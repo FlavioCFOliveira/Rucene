@@ -98,7 +98,17 @@ pub const FIELDS_EXTENSION: &str = "fdt";
 const INDEX_EXTENSION: &str = "fdx";
 const META_EXTENSION: &str = "fdm";
 
-const INDEX_CODEC_NAME: &str = "Lucene90FieldsIndex";
+/// The literal of [`INDEX_CODEC_NAME`], shared with [`INDEX_META_CODEC_NAME`].
+macro_rules! index_codec_name {
+    () => {
+        "Lucene90FieldsIndex"
+    };
+}
+const INDEX_CODEC_NAME: &str = index_codec_name!();
+/// `INDEX_CODEC_NAME + "Meta"`, a constant expression that javac folds into
+/// one literal (`Lucene90CompressingStoredFieldsReader.java:158`).
+// PERF: a constant, as in Java, instead of a string formatted per open.
+const INDEX_META_CODEC_NAME: &str = concat!(index_codec_name!(), "Meta");
 
 const TYPE_STRING: i32 = 0x00;
 const TYPE_BYTE_ARR: i32 = 0x01;
@@ -475,8 +485,11 @@ pub(crate) struct FieldsIndexReader {
     max_doc: i32,
     block_shift: i32,
     num_chunks: i32,
-    docs_meta: DirectMonotonicMeta,
-    start_pointers_meta: DirectMonotonicMeta,
+    /// Java's `docsMeta`, shared by reference with every clone and with the
+    /// readers built over it (`FieldsIndexReader.java:93-98, 145-152`).
+    docs_meta: Arc<DirectMonotonicMeta>,
+    /// Java's `startPointersMeta`, shared as [`docs_meta`](Self::docs_meta).
+    start_pointers_meta: Arc<DirectMonotonicMeta>,
     /// The `.fdx` file, which Java keeps open and slices.
     index_input: Box<dyn IndexInput>,
     docs_start_pointer: i64,
@@ -513,11 +526,18 @@ impl FieldsIndexReader {
         let block_shift = meta_in.read_int()?;
         let num_chunks = meta_in.read_int()?;
         let docs_start_pointer = meta_in.read_long()?;
-        let docs_meta = DirectMonotonicMeta::load(meta_in, i64::from(num_chunks), block_shift)?;
+        let docs_meta = Arc::new(DirectMonotonicMeta::load(
+            meta_in,
+            i64::from(num_chunks),
+            block_shift,
+        )?);
         let docs_end_pointer = meta_in.read_long()?;
         let start_pointers_start_pointer = docs_end_pointer;
-        let start_pointers_meta =
-            DirectMonotonicMeta::load(meta_in, i64::from(num_chunks), block_shift)?;
+        let start_pointers_meta = Arc::new(DirectMonotonicMeta::load(
+            meta_in,
+            i64::from(num_chunks),
+            block_shift,
+        )?);
         let start_pointers_end_pointer = meta_in.read_long()?;
         let max_pointer = meta_in.read_long()?;
 
@@ -526,11 +546,12 @@ impl FieldsIndexReader {
             &index_file,
             /* withHints, `FieldsIndexReader.java:72` */
             io_context
-                .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Index)])
+                .with_hints(&[crate::store::FileTypeHint::Index.shared()])
                 .as_ref(),
         )?;
 
-        let header_name = format!("{codec_name}Idx");
+        // PERF: sized once, as Java's `codecName + "Idx"` is; `format!` grew it.
+        let header_name = [codec_name, "Idx"].concat();
         let checked = check_index_header(
             index_input.as_mut(),
             &header_name,
@@ -590,8 +611,8 @@ impl FieldsIndexReader {
     /// refused by `randomAccessSlice` with an `IllegalArgumentException`.
     fn monotonic_readers(
         index_input: &dyn IndexInput,
-        docs_meta: &DirectMonotonicMeta,
-        start_pointers_meta: &DirectMonotonicMeta,
+        docs_meta: &Arc<DirectMonotonicMeta>,
+        start_pointers_meta: &Arc<DirectMonotonicMeta>,
         [docs_start, docs_end, start_pointers_start, start_pointers_end]: [i64; 4],
     ) -> Result<(DirectMonotonicReader, DirectMonotonicReader)> {
         let docs_slice =
@@ -601,11 +622,11 @@ impl FieldsIndexReader {
             start_pointers_end.wrapping_sub(start_pointers_start),
         )?;
         let docs = DirectMonotonicReader::with_random_access(
-            docs_meta.clone(),
+            Arc::clone(docs_meta),
             shared_random_access_input(docs_slice),
         )?;
         let start_pointers = DirectMonotonicReader::with_random_access(
-            start_pointers_meta.clone(),
+            Arc::clone(start_pointers_meta),
             shared_random_access_input(start_pointers_slice),
         )?;
         Ok((docs, start_pointers))
@@ -706,8 +727,8 @@ impl FieldsIndex for FieldsIndexReader {
             max_doc: self.max_doc,
             block_shift: self.block_shift,
             num_chunks: self.num_chunks,
-            docs_meta: self.docs_meta.clone(),
-            start_pointers_meta: self.start_pointers_meta.clone(),
+            docs_meta: Arc::clone(&self.docs_meta),
+            start_pointers_meta: Arc::clone(&self.start_pointers_meta),
             index_input,
             docs_start_pointer: self.docs_start_pointer,
             docs_end_pointer: self.docs_end_pointer,
@@ -2440,8 +2461,8 @@ impl Lucene90CompressingStoredFieldsReader {
                     /* withHints, `Lucene90CompressingStoredFieldsReader.java:146` */
                     io_context
                         .with_hints(&[
-                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
-                            std::sync::Arc::new(crate::store::DataAccessHint::Random),
+                            crate::store::FileTypeHint::Data.shared(),
+                            crate::store::DataAccessHint::Random.shared(),
                         ])
                         .as_ref(),
                 )?,
@@ -2464,7 +2485,7 @@ impl Lucene90CompressingStoredFieldsReader {
             let meta_in = meta_in.insert(directory.open_checksum_input(&meta_file)?);
             check_index_header(
                 meta_in.as_mut(),
-                &format!("{INDEX_CODEC_NAME}Meta"),
+                INDEX_META_CODEC_NAME,
                 META_VERSION_START,
                 version,
                 &id,
@@ -2620,9 +2641,11 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             let bits = (info_and_bits & TYPE_MASK as u64) as i32;
             debug_assert!(bits <= TYPE_NUMERIC_DOUBLE, "bits={bits:x}");
 
+            // The shared handle onto the field's one `FieldInfo` object, which
+            // Java hands every callback as a reference the visitor may keep.
             let field_info = self
                 .field_infos
-                .field_info_checked(field_number)?
+                .field_info_checked_shared(field_number)?
                 .ok_or_else(|| {
                     LuceneError::from(LuceneErrorKind::corrupt_index_message(format!(
                         "field number {field_number} not found"
@@ -2972,7 +2995,7 @@ impl Lucene90CompressingStoredFieldsReader {
     fn read_field(
         input: &mut dyn DataInput,
         visitor: &mut dyn StoredFieldVisitor,
-        info: &FieldInfo,
+        info: &Arc<FieldInfo>,
         bits: i32,
     ) -> Result<()> {
         match bits & TYPE_MASK {
@@ -3523,37 +3546,37 @@ mod tests {
     }
 
     impl StoredFieldVisitor for CollectingVisitor {
-        fn binary_field(&mut self, info: &FieldInfo, value: &[u8]) -> Result<()> {
+        fn binary_field(&mut self, info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Bytes(value.to_vec())));
             Ok(())
         }
 
-        fn string_field(&mut self, info: &FieldInfo, value: String) -> Result<()> {
+        fn string_field(&mut self, info: &Arc<FieldInfo>, value: String) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::String(value)));
             Ok(())
         }
 
-        fn int_field(&mut self, info: &FieldInfo, value: i32) -> Result<()> {
+        fn int_field(&mut self, info: &Arc<FieldInfo>, value: i32) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Int(value)));
             Ok(())
         }
 
-        fn long_field(&mut self, info: &FieldInfo, value: i64) -> Result<()> {
+        fn long_field(&mut self, info: &Arc<FieldInfo>, value: i64) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Long(value)));
             Ok(())
         }
 
-        fn float_field(&mut self, info: &FieldInfo, value: f32) -> Result<()> {
+        fn float_field(&mut self, info: &Arc<FieldInfo>, value: f32) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Float(value)));
             Ok(())
         }
 
-        fn double_field(&mut self, info: &FieldInfo, value: f64) -> Result<()> {
+        fn double_field(&mut self, info: &Arc<FieldInfo>, value: f64) -> Result<()> {
             self.fields
                 .push((info.name.clone(), StoredValue::Double(value)));
             Ok(())
@@ -3888,7 +3911,7 @@ mod tests {
         impl StoredFieldVisitor for StreamingVisitor {
             fn binary_field_data_input(
                 &mut self,
-                _info: &FieldInfo,
+                _info: &Arc<FieldInfo>,
                 value: &mut StoredFieldDataInput<'_>,
             ) -> Result<()> {
                 let length = value.length() as usize;
@@ -3898,7 +3921,7 @@ mod tests {
                 Ok(())
             }
 
-            fn binary_field(&mut self, _info: &FieldInfo, _value: &[u8]) -> Result<()> {
+            fn binary_field(&mut self, _info: &Arc<FieldInfo>, _value: &[u8]) -> Result<()> {
                 self.materialised += 1;
                 Ok(())
             }
@@ -5646,8 +5669,8 @@ mod tests {
 
     impl DataInput for PrefetchRecordingInput {
         /// `IndexInput.toString()` returns the resource description.
-        fn to_java_string(&self) -> String {
-            crate::store::IndexInput::resource_description(self).to_string()
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
         }
 
         fn read_byte(&mut self) -> Result<u8> {

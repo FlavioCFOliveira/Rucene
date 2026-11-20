@@ -80,7 +80,7 @@ impl CompoundFormat for SimpleTextCompoundFormat {
     /// Port of `SimpleTextCompoundFormat.getCompoundReader`.
     fn get_compound_reader(
         &self,
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         si: &SegmentInfo,
     ) -> Result<Box<dyn CompoundDirectory>> {
         let data_file = segment_file_name(&si.name, "", DATA_EXTENSION);
@@ -364,7 +364,7 @@ mod tests {
         compound(dir.as_ref(), "-1", "00000000000000001E1");
         let si = segment_info(&dir, "_0", 1);
         let error = SimpleTextCompoundFormat::new()
-            .get_compound_reader(dir.as_ref(), &si)
+            .get_compound_reader(&dir, &si)
             .unwrap_err();
         assert_eq!(
             unchecked(&error),
@@ -381,7 +381,7 @@ mod tests {
         compound(dir.as_ref(), "0", "abcdefghijklmnopqrs");
         let si = segment_info(&dir, "_0", 1);
         let error = SimpleTextCompoundFormat::new()
-            .get_compound_reader(dir.as_ref(), &si)
+            .get_compound_reader(&dir, &si)
             .unwrap_err();
         let LuceneErrorKind::CorruptIndex {
             original_message,

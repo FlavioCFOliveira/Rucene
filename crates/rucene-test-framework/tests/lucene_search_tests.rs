@@ -277,7 +277,8 @@ fn keyword_doc(fields: &[(&str, &str)]) -> Document {
     let mut doc = Document::new();
     for (name, value) in fields {
         doc.add(
-            KeywordField::new(name, value.to_string(), Store::NO).unwrap_or_else(|e| rethrow(e)),
+            KeywordField::new(name.to_string(), value.to_string(), Store::NO)
+                .unwrap_or_else(|e| rethrow(e)),
         );
     }
     doc

@@ -397,7 +397,7 @@ macro_rules! forward_leaf_reader {
         fn terms(
             &self,
             field: &str,
-        ) -> rucene::error::Result<Option<Box<dyn rucene::index::Terms>>> {
+        ) -> rucene::error::Result<Option<std::sync::Arc<dyn rucene::index::Terms>>> {
             (&self.$inner as &dyn rucene::index::LeafReader).terms(field)
         }
     };

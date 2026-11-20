@@ -688,7 +688,7 @@ mod tests {
     use crate::index::DocValuesType;
 
     fn term(field: &str, value: &str) -> Term {
-        Term::new(field, BytesRef::new(value.as_bytes().to_vec()))
+        Term::new(field.to_string(), BytesRef::new(value.as_bytes().to_vec()))
     }
 
     fn numeric(term: Term, value: Option<i64>, doc_up_to: i32) -> DocValuesUpdate {

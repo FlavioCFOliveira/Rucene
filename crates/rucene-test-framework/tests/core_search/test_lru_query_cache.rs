@@ -290,18 +290,18 @@ fn key_set(queries: &[&Arc<dyn Query>]) -> HashSet<QueryKey> {
 
 /// `new StringField(name, value, Store.NO)`.
 fn string_field(name: &str, value: &str) -> Result<StringField> {
-    StringField::new(name, value.to_string(), Store::NO)
+    StringField::new(name.to_string(), value.to_string(), Store::NO)
 }
 
 /// `new TextField(name, value, Store.NO)`.
 fn text_field(name: &str, value: &str) -> Result<TextField> {
-    TextField::new(name, value.to_string(), Store::NO)
+    TextField::new(name.to_string(), value.to_string(), Store::NO)
 }
 
 /// `new NumericDocValuesField(name, value)` as a `Field`.
 fn ndv_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -311,7 +311,11 @@ fn ndv_field(name: &str, value: i64) -> Result<Field> {
 fn stored_doc(fields: &[(&str, &str)]) -> Result<Document> {
     let mut doc = Document::new();
     for (name, value) in fields {
-        doc.add(StringField::new(name, value.to_string(), Store::YES)?);
+        doc.add(StringField::new(
+            name.to_string(),
+            value.to_string(),
+            Store::YES,
+        )?);
     }
     Ok(doc)
 }
@@ -2373,7 +2377,7 @@ impl LeafReader for NoCacheHelperLeafReader {
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn rucene::index::Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn rucene::index::Terms>>> {
         self.inner.terms(field)
     }
     fn get_numeric_doc_values(

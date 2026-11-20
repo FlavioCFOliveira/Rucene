@@ -360,3 +360,87 @@ fn file_channel_map_matches_the_jdk() {
     );
     rw.close().unwrap();
 }
+
+/// The last name found from the end is the last entry of every name's
+/// offsets, for normalized and unnormalized byte strings alike.
+#[test]
+fn last_name_offsets_is_the_last_entry_of_name_offsets() {
+    for bytes in [
+        &b""[..],
+        b"/",
+        b"//",
+        b"a",
+        b"/a",
+        b"a/",
+        b"/a/b",
+        b"a/b/",
+        b"//a//bc//",
+        b"/data/dev/index/_0.cfs",
+        b"segments_2",
+    ] {
+        assert_eq!(
+            last_name_offsets(bytes),
+            name_offsets(bytes).last().copied(),
+            "{:?}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+/// A directory entry's path is the one `Path::new` builds for the same name:
+/// a name `readdir` returns needs no normalization, as `UnixDirectoryStream`
+/// relies on when it uses the `UnixPath(fs, byte[])` constructor.
+#[test]
+fn directory_entries_are_the_paths_new_builds() {
+    let (_tmp, dir) = temp_dir();
+    for name in ["_0.cfs", "segments_1", "write.lock", "ä"] {
+        std::fs::write(dir.as_std_path().join(name), b"x").unwrap();
+    }
+    let mut stream = Files::new_directory_stream(&dir).unwrap();
+    let mut seen = Vec::new();
+    for entry in stream.iterator() {
+        let entry = entry.unwrap();
+        let name = entry.get_file_name().unwrap().to_string();
+        assert_eq!(entry, dir.resolve(&path(&name)));
+        assert_eq!(entry.to_string(), format!("{dir}/{name}"));
+        seen.push(name);
+    }
+    stream.close().unwrap();
+    seen.sort();
+    assert_eq!(seen, ["_0.cfs", "segments_1", "write.lock", "ä"]);
+}
+
+/// An input `UnixPath.normalizeAndCheck` returns as it is (`UnixPath.java:81-94`)
+/// is exactly one the separator rebuild would leave unchanged, so taking the
+/// input's bytes as they are gives the same path as rebuilding them; the
+/// others are rebuilt as the JDK rebuilds them.
+#[test]
+fn already_normal_inputs_are_taken_as_they_are() {
+    for (input, normal) in [
+        ("", true),
+        ("/", true),
+        ("a", true),
+        ("/a/b", true),
+        ("/data/dev/index/_0.cfs", true),
+        ("a/", false),
+        ("//", false),
+        ("a//b", false),
+        ("/a/b/", false),
+        ("//a//bc//", false),
+    ] {
+        assert_eq!(is_normal(input.as_bytes()), normal, "{input:?}");
+        let built = path(input).to_string();
+        assert_eq!(built == input, normal, "{input:?} -> {built:?}");
+    }
+    assert_eq!(path("//").to_string(), "/");
+    assert_eq!(path("//a//bc//").to_string(), "/a/bc");
+}
+
+/// `getPath(first)` with no further parts is the path of `first` itself
+/// (`UnixFileSystem.java:299-300`).
+#[test]
+fn get_path_of_one_part_is_that_part() {
+    for first in ["", "/", "a", "a//b/", "/data/dev/index/_0.cfs"] {
+        assert_eq!(default_file_system().get_path(first, &[]), path(first));
+    }
+}

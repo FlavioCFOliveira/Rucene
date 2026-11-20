@@ -224,7 +224,7 @@ fn adoc(vals: &[&str]) -> Result<Document> {
         ));
         if vals[i] == "id" {
             doc.add(SortedDocValuesField::new(
-                vals[i],
+                vals[i].to_string(),
                 BytesRef::from_char_sequence(vals[i + 1]),
             ));
         }
@@ -285,7 +285,7 @@ impl ElevationSlots {
                 .priority
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .get(&term)
+                .get(term)
                 .copied();
             Ok(prio.unwrap_or(0))
         } else {

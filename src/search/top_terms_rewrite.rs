@@ -333,7 +333,7 @@ where
     score_terms.sort_by(|a, b| a.bytes.cmp(&b.bytes));
 
     for st in score_terms {
-        let term = Term::new(query.get_field(), st.bytes);
+        let term = Term::new(query.get_field().to_string(), st.bytes);
         let doc_freq = st.term_state.doc_freq()?;
         // Negative term scores are allowed while collecting the terms — fuzzy
         // query produces them — but such boosts are truncated to `0` when

@@ -475,7 +475,7 @@ fn new_writer(dir: Arc<dyn Directory>) -> Result<Arc<IndexWriter>> {
 /// A document of one float vector field.
 fn float_doc(name: &str, vector: &[f32], sim: VectorSimilarityFunction) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(KnnFloatVectorField::new(name, vector, sim)?);
+    doc.add(KnnFloatVectorField::new(name.to_string(), vector, sim)?);
     Ok(doc)
 }
 
@@ -725,7 +725,7 @@ fn add_float(
     let mut doc = Document::new();
     if let Some(vector) = vector {
         doc.add(KnnFloatVectorField::new(
-            field,
+            field.to_string(),
             vector,
             similarity_function,
         )?);
@@ -750,7 +750,11 @@ fn add_byte(
 ) -> Result<()> {
     let mut doc = Document::new();
     if let Some(vector) = vector {
-        doc.add(KnnByteVectorField::new(field, vector, similarity_function)?);
+        doc.add(KnnByteVectorField::new(
+            field.to_string(),
+            vector,
+            similarity_function,
+        )?);
     }
     doc.add(NumericDocValuesField::new("sortkey", i64::from(sort_key)));
     let id_string = id.to_string();

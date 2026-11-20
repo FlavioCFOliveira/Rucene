@@ -1090,12 +1090,12 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut sdv = npe(sdv);
                 aeq(0, sdv.next_doc()?);
                 Assert::assert_equals(
-                    BytesRef::from_char_sequence("search"),
+                    &BytesRef::from_char_sequence("search"),
                     sdv.lookup_ord(sdv.ord_value()?)?,
                 );
                 aeq(1, sdv.next_doc()?);
                 Assert::assert_equals(
-                    BytesRef::from_char_sequence("search"),
+                    &BytesRef::from_char_sequence("search"),
                     sdv.lookup_ord(sdv.ord_value()?)?,
                 );
                 aeq(NO_MORE_DOCS, sdv.next_doc()?);
@@ -1115,13 +1115,13 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 aeq(0, ssdv.next_doc()?);
                 let ord = ssdv.next_ord()?;
                 Assert::assert_equals(
-                    BytesRef::from_char_sequence("engine"),
+                    &BytesRef::from_char_sequence("engine"),
                     ssdv.lookup_ord(ord)?,
                 );
                 aeq(1, ssdv.next_doc()?);
                 let ord = ssdv.next_ord()?;
                 Assert::assert_equals(
-                    BytesRef::from_char_sequence("engine"),
+                    &BytesRef::from_char_sequence("engine"),
                     ssdv.lookup_ord(ord)?,
                 );
                 aeq(NO_MORE_DOCS, ssdv.next_doc()?);

@@ -109,7 +109,7 @@ fn stored_with(options: IndexOptions) -> Result<FieldType> {
 /// `Collections.singleton(new Field(name, value, ft))`.
 fn singleton(name: &str, value: &str, ft: &FieldType) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(Field::new(name, value.to_string(), ft.clone())?);
+    doc.add(Field::new(name.to_string(), value.to_string(), ft.clone())?);
     Ok(doc)
 }
 

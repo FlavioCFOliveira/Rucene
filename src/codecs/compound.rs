@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{
@@ -29,9 +30,12 @@ pub trait CompoundFormat: Send + Sync + fmt::Debug {
     fn name(&self) -> &str;
 
     /// Returns a [`CompoundDirectory`] view for the compound files in this segment.
+    ///
+    /// `dir` is shared because a reader may keep it, as Java's
+    /// `Lucene90CompoundReader` keeps its `directory` for `toString()`.
     fn get_compound_reader(
         &self,
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         segment_info: &SegmentInfo,
     ) -> Result<Box<dyn CompoundDirectory>>;
 

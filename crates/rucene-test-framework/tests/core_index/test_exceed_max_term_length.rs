@@ -111,7 +111,7 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
         if random().next_boolean() {
             // totally ok short field value
             doc.add(Field::new(
-                &TestUtil::random_simple_string_between(&*random(), 1, 10),
+                TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_simple_string_between(&*random(), 1, 10),
                 ft.clone(),
             )?);
@@ -127,7 +127,7 @@ fn test_token_stream(inst: &Instance) -> Result<()> {
         if random().next_boolean() {
             // totally ok short field value
             doc.add(Field::new(
-                &TestUtil::random_simple_string_between(&*random(), 1, 10),
+                TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_simple_string_between(&*random(), 1, 10),
                 ft.clone(),
             )?);
@@ -161,7 +161,7 @@ fn test_binary_value(inst: &Instance) -> Result<()> {
         if random().next_boolean() {
             // totally ok short field value
             doc.add(Field::new_with_bytes(
-                &TestUtil::random_simple_string_between(&*random(), 1, 10),
+                TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_binary_term_with(&*random(), 10),
                 ft.clone(),
             )?);
@@ -176,7 +176,7 @@ fn test_binary_value(inst: &Instance) -> Result<()> {
         if random().next_boolean() {
             // totally ok short field value
             doc.add(Field::new_with_bytes(
-                &TestUtil::random_simple_string_between(&*random(), 1, 10),
+                TestUtil::random_simple_string_between(&*random(), 1, 10),
                 TestUtil::random_binary_term_with(&*random(), 10),
                 ft.clone(),
             )?);

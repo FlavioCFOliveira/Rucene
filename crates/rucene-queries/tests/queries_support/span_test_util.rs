@@ -57,7 +57,10 @@ pub fn span_query(query: Arc<dyn SpanQuery>) -> Arc<dyn SpanQuery> {
 ///
 /// `spanTermQuery(String, String)`.
 pub fn span_term_query(field: &str, term: &str) -> Arc<dyn SpanQuery> {
-    span_query(Arc::new(SpanTermQuery::new(Term::from_text(field, term))))
+    span_query(Arc::new(SpanTermQuery::new(Term::from_text(
+        field.to_string(),
+        term,
+    ))))
 }
 
 /// Makes a new SpanOrQuery (with additional asserts) from the provided
@@ -177,7 +180,10 @@ pub fn span_near_unordered_query_terms(
     let mut builder = SpanNearQuery::new_unordered_near_query(field);
     builder.set_slop(slop);
     for term in terms {
-        builder.add_clause(Arc::new(SpanTermQuery::new(Term::from_text(field, term))))?;
+        builder.add_clause(Arc::new(SpanTermQuery::new(Term::from_text(
+            field.to_string(),
+            term,
+        ))))?;
     }
     Ok(span_query(Arc::new(builder.build()?)))
 }

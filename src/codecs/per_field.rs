@@ -10,13 +10,14 @@
 #![deny(unsafe_code)]
 #![allow(clippy::type_complexity)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{LuceneError, Result};
+use crate::index::field_infos::FieldName;
 use crate::index::{DocValuesType, IndexOptions};
 use crate::internal::hppc::IntObjectHashMap;
-use crate::util::java_collections::JavaHashMap;
+use crate::util::java_collections::{java_compare_to, JavaHashMap};
 use crate::util::IOUtils;
 
 use super::doc_values::{doc_values_lookup, DocValuesConsumer, DocValuesFormat, DocValuesProducer};
@@ -134,13 +135,27 @@ fn format_identity<T: ?Sized>(format: &Arc<T>) -> usize {
     Arc::as_ptr(format) as *const () as usize
 }
 
+/// `PerFieldPostingsFormat.getSuffix` (`PerFieldPostingsFormat.java:113-115`):
+/// `formatName + "_" + suffix`.
 fn get_suffix(format_name: &str, suffix: impl std::fmt::Display) -> String {
-    format!("{}_{}", format_name, suffix)
+    use std::fmt::Write as _;
+    // PERF: sized once, as Java's concatenation sizes its result; `format!`
+    // started this string empty and grew it twice per field at every open.
+    // A suffix is a decimal `int` (at most 11 characters).
+    let mut segment_suffix = String::with_capacity(format_name.len() + 1 + 11);
+    segment_suffix.push_str(format_name);
+    segment_suffix.push('_');
+    write!(segment_suffix, "{suffix}").expect("INVARIANT: writing to a String cannot fail");
+    segment_suffix
 }
 
-fn get_full_segment_suffix(outer_segment_suffix: &str, segment_suffix: &str) -> String {
+/// `PerFieldDocValuesFormat.getFullSegmentSuffix` (`PerFieldDocValuesFormat.java:250-256`),
+/// which returns `segmentSuffix` itself when the outer suffix is empty.
+fn get_full_segment_suffix(outer_segment_suffix: &str, segment_suffix: String) -> String {
     if outer_segment_suffix.is_empty() {
-        segment_suffix.to_string()
+        // PERF: the argument itself, as Java returns the same `String`, not a
+        // copy of it.
+        segment_suffix
     } else {
         format!("{}_{}", outer_segment_suffix, segment_suffix)
     }
@@ -255,8 +270,10 @@ impl<'a> FieldsWriter<'a> {
             field_info.put_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY, group.suffix.to_string());
         }
 
+        // `fieldList.sort(null)` (`PerFieldPostingsFormat.java:105-108`):
+        // `String.compareTo`, UTF-16 order.
         for group in groups.values_mut() {
-            group.fields.sort();
+            group.fields.sort_by(|a, b| java_compare_to(a, b));
         }
 
         Ok(groups)
@@ -380,7 +397,7 @@ impl Fields for MaskedFields<'_> {
         self.base.size()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.base.terms(field)
     }
 
@@ -422,16 +439,26 @@ struct FieldsReader {
     /// iteration order is the order the producers are closed in, which decides
     /// whose failure surfaces when several fail.
     formats: JavaHashMap<Box<dyn FieldsProducer>>,
-    fields: BTreeMap<String, String>,
+    /// Java's `Map<String, FieldsProducer> fields = new TreeMap<>()`
+    /// (`PerFieldPostingsFormat.java:272`), keyed by each field's own name
+    /// (see [`FieldName`]) and pointing at the segment suffix of its producer
+    /// in [`Self::formats`].
+    ///
+    /// The entries are kept in the `TreeMap`'s key order, `String.compareTo`
+    /// (UTF-16, [`java_compare_to`]), which `iterator()` walks
+    /// (`PerFieldPostingsFormat.java:336`), and are searched in that same
+    /// order. A `BTreeMap` keyed by name would order by UTF-8 bytes, which
+    /// differs for a supplementary character against U+E000..U+FFFF.
+    fields: Vec<(FieldName, String)>,
 }
 
 impl FieldsReader {
     fn new(read_state: &SegmentReadState) -> Result<Self> {
         let mut formats: JavaHashMap<Box<dyn FieldsProducer>> = JavaHashMap::new();
-        let mut fields: BTreeMap<String, String> = BTreeMap::new();
+        let mut fields: Vec<(FieldName, String)> = Vec::new();
 
         let result = (|| -> Result<()> {
-            for fi in read_state.field_infos.iter() {
+            for fi in read_state.field_infos.iter_shared() {
                 if fi.index_options != IndexOptions::NONE {
                     // null formatName means the field is in fieldInfos, but has no postings!
                     // (`PerFieldPostingsFormat.java:305-307`)
@@ -454,7 +481,9 @@ impl FieldsReader {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
                         formats.insert(segment_suffix.clone(), format.fields_producer(&state)?);
                     }
-                    fields.insert(fi.name.clone(), segment_suffix);
+                    // PERF: `fields.put(fieldName, ...)` keys by the field's
+                    // own name (`PerFieldPostingsFormat.java:320`), not a copy.
+                    fields.push((FieldName::new(fi), segment_suffix));
                 }
             }
             Ok(())
@@ -469,7 +498,19 @@ impl FieldsReader {
             return Err(e);
         }
 
+        // The `TreeMap`'s key order. Every `put` adds a new key: `FieldInfos`
+        // holds no two fields of the same name.
+        fields.sort_by(|(a, _), (b, _)| java_compare_to(a.as_str(), b.as_str()));
         Ok(Self { formats, fields })
+    }
+
+    /// `fields.get(field)`: the segment suffix of the producer that serves
+    /// `field`, found by the `TreeMap`'s `String.compareTo` order.
+    fn suffix_of(&self, field: &str) -> Option<&String> {
+        self.fields
+            .binary_search_by(|(name, _)| java_compare_to(name.as_str(), field))
+            .ok()
+            .map(|index| &self.fields[index].1)
     }
 }
 
@@ -491,8 +532,8 @@ impl Fields for FieldsReader {
     /// null : fieldsProducer.terms(field)`, so a field this segment does not
     /// index has no terms. A merge asks every reader for every merged field
     /// (`MultiFields.terms`), including readers that lack it.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
-        let Some(suffix) = self.fields.get(field) else {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+        let Some(suffix) = self.suffix_of(field) else {
             return Ok(None);
         };
         self.formats
@@ -502,7 +543,11 @@ impl Fields for FieldsReader {
     }
 
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
-        let names: Vec<String> = self.fields.keys().cloned().collect();
+        let names: Vec<String> = self
+            .fields
+            .iter()
+            .map(|(name, _)| name.as_str().to_owned())
+            .collect();
         Box::new(names.into_iter())
     }
 }
@@ -534,8 +579,8 @@ impl FieldsProducer for FieldsReader {
         // its merge-instance replacement.
         debug_assert!(self
             .fields
-            .values()
-            .all(|suffix| formats.contains_key(suffix)));
+            .iter()
+            .all(|(_, suffix)| formats.contains_key(suffix)));
         Ok(Box::new(FieldsReader {
             formats,
             fields: self.fields.clone(),
@@ -769,7 +814,7 @@ impl<'a> DvFieldsWriter<'a> {
 
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
-                &get_suffix(&format_name, suffix),
+                get_suffix(&format_name, suffix),
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let consumer = format.fields_consumer(&state)?;
@@ -915,14 +960,12 @@ impl DvFieldsReader {
         let result = (|| -> Result<()> {
             for fi in read_state.field_infos.iter() {
                 if fi.doc_values_type != DocValuesType::NONE {
-                    let format_name = fi
-                        .get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
-                        .ok_or_else(|| {
-                            LuceneError::illegal_state(format!(
-                            "missing attribute: {PER_FIELD_DOC_VALUES_FORMAT_KEY} for field: {}",
-                            fi.name
-                        ))
-                        })?;
+                    // null formatName means the field is in fieldInfos, but has no docvalues!
+                    // (`PerFieldDocValuesFormat.java:290-292`)
+                    let Some(format_name) = fi.get_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY)
+                    else {
+                        continue;
+                    };
                     let suffix = fi
                         .get_attribute(PER_FIELD_DOC_VALUES_SUFFIX_KEY)
                         .ok_or_else(|| {
@@ -936,7 +979,7 @@ impl DvFieldsReader {
                     let format = doc_values_lookup(&format_name)?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, &suffix),
+                        get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -1259,7 +1302,7 @@ impl KnnFieldsWriter {
             self.suffixes.insert(format_name.clone(), suffix);
             let segment_suffix = get_full_segment_suffix(
                 &self.segment_write_state.segment_suffix,
-                &get_suffix(&format_name, suffix),
+                get_suffix(&format_name, suffix),
             );
             let state = self.segment_write_state.with_new_suffix(segment_suffix);
             let writer = format.fields_writer(&state)?;
@@ -1415,7 +1458,7 @@ impl KnnFieldsReader {
                     let format = knn_vectors_lookup(&format_name)?;
                     let segment_suffix = get_full_segment_suffix(
                         &read_state.segment_suffix,
-                        &get_suffix(&format_name, &suffix),
+                        get_suffix(&format_name, &suffix),
                     );
                     if !formats.contains_key(&segment_suffix) {
                         let state = read_state.with_new_suffix(segment_suffix.clone());
@@ -1733,7 +1776,7 @@ impl Fields for FilterFieldsProducer {
         self.filtered.len() as i32
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if !self.filtered.iter().any(|name| name == field) {
             return Err(LuceneError::illegal_argument(format!(
                 "The field named '{field}' is not accessible in the current merge context, \
@@ -1846,7 +1889,7 @@ mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -1960,7 +2003,7 @@ mod tests {
         fn size(&self) -> i32 {
             2
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2062,7 +2105,7 @@ mod tests {
             fn size(&self) -> i32 {
                 2
             }
-            fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
                 Ok(None)
             }
             fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2109,7 +2152,7 @@ mod tests {
             fn size(&self) -> i32 {
                 2
             }
-            fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
                 Ok(None)
             }
             fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2123,21 +2166,152 @@ mod tests {
         let body_info = state.field_infos.field_info("body").unwrap();
         let title_info = state.field_infos.field_info("title").unwrap();
         assert_eq!(
-            body_info.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY),
-            Some("FormatA".to_string())
+            body_info
+                .get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
+                .as_deref(),
+            Some("FormatA")
         );
         assert_eq!(
-            title_info.get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY),
-            Some("FormatB".to_string())
+            title_info
+                .get_attribute(PER_FIELD_POSTINGS_FORMAT_KEY)
+                .as_deref(),
+            Some("FormatB")
         );
         assert_eq!(
-            body_info.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY),
-            Some("0".to_string())
+            body_info
+                .get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
+                .as_deref(),
+            Some("0")
         );
         assert_eq!(
-            title_info.get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY),
-            Some("0".to_string())
+            title_info
+                .get_attribute(PER_FIELD_POSTINGS_SUFFIX_KEY)
+                .as_deref(),
+            Some("0")
         );
+    }
+
+    /// rmp #570: the per-field postings format orders field names by
+    /// `String.compareTo` (UTF-16) on both sides. The writer sorts each
+    /// group's fields with `fieldList.sort(null)`
+    /// (`PerFieldPostingsFormat.java:105-108`), the order the block tree
+    /// writer then asserts (`Lucene103BlockTreeTermsWriter.java:372`), and
+    /// the reader's `fields` is a `TreeMap<String, FieldsProducer>`
+    /// (`PerFieldPostingsFormat.java:272, 336`). U+10000 and U+1D400 sort
+    /// before U+E000 and U+FFFD, the reverse of their UTF-8 byte order. Task
+    /// #570 oracle (`E2Oracle.java`, Lucene 10.5.0): the reader of a segment
+    /// Lucene wrote iterates `a, U+10000, U+1D400, U+E000, U+FFFD`.
+    #[test]
+    fn per_field_postings_order_field_names_as_java_strings() {
+        use crate::codecs::Lucene104PostingsFormat;
+        use std::sync::Mutex;
+
+        /// The `Lucene104` format, recording the fields handed to its consumer.
+        #[derive(Debug)]
+        struct Recording(Arc<Mutex<Vec<String>>>);
+
+        struct RecordingConsumer<'a> {
+            inner: Box<dyn FieldsConsumer + 'a>,
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl FieldsConsumer for RecordingConsumer<'_> {
+            fn write(
+                &mut self,
+                fields: &dyn Fields,
+                norms: Option<&dyn NormsProducer>,
+            ) -> Result<()> {
+                self.seen.lock().unwrap().extend(fields.iterator());
+                self.inner.write(fields, norms)
+            }
+
+            fn close(&mut self) -> Result<()> {
+                self.inner.close()
+            }
+        }
+
+        impl PostingsFormat for Recording {
+            fn name(&self) -> &str {
+                "Lucene104"
+            }
+
+            fn fields_consumer<'a>(
+                &self,
+                state: &SegmentWriteState<'a>,
+            ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+                Ok(Box::new(RecordingConsumer {
+                    inner: Lucene104PostingsFormat::new().fields_consumer(state)?,
+                    seen: Arc::clone(&self.0),
+                }))
+            }
+
+            fn fields_producer<'a>(
+                &self,
+                state: &SegmentReadState<'a>,
+            ) -> Result<Box<dyn FieldsProducer>> {
+                Lucene104PostingsFormat::new().fields_producer(state)
+            }
+        }
+
+        /// The given field names, in the given order, none with terms.
+        struct Names(Vec<String>);
+
+        impl Fields for Names {
+            fn size(&self) -> i32 {
+                self.0.len() as i32
+            }
+
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
+                Ok(None)
+            }
+
+            fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(self.0.clone().into_iter())
+            }
+        }
+
+        let names = ["\u{FFFD}", "a", "\u{1D400}", "\u{E000}", "\u{10000}"];
+        let field_infos = FieldInfos::new(
+            names
+                .iter()
+                .enumerate()
+                .map(|(number, name)| {
+                    let mut field = FieldInfo::new(*name, number as i32);
+                    field.index_options = IndexOptions::DOCS;
+                    field
+                })
+                .collect(),
+        )
+        .unwrap();
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let info = crate::codecs::tests::test_segment_info("_0", 1);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recording: Arc<dyn PostingsFormat> = Arc::new(Recording(Arc::clone(&seen)));
+        let format = PerFieldPostingsFormat::new(move |_field| Arc::clone(&recording));
+        {
+            let state = crate::codecs::tests::write_state(&dir, &info, &field_infos);
+            let mut consumer = format.fields_consumer(&state).unwrap();
+            consumer
+                .write(&Names(names.map(String::from).to_vec()), None)
+                .unwrap();
+            consumer.close().unwrap();
+        }
+        let expected = ["a", "\u{10000}", "\u{1D400}", "\u{E000}", "\u{FFFD}"];
+        assert_eq!(*seen.lock().unwrap(), expected);
+
+        let state = crate::codecs::tests::read_state(&*dir, &info, &field_infos);
+        let reader = FieldsReader::new(&state).unwrap();
+        assert_eq!(reader.iterator().collect::<Vec<_>>(), expected);
+        assert_eq!(reader.size(), 5);
+        for name in expected {
+            assert_eq!(
+                reader.suffix_of(name).map(String::as_str),
+                Some("Lucene104_0")
+            );
+        }
+        assert!(reader.suffix_of("b").is_none());
+        reader.close().unwrap();
     }
 
     /// `PerFieldMergeState.restrictFields` restricts the field infos and the
@@ -2322,7 +2496,7 @@ mod close_family_tests {
         fn size(&self) -> i32 {
             0
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
@@ -2590,7 +2764,7 @@ mod close_family_tests {
         }
         let reader = FieldsReader {
             formats,
-            fields: BTreeMap::new(),
+            fields: Vec::new(),
         };
         assert_eq!(surfaced(reader.close().unwrap_err()), "Lucene104_3");
         assert_eq!(
@@ -2699,7 +2873,7 @@ mod close_family_tests {
                 ("a", Box::new(a) as Box<dyn FieldsProducer>),
                 ("b", Box::new(b) as Box<dyn FieldsProducer>),
             ]),
-            fields: BTreeMap::new(),
+            fields: Vec::new(),
         };
         reader.close().unwrap_err();
         assert_eq!(sorted(&log), ["a", "b"]);
@@ -2765,6 +2939,45 @@ mod close_family_tests {
         let reader = KnnFieldsReader::new(&state).unwrap();
         assert!(reader.formats.is_empty());
         assert!(!reader.fields.contains_key(0));
+    }
+
+    /// rmp #570: a doc-values field without the per-field format attribute is
+    /// skipped, not rejected: "null formatName means the field is in
+    /// fieldInfos, but has no docvalues!" (`PerFieldDocValuesFormat.java:290-292`),
+    /// so `getNumeric` answers `null`. A field that names its format but has
+    /// no suffix still fails (`PerFieldDocValuesFormat.java:293-297`). Task
+    /// #570 oracle (`E2Oracle.java`, Lucene 10.5.0): the reader opens over a
+    /// `NUMERIC` field with no attributes and `getNumeric` returns `null`.
+    #[test]
+    fn doc_values_reader_skips_a_field_without_format_attribute() {
+        use crate::store::DEFAULT_IO_CONTEXT;
+
+        let dir = crate::store::ByteBuffersDirectory::default();
+        let info = crate::codecs::tests::test_segment_info("_0", 1);
+        let mut fi = crate::index::FieldInfo::new("dv", 0);
+        fi.doc_values_type = DocValuesType::NUMERIC;
+        let fis = crate::index::FieldInfos::new(vec![fi]).unwrap();
+        let state = SegmentReadState::new(&dir, &info, &fis, &*DEFAULT_IO_CONTEXT);
+        let reader = DvFieldsReader::new(&state).unwrap();
+        assert!(reader.formats.is_empty());
+        assert!(!reader.fields.contains_key(&0));
+        let field = fis.field_info("dv").unwrap();
+        assert!(reader.get_numeric(field).unwrap().is_none());
+
+        let mut fi = crate::index::FieldInfo::new("dv", 0);
+        fi.doc_values_type = DocValuesType::NUMERIC;
+        fi.put_attribute(PER_FIELD_DOC_VALUES_FORMAT_KEY, "Lucene90");
+        let fis = crate::index::FieldInfos::new(vec![fi]).unwrap();
+        let state = SegmentReadState::new(&dir, &info, &fis, &*DEFAULT_IO_CONTEXT);
+        let error = DvFieldsReader::new(&state).unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::IllegalState { message, .. }
+                    if message == "missing attribute: PerFieldDocValuesFormat.suffix for field: dv"
+            ),
+            "{error:?}"
+        );
     }
 
     /// `PerFieldKnnVectorsFormat.FieldsWriter.close()` is

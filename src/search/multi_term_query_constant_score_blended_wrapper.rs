@@ -265,10 +265,11 @@ impl RewriteInner for BlendedRewrite {
                 let q: Arc<dyn Query> =
                     Arc::new(ConstantScoreQuery::new(Arc::new(TermQuery::with_states(
                         Term::new(
-                            state.query.get_field(),
+                            state.query.get_field().to_string(),
                             terms_enum
                                 .term()?
-                                .ok_or_else(crate::error::LuceneError::null_pointer)?,
+                                .ok_or_else(crate::error::LuceneError::null_pointer)?
+                                .clone(),
                         ),
                         Arc::new(term_states),
                     ))));

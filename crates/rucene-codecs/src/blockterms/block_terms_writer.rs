@@ -189,7 +189,7 @@ impl FieldsConsumer for BlockTermsWriter {
                 )
             })?;
             let mut terms_writer = self.add_field(&field_info)?;
-            while let Some(term) = terms_enum.next()? {
+            while let Some(term) = terms_enum.next()?.cloned() {
                 terms_writer.write(self, &term, terms_enum.as_mut(), norms)?;
             }
             terms_writer.finish(self)?;
@@ -537,8 +537,8 @@ mod use_after_close_tests {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::once("f".to_string()))
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
-            Ok(Some(Box::new(EmptyTerms::new())))
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
+            Ok(Some(Arc::new(EmptyTerms::new())))
         }
         fn size(&self) -> i32 {
             1

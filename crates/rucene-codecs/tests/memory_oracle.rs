@@ -34,7 +34,7 @@ const FST50: FormatOracle = FormatOracle {
     extensions: &["tfp"],
     codec: fst50_codec,
     extra_jars: &[],
-    live_impacts_differ: true,
+    live_impacts_differ: false,
 };
 
 #[test]

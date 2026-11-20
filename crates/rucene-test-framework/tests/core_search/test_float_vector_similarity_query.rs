@@ -98,7 +98,11 @@ impl VectorSimilarityCase for FloatVectorSimilarityCase {
         vector: &Vec<f32>,
         function: VectorSimilarityFunction,
     ) -> Result<Box<dyn IndexableField>> {
-        Ok(Box::new(KnnFloatVectorField::new(name, vector, function)?))
+        Ok(Box::new(KnnFloatVectorField::new(
+            name.to_string(),
+            vector,
+            function,
+        )?))
     }
 
     fn get_vector_query(

@@ -436,32 +436,32 @@ impl<W: StoredFieldsWriter + ?Sized> MergeVisitor<'_, W> {
 }
 
 impl<W: StoredFieldsWriter + ?Sized> StoredFieldVisitor for MergeVisitor<'_, W> {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+    fn binary_field(&mut self, field_info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
         self.writer.write_field_bytes(&remapped, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+    fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
         self.writer.write_field_string(&remapped, &value)
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+    fn int_field(&mut self, field_info: &Arc<FieldInfo>, value: i32) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
         self.writer.write_field_i32(&remapped, value)
     }
 
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+    fn long_field(&mut self, field_info: &Arc<FieldInfo>, value: i64) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
         self.writer.write_field_i64(&remapped, value)
     }
 
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+    fn float_field(&mut self, field_info: &Arc<FieldInfo>, value: f32) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
         self.writer.write_field_f32(&remapped, value)
     }
 
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+    fn double_field(&mut self, field_info: &Arc<FieldInfo>, value: f64) -> Result<()> {
         let remapped = self.remap(field_info)?.clone();
         self.writer.write_field_f64(&remapped, value)
     }
@@ -521,7 +521,7 @@ mod tests {
     /// and which counts the documents read through this very instance.
     #[derive(Debug)]
     struct CountingStoredFieldsReader {
-        field: FieldInfo,
+        field: Arc<FieldInfo>,
         reads: Arc<std::sync::atomic::AtomicUsize>,
     }
 
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn the_default_merge_refuses_a_segment_without_a_reader() {
         let reader = CountingStoredFieldsReader {
-            field: FieldInfo::new("value", 0),
+            field: Arc::new(FieldInfo::new("value", 0)),
             reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let merge_state = two_segment_merge_state(vec![Some(Box::new(reader)), None], vec![3, 2]);
@@ -686,7 +686,7 @@ mod tests {
             .iter()
             .map(|reads| {
                 Some(Box::new(CountingStoredFieldsReader {
-                    field: FieldInfo::new("value", 0),
+                    field: Arc::new(FieldInfo::new("value", 0)),
                     reads: Arc::clone(reads),
                 }) as Box<dyn StoredFieldsReader>)
             })

@@ -18,6 +18,7 @@
 //! Port of `org.apache.lucene.codecs.memory.DirectPostingsFormat`.
 
 use std::any::Any;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -227,11 +228,11 @@ impl Fields for DirectFields {
         Box::new(self.field_names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self
             .fields
             .get(field)
-            .map(|t| Box::new(DirectTerms(Arc::clone(t))) as Box<dyn Terms>))
+            .map(|t| Arc::new(DirectTerms(Arc::clone(t))) as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {
@@ -589,7 +590,7 @@ impl DirectField {
         // Used for payloads, if any:
         let mut ros: Vec<u8> = Vec::new();
 
-        while let Some(term) = terms_enum.next()? {
+        while let Some(term) = terms_enum.next()?.cloned() {
             let doc_freq = terms_enum.doc_freq()?;
             let total_term_freq = terms_enum.total_term_freq()?;
 
@@ -1114,6 +1115,9 @@ struct DirectTermsEnum {
     field: Arc<DirectField>,
     attributes: Option<AttributeSource>,
     scratch: Scratch,
+    /// The term `scratch` names, built from it when first read after it moved,
+    /// so that `term()` and `next()` can lend it as Java returns `scratch`.
+    term: OnceCell<BytesRef>,
     term_ord: i32,
 }
 
@@ -1132,20 +1136,28 @@ impl DirectTermsEnum {
             field,
             attributes: None,
             scratch: None,
+            term: OnceCell::new(),
             term_ord: -1,
         }
     }
 
+    /// The term `scratch` names, lent.
+    fn scratch_term(&self) -> &BytesRef {
+        self.term
+            .get_or_init(|| scratch_term(&self.field, self.scratch))
+    }
+
     /// Port of `setTerm()`: Java assigns `scratch.offset` before it reads
     /// `termOffsets[termOrd + 1]`, so a failing read leaves the new offset.
-    fn set_term(&mut self) -> Result<BytesRef> {
+    fn set_term(&mut self) -> Result<()> {
+        self.term = OnceCell::new();
         let offsets = &self.field.term_offsets;
         let offset = at(offsets, self.term_ord)?;
         let length = self.scratch.map_or(0, |(_, l)| l);
         self.scratch = Some((offset as usize, length));
         let end = at(offsets, self.term_ord + 1)?;
         self.scratch = Some((offset as usize, (end - offset) as usize));
-        Ok(scratch_term(&self.field, self.scratch))
+        Ok(())
     }
 
     /// If non-negative, exact match; else, `-ord-1`, where ord is where you
@@ -1179,10 +1191,11 @@ impl TermsEnum for DirectTermsEnum {
         self.attributes.get_or_insert_with(AttributeSource::new)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.term_ord += 1;
         if (self.term_ord as usize) < self.field.terms.len() {
-            Ok(Some(self.set_term()?))
+            self.set_term()?;
+            Ok(Some(self.scratch_term()))
         } else {
             Ok(None)
         }
@@ -1236,13 +1249,13 @@ impl TermsEnum for DirectTermsEnum {
 
     fn seek_term_state(&mut self, term: &BytesRef, state: &dyn TermState) -> Result<()> {
         self.term_ord = ord_term_state(state)? as i32;
-        let set = self.set_term()?;
-        java_assert!(*term == set);
+        self.set_term()?;
+        java_assert!(term == self.scratch_term());
         Ok(())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(scratch_term(&self.field, self.scratch)))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.scratch_term()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1295,6 +1308,8 @@ struct DirectIntersectTermsEnum {
     compiled: CompiledAutomaton,
     term_ord: i32,
     scratch: Scratch,
+    /// The term `scratch` names (see `DirectTermsEnum::term`).
+    term: OnceCell<BytesRef>,
     states: Vec<State>,
     state_upto: i32,
 }
@@ -1328,6 +1343,7 @@ impl DirectIntersectTermsEnum {
             compiled,
             term_ord: -1,
             scratch: None,
+            term: OnceCell::new(),
             states: vec![State::default()],
             state_upto: 0,
         };
@@ -1708,8 +1724,12 @@ impl TermsEnum for DirectIntersectTermsEnum {
         self.attributes.get_or_insert_with(AttributeSource::new)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        self.do_next()
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.term = OnceCell::new();
+        match self.do_next()? {
+            Some(term) => Ok(Some(self.term.get_or_init(|| term))),
+            None => Ok(None),
+        }
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
@@ -1718,8 +1738,11 @@ impl TermsEnum for DirectIntersectTermsEnum {
         Ok(Box::new(state))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(scratch_term(&self.field, self.scratch)))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(
+            self.term
+                .get_or_init(|| scratch_term(&self.field, self.scratch)),
+        ))
     }
 
     fn ord(&self) -> Result<i64> {

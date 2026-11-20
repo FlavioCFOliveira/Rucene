@@ -38,7 +38,8 @@ Phases (`--phase`, default `all`):
              module scoped to listed files), the randomizedtesting
              `Project`, `Module` -> `Module` `DEPENDS_ON` from each module's
              JPMS descriptor, and one scope `Decision` per widening
-             (`DECISIONS`), with its `SUPERSEDES`.
+             (`DECISIONS`), with its `SUPERSEDES` and `CONCERNS` to each
+             module it brings in.
   structure  packages, files, top-level and nested types, members, `EXTENDS` /
              `IMPLEMENTS`, and `TestClass` -[:PORT_UNIT]-> `Class`, for every
              module beyond `lucene/core` (`ADDED_MODULES`), reusing
@@ -661,6 +662,7 @@ def write_decision(roadmap, decision, rows, deps, commit, date):
         f"d.summary = {esc(summary)}, d.rationale = {esc(rationale)}, "
         f"d.alternatives = {esc(alternatives)}, d.evidence = {esc(evidence)}, "
         f"d.status = 'current', d.gitCommit = {esc(commit)}, d.gitDate = {esc(date)}")
+    link_decision(roadmap, name, decision["modules"], commit, date)
     old_name = decision["supersedes"]
     if not old_name:
         return
@@ -675,6 +677,31 @@ def write_decision(roadmap, decision, rows, deps, commit, date):
             f"SET e.on = {esc(decision['on'])}, e.gitCommit = {esc(commit)}, "
             f"e.gitDate = {esc(date)}, o.status = 'superseded'")
         print(f"  '{old_name}' marked superseded", file=sys.stderr)
+
+
+def link_decision(roadmap, name, modules, commit, date):
+    """Scope `Decision` -[:CONCERNS]-> each port `Module` whose scope it sets.
+
+    Shared with `port_coverage_kg.phase_decision`. An edge to a module no
+    longer in `modules` is dropped. A listed module left without the edge (no
+    `Module` node of that name) stops the run: an isolated scope `Decision` is
+    a defect, not a state the sync accepts.
+    """
+    decision = f"MATCH (d:Decision {{name: {esc(name)}}}) "
+    listed = "[" + ", ".join(esc(m) for m in modules) + "]"
+    rmp("delete", roadmap,
+        f"{decision}MATCH (d)-[e:CONCERNS]->(m:Module) WHERE NOT m.name IN {listed} DELETE e")
+    unwind(roadmap, "create", [{"m": m} for m in modules],
+           f"{decision}MATCH (m:Module {{name: row.m}}) MERGE (d)-[:CONCERNS]->(m)",
+           "Decision CONCERNS Module")
+    rmp("update", roadmap,
+        f"{decision}MATCH (d)-[e:CONCERNS]->(m:Module) WHERE m.name IN {listed} "
+        f"SET e.gitCommit = {esc(commit)}, e.gitDate = {esc(date)}")
+    linked = {r[0] for r in read(roadmap,
+                                 f"{decision}MATCH (d)-[:CONCERNS]->(m:Module) RETURN m.name")}
+    missing = sorted(set(modules) - linked)
+    if missing:
+        sys.exit(f"Decision {name!r}: no CONCERNS edge to Module {', '.join(missing)}")
 
 
 def phase_structure(roadmap, roots, commit, date):

@@ -534,7 +534,7 @@ fn sub_of(mi: &dyn MatchesIterator) -> Result<Box<dyn MatchesIterator>> {
 
 /// `new TermQuery(new Term(field, text))`.
 fn tq(field: &str, text: &str) -> TermQuery {
-    TermQuery::new(Term::from_text(field, text))
+    TermQuery::new(Term::from_text(field.to_string(), text))
 }
 
 /// `int[][]` with Java's array syntax.

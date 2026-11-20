@@ -366,7 +366,7 @@ fn id_order(dir: &Arc<dyn Directory>) -> Vec<String> {
     let terms = leaf.terms("id").unwrap().expect("id is indexed");
     let mut terms_enum = terms.iterator().unwrap();
     let mut order = BTreeMap::new();
-    while let Some(term) = terms_enum.next().unwrap() {
+    while let Some(term) = terms_enum.next().unwrap().cloned() {
         let mut postings = terms_enum
             .postings(None, POSTINGS_ENUM_NONE)
             .unwrap()
@@ -486,7 +486,7 @@ fn binary_index_sort_segment_private_delete_matches_lucene() {
     let terms = leaf.terms("id").unwrap().expect("id is indexed");
     let mut terms_enum = terms.iterator().unwrap();
     let mut order = BTreeMap::new();
-    while let Some(term) = terms_enum.next().unwrap() {
+    while let Some(term) = terms_enum.next().unwrap().cloned() {
         let mut postings = terms_enum
             .postings(None, POSTINGS_ENUM_NONE)
             .unwrap()
@@ -889,7 +889,7 @@ fn numeric_dv_type() -> FieldType {
 /// of the numeric doc-values type carrying no number — which is what
 /// `IndexWriter::update_doc_values` reads as "no value".
 fn numeric_reset(name: &str) -> Field {
-    Field::new_with_bytes(name, BytesRef::default(), numeric_dv_type()).unwrap()
+    Field::new_with_bytes(name.to_string(), BytesRef::default(), numeric_dv_type()).unwrap()
 }
 
 fn rust_dv_update(variant: &str) -> Arc<dyn Directory> {
@@ -1249,12 +1249,16 @@ fn rust_sorted_full(variant: &str, merge: bool) -> Arc<dyn Directory> {
 struct StoredLines(Vec<String>);
 
 impl StoredFieldVisitor for StoredLines {
-    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> rucene::error::Result<()> {
+    fn string_field(
+        &mut self,
+        field_info: &Arc<FieldInfo>,
+        value: String,
+    ) -> rucene::error::Result<()> {
         self.0.push(format!("{}={value}", field_info.name));
         Ok(())
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> rucene::error::Result<()> {
+    fn int_field(&mut self, field_info: &Arc<FieldInfo>, value: i32) -> rucene::error::Result<()> {
         self.0.push(format!("{}={value}", field_info.name));
         Ok(())
     }
@@ -1409,7 +1413,7 @@ fn document_lines(leaf: &Arc<dyn rucene::index::LeafReader>) -> Vec<String> {
         if let Some(tv) = vectors.get_field(doc, "tv").unwrap() {
             let mut te = tv.iterator().unwrap();
             let mut entries = Vec::new();
-            while let Some(term) = te.next().unwrap() {
+            while let Some(term) = te.next().unwrap().cloned() {
                 let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
                 pe.next_doc().unwrap();
                 let freq = pe.freq().unwrap();
@@ -1928,7 +1932,7 @@ fn dump_fields(fields: &dyn Fields, wrap: bool) -> Vec<String> {
     for name in names {
         let terms = fields.terms(&name).unwrap().expect("a listed field");
         let mut terms_enum = terms.iterator().unwrap();
-        while let Some(term) = terms_enum.next().unwrap() {
+        while let Some(term) = terms_enum.next().unwrap().cloned() {
             let postings = terms_enum
                 .postings(None, POSTINGS_ENUM_ALL)
                 .unwrap()
@@ -2045,7 +2049,10 @@ impl Fields for LeafFieldsView {
         Box::new(self.names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> rucene::error::Result<Option<Box<dyn rucene::index::Terms>>> {
+    fn terms(
+        &self,
+        field: &str,
+    ) -> rucene::error::Result<Option<std::sync::Arc<dyn rucene::index::Terms>>> {
         self.leaf.terms(field)
     }
 

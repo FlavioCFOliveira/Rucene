@@ -19,8 +19,8 @@
 
 use rucene::error::Result;
 use rucene::search::{
-    CheckedIntConsumer, CollectionError, CollectionResult, DocIdSetIterator, DocIdStream,
-    LeafCollector, Scorable, Scorer, TwoPhaseIterator, NO_MORE_DOCS,
+    CheckedIntConsumer, CollectionError, CollectionResult, CompetitiveIterator, DocIdSetIterator,
+    DocIdStream, LeafCollector, Scorable, Scorer, TwoPhaseIterator, NO_MORE_DOCS,
 };
 use rucene::util::FixedBitSet;
 
@@ -219,16 +219,13 @@ impl LeafCollector for AssertingLeafCollector<'_> {
         Ok(())
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        Ok(self
-            .inner
-            .competitive_iterator()?
-            .map(|inner| -> Box<dyn DocIdSetIterator> {
-                Box::new(AssertingCompetitiveIterator {
-                    inner,
-                    max: self.max,
-                })
+    fn competitive_iterator(&mut self) -> Result<Option<CompetitiveIterator>> {
+        Ok(self.inner.competitive_iterator()?.map(|inner| {
+            CompetitiveIterator::Boxed(Box::new(AssertingCompetitiveIterator {
+                inner,
+                max: self.max,
             }))
+        }))
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -352,7 +349,7 @@ impl Scorer for BatchCheckingScorer<'_> {
 
 /// The anonymous `FilterDocIdSetIterator` of `competitiveIterator()`.
 struct AssertingCompetitiveIterator {
-    inner: Box<dyn DocIdSetIterator>,
+    inner: CompetitiveIterator,
     max: i32,
 }
 

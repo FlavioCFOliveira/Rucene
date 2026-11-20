@@ -74,6 +74,7 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
@@ -139,11 +140,16 @@ fn index_for(hash: i32, n: usize) -> usize {
     (hash as u32 as usize) & (n - 1)
 }
 
+/// The `String` a key holds, whichever way it holds it.
+fn key_str<K: Borrow<str>>(key: &K) -> &str {
+    key.borrow()
+}
+
 /// One `HashMap.Node`.
 #[derive(Clone, Debug)]
-struct Entry<V> {
+struct Entry<K, V> {
     hash: i32,
-    key: String,
+    key: K,
     value: V,
 }
 
@@ -157,13 +163,20 @@ struct Entry<V> {
 /// generic key would need a port of `Object.hashCode` per key type that nothing
 /// would call.
 ///
+/// `K` only chooses how the `String` key is held: an owned [`String`] (the
+/// default), or a type that shares it by reference, as Java's collections
+/// share one `String` object, such as
+/// [`IndexFileName`](crate::index::IndexFileName). Hash, equality and order are
+/// always those of the key's characters ([`spread`] over `K::borrow()`), so the
+/// holder never changes the iteration order.
+///
 /// The load factor is fixed at [`DEFAULT_LOAD_FACTOR`]; Lucene never constructs
 /// one of these maps with any other.
 #[derive(Clone)]
-pub struct JavaHashMap<V> {
+pub struct JavaHashMap<V, K = String> {
     /// `HashMap.table`. Empty stands for Java's `null` table, which is what a
     /// freshly constructed map has until its first insertion.
-    table: Vec<Vec<Entry<V>>>,
+    table: Vec<Vec<Entry<K, V>>>,
     /// `HashMap.size`.
     size: usize,
     /// `HashMap.threshold`. Before the table exists this holds the *initial
@@ -174,16 +187,9 @@ pub struct JavaHashMap<V> {
     treeified: bool,
 }
 
-impl<V> Default for JavaHashMap<V> {
+/// `new HashMap<>()`, for any way of holding the key.
+impl<V, K> Default for JavaHashMap<V, K> {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<V> JavaHashMap<V> {
-    /// `new HashMap<>()`: no table, no threshold. The table is allocated with
-    /// [`DEFAULT_INITIAL_CAPACITY`] entries on the first insertion.
-    pub fn new() -> Self {
         JavaHashMap {
             table: Vec::new(),
             size: 0,
@@ -191,11 +197,27 @@ impl<V> JavaHashMap<V> {
             treeified: false,
         }
     }
+}
+
+impl<V> JavaHashMap<V> {
+    /// `new HashMap<>()`: no table, no threshold. The table is allocated with
+    /// [`DEFAULT_INITIAL_CAPACITY`] entries on the first insertion.
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// `new HashMap<>(int initialCapacity)`, which sets
     /// `threshold = tableSizeFor(initialCapacity)` and allocates a table of
     /// exactly that length on the first insertion.
     pub fn with_initial_capacity(initial_capacity: i32) -> Self {
+        Self::sized(initial_capacity)
+    }
+}
+
+impl<V, K> JavaHashMap<V, K> {
+    /// [`with_initial_capacity`](JavaHashMap::with_initial_capacity), for any
+    /// way of holding the key.
+    fn sized(initial_capacity: i32) -> Self {
         // `HashMap(int, float)`: `IllegalArgumentException("Illegal initial
         // capacity: " + initialCapacity)`.
         if initial_capacity < 0 {
@@ -237,7 +259,9 @@ impl<V> JavaHashMap<V> {
     pub fn is_treeified(&self) -> bool {
         self.treeified
     }
+}
 
+impl<V, K: Borrow<str>> JavaHashMap<V, K> {
     /// `HashMap.get(Object)`.
     pub fn get(&self, key: &str) -> Option<&V> {
         if self.table.is_empty() {
@@ -247,8 +271,30 @@ impl<V> JavaHashMap<V> {
         let bucket = &self.table[index_for(hash, self.table.len())];
         bucket
             .iter()
-            .find(|e| e.hash == hash && e.key == key)
+            .find(|e| e.hash == hash && key_str(&e.key) == key)
             .map(|e| &e.value)
+    }
+
+    /// Where `key`'s node sits, its bucket and its place in that bucket, for
+    /// [`value_at`](Self::value_at): `HashMap.get(Object)` split in two, so
+    /// that the holder of a shared map that is never mutated can keep the
+    /// answer without keeping a borrow of the map.
+    pub(crate) fn slot_of(&self, key: &str) -> Option<(usize, usize)> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let hash = spread(key);
+        let bucket = index_for(hash, self.table.len());
+        self.table[bucket]
+            .iter()
+            .position(|e| e.hash == hash && key_str(&e.key) == key)
+            .map(|index| (bucket, index))
+    }
+
+    /// The value at a slot [`slot_of`](Self::slot_of) answered on this same,
+    /// unmodified map.
+    pub(crate) fn value_at(&self, (bucket, index): (usize, usize)) -> &V {
+        &self.table[bucket][index].value
     }
 
     /// `HashMap.containsKey(Object)`.
@@ -257,16 +303,16 @@ impl<V> JavaHashMap<V> {
     }
 
     /// `HashMap.put(K, V)`, returning the previous value as Java does.
-    pub fn insert(&mut self, key: String, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.table.is_empty() {
             self.resize();
         }
-        let hash = spread(&key);
+        let hash = spread(key_str(&key));
         let n = self.table.len();
         let index = index_for(hash, n);
         let bucket = &mut self.table[index];
         for entry in bucket.iter_mut() {
-            if entry.hash == hash && entry.key == key {
+            if entry.hash == hash && key_str(&entry.key) == key_str(&key) {
                 return Some(std::mem::replace(&mut entry.value, value));
             }
         }
@@ -297,7 +343,7 @@ impl<V> JavaHashMap<V> {
         let n = self.table.len();
         self.table[index_for(hash, n)]
             .iter_mut()
-            .find(|e| e.hash == hash && e.key == key)
+            .find(|e| e.hash == hash && key_str(&e.key) == key)
             .map(|e| &mut e.value)
     }
 
@@ -316,7 +362,10 @@ impl<V> JavaHashMap<V> {
     ///   (`tab[i] = newNode(hash, key, v, first)`), not its tail;
     /// * `treeifyBin` runs when the bucket already held
     ///   `TREEIFY_THRESHOLD - 1` nodes, one node earlier than in `putVal`.
-    pub fn compute_if_absent(&mut self, key: &str, make: impl FnOnce() -> V) -> &mut V {
+    pub fn compute_if_absent(&mut self, key: &str, make: impl FnOnce() -> V) -> &mut V
+    where
+        K: for<'a> From<&'a str>,
+    {
         if self.size as i32 > self.threshold || self.table.is_empty() {
             self.resize();
         }
@@ -325,7 +374,7 @@ impl<V> JavaHashMap<V> {
         let index = index_for(hash, n);
         if let Some(position) = self.table[index]
             .iter()
-            .position(|e| e.hash == hash && e.key == key)
+            .position(|e| e.hash == hash && key_str(&e.key) == key)
         {
             return &mut self.table[index][position].value;
         }
@@ -334,7 +383,7 @@ impl<V> JavaHashMap<V> {
             0,
             Entry {
                 hash,
-                key: key.to_string(),
+                key: K::from(key),
                 value: make(),
             },
         );
@@ -349,7 +398,7 @@ impl<V> JavaHashMap<V> {
         let index = index_for(hash, self.table.len());
         let position = self.table[index]
             .iter()
-            .position(|e| e.hash == hash && e.key == key)
+            .position(|e| e.hash == hash && key_str(&e.key) == key)
             .expect("INVARIANT: the entry was just inserted");
         &mut self.table[index][position].value
     }
@@ -362,7 +411,9 @@ impl<V> JavaHashMap<V> {
         let hash = spread(key);
         let n = self.table.len();
         let bucket = &mut self.table[index_for(hash, n)];
-        let position = bucket.iter().position(|e| e.hash == hash && e.key == key)?;
+        let position = bucket
+            .iter()
+            .position(|e| e.hash == hash && key_str(&e.key) == key)?;
         let removed = bucket.remove(position);
         self.size -= 1;
         Some(removed.value)
@@ -379,14 +430,14 @@ impl<V> JavaHashMap<V> {
 
     /// Iterates the entries in `HashMap.entrySet()` order: buckets by ascending
     /// index, and within a bucket the chain from head to tail.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.table
             .iter()
             .flat_map(|bucket| bucket.iter().map(|e| (&e.key, &e.value)))
     }
 
     /// Iterates the keys in `HashMap.keySet()` order.
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.iter().map(|(k, _)| k)
     }
 
@@ -397,7 +448,7 @@ impl<V> JavaHashMap<V> {
 
     /// Iterates the entries in `HashMap.entrySet()` order, with each value
     /// open to in-place change (`Map.Entry.setValue`).
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut V)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
         self.table
             .iter_mut()
             .flat_map(|bucket| bucket.iter_mut().map(|e| (&e.key, &mut e.value)))
@@ -449,7 +500,7 @@ impl<V> JavaHashMap<V> {
         self.threshold = new_thr;
 
         let old_table = std::mem::take(&mut self.table);
-        let mut new_table: Vec<Vec<Entry<V>>> = Vec::with_capacity(new_cap);
+        let mut new_table: Vec<Vec<Entry<K, V>>> = Vec::with_capacity(new_cap);
         new_table.resize_with(new_cap, Vec::new);
         for bucket in old_table {
             for entry in bucket {
@@ -469,7 +520,7 @@ impl<V> JavaHashMap<V> {
     /// same entries inserted one by one.
     fn put_map_entries<I>(&mut self, entries: I, size: usize)
     where
-        I: IntoIterator<Item = (String, V)>,
+        I: IntoIterator<Item = (K, V)>,
     {
         if size == 0 {
             return;
@@ -502,12 +553,40 @@ impl<V> JavaHashMap<V> {
     /// `HashMap.putAll(Map)`.
     pub fn put_all<I>(&mut self, entries: I)
     where
-        I: IntoIterator<Item = (String, V)>,
+        I: IntoIterator<Item = (K, V)>,
         I::IntoIter: ExactSizeIterator,
     {
         let iter = entries.into_iter();
         let size = iter.len();
         self.put_map_entries(iter, size);
+    }
+
+    /// A copy of this map whose keys are `key` applied to each of its keys:
+    /// the same table length, threshold and chains, so the copy iterates in
+    /// exactly this map's order. `key` must keep each key's characters.
+    pub(crate) fn map_keys<K2>(&self, mut key: impl FnMut(&K) -> K2) -> JavaHashMap<V, K2>
+    where
+        V: Clone,
+    {
+        JavaHashMap {
+            table: self
+                .table
+                .iter()
+                .map(|bucket| {
+                    bucket
+                        .iter()
+                        .map(|e| Entry {
+                            hash: e.hash,
+                            key: key(&e.key),
+                            value: e.value.clone(),
+                        })
+                        .collect()
+                })
+                .collect(),
+            size: self.size,
+            threshold: self.threshold,
+            treeified: self.treeified,
+        }
     }
 }
 
@@ -568,27 +647,35 @@ impl<V> Extend<(String, V)> for JavaHashMap<V> {
 }
 
 /// `AbstractMap.equals`, which compares contents and ignores iteration order.
-impl<V: PartialEq> PartialEq for JavaHashMap<V> {
+impl<V: PartialEq, K: Borrow<str>> PartialEq for JavaHashMap<V, K> {
     fn eq(&self, other: &Self) -> bool {
         self.size == other.size
             && self
                 .iter()
-                .all(|(k, v)| other.get(k).is_some_and(|other_v| other_v == v))
+                .all(|(k, v)| other.get(key_str(k)).is_some_and(|other_v| other_v == v))
     }
 }
 
-impl<V: Eq> Eq for JavaHashMap<V> {}
+impl<V: Eq, K: Borrow<str>> Eq for JavaHashMap<V, K> {}
 
 /// Formats like [`std::collections::HashMap`], but in Java's iteration order.
-impl<V: fmt::Debug> fmt::Debug for JavaHashMap<V> {
+impl<V: fmt::Debug, K: fmt::Debug + Borrow<str>> fmt::Debug for JavaHashMap<V, K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.iter()).finish()
     }
 }
 
-impl<V> JavaHashMap<V> {
+impl<V, K> JavaHashMap<V, K> {
+    /// Consumes the map and yields its entries in iteration order, without
+    /// collecting them first.
+    pub(crate) fn into_entries(self) -> impl Iterator<Item = (K, V)> {
+        self.table
+            .into_iter()
+            .flat_map(|bucket| bucket.into_iter().map(|e| (e.key, e.value)))
+    }
+
     /// Consumes the map and yields its keys in iteration order.
-    pub fn into_keys(self) -> impl Iterator<Item = String> {
+    pub fn into_keys(self) -> impl Iterator<Item = K> {
         self.table
             .into_iter()
             .flat_map(|bucket| bucket.into_iter().map(|e| e.key))
@@ -1810,28 +1897,70 @@ impl<V> JavaLongHashMap<V> {
 /// `java.util.HashSet` is a `HashMap` whose values are all one shared sentinel
 /// (`HashSet.PRESENT`), so its iteration order is its backing map's and this
 /// port is the same wrapper over [`JavaHashMap`].
-#[derive(Clone, Default)]
-pub struct JavaHashSet {
-    map: JavaHashMap<()>,
+///
+/// `K` is how each `String` element is held, as for [`JavaHashMap`]: an owned
+/// [`String`] by default, or a shared name such as
+/// [`IndexFileName`](crate::index::IndexFileName), which a copy of the set
+/// shares instead of copying, as Java's copies share the `String` objects.
+#[derive(Clone)]
+pub struct JavaHashSet<K = String> {
+    map: JavaHashMap<(), K>,
+}
+
+/// `new HashSet<>()`, for any way of holding the elements.
+impl<K> Default for JavaHashSet<K> {
+    fn default() -> Self {
+        JavaHashSet {
+            map: JavaHashMap::default(),
+        }
+    }
 }
 
 impl JavaHashSet {
     /// `new HashSet<>()`.
     pub fn new() -> Self {
-        JavaHashSet {
-            map: JavaHashMap::new(),
-        }
+        Self::default()
     }
 
     /// `new HashSet<>(int initialCapacity)`.
     pub fn with_initial_capacity(initial_capacity: i32) -> Self {
+        Self::sized(initial_capacity)
+    }
+}
+
+impl<K> JavaHashSet<K> {
+    /// [`with_initial_capacity`](JavaHashSet::with_initial_capacity), for any
+    /// way of holding the elements.
+    fn sized(initial_capacity: i32) -> Self {
         JavaHashSet {
-            map: JavaHashMap::with_initial_capacity(initial_capacity),
+            map: JavaHashMap::sized(initial_capacity),
         }
     }
 
+    /// `HashSet.size()`.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// `HashSet.isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// The current backing table length; see [`JavaHashMap::table_length`].
+    pub fn table_length(&self) -> usize {
+        self.map.table_length()
+    }
+
+    /// See [`JavaHashMap::is_treeified`].
+    pub fn is_treeified(&self) -> bool {
+        self.map.is_treeified()
+    }
+}
+
+impl<K: Borrow<str>> JavaHashSet<K> {
     /// `HashSet.add(E)`, returning whether the set changed.
-    pub fn insert(&mut self, value: String) -> bool {
+    pub fn insert(&mut self, value: K) -> bool {
         self.map.insert(value, ()).is_none()
     }
 
@@ -1845,40 +1974,30 @@ impl JavaHashSet {
         self.map.contains_key(value)
     }
 
-    /// `HashSet.size()`.
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// `HashSet.isEmpty()`.
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
     /// `HashSet.clear()`.
     pub fn clear(&mut self) {
         self.map.clear();
     }
 
     /// Iterates in `HashSet.iterator()` order.
-    pub fn iter(&self) -> impl Iterator<Item = &String> {
+    pub fn iter(&self) -> impl Iterator<Item = &K> {
         self.map.keys()
-    }
-
-    /// The current backing table length; see [`JavaHashMap::table_length`].
-    pub fn table_length(&self) -> usize {
-        self.map.table_length()
-    }
-
-    /// See [`JavaHashMap::is_treeified`].
-    pub fn is_treeified(&self) -> bool {
-        self.map.is_treeified()
     }
 
     /// The elements as a [`std::collections::HashSet`], for the callers that
     /// only test membership and never write the set out.
     pub fn to_std(&self) -> std::collections::HashSet<String> {
-        self.iter().cloned().collect()
+        self.iter().map(|value| key_str(value).to_owned()).collect()
+    }
+
+    /// A copy of this set whose elements are `element` applied to each of its
+    /// elements, in exactly this set's table and order (the copy
+    /// `Object.clone` would make). `element` must keep each element's
+    /// characters.
+    pub(crate) fn map_elements<K2>(&self, element: impl FnMut(&K) -> K2) -> JavaHashSet<K2> {
+        JavaHashSet {
+            map: self.map.map_keys(element),
+        }
     }
 }
 
@@ -1888,9 +2007,9 @@ impl JavaHashSet {
 /// (`SegmentInfo.java:309-320`). Java's collection constructor
 /// `new HashSet<>(Collection)` pre-sizes its backing map instead and so reaches
 /// a different table length; that shape is [`JavaHashSet::from_collection`].
-impl FromIterator<String> for JavaHashSet {
-    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        let mut set = JavaHashSet::new();
+impl<K: Borrow<str>> FromIterator<K> for JavaHashSet<K> {
+    fn from_iter<I: IntoIterator<Item = K>>(iter: I) -> Self {
+        let mut set = JavaHashSet::default();
         for value in iter {
             set.insert(value);
         }
@@ -1898,7 +2017,7 @@ impl FromIterator<String> for JavaHashSet {
     }
 }
 
-impl JavaHashSet {
+impl<K: Borrow<str>> JavaHashSet<K> {
     /// `new HashSet<>(Collection)`.
     ///
     /// The backing map is pre-sized from the collection's size; the exact
@@ -1906,43 +2025,64 @@ impl JavaHashSet {
     /// because it has changed between JDK releases.
     pub fn from_collection<I>(values: I) -> Self
     where
-        I: IntoIterator<Item = String>,
+        I: IntoIterator<Item = K>,
         I::IntoIter: ExactSizeIterator,
     {
         let values = values.into_iter();
-        // `HashMap.newHashMap(Math.max(c.size(), 12))`, i.e.
-        // `new HashMap<>((int) Math.ceil(max(size, 12) / 0.75))`.
-        let requested = (values.len() as i32).max(12);
-        let capacity = (requested as f64 / DEFAULT_LOAD_FACTOR as f64).ceil() as i32;
-        let mut set = JavaHashSet::with_initial_capacity(capacity);
+        let mut set = Self::sized_for_collection(values.len());
         for value in values {
             set.insert(value);
         }
         set
     }
+
+    /// `new HashSet<>(Collection)` over another set, which is borrowed: the
+    /// same pre-sizing as [`from_collection`](Self::from_collection), and each
+    /// element cloned in `source`'s iteration order. Cloning a shared element
+    /// copies its reference, not its characters, as Java's copy does.
+    pub fn from_set(source: &JavaHashSet<K>) -> Self
+    where
+        K: Clone,
+    {
+        let mut set = Self::sized_for_collection(source.len());
+        for value in source.iter() {
+            set.insert(value.clone());
+        }
+        set
+    }
+
+    /// The empty set `new HashSet<>(Collection)` starts from for a
+    /// collection of `size` elements.
+    fn sized_for_collection(size: usize) -> Self {
+        // `HashMap.newHashMap(Math.max(c.size(), 12))`, i.e.
+        // `new HashMap<>((int) Math.ceil(max(size, 12) / 0.75))`.
+        let requested = (size as i32).max(12);
+        let capacity = (requested as f64 / DEFAULT_LOAD_FACTOR as f64).ceil() as i32;
+        JavaHashSet::sized(capacity)
+    }
 }
 
-impl Extend<String> for JavaHashSet {
-    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+impl<K: Borrow<str>> Extend<K> for JavaHashSet<K> {
+    fn extend<I: IntoIterator<Item = K>>(&mut self, iter: I) {
         for value in iter {
             self.insert(value);
         }
     }
 }
 
-impl IntoIterator for JavaHashSet {
-    type Item = String;
-    type IntoIter = std::vec::IntoIter<String>;
+impl<K> IntoIterator for JavaHashSet<K> {
+    type Item = K;
+    type IntoIter = std::vec::IntoIter<K>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let values: Vec<String> = self.map.into_keys().collect();
+        let values: Vec<K> = self.map.into_keys().collect();
         values.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a JavaHashSet {
-    type Item = &'a String;
-    type IntoIter = Box<dyn Iterator<Item = &'a String> + 'a>;
+impl<'a, K: Borrow<str>> IntoIterator for &'a JavaHashSet<K> {
+    type Item = &'a K;
+    type IntoIter = Box<dyn Iterator<Item = &'a K> + 'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         Box::new(self.iter())
@@ -1950,15 +2090,15 @@ impl<'a> IntoIterator for &'a JavaHashSet {
 }
 
 /// `AbstractSet.equals`, which compares contents and ignores iteration order.
-impl PartialEq for JavaHashSet {
+impl<K: Borrow<str>> PartialEq for JavaHashSet<K> {
     fn eq(&self, other: &Self) -> bool {
         self.map == other.map
     }
 }
 
-impl Eq for JavaHashSet {}
+impl<K: Borrow<str>> Eq for JavaHashSet<K> {}
 
-impl fmt::Debug for JavaHashSet {
+impl<K: fmt::Debug + Borrow<str>> fmt::Debug for JavaHashSet<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_set().entries(self.iter()).finish()
     }
@@ -2026,16 +2166,33 @@ impl JavaOrderedSet for JavaHashSet {
 /// order [`str`] compares in: Rust orders by UTF-8 bytes, i.e. by code point,
 /// so it puts U+E000 before U+1D400 while Java, comparing the surrogate 0xD835
 /// against 0xE000, puts U+1D400 first.
+///
+/// The two orders differ in that one case only, so the comparison runs on the
+/// UTF-8 bytes and corrects it. Both strings are valid UTF-8, so their first
+/// differing byte is either a continuation byte of two characters with the
+/// same lead byte — same length, same range, where code-point order and UTF-16
+/// order agree — or the lead byte of each differing character. Of the lead
+/// bytes, only `F0..=F4` (a supplementary character, a surrogate pair in
+/// UTF-16) against `EE`/`EF` (U+E000..U+FFFF, above the surrogates) orders the
+/// other way in UTF-16. A string that is a byte prefix of the other is also a
+/// UTF-16 prefix of it, so the shorter one sorts first in both.
 pub fn java_compare_to(a: &str, b: &str) -> Ordering {
-    let mut left = a.encode_utf16();
-    let mut right = b.encode_utf16();
-    loop {
-        match (left.next(), right.next()) {
-            (Some(x), Some(y)) if x == y => continue,
-            (Some(x), Some(y)) => return x.cmp(&y),
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
+    // PERF: `String.compareTo` on Lucene's Latin-1 attribute keys is a byte
+    // compare (`TreeMap.get` under `DataInput.readMapOfStrings`,
+    // `DataInput.java:261-276`); transcoding both strings to UTF-16 per call
+    // was 3 % of the instructions of every index open.
+    let (left, right) = (a.as_bytes(), b.as_bytes());
+    match left.iter().zip(right).position(|(x, y)| x != y) {
+        None => left.len().cmp(&right.len()),
+        Some(i) => {
+            let (x, y) = (left[i], right[i]);
+            if x >= 0xF0 && (0xEE..=0xEF).contains(&y) {
+                Ordering::Less
+            } else if y >= 0xF0 && (0xEE..=0xEF).contains(&x) {
+                Ordering::Greater
+            } else {
+                x.cmp(&y)
+            }
         }
     }
 }
@@ -2109,6 +2266,28 @@ impl JavaStringMap {
         }
     }
 
+    /// Where `key`'s entry sits, for [`value_at`](Self::value_at): `Map.get`
+    /// split in two, so that the holder of a shared map that is never mutated
+    /// can keep the answer without keeping a borrow of the map.
+    pub(crate) fn slot_of(&self, key: &str) -> Option<(usize, usize)> {
+        match self {
+            JavaStringMap::Sorted(entries) => entries
+                .binary_search_by(|(k, _)| java_compare_to(k, key))
+                .ok()
+                .map(|index| (index, 0)),
+            JavaStringMap::Hash(map) => map.slot_of(key),
+        }
+    }
+
+    /// The value at a slot [`slot_of`](Self::slot_of) answered on this same,
+    /// unmodified map.
+    pub(crate) fn value_at(&self, slot: (usize, usize)) -> &String {
+        match self {
+            JavaStringMap::Sorted(entries) => &entries[slot.0].1,
+            JavaStringMap::Hash(map) => map.value_at(slot),
+        }
+    }
+
     /// `Map.size()`.
     pub fn len(&self) -> usize {
         match self {
@@ -2126,6 +2305,20 @@ impl JavaStringMap {
     /// only look things up and never write the map out.
     pub fn to_std(&self) -> HashMap<String, String> {
         self.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// [`to_std`](Self::to_std) for a map that is no longer needed: the
+    /// entries are moved, not copied.
+    pub fn into_std(self) -> HashMap<String, String> {
+        // PERF: the keys and values move into the new map, as Java's
+        // `Map.copyOf` shares the `String`s it copies (`SegmentInfo.java:137,142`);
+        // the table is sized once.
+        let mut map = HashMap::with_capacity(self.len());
+        match self {
+            JavaStringMap::Sorted(entries) => map.extend(entries),
+            JavaStringMap::Hash(hash) => map.extend(hash.into_entries()),
+        }
+        map
     }
 
     /// `new HashMap<>(this)`, which is what `putAttribute` does before it puts.
@@ -2214,10 +2407,16 @@ impl FromIterator<(String, String)> for JavaStringMap {
 /// `AbstractMap.equals`, which compares contents and ignores iteration order.
 impl PartialEq for JavaStringMap {
     fn eq(&self, other: &Self) -> bool {
+        // PERF: walks each variant directly; the boxed `iter()` cost one
+        // allocation per comparison, and `Lucene94FieldInfosFormat.read`
+        // compares every field's attributes with the previous field's.
+        let contains =
+            |(k, v): (&String, &String)| other.get(k).is_some_and(|other_v| other_v == v);
         self.len() == other.len()
-            && self
-                .iter()
-                .all(|(k, v)| other.get(k).is_some_and(|other_v| other_v == v))
+            && match self {
+                JavaStringMap::Sorted(entries) => entries.iter().all(|(k, v)| contains((k, v))),
+                JavaStringMap::Hash(map) => map.iter().all(contains),
+            }
     }
 }
 
@@ -2461,6 +2660,90 @@ impl<'a, T: Eq + std::hash::Hash> IntoIterator for &'a ImmutableSet<T> {
 mod tests {
     use super::*;
 
+    /// `from_set` is `new HashSet<>(Collection)` over a borrowed set: the
+    /// table length and the iteration order `from_collection` reaches from a
+    /// copy of the same set, which it leaves unchanged.
+    #[test]
+    fn java_hash_set_from_set_matches_from_collection_of_a_copy() {
+        for count in [0usize, 1, 11, 12, 13, 40, 300] {
+            // Built by one `add` per name, as `SegmentInfo.setFiles` does.
+            let source: JavaHashSet = (0..count).map(|i| format!("_{i}.si")).collect();
+            let copied = JavaHashSet::from_set(&source);
+            let collected = JavaHashSet::from_collection(source.clone());
+            assert_eq!(copied.table_length(), collected.table_length(), "{count}");
+            assert_eq!(
+                copied.iter().collect::<Vec<_>>(),
+                collected.iter().collect::<Vec<_>>(),
+                "{count}"
+            );
+            assert_eq!(source.len(), count);
+        }
+    }
+
+    /// A set holding its names shared ([`IndexFileName`]) has the table and the
+    /// order of the same `add`s on a `String` set; so do its `from_set` copy,
+    /// which shares every name instead of copying it (positive control: the
+    /// `map_elements` copy to `String`s holds other allocations), and that
+    /// copy.
+    ///
+    /// [`IndexFileName`]: crate::index::IndexFileName
+    #[test]
+    fn java_hash_set_of_shared_names_orders_like_strings_and_copies_references() {
+        use crate::index::IndexFileName;
+        fn order<K: Borrow<str>>(set: &JavaHashSet<K>) -> Vec<&str> {
+            set.iter().map(key_str).collect()
+        }
+        fn same_allocation(set: &JavaHashSet<IndexFileName>, name: &str) -> bool {
+            set.iter()
+                .any(|held| std::ptr::eq(held.as_str(), name) && held.as_str() == name)
+        }
+        for count in [0usize, 1, 11, 12, 13, 40, 300] {
+            let names: Vec<String> = (0..count).map(|i| format!("_{i}.si")).collect();
+            let strings: JavaHashSet = names.iter().cloned().collect();
+            let shared: JavaHashSet<IndexFileName> = names
+                .iter()
+                .map(|name| IndexFileName::shared(name))
+                .collect();
+            assert_eq!(shared.table_length(), strings.table_length(), "{count}");
+            assert_eq!(order(&shared), order(&strings), "{count}");
+
+            let copy = JavaHashSet::from_set(&shared);
+            let string_copy = JavaHashSet::from_set(&strings);
+            assert_eq!(copy.table_length(), string_copy.table_length(), "{count}");
+            assert_eq!(order(&copy), order(&string_copy), "{count}");
+            assert!(copy
+                .iter()
+                .all(|name| same_allocation(&shared, name.as_str())));
+
+            let mapped = shared.map_elements(|name| name.as_str().to_owned());
+            assert_eq!(mapped.table_length(), shared.table_length(), "{count}");
+            assert_eq!(order(&mapped), order(&shared), "{count}");
+            assert!(mapped.iter().all(|name| !same_allocation(&shared, name)));
+            assert!(mapped == strings);
+        }
+    }
+
+    /// `into_std` moves exactly the entries `to_std` copies, for both shapes
+    /// `readMapOfStrings` builds: sorted (up to ten entries) and hashed.
+    #[test]
+    fn java_string_map_into_std_moves_the_entries_to_std_copies() {
+        for count in [0usize, 1, 10, 11, 40] {
+            let entries: Vec<(String, String)> = (0..count)
+                .map(|i| (format!("key{i}"), format!("value{i}")))
+                .collect();
+            let map = JavaStringMap::from_read(entries);
+            assert_eq!(
+                matches!(map, JavaStringMap::Hash(_)),
+                count > 10,
+                "count {count}"
+            );
+            let copied = map.to_std();
+            let moved = map.into_std();
+            assert_eq!(moved, copied, "count {count}");
+            assert_eq!(moved.len(), count);
+        }
+    }
+
     #[test]
     fn table_size_for_matches_javas_edge_cases() {
         // `-1 >>> numberOfLeadingZeros(cap - 1)` with the shift masked to five
@@ -2556,6 +2839,79 @@ mod tests {
         assert_eq!(set.table_length(), DEFAULT_INITIAL_CAPACITY);
         assert!(set.contains("_9.fdx"));
         assert!(!set.contains("_9.tim"));
+    }
+
+    /// `String.compareTo` by definition: UTF-16 code units, then the length
+    /// difference. The oracle [`java_compare_to`] must agree with.
+    fn utf16_compare_to(a: &str, b: &str) -> Ordering {
+        a.encode_utf16().cmp(b.encode_utf16())
+    }
+
+    #[test]
+    fn java_compare_to_orders_by_utf16_code_units() {
+        let cases = [
+            (
+                "PerFieldPostingsFormat.format",
+                "PerFieldPostingsFormat.suffix",
+            ),
+            ("", ""),
+            ("", "a"),
+            ("abc", "abd"),
+            ("ab", "abc"),
+            ("é", "f"),
+            // A supplementary character (surrogate pair 0xD835 0xDC00) sorts
+            // before U+E000..U+FFFF in UTF-16 but after them by code point.
+            ("\u{1D400}", "\u{E000}"),
+            ("\u{10000}", "\u{FFFF}"),
+            ("x\u{10FFFF}", "x\u{EFFF}"),
+            ("\u{D7FF}", "\u{10000}"),
+            ("\u{1D400}a", "\u{1D400}b"),
+            ("\u{10000}", "\u{10001}"),
+        ];
+        for (a, b) in cases {
+            assert_eq!(
+                java_compare_to(a, b),
+                utf16_compare_to(a, b),
+                "{a:?} vs {b:?}"
+            );
+            assert_eq!(
+                java_compare_to(b, a),
+                utf16_compare_to(b, a),
+                "{b:?} vs {a:?}"
+            );
+        }
+    }
+
+    /// Characters from every UTF-8 length and both sides of the surrogate
+    /// range, so that random pairs keep hitting the case UTF-8 and UTF-16
+    /// order differently.
+    fn mixed_char() -> impl proptest::strategy::Strategy<Value = char> {
+        use proptest::prelude::*;
+        prop_oneof![
+            Just('a'),
+            Just('z'),
+            Just('é'),
+            Just('\u{D7FF}'),
+            Just('\u{E000}'),
+            Just('\u{FFFF}'),
+            Just('\u{10000}'),
+            Just('\u{1D400}'),
+            Just('\u{10FFFF}'),
+            any::<char>(),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn java_compare_to_matches_utf16_order(
+            prefix in proptest::collection::vec(mixed_char(), 0..4),
+            a in proptest::collection::vec(mixed_char(), 0..4),
+            b in proptest::collection::vec(mixed_char(), 0..4),
+        ) {
+            let a: String = prefix.iter().chain(&a).collect();
+            let b: String = prefix.iter().chain(&b).collect();
+            proptest::prop_assert_eq!(java_compare_to(&a, &b), utf16_compare_to(&a, &b));
+        }
     }
 }
 

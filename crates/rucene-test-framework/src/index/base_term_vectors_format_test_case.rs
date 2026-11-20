@@ -914,9 +914,9 @@ fn assert_tk_equals(
         Ok(Boxed(tk.freqs.get(&term.utf8_to_string()?).copied()))
     };
     for sorted_term in &sorted_terms {
-        let next_term = terms_enum.next()?;
+        let next_term = terms_enum.next()?.cloned();
         Assert::assert_equals(Boxed(Some(sorted_term.clone())), Boxed(next_term));
-        Assert::assert_equals_nullable(Some(sorted_term.clone()), terms_enum.term()?);
+        Assert::assert_equals_nullable(Some(sorted_term.clone()), terms_enum.term()?.cloned());
         Assert::assert_equals(1, terms_enum.doc_freq()?);
 
         let postings_enum = terms_enum.postings(None, FREQS)?;
@@ -931,7 +931,7 @@ fn assert_tk_equals(
         Assert::assert_equals(0, postings_enum.next_doc()?);
         Assert::assert_equals(0, postings_enum.doc_id());
         Assert::assert_equals(
-            freq_of(&npe_with(terms_enum.term()?, term_npe))?,
+            freq_of(&npe_with(terms_enum.term()?.cloned(), term_npe))?,
             Boxed(Some(postings_enum.freq()?)),
         );
         Assert::assert_equals(NO_MORE_DOCS, postings_enum.next_doc()?);
@@ -952,7 +952,7 @@ fn assert_tk_equals(
             Assert::assert_equals(0, docs_and_positions_enum.next_doc()?);
             let freq = docs_and_positions_enum.freq()?;
             Assert::assert_equals(
-                freq_of(&npe_with(terms_enum.term()?, term_npe))?,
+                freq_of(&npe_with(terms_enum.term()?.cloned(), term_npe))?,
                 Boxed(Some(freq)),
             );
             let current = terms_enum.term()?;
@@ -971,14 +971,13 @@ fn assert_tk_equals(
                 };
                 if terms.has_positions() {
                     let found_position = indexes.iter().any(|&index| {
-                        Some(&tk.term_bytes[index]) == current.as_ref()
-                            && tk.positions[index] == position
+                        Some(&tk.term_bytes[index]) == current && tk.positions[index] == position
                     });
                     Assert::assert_true(found_position);
                 }
                 if terms.has_offsets() {
                     let found_offset = indexes.iter().any(|&index| {
-                        Some(&tk.term_bytes[index]) == current.as_ref()
+                        Some(&tk.term_bytes[index]) == current
                             && tk.start_offsets[index] == docs_and_positions_enum.start_offset()
                             && tk.end_offsets[index] == docs_and_positions_enum.end_offset()
                     });
@@ -987,7 +986,7 @@ fn assert_tk_equals(
                 if terms.has_payloads() {
                     let payload = docs_and_positions_enum.get_payload()?;
                     let found_payload = indexes.iter().any(|&index| {
-                        Some(&tk.term_bytes[index]) == current.as_ref()
+                        Some(&tk.term_bytes[index]) == current
                             && payload_equals(tk.payloads[index].as_ref(), payload)
                     });
                     Assert::assert_true(found_payload);
@@ -1242,7 +1241,7 @@ fn postings_enum_test(
         );
         let mut terms_enum = terms.iterator()?;
         let bar = LuceneTestCase::new_bytes_ref_str("bar");
-        Assert::assert_equals(Boxed(Some(bar)), Boxed(terms_enum.next()?));
+        Assert::assert_equals(Boxed(Some(bar)), Boxed(terms_enum.next()?.cloned()));
 
         // simple use (FREQS)
         let mut postings = npe_with(
@@ -1369,7 +1368,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
             for _ in 0..num_fields {
                 doc.add(
                     Field::new(
-                        &format!("f_{opts}"),
+                        format!("f_{opts}"),
                         TestUtil::random_simple_string_max(&*random(), 2),
                         ft.clone(),
                     )
@@ -1665,7 +1664,7 @@ pub trait BaseTermVectorsFormatTestCase: BaseIndexFileFormatTestCase {
                     if let Some(index_sort) = &index_sort {
                         for sort_field in index_sort.fields() {
                             doc.add(NumericDocValuesField::new(
-                                npe(sort_field.field()),
+                                npe(sort_field.field()).to_string(),
                                 i64::from(TestUtil::next_int(&*random(), 0, 1024)),
                             ));
                         }

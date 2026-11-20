@@ -415,20 +415,16 @@ impl Automaton {
         // Sort transitions by dest, ascending, then min label ascending, then max
         // label ascending. Lucene uses a stable InPlaceMergeSorter, but the ordering
         // below is total on the triple, so an unstable sort yields the same result.
-        {
-            let block = &mut self.transitions[offset..offset + 3 * num_transitions];
-            let mut triples: Vec<[i32; 3]> = block.as_chunks::<3>().0.to_vec();
-            triples.sort_unstable_by(|a, b| {
+        // PERF: sorted in place, as `destMinMaxSorter.sort(start, start +
+        // numTransitions)` does (`Automaton.java:245`), not through a copy.
+        self.transitions[offset..offset + 3 * num_transitions]
+            .as_chunks_mut::<3>()
+            .0
+            .sort_unstable_by(|a, b| {
                 a[0].cmp(&b[0])
                     .then_with(|| a[1].cmp(&b[1]))
                     .then_with(|| a[2].cmp(&b[2]))
             });
-            for (i, t) in triples.iter().enumerate() {
-                block[3 * i] = t[0];
-                block[3 * i + 1] = t[1];
-                block[3 * i + 2] = t[2];
-            }
-        }
 
         // Reduce any "adjacent" transitions:
         let mut upto = 0usize;
@@ -482,21 +478,16 @@ impl Automaton {
         self.transitions.truncate(offset + 3 * upto);
         self.states[2 * cur_state + 1] = upto as i32;
 
-        // Sort transitions by min/max/dest:
-        {
-            let block = &mut self.transitions[offset..offset + 3 * upto];
-            let mut triples: Vec<[i32; 3]> = block.as_chunks::<3>().0.to_vec();
-            triples.sort_unstable_by(|a, b| {
+        // Sort transitions by min/max/dest, in place, as `minMaxDestSorter.sort(start,
+        // start + upto)` does (`Automaton.java:298`).
+        self.transitions[offset..offset + 3 * upto]
+            .as_chunks_mut::<3>()
+            .0
+            .sort_unstable_by(|a, b| {
                 a[1].cmp(&b[1])
                     .then_with(|| a[2].cmp(&b[2]))
                     .then_with(|| a[0].cmp(&b[0]))
             });
-            for (i, t) in triples.iter().enumerate() {
-                block[3 * i] = t[0];
-                block[3 * i + 1] = t[1];
-                block[3 * i + 2] = t[2];
-            }
-        }
 
         if self.deterministic && upto > 1 {
             let mut last_max = self.transitions[offset + 2];

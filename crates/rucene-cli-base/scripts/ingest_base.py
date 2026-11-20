@@ -6,7 +6,7 @@ Usage::
     python3 -I ingest_base.py fetch  [--cache DIR] [--only ENTITIES] [--force]
     python3 -I ingest_base.py ingest [--cache DIR] [--only ENTITIES] [--root DIR]
                                      [--binary PATH] [--offline DIR] [--limit N]
-                                     [--jobs N]
+                                     [--jobs N] [--prep-jobs N]
     python3 -I ingest_base.py status [--cache DIR] [--verify]
 
 No dataset file is kept in the repository: ``fetch`` downloads the files into
@@ -33,27 +33,38 @@ Stages (``ingest`` runs all of them, in this order):
    CPV and NUTS codes, and split competitor strings. Contracts are deduplicated
    by ``idcontrato`` (newest year file first; the first occurrence wins); the
    rows of one notice repeated per contracting entity are merged by
-   ``IDAnuncio``.
+   ``IDAnuncio``. The source files are read and cleaned in parallel, one file
+   per task, by ``--prep-jobs N`` worker processes (default: one per CPU, at
+   most as many as half the memory limit holds at 384 MiB each), each into
+   line files under ``<cache>/prep``; the main process merges them in the
+   order of a sequential run, so the files and the report do not depend on
+   the number of processes.
 3. **Derive.** Build the entity records with their aggregates: suppliers,
    contracting entities, invited entities, procedures, CPV codes, execution
-   places, NUTS regions. Every entity is first written as normalised JSON
-   Lines to ``<cache>/clean/<entity>.jsonl``.
+   places, NUTS regions, from the unique contracts in that same order. Every
+   entity is first written as normalised JSON Lines to
+   ``<cache>/clean/<entity>.jsonl``.
 4. **Write and load.** Convert each entity to the ``rucene-base`` bulk input
    format (flat JSON Lines, see the crate documentation) in
    ``<cache>/cli/<entity>/part-NNNN.jsonl`` and run, for every index,
    ``rucene-base <entity> create <root>`` followed by one
    ``rucene-base <entity> add <root> --file PART`` per part, then ``count``.
    Every index lives in its own subdirectory ``<root>/<entity>`` with its own
-   writer, so every index loads side by side with the others (one
-   ``rucene-base`` process each, started largest first; ``--jobs N`` caps how
-   many run at once); each index keeps the order of its parts.
+   writer, so an index starts loading as soon as its bulk files are written
+   and checked, while the other indices are still being prepared (one
+   ``rucene-base`` process each; ``--jobs N`` caps how many run at once, the
+   others waiting in the order they became ready); each index keeps the
+   order of its parts.
 
-``ingest`` fails (exit status 1) on any download, parse or CLI error, and when
-a full run yields fewer than 2,000,000 unique contracts. ``--limit N`` reads at
+``ingest`` fails (exit status 1) on any download, parse or CLI error, when the
+``rucene-base`` binary is missing (checked first), and when a full run yields
+fewer than 2,000,000 unique contracts (checked before ``contratos`` loads; an
+index that already started loading is not rolled back). ``--limit N`` reads at
 most N records from each source file (a sample run: the minimum-count check is
-skipped, and with ``--offline`` missing yearly files are allowed). The cache
-needs about 14 GB for a full run (1.4 GB downloads, 7.1 GB clean and 4.8 GB bulk
-JSON Lines).
+skipped, and with ``--offline`` missing yearly files are allowed). After a
+full run the cache holds about 16 GB (1.3 GB downloads, 7.6 GB clean and
+5.1 GB bulk JSON Lines, 2.2 GB indices); a full run over a previous one peaked
+at 24 GB, with up to 8.8 GB of line files in ``<cache>/prep``.
 
 Portal BASE data (IMPIC, published on dados.gov.pt) is in the public domain.
 Only the Python standard library is used.
@@ -63,14 +74,18 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import hashlib
 import html
 import io
 import json
+import multiprocessing
+import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -284,6 +299,18 @@ class Report:
         self.events[key] += 1
         if sample is not None and len(self.samples[key]) < 5:
             self.samples[key].append(sample)
+
+    def merge(self, other: Report) -> None:
+        """Add the counts of ``other``; append its samples after these, up to 5.
+
+        Merging the reports of consecutive parts of the input, in input order,
+        gives the report one pass over the whole input would give.
+        """
+        for key, n in other.events.items():
+            self.events[key] += n
+        for key, samples in other.samples.items():
+            mine = self.samples[key]
+            mine.extend(samples[: max(0, 5 - len(mine))])
 
     def lines(self) -> list[str]:
         """Return the report as sorted human-readable lines."""
@@ -1986,6 +2013,13 @@ def file_year(path: Path) -> int:
 # --------------------------------------------------------------------------
 
 
+def jsonl_line(record: dict[str, Any]) -> bytes:
+    """Return one record as a UTF-8 JSON Lines line (compact, non-ASCII kept)."""
+    return (
+        json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+
+
 class JsonlWriter:
     """Write records as UTF-8 JSON Lines, atomically (``.tmp`` then rename)."""
 
@@ -1993,14 +2027,16 @@ class JsonlWriter:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self.tmp = path.with_name(path.name + ".tmp")
-        self.fh = self.tmp.open("w", encoding="utf-8", newline="\n")
+        self.fh = self.tmp.open("wb")
         self.count = 0
 
     def write(self, record: dict[str, Any]) -> None:
         """Append one record."""
-        self.fh.write(
-            json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
-        )
+        self.write_line(jsonl_line(record))
+
+    def write_line(self, line: bytes) -> None:
+        """Append one line already serialised by ``jsonl_line``."""
+        self.fh.write(line)
         self.count += 1
 
     def close(self) -> None:
@@ -2024,12 +2060,16 @@ class PartWriter:
 
     def write(self, record: dict[str, Any]) -> None:
         """Append one record, opening a new part when the current one is full."""
+        self.write_line(jsonl_line(record))
+
+    def write_line(self, line: bytes) -> None:
+        """Append one line already serialised by ``jsonl_line``."""
         if self._writer is None or self._writer.count >= self.batch:
             self._close_part()
             path = self.directory / f"part-{len(self.parts) + 1:04d}.jsonl"
             self._writer = JsonlWriter(path)
             self.parts.append(path)
-        self._writer.write(record)
+        self._writer.write_line(line)
         self.count += 1
 
     def _close_part(self) -> None:
@@ -2055,18 +2095,317 @@ class Outputs:
     counts: dict[str, int] = field(default_factory=dict)
 
 
+# Indices derived from the contracts, in the order they are written.
+DERIVED = (
+    "fornecedores",
+    "adjudicantes",
+    "procedimentos",
+    "cpv",
+    "locais",
+    "nuts",
+    "convidadas",
+)
+# Peak resident memory budget of one preparation process. The largest measured
+# on the files published on 2026-11-15 was 315,368 kB (anuncios2023.json,
+# merged in memory); contratos2025.zip took 129,504 kB. About 25 % margin.
+PREP_PROCESS_BYTES = 384 * 1024 * 1024
+WORK_BUFFER = 1024 * 1024  # write buffer of a worker's line files
+
+_PRINT_LOCK = threading.Lock()
+
+
+def say(line: str) -> None:
+    """Print one whole line; loads report from several threads at once."""
+    with _PRINT_LOCK:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+class OrderedLines:
+    """Print groups of lines in a fixed order of named slots.
+
+    The lines of a slot are printed once every earlier slot is printed, so
+    the output keeps the order of a sequential run whatever order the work
+    finishes in.
+    """
+
+    def __init__(self, slots: Iterable[str]) -> None:
+        self._slots = list(slots)
+        self._ready: dict[str, list[str]] = {}
+        self._next = 0
+
+    def put(self, slot: str, lines: list[str]) -> None:
+        """Hand in the lines of ``slot``; print every slot now in order."""
+        self._ready[slot] = lines
+        while self._next < len(self._slots) and self._slots[self._next] in self._ready:
+            for line in self._ready.pop(self._slots[self._next]):
+                say(line)
+            self._next += 1
+
+    def flush(self) -> None:
+        """Print the slots handed in so far, skipping those never handed in."""
+        for slot in self._slots[self._next :]:
+            for line in self._ready.pop(slot, []):
+                say(line)
+        self._next = len(self._slots)
+
+
+def _cpu_count() -> int:
+    """Return the number of CPUs this process may run on."""
+    count = getattr(os, "process_cpu_count", os.cpu_count)()
+    return count or 1
+
+
+def _memory_limit() -> int | None:
+    """Return the memory this process may use, in bytes, or ``None`` if unknown.
+
+    The lowest cgroup v2 ``memory.max`` on the path of this process's cgroup
+    (systemd slices and scopes), bounded by the physical memory.
+    """
+    limits: list[int] = []
+    root = Path("/sys/fs/cgroup")
+    try:
+        entries = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+        rel = next(e.split(":", 2)[2] for e in entries if e.startswith("0::"))
+        leaf = root / rel.lstrip("/")
+        for d in (leaf, *leaf.parents):
+            if not d.is_relative_to(root):
+                break
+            limit_file = d / "memory.max"
+            if limit_file.is_file():
+                text = limit_file.read_text(encoding="utf-8").strip()
+                if text != "max":
+                    limits.append(int(text))
+    except (OSError, StopIteration, ValueError):
+        pass
+    try:
+        limits.append(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except (AttributeError, OSError, ValueError):
+        pass
+    return min(limits) if limits else None
+
+
+def default_prep_jobs() -> int:
+    """Return the default number of preparation processes.
+
+    One per CPU, but no more than half the memory limit holds at
+    ``PREP_PROCESS_BYTES`` each; the other half is left to this process and to
+    the ``rucene-base`` processes that load while the preparation runs.
+    """
+    jobs = _cpu_count()
+    limit = _memory_limit()
+    if limit is not None:
+        jobs = min(jobs, limit // 2 // PREP_PROCESS_BYTES)
+    return max(1, jobs)
+
+
+@dataclass
+class Prepared:
+    """One yearly source file prepared by a worker process.
+
+    ``clean`` and ``cli`` hold one line per record (``cli`` may be absent),
+    ``keys`` the record keys in the same order, one per line, and ``digests``
+    the 12-byte ``_digest`` of each record (contracts only).
+    """
+
+    name: str
+    count: int
+    keys: str
+    digests: bytes
+    report: Report
+    clean: Path
+    cli: Path | None
+
+
+def _write_lines(
+    prepared: Iterable[dict[str, Any]],
+    clean: Path,
+    cli: Path | None,
+    to_cli: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    """Write each record's clean line and, when ``cli`` is set, its bulk line."""
+    with contextlib.ExitStack() as stack:
+        cf = stack.enter_context(clean.open("wb", buffering=WORK_BUFFER))
+        lf = (
+            stack.enter_context(cli.open("wb", buffering=WORK_BUFFER))
+            if cli is not None
+            else None
+        )
+        for rec in prepared:
+            cf.write(jsonl_line(rec))
+            if lf is not None:
+                lf.write(jsonl_line(to_cli(rec)))
+
+
+def prepare_contracts(
+    path: Path, limit: int | None, work: Path, mods: Counter[str] | None
+) -> Prepared:
+    """Read and clean one contracts file into line files under ``work``.
+
+    Runs in a worker process. The bulk lines are written only when ``mods``
+    (modifications per contract) is given, that is when ``contratos`` is
+    loaded. Every record is kept: deduplication across files is the
+    caller's.
+    """
+    report = Report()
+    keys: list[str] = []
+    digests = bytearray()
+
+    def cleaned() -> Iterator[dict[str, Any]]:
+        for raw in read_records(path, limit):
+            c = clean_contract(raw, report)
+            keys.append(c["idcontrato"])
+            digests.extend(_digest(c))
+            yield c
+
+    counts = mods if mods is not None else Counter()
+    clean = work / f"{path.name}.clean.jsonl"
+    cli = work / f"{path.name}.cli.jsonl" if mods is not None else None
+    _write_lines(
+        cleaned(),
+        clean,
+        cli,
+        lambda c: contract_to_cli(c, counts.get(c["idcontrato"], 0)),
+    )
+    return Prepared(
+        path.name, len(keys), "\n".join(keys), bytes(digests), report, clean, cli
+    )
+
+
+def prepare_notices(path: Path, limit: int | None, work: Path) -> Prepared:
+    """Read, clean and merge one announcements file into line files under ``work``.
+
+    Runs in a worker process. Rows repeated within the file are merged
+    (``merge_notices``); deduplication across files is the caller's.
+    """
+    report = Report()
+    merged = merge_notices(
+        (clean_notice(raw, report) for raw in read_records(path, limit)), report
+    )
+    clean = work / f"{path.name}.clean.jsonl"
+    cli = work / f"{path.name}.cli.jsonl"
+    _write_lines(merged, clean, cli, notice_to_cli)
+    keys = "\n".join(n["IDAnuncio"] for n in merged)
+    return Prepared(path.name, len(merged), keys, b"", report, clean, cli)
+
+
+def prepare_modifications(
+    path: Path, limit: int | None
+) -> tuple[list[dict[str, Any]], Report]:
+    """Read and clean one modifications file. Runs in a worker process."""
+    report = Report()
+    return [clean_modification(raw, report) for raw in read_records(path, limit)], report
+
+
+def prepare_register(
+    paths: list[Path], limit: int | None
+) -> tuple[dict[str, dict[str, Any]], int, int, Report]:
+    """Read the entity register: rows by NIF, row count, keyless rows, report.
+
+    Runs in a worker process. The first row of a NIF is kept.
+    """
+    report = Report()
+    register: dict[str, dict[str, Any]] = {}
+    rows = keyless = 0
+    for path in paths:
+        for raw in read_records(path, limit):
+            rows += 1
+            row = clean_entity_row(raw, report)
+            if row["nif"] is None:
+                keyless += 1
+                continue
+            if row["nif"] in register:
+                report.note("entidades: duplicate NIF (first row kept)", row["nif"])
+                continue
+            register[row["nif"]] = row
+    return register, rows, keyless, report
+
+
+def _prepared_lines(
+    prep: Prepared,
+) -> Iterator[tuple[int, str, bytes, bytes | None]]:
+    """Yield ``(index, key, clean line, bulk line)`` of a prepared file, then delete it."""
+    keys = prep.keys.split("\n") if prep.count else []
+    with contextlib.ExitStack() as stack:
+        clean = stack.enter_context(prep.clean.open("rb"))
+        bulk: Iterable[bytes | None] = (
+            stack.enter_context(prep.cli.open("rb"))
+            if prep.cli is not None
+            else [None] * prep.count
+        )
+        for i, (key, line, cli) in enumerate(zip(keys, clean, bulk, strict=True)):
+            yield i, key, line, cli
+    prep.clean.unlink()
+    if prep.cli is not None:
+        prep.cli.unlink()
+
+
+def _pool_context() -> multiprocessing.context.BaseContext:
+    """Start worker processes without ``fork``: loads run in threads meanwhile."""
+    methods = multiprocessing.get_all_start_methods()
+    return multiprocessing.get_context(
+        "forkserver" if "forkserver" in methods else "spawn"
+    )
+
+
 def build(
     files: dict[str, list[Path]],
     wanted: tuple[str, ...],
     cache: Path,
     limit: int | None,
     report: Report,
+    on_ready: Callable[[str, Outputs], None] | None = None,
+    prep_jobs: int | None = None,
 ) -> Outputs:
-    """Stages 2-4 (without loading): clean, derive and write the bulk files."""
+    """Stages 2-4 (without loading): clean, derive and write the bulk files.
+
+    ``prep_jobs`` worker processes (default ``default_prep_jobs()``) read and
+    clean the source files, one file per task, into line files under
+    ``<cache>/prep``. This process merges their results in the order of a
+    sequential run: modifications by year, announcements and contracts
+    newest year first (the first occurrence of a key wins), then derives the
+    entity records from the unique contracts in that same order. The files,
+    the printed lines and the report therefore do not depend on
+    ``prep_jobs``. ``on_ready(entity, outputs)`` is called as soon as the
+    bulk files of an index are closed.
+    """
+    jobs = prep_jobs if prep_jobs is not None else default_prep_jobs()
+    if jobs < 1:
+        raise IngestError(f"prep_jobs must be >= 1, got {jobs}")
     clean_dir = cache / "clean"
     cli_dir = cache / "cli"
+    work = cache / "prep"
     clean_dir.mkdir(parents=True, exist_ok=True)
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
     outs = Outputs()
+    derive = "contracts" in files and any(e in wanted for e in DERIVED)
+    with_cli = "contracts" in files and "contratos" in wanted
+    slots = [
+        slot
+        for slot, present in (
+            ("entidades", "entities" in files),
+            ("modificacoes", "mods" in files and "modificacoes" in wanted),
+            ("anuncios", "notices" in files and "anuncios" in wanted),
+            ("contratos", "contracts" in files),
+            *((e, derive and e in wanted) for e in DERIVED),
+        )
+        if present
+    ]
+    printer = OrderedLines(slots)
+
+    def publish(entity: str, cw: JsonlWriter, pw: PartWriter, lines: list[str]) -> None:
+        cw.close()
+        pw.close()
+        outs.parts[entity] = pw.parts
+        outs.counts[entity] = pw.count
+        printer.put(
+            entity,
+            [*lines, f"  {entity}: {pw.count:,} records in {len(pw.parts)} bulk file(s)"],
+        )
+        if on_ready is not None:
+            on_ready(entity, outs)
 
     def emit(
         entity: str,
@@ -2078,139 +2417,159 @@ def build(
         for rec in clean_records:
             cw.write(rec)
             pw.write(to_cli(rec))
-        cw.close()
-        pw.close()
-        outs.parts[entity] = pw.parts
-        outs.counts[entity] = pw.count
-        print(f"  {entity}: {pw.count:,} records in {len(pw.parts)} bulk file(s)")
+        publish(entity, cw, pw, [])
 
-    # Entity register (only for fornecedores/adjudicantes).
-    register: dict[str, dict[str, Any]] = {}
-    if "entities" in files:
-        rows = keyless = 0
-        for path in files["entities"]:
-            for raw in read_records(path, limit):
-                rows += 1
-                row = clean_entity_row(raw, report)
-                if row["nif"] is None:
-                    keyless += 1
-                    continue
-                if row["nif"] in register:
-                    report.note("entidades: duplicate NIF (first row kept)", row["nif"])
-                    continue
-                register[row["nif"]] = row
-        print(
-            f"  entidades: {rows:,} rows, {len(register):,} NIFs, {keyless:,} rows without NIF"
+    pool = concurrent.futures.ProcessPoolExecutor(
+        max_workers=jobs, mp_context=_pool_context()
+    )
+    deriver: Deriver | None = None
+    try:
+        # Submitted in the order they are consumed, so the file consumed next
+        # is always being prepared. The contracts need the modification counts.
+        register_job = (
+            pool.submit(prepare_register, files["entities"], limit)
+            if "entities" in files
+            else None
         )
-
-    # Modifications (small: held in memory to assign sequences).
-    mods_per_contract: Counter[str] = Counter()
-    if "mods" in files:
-        mods = []
-        for path in sorted(files["mods"], key=file_year):
-            for raw in read_records(path, limit):
-                mods.append(clean_modification(raw, report))
+        mod_jobs = [
+            pool.submit(prepare_modifications, p, limit)
+            for p in sorted(files.get("mods", []), key=file_year)
+        ]
+        mods: list[dict[str, Any]] = []
+        for job in mod_jobs:
+            records, part = job.result()
+            report.merge(part)
+            mods.extend(records)
         sequenced = sequence_modifications(mods)
         mods_per_contract = Counter(m["idcontrato"] for m in sequenced)
-        if "modificacoes" in wanted:
+        contract_files = sorted(files.get("contracts", []), key=file_year, reverse=True)
+        contract_jobs = [
+            pool.submit(
+                prepare_contracts,
+                p,
+                limit,
+                work,
+                mods_per_contract if with_cli else None,
+            )
+            for p in contract_files
+        ]
+        notice_files = (
+            sorted(files["notices"], key=file_year, reverse=True)
+            if "notices" in files and "anuncios" in wanted
+            else []
+        )
+        notice_jobs = [pool.submit(prepare_notices, p, limit, work) for p in notice_files]
+
+        # Modifications (small: held in memory to assign sequences).
+        if "mods" in files and "modificacoes" in wanted:
             emit("modificacoes", sequenced, modification_to_cli)
 
-    # Announcements (deduplicated by IDAnuncio, newest year first).
-    if "notices" in files and "anuncios" in wanted:
-
-        def notices() -> Iterator[dict[str, Any]]:
-            seen: set[str] = set()
-            for path in sorted(files["notices"], key=file_year, reverse=True):
-                merged = merge_notices(
-                    (clean_notice(raw, report) for raw in read_records(path, limit)),
-                    report,
-                )
-                for n in merged:
-                    if n["IDAnuncio"] in seen:
+        # Contracts: deduplicated by idcontrato, newest year first.
+        kept = clean_dir / "contratos.jsonl" if with_cli else work / "contratos.jsonl"
+        if "contracts" in files:
+            cw = JsonlWriter(kept)
+            pw = PartWriter(cli_dir / "contratos") if with_cli else None
+            seen: dict[str, bytes] = {}
+            lines = []
+            for job in contract_jobs:
+                prep = job.result()
+                report.merge(prep.report)
+                for i, cid, line, cli in _prepared_lines(prep):
+                    digest = prep.digests[12 * i : 12 * i + 12]
+                    old = seen.get(cid)
+                    if old is not None:
+                        kind = "identical" if old == digest else "non-identical"
                         report.note(
-                            "anuncios: IDAnuncio in an older year file (newest kept)",
-                            n["IDAnuncio"],
+                            f"contratos: {kind} duplicate idcontrato (newest kept)", cid
                         )
                         continue
-                    seen.add(n["IDAnuncio"])
-                    yield n
-
-        emit("anuncios", notices(), notice_to_cli)
-
-    # Contracts: clean, dedupe, write, derive in one pass.
-    if "contracts" in files:
-        derive = any(
-            e in wanted
-            for e in ENTITIES
-            if e not in ("contratos", "modificacoes", "anuncios")
-        )
-        deriver = Deriver(cache / "spill", report) if derive else None
-        try:
-
-            def contracts() -> Iterator[dict[str, Any]]:
-                seen: dict[str, bytes] = {}
-                for path in sorted(files["contracts"], key=file_year, reverse=True):
-                    n_file = 0
-                    for raw in read_records(path, limit):
-                        n_file += 1
-                        c = clean_contract(raw, report)
-                        digest = _digest(c)
-                        old = seen.get(c["idcontrato"])
-                        if old is not None:
-                            kind = "identical" if old == digest else "non-identical"
-                            report.note(
-                                f"contratos: {kind} duplicate idcontrato (newest kept)",
-                                c["idcontrato"],
-                            )
-                            continue
-                        seen[c["idcontrato"]] = digest
-                        if deriver is not None:
-                            deriver.add(c)
-                        yield c
-                    print(f"    {path.name}: {n_file:,} records read")
-                unresolved = set(mods_per_contract) - seen.keys()
-                for cid in sorted(unresolved, key=_id_sort_key):
-                    report.note("modificacoes: idcontrato not found in contracts", cid)
-
-            if "contratos" in wanted:
-                emit(
-                    "contratos",
-                    contracts(),
-                    lambda c: contract_to_cli(
-                        c, mods_per_contract.get(c["idcontrato"], 0)
-                    ),
-                )
+                    seen[cid] = digest
+                    cw.write_line(line)
+                    if pw is not None and cli is not None:
+                        pw.write_line(cli)
+                lines.append(f"    {prep.name}: {prep.count:,} records read")
+            unresolved = set(mods_per_contract) - seen.keys()
+            for cid in sorted(unresolved, key=_id_sort_key):
+                report.note("modificacoes: idcontrato not found in contracts", cid)
+            del seen
+            if pw is not None:
+                publish("contratos", cw, pw, lines)
             else:
-                for _ in contracts():
-                    pass
-            if deriver is not None:
-                for kind, total in sorted(deriver.keyless.items()):
-                    report.events[f"derive: {kind}"] = total
-                derived: list[tuple[str, Callable[[], Iterator[dict[str, Any]]]]] = [
-                    ("fornecedores", lambda: deriver.suppliers_records(register)),
-                    ("adjudicantes", lambda: deriver.entities_records(register)),
-                    ("procedimentos", deriver.procedure_records),
-                    ("cpv", deriver.cpv_records),
-                    ("locais", deriver.places_records),
-                    ("nuts", deriver.nuts_records),
-                    ("convidadas", deriver.invited_records),
-                ]
-                for entity, make in derived:
-                    if entity in wanted:
-                        emit(entity, make(), lambda r: r)
-                if register:
-                    unmatched = sum(
-                        1
-                        for nif in register
-                        if nif not in deriver.suppliers and nif not in deriver.entities
-                    )
-                    report.events[
-                        "entidades: NIFs not seen as supplier or contracting entity"
-                    ] = unmatched
-        finally:
-            if deriver is not None:
-                deriver.close()
-                shutil.rmtree(deriver.spill_dir, ignore_errors=True)
+                cw.close()
+                printer.put("contratos", lines)
+
+        # Announcements (deduplicated by IDAnuncio, newest year first).
+        if notice_jobs:
+            cw = JsonlWriter(clean_dir / "anuncios.jsonl")
+            pw = PartWriter(cli_dir / "anuncios")
+            seen_notices: set[str] = set()
+            for job in notice_jobs:
+                prep = job.result()
+                report.merge(prep.report)
+                for _, nid, line, cli in _prepared_lines(prep):
+                    if nid in seen_notices:
+                        report.note(
+                            "anuncios: IDAnuncio in an older year file (newest kept)", nid
+                        )
+                        continue
+                    seen_notices.add(nid)
+                    cw.write_line(line)
+                    if cli is not None:
+                        pw.write_line(cli)
+            publish("anuncios", cw, pw, [])
+
+        # Entity register (only for fornecedores/adjudicantes).
+        register: dict[str, dict[str, Any]] = {}
+        if register_job is not None:
+            register, rows, keyless, part = register_job.result()
+            report.merge(part)
+            printer.put(
+                "entidades",
+                [
+                    f"  entidades: {rows:,} rows, {len(register):,} NIFs, "
+                    f"{keyless:,} rows without NIF"
+                ],
+            )
+
+        # Derived entities, from the unique contracts in the order kept.
+        if derive:
+            deriver = Deriver(cache / "spill", report)
+            with kept.open("rb") as fh:
+                for line in fh:
+                    deriver.add(json.loads(line))
+            if not with_cli:
+                kept.unlink()
+            for kind, total in sorted(deriver.keyless.items()):
+                report.events[f"derive: {kind}"] = total
+            d = deriver
+            derived: list[tuple[str, Callable[[], Iterator[dict[str, Any]]]]] = [
+                ("fornecedores", lambda: d.suppliers_records(register)),
+                ("adjudicantes", lambda: d.entities_records(register)),
+                ("procedimentos", d.procedure_records),
+                ("cpv", d.cpv_records),
+                ("locais", d.places_records),
+                ("nuts", d.nuts_records),
+                ("convidadas", d.invited_records),
+            ]
+            for entity, make in derived:
+                if entity in wanted:
+                    emit(entity, make(), lambda r: r)
+            if register:
+                unmatched = sum(
+                    1
+                    for nif in register
+                    if nif not in deriver.suppliers and nif not in deriver.entities
+                )
+                report.events[
+                    "entidades: NIFs not seen as supplier or contracting entity"
+                ] = unmatched
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        printer.flush()
+        if deriver is not None:
+            deriver.close()
+            shutil.rmtree(deriver.spill_dir, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
     return outs
 
 
@@ -2259,10 +2618,9 @@ def load_one(binary: Path, root: Path, outs: Outputs, entity: str) -> str:
     for part in outs.parts[entity]:
         run_cli(binary, [entity, "add", str(root), "--file", str(part)])
     counted = run_cli(binary, [entity, "count", str(root)]).strip()
-    print(
+    say(
         f"  {entity}: loaded {outs.counts[entity]:,} documents in "
-        f"{time.monotonic() - started:.1f} s; count: {counted}",
-        flush=True,
+        f"{time.monotonic() - started:.1f} s; count: {counted}"
     )
     number = re.search(r"\d+", counted.replace(",", ""))
     if number and int(number.group()) != outs.counts[entity]:
@@ -2270,6 +2628,67 @@ def load_one(binary: Path, root: Path, outs: Outputs, entity: str) -> str:
             f"{entity}: index count {number.group()} != {outs.counts[entity]} documents written"
         )
     return counted
+
+
+class Loader:
+    """Load indices through the CLI, up to ``jobs`` at once, in the order started.
+
+    The indices are independent (``<root>/<entity>``, one writer each), so
+    they load side by side, one ``rucene-base`` process per index; each index
+    runs ``create``, its parts in order, then ``count`` (``load_one``). An
+    index started while ``jobs`` are loading waits for a free slot. After
+    the first failure no further index is started, the running ones finish,
+    and ``wait`` raises that failure.
+    """
+
+    def __init__(self, binary: Path, root: Path, jobs: int) -> None:
+        if not binary.is_file():
+            raise IngestError(
+                f"binary not found: {binary} (build it with: cargo build --release -p rucene-cli-base)"
+            )
+        if jobs < 1:
+            raise IngestError(f"jobs must be >= 1, got {jobs}")
+        root.mkdir(parents=True, exist_ok=True)
+        self.binary = binary
+        self.root = root
+        self.started: float | None = None
+        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
+        self._lock = threading.Lock()
+        self._futures: dict[str, concurrent.futures.Future[str]] = {}
+        self._errors: list[BaseException] = []
+
+    def start(self, entity: str, outs: Outputs) -> None:
+        """Queue the load of ``entity``, whose bulk files are complete in ``outs``."""
+        with self._lock:
+            if self._errors:
+                return
+            if self.started is None:
+                self.started = time.monotonic()
+            future = self._pool.submit(load_one, self.binary, self.root, outs, entity)
+            self._futures[entity] = future
+        future.add_done_callback(self._done)
+
+    def _done(self, future: concurrent.futures.Future[str]) -> None:
+        if future.cancelled() or future.exception() is None:
+            return
+        with self._lock:
+            self._errors.append(future.exception())  # type: ignore[arg-type]
+            for other in self._futures.values():
+                other.cancel()
+
+    def wait(self) -> dict[str, str]:
+        """Wait for every started index; return its ``count`` output by index.
+
+        Raises the first failure.
+        """
+        self._pool.shutdown(wait=True)
+        if self._errors:
+            raise self._errors[0]
+        return {e: f.result() for e, f in self._futures.items()}
+
+    def close(self) -> None:
+        """Drop the indices not started yet; wait for the running ones."""
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
 
 def load(
@@ -2281,38 +2700,17 @@ def load(
 ) -> dict[str, str]:
     """Create every wanted index under ``root`` and add its bulk files; return ``count`` output.
 
-    The indices are independent (``<root>/<entity>``, one writer each), so
-    they load side by side: up to ``jobs`` at once (default: all of them, one
-    ``rucene-base`` process per index), started largest first;
-    each index still runs ``create``, its parts in order, then ``count``. On
-    the first failure no further index is started, the running ones finish,
-    and the first error is raised.
+    All bulk files are complete: the indices load side by side, up to
+    ``jobs`` at once (default: all of them), started largest first (see
+    ``Loader``).
     """
-    if not binary.is_file():
-        raise IngestError(
-            f"binary not found: {binary} (build it with: cargo build --release -p rucene-cli-base)"
-        )
-    if jobs is None:
-        jobs = max(1, len(wanted))
-    if jobs < 1:
-        raise IngestError(f"jobs must be >= 1, got {jobs}")
-    root.mkdir(parents=True, exist_ok=True)
-    order = load_order(wanted, outs.counts)
-    counted: dict[str, str] = {}
-    errors: list[BaseException] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = {pool.submit(load_one, binary, root, outs, e): e for e in order}
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                counted[futures[future]] = future.result()
-            except concurrent.futures.CancelledError:
-                continue
-            except Exception as exc:  # noqa: BLE001 - re-raised below
-                errors.append(exc)
-                for other in futures:
-                    other.cancel()
-    if errors:
-        raise errors[0]
+    loader = Loader(binary, root, max(1, len(wanted)) if jobs is None else jobs)
+    try:
+        for entity in load_order(wanted, outs.counts):
+            loader.start(entity, outs)
+        counted = loader.wait()
+    finally:
+        loader.close()
     return {e: counted[e] for e in wanted}
 
 
@@ -2392,8 +2790,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     i.add_argument(
         "--jobs",
         type=int,
-        help="cap on the indices loaded at once, largest first (default: every "
-        "selected index at once, one rucene-base process each)",
+        help="cap on the indices loaded at once, each started as soon as its bulk "
+        "files are written (default: every selected index at once, one "
+        "rucene-base process each)",
+    )
+    i.add_argument(
+        "--prep-jobs",
+        type=int,
+        help="processes that read and clean the source files, one file each at "
+        "a time (default: one per CPU, at most as many as half the memory "
+        "limit holds)",
     )
     s_ = sub.add_parser(
         "status", parents=[common], help="show the cached files (no network)"
@@ -2404,6 +2810,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.only = _only(ap, args.only)
     if getattr(args, "jobs", None) is not None and args.jobs < 1:
         ap.error("--jobs must be >= 1")
+    if getattr(args, "prep_jobs", None) is not None and args.prep_jobs < 1:
+        ap.error("--prep-jobs must be >= 1")
     if getattr(args, "limit", None) is not None and args.limit < 1:
         ap.error("--limit must be >= 1")
     if getattr(args, "offline", None) is not None and not args.offline.is_dir():
@@ -2423,10 +2831,17 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
-    """``ingest``: obtain the files, then run stages 2-4."""
+    """``ingest``: obtain the files, then run stages 2-4.
+
+    Each index starts loading as soon as its bulk files are written and
+    checked, while the other indices are still being prepared.
+    """
     report = Report()
     datasets = datasets_for(args.only)
     started = time.monotonic()
+    jobs = args.jobs if args.jobs is not None else len(args.only)
+    prep_jobs = args.prep_jobs if args.prep_jobs is not None else default_prep_jobs()
+    loader = Loader(args.binary, args.root, jobs)
     raw_dir = args.cache / "raw"
     print("stage 1: source files")
     if args.offline is not None:
@@ -2440,14 +2855,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             files = cached
             n = sum(len(v) for v in files.values())
             print(f"  using {n} cached file(s) in {raw_dir} (run 'fetch' to refresh)")
-    try:
-        print("stages 2-4: clean, derive, write bulk files")
-        outs = build(files, args.only, args.cache, args.limit, report)
-        for entity in args.only:
-            if outs.counts.get(entity, 0) == 0:
-                raise IngestError(f"{entity}: no documents produced")
+    def ready(entity: str, outs: Outputs) -> None:
+        if outs.counts.get(entity, 0) == 0:
+            raise IngestError(f"{entity}: no documents produced")
         if (
-            "contratos" in args.only
+            entity == "contratos"
             and args.limit is None
             and outs.counts["contratos"] < MIN_CONTRACTS
         ):
@@ -2455,13 +2867,26 @@ def cmd_ingest(args: argparse.Namespace) -> int:
                 f"contratos: {outs.counts['contratos']:,} unique contracts "
                 f"< {MIN_CONTRACTS:,}"
             )
-        print(f"stages 1-3 done in {time.monotonic() - started:.0f} s")
-        jobs = args.jobs if args.jobs is not None else len(args.only)
-        print(f"stage 4: load ({jobs} index(es) at once)")
-        loading = time.monotonic()
-        load(args.binary, args.root, outs, args.only, jobs)
-        print(f"stage 4 done in {time.monotonic() - loading:.0f} s")
+        loader.start(entity, outs)
+
+    try:
+        say("stages 2-4: clean, derive, write bulk files")
+        say(
+            f"stage 4: load ({jobs} index(es) at once, each as soon as its bulk "
+            f"files are written); preparation: {prep_jobs} process(es)"
+        )
+        outs = build(
+            files, args.only, args.cache, args.limit, report, ready, prep_jobs
+        )
+        for entity in args.only:
+            if outs.counts.get(entity, 0) == 0:
+                raise IngestError(f"{entity}: no documents produced")
+        say(f"stages 1-3 done in {time.monotonic() - started:.0f} s")
+        loader.wait()
+        loading = loader.started if loader.started is not None else time.monotonic()
+        say(f"stage 4 done in {time.monotonic() - loading:.0f} s (from the first index)")
     finally:
+        loader.close()
         _print_report(report)
     print("documents per index:")
     for entity in args.only:

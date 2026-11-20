@@ -287,8 +287,8 @@ pub use collection_terminated_exception::{
     CollectionError, CollectionResult, CollectionTerminatedException, TimeExceededException,
 };
 pub use collector::{
-    Collector, CollectorManager, FilterCollector, FilterLeafCollector, LeafCollector,
-    SimpleCollector, SimpleCollectorImpl,
+    Collector, CollectorManager, CompetitiveIterator, FilterCollector, FilterLeafCollector,
+    LeafCollector, SimpleCollector, SimpleCollectorImpl,
 };
 pub use combined_field_query::{
     Builder as CombinedFieldQueryBuilder, CombinedFieldQuery, CombinedFieldScorer,

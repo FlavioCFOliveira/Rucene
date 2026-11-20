@@ -14,6 +14,7 @@ the entity register.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -844,6 +845,157 @@ class LoadTest(unittest.TestCase):
             ib.load(self.binary.with_name("absent"), self.root, self.outs, ("locais",))
 
 
+class ReportMergeTest(unittest.TestCase):
+    def test_merge_in_order_equals_one_pass(self) -> None:
+        one = ib.Report()
+        parts = [ib.Report(), ib.Report(), ib.Report()]
+        for i in range(9):
+            for r in (one, parts[i // 3]):
+                r.note("k: sampled", f"s{i}")
+                r.note("k: counted")
+        merged = ib.Report()
+        for part in parts:
+            merged.merge(part)
+        self.assertEqual(merged.lines(), one.lines())
+        self.assertEqual(merged.samples["k: sampled"], ["s0", "s1", "s2", "s3", "s4"])
+
+
+def fixture_files() -> dict[str, list[Path]]:
+    with contextlib.redirect_stdout(io.StringIO()):
+        return ib.offline_files(
+            {"contracts", "mods", "notices", "entities"}, FIXTURES, True
+        )
+
+
+class ParallelBuildTest(unittest.TestCase):
+    """The number of preparation processes changes no output."""
+
+    def build(
+        self,
+        cache: Path,
+        prep_jobs: int,
+        on_ready: Any = None,
+    ) -> tuple[ib.Outputs, ib.Report, list[str]]:
+        report = ib.Report()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            outs = ib.build(
+                fixture_files(), ib.ENTITIES, cache, None, report, on_ready, prep_jobs
+            )
+        return outs, report, out.getvalue().splitlines()
+
+    def test_same_files_report_and_lines_for_any_process_count(self) -> None:
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            _, report_a, lines_a = self.build(Path(a), 1)
+            _, report_b, lines_b = self.build(Path(b), 3)
+            files_a = sorted(p.relative_to(a) for p in Path(a).rglob("*") if p.is_file())
+            files_b = sorted(p.relative_to(b) for p in Path(b).rglob("*") if p.is_file())
+            self.assertEqual(files_a, files_b)
+            self.assertTrue(files_a)
+            for rel in files_a:
+                self.assertEqual(
+                    (Path(a) / rel).read_bytes(), (Path(b) / rel).read_bytes(), rel
+                )
+            self.assertEqual(report_a.lines(), report_b.lines())
+            self.assertEqual(lines_a, lines_b)
+            self.assertFalse((Path(b) / "prep").exists())
+            self.assertFalse((Path(b) / "spill").exists())
+
+    def test_lines_print_in_sequential_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, lines = self.build(Path(tmp), 3)
+        names = [line.split(":")[0].strip() for line in lines]
+        self.assertEqual(
+            names,
+            [
+                "entidades",
+                "modificacoes",
+                "anuncios",
+                "contratos2025.json",
+                "contratos2012.json",
+                "contratos",
+                *ib.DERIVED,
+            ],
+        )
+
+    def test_on_ready_once_per_index_with_closed_files(self) -> None:
+        calls: list[tuple[str, int, int]] = []
+
+        def ready(entity: str, outs: ib.Outputs) -> None:
+            lines = sum(len(read_jsonl(p)) for p in outs.parts[entity])
+            calls.append((entity, outs.counts[entity], lines))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.build(Path(tmp), 2, ready)
+        self.assertEqual(sorted(c[0] for c in calls), sorted(ib.ENTITIES))
+        for entity, count, lines in calls:
+            self.assertEqual(count, lines, entity)
+            self.assertGreater(count, 0, entity)
+
+    def test_prep_jobs_default_and_bounds(self) -> None:
+        self.assertGreaterEqual(ib.default_prep_jobs(), 1)
+        self.assertLessEqual(ib.default_prep_jobs(), ib._cpu_count())
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ib.IngestError):
+            self.build(Path(tmp), 0)
+
+
+class IngestCommandTest(unittest.TestCase):
+    """``ingest`` end to end on the fixture with a fake ``rucene-base``."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.binary = base / "fake-cli"
+        self.binary.write_text(
+            FAKE_CLI.replace("/usr/bin/env python3", sys.executable), encoding="utf-8"
+        )
+        self.binary.chmod(self.binary.stat().st_mode | stat.S_IXUSR)
+        self.argv = [
+            "ingest",
+            "--offline",
+            str(FIXTURES),
+            "--limit",
+            "100",
+            "--cache",
+            str(base / "cache"),
+            "--root",
+            str(base / "index"),
+            "--only",
+            "contratos,modificacoes,anuncios,locais",
+            "--prep-jobs",
+            "2",
+        ]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_every_index_loads_its_parts_in_order(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            status = ib.main([*self.argv, "--binary", str(self.binary)])
+        self.assertEqual(status, 0, out.getvalue())
+        for entity in ("contratos", "modificacoes", "anuncios", "locais"):
+            state = self.binary.with_suffix(f".{entity}.state")
+            calls = json.loads(state.read_text())["calls"]
+            parts = sorted(
+                (Path(self.tmp.name) / "cache" / "cli" / entity).glob("part-*.jsonl")
+            )
+            self.assertEqual(
+                [c[1] for c in calls], ["create", *(["add"] * len(parts)), "count"]
+            )
+            self.assertEqual([c[4] for c in calls if c[1] == "add"], [str(p) for p in parts])
+        self.assertEqual(out.getvalue().count(": loaded "), 4)
+
+    def test_missing_binary_fails_before_preparing(self) -> None:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as err,
+        ):
+            status = ib.main([*self.argv, "--binary", str(self.binary) + "-absent"])
+        self.assertEqual(status, 1)
+        self.assertIn("binary not found", err.getvalue())
+        self.assertFalse((Path(self.tmp.name) / "cache" / "clean").exists())
+
+
 class ArgsTest(unittest.TestCase):
     def quiet_exit(self, argv: list[str]) -> None:
         with self.assertRaises(SystemExit), open(os.devnull, "w") as null:
@@ -863,12 +1015,16 @@ class ArgsTest(unittest.TestCase):
         self.assertEqual(ib.parse_args(["fetch"]).only, ib.ENTITIES)
         self.assertEqual(ib.parse_args(["ingest", "--jobs", "3"]).jobs, 3)
         self.assertIsNone(ib.parse_args(["ingest"]).jobs)
+        self.assertEqual(ib.parse_args(["ingest", "--prep-jobs", "2"]).prep_jobs, 2)
+        self.assertIsNone(ib.parse_args(["ingest"]).prep_jobs)
 
     def test_validation(self) -> None:
         self.quiet_exit([])
         self.quiet_exit(["ingest", "--only", "contracts"])
         self.quiet_exit(["ingest", "--limit", "0"])
         self.quiet_exit(["ingest", "--jobs", "0"])
+        self.quiet_exit(["ingest", "--prep-jobs", "0"])
+        self.quiet_exit(["fetch", "--prep-jobs", "2"])
         self.quiet_exit(["fetch", "--limit", "5"])
         self.quiet_exit(["status", "--force"])
 

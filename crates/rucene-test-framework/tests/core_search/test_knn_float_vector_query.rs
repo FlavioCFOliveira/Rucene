@@ -119,14 +119,17 @@ impl KnnVectorCase for KnnFloatCase {
         similarity_function: VectorSimilarityFunction,
     ) -> Result<Box<dyn IndexableField>> {
         Ok(Box::new(KnnFloatVectorField::new(
-            name,
+            name.to_string(),
             vector,
             similarity_function,
         )?))
     }
 
     fn get_knn_vector_field(name: &str, vector: &[f32]) -> Result<Box<dyn IndexableField>> {
-        Ok(Box::new(KnnFloatVectorField::with_euclidean(name, vector)?))
+        Ok(Box::new(KnnFloatVectorField::with_euclidean(
+            name.to_string(),
+            vector,
+        )?))
     }
 }
 

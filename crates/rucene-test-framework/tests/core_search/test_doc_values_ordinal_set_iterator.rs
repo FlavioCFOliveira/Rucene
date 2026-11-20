@@ -147,6 +147,8 @@ fn unsupported<T>() -> Result<T> {
 struct FakeTermsEnum {
     ordinals: Vec<i64>,
     idx: i32,
+    /// The term `next()` lends.
+    current: BytesRef,
 }
 
 impl fmt::Display for FakeTermsEnum {
@@ -159,14 +161,14 @@ impl fmt::Display for FakeTermsEnum {
 }
 
 impl TermsEnum for FakeTermsEnum {
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.idx += 1;
         if self.idx as usize >= self.ordinals.len() {
             return Ok(None);
         }
-        Ok(Some(BytesRef::new(
-            format!("term{}", self.ordinals[self.idx as usize]).into_bytes(),
-        )))
+        self.current =
+            BytesRef::new(format!("term{}", self.ordinals[self.idx as usize]).into_bytes());
+        Ok(Some(&self.current))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -206,7 +208,7 @@ impl TermsEnum for FakeTermsEnum {
         unsupported()
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         unsupported()
     }
 
@@ -239,6 +241,7 @@ fn fake_terms_enum(ordinals: &[i64]) -> FakeTermsEnum {
     FakeTermsEnum {
         ordinals: ordinals.to_vec(),
         idx: -1,
+        current: BytesRef::default(),
     }
 }
 
@@ -344,7 +347,7 @@ impl SortedDocValues for FakeSortedDocValues {
         Ok((QUERY_MAX + 10) as i32)
     }
 
-    fn lookup_ord(&self, _ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, _ord: i32) -> Result<&BytesRef> {
         unsupported()
     }
 }
@@ -655,7 +658,7 @@ impl SortedSetDocValues for FakeSortedSetDocValues {
         Ok(2)
     }
 
-    fn lookup_ord(&self, _ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, _ord: i64) -> Result<&BytesRef> {
         unsupported()
     }
 

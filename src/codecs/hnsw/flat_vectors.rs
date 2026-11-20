@@ -1087,6 +1087,7 @@ impl RandomVectorScorerSupplier for FloatScoringSupplier {
             values: Arc::clone(&self.vectors),
             target_vectors: Arc::clone(&self.target_vectors),
             query,
+            target: vec![0.0f32; dimension as usize],
             similarity_function: self.similarity_function,
         }))
     }
@@ -1114,6 +1115,11 @@ struct UpdateableFloatVectorScorer {
     values: Arc<dyn FloatVectorValues>,
     target_vectors: Arc<dyn FloatVectorValues>,
     query: Vec<f32>,
+    /// The vector `score` compares with: Java reads it into the values'
+    /// reused `value` array (`targetVectors.vectorValue(node)`,
+    /// `OffHeapFloatVectorValues.java:78-86`); the port reads it here, once
+    /// allocated per scorer.
+    target: Vec<f32>,
     similarity_function: VectorSimilarityFunction,
 }
 
@@ -1127,8 +1133,11 @@ impl crate::util::hnsw::HasKnnVectorValues for UpdateableFloatVectorScorer {
 
 impl RandomVectorScorer for UpdateableFloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
-        let v = self.target_vectors.vector_value(node)?;
-        self.similarity_function.compare_f32(&self.query, &v)
+        // PERF: read into the scorer's buffer, not a new vector per node.
+        self.target_vectors
+            .vector_value_into(node, &mut self.target)?;
+        self.similarity_function
+            .compare_f32(&self.query, &self.target)
     }
 
     fn max_ord(&self) -> i32 {
@@ -1148,10 +1157,11 @@ impl RandomVectorScorer for UpdateableFloatVectorScorer {
 }
 
 impl UpdateableRandomVectorScorer for UpdateableFloatVectorScorer {
+    /// `System.arraycopy(targetVectors.vectorValue(node), 0, vector, 0,
+    /// vector.length)` (`DefaultFlatVectorScorer.java:154-156`): the vector
+    /// is read straight into the query buffer.
     fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
-        let v = self.target_vectors.vector_value(node)?;
-        self.query.copy_from_slice(&v);
-        Ok(())
+        self.target_vectors.vector_value_into(node, &mut self.query)
     }
 }
 
@@ -1183,6 +1193,7 @@ impl RandomVectorScorerSupplier for ByteScoringSupplier {
             values: Arc::clone(&self.vectors),
             target_vectors: Arc::clone(&self.target_vectors),
             query,
+            target: vec![0u8; dimension as usize],
             similarity_function: self.similarity_function,
         }))
     }
@@ -1210,6 +1221,8 @@ struct UpdateableByteVectorScorer {
     values: Arc<dyn ByteVectorValues>,
     target_vectors: Arc<dyn ByteVectorValues>,
     query: Vec<u8>,
+    /// The vector `score` compares with, as for the float scorer.
+    target: Vec<u8>,
     similarity_function: VectorSimilarityFunction,
 }
 
@@ -1223,8 +1236,11 @@ impl crate::util::hnsw::HasKnnVectorValues for UpdateableByteVectorScorer {
 
 impl RandomVectorScorer for UpdateableByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
-        let v = self.target_vectors.vector_value(node)?;
-        self.similarity_function.compare_bytes(&self.query, &v)
+        // PERF: read into the scorer's buffer, not a new vector per node.
+        self.target_vectors
+            .vector_value_into(node, &mut self.target)?;
+        self.similarity_function
+            .compare_bytes(&self.query, &self.target)
     }
 
     fn max_ord(&self) -> i32 {
@@ -1244,10 +1260,10 @@ impl RandomVectorScorer for UpdateableByteVectorScorer {
 }
 
 impl UpdateableRandomVectorScorer for UpdateableByteVectorScorer {
+    /// `System.arraycopy(targetVectors.vectorValue(node), 0, vector, 0,
+    /// vector.length)` (`DefaultFlatVectorScorer.java:109-111`).
     fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
-        let v = self.target_vectors.vector_value(node)?;
-        self.query.copy_from_slice(&v);
-        Ok(())
+        self.target_vectors.vector_value_into(node, &mut self.query)
     }
 }
 
@@ -1608,6 +1624,7 @@ mod tests {
             values: Arc::clone(&floats),
             target_vectors: Arc::clone(&float_copy),
             query: vec![0.0; 2],
+            target: vec![0.0; 2],
             similarity_function: sim,
         };
         assert_eq!(addr(s.values().unwrap()), addr(&*floats));
@@ -1616,6 +1633,7 @@ mod tests {
             values: Arc::clone(&bytes),
             target_vectors: Arc::clone(&byte_copy),
             query: vec![0; 2],
+            target: vec![0; 2],
             similarity_function: sim,
         };
         assert_eq!(addr(s.values().unwrap()), addr(&*bytes));

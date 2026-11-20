@@ -146,11 +146,11 @@ fn test_sorted_doc_values() -> Result<()> {
     let leaf = only_leaf(&r)?;
     let mut dv = nn(leaf.get_sorted_doc_values("sorted")?);
     assert_equals(&0, &dv.next_doc()?);
-    assert_equals(&nbr("x"), &dv.lookup_ord(dv.ord_value()?)?);
+    assert_equals(&nbr("x"), dv.lookup_ord(dv.ord_value()?)?);
     assert_equals(&1, &dv.next_doc()?);
-    assert_equals(&nbr("y"), &dv.lookup_ord(dv.ord_value()?)?);
+    assert_equals(&nbr("y"), dv.lookup_ord(dv.ord_value()?)?);
     assert_equals(&2, &dv.next_doc()?);
-    assert_equals(&nbr("x"), &dv.lookup_ord(dv.ord_value()?)?);
+    assert_equals(&nbr("x"), dv.lookup_ord(dv.ord_value()?)?);
     // "x" and "y" should share ord space
     assert_equals(&2, &dv.get_value_count()?);
     c.close(Some(r))
@@ -177,13 +177,13 @@ fn test_sorted_set_doc_values() -> Result<()> {
     assert_equals(&0, &dv.next_doc()?);
     assert_equals(&2, &dv.doc_value_count()?);
     let o = dv.next_ord()?;
-    assert_equals(&nbr("a"), &dv.lookup_ord(o)?);
+    assert_equals(&nbr("a"), dv.lookup_ord(o)?);
     let o = dv.next_ord()?;
-    assert_equals(&nbr("b"), &dv.lookup_ord(o)?);
+    assert_equals(&nbr("b"), dv.lookup_ord(o)?);
     assert_equals(&1, &dv.next_doc()?);
     assert_equals(&1, &dv.doc_value_count()?);
     let o = dv.next_ord()?;
-    assert_equals(&nbr("a"), &dv.lookup_ord(o)?);
+    assert_equals(&nbr("a"), dv.lookup_ord(o)?);
     assert_equals(&NO_MORE_DOCS, &dv.next_doc()?);
     c.close(Some(r))
 }
@@ -219,7 +219,7 @@ fn test_stored_binary_column() -> Result<()> {
     let mut dv = nn(leaf.get_sorted_doc_values("val")?);
     for i in 0..3 {
         assert_equals(&(i as i32), &dv.next_doc()?);
-        assert_equals(&values[i], &dv.lookup_ord(dv.ord_value()?)?);
+        assert_equals(&values[i], dv.lookup_ord(dv.ord_value()?)?);
     }
     c.close(Some(r))
 }
@@ -268,7 +268,7 @@ fn test_inverted_with_doc_values() -> Result<()> {
     let mut dv = nn(leaf.get_sorted_doc_values("field")?);
     for i in 0..3 {
         assert_equals(&(i as i32), &dv.next_doc()?);
-        assert_equals(&values[i], &dv.lookup_ord(dv.ord_value()?)?);
+        assert_equals(&values[i], dv.lookup_ord(dv.ord_value()?)?);
     }
     c.close(Some(r))
 }
@@ -333,7 +333,7 @@ fn test_inverted_with_stored_and_doc_values() -> Result<()> {
     let mut dv = nn(leaf.get_sorted_doc_values("field")?);
     for i in 0..3 {
         assert_equals(&(i as i32), &dv.next_doc()?);
-        assert_equals(&values[i], &dv.lookup_ord(dv.ord_value()?)?);
+        assert_equals(&values[i], dv.lookup_ord(dv.ord_value()?)?);
     }
     c.close(Some(r))
 }
@@ -654,7 +654,7 @@ fn test_binary_column_sorted_dv_and_points() -> Result<()> {
     let mut dv = nn(leaf.get_sorted_doc_values("field")?);
     for i in 0..3 {
         assert_equals(&(i as i32), &dv.next_doc()?);
-        assert_equals(&values[i], &dv.lookup_ord(dv.ord_value()?)?);
+        assert_equals(&values[i], dv.lookup_ord(dv.ord_value()?)?);
     }
     let s = searcher(&r)?;
     assert_equals(&1, &s.count(IntPoint::new_exact_query("field", 10)?)?);
@@ -699,7 +699,7 @@ fn test_multi_valued_binary_across_docs() -> Result<()> {
         assert_equals(&(expected_per_doc[d].len() as i32), &dv.doc_value_count()?);
         for i in 0..expected_per_doc[d].len() {
             let ord = dv.next_ord()?;
-            assert_equals(&nbr(expected_per_doc[d][i]), &dv.lookup_ord(ord)?);
+            assert_equals(&nbr(expected_per_doc[d][i]), dv.lookup_ord(ord)?);
         }
     }
     assert_equals(&NO_MORE_DOCS, &dv.next_doc()?);
@@ -790,7 +790,7 @@ fn test_dense_binary_points_with_sorted_doc_values() -> Result<()> {
     assert_equals(&(n as i32), &dv.get_value_count()?);
     for i in 0..n {
         assert_equals(&(i as i32), &dv.next_doc()?);
-        assert_equals(&encoded[i], &dv.lookup_ord(dv.ord_value()?)?);
+        assert_equals(&encoded[i], dv.lookup_ord(dv.ord_value()?)?);
     }
     assert_equals(&NO_MORE_DOCS, &dv.next_doc()?);
     // Verify points: exact query for each encoded value returns exactly 1 doc.

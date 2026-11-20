@@ -417,6 +417,28 @@ struct SetEnumFilter {
     seek_term: Option<BytesRef>,
 }
 
+impl SetEnumFilter {
+    /// `seekTerm = iterator.next()`: Java's `seekTerm` is the iterator's
+    /// reused `bytes` (`TermInSetQuery.java:251-289`), so the term is
+    /// copied into this filter's own reused buffer rather than into a new
+    /// one per term.
+    fn advance_seek_term(&mut self) -> Result<()> {
+        match self.iterator.next_bytes()? {
+            Some(bytes) => {
+                // PERF: refill the buffer in place; a new term allocates only
+                // when it is longer than every term before it.
+                let seek_term = self.seek_term.get_or_insert_with(BytesRef::default);
+                seek_term.bytes.clear();
+                seek_term.bytes.extend_from_slice(bytes);
+                seek_term.offset = 0;
+                seek_term.length = bytes.len();
+            }
+            None => self.seek_term = None,
+        }
+        Ok(())
+    }
+}
+
 impl FilteredTermsEnumFilter for SetEnumFilter {
     fn java_class_name(&self) -> &'static str {
         "org.apache.lucene.search.TermInSetQuery$SetEnum"
@@ -431,7 +453,7 @@ impl FilteredTermsEnumFilter for SetEnumFilter {
             if cmp != std::cmp::Ordering::Less {
                 break;
             }
-            self.seek_term = self.iterator.next()?;
+            self.advance_seek_term()?;
         }
         if self.seek_term.is_none() {
             Ok(AcceptStatus::End)
@@ -452,7 +474,7 @@ impl FilteredTermsEnumFilter for SetEnumFilter {
             if seek_term.cmp(current_term) == std::cmp::Ordering::Greater {
                 break;
             }
-            self.seek_term = self.iterator.next()?;
+            self.advance_seek_term()?;
         }
         Ok(self.seek_term.clone())
     }

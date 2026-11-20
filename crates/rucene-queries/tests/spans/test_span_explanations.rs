@@ -171,7 +171,7 @@ fn boost(query: Arc<dyn Query>, b: f32) -> Result<Arc<dyn Query>> {
 }
 
 fn tq(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::from_text(field, text)))
+    Arc::new(TermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 // ---------------------------------------------------------------------------

@@ -290,7 +290,7 @@ fn list_files(dir: &Arc<dyn Directory>) -> Result<String> {
             let codec = info.info.codec().unwrap_or_else(|| npe("getCodec()"));
             let cfs = codec
                 .compound_format()
-                .get_compound_reader(&**dir, &info.info)?;
+                .get_compound_reader(dir, &info.info)?;
             let outcome = (|| -> Result<()> {
                 for file in cfs.list_all()? {
                     sb.push_str(&format!(
@@ -414,7 +414,7 @@ fn test_merge_per_field() -> Result<()> {
                         ));
                     }
                     doc.add(LongPoint::new(
-                        &format!("p{f}"),
+                        format!("p{f}"),
                         &[random().next_int_bound(10000) as i64],
                     )?);
                 }

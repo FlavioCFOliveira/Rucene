@@ -130,9 +130,9 @@ impl LeafCollector for SetCollector<'_> {
         Ok(())
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<rucene::search::CompetitiveIterator>> {
         // Java hands out the same iterator each time; it is taken once here.
-        Ok(self.competitive_it.take())
+        Ok(self.competitive_it.take().map(Into::into))
     }
 }
 

@@ -134,7 +134,7 @@ fn bits(score: f32) -> String {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+    Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
 }
 
 fn term_query(field: &str, text: &str) -> Arc<dyn Query> {

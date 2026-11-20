@@ -6,6 +6,8 @@ on a hand-built source tree modelled on the crate file that showed the shape.
 import json
 from pathlib import Path
 
+import pytest
+
 import ask
 import divergences_kg as dv
 import lucene_tests_kg as lt
@@ -341,6 +343,50 @@ def test_framework_classes_are_marked_not_applicable(monkeypatch):
     assert "SET c.ruceneCoverage = 'not-applicable'" in seen[0]
     assert "c.testKind = 'framework'" in seen[0]
     assert "e.evidence = 'ported-type-file-has-tests' DELETE e" in seen[1]
+
+
+def test_each_resource_is_contained_by_its_module(monkeypatch):
+    # Task #578: a `TestResource` is never left isolated.
+    seen, writes = [], []
+    rows = [{"p": "lucene/test-framework/src/resources/a.gz", "m": "lucene/test-framework",
+             "commit": "c" * 40, "date": "2026-11-19"}]
+    monkeypatch.setattr(lt, "rmp", lambda _m, _r, q, *a: seen.append(q))
+    monkeypatch.setattr(lt, "run_unwind", lambda _m, _r, rows, body, _b, label:
+                        writes.append((label, rows, body)))
+    monkeypatch.setattr(lt, "read", lambda _r, _q: [])
+    lt.link_resources("r", rows, 200)
+    assert seen == ["MATCH (m:Module)-[e:CONTAINS]->(r:TestResource) "
+                    "WHERE m.name <> r.module DELETE e"]
+    (_, linked, merge), (_, stamped, stamp) = writes
+    assert linked == [{"m": "lucene/test-framework", "p": rows[0]["p"]}]
+    assert merge == ("MATCH (m:Module {name: row.m}) MATCH (r:TestResource {path: row.p}) "
+                     "MERGE (m)-[:CONTAINS]->(r)")
+    assert stamp.startswith("MATCH (m:Module {name: row.m})-[e:CONTAINS]->"
+                            "(r:TestResource {path: row.p}) SET e.gitCommit = row.commit")
+    assert stamped[0]["commit"] == "c" * 40
+    monkeypatch.setattr(lt, "read", lambda _r, _q: [{"p": rows[0]["p"], "m": rows[0]["m"]}])
+    with pytest.raises(SystemExit, match="TestResource without CONTAINS"):
+        lt.link_resources("r", rows, 200)
+
+
+def test_a_scope_decision_concerns_its_modules_or_the_run_stops(monkeypatch):
+    # Task #578: a scope `Decision` is never left isolated.
+    seen, writes = [], []
+    monkeypatch.setattr(pm, "rmp", lambda _m, _r, q, *a, **k: seen.append(q))
+    monkeypatch.setattr(pm, "unwind", lambda _r, _m, rows, body, label, *a, **k:
+                        writes.append((label, rows, body)))
+    monkeypatch.setattr(pm, "read", lambda _r, _q: [["lucene/core"]])
+    pm.link_decision("r", "D", ("lucene/core",), "c" * 40, "2026-11-19")
+    assert seen[0] == ("MATCH (d:Decision {name: 'D'}) MATCH (d)-[e:CONCERNS]->(m:Module) "
+                       "WHERE NOT m.name IN ['lucene/core'] DELETE e")
+    assert writes == [("Decision CONCERNS Module", [{"m": "lucene/core"}],
+                       "MATCH (d:Decision {name: 'D'}) MATCH (m:Module {name: row.m}) "
+                       "MERGE (d)-[:CONCERNS]->(m)")]
+    assert "MATCH (d)-[e:CONCERNS]->(m:Module) WHERE m.name IN ['lucene/core'] " \
+           "SET e.gitCommit = 'cccc" in seen[1]
+    monkeypatch.setattr(pm, "read", lambda _r, _q: [])
+    with pytest.raises(SystemExit, match="no CONCERNS edge to Module lucene/core"):
+        pm.link_decision("r", "D", ("lucene/core",), "c" * 40, "2026-11-19")
 
 
 def test_the_framework_trees_are_the_port_modules_tests_and_resources():

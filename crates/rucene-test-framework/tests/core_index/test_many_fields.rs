@@ -168,7 +168,7 @@ fn test_rotating_field_names() -> Result<()> {
             let mut doc = Document::new();
             for _ in 0..10 {
                 doc.add(Field::new(
-                    &format!("field{upto}"),
+                    format!("field{upto}"),
                     "content".to_string(),
                     ft.clone(),
                 )?);

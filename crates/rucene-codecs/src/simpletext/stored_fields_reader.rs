@@ -131,7 +131,7 @@ impl SimpleTextStoredFieldsReader {
         &self,
         state: &mut ReaderState,
         type_: StoredType,
-        field_info: &rucene::index::FieldInfo,
+        field_info: &Arc<rucene::index::FieldInfo>,
         visitor: &mut dyn StoredFieldVisitor,
     ) -> Result<()> {
         read_line(state.input.as_mut(), &mut state.scratch)?;
@@ -224,7 +224,7 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
             // **Divergence.** Java passes the `null` `fieldInfos.fieldInfo(n)`
             // returns for a field number the segment does not know on to the
             // visitor, whose first use of it throws the
-            // `NullPointerException`; a Rust visitor takes a `&FieldInfo`,
+            // `NullPointerException`; a Rust visitor takes a `&Arc<FieldInfo>`,
             // which cannot be null, so the port throws it here. Java's message
             // depends on the visitor; this is the one the visitor of
             // `StoredFields.document(int)` raises for a string field
@@ -232,7 +232,7 @@ impl StoredFieldsReader for SimpleTextStoredFieldsReader {
             // `DocumentStoredFieldVisitor.java:66-68`).
             let field_info = self
                 .field_infos
-                .field_info_by_number(field_number)
+                .shared_field_info_by_number(field_number)
                 .ok_or_else(|| {
                     LuceneError::unchecked(
                         "java.lang.NullPointerException",

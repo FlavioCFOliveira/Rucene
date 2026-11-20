@@ -1377,7 +1377,7 @@ impl Fields for OneDocFields {
         Box::new(self.indexed_fields.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.reader.terms(field)
     }
 
@@ -1684,7 +1684,7 @@ struct ReadBytesIndexInputWrapper {
 impl ReadBytesIndexInputWrapper {
     fn new(r#in: Box<dyn IndexInput>, read_byte: ReadByte) -> Self {
         ReadBytesIndexInputWrapper {
-            resource_description: r#in.to_java_string(),
+            resource_description: r#in.to_java_string().into_owned(),
             r#in,
             read_byte,
         }
@@ -1697,8 +1697,8 @@ impl DataInput for ReadBytesIndexInputWrapper {
         self.r#in.read_byte()
     }
 
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {

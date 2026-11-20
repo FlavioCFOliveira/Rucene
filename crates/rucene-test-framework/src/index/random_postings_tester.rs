@@ -513,7 +513,7 @@ impl Fields for SeedFields {
         Box::new(self.fields.keys().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         match self.fields.get(field) {
             None => Ok(None),
             Some(terms) => {
@@ -522,7 +522,7 @@ impl Fields for SeedFields {
                         "no FieldInfo for field {field}"
                     ))
                 })?;
-                Ok(Some(Box::new(SeedTerms {
+                Ok(Some(Arc::new(SeedTerms {
                     terms: Arc::clone(terms),
                     index_options: field_info.get_index_options(),
                     has_payloads: field_info.has_payloads(),
@@ -657,7 +657,7 @@ impl TermsEnum for SeedTermsEnum {
         }
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         let after = self
             .iterator_after
             .clone()
@@ -670,8 +670,8 @@ impl TermsEnum for SeedTermsEnum {
         match next {
             Some((key, value)) => {
                 self.iterator_after = Some(Bound::Excluded(key.clone()));
-                self.current = Some((key.clone(), value));
-                Ok(Some(key))
+                self.current = Some((key, value));
+                Ok(Some(&self.current()?.0))
             }
             None => Ok(None),
         }
@@ -681,8 +681,8 @@ impl TermsEnum for SeedTermsEnum {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.current()?.0.clone()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.current()?.0))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -1351,7 +1351,7 @@ impl RandomPostingsTester {
 
         // Make sure TermsEnum really is positioned on the
         // expected term:
-        assert_equals_bytes(None, term, terms_enum.term()?.as_ref());
+        assert_equals_bytes(None, term, terms_enum.term()?);
 
         let current_field_infos = self
             .current_field_infos
@@ -2088,9 +2088,9 @@ impl RandomPostingsTester {
             }
             if doc > max {
                 impacts_enum.advance_shallow(doc)?;
-                let impacts = impacts_enum.get_impacts()?;
-                access.check_impacts(&*impacts, doc)?;
-                impacts_copy = copy_of(&impacts.get_impacts(0));
+                let mut impacts = impacts_enum.get_impacts()?;
+                access.check_impacts(&mut *impacts, doc)?;
+                impacts_copy = copy_of(impacts.get_impacts(0));
             }
             let freq = impacts_enum.freq()?;
             let norm = doc_to_norm_fn(doc);
@@ -2128,12 +2128,12 @@ impl RandomPostingsTester {
                 max = target.wrapping_add(delta);
 
                 impacts_enum.advance_shallow(target)?;
-                let impacts = impacts_enum.get_impacts()?;
-                access.check_impacts(&*impacts, target)?;
+                let mut impacts = impacts_enum.get_impacts()?;
+                access.check_impacts(&mut *impacts, target)?;
                 impacts_copy = vec![Impact::new(i32::MAX, 1)];
                 for level in 0..impacts.num_levels() {
                     if impacts.doc_id_up_to(level) >= max {
-                        impacts_copy = copy_of(&impacts.get_impacts(level));
+                        impacts_copy = copy_of(impacts.get_impacts(level));
                         break;
                     }
                 }
@@ -2188,12 +2188,12 @@ impl RandomPostingsTester {
             if doc > max {
                 let delta = (1 + random.next_int_bound(512)).min(NO_MORE_DOCS.wrapping_sub(doc));
                 max = doc.wrapping_add(delta);
-                let impacts = impacts_enum.get_impacts()?;
-                access.check_impacts(&*impacts, doc)?;
+                let mut impacts = impacts_enum.get_impacts()?;
+                access.check_impacts(&mut *impacts, doc)?;
                 impacts_copy = vec![Impact::new(i32::MAX, 1)];
                 for level in 0..impacts.num_levels() {
                     if impacts.doc_id_up_to(level) >= max {
-                        impacts_copy = copy_of(&impacts.get_impacts(level));
+                        impacts_copy = copy_of(impacts.get_impacts(level));
                         break;
                     }
                 }
@@ -2382,7 +2382,7 @@ impl RandomPostingsTester {
             }
 
             // check we really seeked to the right place
-            assert_equals_bytes(None, &field_and_term.term, terms_enum.term()?.as_ref());
+            assert_equals_bytes(None, &field_and_term.term, terms_enum.term()?);
 
             let term_ord = if supports_ords {
                 match terms_enum.ord() {
@@ -2505,10 +2505,10 @@ impl RandomPostingsTester {
                 let mut intersected = terms.intersect(&ca, start_term.as_ref())?;
 
                 let mut intersected_terms = std::collections::HashSet::new();
-                while let Some(term) = intersected.next()? {
+                while let Some(term) = intersected.next()?.cloned() {
                     if let Some(start_term) = &start_term {
                         // NOTE: not <=
-                        Assert::assert_true(*start_term < term);
+                        Assert::assert_true(*start_term < term.clone());
                     }
                     intersected_terms.insert(BytesRef::deep_copy_of(&term));
                     self.verify_enum(
@@ -2696,7 +2696,7 @@ mod tests {
             Box::new(Restarting(0))
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 

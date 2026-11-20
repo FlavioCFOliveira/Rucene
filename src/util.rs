@@ -389,6 +389,21 @@ impl BytesRef {
         }
     }
 
+    /// Makes this value hold a copy of `other`'s active bytes, with offset
+    /// zero and `bytes` exactly that long, re-using this value's buffer.
+    ///
+    /// For a caller that keeps a term a [`TermsEnum`](crate::index::TermsEnum)
+    /// lent past the enum's next move, as a Java caller copies it into its own
+    /// `BytesRefBuilder` (`BytesRefBuilder.copyBytes(BytesRef)`,
+    /// `BytesRefBuilder.java:113-115`): once the buffer is large enough, no
+    /// allocation.
+    pub(crate) fn copy_from(&mut self, other: &BytesRef) {
+        self.bytes.clear();
+        self.bytes.extend_from_slice(other.slice());
+        self.offset = 0;
+        self.length = self.bytes.len();
+    }
+
     /// Returns the active slice of bytes.
     pub fn slice(&self) -> &[u8] {
         &self.bytes[self.offset..self.offset + self.length]
@@ -657,7 +672,7 @@ impl BytesRefBuilder {
     /// is shorter than `capacity`.
     pub fn grow(&mut self, capacity: usize) {
         if self.inner.bytes.len() < capacity {
-            self.inner.bytes = ArrayUtil::grow(&self.inner.bytes, capacity);
+            self.inner.bytes = ArrayUtil::grow(std::mem::take(&mut self.inner.bytes), capacity);
         }
     }
 
@@ -758,6 +773,20 @@ impl BytesRefBuilder {
         let written = UnicodeUtil::utf16_to_utf8(text, offset, length, &mut self.inner.bytes);
         self.inner.offset = 0;
         self.inner.length = written;
+    }
+
+    /// Returns the builder's own `BytesRef`, without copying it.
+    ///
+    /// Equivalent to `BytesRefBuilder.get()` (`BytesRefBuilder.java:155-158`),
+    /// which returns the builder's `ref`; the borrow ends before the builder
+    /// is next modified. A [`TermsEnum`](crate::index::TermsEnum) whose term
+    /// lives in a builder lends it through this.
+    pub fn get_ref(&self) -> &BytesRef {
+        debug_assert!(
+            self.inner.offset == 0,
+            "Modifying the offset of the returned ref is illegal"
+        );
+        &self.inner
     }
 
     /// Returns a `BytesRef` pointing to the builder's internal content.
@@ -1840,31 +1869,47 @@ impl ArrayUtil {
         new_size
     }
 
-    /// Returns a larger array, generally over-allocating exponentially.
-    pub fn grow(array: &[u8], min_size: usize) -> Vec<u8> {
+    /// Grows a byte array: returns `array` itself when it already holds
+    /// `min_size` elements, else a copy over-allocated exponentially.
+    ///
+    /// Equivalent to `ArrayUtil.grow(byte[], int)` (`ArrayUtil.java:446-451`),
+    /// which returns the same array when it is long enough. Java returns the
+    /// reference it was given; this takes the array by value so it can hand
+    /// the same allocation back.
+    pub fn grow(array: Vec<u8>, min_size: usize) -> Vec<u8> {
         if array.len() >= min_size {
-            return array.to_vec();
+            return array;
         }
         let new_len = Self::oversize(min_size, 1);
-        Self::grow_exact(array, new_len)
+        Self::grow_exact(&array, new_len)
     }
 
-    /// Grows an `i32` array.
-    pub fn grow_int(array: &[i32], min_size: usize) -> Vec<i32> {
+    /// Grows an `i32` array: returns `array` itself when it already holds
+    /// `min_size` elements, else a copy over-allocated exponentially.
+    ///
+    /// Equivalent to `ArrayUtil.grow(int[], int)`, which returns the same
+    /// array when it is long enough (`ArrayUtil.java:329-347, 377-379`): the
+    /// call costs nothing then, so callers may make it on every append.
+    pub fn grow_int(array: Vec<i32>, min_size: usize) -> Vec<i32> {
         if array.len() >= min_size {
-            return array.to_vec();
+            return array;
         }
         let new_len = Self::oversize(min_size, 4);
-        Self::grow_exact_int(array, new_len)
+        Self::grow_exact_int(&array, new_len)
     }
 
-    /// Grows an `i64` array.
-    pub fn grow_long(array: &[i64], min_size: usize) -> Vec<i64> {
+    /// Grows an `i64` array: returns `array` itself when it already holds
+    /// `min_size` elements, else a copy over-allocated exponentially.
+    ///
+    /// Equivalent to `ArrayUtil.grow(long[], int)` (`ArrayUtil.java:409-414`),
+    /// which returns the same array when it is long enough; taken by value, as
+    /// [`grow`](Self::grow).
+    pub fn grow_long(array: Vec<i64>, min_size: usize) -> Vec<i64> {
         if array.len() >= min_size {
-            return array.to_vec();
+            return array;
         }
         let new_len = Self::oversize(min_size, 8);
-        Self::grow_exact_long(array, new_len)
+        Self::grow_exact_long(&array, new_len)
     }
 
     /// Returns an array of at least `min_size` bytes, discarding the contents
@@ -1925,14 +1970,17 @@ impl ArrayUtil {
     /// Grows `array` to hold at least `min_length` elements, without exceeding
     /// `max_length`.
     ///
-    /// Equivalent to `ArrayUtil.growInRange(int[], int, int)`.
+    /// Equivalent to `ArrayUtil.growInRange(int[], int, int)`
+    /// (`ArrayUtil.java:329-347`), which returns the same array when it
+    /// already holds `min_length` elements; taken by value, as
+    /// [`grow`](Self::grow).
     ///
     /// # Errors
     ///
     /// Returns an error when `min_length > max_length`, which is the
     /// `IllegalArgumentException` Java throws.
     pub fn grow_in_range_int(
-        array: &[i32],
+        array: Vec<i32>,
         min_length: usize,
         max_length: usize,
     ) -> Result<Vec<i32>, LuceneError> {
@@ -1942,13 +1990,16 @@ impl ArrayUtil {
     /// Grows `array` to hold at least `min_length` elements, without exceeding
     /// `max_length`.
     ///
-    /// Equivalent to `ArrayUtil.growInRange(float[], int, int)`.
+    /// Equivalent to `ArrayUtil.growInRange(float[], int, int)`
+    /// (`ArrayUtil.java:353-371`), which returns the same array when it
+    /// already holds `min_length` elements; taken by value, as
+    /// [`grow`](Self::grow).
     ///
     /// # Errors
     ///
     /// Returns an error when `min_length > max_length`.
     pub fn grow_in_range_float(
-        array: &[f32],
+        array: Vec<f32>,
         min_length: usize,
         max_length: usize,
     ) -> Result<Vec<f32>, LuceneError> {
@@ -1961,7 +2012,7 @@ impl ArrayUtil {
     /// primitives; the only thing that varies is the element width handed to
     /// [`oversize`](Self::oversize), so one generic function stands for both.
     fn grow_in_range_generic<T: Copy + Default>(
-        array: &[T],
+        array: Vec<T>,
         min_length: usize,
         max_length: usize,
         bytes_per_element: usize,
@@ -1980,8 +2031,9 @@ impl ArrayUtil {
             )));
         }
 
+        // `if (array.length >= minLength) return array;`
         if array.len() >= min_length {
-            return Ok(array.to_vec());
+            return Ok(array);
         }
 
         let potential_length = Self::oversize(min_length, bytes_per_element);
@@ -4654,8 +4706,16 @@ impl FixedBitSet {
     }
 
     /// Writes word `i`, Java's `bits[i] = value`.
+    ///
+    /// Crate-visible for the callers that write the array `getBits()` returns,
+    /// as `docIn.readLongs(docBitSet.getBits(), 0, numLongs)` does
+    /// (`Lucene104PostingsReader.java:611`).
+    ///
+    /// # Panics
+    ///
+    /// If `i` is past the word array (Java's `ArrayIndexOutOfBoundsException`).
     #[inline]
-    fn set_word(&mut self, i: usize, value: u64) {
+    pub(crate) fn set_word(&mut self, i: usize, value: u64) {
         self.bits[i].store(value, AtomicOrdering::Relaxed);
     }
 
@@ -6192,6 +6252,44 @@ mod tests {
         assert_eq!(builder.length(), 0);
     }
 
+    /// `BytesRefBuilder.get()` returns the builder's own `ref`
+    /// (`BytesRefBuilder.java:155-158`): `get_ref` lends it, the same value
+    /// `get` copies, and the same object on every call.
+    #[test]
+    fn bytes_ref_builder_get_ref_lends_the_builders_own_ref() {
+        let mut builder = BytesRefBuilder::new();
+        builder.copy_bytes(b"term", 0, 4);
+        let lent: *const BytesRef = builder.get_ref();
+        assert_eq!(*builder.get_ref(), builder.get());
+        assert_eq!(builder.get_ref().slice(), b"term");
+        builder.append(b's');
+        assert!(std::ptr::eq(builder.get_ref(), lent));
+        assert_eq!(builder.get_ref().slice(), b"terms");
+    }
+
+    /// `copy_from` makes an exact copy of the active bytes (offset zero,
+    /// `bytes` exactly that long) and re-uses its buffer: a shorter term
+    /// after a longer one keeps the capacity, so no allocation.
+    #[test]
+    fn bytes_ref_copy_from_copies_the_active_bytes_into_its_own_buffer() {
+        let source = BytesRef {
+            bytes: b"xxlongtermyy".to_vec(),
+            offset: 2,
+            length: 8,
+        };
+        let mut copy = BytesRef::default();
+        copy.copy_from(&source);
+        assert_eq!(copy.slice(), b"longterm");
+        assert_eq!((copy.offset, copy.length, copy.bytes.len()), (0, 8, 8));
+        let capacity = copy.bytes.capacity();
+        let buffer = copy.bytes.as_ptr();
+        copy.copy_from(&BytesRef::new(b"short".to_vec()));
+        assert_eq!(copy.slice(), b"short");
+        assert_eq!((copy.offset, copy.length, copy.bytes.len()), (0, 5, 5));
+        assert_eq!(copy.bytes.capacity(), capacity);
+        assert_eq!(copy.bytes.as_ptr(), buffer);
+    }
+
     #[test]
     fn numeric_utils_float_double_long_round_trip() {
         let floats = [
@@ -6540,7 +6638,7 @@ mod tests {
     #[test]
     fn array_util_grow_and_copy() {
         let small = vec![1u8, 2, 3];
-        let grown = ArrayUtil::grow(&small, 10);
+        let grown = ArrayUtil::grow(small.clone(), 10);
         assert!(grown.len() >= 10);
         assert_eq!(&grown[..3], &small[..]);
 
@@ -6571,6 +6669,65 @@ mod tests {
         let same = ArrayUtil::grow_no_copy_generic(ints, 8);
         assert_eq!(same.as_ptr(), address, "the generic overloads keep it too");
         assert_eq!(same, vec![5i32; 8]);
+    }
+
+    /// `ArrayUtil.grow(int[], int)` (`ArrayUtil.java:329-347, 377-379`)
+    /// returns the very array it was given when it already holds `minSize`
+    /// elements, so a caller may grow on every append in O(1) (rmp #576:
+    /// the port copied the whole array on each call, and
+    /// `TestIntArrayDocIdSet.copyOf` went quadratic); otherwise a copy of
+    /// `oversize(minSize, 4)` elements.
+    #[test]
+    fn array_util_grow_int_returns_the_same_array_when_long_enough() {
+        let array = vec![3i32, 1, 4, 1, 5];
+        let address = array.as_ptr();
+        let same = ArrayUtil::grow_int(array, 5);
+        assert_eq!(same.as_ptr(), address, "no copy at the exact size");
+        let same = ArrayUtil::grow_int(same, 2);
+        assert_eq!(same.as_ptr(), address, "no copy below the size");
+        assert_eq!(same, [3, 1, 4, 1, 5]);
+
+        let grown = ArrayUtil::grow_int(same, 6);
+        assert_eq!(grown.len(), ArrayUtil::oversize(6, 4));
+        assert_eq!(&grown[..5], [3, 1, 4, 1, 5], "the contents are copied");
+        assert!(grown[5..].iter().all(|&v| v == 0));
+    }
+
+    /// `ArrayUtil.grow(byte[], int)` (`ArrayUtil.java:446-451`), `grow(long[],
+    /// int)` (`:409-414`) and `growInRange(int[]|float[], int, int)`
+    /// (`:329-347`, `:353-371`) return the very array they were given when it
+    /// already holds the minimum length (rmp #575: the port copied it);
+    /// otherwise a copy of the Java length.
+    #[test]
+    fn array_util_grow_overloads_return_the_same_array_when_long_enough() {
+        let bytes = vec![7u8; 9];
+        let address = bytes.as_ptr();
+        let same = ArrayUtil::grow(bytes, 9);
+        assert_eq!(same.as_ptr(), address, "grow(byte[])");
+        let grown = ArrayUtil::grow(same, 10);
+        assert_eq!(grown.len(), ArrayUtil::oversize(10, 1));
+        assert_eq!(grown[..9], [7u8; 9]);
+
+        let longs = vec![-1i64; 4];
+        let address = longs.as_ptr();
+        let same = ArrayUtil::grow_long(longs, 3);
+        assert_eq!(same.as_ptr(), address, "grow(long[])");
+        assert_eq!(
+            ArrayUtil::grow_long(same, 5).len(),
+            ArrayUtil::oversize(5, 8)
+        );
+
+        let ints = vec![1i32, 2, 3];
+        let address = ints.as_ptr();
+        let same = ArrayUtil::grow_in_range_int(ints, 3, 3).unwrap();
+        assert_eq!(same.as_ptr(), address, "growInRange(int[])");
+        assert_eq!(ArrayUtil::grow_in_range_int(same, 4, 5).unwrap().len(), 5);
+
+        let floats = vec![1.0f32, 2.0];
+        let address = floats.as_ptr();
+        let same = ArrayUtil::grow_in_range_float(floats, 1, 1).unwrap();
+        assert_eq!(same.as_ptr(), address, "growInRange(float[])");
+        assert_eq!(same, [1.0, 2.0]);
     }
 
     #[test]

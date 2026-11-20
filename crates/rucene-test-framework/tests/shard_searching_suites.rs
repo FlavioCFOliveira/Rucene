@@ -310,7 +310,7 @@ fn test_simple(inst: &ShardSearchingInstance) -> Result<()> {
                     let mut terms_enum = multi_terms.iterator()?;
                     let mut collected = Vec::new();
                     while let Some(term) = terms_enum.next()? {
-                        collected.push(BytesRef::deep_copy_of(&term));
+                        collected.push(BytesRef::deep_copy_of(term));
                     }
                     if *VERBOSE {
                         println!("TEST: init terms: {} terms", collected.len());

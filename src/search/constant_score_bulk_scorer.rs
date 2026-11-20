@@ -281,7 +281,7 @@ impl BulkScorer for ConstantScoreBulkScorer {
         let competitive_iterator = collector.competitive_iterator()?;
         match competitive_iterator {
             Some(mut competitive_iterator) => {
-                self.score_iterator(collector, accept_docs, &mut *competitive_iterator, min, max)?
+                self.score_iterator(collector, accept_docs, &mut competitive_iterator, min, max)?
             }
             None => self.score_iterator_into_bit_set(collector, accept_docs, min, max)?,
         }

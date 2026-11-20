@@ -60,7 +60,7 @@ impl SrndTermQuery {
     /// Equivalent to `getLuceneTerm(String)`.
     pub fn get_lucene_term(&self, field_name: &str) -> Term {
         Term::new(
-            field_name,
+            field_name.to_string(),
             BytesRef::from_char_sequence(self.get_term_text()),
         )
     }

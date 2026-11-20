@@ -278,14 +278,14 @@ impl Fields for FSTTermsReader {
         Box::new(self.field_names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.fields_cleared.load(Ordering::SeqCst) {
             return Ok(None);
         }
         Ok(self
             .fields
             .get(field)
-            .map(|t| Box::new(SharedTermsReader(Arc::clone(t))) as Box<dyn Terms>))
+            .map(|t| Arc::new(SharedTermsReader(Arc::clone(t))) as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {
@@ -623,12 +623,12 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self.base.attributes
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         // `null` when unpositioned, as Java's `term()` returns.
-        Ok(self.term.clone())
+        Ok(self.term.as_ref())
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.seek_pending {
             // previously positioned, but termOutputs not fetched
             self.seek_pending = false;
@@ -639,7 +639,7 @@ impl TermsEnum for SegmentTermsEnum {
         }
         let next = pair(self.fst_enum.next()?);
         self.update_enum(next);
-        Ok(self.term.clone())
+        Ok(self.term.as_ref())
     }
 
     fn seek_exact(&mut self, target: &BytesRef) -> Result<bool> {
@@ -751,8 +751,9 @@ impl Frame {
 /// always passes.
 struct IntersectTermsEnum {
     base: BaseState,
-    /// Current term, null when enum ends or unpositioned.
-    term: Option<Vec<u8>>,
+    /// Current term, null when enum ends or unpositioned; its `bytes` hold
+    /// exactly the term, which `term()` and `next()` lend.
+    term: Option<BytesRef>,
     /// True when current term's metadata is decoded.
     decoded: bool,
     /// True when there is pending term when calling next().
@@ -828,7 +829,7 @@ impl IntersectTermsEnum {
             Some(start_term) => {
                 e.do_seek_ceil(start_term)?;
                 let top = e.level as usize;
-                e.pending = e.term.as_deref() != Some(start_term.slice())
+                e.pending = e.term.as_ref().map(BytesRef::slice) != Some(start_term.slice())
                     && e.is_valid(top)
                     && e.is_accept(top);
             }
@@ -842,8 +843,8 @@ impl IntersectTermsEnum {
             .expect("INVARIANT: the constructor checked the byte runnable")
     }
 
-    fn term_ref(&self) -> Option<BytesRef> {
-        self.term.as_ref().map(|t| BytesRef::new(t.clone()))
+    fn term_ref(&self) -> Option<&BytesRef> {
+        self.term.as_ref()
     }
 
     /// Port of `decodeMetaData()`.
@@ -1082,17 +1083,21 @@ impl IntersectTermsEnum {
 
     fn grow(&mut self, label: i32) {
         match &mut self.term {
-            None => self.term = Some(Vec::new()),
-            Some(term) => term.push(label as u8),
+            None => self.term = Some(BytesRef::default()),
+            Some(term) => {
+                term.bytes.push(label as u8);
+                term.length = term.bytes.len();
+            }
         }
     }
 
     fn shrink(&mut self) {
         if let Some(term) = &mut self.term {
-            if term.is_empty() {
+            if term.bytes.is_empty() {
                 self.term = None;
             } else {
-                term.pop();
+                term.bytes.pop();
+                term.length = term.bytes.len();
             }
         }
     }
@@ -1103,7 +1108,7 @@ impl TermsEnum for IntersectTermsEnum {
         &mut self.base.attributes
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         // `null` when unpositioned, as Java's `term()` returns.
         Ok(self.term_ref())
     }
@@ -1114,12 +1119,12 @@ impl TermsEnum for IntersectTermsEnum {
         self.load_meta_data();
         Ok(match &self.term {
             None => SeekStatus::END,
-            Some(term) if term.as_slice() == target.slice() => SeekStatus::FOUND,
+            Some(term) if term.slice() == target.slice() => SeekStatus::FOUND,
             Some(_) => SeekStatus::NOT_FOUND,
         })
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.pending {
             self.pending = false;
             self.load_meta_data();

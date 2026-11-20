@@ -92,7 +92,7 @@ fn test_2b_ords() -> Result<()> {
             bytes[3] = (counter) as u8;
             counter += 1;
             let term = dv.lookup_ord(dv.ord_value()?)?;
-            assert_equals(&BytesRef::new(bytes.to_vec()), &term);
+            assert_equals(&BytesRef::new(bytes.to_vec()), term);
         }
     }
 

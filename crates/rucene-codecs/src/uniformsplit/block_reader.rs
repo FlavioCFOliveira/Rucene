@@ -57,6 +57,14 @@ pub(crate) struct SharedTermsHooks {
     pub(crate) bounded: bool,
 }
 
+/// The empty term [`BlockReader::term_bytes`] lends for a forced term state
+/// without a term.
+static EMPTY_TERM: BytesRef = BytesRef {
+    bytes: Vec::new(),
+    offset: 0,
+    length: 0,
+};
+
 /// Seeks the block corresponding to a given term, read the block bytes, and
 /// scans the block terms.
 ///
@@ -134,12 +142,16 @@ pub struct BlockReader {
     /// don't access the terms block file (we don't seek) but directly the
     /// postings file because we already have the `TermState` with the file
     /// pointers to the postings file.
-    pub(crate) forced_term: Option<Vec<u8>>,
+    pub(crate) forced_term: Option<BytesRef>,
 
     /// The length of `forcedTerm`'s byte array: `copyBytes` grows it with
     /// `growNoCopy` to `ArrayUtil.oversize(length, 1)` when too short, and
     /// `ramBytesUsed()` measures it.
     pub(crate) forced_term_capacity: usize,
+
+    /// The term the last `next()` returned, which `TermsEnum::next` lends
+    /// (this reader's and its wrappers').
+    pub(crate) next_term: Option<BytesRef>,
 
     pub(crate) scratch_term_state: BlockTermState,
 
@@ -271,6 +283,7 @@ impl BlockReader {
             term_state_forced: false,
             forced_term: None,
             forced_term_capacity: 0,
+            next_term: None,
             scratch_term_state,
             shared_terms: None,
             overrides: None,
@@ -653,7 +666,7 @@ impl BlockReader {
         if self.forced_term_capacity < length {
             self.forced_term_capacity = rucene::util::ArrayUtil::oversize(length, 1);
         }
-        self.forced_term = Some(term.slice().to_vec());
+        self.forced_term = Some(BytesRef::new(term.slice().to_vec()));
         Ok(())
     }
 
@@ -664,7 +677,11 @@ impl BlockReader {
     /// `CorruptIndexException` for a missing block; I/O errors.
     pub fn next_impl(&mut self) -> Result<Option<BytesRef>> {
         if self.term_state_forced {
-            let forced = self.forced_term.clone().unwrap_or_default();
+            let forced = self
+                .forced_term
+                .as_ref()
+                .map(|term| term.slice().to_vec())
+                .unwrap_or_default();
             let fp = self.scratch_term_state.block_file_pointer;
             self.initialize_header(Some(&forced), fp)?;
             if self.block_header.is_none() {
@@ -735,7 +752,7 @@ impl BlockReader {
             }
             self.read_line_in_block()?;
         }
-        Ok(self.term_bytes())
+        Ok(self.term_bytes().cloned())
     }
 
     /// The cloned block input, which `initializeBlockReadLazily` set.
@@ -1031,14 +1048,19 @@ impl BlockReader {
     }
 
     /// Port of `BlockReader.term()`, Java's `null` being `None`.
-    pub fn term_bytes(&self) -> Option<BytesRef> {
-        self.current_term().map(|t| BytesRef::new(t.to_vec()))
+    pub fn term_bytes(&self) -> Option<&BytesRef> {
+        if self.term_state_forced {
+            return Some(self.forced_term.as_ref().unwrap_or(&EMPTY_TERM));
+        }
+        self.block_line
+            .as_ref()
+            .map(|_| &self.block_line_reader.current_term)
     }
 
     /// The bytes of `term_bytes`, without a copy.
     pub fn current_term(&self) -> Option<&[u8]> {
         if self.term_state_forced {
-            return Some(self.forced_term.as_deref().unwrap_or_default());
+            return Some(self.forced_term.as_ref().map_or(&[][..], BytesRef::slice));
         }
         self.block_line
             .as_ref()
@@ -1251,7 +1273,7 @@ impl TermsEnum for BlockReader {
         self.seek_exact_state(text, state)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         // `null` when unpositioned, as Java's `term()` returns.
         Ok(self.term_bytes())
     }
@@ -1284,8 +1306,9 @@ impl TermsEnum for BlockReader {
         self.term_state_impl()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        self.next_impl()
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.next_term = self.next_impl()?;
+        Ok(self.next_term.as_ref())
     }
 }
 

@@ -859,12 +859,12 @@ impl Position {
     /// Equivalent to the private `Position.grow()`.
     fn grow(&mut self) {
         let min = (1 + self.count) as usize;
-        self.costs = ArrayUtil::grow_int(&self.costs, min);
-        self.last_right_id = ArrayUtil::grow_int(&self.last_right_id, min);
-        self.back_pos = ArrayUtil::grow_int(&self.back_pos, min);
-        self.back_word_pos = ArrayUtil::grow_int(&self.back_word_pos, min);
-        self.back_index = ArrayUtil::grow_int(&self.back_index, min);
-        self.back_id = ArrayUtil::grow_int(&self.back_id, min);
+        self.costs = ArrayUtil::grow_int(std::mem::take(&mut self.costs), min);
+        self.last_right_id = ArrayUtil::grow_int(std::mem::take(&mut self.last_right_id), min);
+        self.back_pos = ArrayUtil::grow_int(std::mem::take(&mut self.back_pos), min);
+        self.back_word_pos = ArrayUtil::grow_int(std::mem::take(&mut self.back_word_pos), min);
+        self.back_index = ArrayUtil::grow_int(std::mem::take(&mut self.back_index), min);
+        self.back_id = ArrayUtil::grow_int(std::mem::take(&mut self.back_id), min);
 
         // NOTE: sneaky: grow separately because
         // ArrayUtil.grow will otherwise pick a different

@@ -508,7 +508,7 @@ impl BulkScorer for DenseConjunctionBulkScorer {
         let appended = competitive.is_some();
         if let Some(competitive) = competitive {
             self.iterators
-                .push(ConjunctionMember::from_iterator(competitive));
+                .push(ConjunctionMember::from_iterator(competitive.into_boxed()));
         }
 
         let result = self.score_inner(collector, accept_docs, min, max);
@@ -636,7 +636,7 @@ mod tests {
 
     fn term(field: &str) -> Arc<dyn Query> {
         Arc::new(TermQuery::new(Term::new(
-            field,
+            field.to_string(),
             BytesRef::new(b"x".to_vec()),
         )))
     }

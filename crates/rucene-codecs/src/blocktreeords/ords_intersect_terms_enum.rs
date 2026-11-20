@@ -56,9 +56,9 @@ pub struct OrdsIntersectTermsEnum {
 
     current_frame: usize,
 
-    /// `term`: Java's `BytesRef`, its array and its length.
-    term_bytes: Vec<u8>,
-    term_length: usize,
+    /// `term`: Java's `BytesRef`, its array and its length, which
+    /// `term()` and `next()` lend as Java returns `term`.
+    term: BytesRef,
 
     index: Arc<FST<FSTOrdsOutputs>>,
     fst_reader: Box<dyn BytesReader>,
@@ -112,8 +112,7 @@ impl OrdsIntersectTermsEnum {
             compiled,
             common_suffix_ref,
             current_frame: 0,
-            term_bytes: Vec::new(),
-            term_length: 0,
+            term: BytesRef::default(),
             index,
             fst_reader,
             fr,
@@ -242,7 +241,7 @@ impl OrdsIntersectTermsEnum {
         java_assert!(cur_suffix > 0);
         let mut output = self.cur().output_prefix.clone();
         while idx < f_prefix {
-            let target = i32::from(self.term_bytes[idx]);
+            let target = i32::from(self.term.bytes[idx]);
             // TODO: we could be more efficient for the next()
             // case by using current arc as starting point,
             // passed to findTargetArc
@@ -297,8 +296,9 @@ impl OrdsIntersectTermsEnum {
     /// len)`: a copy into an array of `ArrayUtil.oversize(len, 1)` bytes. A
     /// negative `len` (a corrupt block) never grows.
     fn grow_term(&mut self, len: i32) {
-        if len > 0 && self.term_bytes.len() < len as usize {
-            self.term_bytes
+        if len > 0 && self.term.bytes.len() < len as usize {
+            self.term
+                .bytes
                 .resize(ArrayUtil::oversize(len as usize, 1), 0);
         }
     }
@@ -309,13 +309,13 @@ impl OrdsIntersectTermsEnum {
         let Self {
             stack,
             current_frame,
-            term_bytes,
+            term,
             ..
         } = self;
         let cur = &stack[*current_frame];
         cur.suffixes.copy_to(
             cur.start_byte_pos,
-            term_bytes,
+            &mut term.bytes,
             cur.prefix as i32,
             cur.suffix,
         )
@@ -328,7 +328,7 @@ impl OrdsIntersectTermsEnum {
 
     /// The current term, `term.bytes[0 .. term.length]`.
     fn term_slice(&self) -> &[u8] {
-        &self.term_bytes[..self.term_length]
+        &self.term.bytes[..self.term.length]
     }
 
     /// NOTE: specialized to only doing the first-time seek, but we could
@@ -338,7 +338,7 @@ impl OrdsIntersectTermsEnum {
     /// Port of `seekToStartTerm(BytesRef)`.
     fn seek_to_start_term(&mut self, target: &[u8]) -> Result<()> {
         java_assert!(self.cur().ord == 0);
-        if self.term_length < target.len() {
+        if self.term.length < target.len() {
             self.grow_term(target.len() as i32);
         }
 
@@ -360,7 +360,7 @@ impl OrdsIntersectTermsEnum {
                 let len = self.cur_term_len();
                 self.grow_term(len);
                 self.copy_suffix_into_term()?;
-                self.term_length = len as usize;
+                self.term.length = len as usize;
 
                 if is_sub_block && target.starts_with(self.term_slice()) {
                     // Recurse
@@ -396,7 +396,7 @@ impl OrdsIntersectTermsEnum {
                         cur.suffixes.set_position(save_pos);
                         cur.term_state.term_block_ord = save_tbo;
                         self.copy_suffix_into_term()?;
-                        self.term_length = self.cur_term_len() as usize;
+                        self.term.length = self.cur_term_len() as usize;
                         // If the last entry was a block we don't
                         // need to bother recursing and pushing to
                         // the last term under it because the first
@@ -416,7 +416,7 @@ impl OrdsIntersectTermsEnum {
         let len = self.cur_term_len();
         self.grow_term(len);
         self.copy_suffix_into_term()?;
-        self.term_length = len as usize;
+        self.term.length = len as usize;
         Ok(())
     }
 
@@ -446,9 +446,9 @@ impl OrdsIntersectTermsEnum {
             while term_bytes_pos < term_bytes_pos_end {
                 let term_byte = usize::try_from(term_bytes_pos)
                     .ok()
-                    .and_then(|i| self.term_bytes.get(i).copied())
+                    .and_then(|i| self.term.bytes.get(i).copied())
                     .ok_or_else(|| {
-                        super::out_of_bounds_i32(term_bytes_pos, self.term_bytes.len())
+                        super::out_of_bounds_i32(term_bytes_pos, self.term.bytes.len())
                     })?;
                 if term_byte != common_suffix_bytes[common_suffix_bytes_pos] {
                     return Ok(false);
@@ -505,8 +505,8 @@ impl TermsEnum for OrdsIntersectTermsEnum {
         Ok(Box::new(self.cur().term_state))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.term_slice().to_vec())))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.term))
     }
 
     // TODO: do we need ord() here?  OrdsIntersectTermsEnumFrame tracks termOrd but it may be buggy!
@@ -548,7 +548,7 @@ impl TermsEnum for OrdsIntersectTermsEnum {
             .impacts(&fr.data.field_info, &state, flags)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         'next_term: loop {
             // Pop finished frames
             while self.cur().next_ent == self.cur().ent_count {
@@ -652,7 +652,7 @@ impl TermsEnum for OrdsIntersectTermsEnum {
                     java_utf8_to_string(self.saved_start_term.as_deref().unwrap_or_default()),
                     java_utf8_to_string(self.term_slice())
                 );
-                return Ok(Some(BytesRef::new(self.term_slice().to_vec())));
+                return Ok(Some(&self.term));
             }
         }
     }

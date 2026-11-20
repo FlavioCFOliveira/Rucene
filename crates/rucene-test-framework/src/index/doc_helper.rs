@@ -145,7 +145,7 @@ type Static<T> = LazyLock<Arc<T>>;
 
 /// `new Field(name, value, type)` for DocHelper's fields.
 fn new_field(name: &str, value: &str, ft: &Arc<FieldType>) -> Field {
-    Field::new(name, value.to_string(), Arc::clone(ft))
+    Field::new(name.to_string(), value.to_string(), Arc::clone(ft))
         .expect("INVARIANT: DocHelper's fields are valid")
 }
 

@@ -592,8 +592,9 @@ def phase_coverage(roadmap, commit, date, batch_size):
 # run time (`lucene/test-framework/src/resources`: the line-docs file, the geo
 # fixtures, the `META-INF/services` registrations). Without nodes for them the
 # graph cannot say whether they were carried over. This phase loads them and
-# their Rust counterparts, and it owns those nodes: it prunes what the trees no
-# longer declare. It runs at every sync, since the counterparts are Rust facts.
+# their Rust counterparts, links each resource from its port `Module` by
+# `CONTAINS`, and it owns those nodes: it prunes what the trees no longer
+# declare. It runs at every sync, since the counterparts are Rust facts.
 
 # (module, repo, tree relative to the repo's clone, testKind)
 FRAMEWORK_TEST_TREES = (
@@ -783,6 +784,7 @@ def phase_framework(roadmap, roots, source_root, commit, date, batch_size):
                "r.resource = row.res, r.ruceneCounterpart = row.cp, "
                "r.ruceneCounterpartEvidence = row.ev, r.gitCommit = row.commit, "
                "r.gitDate = row.date", batch_size, "TestResource update")
+    link_resources(roadmap, rows, batch_size)
 
     mark_framework_not_applicable(roadmap, batch_size)
     print(f"  framework tests: classes={len(classes)} methods={len(methods)} "
@@ -790,6 +792,35 @@ def phase_framework(roadmap, roots, source_root, commit, date, batch_size):
           f"uncovered={sum(1 for v in state.values() if v == 'uncovered')}; "
           f"resources={len(resources)} with a counterpart="
           f"{sum(1 for r in rows if r['cp'])}", file=sys.stderr)
+
+
+def link_resources(roadmap, rows, batch_size):
+    """`Module` -[:CONTAINS]-> each `TestResource` of its resource tree.
+
+    `rows` are the `TestResource update` rows (`p`: path, `m`: module, and the
+    stamp). An edge from a module other than the node's `module` is dropped.
+    A resource left without the edge (no `Module` node of that name) stops the
+    run: an isolated `TestResource` is a defect, not a state the sync accepts.
+    """
+    rmp("delete", roadmap,
+        "MATCH (m:Module)-[e:CONTAINS]->(r:TestResource) WHERE m.name <> r.module DELETE e",
+        "retire stale Module CONTAINS TestResource")
+    run_unwind("create", roadmap, [{"m": r["m"], "p": r["p"]} for r in rows],
+               "MATCH (m:Module {name: row.m}) MATCH (r:TestResource {path: row.p}) "
+               "MERGE (m)-[:CONTAINS]->(r)", batch_size, "Module CONTAINS TestResource")
+    run_unwind("update", roadmap,
+               [{"m": r["m"], "p": r["p"], "commit": r["commit"], "date": r["date"]}
+                for r in rows],
+               "MATCH (m:Module {name: row.m})-[e:CONTAINS]->(r:TestResource {path: row.p}) "
+               "SET e.gitCommit = row.commit, e.gitDate = row.date",
+               batch_size, "Module CONTAINS TestResource stamped")
+    unlinked = read(roadmap,
+                    "MATCH (r:TestResource) OPTIONAL MATCH (m:Module)-[:CONTAINS]->(r) "
+                    "WHERE m.name = r.module WITH r, count(m) AS n WHERE n = 0 "
+                    "RETURN r.path AS p, r.module AS m")
+    if unlinked:
+        sys.exit("TestResource without CONTAINS from its Module: "
+                 + ", ".join(f"{u['p']} ({u['m']})" for u in unlinked))
 
 
 def mark_framework_not_applicable(roadmap, batch_size):

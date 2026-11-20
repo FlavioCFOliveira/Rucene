@@ -336,12 +336,12 @@ impl BulkScorer for DefaultBulkScorer {
             (false, None) => self.score_iterator(collector, accept_docs, max)?,
             (true, None) => self.score_two_phase_iterator(collector, accept_docs, max)?,
             (false, Some(competitive)) => {
-                self.score_competitive_iterator(collector, accept_docs, &mut **competitive, max)?
+                self.score_competitive_iterator(collector, accept_docs, competitive, max)?
             }
             (true, Some(competitive)) => self.score_two_phase_or_competitive_iterator(
                 collector,
                 accept_docs,
-                &mut **competitive,
+                competitive,
                 max,
             )?,
         }

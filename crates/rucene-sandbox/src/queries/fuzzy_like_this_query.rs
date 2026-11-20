@@ -26,7 +26,7 @@ use rucene::analysis::tokenattributes::CharTermAttribute;
 use rucene::analysis::Analyzer;
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::TermsEnum;
-use rucene::index::{IndexReader, MultiTerms, Term, TermStates, Terms};
+use rucene::index::{IndexReader, MultiTerms, Term, TermStates};
 use rucene::search::boolean_clause::Occur;
 use rucene::search::boolean_query::Builder as BooleanQueryBuilder;
 use rucene::search::boost_query::BoostQuery;
@@ -211,7 +211,6 @@ impl FuzzyLikeThisQuery {
         let Some(terms) = MultiTerms::get_terms(reader, field_name)? else {
             return Ok(());
         };
-        let terms: Arc<dyn Terms> = Arc::from(terms);
         // `analyzer.tokenStream(...)` dereferences a `null` analyzer; the
         // message is JDK 25's helpful one
         let analyzer = self.analyzer.as_ref().ok_or_else(|| {
@@ -247,7 +246,7 @@ impl FuzzyLikeThisQuery {
                     // maxNum variants considered for any one term
                     let mut variants_q = ScoreTermQueue::new(self.max_variants_per_term)?;
                     let mut min_score = 0f32;
-                    let start_term = Term::from_text(field_name, &term);
+                    let start_term = Term::from_text(field_name.to_string(), &term);
                     let mut fe = FuzzyTermsEnum::new(
                         Arc::clone(&terms),
                         start_term.clone(),
@@ -261,7 +260,7 @@ impl FuzzyLikeThisQuery {
                     let mut total_variant_doc_freqs = 0i32;
                     // `fe.attributes().addAttribute(BoostAttribute.class)` is the
                     // attribute the enum installed, which `get_boost` reads.
-                    while let Some(possible_match) = fe.next()? {
+                    while let Some(possible_match) = fe.next()?.cloned() {
                         num_variants = num_variants.wrapping_add(1);
                         total_variant_doc_freqs =
                             total_variant_doc_freqs.wrapping_add(fe.doc_freq()?);
@@ -270,7 +269,7 @@ impl FuzzyLikeThisQuery {
                             || score > min_score
                         {
                             let st = ScoreTerm::new(
-                                Term::new(start_term.field(), possible_match),
+                                Term::new(start_term.field().to_string(), possible_match),
                                 score,
                                 start_term.clone(),
                             );

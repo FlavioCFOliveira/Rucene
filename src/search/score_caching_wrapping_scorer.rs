@@ -6,7 +6,6 @@
 use crate::error::Result;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::scorable::{ChildScorable, Scorable};
 
 /// Wraps another scorable and caches the score of the current document.
@@ -116,7 +115,7 @@ impl<L: LeafCollector> LeafCollector for ScoreCachingWrappingLeafCollector<L> {
         self.inner.collect(doc, &mut caching)
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
         self.inner.competitive_iterator()
     }
 

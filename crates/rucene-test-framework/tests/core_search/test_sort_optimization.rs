@@ -174,23 +174,29 @@ type StringFieldBuilder = fn(&str, BytesRef) -> Result<Box<dyn IndexableField>>;
 /// `List.of(new LongPoint(field, value), new NumericDocValuesField(field, value))`.
 fn long_point_fields(field: &str, value: i32) -> Result<Vec<Box<dyn IndexableField>>> {
     Ok(vec![
-        Box::new(LongPoint::new(field, &[i64::from(value)])?),
-        Box::new(NumericDocValuesField::new(field, i64::from(value))),
+        Box::new(LongPoint::new(field.to_string(), &[i64::from(value)])?),
+        Box::new(NumericDocValuesField::new(
+            field.to_string(),
+            i64::from(value),
+        )),
     ])
 }
 
 /// `List.of(new IntPoint(field, value), new NumericDocValuesField(field, value))`.
 fn int_point_fields(field: &str, value: i32) -> Result<Vec<Box<dyn IndexableField>>> {
     Ok(vec![
-        Box::new(IntPoint::new(field, &[value])?),
-        Box::new(NumericDocValuesField::new(field, i64::from(value))),
+        Box::new(IntPoint::new(field.to_string(), &[value])?),
+        Box::new(NumericDocValuesField::new(
+            field.to_string(),
+            i64::from(value),
+        )),
     ])
 }
 
 /// `List.of(NumericDocValuesField.indexedField(field, value))`.
 fn skipper_fields(field: &str, value: i32) -> Result<Vec<Box<dyn IndexableField>>> {
     Ok(vec![Box::new(NumericDocValuesField::indexed_field(
-        field,
+        field.to_string(),
         i64::from(value),
     ))])
 }
@@ -198,7 +204,7 @@ fn skipper_fields(field: &str, value: i32) -> Result<Vec<Box<dyn IndexableField>
 /// `new KeywordField(field, value, Field.Store.NO)`.
 fn keyword_field(field: &str, value: BytesRef) -> Result<Box<dyn IndexableField>> {
     Ok(Box::new(KeywordField::new_with_bytes(
-        field,
+        field.to_string(),
         value,
         Store::NO,
     )?))
@@ -206,7 +212,10 @@ fn keyword_field(field: &str, value: BytesRef) -> Result<Box<dyn IndexableField>
 
 /// `SortedDocValuesField::indexedField`.
 fn sorted_indexed_field(field: &str, value: BytesRef) -> Result<Box<dyn IndexableField>> {
-    Ok(Box::new(SortedDocValuesField::indexed_field(field, value)))
+    Ok(Box::new(SortedDocValuesField::indexed_field(
+        field.to_string(),
+        value,
+    )))
 }
 
 /// `fieldsBuilder.apply(field, value).forEach(doc::add)`.
@@ -748,8 +757,8 @@ fn sort_optimization_equal_values(fields_builder: FieldsBuilder) -> Result<()> {
 fn test_float_sort_optimization_point_index() -> Result<()> {
     float_sort_optimization(|field, value| {
         Ok(vec![
-            Box::new(FloatPoint::new(field, &[value])?),
-            Box::new(FloatDocValuesField::new(field, value)),
+            Box::new(FloatPoint::new(field.to_string(), &[value])?),
+            Box::new(FloatDocValuesField::new(field.to_string(), value)),
         ])
     })
 }
@@ -760,7 +769,7 @@ fn test_float_sort_optimization_skpper_index() -> Result<()> {
     // `NumericDocValuesField.indexedField` it inherits.
     float_sort_optimization(|field, value| {
         Ok(vec![Box::new(NumericDocValuesField::indexed_field(
-            field,
+            field.to_string(),
             i64::from(value.to_bits() as i32),
         ))])
     })
@@ -1987,7 +1996,7 @@ impl LeafReader for NoIndexLeafReader {
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn rucene::index::Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn rucene::index::Terms>>> {
         Ok(None)
     }
     fn get_numeric_doc_values(

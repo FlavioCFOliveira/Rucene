@@ -887,7 +887,7 @@ fn dump(reader: &dyn TermVectorsReader, max_doc: i32) -> Vec<String> {
             let has_offsets = terms.has_offsets();
             let has_payloads = terms.has_payloads();
             let mut iterator = terms.iterator().expect("terms enum");
-            while let Some(term) = iterator.next().expect("next term") {
+            while let Some(term) = iterator.next().expect("next term").cloned() {
                 let freq = iterator.total_term_freq().expect("total term freq") as i32;
                 let mut postings = iterator
                     .postings(None, POSTINGS_ENUM_ALL)
@@ -1157,7 +1157,7 @@ fn rucene_reads_the_term_vectors_of_a_compound_file_segment_written_by_lucene() 
     let segment_info = infos.info(0).info.clone();
     let compound = codec
         .compound_format()
-        .get_compound_reader(directory.as_ref(), &segment_info)
+        .get_compound_reader(&directory, &segment_info)
         .expect("compound reader");
     let field_infos = codec
         .field_infos_format()

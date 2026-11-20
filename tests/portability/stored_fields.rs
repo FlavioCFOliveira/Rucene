@@ -900,7 +900,7 @@ fn open_java_segment(dir: &Path) -> (Arc<dyn Directory>, SegmentInfo, FieldInfos
     let directory: Arc<dyn Directory> = Arc::new(FSDirectory::open(dir).expect("directory"));
     let infos = SegmentInfos::read_latest_commit(Arc::clone(&directory)).expect("segments file");
     assert_eq!(infos.size(), 1, "the fixture writes exactly one segment");
-    let segment_info = infos.info(0).info.clone();
+    let segment_info = SegmentInfo::clone(&infos.info(0).info);
     let field_infos = codec
         .field_infos_format()
         .read(directory.as_ref(), &segment_info, "", &*DEFAULT_IO_CONTEXT)
@@ -957,13 +957,13 @@ fn render_value(value: &[u8]) -> String {
 }
 
 impl StoredFieldVisitor for RecordingVisitor {
-    fn binary_field(&mut self, info: &FieldInfo, value: &[u8]) -> rucene::error::Result<()> {
+    fn binary_field(&mut self, info: &Arc<FieldInfo>, value: &[u8]) -> rucene::error::Result<()> {
         self.seen
             .push(format!("{}=bin{}", info.name, render_value(value)));
         Ok(())
     }
 
-    fn string_field(&mut self, info: &FieldInfo, value: String) -> rucene::error::Result<()> {
+    fn string_field(&mut self, info: &Arc<FieldInfo>, value: String) -> rucene::error::Result<()> {
         self.seen.push(format!(
             "{}=str{}",
             info.name,
@@ -972,24 +972,24 @@ impl StoredFieldVisitor for RecordingVisitor {
         Ok(())
     }
 
-    fn int_field(&mut self, info: &FieldInfo, value: i32) -> rucene::error::Result<()> {
+    fn int_field(&mut self, info: &Arc<FieldInfo>, value: i32) -> rucene::error::Result<()> {
         self.seen.push(format!("{}=i32:{value}", info.name));
         Ok(())
     }
 
-    fn long_field(&mut self, info: &FieldInfo, value: i64) -> rucene::error::Result<()> {
+    fn long_field(&mut self, info: &Arc<FieldInfo>, value: i64) -> rucene::error::Result<()> {
         self.seen.push(format!("{}=i64:{value}", info.name));
         Ok(())
     }
 
-    fn float_field(&mut self, info: &FieldInfo, value: f32) -> rucene::error::Result<()> {
+    fn float_field(&mut self, info: &Arc<FieldInfo>, value: f32) -> rucene::error::Result<()> {
         // `Integer.toHexString` prints without leading zeros.
         self.seen
             .push(format!("{}=f32:{:x}", info.name, value.to_bits()));
         Ok(())
     }
 
-    fn double_field(&mut self, info: &FieldInfo, value: f64) -> rucene::error::Result<()> {
+    fn double_field(&mut self, info: &Arc<FieldInfo>, value: f64) -> rucene::error::Result<()> {
         self.seen
             .push(format!("{}=f64:{:x}", info.name, value.to_bits()));
         Ok(())
@@ -1269,7 +1269,7 @@ fn rucene_reads_the_stored_fields_of_a_compound_file_segment_written_by_lucene()
     let segment_info = infos.info(0).info.clone();
     let compound = codec
         .compound_format()
-        .get_compound_reader(directory.as_ref(), &segment_info)
+        .get_compound_reader(&directory, &segment_info)
         .expect("compound reader");
     let field_infos = codec
         .field_infos_format()

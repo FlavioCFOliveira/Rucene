@@ -1060,11 +1060,11 @@ impl LeafReader for ExitableFilterLeafReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         let Some(terms) = self.inner.terms(field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(ExitableTerms::new(
+        Ok(Some(Arc::new(ExitableTerms::new(
             terms,
             Arc::clone(&self.query_timeout),
         ))))
@@ -1274,7 +1274,7 @@ impl ExitableTerms {
     /// Wraps `terms`, checking `query_timeout` as its enumerations are walked.
     ///
     /// Equivalent to `ExitableTerms(Terms, QueryTimeout)`.
-    pub fn new(terms: Box<dyn Terms>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
+    pub fn new(terms: Arc<dyn Terms>, query_timeout: Arc<dyn QueryTimeout>) -> Self {
         Self {
             inner: FilterTerms::new(terms),
             query_timeout,
@@ -1438,7 +1438,7 @@ impl TermsEnum for ExitableTermsEnum {
     ///
     /// Raises the exiting-reader error on a sampled call once the timeout has
     /// fired, and otherwise propagates the delegate's errors.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         // Before every iteration, check if the iteration should exit.
         self.check_timeout_with_sampling()?;
         self.inner.next()
@@ -1460,7 +1460,7 @@ impl TermsEnum for ExitableTermsEnum {
         self.inner.seek_ord(ord)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -2533,11 +2533,11 @@ impl SortedDocValues for ExitableSortedDocValues {
         self.inner.get_value_count()
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         self.inner.lookup_term(key)
     }
 
@@ -2731,7 +2731,7 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
         self.inner.doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord)
     }
 
@@ -2739,7 +2739,7 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
         self.inner.get_value_count()
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         self.inner.lookup_term(key)
     }
 
@@ -3021,7 +3021,7 @@ impl LeafReader for SlowCodecReader {
         self.reader.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 
@@ -3463,7 +3463,7 @@ impl Fields for SlowFieldsProducer {
         Box::new(self.indexed_fields.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.reader.terms(field)
     }
 
@@ -3814,7 +3814,7 @@ impl LeafReader for SoftDeletesFilterLeafReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.inner.terms(field)
     }
 
@@ -4019,7 +4019,7 @@ impl LeafReader for SoftDeletesFilterCodecReader {
         self.inner.get_core_cache_helper()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         final_members::terms(self, field)
     }
 

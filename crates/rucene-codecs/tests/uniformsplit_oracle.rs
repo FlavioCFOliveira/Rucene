@@ -98,7 +98,7 @@ const fn format(
         extensions,
         codec,
         extra_jars: &[],
-        live_impacts_differ: true,
+        live_impacts_differ: false,
     }
 }
 
@@ -359,7 +359,7 @@ fn block_codec_round_trip_reads_what_lucene_reads() {
                 &format!("{prefix}: {case}: encoded"),
                 &dump(&dir.0),
                 &java_reads(prefix, case),
-                true,
+                false,
             );
         }
     }
@@ -441,12 +441,13 @@ fn shared_terms_sorted_merge_falls_back_to_the_default_merge() {
     w.close().unwrap();
     let rucene = dump(&dir.0);
     assert!(rucene.len() > 50, "{} lines", rucene.len());
-    // Rucene's `live` lines meet core defect 1 (`Lucene104PostingsReader.impacts`).
+    // Rucene's `live` lines met core defect 1 (`Lucene104PostingsReader.impacts`),
+    // fixed by rmp #584: they are compared too.
     assert_same_lines_but_live(
         "stuniformsplit: sorted merge: Rucene and Lucene on Rucene's files",
         &rucene,
         &lucene_dump(&dir.0),
-        true,
+        false,
     );
 }
 

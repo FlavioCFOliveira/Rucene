@@ -357,12 +357,12 @@ impl Fields for SimpleTVFields {
         Box::new(self.fields.iter().map(|(name, _)| name.clone()))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self
             .fields
             .iter()
             .find(|(name, _)| name == field)
-            .map(|(_, terms)| Box::new(terms.clone()) as Box<dyn Terms>))
+            .map(|(_, terms)| Arc::new(terms.clone()) as Arc<dyn Terms>))
     }
 
     fn size(&self) -> i32 {
@@ -496,18 +496,18 @@ impl TermsEnum for SimpleTVTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.next >= self.terms.len() {
             Ok(None)
         } else {
             self.current = Some(self.next);
             self.next += 1;
-            Ok(Some(self.terms[self.next - 1].0.clone()))
+            Ok(Some(&self.terms[self.next - 1].0))
         }
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.current("getKey()")?.0.clone()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.current("getKey()")?.0))
     }
 
     fn ord(&self) -> Result<i64> {

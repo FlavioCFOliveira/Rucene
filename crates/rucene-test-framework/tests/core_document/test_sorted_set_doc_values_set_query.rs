@@ -133,8 +133,15 @@ fn duel(filtered: bool) -> Result<()> {
         for _i in 0..num_docs {
             let mut doc = Document::new();
             let term = &all_terms[random().next_int_bound(all_terms.len() as i32) as usize];
-            doc.add(StringField::new(term.field(), term.text(), Store::NO)?);
-            doc.add(SortedDocValuesField::new(term.field(), br(&term.text())));
+            doc.add(StringField::new(
+                term.field().to_string(),
+                term.text(),
+                Store::NO,
+            )?);
+            doc.add(SortedDocValuesField::new(
+                term.field().to_string(),
+                br(&term.text()),
+            ));
             iw.add_document(&doc)?;
         }
         if num_terms > 1 && random().next_boolean() {

@@ -127,7 +127,7 @@ mod search {
     fn prefix_dv_query(field: &str, prefix: &str) -> Arc<dyn Query> {
         Arc::new(
             PrefixQuery::with_rewrite_method(
-                Term::from_text(field, prefix),
+                Term::from_text(field.to_string(), prefix),
                 Arc::new(DocValuesRewriteMethod),
             )
             .unwrap(),
@@ -575,7 +575,7 @@ mod oracle {
             5 => exiting_outcome(
                 leaf.terms("s")
                     .and_then(|t| t.unwrap().iterator())
-                    .and_then(|mut e| e.next()),
+                    .and_then(|mut e| e.next().map(|term| term.cloned())),
             ),
             6 => exiting_outcome(leaf.get_point_values("p")),
             7 => exiting_outcome(

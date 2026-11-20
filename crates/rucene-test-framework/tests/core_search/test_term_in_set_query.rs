@@ -665,11 +665,11 @@ impl LeafReader for TermsCountingLeafReaderWrapper {
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(terms) = self.inner.terms(field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(CountingTerms {
+        Ok(Some(Arc::new(CountingTerms {
             inner: FilterTerms::new(terms),
             counter: Arc::clone(&self.counter),
         })))

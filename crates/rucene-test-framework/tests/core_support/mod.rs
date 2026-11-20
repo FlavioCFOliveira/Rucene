@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex};
 use randomizedtesting::jdk::exception::Throwable;
 use randomizedtesting::jdk::random::Random;
 use randomizedtesting::jdk::reflect::{Class, Constructor, Method};
-use randomizedtesting::junit::Assert;
+use randomizedtesting::jdk::system;
+use randomizedtesting::junit::{Assert, JUnitCore, Request};
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene_test_framework::util::java_exceptions::rethrow_java;
 use rucene_test_framework::util::lucene_test_case::VERBOSE;
@@ -82,6 +83,38 @@ static SUITES: Mutex<()> = Mutex::new(());
 pub fn run(class: fn() -> Arc<Class>) {
     let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
     suite_seeds::run_suite(class);
+}
+
+/// Runs the test method `method` alone of the suite `class` builds
+/// (`Request.method(clazz, methodName)`) on the master seed `seed`
+/// (`tests.seed`), and fails with every failure: the regression test of a
+/// seed on which the method failed.
+pub fn run_method_on_seed(class: fn() -> Arc<Class>, method: &str, seed: &str) {
+    let _one = SUITES.lock().unwrap_or_else(|e| e.into_inner());
+    rucene_test_framework::util::lucene_test_case::enable_error_backtraces();
+    let previous = system::set_property("tests.seed", seed);
+    let result = JUnitCore::new().run(&Request::method(&class(), method));
+    match previous {
+        Some(p) => system::set_property("tests.seed", &p),
+        None => system::clear_property("tests.seed"),
+    };
+    let failures: Vec<String> = result
+        .failures()
+        .iter()
+        .map(|f| {
+            format!(
+                "{}: {}",
+                f.exception().class_name(),
+                f.message().unwrap_or("null")
+            )
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{method} failed on seed {seed}:\n{}",
+        failures.join("\n")
+    );
+    assert_eq!(result.run_count(), 1, "{method} did not run on seed {seed}");
 }
 
 /// `random()`.

@@ -1046,6 +1046,8 @@ def phase_decision(roadmap, top_level, commit, date):
         f"d.gitCommit = {esc(commit)}, d.gitDate = {esc(date)}",
         "decision props",
     )
+    # The decision sets lucene/core's scope: `CONCERNS` -> that `Module`.
+    pm.link_decision(roadmap, name, ("lucene/core",), commit, date)
 
 
 def main():

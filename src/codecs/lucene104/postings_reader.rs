@@ -26,7 +26,7 @@ use crate::codecs::state::SegmentReadState;
 use crate::codecs::term_state::BlockTermState;
 use crate::error::{LuceneError, Result};
 use crate::index::{FieldInfo, IndexOptions};
-use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
+use crate::index::{FreqAndNormBuffer, Impacts, ImpactsRef, ImpactsSource};
 use crate::internal::vectorization::PostingDecodingUtil;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{close_after, DataInput, IndexInput, SharedIndexInput};
@@ -298,8 +298,8 @@ impl Lucene104PostingsReader {
                     state
                         .context
                         .with_hints(&[
-                            std::sync::Arc::new(crate::store::FileTypeHint::Data),
-                            std::sync::Arc::new(crate::store::FileDataHint::Postings),
+                            crate::store::FileTypeHint::Data.shared(),
+                            crate::store::FileDataHint::Postings.shared(),
                         ])
                         .as_ref(),
                 )?,
@@ -314,7 +314,7 @@ impl Lucene104PostingsReader {
                         /* withHints, `Lucene104PostingsReader.java:146` */
                         state
                             .context
-                            .with_hints(&[std::sync::Arc::new(crate::store::FileTypeHint::Data)])
+                            .with_hints(&[crate::store::FileTypeHint::Data.shared()])
                             .as_ref(),
                     )?,
                 );
@@ -370,7 +370,7 @@ impl Lucene104PostingsReader {
         field_info: &FieldInfo,
         flags: i32,
         needs_impacts: bool,
-    ) -> Result<BlockPostingsEnum> {
+    ) -> Result<Box<BlockPostingsEnum>> {
         let pos_in = self.pos_in.as_ref().map(SharedIndexInput::read);
         let pay_in = self.pay_in.as_ref().map(SharedIndexInput::read);
         BlockPostingsEnum::new(
@@ -489,7 +489,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
             });
         let mut postings: Box<dyn PostingsEnum> = match reuse {
             Some(everything_enum) if can_reuse => everything_enum,
-            _ => Box::new(self.new_block_postings_enum(field_info, flags, false)?),
+            _ => self.new_block_postings_enum(field_info, flags, false)?,
         };
         postings
             .as_any_mut()
@@ -507,7 +507,7 @@ impl PostingsReaderBase for Lucene104PostingsReader {
     ) -> Result<Box<dyn ImpactsEnum>> {
         let mut enum_ = self.new_block_postings_enum(field_info, flags, true)?;
         enum_.reset(state, self.doc_in.as_ref())?;
-        Ok(Box::new(enum_))
+        Ok(enum_)
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -590,10 +590,15 @@ pub struct BlockPostingsEnum {
     /// the first [`freq`](PostingsEnum::freq), which takes `&self`, hence the
     /// cell; everything else reaches them through `get_mut`.
     freq_buffer: RefCell<[i32; BS]>,
-    pos_delta_buffer: Option<[i32; BS]>,
-    payload_length_buffer: Option<[i32; BS]>,
-    offset_start_delta_buffer: Option<[i32; BS]>,
-    offset_length_buffer: Option<[i32; BS]>,
+    /// `posDeltaBuffer`, `payloadLengthBuffer`, `offsetStartDeltaBuffer` and
+    /// `offsetLengthBuffer`: allocated only when the enum reads what they
+    /// hold, as Java's `new int[BLOCK_SIZE]` is
+    /// (`Lucene104PostingsReader.java:454-490`), so that an enum that reads
+    /// docs and freqs carries none of them.
+    pos_delta_buffer: Option<Box<[i32; BS]>>,
+    payload_length_buffer: Option<Box<[i32; BS]>>,
+    offset_start_delta_buffer: Option<Box<[i32; BS]>>,
+    offset_length_buffer: Option<Box<[i32; BS]>>,
 
     payload_bytes: Vec<u8>,
     payload_byte_upto: i32,
@@ -662,20 +667,16 @@ pub struct BlockPostingsEnum {
     level0_block_pos_upto: i32,
     level0_pay_end_fp: i64,
     level0_block_pay_upto: i32,
-    level0_serialized_impacts: Vec<u8>,
-    /// `level0SerializedImpacts.length`: how many leading bytes of
-    /// [`level0_serialized_impacts`](Self::level0_serialized_impacts) the
-    /// last read filled (`Lucene104PostingsReader.java:751, 850`).
-    level0_serialized_impacts_length: usize,
 
     level1_pos_end_fp: i64,
     level1_block_pos_upto: i32,
     level1_pay_end_fp: i64,
     level1_block_pay_upto: i32,
-    level1_serialized_impacts: Vec<u8>,
-    /// `level1SerializedImpacts.length` (`Lucene104PostingsReader.java:702`).
-    level1_serialized_impacts_length: usize,
 
+    /// Java's `impacts` field (`Lucene104PostingsReader.java:1353-1408`), the
+    /// view [`ImpactsSource::get_impacts`] lends, with the enum fields it reads:
+    /// `level0SerializedImpacts`, `level1SerializedImpacts` and `impactBuffer`
+    /// live in it.
     impacts: BlockImpacts,
 
     needs_refilling: bool,
@@ -720,7 +721,7 @@ impl BlockPostingsEnum {
         max_impact_num_bytes_at_level0: i32,
         max_num_impacts_at_level1: i32,
         max_impact_num_bytes_at_level1: i32,
-    ) -> Result<Self> {
+    ) -> Result<Box<Self>> {
         let index_options = field_info.index_options;
         let index_has_freq = index_options.subsumes(IndexOptions::DOCS_AND_FREQS);
         let index_has_pos = index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
@@ -739,15 +740,18 @@ impl BlockPostingsEnum {
             && crate::index::feature_requested(flags, crate::index::POSTINGS_ENUM_PAYLOADS);
         let needs_offsets_or_payloads = needs_offsets || needs_payloads;
 
-        let freq_buffer = [1i32; BS];
-        let pos_delta_buffer = if needs_pos { Some([0i32; BS]) } else { None };
+        let pos_delta_buffer = if needs_pos {
+            Some(Box::new([0i32; BS]))
+        } else {
+            None
+        };
         let payload_length_buffer = if index_has_payloads {
-            Some([0i32; BS])
+            Some(Box::new([0i32; BS]))
         } else {
             None
         };
         let (offset_start_delta_buffer, offset_length_buffer) = if needs_offsets {
-            (Some([0i32; BS]), Some([0i32; BS]))
+            (Some(Box::new([0i32; BS])), Some(Box::new([0i32; BS])))
         } else {
             (None, None)
         };
@@ -758,13 +762,18 @@ impl BlockPostingsEnum {
             Vec::new()
         };
 
+        // `impactBuffer = new FreqAndNormBuffer(); impactBuffer.growNoCopy(capacity)`
+        // when impacts are needed, `null` otherwise
+        // (`Lucene104PostingsReader.java:434-444`).
         let mut impact_buffer = FreqAndNormBuffer::new();
-        let capacity = if needs_impacts && needs_freq {
-            (max_num_impacts_at_level0.max(max_num_impacts_at_level1)).max(1) as usize
-        } else {
-            1
-        };
-        impact_buffer.grow_no_copy(capacity);
+        if needs_impacts {
+            let mut capacity = 1; // for dummy impacts
+            if needs_freq {
+                capacity = max_num_impacts_at_level0.max(capacity);
+                capacity = max_num_impacts_at_level1.max(capacity);
+            }
+            impact_buffer.grow_no_copy(capacity as usize);
+        }
 
         let level0_serialized_impacts = if needs_impacts && needs_freq {
             vec![0u8; max_impact_num_bytes_at_level0 as usize]
@@ -795,93 +804,99 @@ impl BlockPostingsEnum {
             None
         };
 
-        let impacts = BlockImpacts {
-            index_has_freq,
-            level0_last_doc_id: -1,
-            level1_last_doc_id: -1,
-            level0_serialized_impacts: level0_serialized_impacts.clone(),
-            level0_serialized_impacts_length: 0,
-            level1_serialized_impacts: level1_serialized_impacts.clone(),
-            level1_serialized_impacts_length: 0,
-            impact_buffer: impact_buffer.clone(),
-        };
+        let doc_bit_set = FixedBitSet::new(BS * 32);
 
-        Ok(Self {
-            for_util: ForUtil::new(),
-            pfor_util: Some(PForUtil::new()),
-            encoding: DeltaEncoding::Packed,
-            doc: -1,
-            doc_buffer: [0i32; BS],
-            doc_bit_set: FixedBitSet::new(BS * 32),
-            doc_bit_set_base: 0,
-            level0_last_doc_id: -1,
-            level0_doc_end_fp: 0,
-            level1_last_doc_id: -1,
-            level1_doc_end_fp: 0,
-            level1_doc_count_upto: 0,
-            doc_freq: 0,
-            total_term_freq: 0,
-            singleton_doc_id: -1,
-            doc_count_left: 0,
-            prev_doc_id: -1,
-            doc_buffer_size: BS_I32,
-            doc_buffer_upto: BS_I32,
-            doc_in_util: RefCell::new(None),
-            freq_buffer: RefCell::new(freq_buffer),
-            pos_delta_buffer,
-            payload_length_buffer,
-            offset_start_delta_buffer,
-            offset_length_buffer,
-            payload_bytes,
-            payload_byte_upto: 0,
-            payload_length: 0,
-            payload_offset: 0,
-            last_start_offset: 0,
-            // Java leaves both at the `int` default of zero when the enum
-            // reads offsets, and sets them to -1 only when it does not
-            // (`Lucene104PostingsReader.java:472-480`), where `startOffset()`
-            // and `endOffset()` answer -1 regardless.
-            start_offset: if needs_offsets { 0 } else { -1 },
-            end_offset: if needs_offsets { 0 } else { -1 },
-            pos_buffer_upto: BS_I32,
-            pos_in_util,
-            pay_in_util,
-            index_has_freq,
-            index_has_pos,
-            index_has_offsets,
-            index_has_payloads,
-            index_has_offsets_or_payloads,
-            options: index_options,
-            flags,
-            parent_doc_in_identity,
-            needs_freq,
-            needs_pos,
-            needs_offsets,
-            needs_payloads,
-            needs_offsets_or_payloads,
-            needs_impacts,
-            needs_docs_and_freqs_only: !needs_pos && !needs_impacts,
-            freq_fp: Cell::new(-1),
-            position: 0,
-            pos_doc_buffer_upto: BS_I32,
-            pos_pending_count: 0,
-            last_pos_block_fp: 0,
-            level0_pos_end_fp: 0,
-            level0_block_pos_upto: 0,
-            level0_pay_end_fp: 0,
-            level0_block_pay_upto: 0,
-            level0_serialized_impacts,
-            // `new BytesRef(capacity)` has length 0.
-            level0_serialized_impacts_length: 0,
-            level1_pos_end_fp: 0,
-            level1_block_pos_upto: 0,
-            level1_pay_end_fp: 0,
-            level1_block_pay_upto: 0,
-            level1_serialized_impacts,
-            level1_serialized_impacts_length: 0,
-            impacts,
-            needs_refilling: false,
-        })
+        // PERF: Java constructs the enum in place (`new BlockPostingsEnum(...)`,
+        // `Lucene104PostingsReader.java:433-470`). `Box::new(Self { .. })` built
+        // the 4 688-byte value on the stack and then copied it into the heap
+        // (cycle 5, #588 item 5). Allocating the box first and writing a struct
+        // literal whose fields are plain values (every call is made above)
+        // lets the value be stored straight into the allocation.
+        let boxed = Box::<Self>::new_uninit();
+        Ok(Box::write(
+            boxed,
+            Self {
+                for_util: ForUtil::new(),
+                pfor_util: Some(PForUtil::new()),
+                encoding: DeltaEncoding::Packed,
+                doc: -1,
+                doc_buffer: [0i32; BS],
+                doc_bit_set,
+                doc_bit_set_base: 0,
+                level0_last_doc_id: -1,
+                level0_doc_end_fp: 0,
+                level1_last_doc_id: -1,
+                level1_doc_end_fp: 0,
+                level1_doc_count_upto: 0,
+                doc_freq: 0,
+                total_term_freq: 0,
+                singleton_doc_id: -1,
+                doc_count_left: 0,
+                prev_doc_id: -1,
+                doc_buffer_size: BS_I32,
+                doc_buffer_upto: BS_I32,
+                doc_in_util: RefCell::new(None),
+                freq_buffer: RefCell::new([1i32; BS]),
+                pos_delta_buffer,
+                payload_length_buffer,
+                offset_start_delta_buffer,
+                offset_length_buffer,
+                payload_bytes,
+                payload_byte_upto: 0,
+                payload_length: 0,
+                payload_offset: 0,
+                last_start_offset: 0,
+                // Java leaves both at the `int` default of zero when the enum
+                // reads offsets, and sets them to -1 only when it does not
+                // (`Lucene104PostingsReader.java:472-480`), where `startOffset()`
+                // and `endOffset()` answer -1 regardless.
+                start_offset: if needs_offsets { 0 } else { -1 },
+                end_offset: if needs_offsets { 0 } else { -1 },
+                pos_buffer_upto: BS_I32,
+                pos_in_util,
+                pay_in_util,
+                index_has_freq,
+                index_has_pos,
+                index_has_offsets,
+                index_has_payloads,
+                index_has_offsets_or_payloads,
+                options: index_options,
+                flags,
+                parent_doc_in_identity,
+                needs_freq,
+                needs_pos,
+                needs_offsets,
+                needs_payloads,
+                needs_offsets_or_payloads,
+                needs_impacts,
+                needs_docs_and_freqs_only: !needs_pos && !needs_impacts,
+                freq_fp: Cell::new(-1),
+                position: 0,
+                pos_doc_buffer_upto: BS_I32,
+                pos_pending_count: 0,
+                last_pos_block_fp: 0,
+                level0_pos_end_fp: 0,
+                level0_block_pos_upto: 0,
+                level0_pay_end_fp: 0,
+                level0_block_pay_upto: 0,
+                level1_pos_end_fp: 0,
+                level1_block_pos_upto: 0,
+                level1_pay_end_fp: 0,
+                level1_block_pay_upto: 0,
+                impacts: BlockImpacts {
+                    index_has_freq,
+                    level0_last_doc_id: 0,
+                    level1_last_doc_id: 0,
+                    level0_serialized_impacts,
+                    // `new BytesRef(capacity)` has length 0.
+                    level0_serialized_impacts_length: 0,
+                    level1_serialized_impacts,
+                    level1_serialized_impacts_length: 0,
+                    impact_buffer,
+                },
+                needs_refilling: false,
+            },
+        ))
     }
 
     /// Equivalent to `BlockPostingsEnum.canReuse(IndexInput, FieldInfo, int, boolean)`
@@ -1036,12 +1051,15 @@ impl BlockPostingsEnum {
             // block is encoded as a bit set
             debug_assert!(self.level0_last_doc_id != NO_MORE_DOCS);
             self.doc_bit_set_base = self.prev_doc_id + 1;
-            self.doc_bit_set.clear_all();
+            // PERF: as Java, the block's words are written in place and the
+            // set is never cleared (`Lucene104PostingsReader.java:600-612`).
+            // The words past the block keep an earlier block's bits; no
+            // reader reaches them, since every read stops at
+            // `level0_last_doc_id`, the block's last set bit.
             if bits_per_value == 0 {
-                // A full 256-doc block: no bitset longs are written.
-                for i in 0..BS {
-                    self.doc_bit_set.set(i);
-                }
+                // A full 256-doc block: no bitset longs are written; Java's
+                // `docBitSet.set(0, BLOCK_SIZE)` writes words 0..4.
+                self.doc_bit_set.set_range(0, BS);
                 if self.needs_freq {
                     // The cumulative pop counts of the words of the bit set,
                     // written over `docBuffer` as Java's
@@ -1053,17 +1071,19 @@ impl BlockPostingsEnum {
                 }
             } else {
                 let num_longs = (-bits_per_value) as usize;
-                let mut longs = vec![0i64; num_longs];
+                // PERF: Java reads the longs straight into
+                // `docBitSet.getBits()` (`Lucene104PostingsReader.java:611`).
+                // The set's words are atomics (see `FixedBitSet`), which
+                // `read_longs` cannot fill, so the longs pass through a stack
+                // array as long as the word array (`BS * 32` bits), then one
+                // store per word writes words `[0, numLongs)`.
+                let mut words = [0i64; BS * 32 / 64];
                 doc_in_util
                     .r#in
-                    .read_longs(Some(&mut longs), 0, num_longs)?;
+                    .read_longs(Some(&mut words), 0, num_longs)?;
+                let longs = &words[..num_longs];
                 for (i, &l) in longs.iter().enumerate() {
-                    let word = l as u64;
-                    for b in 0..64 {
-                        if (word >> b) & 1 != 0 {
-                            self.doc_bit_set.set(i * 64 + b);
-                        }
-                    }
+                    self.doc_bit_set.set_word(i, l as u64);
                 }
                 if self.needs_freq {
                     // The cumulative pop counts, over `docBuffer` as in Java.
@@ -1170,11 +1190,11 @@ impl BlockPostingsEnum {
                 let num_impact_bytes = doc_in.read_short()? as usize;
                 if self.needs_impacts && self.level1_last_doc_id >= target {
                     doc_in.read_bytes(
-                        Some(&mut self.level1_serialized_impacts),
+                        Some(&mut self.impacts.level1_serialized_impacts),
                         0,
                         num_impact_bytes,
                     )?;
-                    self.level1_serialized_impacts_length = num_impact_bytes;
+                    self.impacts.level1_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
                 }
@@ -1233,11 +1253,11 @@ impl BlockPostingsEnum {
                 let num_impact_bytes = doc_in.read_v_int()? as usize;
                 if self.needs_impacts {
                     doc_in.read_bytes(
-                        Some(&mut self.level0_serialized_impacts),
+                        Some(&mut self.impacts.level0_serialized_impacts),
                         0,
                         num_impact_bytes,
                     )?;
-                    self.level0_serialized_impacts_length = num_impact_bytes;
+                    self.impacts.level0_serialized_impacts_length = num_impact_bytes;
                 } else {
                     doc_in.skip_bytes(num_impact_bytes as i64)?;
                 }
@@ -1367,11 +1387,11 @@ impl BlockPostingsEnum {
                         let num_impact_bytes = doc_in.read_v_int()? as usize;
                         if self.needs_impacts && found {
                             doc_in.read_bytes(
-                                Some(&mut self.level0_serialized_impacts),
+                                Some(&mut self.impacts.level0_serialized_impacts),
                                 0,
                                 num_impact_bytes,
                             )?;
-                            self.level0_serialized_impacts_length = num_impact_bytes;
+                            self.impacts.level0_serialized_impacts_length = num_impact_bytes;
                         } else {
                             doc_in.skip_bytes(num_impact_bytes as i64)?;
                         }
@@ -1421,7 +1441,7 @@ impl BlockPostingsEnum {
             let end = (self.pos_buffer_upto + to_skip) as usize;
             if self.needs_payloads {
                 self.payload_byte_upto += sum_over_range(
-                    self.payload_length_buffer.as_ref().unwrap(),
+                    &self.payload_length_buffer.as_ref().unwrap()[..],
                     self.pos_buffer_upto as usize,
                     end,
                 );
@@ -1459,7 +1479,7 @@ impl BlockPostingsEnum {
             self.refill_positions()?;
             if self.needs_payloads {
                 self.payload_byte_upto = sum_over_range(
-                    self.payload_length_buffer.as_ref().unwrap(),
+                    &self.payload_length_buffer.as_ref().unwrap()[..],
                     0,
                     to_skip as usize,
                 );
@@ -1617,20 +1637,6 @@ impl BlockPostingsEnum {
                 + self.offset_length_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
             self.last_start_offset = self.start_offset;
         }
-    }
-
-    fn update_impacts_state(&mut self) {
-        self.impacts.index_has_freq = self.index_has_freq;
-        self.impacts.level0_last_doc_id = self.level0_last_doc_id;
-        self.impacts.level1_last_doc_id = self.level1_last_doc_id;
-        self.impacts
-            .level0_serialized_impacts
-            .clone_from(&self.level0_serialized_impacts);
-        self.impacts.level0_serialized_impacts_length = self.level0_serialized_impacts_length;
-        self.impacts
-            .level1_serialized_impacts
-            .clone_from(&self.level1_serialized_impacts);
-        self.impacts.level1_serialized_impacts_length = self.level1_serialized_impacts_length;
     }
 }
 
@@ -2036,30 +2042,47 @@ impl ImpactsSource for BlockPostingsEnum {
             self.do_advance_shallow(target)?;
             self.needs_refilling = true;
         }
-        self.update_impacts_state();
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    /// Java returns its `impacts` field, a view of the enum's own fields
+    /// (`Lucene104PostingsReader.java:1353-1408`). The view lends the enum's
+    /// [`BlockImpacts`]; the two last doc IDs it reads are the enum's, copied
+    /// in because the enum's skip code owns them: the returned borrow freezes
+    /// the enum, so they cannot change while the view is read.
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         debug_assert!(self.needs_impacts);
-        self.update_impacts_state();
-        Ok(Box::new(self.impacts.clone()))
+        self.impacts.index_has_freq = self.index_has_freq;
+        self.impacts.level0_last_doc_id = self.level0_last_doc_id;
+        self.impacts.level1_last_doc_id = self.level1_last_doc_id;
+        Ok(ImpactsRef::Borrowed(&mut self.impacts))
     }
 }
 
 impl ImpactsEnum for BlockPostingsEnum {}
 
-#[derive(Clone)]
+/// The impacts view of a [`BlockPostingsEnum`]: Java's anonymous `Impacts`
+/// over the enum's fields (`Lucene104PostingsReader.java:1353-1408`), with the
+/// fields only it reads.
+#[derive(Debug)]
 struct BlockImpacts {
     index_has_freq: bool,
+    /// The enum's `level0LastDocID` when the view was lent.
     level0_last_doc_id: i32,
+    /// The enum's `level1LastDocID` when the view was lent.
     level1_last_doc_id: i32,
+    /// Java's `level0SerializedImpacts.bytes`.
     level0_serialized_impacts: Vec<u8>,
-    /// `level0SerializedImpacts.length`.
+    /// `level0SerializedImpacts.length`: how many leading bytes of
+    /// [`level0_serialized_impacts`](Self::level0_serialized_impacts) the
+    /// last read filled (`Lucene104PostingsReader.java:751, 850`).
     level0_serialized_impacts_length: usize,
+    /// Java's `level1SerializedImpacts.bytes`.
     level1_serialized_impacts: Vec<u8>,
-    /// `level1SerializedImpacts.length`.
+    /// `level1SerializedImpacts.length` (`Lucene104PostingsReader.java:702`).
     level1_serialized_impacts_length: usize,
+    /// Java's `impactBuffer` (`Lucene104PostingsReader.java:406, 434-444`),
+    /// refilled by every [`Impacts::get_impacts`] call.
     impact_buffer: FreqAndNormBuffer,
 }
 
@@ -2085,10 +2108,10 @@ impl Impacts for BlockImpacts {
         }
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
-        let mut buffer = FreqAndNormBuffer::new();
-        buffer.grow_no_copy(self.impact_buffer.freqs.len().max(1));
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
+        let buffer = &mut self.impact_buffer;
         if !self.index_has_freq {
+            // Max freq is 1 since freqs are not indexed.
             buffer.size = 1;
             buffer.freqs[0] = 1;
             buffer.norms[0] = 1;
@@ -2102,7 +2125,7 @@ impl Impacts for BlockImpacts {
                 &mut crate::store::ByteArrayDataInput::new(
                     &self.level0_serialized_impacts[..self.level0_serialized_impacts_length],
                 ),
-                &mut buffer,
+                buffer,
             )
             .expect("impacts from memory");
             return buffer;
@@ -2112,7 +2135,7 @@ impl Impacts for BlockImpacts {
                 &mut crate::store::ByteArrayDataInput::new(
                     &self.level1_serialized_impacts[..self.level1_serialized_impacts_length],
                 ),
-                &mut buffer,
+                buffer,
             )
             .expect("impacts from memory");
             return buffer;
@@ -2142,6 +2165,68 @@ mod tests {
         MockIndexInput,
     };
     use std::sync::Arc;
+
+    /// Java's `getImpacts()` returns the enum's own `impacts` field, and its
+    /// `getImpacts(level)` refills the enum's one `impactBuffer`
+    /// (`Lucene104PostingsReader.java:406, 434-444, 1353-1393`): the view is
+    /// lent, not built, and every read lands in the same buffer, across views
+    /// and across `advanceShallow`.
+    #[test]
+    fn impacts_view_lends_the_enum_and_its_one_buffer() {
+        use crate::document::{Document, Store, TextField};
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::{
+            ImpactsRef, IndexWriterConfig, SegmentInfos, SegmentReader, POSTINGS_ENUM_FREQS,
+        };
+        use crate::util::BytesRef;
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        // 600 documents: the postings of `a` have full blocks, hence
+        // serialized impacts on level 0.
+        for i in 0..600 {
+            let mut doc = Document::new();
+            let text = format!("{}b{}", "a ".repeat(i % 5 + 1), " c".repeat(i % 7));
+            doc.add(TextField::new("body", text, Store::NO).unwrap());
+            writer.add_document(&doc).unwrap();
+        }
+        writer.force_merge(1).unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            infos.index_created_version_major(),
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )
+        .unwrap();
+        let postings = reader.get_postings_reader().unwrap().unwrap();
+        let terms = postings.terms("body").unwrap().unwrap();
+        let mut terms_enum = terms.iterator().unwrap();
+        assert!(terms_enum
+            .seek_exact(&BytesRef::new(b"a".to_vec()))
+            .unwrap());
+        let mut impacts_enum = terms_enum.impacts(POSTINGS_ENUM_FREQS).unwrap();
+
+        let mut buffers = Vec::new();
+        for target in [0, 130, 300, 599] {
+            impacts_enum.advance_shallow(target).unwrap();
+            let mut view = impacts_enum.get_impacts().unwrap();
+            assert!(matches!(view, ImpactsRef::Borrowed(_)), "{view:?}");
+            assert!(view.doc_id_up_to(0) >= target);
+            for level in 0..view.num_levels() {
+                let impacts = view.get_impacts(level);
+                assert!(impacts.size > 0);
+                buffers.push((impacts.freqs.as_ptr(), impacts.norms.as_ptr()));
+            }
+        }
+        assert_eq!(buffers.len(), 4, "one level per target");
+        assert!(
+            buffers.iter().all(|pointers| *pointers == buffers[0]),
+            "every read refills the enum's one impact buffer"
+        );
+    }
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
         crate::codecs::tests::test_segment_info(name, max_doc)
@@ -2572,6 +2657,131 @@ mod tests {
         assert_eq!(it.advance(8192).unwrap(), 8192);
         assert_eq!(it.freq().unwrap(), 1);
         assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+        reader.close().expect("close succeeds");
+    }
+
+    /// rmp #566: a bit-set block writes only its own words, as Java's
+    /// `docIn.readLongs(docBitSet.getBits(), 0, numLongs)` and
+    /// `docBitSet.set(0, BLOCK_SIZE)` do, with no clear
+    /// (`Lucene104PostingsReader.java:600-612`); the words past the block keep
+    /// an earlier block's bits. `nextDoc`, `advance`, `intoBitSet`,
+    /// `nextPostings` and `docIDRunEnd` all stop at the block's last doc, so
+    /// none of them observes those words.
+    #[test]
+    fn bit_set_blocks_never_observe_an_earlier_blocks_words() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        const ALTERNATE: u64 = 0x5555_5555_5555_5555;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let field_infos = field_infos_with_freqs();
+        let field_info = field_infos.field_info("body").unwrap();
+        // Block 1: every second doc of 0..=510, a bit set of 8 words.
+        let mut docs: Vec<i32> = (0..=510).step_by(2).collect();
+        // Block 2: 511..=765 and 767, a bit set of 5 words.
+        docs.extend(511..=765);
+        docs.push(767);
+        // Block 3: 768..=1023, the all-ones block (words 0..4).
+        docs.extend(768..=1023);
+        // A tail of two docs.
+        docs.extend([1030, 1040]);
+        assert_eq!(docs.len(), 3 * BS + 2);
+        let freqs: Vec<i32> = (0..docs.len()).map(|i| (i % 5) as i32 + 1).collect();
+        let postings = TestPostingsEnum::new(docs.clone(), freqs.clone(), vec![vec![]; docs.len()]);
+        let freq_of = |doc: i32| freqs[docs.binary_search(&doc).unwrap()];
+        let expected_next = |target: i32| {
+            docs.iter()
+                .copied()
+                .find(|&doc| doc >= target)
+                .unwrap_or(NO_MORE_DOCS)
+        };
+
+        let (reader, state) = write_term_and_open_reader(&dir, &field_infos, field_info, &postings)
+            .expect("reader builds");
+        let open = |flags: i32| {
+            reader
+                .postings(field_info, &state, None, flags)
+                .expect("postings exist")
+        };
+        let words_of = |it: &mut Box<dyn PostingsEnum>| -> Vec<u64> {
+            let block = it
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
+                .expect("a BlockPostingsEnum");
+            assert!(block.encoding == DeltaEncoding::Unary);
+            let words = block.doc_bit_set.get_bits();
+            words[..8].iter().map(|word| word.load(Relaxed)).collect()
+        };
+
+        // `nextDoc` and `freq` over every doc. Non-vacuity: blocks 2 and 3
+        // hold stale words of the blocks before them.
+        let mut it = open(crate::index::POSTINGS_ENUM_FREQS);
+        for (i, &doc) in docs.iter().enumerate() {
+            assert_eq!(it.next_doc().unwrap(), doc);
+            assert_eq!(it.freq().unwrap(), freqs[i]);
+            if doc == 767 {
+                let words = words_of(&mut it);
+                assert_eq!(words[3], u64::MAX >> 1, "doc 766 is missing");
+                assert_eq!(words[4], 1);
+                assert_eq!(words[5..8], [ALTERNATE; 3], "block 1's words");
+                assert_eq!(it.doc_id_run_end().unwrap(), 768);
+            }
+            if doc == 1000 {
+                let words = words_of(&mut it);
+                assert_eq!(words[..4], [u64::MAX; 4]);
+                assert_eq!(words[4], 1, "block 2's word");
+                assert_eq!(words[5..8], [ALTERNATE; 3], "block 1's words");
+                assert_eq!(it.doc_id_run_end().unwrap(), 1024);
+            }
+        }
+        assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+
+        // `advance` then `nextDoc`, with and without freqs: within a block,
+        // into a gap, to a block's last doc, and across blocks (a refill).
+        let target_lists: [&[i32]; 2] = [
+            &[3, 505, 511, 700, 766, 1000, 1023, 1035],
+            &[3, 600, 800, 1024],
+        ];
+        for flags in [
+            crate::index::POSTINGS_ENUM_FREQS,
+            crate::index::POSTINGS_ENUM_NONE,
+        ] {
+            for targets in target_lists {
+                let mut it = open(flags);
+                for &target in targets {
+                    let expected = expected_next(target);
+                    assert_eq!(it.advance(target).unwrap(), expected, "advance({target})");
+                    if flags == crate::index::POSTINGS_ENUM_FREQS {
+                        assert_eq!(it.freq().unwrap(), freq_of(expected));
+                    }
+                    let after = expected_next(expected + 1);
+                    assert_eq!(it.next_doc().unwrap(), after, "next_doc after {expected}");
+                }
+            }
+        }
+
+        // `intoBitSet` up to the middle of block 2, then past the blocks.
+        let mut it = open(crate::index::POSTINGS_ENUM_FREQS);
+        assert_eq!(it.next_doc().unwrap(), 0);
+        let mut bits = FixedBitSet::new(1100);
+        it.into_bit_set(600, &mut bits, 0).unwrap();
+        assert_eq!(it.doc_id(), 600);
+        it.into_bit_set(1035, &mut bits, 0).unwrap();
+        assert_eq!(it.doc_id(), 1040);
+        for doc in 0..1100 {
+            let expected = doc < 1035 && docs.binary_search(&(doc as i32)).is_ok();
+            assert_eq!(bits.get(doc), expected, "bit {doc}");
+        }
+
+        // `nextPostings` from inside block 2: its docs only, then block 3.
+        let mut it = open(crate::index::POSTINGS_ENUM_FREQS);
+        assert_eq!(it.advance(600).unwrap(), 600);
+        let mut buffer = crate::index::postings_enum::DocAndFloatFeatureBuffer::new();
+        it.next_postings(NO_MORE_DOCS, &mut buffer).unwrap();
+        let expected: Vec<i32> = (600..=765).chain([767]).collect();
+        assert_eq!(buffer.docs[..buffer.size], expected[..]);
+        let expected_freqs: Vec<f32> = expected.iter().map(|&doc| freq_of(doc) as f32).collect();
+        assert_eq!(buffer.features[..buffer.size], expected_freqs[..]);
+        assert_eq!(it.doc_id(), 768);
         reader.close().expect("close succeeds");
     }
 }

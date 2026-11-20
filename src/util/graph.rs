@@ -205,7 +205,7 @@ impl GraphTokenStreamFiniteStrings {
                     .get_attribute_interface::<dyn TermToBytesRefAttribute>()
                     .map(|att| att.get_bytes_ref())
                     .unwrap_or_default();
-                Term::new(field, bytes)
+                Term::new(field.to_string(), bytes)
             })
             .collect()
     }

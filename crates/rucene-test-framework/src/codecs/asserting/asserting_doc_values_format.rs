@@ -184,11 +184,11 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         let mut last_value: Option<BytesRef> = None;
         for ord in 0..value_count {
             let b = values.lookup_ord(ord)?;
-            assert_valid(&b)?;
+            assert_valid(b)?;
             if ord > 0 {
-                java_assert!(last_value.as_ref().is_some_and(|last| b > *last));
+                java_assert!(last_value.as_ref().is_some_and(|last| b > last));
             }
-            last_value = Some(BytesRef::deep_copy_of(&b));
+            last_value = Some(BytesRef::deep_copy_of(b));
         }
 
         let mut seen_ords = FixedBitSet::new(value_count.max(0) as usize);
@@ -253,11 +253,11 @@ impl DocValuesConsumer for AssertingDocValuesConsumer<'_> {
         let mut last_value: Option<BytesRef> = None;
         for i in 0..value_count {
             let b = values.lookup_ord(i)?;
-            assert_valid(&b)?;
+            assert_valid(b)?;
             if i > 0 {
-                java_assert!(last_value.as_ref().is_some_and(|last| b > *last));
+                java_assert!(last_value.as_ref().is_some_and(|last| b > last));
             }
-            last_value = Some(BytesRef::deep_copy_of(&b));
+            last_value = Some(BytesRef::deep_copy_of(b));
         }
 
         let mut seen_ords = LongBitSet::new(value_count)?;

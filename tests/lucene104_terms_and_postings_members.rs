@@ -29,7 +29,7 @@ fn index(docs: &[Vec<(&str, String)>]) -> (Arc<dyn Directory>, Arc<dyn Directory
     for fields in docs {
         let mut doc = Document::new();
         for (name, value) in fields {
-            doc.add(StringField::new(name, value.clone(), Store::NO).unwrap());
+            doc.add(StringField::new(name.to_string(), value.clone(), Store::NO).unwrap());
         }
         writer.add_document(&doc).unwrap();
     }
@@ -158,7 +158,7 @@ fn seek_exact_by_an_intersect_state_positions_the_terms_enum() {
     let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
     let mut intersect = terms.intersect(&compiled, None).unwrap();
     let mut states = Vec::new();
-    while let Some(term) = intersect.next().unwrap() {
+    while let Some(term) = intersect.next().unwrap().cloned() {
         let state = intersect.term_state().unwrap();
         let block_state = state.as_any().downcast_ref::<BlockTermState>().unwrap();
         assert!(block_state.term_block_ord > 0, "{block_state:?}");
@@ -174,7 +174,7 @@ fn seek_exact_by_an_intersect_state_positions_the_terms_enum() {
         // A prior seek, so that the terms input is open and `next()` re-seeks.
         assert!(te.seek_exact(&BytesRef::new(b"t000".to_vec())).unwrap());
         te.seek_term_state(term, state.as_ref()).unwrap();
-        assert_eq!(te.term().unwrap(), Some(term.clone()));
+        assert_eq!(te.term().unwrap(), Some(term));
         assert_eq!(te.doc_freq().unwrap(), expected.len() as i32);
         let mut postings = te.postings(None, POSTINGS_ENUM_NONE).unwrap().unwrap();
         let mut got = Vec::new();
@@ -185,7 +185,7 @@ fn seek_exact_by_an_intersect_state_positions_the_terms_enum() {
         }
         assert_eq!(got, expected, "{term:?}");
         let next = te.next().unwrap().unwrap();
-        assert_eq!(next, BytesRef::new(format!("t{:03}", i + 1).into_bytes()));
+        assert_eq!(*next, BytesRef::new(format!("t{:03}", i + 1).into_bytes()));
     }
     // The cursor positions from the state alone, without reading the terms
     // file (`SegmentTermsEnum.java:1022-1029`): the term is the target given,
@@ -194,7 +194,7 @@ fn seek_exact_by_an_intersect_state_positions_the_terms_enum() {
     let mut te = terms.iterator().unwrap();
     let target = BytesRef::new(b"zzz".to_vec());
     te.seek_term_state(&target, state.as_ref()).unwrap();
-    assert_eq!(te.term().unwrap(), Some(target));
+    assert_eq!(te.term().unwrap(), Some(&target));
     // `t050` is in docs 50 and 150.
     assert_eq!(te.doc_freq().unwrap(), 2);
     drop((intersect, terms, leaf));

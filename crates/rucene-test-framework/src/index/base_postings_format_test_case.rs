@@ -434,7 +434,7 @@ fn check_one_doc(p: &mut dyn PostingsEnum, freq: FreqIs, positions: &[PositionIs
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::from_char_sequence(text))
+    Term::new(field.to_string(), BytesRef::from_char_sequence(text))
 }
 
 /// The analyzer of the `testPostingsEnum*` tests: `new Analyzer() {
@@ -666,10 +666,10 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut terms_enum = npe(terms).iterator()?;
         Assert::assert_true(terms_enum.next()?.is_some());
         Assert::assert_equals_nullable(
-            terms_enum.term()?,
+            terms_enum.term()?.cloned(),
             Some(BytesRef::from_char_sequence("something")),
         );
-        assert_null_term(terms_enum.next()?);
+        assert_null_term(terms_enum.next()?.cloned());
         drop((terms_enum, ar));
         ir.close()?;
         drop(ir);
@@ -699,8 +699,11 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_true(terms.is_some());
         let mut terms_enum = npe(terms).iterator()?;
         Assert::assert_true(terms_enum.next()?.is_some());
-        Assert::assert_equals_nullable(terms_enum.term()?, Some(BytesRef::from_char_sequence("")));
-        assert_null_term(terms_enum.next()?);
+        Assert::assert_equals_nullable(
+            terms_enum.term()?.cloned(),
+            Some(BytesRef::from_char_sequence("")),
+        );
+        assert_null_term(terms_enum.next()?.cloned());
         drop((terms_enum, ar));
         ir.close()?;
         drop(ir);
@@ -861,13 +864,13 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             let target = BytesRef::from_char_sequence(&n.to_string());
             // seekExact.
             Assert::assert_true(terms_enum.seek_exact(&target)?);
-            Assert::assert_equals_nullable(terms_enum.term()?, Some(target.clone()));
+            Assert::assert_equals_nullable(terms_enum.term()?.cloned(), Some(target.clone()));
             // seekCeil.
             Assert::assert_equals(
                 JavaSeekStatus(SeekStatus::FOUND),
                 JavaSeekStatus(terms_enum.seek_ceil(&target)?),
             );
-            Assert::assert_equals_nullable(terms_enum.term()?, Some(target));
+            Assert::assert_equals_nullable(terms_enum.term()?.cloned(), Some(target));
         }
 
         drop((terms_enum, leaf));
@@ -912,7 +915,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             let target = BytesRef::from_char_sequence(&i.to_string());
             if i % 2 == 1 {
                 Assert::assert_true(terms_enum.seek_exact(&target)?);
-                Assert::assert_equals_nullable(terms_enum.term()?, Some(target));
+                Assert::assert_equals_nullable(terms_enum.term()?.cloned(), Some(target));
             } else {
                 Assert::assert_false(terms_enum.seek_exact(&target)?);
             }
@@ -927,11 +930,11 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
                     JavaSeekStatus(SeekStatus::FOUND),
                     JavaSeekStatus(terms_enum.seek_ceil(&target)?),
                 );
-                Assert::assert_equals_nullable(terms_enum.term()?, Some(target));
+                Assert::assert_equals_nullable(terms_enum.term()?.cloned(), Some(target));
                 if i <= 100397 {
                     Assert::assert_equals(
                         JavaBytesRef(Some(BytesRef::from_char_sequence(&(i + 2).to_string()))),
-                        JavaBytesRef(terms_enum.next()?),
+                        JavaBytesRef(terms_enum.next()?.cloned()),
                     );
                 }
             } else {
@@ -941,7 +944,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
                 );
                 Assert::assert_equals_nullable(
                     Some(BytesRef::from_char_sequence(&(i + 1).to_string())),
-                    terms_enum.term()?,
+                    terms_enum.term()?.cloned(),
                 );
             }
         }
@@ -1095,7 +1098,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
         let mut term_count: i64 = 0;
         let mut supports_ords = true;
         while terms_enum.next()?.is_some() {
-            let term = npe_with(terms_enum.term()?, || {
+            let term = npe_with(terms_enum.term()?.cloned(), || {
                 "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because \"term\" is null".to_string()
             });
             let tf = npe_with(term_freqs.get(&term.utf8_to_string()?), || {
@@ -1545,7 +1548,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             Some(&npe_with(te.next()?, next_npe).utf8_to_string()?),
         );
         Assert::assert_equals(2, te.doc_freq()?);
-        assert_null_term(te.next()?);
+        assert_null_term(te.next()?.cloned());
 
         te = npe_with(leaf_reader.terms("g")?, terms_npe).iterator()?;
         Assert::assert_equals_str(
@@ -1554,7 +1557,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             Some(&npe_with(te.next()?, next_npe).utf8_to_string()?),
         );
         Assert::assert_equals(2, te.doc_freq()?);
-        assert_null_term(te.next()?);
+        assert_null_term(te.next()?.cloned());
 
         drop((te, leaf_reader));
         // `IOUtils.close(reader, w2, dir1, dir2)` (`w2` is already closed);
@@ -1624,7 +1627,7 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             for _ in 0..num_fields {
                 let value = TestUtil::random_simple_string_max(&*LuceneTestCase::random(), 2);
                 doc.add(
-                    Field::new(&format!("f_{opts:?}"), value, ft.clone())
+                    Field::new(format!("f_{opts:?}"), value, ft.clone())
                         .unwrap_or_else(|e| rethrow(e)),
                 );
             }
@@ -1874,7 +1877,7 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
         let mut terms_enum = terms.iterator()?;
         let mut docs: Option<Box<dyn PostingsEnum>> = None;
         while terms_enum.next()?.is_some() {
-            let term = npe_with(terms_enum.term()?, || {
+            let term = npe_with(terms_enum.term()?.cloned(), || {
                 "Cannot invoke \"org.apache.lucene.util.BytesRef.utf8ToString()\" because \"term\" is null".to_string()
             });
             // TODO: also sometimes ask for payloads/offsets?
@@ -1990,7 +1993,7 @@ impl FieldsConsumer for InvertedWriteConsumer<'_> {
                 let current = npe_with(terms_enum.term()?, || {
                     "Cannot read field \"bytes\" because \"other\" is null".to_string()
                 });
-                Assert::assert_true(term < current);
+                Assert::assert_true(term < current.clone());
             }
         }
         Ok(())

@@ -140,11 +140,11 @@ fn bytes(text: &str) -> BytesRef {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 fn keyword(field: &str, value: String) -> Box<StringField> {
-    Box::new(StringField::new(field, value, Store::NO).unwrap())
+    Box::new(StringField::new(field.to_string(), value, Store::NO).unwrap())
 }
 
 /// `TermsDictFixture.doc(int)`; the perturbed corpus gives document 0 the
@@ -365,7 +365,7 @@ fn dump_terms(out: &mut String, reader: &Arc<dyn IndexReader>) {
                 writeln!(
                     out,
                     "  term {} docFreq={} ttf={}",
-                    text(Some(&t)),
+                    text(Some(t)),
                     te.doc_freq().unwrap(),
                     te.total_term_freq().unwrap()
                 )
@@ -379,7 +379,7 @@ fn dump_terms(out: &mut String, reader: &Arc<dyn IndexReader>) {
                 } else {
                     format!(
                         " {} docFreq={}",
-                        text(seeker.term().unwrap().as_ref()),
+                        text(seeker.term().unwrap()),
                         seeker.doc_freq().unwrap()
                     )
                 };

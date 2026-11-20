@@ -167,8 +167,9 @@ fn test_queries_composite_composite() -> Result<()> {
 
 /// `private void queries()`.
 fn queries(f: &QueryFixture) -> Result<()> {
-    let q =
-        |f: &str, v: &str| -> Arc<dyn Query> { Arc::new(TermQuery::new(Term::from_text(f, v))) };
+    let q = |f: &str, v: &str| -> Arc<dyn Query> {
+        Arc::new(TermQuery::new(Term::from_text(f.to_string(), v)))
+    };
     query_test(f, q("f1", "v1"))?;
     query_test(f, q("f1", "v2"))?;
     query_test(f, q("f2", "v1"))?;

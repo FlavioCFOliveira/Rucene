@@ -233,7 +233,7 @@ impl TermsEnum for STMergingBlockReader {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         Ok(self.base.term_bytes())
     }
 
@@ -265,7 +265,8 @@ impl TermsEnum for STMergingBlockReader {
         Err(unsupported())
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        self.next_impl()
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.base.next_term = self.next_impl()?;
+        Ok(self.base.next_term.as_ref())
     }
 }

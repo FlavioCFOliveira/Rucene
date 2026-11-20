@@ -159,7 +159,7 @@ fn iwc_with(similarity: Arc<dyn Similarity>) -> Result<IndexWriterConfig> {
 
 fn text(name: &str, value: &str) -> Result<Box<TextField>> {
     Ok(Box::new(TextField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::NO,
     )?))

@@ -123,8 +123,8 @@ impl DataInput for SharedIndexInput {
         self.inner.lock().unwrap().read_byte()
     }
 
-    fn to_java_string(&self) -> String {
-        self.inner.lock().unwrap().to_java_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(self.inner.lock().unwrap().to_java_string().into_owned())
     }
 
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {

@@ -127,7 +127,7 @@ impl HnswCase for ByteCase {
         similarity_function: VectorSimilarityFunction,
     ) -> Result<Box<dyn IndexableField>> {
         Ok(Box::new(KnnByteVectorField::new(
-            name,
+            name.to_string(),
             vector,
             similarity_function,
         )?))

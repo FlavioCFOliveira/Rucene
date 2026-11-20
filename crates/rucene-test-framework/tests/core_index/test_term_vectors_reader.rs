@@ -357,7 +357,7 @@ fn get_vector(
     reader: &dyn TermVectorsReader,
     doc: i32,
     field: &str,
-) -> Result<Option<Box<dyn rucene::index::Terms>>> {
+) -> Result<Option<Arc<dyn rucene::index::Terms>>> {
     reader
         .get(doc)?
         .unwrap_or_else(|| npe("reader.get(j)"))

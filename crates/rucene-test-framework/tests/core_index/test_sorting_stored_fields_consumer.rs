@@ -111,7 +111,7 @@ struct SeekCountingInput {
 }
 
 impl DataInput for SeekCountingInput {
-    fn to_java_string(&self) -> String {
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
         self.inner.to_java_string()
     }
     fn read_byte(&mut self) -> Result<u8> {

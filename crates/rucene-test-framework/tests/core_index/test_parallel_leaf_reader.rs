@@ -98,8 +98,9 @@ fn test_queries() -> Result<()> {
     let (single, dir) = single()?;
     let (parallel, dir1, dir2) = parallel()?;
 
-    let q =
-        |f: &str, v: &str| -> Arc<dyn Query> { Arc::new(TermQuery::new(Term::from_text(f, v))) };
+    let q = |f: &str, v: &str| -> Arc<dyn Query> {
+        Arc::new(TermQuery::new(Term::from_text(f.to_string(), v)))
+    };
     query_test(&parallel, &single, q("f1", "v1"))?;
     query_test(&parallel, &single, q("f1", "v2"))?;
     query_test(&parallel, &single, q("f2", "v1"))?;

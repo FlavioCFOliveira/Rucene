@@ -72,7 +72,8 @@ fn test_same_scores_with_threads() -> Result<()> {
             let term = BytesRef::deep_copy_of(
                 &terms_enum
                     .term()?
-                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .clone(),
             );
             let top_docs = s.search(
                 Arc::new(TermQuery::new(Term::new("body", term.clone()))),

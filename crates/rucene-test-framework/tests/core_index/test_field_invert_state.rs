@@ -79,7 +79,7 @@ fn canned_field(name: &str, tokens: Vec<Token>) -> Result<Field> {
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(CannedTokenStream::new(tokens)));
     Field::new_with_token_stream(
-        name,
+        name.to_string(),
         stream,
         FieldType::new_from(TextField::type_not_stored()),
     )

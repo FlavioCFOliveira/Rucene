@@ -212,7 +212,7 @@ pub fn str_val<T: DocTermsIndexDocValues + ?Sized>(
     let term = state
         .terms_index
         .lookup_ord(state.terms_index.ord_value()?)?;
-    state.spare_chars.copy_utf8_bytes_ref(&term);
+    state.spare_chars.copy_utf8_bytes_ref(term);
     Ok(Some(state.spare_chars.to_string()))
 }
 

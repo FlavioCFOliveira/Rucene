@@ -55,7 +55,7 @@ impl CompoundFormat for CrankyCompoundFormat {
 
     fn get_compound_reader(
         &self,
-        dir: &dyn Directory,
+        dir: &std::sync::Arc<dyn Directory>,
         segment_info: &SegmentInfo,
     ) -> Result<Box<dyn CompoundDirectory>> {
         self.delegate.get().get_compound_reader(dir, segment_info)

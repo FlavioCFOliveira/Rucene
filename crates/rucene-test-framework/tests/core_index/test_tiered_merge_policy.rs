@@ -814,7 +814,7 @@ fn get_rand_terms(ctx: &LeafReaderContext, pct: i32, round_up: bool) -> Result<V
         lim += 1;
     }
 
-    let mut br: Option<BytesRef> = iter.next()?;
+    let mut br: Option<BytesRef> = iter.next()?.cloned();
     while let Some(b) = br {
         if ret.len() >= lim {
             break;
@@ -823,7 +823,7 @@ fn get_rand_terms(ctx: &LeafReaderContext, pct: i32, round_up: bool) -> Result<V
             ret.push(Term::new("id", b));
         }
         counter += 1;
-        br = iter.next()?;
+        br = iter.next()?.cloned();
     }
     Ok(ret)
 }

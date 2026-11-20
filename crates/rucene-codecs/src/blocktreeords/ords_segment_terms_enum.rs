@@ -847,7 +847,7 @@ impl TermsEnum for OrdsSegmentTermsEnum {
     /// Decodes only the term bytes of the next term. If caller then asks
     /// for metadata, ie docFreq, totalTermFreq or pulls a D/&PEnum, we then
     /// (lazily) decode all metadata up to the current term.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.input.is_none() {
             // Fresh TermsEnum; seek to first term:
             let has_arc = match &self.index {
@@ -931,14 +931,14 @@ impl TermsEnum for OrdsSegmentTermsEnum {
                 self.load_block()?;
             } else {
                 self.positioned = true;
-                return Ok(Some(BytesRef::new(self.term.get().to_vec())));
+                return Ok(Some(self.term.get_ref()));
             }
         }
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         java_assert!(!self.eof);
-        Ok(Some(BytesRef::new(self.term.get().to_vec())))
+        Ok(Some(self.term.get_ref()))
     }
 
     fn ord(&self) -> Result<i64> {

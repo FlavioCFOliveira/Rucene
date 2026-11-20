@@ -193,7 +193,7 @@ pub fn rewrite_as_boolean_query(
         );
         bq.add(
             Arc::new(TermQuery::with_states(
-                Term::new(state.query.get_field(), t.term.clone()),
+                Term::new(state.query.get_field().to_string(), t.term.clone()),
                 Arc::new(term_states),
             )),
             Occur::SHOULD,
@@ -227,10 +227,13 @@ pub fn collect_terms(
         let Some(term) = terms_enum.next()? else {
             return Ok(true);
         };
+        // `BytesRef.deepCopyOf(term)`, taken before `termState()` moves the
+        // enum's borrow on; it reads only the term's bytes.
+        let term = BytesRef::deep_copy_of(term);
         let state = terms_enum.term_state()?;
         let doc_freq = terms_enum.doc_freq()?;
         let term_and_state = TermAndState {
-            term: BytesRef::deep_copy_of(&term),
+            term,
             state,
             doc_freq,
             total_term_freq: terms_enum.total_term_freq()?,
@@ -408,7 +411,6 @@ pub fn rewriting_scorer_supplier(
     let Some(terms) = context.leaf_reader().terms(state.query.get_field())? else {
         return Ok(None);
     };
-    let terms: Arc<dyn Terms> = Arc::from(terms);
 
     let field_doc_count = terms.doc_count()?;
     let mut terms_enum = get_terms_enum(&*state.query, &terms)?;
@@ -524,7 +526,6 @@ pub fn rewriting_matches(
             let Some(terms) = context.leaf_reader().terms(&supplier_field)? else {
                 return Ok(None);
             };
-            let terms: Arc<dyn Terms> = Arc::from(terms);
             let terms_enum = get_terms_enum(&*query, &terms)?;
             crate::search::disjunction_matches_iterator::from_terms_enum(
                 &context,

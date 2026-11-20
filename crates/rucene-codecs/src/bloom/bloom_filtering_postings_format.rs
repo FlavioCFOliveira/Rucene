@@ -17,7 +17,7 @@
 
 //! Port of `org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat`.
 
-use std::cell::RefCell;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -271,15 +271,15 @@ impl Fields for BloomFilteredFieldsProducer {
         self.delegate_fields_producer.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         match self.blooms_by_field_name.get(field) {
             None => self.delegate_fields_producer.terms(field),
             Some(filter) => {
                 let Some(result) = self.delegate_fields_producer.terms(field)? else {
                     return Ok(None);
                 };
-                Ok(Some(Box::new(BloomFilteredTerms {
-                    delegate_terms: Arc::from(result),
+                Ok(Some(Arc::new(BloomFilteredTerms {
+                    delegate_terms: result,
                     filter: Arc::clone(filter),
                 })))
             }
@@ -399,10 +399,11 @@ impl Terms for BloomFilteredTerms {
 ///
 /// Java pulls the delegate's iterator only when it is first needed, from
 /// any method, `term()` and `ord()` included; those two take `&self` here,
-/// so the lazily pulled enum sits in a [`RefCell`].
+/// so the lazily pulled enum sits in a [`OnceCell`], which can lend the
+/// delegate's term from `&self`.
 struct BloomFilteredTermsEnum {
     delegate_terms: Arc<dyn Terms>,
-    delegate_terms_enum: RefCell<Option<Box<dyn TermsEnum>>>,
+    delegate_terms_enum: OnceCell<Box<dyn TermsEnum>>,
     filter: Arc<FuzzySet>,
     attributes: Option<AttributeSource>,
 }
@@ -412,7 +413,7 @@ impl BloomFilteredTermsEnum {
     fn new(delegate_terms: Arc<dyn Terms>, filter: Arc<FuzzySet>) -> Self {
         Self {
             delegate_terms,
-            delegate_terms_enum: RefCell::new(None),
+            delegate_terms_enum: OnceCell::new(),
             filter,
             attributes: None,
         }
@@ -422,33 +423,37 @@ impl BloomFilteredTermsEnum {
     #[allow(dead_code)]
     fn reset(&mut self, delegate_terms: Arc<dyn Terms>) {
         self.delegate_terms = delegate_terms;
-        *self.delegate_terms_enum.get_mut() = None;
+        self.delegate_terms_enum = OnceCell::new();
     }
 
     /// Port of `delegate()`.
     fn delegate(&mut self) -> Result<&mut dyn TermsEnum> {
-        let slot = self.delegate_terms_enum.get_mut();
-        if slot.is_none() {
+        if self.delegate_terms_enum.get().is_none() {
             /* pull the iterator only if we really need it -
              * this can be a relativly heavy operation depending on the
              * delegate postings format and they underlying directory
              * (clone IndexInput) */
-            *slot = Some(self.delegate_terms.iterator()?);
+            let iterator = self.delegate_terms.iterator()?;
+            let _ = self.delegate_terms_enum.set(iterator);
         }
-        Ok(slot
-            .as_deref_mut()
-            .expect("INVARIANT: the delegate was pulled above"))
+        Ok(self
+            .delegate_terms_enum
+            .get_mut()
+            .expect("INVARIANT: the delegate was pulled above")
+            .as_mut())
     }
 
     /// [`delegate`](Self::delegate) for the `&self` methods.
-    fn with_delegate<T>(&self, f: impl FnOnce(&dyn TermsEnum) -> Result<T>) -> Result<T> {
-        let mut slot = self.delegate_terms_enum.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(self.delegate_terms.iterator()?);
+    fn delegate_ref(&self) -> Result<&dyn TermsEnum> {
+        if self.delegate_terms_enum.get().is_none() {
+            let iterator = self.delegate_terms.iterator()?;
+            let _ = self.delegate_terms_enum.set(iterator);
         }
-        f(slot
-            .as_deref()
-            .expect("INVARIANT: the delegate was pulled above"))
+        Ok(self
+            .delegate_terms_enum
+            .get()
+            .expect("INVARIANT: the delegate was pulled above")
+            .as_ref())
     }
 }
 
@@ -463,7 +468,7 @@ impl TermsEnum for BloomFilteredTermsEnum {
         self.attributes.get_or_insert_with(AttributeSource::new)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.delegate()?.next()
     }
 
@@ -498,12 +503,12 @@ impl TermsEnum for BloomFilteredTermsEnum {
         self.delegate()?.seek_ord(ord)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        self.with_delegate(|d| d.term())
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        self.delegate_ref()?.term()
     }
 
     fn ord(&self) -> Result<i64> {
-        self.with_delegate(|d| d.ord())
+        self.delegate_ref()?.ord()
     }
 
     fn doc_freq(&mut self) -> Result<i32> {
@@ -596,7 +601,7 @@ impl FieldsConsumer for BloomFilteredFieldsConsumer<'_> {
             let mut bloom_filter: Option<usize> = None;
 
             let mut postings_enum: Option<Box<dyn PostingsEnum>> = None;
-            while let Some(term) = terms_enum.next()? {
+            while let Some(term) = terms_enum.next()?.cloned() {
                 let index = match bloom_filter {
                     Some(index) => index,
                     None => {
@@ -713,7 +718,7 @@ mod producer_to_string_tests {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::empty())
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn size(&self) -> i32 {
@@ -836,7 +841,7 @@ mod fidelity_tests {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::empty())
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn size(&self) -> i32 {
@@ -898,7 +903,7 @@ mod producer_to_string_tests_support {
         fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
             Box::new(std::iter::empty())
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn size(&self) -> i32 {

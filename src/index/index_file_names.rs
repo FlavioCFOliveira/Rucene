@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
+use std::sync::Arc;
 
 /// Name of the index segment file.
 ///
@@ -331,6 +332,142 @@ fn radix36(value: u64) -> String {
 fn parse_radix36(s: &str) -> Result<i64> {
     crate::util::extra::java_parse_long_radix(s, 36)
         .ok_or_else(|| LuceneError::number_format_for_input_string(s, 36))
+}
+
+// -----------------------------------------------------------------------------
+// IndexFileName
+// -----------------------------------------------------------------------------
+
+/// The name of an index file, held as Java holds a `String`: one object that
+/// every file set naming the file shares by reference.
+///
+/// Lucene's file sets copy references, never characters:
+/// `SegmentCommitInfo.files()` starts from `new HashSet<>(info.files())`
+/// (`SegmentCommitInfo.java:241`) and `SegmentInfos.files` adds each
+/// segment's set with `addAll` (`SegmentInfos.java:943`). A Rust `String`
+/// cannot be shared, so this type holds the name either
+///
+/// * shared, as an `Arc<str>` that a clone shares (one reference-count
+///   increment): how [`SegmentInfo`](crate::index::SegmentInfo) holds its
+///   files, so that every set built from them shares them; or
+/// * owned, as a `String` moved in without a copy: a name made for one set,
+///   such as the live-docs name `LiveDocsFormat.files` builds per call.
+///
+/// Equality, hashing, ordering and formatting are those of the characters,
+/// however the name is held. It has no counterpart in Lucene 10.5.0, whose
+/// `String` objects are already shared.
+#[derive(Clone)]
+pub struct IndexFileName(NameRepr);
+
+/// How an [`IndexFileName`] holds its characters.
+#[derive(Clone)]
+enum NameRepr {
+    Owned(String),
+    Shared(Arc<str>),
+}
+
+impl IndexFileName {
+    /// A name that clones share instead of copying: one allocation, of the
+    /// name's characters.
+    pub fn shared(name: &str) -> Self {
+        Self(NameRepr::Shared(Arc::from(name)))
+    }
+
+    /// The name as a string slice.
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            NameRepr::Owned(name) => name,
+            NameRepr::Shared(name) => name,
+        }
+    }
+}
+
+/// Holds `name` itself, without a copy.
+impl From<String> for IndexFileName {
+    fn from(name: String) -> Self {
+        Self(NameRepr::Owned(name))
+    }
+}
+
+/// Moves an owned name out, and copies a shared one.
+impl From<IndexFileName> for String {
+    fn from(name: IndexFileName) -> Self {
+        match name.0 {
+            NameRepr::Owned(name) => name,
+            NameRepr::Shared(name) => String::from(&*name),
+        }
+    }
+}
+
+impl std::ops::Deref for IndexFileName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for IndexFileName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for IndexFileName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for IndexFileName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for IndexFileName {}
+
+impl PartialEq<str> for IndexFileName {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for IndexFileName {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::hash::Hash for IndexFileName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialOrd for IndexFileName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IndexFileName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+/// Formats as the characters' `Debug`, like a `String`.
+impl std::fmt::Debug for IndexFileName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for IndexFileName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 // -----------------------------------------------------------------------------

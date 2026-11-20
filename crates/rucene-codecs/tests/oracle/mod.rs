@@ -289,7 +289,7 @@ pub fn bytes(text: &str) -> BytesRef {
 }
 
 pub fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 pub fn doc(i: i32) -> Document {
@@ -1206,7 +1206,7 @@ pub fn dump_terms(
             let mut im = "   imp".to_string();
             for target in ADVANCE_TARGETS {
                 ie.advance_shallow(target)?;
-                let impacts = ie.get_impacts()?;
+                let mut impacts = ie.get_impacts()?;
                 im.push_str(&format!(" @{target} levels={}", impacts.num_levels()));
                 for level in 0..impacts.num_levels() {
                     im.push_str(&format!(" L{level} upTo={}", impacts.doc_id_up_to(level)));
@@ -1215,6 +1215,7 @@ pub fn dump_terms(
                         im.push_str(&format!(" {}/{}", buf.freqs[i], buf.norms[i]));
                     }
                 }
+                drop(impacts);
                 if ie.doc_id() < target {
                     ie.advance(target)?;
                 }
@@ -1223,14 +1224,20 @@ pub fn dump_terms(
                 }
             }
             out.push(im);
-            // The `Impacts` `get_impacts` returns is a view of the enum: one
-            // taken before the first `advance_shallow` reports the state each
-            // later one leaves.
+            // The `Impacts` `get_impacts` returns is a view of the enum: Java's
+            // one, taken before the first `advance_shallow`, reports the state
+            // each later one leaves. The port's view borrows the enum, so it
+            // is taken again after each move: the same view of the same state.
+            // Java's call before the loop is still made, where Java makes it:
+            // it is the one an asserting enum rejects ("Cannot get impacts
+            // until the iterator is positioned ..."), and SimpleText's
+            // `getImpacts` runs `advanceShallow(docID)` there.
             let mut held = te.impacts(POSTINGS_ENUM_FREQS)?;
-            let view = held.get_impacts()?;
+            drop(held.get_impacts()?);
             let mut lv = "   live".to_string();
             for target in ADVANCE_TARGETS {
                 held.advance_shallow(target)?;
+                let mut view = held.get_impacts()?;
                 lv.push_str(&format!(" @{target} levels={}", view.num_levels()));
                 for level in 0..view.num_levels() {
                     lv.push_str(&format!(" L{level} upTo={}", view.doc_id_up_to(level)));
@@ -1239,6 +1246,7 @@ pub fn dump_terms(
                         lv.push_str(&format!(" {}/{}", buf.freqs[i], buf.norms[i]));
                     }
                 }
+                drop(view);
                 if held.doc_id() < target {
                     held.advance(target)?;
                 }
@@ -1299,35 +1307,35 @@ impl StoredFieldVisitor for DumpVisitor {
         Ok(StoredFieldVisitorStatus::Yes)
     }
 
-    fn string_field(&mut self, fi: &FieldInfo, value: String) -> rucene::error::Result<()> {
+    fn string_field(&mut self, fi: &Arc<FieldInfo>, value: String) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=string:{}", fi.name, hex(value.as_bytes())));
         Ok(())
     }
 
-    fn binary_field(&mut self, fi: &FieldInfo, value: &[u8]) -> rucene::error::Result<()> {
+    fn binary_field(&mut self, fi: &Arc<FieldInfo>, value: &[u8]) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=binary:{}", fi.name, hex(value)));
         Ok(())
     }
 
-    fn int_field(&mut self, fi: &FieldInfo, value: i32) -> rucene::error::Result<()> {
+    fn int_field(&mut self, fi: &Arc<FieldInfo>, value: i32) -> rucene::error::Result<()> {
         self.sb.push_str(&format!(" {}=int:{value}", fi.name));
         Ok(())
     }
 
-    fn long_field(&mut self, fi: &FieldInfo, value: i64) -> rucene::error::Result<()> {
+    fn long_field(&mut self, fi: &Arc<FieldInfo>, value: i64) -> rucene::error::Result<()> {
         self.sb.push_str(&format!(" {}=long:{value}", fi.name));
         Ok(())
     }
 
-    fn float_field(&mut self, fi: &FieldInfo, value: f32) -> rucene::error::Result<()> {
+    fn float_field(&mut self, fi: &Arc<FieldInfo>, value: f32) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=float:{}", fi.name, fbits(value)));
         Ok(())
     }
 
-    fn double_field(&mut self, fi: &FieldInfo, value: f64) -> rucene::error::Result<()> {
+    fn double_field(&mut self, fi: &Arc<FieldInfo>, value: f64) -> rucene::error::Result<()> {
         self.sb
             .push_str(&format!(" {}=double:{:x}", fi.name, value.to_bits()));
         Ok(())
@@ -1853,25 +1861,28 @@ pub fn mask_crc(message: &str) -> String {
     out
 }
 
-// A defect of Rucene's core that these tests meet but do not own
-// (rmp #334 reports it; the task that owns the core class fixes it):
-// `BlockPostingsEnum::get_impacts` (`src/codecs/lucene104/postings_reader.rs`,
-// `Ok(Box::new(self.impacts.clone()))`) returns a snapshot, where Lucene's
+// A defect of Rucene's core that these tests met (rmp #334): its
+// `BlockPostingsEnum::get_impacts` returned a snapshot, where Lucene's
 // `getImpacts()` returns the enum's own `Impacts` object, a view of every
-// later `advanceShallow`. The dump's `   live` lines read such a view; every
-// format here keeps its postings in `Lucene104PostingsWriter`'s files, so
-// those lines differ. [`assert_same_lines_but_live`] compares every other
-// line and requires the `live` lines to still differ, so the exclusion fails
-// once the core is fixed.
+// later `advanceShallow`. The port's `get_impacts` now lends the enum's own
+// view (rmp #584), so the dump's `   live` lines, which read the view after
+// each move, are compared like every other line. A format whose `live` lines
+// still differed would set `live_must_differ`, which requires a difference so
+// that the exclusion fails once it is fixed.
 
-/// [`assert_same_lines`] except the dump's `   live` lines (the core defect
-/// above), which must still differ somewhere when `live_must_differ`.
+/// [`assert_same_lines`], except that the dump's `   live` lines are skipped
+/// and must still differ somewhere when `live_must_differ` (a core defect
+/// above that a format still meets).
 pub fn assert_same_lines_but_live(
     what: &str,
     actual: &[String],
     expected: &[String],
     live_must_differ: bool,
 ) {
+    if !live_must_differ {
+        assert_same_lines(what, actual, expected);
+        return;
+    }
     assert_eq!(actual.len(), expected.len(), "{what}: line count");
     let mut live_differences = 0;
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
@@ -1883,12 +1894,10 @@ pub fn assert_same_lines_but_live(
         }
         assert_eq!(a, e, "{what}: line {} differs", i + 1);
     }
-    if live_must_differ {
-        assert!(
-            live_differences > 0,
-            "{what}: every `live` line matches: the core's live impacts are fixed, remove the exclusion"
-        );
-    }
+    assert!(
+        live_differences > 0,
+        "{what}: every `live` line matches: the core's live impacts are fixed, remove the exclusion"
+    );
 }
 
 /// `PostingsFormatOracle.REGEXPS`.
@@ -1962,7 +1971,7 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                     sb.push('/');
                     sb.push_str(&te.total_term_freq()?.to_string());
                     let next = te.next()?;
-                    sb.push_str(&format!(" next={}", hex_or_null(next.as_ref())));
+                    sb.push_str(&format!(" next={}", hex_or_null(next)));
                     if next.is_some() {
                         sb.push('@');
                         sb.push_str(&te.ord()?.to_string());
@@ -2007,7 +2016,7 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
                     sb.push_str(&first_doc(fresh.as_mut())?.to_string());
                     sb.push_str(" next=");
                     let next = fresh.next()?;
-                    sb.push_str(&hex_or_null(next.as_ref()));
+                    sb.push_str(&hex_or_null(next));
                     Ok(())
                 })(&mut sb);
                 if let Err(e) = step {
@@ -2019,7 +2028,7 @@ pub fn enum_trace_with(path: &Path, known_panic: Option<&str>, panics: &mut usiz
 
             let mut it = terms.iterator().unwrap();
             let second = if it.next().unwrap().is_some() {
-                it.next().unwrap()
+                it.next().unwrap().cloned()
             } else {
                 None
             };

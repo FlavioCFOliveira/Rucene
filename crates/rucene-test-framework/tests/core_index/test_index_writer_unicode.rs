@@ -226,7 +226,7 @@ fn check_terms_order(
             break;
         };
 
-        Assert::assert_true(last.get() < term);
+        Assert::assert_true(last.get() < term.clone());
         last.copy_bytes(&term.bytes[term.offset..], 0, term.length);
 
         let s = term.utf8_to_string()?;

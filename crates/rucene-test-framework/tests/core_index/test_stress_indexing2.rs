@@ -558,7 +558,7 @@ fn verify_equals_readers(
     let mut term_docs2: Option<Box<dyn PostingsEnum>> = None;
 
     loop {
-        let Some(term) = terms_enum.next()? else {
+        let Some(term) = terms_enum.next()?.cloned() else {
             break;
         };
         // System.out.println("TEST: match id term=" + term);
@@ -691,7 +691,7 @@ fn verify_equals_readers(
                 terms_enum1 = Some(terms.iterator()?);
             }
             let te1 = terms_enum1.as_mut().expect("set");
-            term1 = te1.next()?;
+            term1 = te1.next()?.cloned();
             if term1.is_none() {
                 // no more terms in this field
                 terms_enum1 = None;
@@ -733,7 +733,7 @@ fn verify_equals_readers(
                 terms_enum2 = Some(terms.iterator()?);
             }
             let te2 = terms_enum2.as_mut().expect("set");
-            term2 = te2.next()?;
+            term2 = te2.next()?.cloned();
             if term2.is_none() {
                 // no more terms in this field
                 terms_enum2 = None;

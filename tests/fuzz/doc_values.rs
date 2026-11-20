@@ -1828,7 +1828,7 @@ fn an_ordinal_outside_the_dictionary_is_refused() {
         for field in infos.iter() {
             match field.doc_values_type {
                 DocValuesType::SORTED => {
-                    let values = producer.get_sorted(field).expect("sorted").unwrap();
+                    let mut values = producer.get_sorted(field).expect("sorted").unwrap();
                     let count = values.get_value_count().expect("value count");
                     assert!(count > 0, "[{}] the fixture writes terms", fixture.name);
                     assert!(values.lookup_ord(count).is_err());
@@ -1837,7 +1837,7 @@ fn an_ordinal_outside_the_dictionary_is_refused() {
                     assert!(values.lookup_ord(count - 1).is_ok());
                 }
                 DocValuesType::SORTED_SET => {
-                    let values = producer.get_sorted_set(field).expect("sorted set").unwrap();
+                    let mut values = producer.get_sorted_set(field).expect("sorted set").unwrap();
                     let count = values.get_value_count().expect("value count");
                     assert!(count > 0, "[{}] the fixture writes terms", fixture.name);
                     assert!(values.lookup_ord(count).is_err());

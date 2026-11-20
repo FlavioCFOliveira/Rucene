@@ -250,19 +250,19 @@ fn memory_writer(sort: Option<rucene::search::Sort>) -> Arc<IndexWriter> {
 }
 
 fn stored(name: &str, value: &str) -> Box<dyn IndexableField> {
-    Box::new(StoredField::new_string(name, value.to_string()).unwrap())
+    Box::new(StoredField::new_string(name.to_string(), value.to_string()).unwrap())
 }
 
 fn sdv(name: &str, value: &str) -> Box<dyn IndexableField> {
-    Box::new(SortedDocValuesField::new(name, bytes(value)))
+    Box::new(SortedDocValuesField::new(name.to_string(), bytes(value)))
 }
 
 fn ndv(name: &str, value: i64) -> Box<dyn IndexableField> {
-    Box::new(NumericDocValuesField::new(name, value))
+    Box::new(NumericDocValuesField::new(name.to_string(), value))
 }
 
 fn typed(name: &str, value: &str, field_type: &FieldType) -> Box<dyn IndexableField> {
-    Box::new(Field::new(name, value.to_string(), field_type.clone()).unwrap())
+    Box::new(Field::new(name.to_string(), value.to_string(), field_type.clone()).unwrap())
 }
 
 fn stored_type(frozen: bool) -> FieldType {

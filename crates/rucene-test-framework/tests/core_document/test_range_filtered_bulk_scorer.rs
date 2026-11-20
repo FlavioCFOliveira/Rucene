@@ -194,8 +194,8 @@ impl LeafCollector for RangeRecordingCollector {
         Ok(())
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        Ok(self.competitive_iterator.take())
+    fn competitive_iterator(&mut self) -> Result<Option<rucene::search::CompetitiveIterator>> {
+        Ok(self.competitive_iterator.take().map(Into::into))
     }
 }
 

@@ -355,14 +355,14 @@ impl Fields for OrdsBlockTreeTermsReader {
         Box::new(self.field_names.iter().cloned())
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.fields_cleared() {
             return Ok(None);
         }
         let Some(data) = self.fields.get(field) else {
             return Ok(None);
         };
-        Ok(Some(Box::new(OrdsFieldReader::new(
+        Ok(Some(Arc::new(OrdsFieldReader::new(
             Arc::clone(self.shared()?),
             Arc::clone(data),
         ))))

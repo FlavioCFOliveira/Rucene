@@ -989,7 +989,9 @@ enum PrepareSeek {
 /// first time a block is loaded or prefetched. `seek_ord` is unsupported here
 /// as it is in Java, and `intersect` lives in its own cursor.
 pub struct SegmentTermsEnum {
-    field: FieldReader,
+    /// The field this cursor walks, shared as Java's `fr` reference is
+    /// (`SegmentTermsEnum.java:48`, `FieldReader.java:139-141`).
+    field: std::sync::Arc<FieldReader>,
     /// This cursor's clone of the `.tim` input, or `None` until a block is
     /// first loaded or prefetched.
     ///
@@ -1008,8 +1010,14 @@ pub struct SegmentTermsEnum {
     current: usize,
     /// The trie node reached at each stack depth.
     nodes: Vec<Node>,
-    /// The current term.
-    term: Vec<u8>,
+    /// The current term: Java's `BytesRefBuilder term`
+    /// (`SegmentTermsEnum.java:56`). `bytes` holds exactly the term
+    /// (`offset` 0, `length == bytes.len()`, kept so by every write through
+    /// [`restore_term`](Self::restore_term) and the other term setters), so
+    /// that [`TermsEnum::term`] and [`TermsEnum::next`] lend this buffer as
+    /// Java's `term.get()` does (`SegmentTermsEnum.java:962, 968-970`) and the
+    /// lent term reads as the copy this port used to return.
+    term: BytesRef,
     /// Whether the current position names a term rather than a sub-block.
     term_exists: bool,
     /// Whether the cursor has run past the last term.
@@ -1039,7 +1047,10 @@ impl std::fmt::Debug for SegmentTermsEnum {
 
 impl SegmentTermsEnum {
     /// Opens a cursor over `field`.
-    pub fn new(field: FieldReader) -> Result<Self> {
+    ///
+    /// Equivalent to `SegmentTermsEnum(FieldReader, TrieReader)`, whose
+    /// `fr` is a reference to the field's one reader.
+    pub fn new(field: std::sync::Arc<FieldReader>) -> Result<Self> {
         let trie = field.new_reader()?;
 
         Ok(Self {
@@ -1050,7 +1061,7 @@ impl SegmentTermsEnum {
             static_frame: SegmentTermsEnumFrame::new(0, BlockTermState::default()),
             current: 0,
             nodes: Vec::new(),
-            term: Vec::new(),
+            term: BytesRef::default(),
             term_exists: false,
             eof: false,
             started: false,
@@ -1243,9 +1254,9 @@ impl SegmentTermsEnum {
     fn frame_next(&mut self) -> Result<bool> {
         loop {
             if self.stack[self.current].is_leaf_block {
-                let mut term = std::mem::take(&mut self.term);
+                let mut term = std::mem::take(&mut self.term.bytes);
                 let result = self.stack[self.current].next_leaf(&mut term);
-                self.term = term;
+                self.restore_term(term);
                 result?;
                 self.term_exists = true;
                 return Ok(false);
@@ -1263,9 +1274,9 @@ impl SegmentTermsEnum {
                 self.stack[self.current].load_next_floor_block(terms_in)?;
                 continue;
             }
-            let mut term = std::mem::take(&mut self.term);
+            let mut term = std::mem::take(&mut self.term.bytes);
             let result = self.stack[self.current].next_non_leaf_entry(&mut term);
-            self.term = term;
+            self.restore_term(term);
             let is_sub_block = result?;
             self.term_exists = !is_sub_block;
             return Ok(is_sub_block);
@@ -1278,11 +1289,11 @@ impl SegmentTermsEnum {
     /// Equivalent to `SegmentTermsEnumFrame.scanToTerm` together with the
     /// descent its non-leaf half performs through its cursor.
     fn scan_to_term_current(&mut self, target: &[u8], exact_only: bool) -> Result<SeekStatus> {
-        let mut term = std::mem::take(&mut self.term);
+        let mut term = std::mem::take(&mut self.term.bytes);
         let mut term_exists = self.term_exists;
         let result =
             self.stack[self.current].scan_to_term(target, exact_only, &mut term, &mut term_exists);
-        self.term = term;
+        self.restore_term(term);
         self.term_exists = term_exists;
         let (status, descend) = result?;
 
@@ -1298,7 +1309,7 @@ impl SegmentTermsEnum {
             self.load_current_block()?;
             while self.frame_next()? {
                 let sub_fp = self.stack[self.current].last_sub_fp;
-                let length = self.term.len();
+                let length = self.term.bytes.len();
                 self.push_frame(None, sub_fp, length)?;
                 self.load_current_block()?;
             }
@@ -1312,10 +1323,42 @@ impl SegmentTermsEnum {
     /// Java can call past the term's current length because the builder keeps
     /// buffer and length apart.
     fn set_term_byte(&mut self, index: usize, byte: u8) {
-        if self.term.len() <= index {
-            self.term.resize(index + 1, 0);
+        if self.term.bytes.len() <= index {
+            self.term.bytes.resize(index + 1, 0);
+            self.term.length = self.term.bytes.len();
         }
-        self.term[index] = byte;
+        self.term.bytes[index] = byte;
+    }
+
+    /// Puts back the term buffer a frame filled — taken out with
+    /// `std::mem::take` so that the frame and the cursor can be borrowed
+    /// together — and records its length, so the lent term stays exact.
+    fn restore_term(&mut self, bytes: Vec<u8>) {
+        self.term.length = bytes.len();
+        self.term.bytes = bytes;
+    }
+
+    /// Cuts the term to its first `length` bytes: Java's
+    /// `term.setLength(length)` over a shorter term, and `term.clear()` for 0.
+    fn truncate_term(&mut self, length: usize) {
+        self.term.bytes.truncate(length);
+        self.term.length = self.term.bytes.len();
+    }
+
+    /// Replaces the term with `bytes`: Java's `term.copyBytes(bytes)`.
+    fn copy_term(&mut self, bytes: &[u8]) {
+        self.term.bytes.clear();
+        self.term.bytes.extend_from_slice(bytes);
+        self.term.length = self.term.bytes.len();
+    }
+
+    /// The current term as the cursor lends it: Java's `term.get()`.
+    fn term_ref(&self) -> &BytesRef {
+        debug_assert!(
+            self.term.offset == 0 && self.term.length == self.term.bytes.len(),
+            "the term buffer must hold exactly the term"
+        );
+        &self.term
     }
 
     /// Walks the term index towards `target` without reading any block.
@@ -1354,12 +1397,12 @@ impl SegmentTermsEnum {
             target_upto = 0;
 
             let mut last_frame_ord = 0usize;
-            debug_assert!(self.valid_index_prefix <= self.term.len());
+            debug_assert!(self.valid_index_prefix <= self.term.bytes.len());
             let target_limit = target.len().min(self.valid_index_prefix);
 
             let mut cmp = std::cmp::Ordering::Equal;
             while target_upto < target_limit {
-                cmp = self.term[target_upto].cmp(&target[target_upto]);
+                cmp = self.term.bytes[target_upto].cmp(&target[target_upto]);
                 if cmp != std::cmp::Ordering::Equal {
                     break;
                 }
@@ -1379,7 +1422,7 @@ impl SegmentTermsEnum {
             if cmp == std::cmp::Ordering::Equal {
                 // Compare the rest of the term, without saving any state: this
                 // only decides whether the target is before, at or after it.
-                cmp = self.term[target_upto..].cmp(&target[target_upto..]);
+                cmp = self.term.bytes[target_upto..].cmp(&target[target_upto..]);
             }
 
             match cmp {
@@ -1396,7 +1439,7 @@ impl SegmentTermsEnum {
                     self.stack[self.current].rewind(self.trie.floor_input())?;
                 }
                 std::cmp::Ordering::Equal => {
-                    debug_assert_eq!(self.term.len(), target.len());
+                    debug_assert_eq!(self.term.bytes.len(), target.len());
                     if self.term_exists {
                         return Ok(PrepareSeek::AlreadyPositioned);
                     }
@@ -1426,7 +1469,7 @@ impl SegmentTermsEnum {
                 if !self.stack[self.current].has_terms {
                     self.term_exists = false;
                     self.set_term_byte(target_upto, target_label as u8);
-                    self.term.truncate(1 + target_upto);
+                    self.truncate_term(1 + target_upto);
                     return Ok(PrepareSeek::NoMatch);
                 }
                 return Ok(PrepareSeek::ScanBlock);
@@ -1449,7 +1492,7 @@ impl SegmentTermsEnum {
         // The target term is entirely contained in the index.
         if !self.stack[self.current].has_terms {
             self.term_exists = false;
-            self.term.truncate(target_upto);
+            self.truncate_term(target_upto);
             return Ok(PrepareSeek::NoMatch);
         }
 
@@ -1573,7 +1616,7 @@ impl SegmentTermsEnum {
                 if self.frame_next()? {
                     // Push to a new block.
                     let sub_fp = self.stack[self.current].last_sub_fp;
-                    let length = self.term.len();
+                    let length = self.term.bytes.len();
                     self.push_frame(None, sub_fp, length)?;
                     self.stack[self.current].fp_orig = self.stack[self.current].fp;
                     // This is a "next" frame: even when it is floor'd we must
@@ -1582,7 +1625,7 @@ impl SegmentTermsEnum {
                     let is_floor = !self.stack[self.current].is_last_in_floor;
                     stats.start_block(&self.stack[self.current], is_floor);
                 } else {
-                    stats.term(&BytesRef::new(self.term.clone()));
+                    stats.term(self.term_ref());
                     break;
                 }
             }
@@ -1598,7 +1641,7 @@ impl SegmentTermsEnum {
         self.stack[self.current].rewind(self.trie.floor_input())?;
         self.load_current_block()?;
         self.valid_index_prefix = 0;
-        self.term.clear();
+        self.truncate_term(0);
 
         Ok(stats)
     }
@@ -1629,7 +1672,8 @@ impl SegmentTermsEnum {
         loop {
             self.ensure_frame(ord)?;
             let f = &self.stack[ord];
-            let prefix: Vec<u8> = self.term[..f.prefix_length.min(self.term.len())].to_vec();
+            let prefix: Vec<u8> =
+                self.term.bytes[..f.prefix_length.min(self.term.bytes.len())].to_vec();
             if f.next_ent == -1 {
                 writeln!(
                     out,
@@ -1693,12 +1737,12 @@ impl SegmentTermsEnum {
             if frame_prefix_length > 0 && is_seek_frame {
                 // Java dereferences the null node (an NPE) when assertions are off.
                 let node = frame_node.expect("seek state is broken: seek frame has no index node");
-                if node.label != i32::from(self.term[frame_prefix_length - 1]) {
+                if node.label != i32::from(self.term.bytes[frame_prefix_length - 1]) {
                     writeln!(
                         out,
                         "      broken seek state: node.label={} vs term byte={}",
                         java_label_char(node.label),
-                        char::from(self.term[frame_prefix_length - 1])
+                        char::from(self.term.bytes[frame_prefix_length - 1])
                     )?;
                     return Err(LuceneError::unchecked(
                         "java.lang.RuntimeException",
@@ -1767,8 +1811,7 @@ impl SegmentTermsEnum {
         if result != SeekStatus::END {
             return Ok(result);
         }
-        self.term.clear();
-        self.term.extend_from_slice(target);
+        self.copy_term(target);
         self.term_exists = false;
         if TermsEnum::next(self)?.is_some() {
             Ok(SeekStatus::NOT_FOUND)
@@ -1832,7 +1875,9 @@ impl TermsEnum for SegmentTermsEnum {
         &mut self.attributes
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    /// Equivalent to `SegmentTermsEnum.next()` (`SegmentTermsEnum.java:881-965`),
+    /// which returns `term.get()`, the cursor's own buffer.
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         if self.terms_in.is_none() {
             // Fresh TermsEnum; seek to first term.
             self.start()?;
@@ -1849,7 +1894,7 @@ impl TermsEnum for SegmentTermsEnum {
             // a D/&PEnum or get docFreq, etc. But, if they then call next(),
             // this method catches up all internal state so next() works
             // properly (`SegmentTermsEnum.java:900-912`).
-            let term = BytesRef::new(self.term.clone());
+            let term = self.term_ref().clone();
             let result = self.seek_exact(&term)?;
             debug_assert!(result);
         }
@@ -1866,7 +1911,7 @@ impl TermsEnum for SegmentTermsEnum {
                 }
                 if self.stack[self.current].ord == 0 {
                     debug_assert!(self.set_eof());
-                    self.term.clear();
+                    self.truncate_term(0);
                     self.valid_index_prefix = 0;
                     self.stack[self.current].rewind(self.trie.floor_input())?;
                     self.term_exists = false;
@@ -1877,15 +1922,15 @@ impl TermsEnum for SegmentTermsEnum {
                 if self.stack[self.current].next_ent == -1
                     || self.stack[self.current].last_sub_fp != last_fp
                 {
-                    let target = self.term.clone();
+                    let target = self.term.bytes.clone();
                     self.stack[self.current]
                         .scan_to_floor_frame(&target, self.trie.floor_input())?;
                     self.init_index_input()?;
                     let terms_in = Self::index_input(&mut self.terms_in);
                     self.stack[self.current].load_block(terms_in)?;
-                    let mut term = std::mem::take(&mut self.term);
+                    let mut term = std::mem::take(&mut self.term.bytes);
                     let result = self.stack[self.current].scan_to_sub_block(last_fp, &mut term);
-                    self.term = term;
+                    self.restore_term(term);
                     result?;
                 }
 
@@ -1897,26 +1942,26 @@ impl TermsEnum for SegmentTermsEnum {
 
             let is_leaf = self.stack[self.current].is_leaf_block;
             if is_leaf {
-                let mut term = std::mem::take(&mut self.term);
+                let mut term = std::mem::take(&mut self.term.bytes);
                 let result = self.stack[self.current].next_leaf(&mut term);
-                self.term = term;
+                self.restore_term(term);
                 result?;
                 self.term_exists = true;
-                return Ok(Some(BytesRef::new(self.term.clone())));
+                return Ok(Some(self.term_ref()));
             }
 
-            let mut term = std::mem::take(&mut self.term);
+            let mut term = std::mem::take(&mut self.term.bytes);
             let is_sub_block = self.stack[self.current].next_non_leaf_entry(&mut term);
-            self.term = term;
+            self.restore_term(term);
             if is_sub_block? {
                 // Descend into the sub-block and keep going.
                 let sub_fp = self.stack[self.current].last_sub_fp;
-                let length = self.term.len();
+                let length = self.term.bytes.len();
                 self.push_frame(None, sub_fp, length)?;
                 self.load_current_block()?;
             } else {
                 self.term_exists = true;
-                return Ok(Some(BytesRef::new(self.term.clone())));
+                return Ok(Some(self.term_ref()));
             }
         }
     }
@@ -1964,12 +2009,12 @@ impl TermsEnum for SegmentTermsEnum {
             target_upto = 0;
 
             let mut last_frame_ord = 0usize;
-            debug_assert!(self.valid_index_prefix <= self.term.len());
+            debug_assert!(self.valid_index_prefix <= self.term.bytes.len());
             let target_limit = target.len().min(self.valid_index_prefix);
 
             let mut cmp = std::cmp::Ordering::Equal;
             while target_upto < target_limit {
-                cmp = self.term[target_upto].cmp(&target[target_upto]);
+                cmp = self.term.bytes[target_upto].cmp(&target[target_upto]);
                 if cmp != std::cmp::Ordering::Equal {
                     break;
                 }
@@ -1988,7 +2033,7 @@ impl TermsEnum for SegmentTermsEnum {
 
             if cmp == std::cmp::Ordering::Equal {
                 // Compare the rest of the term, without saving any state.
-                cmp = self.term[target_upto..].cmp(&target[target_upto..]);
+                cmp = self.term.bytes[target_upto..].cmp(&target[target_upto..]);
             }
 
             match cmp {
@@ -2004,7 +2049,7 @@ impl TermsEnum for SegmentTermsEnum {
                     self.stack[self.current].rewind(self.trie.floor_input())?;
                 }
                 std::cmp::Ordering::Equal => {
-                    debug_assert_eq!(self.term.len(), target.len());
+                    debug_assert_eq!(self.term.bytes.len(), target.len());
                     if self.term_exists {
                         return Ok(SeekStatus::FOUND);
                     }
@@ -2061,14 +2106,16 @@ impl TermsEnum for SegmentTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    /// Equivalent to `SegmentTermsEnum.term()` (`SegmentTermsEnum.java:968-971`):
+    /// `assert !eof`, then `term.get()`, the cursor's own buffer.
+    fn term(&self) -> Result<Option<&BytesRef>> {
         debug_assert!(!self.eof);
-        Ok(Some(BytesRef::new(self.term.clone())))
+        Ok(Some(self.term_ref()))
     }
 
     /// The `term` buffer `term()` returns, read without its `assert !eof`.
-    fn term_buffer(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.term.clone())))
+    fn term_buffer(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.term_ref()))
     }
 
     /// Equivalent to `SegmentTermsEnum.ord()` (`SegmentTermsEnum.java:1051-1054`):
@@ -2139,12 +2186,11 @@ impl TermsEnum for SegmentTermsEnum {
     fn seek_term_state(&mut self, target: &BytesRef, state: &dyn TermState) -> Result<()> {
         debug_assert!(self.clear_eof());
         self.clear_eof();
-        if target.slice() != self.term.as_slice() || !self.term_exists {
+        if target.slice() != self.term.bytes.as_slice() || !self.term_exists {
             debug_assert!(state.as_any().downcast_ref::<BlockTermState>().is_some());
             self.started = false;
             TermState::copy_from(&mut self.static_frame.state, state);
-            self.term.clear();
-            self.term.extend_from_slice(target.slice());
+            self.copy_term(target.slice());
             self.static_frame.meta_data_upto = self.static_frame.get_term_block_ord();
             debug_assert!(self.static_frame.meta_data_upto > 0);
             self.valid_index_prefix = 0;

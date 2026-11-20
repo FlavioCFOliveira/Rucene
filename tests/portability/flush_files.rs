@@ -619,7 +619,7 @@ fn a_lucene_compound_file_is_read_through_slices_of_its_handle() {
     let codec = info.codec().expect("the segment names its codec");
     let cfs = codec
         .compound_format()
-        .get_compound_reader(dir.as_ref(), info)
+        .get_compound_reader(&dir, info)
         .expect("open the compound file Lucene wrote");
     cfs.check_integrity().expect("the data file checksums");
 

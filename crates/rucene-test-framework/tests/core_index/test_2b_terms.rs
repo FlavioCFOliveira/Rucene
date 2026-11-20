@@ -330,7 +330,7 @@ fn find_terms(r: &Arc<dyn IndexReader>) -> Result<Vec<BytesRef>> {
     while let Some(term) = terms_enum.next()? {
         next_save -= 1;
         if next_save == 0 {
-            saved_terms.push(BytesRef::deep_copy_of(&term));
+            saved_terms.push(BytesRef::deep_copy_of(term));
             println!("TEST: add {term}");
             next_save = TestUtil::next_int(&*random(), 500000, 1000000);
         }

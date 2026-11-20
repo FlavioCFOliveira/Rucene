@@ -5,8 +5,8 @@
 
 use crate::error::Result;
 use crate::index::{
-    DocAndFloatFeatureBuffer, Impacts, ImpactsEnum, ImpactsSource, NumericDocValues, PostingsEnum,
-    SlowImpactsEnum,
+    DocAndFloatFeatureBuffer, ImpactsEnum, ImpactsRef, ImpactsSource, NumericDocValues,
+    PostingsEnum, SlowImpactsEnum,
 };
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::impacts_disi::ImpactsDISI;
@@ -106,7 +106,7 @@ impl ImpactsSource for BoxedImpactsEnum {
         self.0.advance_shallow(target)
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         self.0.get_impacts()
     }
 }
@@ -122,7 +122,10 @@ impl ImpactsEnum for BoxedImpactsEnum {}
 /// combinations become its three variants.
 enum Iteration {
     /// The first constructor: a plain postings enum, wrapped in a
-    /// [`SlowImpactsEnum`] so that it can also answer impacts.
+    /// [`SlowImpactsEnum`] so that it can also answer impacts. As in Java,
+    /// only the score cache sees the wrapper: the postings, the doc ID and
+    /// the iterator are the wrapped enum itself (`TermScorer.java:48-50`), so
+    /// its bulk paths (`intoBitSet`, `docIDRunEnd`) are the ones callers reach.
     Slow(SlowImpactsEnum, MaxScoreCache),
     /// The second constructor with `topLevelScoringClause == false`: the
     /// impacts enum is iterated directly.
@@ -136,7 +139,7 @@ enum Iteration {
 impl Iteration {
     fn postings(&mut self) -> &mut dyn PostingsEnum {
         match self {
-            Self::Slow(e, _) => e,
+            Self::Slow(e, _) => e.delegate_mut(),
             Self::Impacts(e, _) => e,
             Self::ImpactsDisi(d) => d.inner(),
         }
@@ -144,7 +147,7 @@ impl Iteration {
 
     fn doc_id(&self) -> i32 {
         match self {
-            Self::Slow(e, _) => e.doc_id(),
+            Self::Slow(e, _) => e.delegate_ref().doc_id(),
             Self::Impacts(e, _) => e.doc_id(),
             Self::ImpactsDisi(d) => d.doc_id(),
         }
@@ -166,7 +169,10 @@ impl Iteration {
 
     fn iterator(&mut self) -> &mut dyn DocIdSetIterator {
         match self {
-            Self::Slow(e, _) => e,
+            // PERF: `iterator = this.postingsEnum` (`TermScorer.java:48`): the
+            // wrapped enum, whose `into_bit_set`/`doc_id_run_end` overrides
+            // the `SlowImpactsEnum` forwarder does not carry.
+            Self::Slow(e, _) => e.delegate_mut(),
             Self::Impacts(e, _) => e,
             Self::ImpactsDisi(d) => &mut **d,
         }
@@ -379,5 +385,121 @@ impl Scorer for TermScorer {
         }
         buffer.features[..size].copy_from_slice(&self.score_spare[..size]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::NO_MORE_DOCS;
+    use crate::util::FixedBitSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// A postings enum over the docs `[0, len)` that counts the calls to its
+    /// own bulk overrides.
+    struct RunPostings {
+        doc: i32,
+        len: i32,
+        into_bit_set_calls: Arc<AtomicUsize>,
+        run_end_calls: Arc<AtomicUsize>,
+    }
+
+    impl DocIdSetIterator for RunPostings {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            let target = self.doc + 1;
+            self.advance(target)
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.doc = if target >= self.len {
+                NO_MORE_DOCS
+            } else {
+                target
+            };
+            Ok(self.doc)
+        }
+        fn cost(&self) -> i64 {
+            i64::from(self.len)
+        }
+        fn into_bit_set(
+            &mut self,
+            up_to: i32,
+            bit_set: &mut FixedBitSet,
+            offset: i32,
+        ) -> Result<()> {
+            self.into_bit_set_calls.fetch_add(1, Ordering::Relaxed);
+            let up_to = up_to.min(self.len);
+            if up_to > self.doc {
+                bit_set.set_range((self.doc - offset) as usize, (up_to - offset) as usize);
+                self.advance(up_to)?;
+            }
+            Ok(())
+        }
+        fn doc_id_run_end(&mut self) -> Result<i32> {
+            self.run_end_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.len)
+        }
+    }
+
+    impl std::fmt::Display for RunPostings {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RunPostings")
+        }
+    }
+
+    impl PostingsEnum for RunPostings {
+        fn freq(&self) -> Result<i32> {
+            Ok(1)
+        }
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(-1)
+        }
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+    }
+
+    struct ConstantSimScorer;
+
+    impl SimScorer for ConstantSimScorer {
+        fn score(&self, _freq: f32, _norm: i64) -> f32 {
+            1.0
+        }
+    }
+
+    /// `TermScorer(PostingsEnum, SimScorer, NumericDocValues)` iterates the
+    /// postings enum itself (`iterator = this.postingsEnum`,
+    /// `TermScorer.java:48`); the `SlowImpactsEnum` it builds serves only the
+    /// score cache. So the enum's own `into_bit_set` and `doc_id_run_end`
+    /// answer, not the forwarder's per-document defaults.
+    #[test]
+    fn plain_term_scorer_iterates_the_postings_enum_itself() {
+        let into_bit_set_calls = Arc::new(AtomicUsize::new(0));
+        let run_end_calls = Arc::new(AtomicUsize::new(0));
+        let postings = RunPostings {
+            doc: -1,
+            len: 100,
+            into_bit_set_calls: Arc::clone(&into_bit_set_calls),
+            run_end_calls: Arc::clone(&run_end_calls),
+        };
+        let mut scorer = TermScorer::new(Box::new(postings), Arc::new(ConstantSimScorer), None);
+        assert_eq!(scorer.iterator().next_doc().unwrap(), 0);
+        assert_eq!(scorer.iterator().doc_id_run_end().unwrap(), 100);
+        let mut bits = FixedBitSet::new(100);
+        scorer.iterator().into_bit_set(60, &mut bits, 0).unwrap();
+        assert_eq!(scorer.doc_id(), 60);
+        assert_eq!(bits.cardinality(), 60);
+        assert_eq!(scorer.freq().unwrap(), 1);
+        assert_eq!(into_bit_set_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(run_end_calls.load(Ordering::Relaxed), 1);
     }
 }

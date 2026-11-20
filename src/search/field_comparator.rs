@@ -12,7 +12,6 @@ use crate::util::atomic_ref_cell::{AtomicRefCell, AtomicRefMut};
 
 use crate::error::Result;
 use crate::index::{BinaryDocValues, DocValues, LeafReaderContext};
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::scorable::Scorable;
 use crate::util::BytesRef;
@@ -452,7 +451,7 @@ pub trait SlotComparator: Debug + Send + Sync + 'static {
     fn competitive_iterator(
         &mut self,
         _leaf: &mut Self::Leaf,
-    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    ) -> Result<Option<crate::search::CompetitiveIterator>> {
         Ok(None)
     }
 
@@ -609,7 +608,7 @@ impl<C: SlotComparator> LeafFieldComparator for SharedLeafComparator<C> {
         lock_slots(&self.shared).set_scorer(&mut self.leaf, scorer)
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
         lock_slots(&self.shared).competitive_iterator(&mut self.leaf)
     }
 

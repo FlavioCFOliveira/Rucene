@@ -167,13 +167,17 @@ pub(crate) fn to_bytes(value: i64) -> BytesRef {
 
 /// `new BinaryDocValuesField(name, value)`.
 fn bdv_field(name: &str, value: BytesRef) -> Box<BinaryDocValuesField> {
-    Box::new(BinaryDocValuesField::new(name, value))
+    Box::new(BinaryDocValuesField::new(name.to_string(), value))
 }
 
 /// `new BinaryDocValuesField(name, value)` as the `Field` `updateDocValues`
 /// takes.
 fn bdv_update(name: &str, value: BytesRef) -> Result<Field> {
-    Field::new_with_bytes(name, value, BinaryDocValuesField::type_().clone())
+    Field::new_with_bytes(
+        name.to_string(),
+        value,
+        BinaryDocValuesField::type_().clone(),
+    )
 }
 
 /// `private Document doc(int id)`.
@@ -521,7 +525,7 @@ fn test_multiple_doc_values_types() -> Result<()> {
         assert_equals(&17, &get_value(&*bdv)?);
         assert_equals(&i, &sdv.next_doc()?);
         let term = sdv.lookup_ord(sdv.ord_value()?)?;
-        assert_equals(&LuceneTestCase::new_bytes_ref_str(&i.to_string()), &term);
+        assert_equals(&LuceneTestCase::new_bytes_ref_str(&i.to_string()), term);
         assert_equals(&i, &ssdv.next_doc()?);
 
         let mut ord = ssdv.next_ord()?;
@@ -697,7 +701,7 @@ fn test_different_dv_format_per_field() -> Result<()> {
         assert_equals(&17, &get_value(&*bdv)?);
         assert_equals(&i, &sdv.next_doc()?);
         let term = sdv.lookup_ord(sdv.ord_value()?)?;
-        assert_equals(&LuceneTestCase::new_bytes_ref_str("value"), &term);
+        assert_equals(&LuceneTestCase::new_bytes_ref_str("value"), term);
     }
 
     reader.close()?;

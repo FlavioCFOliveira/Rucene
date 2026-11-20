@@ -87,7 +87,7 @@ pub use doc_values::{
 pub use field_infos::{FieldInfo, FieldInfos, FieldInfosBuilder, FieldNumbers};
 pub use index_file_names::{
     file_name_from_generation, get_extension, is_codec_file, matches_extension, parse_generation,
-    parse_segment_name, segment_file_name, strip_extension, strip_segment_name,
+    parse_segment_name, segment_file_name, strip_extension, strip_segment_name, IndexFileName,
     COMPOUND_FILE_ENTRIES_EXTENSION, COMPOUND_FILE_EXTENSION, DOC_VALUES_EXTENSION,
     DOC_VALUES_META_EXTENSION, FIELD_INFO_EXTENSION, KNN_VECTORS_EXTENSION,
     KNN_VECTORS_FORMAT_META_EXTENSION, KNN_VECTORS_INDEX_EXTENSION, KNN_VECTORS_META_EXTENSION,
@@ -124,8 +124,8 @@ pub use point_values::{
 };
 pub use postings_enum::{
     feature_requested, DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum,
-    ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
-    POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+    ImpactsRef, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
+    POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 pub use segment_info::{

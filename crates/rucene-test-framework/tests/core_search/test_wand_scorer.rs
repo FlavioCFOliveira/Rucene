@@ -721,7 +721,9 @@ impl Scorer for MaxScoreWrapperScorer {
 
     fn advance_shallow(&mut self, target: i32) -> Result<i32> {
         self.last_shallow_target = target;
-        self.r#in.advance_shallow(target)
+        // Java's `in.advanceShallow(target)`: `in` is the wrapped scorer.
+        // `FilterScorer` keeps `Scorer`'s non-forwarding default, as in Java.
+        self.r#in.inner_mut().advance_shallow(target)
     }
 
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {

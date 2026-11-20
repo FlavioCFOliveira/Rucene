@@ -143,7 +143,7 @@ fn java_lines(prefix: &str) -> Vec<String> {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+    Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
 }
 
 /// `PostingsSkipFixture.describe`: doc, freq, then pos/start-end/payload.
@@ -230,14 +230,14 @@ const IMPACT_TARGETS: [i32; 22] = [
 
 /// `PostingsSkipFixture.describe(Impacts)`: `level:docIdUpTo:freq/norm,...`
 /// per level.
-fn describe_impacts(impacts: &dyn rucene::index::Impacts) -> String {
+fn describe_impacts(impacts: &mut dyn rucene::index::Impacts) -> String {
     let mut out = String::new();
     for level in 0..impacts.num_levels() {
-        let buffer = impacts.get_impacts(level);
         if level > 0 {
             out.push(' ');
         }
         out.push_str(&format!("{level}:{}:", impacts.doc_id_up_to(level)));
+        let buffer = impacts.get_impacts(level);
         for k in 0..buffer.size {
             if k > 0 {
                 out.push(',');
@@ -273,7 +273,7 @@ fn impacts_of_each_level_match_lucene() {
         impacts.advance_shallow(target).unwrap();
         rust.push(format!(
             "{target} {}",
-            describe_impacts(impacts.get_impacts().unwrap().as_ref())
+            describe_impacts(&mut *impacts.get_impacts().unwrap())
         ));
     }
     let java: Vec<String> = java_lines("impacts")
@@ -509,7 +509,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
         .unwrap()
         .iterator()
         .unwrap();
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"aaa".to_vec())));
     let mut postings = terms
         .postings(None, POSTINGS_ENUM_OFFSETS)
         .unwrap()
@@ -520,7 +520,7 @@ fn a_reused_block_postings_enum_keeps_the_last_offsets_until_next_doc() {
     assert_eq!((postings.start_offset(), postings.end_offset()), (0, 3));
     let first = identity(postings.as_ref());
 
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_OFFSETS)
         .unwrap()
@@ -636,7 +636,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
         .unwrap()
         .iterator()
         .unwrap();
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"aaa".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"aaa".to_vec())));
     let mut postings = terms
         .postings(None, POSTINGS_ENUM_PAYLOADS)
         .unwrap()
@@ -646,7 +646,7 @@ fn a_reused_block_postings_enum_keeps_the_last_payload_until_next_doc() {
     assert_eq!(postings.get_payload().unwrap(), Some(&[1u8, 2][..]));
     let first = identity(postings.as_ref());
 
-    assert_eq!(terms.next().unwrap(), Some(BytesRef::new(b"bbb".to_vec())));
+    assert_eq!(terms.next().unwrap(), Some(&BytesRef::new(b"bbb".to_vec())));
     let reused = terms
         .postings(Some(postings), POSTINGS_ENUM_PAYLOADS)
         .unwrap()
@@ -763,7 +763,7 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         self.inner.seek_term_state(text, state)
     }
 
-    fn term(&self) -> rucene::error::Result<Option<BytesRef>> {
+    fn term(&self) -> rucene::error::Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -810,7 +810,7 @@ impl TermsEnum for RecordingTermsEnum<'_> {
         self.inner.prefer_seek_exact()
     }
 
-    fn next(&mut self) -> rucene::error::Result<Option<BytesRef>> {
+    fn next(&mut self) -> rucene::error::Result<Option<&BytesRef>> {
         self.inner.next()
     }
 }

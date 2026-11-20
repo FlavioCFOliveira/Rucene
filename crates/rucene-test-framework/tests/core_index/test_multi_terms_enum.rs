@@ -232,7 +232,7 @@ impl MigratingFieldsProducer {
     }
 
     /// `BaseMigratingFieldsProducer.terms(field)`: `delegate.terms(field)`.
-    fn super_terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn super_terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.delegate.get().terms(field)
     }
 
@@ -248,11 +248,11 @@ impl Fields for MigratingFieldsProducer {
         Box::new(self.new_field_info.iter().map(|fi| fi.name.to_string()))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if "deleted" == field {
             let deleted_terms = self.super_terms("deleted")?;
             if let Some(deleted_terms) = deleted_terms {
-                return Ok(Some(Box::new(ValueFilteredTerms::new(
+                return Ok(Some(Arc::new(ValueFilteredTerms::new(
                     deleted_terms,
                     BytesRef::from_char_sequence("1"),
                 ))));
@@ -292,12 +292,12 @@ impl FieldsProducer for MigratingFieldsProducer {
 
 /// `private static class ValueFilteredTerms extends Terms`.
 struct ValueFilteredTerms {
-    delegate: Box<dyn Terms>,
+    delegate: Arc<dyn Terms>,
     value: BytesRef,
 }
 
 impl ValueFilteredTerms {
-    fn new(delegate: Box<dyn Terms>, value: BytesRef) -> Self {
+    fn new(delegate: Arc<dyn Terms>, value: BytesRef) -> Self {
         ValueFilteredTerms { delegate, value }
     }
 }

@@ -407,7 +407,7 @@ fn one_field_doc(field: &str, term: &str, text: bool) -> Document {
 /// `assertEquals(new BytesRef(expected), te.next())`.
 fn assert_next(te: &mut dyn TermsEnum, expected: &str) -> Result<()> {
     let next = te.next()?;
-    if next.as_ref() != Some(&bytes(expected)) {
+    if next != Some(&bytes(expected)) {
         let was = next.map_or_else(|| "null".to_string(), |b| b.to_string());
         randomizedtesting::jdk::exception::throw(
             "java.lang.AssertionError",
@@ -445,11 +445,11 @@ fn ords_test_basic() -> Result<()> {
 
     // Test seekExact by ord
     te.seek_ord(1)?;
-    Assert::assert_equals_nullable(Some(bytes("b")), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("b")), te.term()?.cloned());
     te.seek_ord(0)?;
-    Assert::assert_equals_nullable(Some(bytes("a")), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("a")), te.term()?.cloned());
     te.seek_ord(2)?;
-    Assert::assert_equals_nullable(Some(bytes("c")), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("c")), te.term()?.cloned());
 
     drop(te);
     r.close()?;
@@ -493,7 +493,7 @@ fn ords_test_two_blocks() -> Result<()> {
     Assert::assert_equals(27i64, te.ord()?);
 
     te.seek_ord(54)?;
-    Assert::assert_equals_nullable(Some(bytes("s")), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("s")), te.term()?.cloned());
 
     terms.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
 
@@ -531,7 +531,7 @@ fn ords_test_two_blocks() -> Result<()> {
             te.seek_exact(&term)?;
         }
         Assert::assert_equals(ord as i64, te.ord()?);
-        Assert::assert_equals_nullable(Some(term), te.term()?);
+        Assert::assert_equals_nullable(Some(term), te.term()?.cloned());
     }
 
     drop(te);
@@ -571,7 +571,7 @@ fn ords_test_three_blocks() -> Result<()> {
     Assert::assert_equals(27i64, te.ord()?);
 
     te.seek_ord(90)?;
-    Assert::assert_equals_nullable(Some(bytes("s")), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("s")), te.term()?.cloned());
 
     test_enum(&mut *te, &mut terms)?;
 
@@ -653,7 +653,7 @@ fn ords_test_floor_blocks() -> Result<()> {
     let mut te = multi_terms_enum(&r, "field")?;
 
     if *VERBOSE {
-        while let Some(term) = te.next()? {
+        while let Some(term) = te.next()?.cloned() {
             println!("  {}: {}", te.ord()?, term.utf8_to_string()?);
         }
     }
@@ -662,7 +662,7 @@ fn ords_test_floor_blocks() -> Result<()> {
     Assert::assert_equals(97i64, te.ord()?);
 
     te.seek_ord(98)?;
-    Assert::assert_equals_nullable(Some(bytes("b")), te.term()?);
+    Assert::assert_equals_nullable(Some(bytes("b")), te.term()?.cloned());
 
     Assert::assert_true(te.seek_exact(&bytes("z"))?);
     Assert::assert_equals(122i64, te.ord()?);
@@ -701,7 +701,7 @@ fn ords_test_non_root_floor_blocks() -> Result<()> {
     let mut te = multi_terms_enum(&r, "field")?;
 
     let mut ord: i64 = 0;
-    while let Some(term) = te.next()? {
+    while let Some(term) = te.next()?.cloned() {
         if *VERBOSE {
             println!("TEST: {}: {}", te.ord()?, term.utf8_to_string()?);
         }

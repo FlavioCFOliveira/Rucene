@@ -20,6 +20,7 @@ use rucene::search::pruning::Pruning;
 use rucene::search::scorable::Scorable;
 use rucene::search::sort::{MissingValue, Sort, SortField, SortFieldType};
 use rucene::search::total_hits::TotalHitsRelation;
+use rucene::search::DocIdSetIterator;
 use rucene::search::{MatchAllDocsQuery, NO_MORE_DOCS};
 use rucene_test_framework::util::{LuceneTestCase, TestUtil};
 

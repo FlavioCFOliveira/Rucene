@@ -6,7 +6,7 @@
 use crate::search::bulk_scorer::BulkScorer;
 use crate::search::collection_terminated_exception::CollectionResult;
 use crate::search::collector::LeafCollector;
-use crate::search::conjunction_disi::ConjunctionMember;
+use crate::search::conjunction_disi::{ConjunctionMember, MemberView};
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::scorer::Scorer;
 use crate::search::two_phase_iterator::TwoPhaseIterator;
@@ -65,6 +65,59 @@ impl ReqExclBulkScorer {
     }
 }
 
+/// The loop of `ReqExclBulkScorer.score(LeafCollector, Bits, int, int)`
+/// (`ReqExclBulkScorer.java:51-78`), over the prohibited clause's view.
+///
+/// **Divergence from Lucene 10.5.0 (declared, user decision 2026-11-18).** Java
+/// keeps the exclusion's approximation and its two-phase view as two fields
+/// (`ReqExclBulkScorer.java:24-26`, set at `:28-48`). Here both are one `&mut`
+/// view, so the approximation is fetched again (`excl.approximation()`) at each
+/// move. Holding both at once would need a split-borrow accessor on
+/// [`TwoPhaseIterator`] that Lucene does not have. Measured cost: 0.313 % of the
+/// instructions of a 310-request query workload, by exact call count.
+fn score_excluding(
+    req: &mut dyn BulkScorer,
+    excl: &mut MemberView<'_>,
+    collector: &mut dyn LeafCollector,
+    accept_docs: Option<&dyn Bits>,
+    min: i32,
+    max: i32,
+) -> CollectionResult<i32> {
+    let mut up_to = min;
+    let mut excl_doc = excl.approximation().doc_id();
+
+    while up_to < max {
+        if excl_doc < up_to {
+            excl_doc = excl.approximation().advance(up_to)?;
+        }
+        if excl_doc == up_to {
+            match excl {
+                MemberView::Iterator(approximation) => {
+                    // from up_to to doc_id_run_end() are excluded, so we
+                    // scored up to doc_id_run_end()
+                    up_to = approximation.doc_id_run_end()?.min(max);
+                }
+                MemberView::TwoPhase(two_phase) => {
+                    if two_phase.matches()? {
+                        // up_to is excluded so we can consider that we scored
+                        // up to up_to + 1
+                        up_to += 1;
+                    }
+                }
+            }
+            excl_doc = excl.approximation().next_doc()?;
+        } else {
+            up_to = req.score(collector, accept_docs, up_to, excl_doc.min(max))?;
+        }
+    }
+
+    if up_to == max {
+        up_to = req.score(collector, accept_docs, up_to, up_to)?;
+    }
+
+    Ok(up_to)
+}
+
 impl BulkScorer for ReqExclBulkScorer {
     /// This bulk scorer answers with itself: Java tests `instanceof ReqExclBulkScorer`.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -78,36 +131,21 @@ impl BulkScorer for ReqExclBulkScorer {
         min: i32,
         max: i32,
     ) -> CollectionResult<i32> {
-        let mut up_to = min;
-        let mut excl_doc = self.excl.doc_id();
-
-        while up_to < max {
-            if excl_doc < up_to {
-                excl_doc = self.excl.advance(up_to)?;
-            }
-            if excl_doc == up_to {
-                if !self.excl.has_two_phase() {
-                    // from up_to to doc_id_run_end() are excluded, so we scored
-                    // up to doc_id_run_end()
-                    up_to = self.excl.doc_id_run_end()?.min(max);
-                } else if self.excl.matches()? {
-                    // up_to is excluded so we can consider that we scored up to
-                    // up_to + 1
-                    up_to += 1;
-                }
-                excl_doc = self.excl.next_doc()?;
-            } else {
-                up_to = self
-                    .req
-                    .score(collector, accept_docs, up_to, excl_doc.min(max))?;
-            }
-        }
-
-        if up_to == max {
-            up_to = self.req.score(collector, accept_docs, up_to, up_to)?;
-        }
-
-        Ok(up_to)
+        // PERF: the prohibited clause's view is borrowed once per call, as
+        // Java reads its `exclApproximation` and `exclTwoPhase` fields
+        // (`ReqExclBulkScorer.java:24-48`), instead of being fetched again
+        // from the member on every move. The prohibited scorer is never handed
+        // to the collector, so the borrow does not alias the required side.
+        let result = score_excluding(
+            self.req.as_mut(),
+            &mut self.excl.view(),
+            collector,
+            accept_docs,
+            min,
+            max,
+        );
+        self.excl.sync_scorer_doc();
+        result
     }
 
     fn cost(&self) -> i64 {

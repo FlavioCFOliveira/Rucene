@@ -344,24 +344,24 @@ fn a_valid_segment_still_reads_after_all_that() {
         values: usize,
     }
     impl StoredFieldVisitor for Counting {
-        fn binary_field(&mut self, _i: &FieldInfo, _v: &[u8]) -> rucene::error::Result<()> {
+        fn binary_field(&mut self, _i: &Arc<FieldInfo>, _v: &[u8]) -> rucene::error::Result<()> {
             self.values += 1;
             Ok(())
         }
-        fn string_field(&mut self, _i: &FieldInfo, _v: String) -> rucene::error::Result<()> {
+        fn string_field(&mut self, _i: &Arc<FieldInfo>, _v: String) -> rucene::error::Result<()> {
             self.values += 1;
             Ok(())
         }
-        fn long_field(&mut self, _i: &FieldInfo, _v: i64) -> rucene::error::Result<()> {
+        fn long_field(&mut self, _i: &Arc<FieldInfo>, _v: i64) -> rucene::error::Result<()> {
             self.values += 1;
             Ok(())
         }
-        fn float_field(&mut self, _i: &FieldInfo, v: f32) -> rucene::error::Result<()> {
+        fn float_field(&mut self, _i: &Arc<FieldInfo>, v: f32) -> rucene::error::Result<()> {
             assert_eq!(v, -1.0, "the small-integer float form must decode");
             self.values += 1;
             Ok(())
         }
-        fn double_field(&mut self, _i: &FieldInfo, v: f64) -> rucene::error::Result<()> {
+        fn double_field(&mut self, _i: &Arc<FieldInfo>, v: f64) -> rucene::error::Result<()> {
             assert_eq!(v, -1.0, "the small-integer double form must decode");
             self.values += 1;
             Ok(())

@@ -33,12 +33,12 @@
 //!
 //! # Java to Rust adaptations
 //!
-//! * **Field lookup is a map, not a hand-rolled hash table.** Lucene keeps
-//!   `PerField` objects in an open-addressed `PerField[] fieldHash` with its own
-//!   `rehash()`, because it wants to avoid `HashMap.Entry` allocations per
-//!   segment. A `HashMap<String, usize>` into a `Vec<PerField>` costs the same
-//!   lookup and lets the borrow checker prove that the per-field state and the
-//!   shared byte pool are disjoint.
+//! * **Per-field state lives in a `Vec`, chained by index.** Lucene chains
+//!   `PerField` objects through `PerField.next` in its `PerField[] fieldHash`,
+//!   bucketed by `fieldName.hashCode() & hashMask`, with its own `rehash()`.
+//!   The port keeps the same table and chains, holding indices into a
+//!   `Vec<PerField>` instead of references, which lets the borrow checker
+//!   prove that the per-field state and the shared byte pool are disjoint.
 //! * **Attribute handles are resolved per field instance, not cached in
 //!   `FieldInvertState`.** Lucene caches five `Attribute` references in
 //!   `setAttributeSource`. Rucene's `AttributeSource` hands out `Ref<'_, T>`
@@ -120,6 +120,14 @@ pub const MAX_POSITION: i32 = i32::MAX - 128;
 /// `name`, exactly `fieldName.hashCode() & hashMask`: Java hashes the string's
 /// UTF-16 code units with `h = 31*h + unit`, in 32-bit wrapping arithmetic.
 fn java_string_hashcode(name: &str) -> i32 {
+    let bytes = name.as_bytes();
+    if bytes.is_ascii() {
+        // PERF: an ASCII byte is one UTF-16 code unit of the same value, so the
+        // bytes hash as Java's code units do without decoding UTF-8.
+        return bytes.iter().fold(0i32, |hash, &byte| {
+            hash.wrapping_mul(31).wrapping_add(i32::from(byte))
+        });
+    }
     name.encode_utf16().fold(0i32, |hash, unit| {
         hash.wrapping_mul(31).wrapping_add(i32::from(unit))
     })
@@ -646,6 +654,11 @@ impl crate::codecs::norms::NormsProducer for EmptyNormsProducer {
 struct PerField {
     /// Equivalent to `PerField.fieldName`.
     field_name: String,
+    /// The next per-field state in this one's `field_hash` bucket.
+    ///
+    /// Equivalent to `PerField.next`, as an index into
+    /// [`DefaultIndexingChain::per_fields`].
+    next: Option<usize>,
     /// The field's `FieldInfo`, `None` until
     /// [`initialize_field_info`](DefaultIndexingChain::initialize_field_info)
     /// creates it the first time a document of the segment carries the field.
@@ -750,6 +763,13 @@ struct PerField {
     /// `IndexingChain.java:1774-1775`), which `invertTokenStream` assigns from
     /// `field.tokenStream(analyzer, tokenStream)` (`IndexingChain.java:1908`).
     token_stream: Option<Box<dyn TokenStream>>,
+    /// The buffer every token's term is encoded into, kept across the field's
+    /// instances.
+    ///
+    /// Java encodes it into the term attribute's own `BytesRefBuilder`
+    /// (`CharTermAttributeImpl.java:39, 92-95`), which lives as long as the
+    /// reused token stream and only grows to the longest term.
+    term_bytes: BytesRef,
 }
 
 impl PerField {
@@ -1199,7 +1219,14 @@ pub struct DefaultIndexingChain {
     /// documentation).
     doc_values_byte_pool: Arc<ByteBlockPool>,
     per_fields: Vec<PerField>,
-    per_field_index: HashMap<String, usize>,
+    /// The heads of the per-field chains, bucketed by
+    /// `java_string_hashcode(field_name) & (field_hash.len() - 1)`.
+    ///
+    /// Equivalent to `IndexingChain.fieldHash` and `hashMask`
+    /// (`IndexingChain.java:101-102`), which start two buckets wide; the mask
+    /// is read off the length, and Java's `totalFieldCount` is
+    /// `per_fields.len()`.
+    field_hash: Vec<Option<usize>>,
     next_field_gen: i64,
     /// `IndexingChain.fields` (`IndexingChain.java:108`): the indices into
     /// [`per_fields`](Self::per_fields) of a document's unique fields whose
@@ -1257,7 +1284,8 @@ impl DefaultIndexingChain {
             config,
             bytes_used,
             per_fields: Vec::new(),
-            per_field_index: HashMap::new(),
+            // `fieldHash = new PerField[2]`.
+            field_hash: vec![None; 2],
             next_field_gen: 0,
             fields: Vec::new(),
             doc_fields: Vec::new(),
@@ -1402,9 +1430,8 @@ impl DefaultIndexingChain {
     /// The values are those of the last document in which the field appeared,
     /// which is exactly what `IndexingChain` keeps in its `PerField`.
     pub fn field_invert_state(&self, field: &str) -> Option<&FieldInvertState> {
-        self.per_field_index
-            .get(field)
-            .map(|index| &self.per_fields[*index].invert_state)
+        self.get_per_field(field)
+            .map(|index| &self.per_fields[index].invert_state)
     }
 
     /// Returns the number of distinct terms buffered for `field`.
@@ -1707,13 +1734,23 @@ impl DefaultIndexingChain {
     /// [`initialize_field_info`](Self::initialize_field_info), once the whole
     /// document has declared the field's schema.
     fn get_or_add_per_field(&mut self, field_name: &str) -> usize {
-        if let Some(index) = self.per_field_index.get(field_name) {
-            return *index;
+        // PERF: `fieldName.hashCode() & hashMask`, then `equals` along the
+        // chain, instead of a SipHash of the name per field per document.
+        let hash_pos =
+            java_string_hashcode(field_name) as u32 as usize & (self.field_hash.len() - 1);
+        let mut pf = self.field_hash[hash_pos];
+        while let Some(index) = pf {
+            if self.per_fields[index].field_name == field_name {
+                return index;
+            }
+            pf = self.per_fields[index].next;
         }
         // first time we encounter field with this name in this segment
         let index = self.per_fields.len();
         self.per_fields.push(PerField {
             field_name: field_name.to_string(),
+            // `pf.next = fieldHash[hashPos]; fieldHash[hashPos] = pf;`
+            next: self.field_hash[hash_pos],
             field_info: None,
             schema: FieldSchema::new(field_name),
             validated_frozen_field_type: None,
@@ -1734,9 +1771,56 @@ impl DefaultIndexingChain {
             knn_field_vectors_writer: None,
             column_features: 0,
             token_stream: None,
+            term_bytes: BytesRef::default(),
         });
-        self.per_field_index.insert(field_name.to_string(), index);
+        self.field_hash[hash_pos] = Some(index);
+        // `totalFieldCount++`; at most 50% load factor.
+        if self.per_fields.len() >= self.field_hash.len() / 2 {
+            self.rehash();
+        }
         index
+    }
+
+    /// Returns the per-field state of `name`, or `None` when the segment has
+    /// not seen the name.
+    ///
+    /// Equivalent to `IndexingChain.getPerField(String)`
+    /// (`IndexingChain.java:1709-1716`).
+    fn get_per_field(&self, name: &str) -> Option<usize> {
+        let hash_pos = java_string_hashcode(name) as u32 as usize & (self.field_hash.len() - 1);
+        let mut fp = self.field_hash[hash_pos];
+        while let Some(index) = fp {
+            if self.per_fields[index].field_name == name {
+                return Some(index);
+            }
+            fp = self.per_fields[index].next;
+        }
+        None
+    }
+
+    /// Doubles the field-hash table and re-chains every per-field state.
+    ///
+    /// Equivalent to `IndexingChain.rehash()` (`IndexingChain.java:546-566`):
+    /// the old buckets are walked in order, head to tail, and each state is
+    /// chained at the head of its new bucket.
+    fn rehash(&mut self) {
+        let new_hash_size = self.field_hash.len() * 2;
+        debug_assert!(new_hash_size > self.field_hash.len());
+        let mut new_hash_array: Vec<Option<usize>> = vec![None; new_hash_size];
+        let new_hash_mask = new_hash_size - 1;
+        for j in 0..self.field_hash.len() {
+            let mut fp0 = self.field_hash[j];
+            while let Some(index) = fp0 {
+                let hash_pos2 = java_string_hashcode(&self.per_fields[index].field_name) as u32
+                    as usize
+                    & new_hash_mask;
+                let next_fp0 = self.per_fields[index].next;
+                self.per_fields[index].next = new_hash_array[hash_pos2];
+                new_hash_array[hash_pos2] = Some(index);
+                fp0 = next_fp0;
+            }
+        }
+        self.field_hash = new_hash_array;
     }
 
     /// Initializes the `FieldInfo` of each field in `fields` seen for the
@@ -2584,6 +2668,10 @@ impl DefaultIndexingChain {
             }
         };
         let mut term_vectors = term_vectors;
+        // PERF: the buffer of the previous instance, as Java's term attribute
+        // keeps its builder (see `PerField::term_bytes`); a new one per
+        // field value grew on its first token.
+        let mut term_bytes = std::mem::take(&mut per_field.term_bytes);
 
         let outcome = (|| -> Result<()> {
             stream.reset()?;
@@ -2597,7 +2685,6 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1908-1912`).
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
-            let mut term_bytes = BytesRef::default();
             while stream.increment_token()? {
                 let token = read_token(per_field.invert_state.attributes()?, &mut term_bytes)?;
                 let state = &mut per_field.invert_state;
@@ -2725,6 +2812,7 @@ impl DefaultIndexingChain {
             per_field.invert_state.offset += end_offset;
             Ok(())
         })();
+        per_field.term_bytes = term_bytes;
 
         let close_outcome = stream.close();
         // `tokenStream = field.tokenStream(...)`: the stream is kept, closed,
@@ -2779,7 +2867,7 @@ impl DefaultIndexingChain {
         // close runs either way.
         let outcome = (|| -> Result<()> {
             for info in state.field_infos.iter() {
-                debug_assert!(self.per_field_index.contains_key(&info.name));
+                debug_assert!(self.get_per_field(&info.name).is_some());
                 // Java re-reads `omitsNorms()` and `getIndexOptions()` from the
                 // *final* field info rather than trusting the one the writer
                 // was created with; `has_norms()` is exactly that conjunction.
@@ -2788,9 +2876,8 @@ impl DefaultIndexingChain {
                 }
                 // `getPerField(fi.name)` is `null` (after `assert perField !=
                 // null`): `perField.norms` throws `NullPointerException`.
-                let index = *self
-                    .per_field_index
-                    .get(&info.name)
+                let index = self
+                    .get_per_field(&info.name)
                     .ok_or_else(LuceneError::null_pointer)?;
                 debug_assert!(
                     self.per_fields[index].norms.is_some(),
@@ -4448,10 +4535,10 @@ impl IndexingChain for DefaultIndexingChain {
     ///
     /// Propagates whatever opening the buffered doc-values view raises.
     fn get_has_doc_values(&mut self, field: &str) -> Result<Option<Box<dyn DocIdSetIterator>>> {
-        let Some(index) = self.per_field_index.get(field) else {
+        let Some(index) = self.get_per_field(field) else {
             return Ok(None);
         };
-        let per_field = &mut self.per_fields[*index];
+        let per_field = &mut self.per_fields[index];
         let Some(writer) = per_field.doc_values.as_mut() else {
             return Ok(None);
         };
@@ -4810,7 +4897,7 @@ impl IndexingChain for DefaultIndexingChain {
         };
         // The `finally`, `Arrays.fill(fieldHash, null)`.
         self.per_fields.clear();
-        self.per_field_index.clear();
+        self.field_hash.fill(None);
         self.reset_doc_values_byte_pool();
         self.bytes_used.store(0, Ordering::Release);
         body?;
@@ -4881,9 +4968,6 @@ impl IndexingChain for DefaultIndexingChain {
         } else {
             None
         };
-        // `FreqProxTermsWriter.applyDeletes(state, fields)` reads the delete
-        // terms off `state.segUpdates` (`FreqProxTermsWriter.java:43-46`).
-        let delete_terms = state.seg_updates.delete_terms();
         let flushed = (|| -> Result<()> {
             // Use the merge instance in order to reuse the same IndexInput for
             // all terms.
@@ -4899,12 +4983,11 @@ impl IndexingChain for DefaultIndexingChain {
                     sort_map.as_ref(),
                 )?;
             }
-            self.terms_writer.flush(
-                state,
-                &delete_terms,
-                sort_map.as_ref(),
-                norms_merge_instance.as_deref(),
-            )
+            // `FreqProxTermsWriter.applyDeletes(state, fields)` reads the
+            // delete terms off `state.segUpdates` (`FreqProxTermsWriter.java:
+            // 53-56`).
+            self.terms_writer
+                .flush(state, sort_map.as_ref(), norms_merge_instance.as_deref())
         })();
         let closed = norms.as_mut().map_or(Ok(()), |norms| norms.close());
         flushed?;
@@ -4937,7 +5020,7 @@ impl IndexingChain for DefaultIndexingChain {
         }
 
         self.per_fields.clear();
-        self.per_field_index.clear();
+        self.field_hash.fill(None);
         self.reset_doc_values_byte_pool();
         self.bytes_used.store(0, Ordering::Release);
 
@@ -5081,7 +5164,7 @@ impl crate::index::LeafReader for BufferedDocValuesReader {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         // `throw new UnsupportedOperationException()` (`DocValuesLeafReader`).
         Err(LuceneError::unsupported_operation(String::new()))
     }
@@ -5433,7 +5516,7 @@ mod tests {
         let stream: Arc<AtomicRefCell<dyn TokenStream>> =
             Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
-            Field::new_with_token_stream(name, stream, field_type(options))
+            Field::new_with_token_stream(name.to_string(), stream, field_type(options))
                 .expect("token stream field"),
         )
     }
@@ -5504,8 +5587,8 @@ mod tests {
         );
         chain.restore_doc_values_writers(reader);
 
-        let n = chain.per_field_index["n"];
-        let tag = chain.per_field_index["tag"];
+        let n = chain.get_per_field("n").expect("n");
+        let tag = chain.get_per_field("tag").expect("tag");
         match chain.per_fields[n].doc_values.as_mut() {
             Some(DocValuesWriter::Numeric(writer)) => assert!(
                 writer.add_value(2, 5).is_err(),
@@ -6238,9 +6321,7 @@ mod tests {
     ) -> crate::index::documents_writer::BufferedUpdates {
         let mut updates = crate::index::documents_writer::BufferedUpdates::new("_0");
         for delete in delete_terms {
-            updates
-                .add_term(delete.term.clone(), delete.doc_id_upto)
-                .unwrap();
+            updates.add_term(&delete.term, delete.doc_id_upto).unwrap();
         }
         updates
     }
@@ -6319,7 +6400,7 @@ mod tests {
         let stream: Arc<AtomicRefCell<dyn TokenStream>> =
             Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
-            Field::new_with_token_stream(name, stream, norm_field_type(options))
+            Field::new_with_token_stream(name.to_string(), stream, norm_field_type(options))
                 .expect("token stream field"),
         )
     }
@@ -7114,7 +7195,9 @@ mod tests {
 
     /// Builds a stored-and-indexed text field.
     fn stored_text_field(name: &str, value: &str) -> Box<dyn crate::index::IndexableField> {
-        Box::new(TextField::new(name, value.to_string(), Store::YES).expect("text field"))
+        Box::new(
+            TextField::new(name.to_string(), value.to_string(), Store::YES).expect("text field"),
+        )
     }
 
     /// Reads every document of the flushed segment back as a `Document`.
@@ -7425,7 +7508,7 @@ mod tests {
             Arc::new(AtomicRefCell::new(ScriptedTokenStream::new(tokens)));
         Box::new(
             Field::new_with_token_stream(
-                name,
+                name.to_string(),
                 stream,
                 tv_field_type(options, vectors, positions, offsets, payloads),
             )
@@ -7713,6 +7796,43 @@ mod tests {
                 payloads: Vec::new(),
             }]
         );
+    }
+
+    /// The term buffer is kept across the field's instances, as Java's term
+    /// attribute keeps its `BytesRefBuilder` (`CharTermAttributeImpl.java:39,
+    /// 92-95`): a shorter term after a longer one, in a later document, is
+    /// indexed with its own bytes only.
+    #[test]
+    fn a_kept_term_buffer_never_leaks_an_earlier_longer_term() {
+        let documents: Vec<Document> = [
+            vec![Tok::new("longerterm", 1, 0, 10)],
+            vec![Tok::new("ab", 1, 0, 2), Tok::new("abc", 1, 3, 6)],
+        ]
+        .into_iter()
+        .map(|tokens| {
+            let mut document = Document::new();
+            document.add_shared(std::sync::Arc::from(tv_field(
+                "body",
+                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+                true,
+                false,
+                false,
+                false,
+                tokens,
+            )));
+            document
+        })
+        .collect();
+        let (_, vectors) = flush_and_read_vectors(documents);
+        let terms = |doc: usize| {
+            vectors[doc].as_ref().expect("the document has vectors")[0]
+                .terms
+                .iter()
+                .map(|term| term.term.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(terms(0), vec!["longerterm"]);
+        assert_eq!(terms(1), vec!["ab", "abc"]);
     }
 
     #[test]
@@ -8263,6 +8383,57 @@ mod tests {
             ),
             "{error:?}"
         );
+    }
+
+    /// `getOrAddPerField` and `getPerField` walk `fieldHash` chains bucketed by
+    /// Java's `String.hashCode()` (`IndexingChain.java:1449-1481, 1709-1716`):
+    /// names whose Java hashes collide share a bucket, every name keeps its
+    /// own state through the doublings of the table (`rehash`,
+    /// `IndexingChain.java:546-566`), and the load factor stays below 50%.
+    #[test]
+    fn per_field_lookup_follows_the_java_field_hash_through_collisions_and_growth() {
+        let mut chain = DefaultIndexingChain::new(config());
+        // "Aa" and "BB" hash alike in Java, and so do their concatenations.
+        assert_eq!(java_string_hashcode("Aa"), java_string_hashcode("BB"));
+        assert_eq!(java_string_hashcode("AaBB"), java_string_hashcode("BBAa"));
+        let mut names: Vec<String> = ["Aa", "BB", "AaAa", "BBBB", "AaBB", "BBAa"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        names.extend((0..40).map(|i| format!("field_{i}")));
+        names.extend(["\u{fc}ber", "\u{10000}", "a\u{1d400}b"].map(str::to_string));
+        for name in &names {
+            // The ASCII fast path and the UTF-16 path both give Java's value.
+            assert_eq!(
+                java_string_hashcode(name),
+                crate::util::java_collections::java_string_hash_code(name),
+                "hashCode({name:?})"
+            );
+        }
+
+        let indices: Vec<usize> = names
+            .iter()
+            .map(|name| chain.get_or_add_per_field(name))
+            .collect();
+        assert_eq!(indices, (0..names.len()).collect::<Vec<_>>());
+        assert!(
+            chain.per_fields.len() < chain.field_hash.len() / 2,
+            "{} fields in {} buckets",
+            chain.per_fields.len(),
+            chain.field_hash.len()
+        );
+        for (index, name) in names.iter().enumerate() {
+            assert_eq!(chain.get_per_field(name), Some(index), "{name:?}");
+            assert_eq!(chain.get_or_add_per_field(name), index, "{name:?}");
+            assert_eq!(chain.per_fields[index].field_name, *name);
+        }
+        assert_eq!(
+            chain.per_fields.len(),
+            names.len(),
+            "a known name adds no state"
+        );
+        assert_eq!(chain.get_per_field("absent"), None);
+        assert_eq!(chain.get_per_field("AaAb"), None);
     }
 
     #[test]

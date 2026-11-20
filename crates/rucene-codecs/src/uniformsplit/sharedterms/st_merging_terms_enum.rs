@@ -116,8 +116,8 @@ impl TermsEnum for STMergingTermsEnum {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(self.term.clone())
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(self.term.as_ref())
     }
 
     fn ord(&self) -> Result<i64> {
@@ -155,7 +155,7 @@ impl TermsEnum for STMergingTermsEnum {
         Err(unsupported())
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         Err(unsupported())
     }
 }

@@ -88,7 +88,7 @@ fn bytes(text: &str) -> BytesRef {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 /// `DvRangeFeatureFixture.TEXT_TYPE`.
@@ -125,7 +125,7 @@ fn inet(b: &[u8]) -> std::net::IpAddr {
 }
 
 fn sndv(field: &str, value: i64) -> Box<SortedNumericDocValuesField> {
-    Box::new(SortedNumericDocValuesField::new(field, value))
+    Box::new(SortedNumericDocValuesField::new(field.to_string(), value))
 }
 
 /// `DvRangeFeatureFixture.doc(int)`; the perturbed corpus gives document 0 a

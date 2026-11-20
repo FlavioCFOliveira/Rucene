@@ -180,12 +180,12 @@ fn random_bytes(min: i32, max: i32) -> Vec<u8> {
 }
 
 fn binary_dv(field: &str, value: BytesRef) -> Box<BinaryDocValuesField> {
-    Box::new(BinaryDocValuesField::new(field, value))
+    Box::new(BinaryDocValuesField::new(field.to_string(), value))
 }
 
 fn stored_int(field: &str, value: i32) -> Result<Box<StoredField>> {
     Ok(Box::new(StoredField::new_number(
-        field,
+        field.to_string(),
         NumericValue::Int(value),
     )?))
 }

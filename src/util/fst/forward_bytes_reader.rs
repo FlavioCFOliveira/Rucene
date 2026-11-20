@@ -28,11 +28,11 @@ impl<'a> ForwardBytesReader<'a> {
 
 impl DataInput for ForwardBytesReader<'_> {
     /// `Object.toString()` of `org.apache.lucene.util.fst.ForwardBytesReader`, which declares no `toString()`.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.util.fst.ForwardBytesReader",
             self,
-        )
+        ))
     }
 
     /// `return bytes[pos++]`: the position moves before the array access

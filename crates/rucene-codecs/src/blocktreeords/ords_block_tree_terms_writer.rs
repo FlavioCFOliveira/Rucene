@@ -257,7 +257,7 @@ impl FieldsConsumer for OrdsBlockTreeTermsWriter {
                     )
                 })?;
             let mut terms_writer = TermsWriter::new(self, field_info)?;
-            while let Some(term) = terms_enum.next()? {
+            while let Some(term) = terms_enum.next()?.cloned() {
                 terms_writer.write(self, &term, terms_enum.as_mut(), norms)?;
             }
 

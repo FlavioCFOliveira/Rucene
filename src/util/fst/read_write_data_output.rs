@@ -256,11 +256,11 @@ impl<B: AsRef<[Vec<u8>]>> BlockReverseBytesReader<B> {
 impl<B: AsRef<[Vec<u8>]>> DataInput for BlockReverseBytesReader<B> {
     /// `Object.toString()` of `org.apache.lucene.util.fst.ReadWriteDataOutput$1`, the anonymous `FST.BytesReader` of `getReverseBytesReader`, which declares no
     /// `toString()`.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.util.fst.ReadWriteDataOutput$1",
             self,
-        )
+        ))
     }
 
     fn read_byte(&mut self) -> Result<u8> {

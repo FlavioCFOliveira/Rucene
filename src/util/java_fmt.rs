@@ -56,12 +56,23 @@ pub fn double_to_string(d: f64) -> String {
         return if d.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
     let a = d.abs();
+    // `a = m × 2^q`, the binary64 decoding of the magnitude.
+    let bits = a.to_bits();
+    let biased = (bits >> 52) as i32;
+    let fraction = bits & ((1u64 << 52) - 1);
+    let (m, q) = if biased == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1u64 << 52), biased - 1075)
+    };
     let decimal = giulietti_decimal(
-        format!("{a:e}"),
-        format!("{a:.1e}"),
+        Decimal::render(format_args!("{a:e}")),
+        biased == 0,
+        || Decimal::render(format_args!("{a:.1e}")),
+        |p, exp| is_halfway(m, q, p, exp),
         // A double's exact decimal expansion has at most 767 significant
         // digits, so 800 fraction digits render it exactly.
-        |digits| format!("{a:.*e}", digits.min(800)),
+        || format!("{a:.800e}"),
         |s| s.parse::<f64>().is_ok_and(|v| v.to_bits() == a.to_bits()),
     );
     java_float_format(&decimal, d < 0.0)
@@ -83,77 +94,204 @@ pub fn float_to_string(f: f32) -> String {
         return if f.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
     let a = f.abs();
+    // `a = m × 2^q`, the binary32 decoding of the magnitude.
+    let bits = a.to_bits();
+    let biased = (bits >> 23) as i32;
+    let fraction = u64::from(bits & ((1u32 << 23) - 1));
+    let (m, q) = if biased == 0 {
+        (fraction, -149)
+    } else {
+        (fraction | (1u64 << 23), biased - 150)
+    };
     let decimal = giulietti_decimal(
-        format!("{a:e}"),
-        format!("{a:.1e}"),
+        Decimal::render(format_args!("{a:e}")),
+        biased == 0,
+        || Decimal::render(format_args!("{a:.1e}")),
+        |p, exp| is_halfway(m, q, p, exp),
         // A float's exact decimal expansion has at most 112 significant digits.
-        |digits| format!("{a:.*e}", digits.min(150)),
+        || format!("{a:.150e}"),
         |s| s.parse::<f32>().is_ok_and(|v| v.to_bits() == a.to_bits()),
     );
     java_float_format(&decimal, f < 0.0)
 }
 
+/// A positive decimal `0.d₁d₂…dₙ × 10^(exp + 1)`, that is `d₁.d₂…dₙ ×
+/// 10^exp`: the significant digits (ASCII) and the decimal exponent of a
+/// scientific rendering `d[.ddd]e[-]n`.
+///
+/// It is read from Rust's `{:e}` and `{:.1e}` renderings of an `f32` or
+/// `f64`, which hold at most 17 significant digits, or built from the at most
+/// 17 digits of a halfway neighbour.
+// PERF: kept on the stack; `Double.toString` is called per value by
+// `toString()` bodies and the test framework, and the two `String`s per call
+// of the former `d.ddde-n` form were a measurable part of its cost (#575).
+struct Decimal {
+    digits: [u8; Decimal::CAPACITY],
+    len: usize,
+    exp: i32,
+}
+
+impl Decimal {
+    /// Room for the 17 significant digits of a shortest `f64` rendering and
+    /// the sign, point, `e`, sign and exponent digits around them.
+    const CAPACITY: usize = 32;
+
+    /// The decimal of a scientific rendering, `d[.ddd]e[-]n`.
+    fn parse(sci: &[u8]) -> Self {
+        let mut digits = [0u8; Self::CAPACITY];
+        let mut len = 0;
+        let mut i = 0;
+        while i < sci.len() && sci[i] != b'e' {
+            if sci[i].is_ascii_digit() && len < Self::CAPACITY {
+                digits[len] = sci[i];
+                len += 1;
+            }
+            i += 1;
+        }
+        let mut exp = 0i32;
+        let mut negative = false;
+        for &b in sci.get(i + 1..).unwrap_or_default() {
+            if b == b'-' {
+                negative = true;
+            } else if b.is_ascii_digit() {
+                exp = exp * 10 + i32::from(b - b'0');
+            }
+        }
+        Self {
+            digits,
+            len,
+            exp: if negative { -exp } else { exp },
+        }
+    }
+
+    /// The decimal of the scientific rendering `args` produces, formatted on
+    /// the stack.
+    fn render(args: std::fmt::Arguments<'_>) -> Self {
+        let mut out = StackText {
+            buf: [0u8; Self::CAPACITY],
+            len: 0,
+        };
+        if std::fmt::Write::write_fmt(&mut out, args).is_ok() {
+            Self::parse(&out.buf[..out.len])
+        } else {
+            // Unreachable: `{:e}` of a float never exceeds the buffer.
+            Self::parse(std::fmt::format(args).as_bytes())
+        }
+    }
+
+    /// The significant digits, as ASCII.
+    fn digits(&self) -> &[u8] {
+        &self.digits[..self.len]
+    }
+}
+
+/// A fixed-size text buffer `std::fmt::Write` renders into.
+struct StackText {
+    buf: [u8; Decimal::CAPACITY],
+    len: usize,
+}
+
+impl std::fmt::Write for StackText {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len + s.len();
+        if end > self.buf.len() {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Whether the positive value `m × 2^q` lies exactly halfway between two
+/// consecutive decimals of `p` significant digits at decimal exponent `exp`,
+/// that is whether its scaled value `v = m × 2^q × 10^s`, `s = p - 1 - exp`,
+/// has the fraction `1/2`: whether `2v = m × 5^s × 2^(q + 1 + s)` is an odd
+/// integer.
+///
+/// With `t` the trailing zero bits of `m`, the power of two in `2v` is
+/// `t + q + 1 + s`, which must be `0` for an odd integer; then `2v` is the odd
+/// `m >> t` times `5^s`, an odd integer when `s >= 0` and, when `s < 0`,
+/// exactly when `5^-s` divides `m` (never past `5^22`: `m < 2^53 < 5^23`).
+///
+/// This is the test `giulietti_decimal` made on the exact decimal expansion,
+/// `{:.*e}` with up to 800 fraction digits, answered from the binary value
+/// instead.
+// PERF: the two exact renderings it replaces (`p + 20` digits, then the whole
+// expansion, through `core::num::flt2dec`'s bignum fallback) were most of
+// `Double.toString`'s cost (#575).
+fn is_halfway(m: u64, q: i32, p: usize, exp: i32) -> bool {
+    let s = p as i32 - 1 - exp;
+    if m.trailing_zeros() as i32 + q + 1 + s != 0 {
+        return false;
+    }
+    if s >= 0 {
+        return true;
+    }
+    let k = s.unsigned_abs();
+    k <= 22 && m.is_multiple_of(5u64.pow(k))
+}
+
 /// The decimal `Double.toString` / `Float.toString` render for the positive
-/// finite value whose shortest round-trip form (`{:e}`) is `shortest` and
-/// whose form rounded to two significant digits (`{:.1e}`) is `two`.
+/// finite value whose shortest round-trip form (`{:e}`) is `shortest`.
 ///
 /// JDK 19 and later (the `Double.toString(double)` javadoc, the algorithm of
 /// Raffaello Giulietti) take the set R of decimals that round to the value,
 /// and the minimal length p over R: when p >= 2 the result is the decimal of
 /// length p in R closest to the value, which is the shortest form; when p is
 /// 1, the result is the decimal of length 1 or 2 in R closest to the value,
-/// which is the value rounded to two significant digits (that decimal is
-/// closer than the one-digit one, so it is in R too). Before, this
-/// emulation always took the shortest form and padded `d` to `d.0`, so
+/// which is the value rounded to two significant digits, `two()` (`{:.1e}`;
+/// that decimal is closer than the one-digit one, so it is in R too). Before,
+/// this emulation always took the shortest form and padded `d` to `d.0`, so
 /// `Double.MIN_VALUE` (shortest `5e-324`) rendered `5.0E-324` where JDK 25
 /// renders `4.9E-324`, and `Float.MIN_VALUE` `1.0E-45` for `1.4E-45`.
+///
+/// For a normal value (`subnormal` false) of length p = 1, the two-digit
+/// rounding is the one-digit form itself, `d.0`: the value is within half an
+/// ulp, a relative `2^-24` or less, of the one-digit decimal, while two-digit
+/// decimals are a relative `1/99` or more apart. So `two()` is rendered for
+/// subnormal values only.
 ///
 /// Among the decimals of length p, JDK 25 takes the one closest to the value
 /// and, of two equally close, the one with the even significand. Rust's
 /// shortest form breaks that tie upwards: when the value lies exactly halfway
-/// between two p-digit decimals (its exact expansion, `exact(n)` with `n`
-/// fraction digits, continues
-/// after the p-th digit with `5` and zeros only), the neighbour with the even
-/// last digit is taken if it rounds to the value too (`round_trips`). Measured on JDK 25:
+/// between two p-digit decimals (`halfway(p, exp)`, [`is_halfway`]; its exact
+/// expansion, `exact()`, continues after the p-th digit with `5` and zeros
+/// only), the neighbour with the even last digit is taken if it rounds to the
+/// value too (`round_trips`). Measured on JDK 25:
 /// `Float.toString(2234752.25f)` is `2234752.2`, where the shortest form is
 /// `2234752.3`.
 fn giulietti_decimal(
-    shortest: String,
-    two: String,
-    exact: impl Fn(usize) -> String,
-    round_trips: impl Fn(&str) -> bool,
-) -> String {
-    let split = |sci: &str| -> (String, i32) {
-        let (m, e) = sci.split_once('e').expect("scientific notation");
-        (
-            m.chars().filter(char::is_ascii_digit).collect(),
-            e.parse().expect("exponent"),
-        )
-    };
-    let (digits, exp) = split(&shortest);
-    if digits.len() == 1 {
-        return two;
+    shortest: Decimal,
+    subnormal: bool,
+    two: impl FnOnce() -> Decimal,
+    halfway: impl FnOnce(usize, i32) -> bool,
+    exact: impl FnOnce() -> String,
+    round_trips: impl FnOnce(&str) -> bool,
+) -> Decimal {
+    let p = shortest.len;
+    let exp = shortest.exp;
+    if p == 1 {
+        return if subnormal { two() } else { shortest };
     }
-    // The exact value's digits at the same exponent: a halfway point is
-    // `digits - 1` followed by `5000…`.
-    let p = digits.len();
-    let halfway = |sci: &str| -> Option<String> {
-        let (exact_digits, exact_exp) = split(sci);
-        let tail = &exact_digits[p..];
-        (exact_exp == exp && tail.starts_with('5') && tail[1..].bytes().all(|b| b == b'0'))
-            .then_some(exact_digits)
-    };
-    // A cheap rendering with 20 more digits rules out almost every value; a
-    // possible halfway point is confirmed on the exact expansion.
-    if halfway(&exact(p + 20)).is_none() {
+    // Rare (an exact dyadic value one digit longer than its shortest form):
+    // the neighbours are read from the exact expansion, as before.
+    if !halfway(p, exp) {
         return shortest;
     }
-    let Some(exact_digits) = halfway(&exact(usize::MAX)) else {
+    let sci = exact();
+    let (mantissa, exact_exp) = sci.split_once('e').unwrap_or((sci.as_str(), "0"));
+    let exact_digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    let tail = exact_digits.get(p..).unwrap_or_default();
+    let confirmed = exact_exp.parse::<i32>() == Ok(exp)
+        && tail.first() == Some(&b'5')
+        && tail[1..].iter().all(|&b| b == b'0');
+    if !confirmed {
         return shortest;
-    };
+    }
     // The two neighbours: `exact_digits[..p]` and the next p-digit decimal.
-    let lower = exact_digits[..p].to_string();
-    let mut upper = lower.clone().into_bytes();
+    let lower = &exact_digits[..p];
+    let mut upper = lower.to_vec();
     let mut i = p;
     loop {
         if i == 0 {
@@ -168,74 +306,82 @@ fn giulietti_decimal(
             break;
         }
     }
-    let upper = String::from_utf8(upper).expect("ASCII digits");
-    let even = if (lower.as_bytes()[p - 1] - b'0').is_multiple_of(2) {
+    let even: &[u8] = if (lower[p - 1] - b'0').is_multiple_of(2) {
         lower
     } else {
-        upper
+        &upper
     };
-    if even == digits {
+    if even == shortest.digits() {
         return shortest;
     }
-    let candidate = format!("{}.{}e{exp}", &even[..1], &even[1..]);
+    let candidate = format!(
+        "{}.{}e{exp}",
+        char::from(even[0]),
+        String::from_utf8_lossy(&even[1..])
+    );
     if round_trips(&candidate) {
-        candidate
+        Decimal::parse(candidate.as_bytes())
     } else {
         shortest
     }
 }
 
-/// Formats decimal digits as `Double.toString` / `Float.toString` do:
-/// plain notation with at least one fraction digit for magnitudes in
-/// `[10^-3, 10^7)`, otherwise `d.dddE[-]n`.
-fn java_float_format(sci: &str, negative: bool) -> String {
-    // `sci` is the decimal of `giulietti_decimal`, `d[.ddd]e[-]n`.
-    let (mantissa, exp) = sci.split_once('e').expect("scientific notation");
-    let exp: i32 = exp.parse().expect("exponent");
-    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+/// Formats a decimal as `Double.toString` / `Float.toString` do: plain
+/// notation with at least one fraction digit for magnitudes in `[10^-3,
+/// 10^7)`, otherwise `d.dddE[-]n`.
+fn java_float_format(decimal: &Decimal, negative: bool) -> String {
+    let exp = decimal.exp;
     // `{:.1e}` keeps a second digit that may be a zero; the significand
     // carries no trailing zero (`d.0` is rendered by the branches below).
-    let digits = match digits.trim_end_matches('0') {
-        "" => "0".to_string(),
-        trimmed => trimmed.to_string(),
-    };
-    let mut out = String::new();
+    let mut digits = decimal.digits();
+    while let [rest @ .., b'0'] = digits {
+        digits = rest;
+    }
+    if digits.is_empty() {
+        digits = b"0";
+    }
+    // At most a sign, `0.00` and 17 digits, or a sign, 17 digits, the point
+    // and `E-324`.
+    let mut out = Vec::with_capacity(26);
     if negative {
-        out.push('-');
+        out.push(b'-');
     }
     if (-3..7).contains(&exp) {
         if exp < 0 {
-            out.push_str("0.");
-            for _ in 0..(-exp - 1) {
-                out.push('0');
-            }
-            out.push_str(&digits);
+            out.extend_from_slice(b"0.");
+            out.resize(out.len() + (-exp - 1) as usize, b'0');
+            out.extend_from_slice(digits);
         } else {
             let int_len = (exp + 1) as usize;
             if digits.len() <= int_len {
-                out.push_str(&digits);
-                for _ in digits.len()..int_len {
-                    out.push('0');
-                }
-                out.push_str(".0");
+                out.extend_from_slice(digits);
+                out.resize(out.len() + (int_len - digits.len()), b'0');
+                out.extend_from_slice(b".0");
             } else {
-                out.push_str(&digits[..int_len]);
-                out.push('.');
-                out.push_str(&digits[int_len..]);
+                out.extend_from_slice(&digits[..int_len]);
+                out.push(b'.');
+                out.extend_from_slice(&digits[int_len..]);
             }
         }
     } else {
-        out.push_str(&digits[..1]);
-        out.push('.');
+        out.push(digits[0]);
+        out.push(b'.');
         if digits.len() > 1 {
-            out.push_str(&digits[1..]);
+            out.extend_from_slice(&digits[1..]);
         } else {
-            out.push('0');
+            out.push(b'0');
         }
-        out.push('E');
-        out.push_str(&exp.to_string());
+        out.push(b'E');
+        let mut text = StackText {
+            buf: [0u8; Decimal::CAPACITY],
+            len: 0,
+        };
+        // An `i32` always fits the buffer.
+        let _ = std::fmt::Write::write_fmt(&mut text, format_args!("{exp}"));
+        out.extend_from_slice(&text.buf[..text.len]);
     }
-    out
+    // ASCII digits, signs, points and `E` only.
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// Renders `value` the way `String.format(Locale.ROOT, "%.<digits>f", value)`
@@ -863,6 +1009,47 @@ mod tests {
         );
         assert_eq!(double_to_string(1e23), "1.0E23");
         assert_eq!(double_to_string(9.99999999999E-4), "9.99999999999E-4");
+    }
+
+    /// `is_halfway` answers from the binary value what the exact decimal
+    /// expansion shows, the test `giulietti_decimal` made on `{:.800e}`
+    /// before (rmp #575): the value lies halfway between two decimals of p
+    /// significant digits exactly when its expansion continues after the p-th
+    /// digit with `5` and zeros only. Dyadic values with few significant bits
+    /// and exponents on both sides of zero reach both of its branches (`10^s`
+    /// with `s >= 0` and `s < 0`).
+    #[test]
+    fn is_halfway_matches_the_exact_expansion() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut halfway = [0usize; 2];
+        for _ in 0..50_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let m = (x >> 11) >> (x % 51);
+            if m == 0 {
+                continue;
+            }
+            let a = m as f64 * 2f64.powi((x >> 32) as i32 % 41 - 20);
+            let bits = a.to_bits();
+            let (mm, q) = (
+                (bits & ((1 << 52) - 1)) | (1 << 52),
+                (bits >> 52) as i32 - 1075,
+            );
+            let sci = format!("{a:.800e}");
+            let (mantissa, exp) = sci.split_once('e').unwrap();
+            let exp: i32 = exp.parse().unwrap();
+            let digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+            for p in 1..=17 {
+                let tail = &digits[p..];
+                let expected = tail[0] == b'5' && tail[1..].iter().all(|&b| b == b'0');
+                assert_eq!(is_halfway(mm, q, p, exp), expected, "{a:e} at {p} digits");
+                if expected {
+                    halfway[usize::from(p as i32 - 1 - exp < 0)] += 1;
+                }
+            }
+        }
+        assert!(halfway[0] > 100 && halfway[1] > 50, "{halfway:?}");
     }
 
     /// JDK 25 `Float.parseFloat` and `Double.parseDouble`: surrounding

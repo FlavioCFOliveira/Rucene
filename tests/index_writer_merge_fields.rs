@@ -497,7 +497,7 @@ fn searcher(dir: &Arc<dyn Directory>) -> (Arc<dyn DirectoryReader>, IndexSearche
 }
 
 fn term_query(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::new(field, bytes(text))))
+    Arc::new(TermQuery::new(Term::new(field.to_string(), bytes(text))))
 }
 
 /// Every live document's `id` term finds exactly one document, every merged
@@ -690,14 +690,14 @@ fn assert_every_doc_value(dir: &Arc<dyn Directory>, case: Case) {
         assert_eq!(sorted.next_doc().unwrap(), doc);
         assert_eq!(
             sorted.lookup_ord(sorted.ord_value().unwrap()).unwrap(),
-            bytes(&format!("s{}", i % 300))
+            &bytes(&format!("s{}", i % 300))
         );
         assert_eq!(sorted_set.next_doc().unwrap(), doc);
         assert_eq!(sorted_set.doc_value_count().unwrap(), 2);
         let mut terms = Vec::new();
         for _ in 0..2 {
             let ord = sorted_set.next_ord().unwrap();
-            terms.push(sorted_set.lookup_ord(ord).unwrap());
+            terms.push(sorted_set.lookup_ord(ord).unwrap().clone());
         }
         assert_eq!(
             terms,

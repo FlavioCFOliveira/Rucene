@@ -288,7 +288,8 @@ fn test_multi_term_docs() -> Result<()> {
         &mr2,
         "body",
         &te2.term()?
-            .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .clone(),
         None,
         0,
     )?;

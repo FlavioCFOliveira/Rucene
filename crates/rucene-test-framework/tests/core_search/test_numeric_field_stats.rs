@@ -90,7 +90,7 @@ fn new_custom_width_point(name: &str, num_bytes: i32, mut value: i64) -> Result<
         value >>= 8;
     }
     packed[0] ^= 0x80;
-    Field::new_with_bytes(name, BytesRef::new(packed), r#type)
+    Field::new_with_bytes(name.to_string(), BytesRef::new(packed), r#type)
 }
 
 /// `newIndexWriterConfig()`.

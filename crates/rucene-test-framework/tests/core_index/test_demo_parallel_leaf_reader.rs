@@ -416,7 +416,7 @@ impl ReindexingState {
         let segment_reader = leaf.as_segment_reader().unwrap_or_else(|| {
             Throwable::new("java.lang.ClassCastException", "not a SegmentReader").throw()
         });
-        let info: SegmentInfo = segment_reader.get_segment_info().info.clone();
+        let info: SegmentInfo = SegmentInfo::clone(&segment_reader.get_segment_info().info);
 
         let info_schema_gen = get_schema_gen(&info);
 
@@ -914,7 +914,7 @@ impl ReindexingMergePolicy {
         merge.set_set_merge_info_override(Arc::new(
             move |merge: &OneMerge, mut info: SegmentCommitInfo| {
                 // Record that this merged segment is current as of this schemaGen:
-                info.info.add_diagnostics(HashMap::from([(
+                Arc::make_mut(&mut info.info).add_diagnostics(HashMap::from([(
                     SCHEMA_GEN_KEY.to_string(),
                     schema_gen.to_string(),
                 )]));
@@ -1200,7 +1200,7 @@ impl ReindexingHooks for NewDvFieldsReindexer {
                 let mut new_doc = Document::new();
                 let value = number_of(&old_doc);
                 new_doc.add(NumericDocValuesField::new(
-                    &format!("number_{new_schema_gen}"),
+                    format!("number_{new_schema_gen}"),
                     value,
                 ));
                 new_doc.add(LongPoint::new("number", &[value])?);
@@ -1220,7 +1220,7 @@ impl ReindexingHooks for NewDvFieldsReindexer {
                 stored_fields.document(i)?;
                 let mut new_doc = Document::new();
                 new_doc.add(NumericDocValuesField::new(
-                    &format!("number_{new_schema_gen}"),
+                    format!("number_{new_schema_gen}"),
                     old_values.long_value()?,
                 ));
                 w.add_document(&new_doc)?;

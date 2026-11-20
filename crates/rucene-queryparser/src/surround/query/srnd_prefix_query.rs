@@ -101,7 +101,10 @@ impl SimpleTerm for SrndPrefixQuery {
         if let Some(terms) = MultiTerms::get_terms(reader, field_name)? {
             let mut terms_enum = self.compiled.get_terms_enum(terms.as_ref())?;
             while let Some(br) = terms_enum.next()? {
-                mtv.visit_matching_term(Term::new(field_name, BytesRef::deep_copy_of(&br)))?;
+                mtv.visit_matching_term(Term::new(
+                    field_name.to_string(),
+                    BytesRef::deep_copy_of(br),
+                ))?;
             }
         }
         Ok(())

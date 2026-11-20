@@ -147,7 +147,7 @@ impl TermsEnum for STIntersectBlockReader {
         Err(unsupported())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.base.term()
     }
 
@@ -179,7 +179,8 @@ impl TermsEnum for STIntersectBlockReader {
         self.base.term_state()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        self.next_impl()
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.base.base.next_term = self.next_impl()?;
+        Ok(self.base.base.next_term.as_ref())
     }
 }

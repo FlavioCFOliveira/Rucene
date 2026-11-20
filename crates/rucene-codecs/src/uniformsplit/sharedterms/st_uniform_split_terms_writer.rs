@@ -256,7 +256,7 @@ struct FieldTerms {
 impl FieldTerms {
     /// Port of `FieldTerms.nextTerm()`.
     fn next_term(&mut self) -> Result<bool> {
-        self.term = self.terms_enum.next()?;
+        self.term = self.terms_enum.next()?.cloned();
         Ok(self.term.is_some())
     }
 }

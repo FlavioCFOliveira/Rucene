@@ -37,7 +37,7 @@ const BLOCK_TREE_ORDS: FormatOracle = FormatOracle {
     extensions: &["tio", "tipo"],
     codec: block_tree_ords_codec,
     extra_jars: &[],
-    live_impacts_differ: true,
+    live_impacts_differ: false,
 };
 
 #[test]
@@ -210,7 +210,7 @@ fn check_intersect(terms: &dyn Terms, regexps: &[&str]) -> usize {
             .collect();
         let mut ie = terms.intersect(&compiled, None).unwrap();
         let mut actual = Vec::new();
-        while let Some(t) = ie.next().unwrap() {
+        while let Some(t) = ie.next().unwrap().cloned() {
             ie.doc_freq().unwrap();
             actual.push(t.slice().to_vec());
         }
@@ -261,7 +261,7 @@ fn ords_index(dir: &TempDir, docs: &[Vec<String>]) -> Arc<dyn IndexReader> {
     directory_reader::open(open_dir(&dir.0)).unwrap()
 }
 
-fn field_terms(reader: &Arc<dyn IndexReader>) -> Box<dyn Terms> {
+fn field_terms(reader: &Arc<dyn IndexReader>) -> Arc<dyn Terms> {
     let leaves = Arc::clone(reader).leaves().unwrap();
     assert_eq!(leaves.len(), 1);
     leaves[0].leaf_reader().terms("field").unwrap().unwrap()

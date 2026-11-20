@@ -109,6 +109,7 @@ impl TermRangeQuery {
         // carries the field for `AutomatonQuery`, and the endpoints are
         // compared explicitly by `query_eq` below, so nothing observes the
         // difference.
+        let field: String = field.into();
         let term = Term::new(field, lower_term.clone().unwrap_or_default());
         Ok(Self {
             inner: AutomatonQuery::with_rewrite_method(term, automaton, true, rewrite_method)?,

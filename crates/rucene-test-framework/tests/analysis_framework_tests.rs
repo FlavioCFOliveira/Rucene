@@ -491,7 +491,10 @@ mod test_mock_analyzer {
         let mut te = terms.iterator()?;
         let next = te.next()?;
         Assert::assert_true_msg("expected:<[61]> but was:<null>", next.is_some());
-        Assert::assert_equals(LuceneTestCase::new_bytes_ref_str("a"), next.unwrap());
+        Assert::assert_equals(
+            LuceneTestCase::new_bytes_ref_str("a"),
+            next.unwrap().clone(),
+        );
         let mut dpe = te
             .postings(None, POSTINGS_ENUM_ALL)?
             .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -1250,7 +1253,7 @@ fn index_and_read_vectors(
     let terms = fields.terms("f").unwrap().unwrap();
     let mut te = terms.iterator().unwrap();
     let mut out = Vec::new();
-    while let Some(term) = te.next().unwrap() {
+    while let Some(term) = te.next().unwrap().cloned() {
         let mut postings = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();
         postings.next_doc().unwrap();
         let (mut starts, mut ends) = (Vec::new(), Vec::new());

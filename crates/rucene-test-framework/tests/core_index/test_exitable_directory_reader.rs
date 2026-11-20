@@ -124,9 +124,9 @@ impl LeafReader for TestReader {
         search_nearest_vectors, search_nearest_vectors_byte, get_field_infos, get_live_docs,
         get_point_values, check_integrity, get_meta_data);
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let terms = (&self.inner as &dyn LeafReader).terms(field)?;
-        Ok(terms.map(|terms| Box::new(TestTerms::new(terms)) as Box<dyn Terms>))
+        Ok(terms.map(|terms| Arc::new(TestTerms::new(terms)) as Arc<dyn Terms>))
     }
 
     /// `in.getCoreCacheHelper()`.
@@ -146,7 +146,7 @@ struct TestTerms {
 }
 
 impl TestTerms {
-    fn new(r#in: Box<dyn Terms>) -> Self {
+    fn new(r#in: Arc<dyn Terms>) -> Self {
         TestTerms {
             inner: FilterTerms::new(r#in),
         }
@@ -219,12 +219,12 @@ impl TermsEnum for TestTermsEnum {
         self.inner.seek_ord(ord)
     }
     /// Sleep between iterations to timeout things.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         // Sleep for 100ms before each .next() call.
         std::thread::sleep(std::time::Duration::from_millis(100));
         self.inner.next()
     }
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {

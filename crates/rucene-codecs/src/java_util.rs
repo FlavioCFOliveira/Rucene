@@ -23,7 +23,7 @@
 
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::{ByteArrayDataInput, DataInput, IndexInput};
-use rucene::util::ArrayUtil;
+use rucene::util::{ArrayUtil, BytesRef};
 
 /// A `java.lang.NullPointerException` with the given helpful message.
 pub(crate) fn null_pointer(message: impl Into<String>) -> LuceneError {
@@ -377,13 +377,36 @@ pub(crate) fn out_of_bounds_i32(index: i32, length: usize) -> LuceneError {
 /// Java's `BytesRefBuilder term`: the backing array plus the length;
 /// `setLength` keeps the bytes of the array, and `grow` zero-fills the new
 /// ones.
+///
+/// It holds them as the `BytesRef` Java's `get()` returns (`bytes`, `length`,
+/// `offset` 0), reached through [`Deref`](std::ops::Deref), so that a terms
+/// enum lends its term with [`get_ref`](Self::get_ref) as Java returns
+/// `term.get()`.
 #[derive(Default)]
 pub(crate) struct TermBuilder {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) length: usize,
+    term: BytesRef,
+}
+
+impl std::ops::Deref for TermBuilder {
+    type Target = BytesRef;
+
+    fn deref(&self) -> &BytesRef {
+        &self.term
+    }
+}
+
+impl std::ops::DerefMut for TermBuilder {
+    fn deref_mut(&mut self) -> &mut BytesRef {
+        &mut self.term
+    }
 }
 
 impl TermBuilder {
+    /// `get()`, the builder's own `BytesRef`, lent without copying.
+    pub(crate) fn get_ref(&self) -> &BytesRef {
+        &self.term
+    }
+
     /// `grow(capacity)`: `ArrayUtil.grow` copies the array into one of
     /// `ArrayUtil.oversize(capacity, 1)` bytes when it is too short.
     pub(crate) fn grow(&mut self, capacity: usize) {

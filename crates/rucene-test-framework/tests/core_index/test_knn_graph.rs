@@ -271,7 +271,7 @@ fn test_multiple_vector_fields(this: &mut Instance) -> Result<()> {
             for field in 0..num_vector_fields {
                 if let Some(vector) = &values[field][doc_id] {
                     doc.add(KnnFloatVectorField::with_field_type(
-                        &format!("{KNN_GRAPH_FIELD}{field}"),
+                        format!("{KNN_GRAPH_FIELD}{field}"),
                         vector,
                         field_types[field].clone(),
                     )?);

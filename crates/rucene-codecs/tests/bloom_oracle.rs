@@ -43,7 +43,7 @@ const BLOOM: FormatOracle = FormatOracle {
     extensions: &["blm"],
     codec: bloom_codec,
     extra_jars: &[],
-    live_impacts_differ: true,
+    live_impacts_differ: false,
 };
 
 #[test]
@@ -172,7 +172,7 @@ fn lucenes_filters_hold_every_term_of_their_field() {
             let mut te = terms.iterator().unwrap();
             while let Some(term) = te.next().unwrap() {
                 assert_eq!(
-                    set.contains(&term),
+                    set.contains(term),
                     ContainsResult::MAYBE,
                     "{segment}: {}: {term:?}",
                     fi.name

@@ -84,12 +84,12 @@ impl LeafReader for TestReader {
         search_nearest_vectors, search_nearest_vectors_byte, get_field_infos, get_live_docs,
         get_point_values, check_integrity, get_meta_data);
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let terms = (&self.inner as &dyn LeafReader).terms(field)?;
         Ok(terms.map(|terms| {
-            Box::new(TestTerms {
+            Arc::new(TestTerms {
                 inner: FilterTerms::new(terms),
-            }) as Box<dyn Terms>
+            }) as Arc<dyn Terms>
         }))
     }
 
@@ -228,15 +228,20 @@ impl TermsEnum for TestTermsEnum {
         self.inner.seek_ord(ord)
     }
     /// Scan for terms containing the letter 'e'.
-    fn next(&mut self) -> Result<Option<BytesRef>> {
-        while let Some(text) = self.inner.next()? {
-            if text.utf8_to_string()?.contains('e') {
-                return Ok(Some(text));
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        loop {
+            let keep = match self.inner.next()? {
+                Some(text) => text.utf8_to_string()?.contains('e'),
+                None => break,
+            };
+            if keep {
+                // `return text`: the delegate's term, lent anew.
+                return self.inner.term();
             }
         }
         Ok(None)
     }
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {

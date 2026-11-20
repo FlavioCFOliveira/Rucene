@@ -636,7 +636,7 @@ impl MoreLikeThis {
         let term_vectors = self.ir.term_vectors()?;
         for field_name in self.field_names_or_npe()? {
             let vectors = term_vectors.get(doc_num)?;
-            let vector: Option<Box<dyn Terms>> = match vectors {
+            let vector: Option<Arc<dyn Terms>> = match vectors {
                 Some(vectors) => vectors.terms(field_name)?,
                 None => None,
             };
@@ -705,7 +705,7 @@ impl MoreLikeThis {
         let mut terms_enum = vector.iterator()?;
         let mut spare = CharsRefBuilder::new();
         while let Some(text) = terms_enum.next()? {
-            spare.copy_utf8_bytes_ref(&text);
+            spare.copy_utf8_bytes_ref(text);
             let term = spare.to_string();
             if self.is_noise_word(&term) {
                 continue;

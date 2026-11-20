@@ -106,8 +106,10 @@ impl BinaryDictionaryWriter {
             )));
         }
         if source_id > self.last_source_id {
-            self.target_map_offsets =
-                ArrayUtil::grow_int(&self.target_map_offsets, (source_id + 1) as usize);
+            self.target_map_offsets = ArrayUtil::grow_int(
+                std::mem::take(&mut self.target_map_offsets),
+                (source_id + 1) as usize,
+            );
             for i in self.last_source_id + 1..=source_id {
                 self.target_map_offsets[i as usize] = self.target_map_end_offset;
             }
@@ -117,8 +119,10 @@ impl BinaryDictionaryWriter {
                 self.last_source_id
             )));
         }
-        self.target_map =
-            ArrayUtil::grow_int(&self.target_map, (self.target_map_end_offset + 1) as usize);
+        self.target_map = ArrayUtil::grow_int(
+            std::mem::take(&mut self.target_map),
+            (self.target_map_end_offset + 1) as usize,
+        );
         self.target_map[self.target_map_end_offset as usize] = word_id;
         self.target_map_end_offset += 1;
         self.last_source_id = source_id;

@@ -50,7 +50,7 @@ fn test_ram_bytes_used() -> Result<()> {
             random().next_int_bound(100000)
         };
         let term = Term::from_text("id", &random().next_int_bound(100).to_string());
-        bu.add_term(term, doc_id_upto)?;
+        bu.add_term(&term, doc_id_upto)?;
     }
     Assert::assert_true_msg("we have added tons of docIds, terms and queries", bu.any());
 
@@ -107,10 +107,16 @@ fn test_deleted_terms() -> Result<()> {
             expected.iter().map(|(k, v)| (k.clone(), *v)).collect();
         expected_sorted.sort_by(|a, b| a.0.cmp(&b.0));
         let mut actual_sorted: Vec<(Term, i32)> = Vec::new();
-        actual.for_each_ordered(|term, doc_id| {
-            let copy = Term::new(term.field(), BytesRef::deep_copy_of(term.bytes()));
-            actual_sorted.push((copy, doc_id));
-        });
+        actual
+            .for_each_ordered(|term, doc_id| {
+                let copy = Term::new(
+                    term.field().to_string(),
+                    BytesRef::deep_copy_of(term.bytes()),
+                );
+                actual_sorted.push((copy, doc_id));
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|never| match never {});
         assert_array_equals(&expected_sorted, &actual_sorted);
 
         actual.clear();

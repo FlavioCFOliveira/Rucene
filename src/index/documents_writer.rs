@@ -28,7 +28,7 @@
 //! * **The DWPT lock owns the DWPT state.** Java locks a DWPT and then mutates
 //!   plain fields, asserting `isHeldByCurrentThread()` in every method that
 //!   needs the lock. Rucene stores the mutable part of a DWPT in
-//!   `Mutex<Option<DwptState>>`; locking *takes* the state out and hands it to
+//!   `Mutex<Option<Box<DwptState>>>`; locking *takes* the state out and hands it to
 //!   an owned [`DwptGuard`], and dropping the guard puts it back and wakes one
 //!   waiter. The guard is a movable value, exactly like the Java lock, and the
 //!   borrow checker replaces every `assert isHeldByCurrentThread()`: an
@@ -82,7 +82,7 @@ use std::time::Duration;
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::Codec;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
-use crate::index::buffered_updates_stream::{FieldTermIterator, SegmentState};
+use crate::index::buffered_updates_stream::SegmentState;
 use crate::index::doc_values_field_updates::DocValuesFieldUpdates;
 use crate::index::doc_values_update::{DocValuesUpdate, DocValuesUpdateValue};
 use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
@@ -94,7 +94,7 @@ use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
 use crate::index::{DocumentsIterable, IndexableFieldIterable, SingleDocument};
-use crate::index::{FieldInfos, SegmentCommitInfo, SegmentInfo, Term};
+use crate::index::{FieldInfos, IndexFileName, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::{query_to_string, Query, QueryKey};
 use crate::store::{
@@ -103,6 +103,7 @@ use crate::store::{
 };
 use crate::util::byte_block_pool::ByteBlockPool;
 use crate::util::bytes_ref_hash::BytesRefHash;
+use crate::util::java_collections::JavaHashMap;
 use crate::util::string_helper::StringHelper;
 use crate::util::{Accountable, BytesRef, FixedBitSet, InfoStream, Version};
 use crate::util::{ArrayUtil, RamUsageEstimator};
@@ -264,8 +265,8 @@ pub struct DeletedTerms {
     /// Equivalent to `DeletedTerms.pool`.
     pool: ByteBlockPool,
     /// Equivalent to `DeletedTerms.deleteTerms`, a `HashMap<String,
-    /// BytesRefIntMap>`.
-    delete_terms: HashMap<String, BytesRefIntMap>,
+    /// BytesRefIntMap>`: Java's `HashMap`, hashed with `String.hashCode`.
+    delete_terms: JavaHashMap<BytesRefIntMap>,
     /// Equivalent to `DeletedTerms.termsSize`.
     terms_size: usize,
 }
@@ -283,7 +284,7 @@ impl DeletedTerms {
         Self {
             pool: ByteBlockPool::new(Arc::clone(&bytes_used)),
             bytes_used,
-            delete_terms: HashMap::new(),
+            delete_terms: JavaHashMap::new(),
             terms_size: 0,
         }
     }
@@ -310,20 +311,16 @@ impl DeletedTerms {
     /// pool block can hold, which is Java's
     /// `BytesRefHash.MaxBytesLengthExceededException`.
     pub fn put(&mut self, term: &Term, value: i32) -> Result<()> {
-        if !self.delete_terms.contains_key(term.field()) {
-            self.bytes_used.fetch_add(
+        // PERF: one lookup, `deleteTerms.computeIfAbsent(term.field, ...)`
+        // (`BufferedUpdates.java:210-216`), where `containsKey` + `get` made two.
+        let bytes_used = &self.bytes_used;
+        let hash = self.delete_terms.compute_if_absent(term.field(), || {
+            bytes_used.fetch_add(
                 RamUsageEstimator::size_of_string(term.field()),
                 Ordering::AcqRel,
             );
-            self.delete_terms.insert(
-                term.field().to_string(),
-                BytesRefIntMap::new(Arc::clone(&self.bytes_used)),
-            );
-        }
-        let hash = self
-            .delete_terms
-            .get_mut(term.field())
-            .expect("INVARIANT: the field's map was just inserted");
+            BytesRefIntMap::new(Arc::clone(bytes_used))
+        });
         if hash.put(&mut self.pool, term.bytes().slice(), value)? {
             self.terms_size += 1;
         }
@@ -365,29 +362,53 @@ impl DeletedTerms {
     }
 
     /// Visits every term with its `docIDUpto`, fields by name and terms by
-    /// their bytes.
+    /// their bytes, stopping at the first error `consumer` returns.
     ///
-    /// Equivalent to `DeletedTerms.forEachOrdered`. Like Java's, it sorts each
-    /// field's `BytesRefHash` in place with the destructive
-    /// `BytesRefHash.sort()`, and reads the first `size()` sorted ids, so the
-    /// per-field maps are consumed: Java never probes them again before
-    /// clearing them.
-    pub fn for_each_ordered(&self, mut consumer: impl FnMut(Term, i32)) {
-        let mut fields: Vec<&String> = self.delete_terms.keys().collect();
-        fields.sort();
-        for field in fields {
-            let terms = &self.delete_terms[field];
+    /// Equivalent to `DeletedTerms.forEachOrdered(DeletedTermConsumer<E>)`
+    /// (`BufferedUpdates.java:257-272`). The fields are sorted with
+    /// `Map.Entry.comparingByKey()`, `String.compareTo`, which orders UTF-16
+    /// code units. As in Java, the consumer is handed one scratch `Term`,
+    /// repointed at each term in turn, so it must copy what it keeps beyond
+    /// the call. Like Java's, it sorts each field's `BytesRefHash` in place
+    /// with the destructive `BytesRefHash.sort()` and reads the first `size()`
+    /// sorted ids, so the per-field maps are consumed: Java never probes them
+    /// again before clearing them.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error `consumer` returns, as Java's `throws E`.
+    pub fn for_each_ordered<E>(
+        &self,
+        mut consumer: impl FnMut(&Term, i32) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        // `new ArrayList<>(deleteTerms.entrySet())` sorted with
+        // `Map.Entry.comparingByKey()`.
+        let mut fields: Vec<(&String, &BytesRefIntMap)> = self.delete_terms.iter().collect();
+        fields.sort_by(|(left, _), (right, _)| crate::util::compare_utf16(left, right));
+        // `Term scratch = new Term("", new BytesRef())`.
+        let mut scratch = Term::empty("");
+        for (field, terms) in fields {
+            // `scratch.field = deleteFieldEntry.getKey()`.
+            scratch.set(field, crate::util::BytesRef::default());
             let mut hash = terms.lock_hash();
             let size = hash.size() as usize;
-            let indices = hash.sort(&self.pool)[..size].to_vec();
-            for index in indices {
+            // `int[] indices = terms.bytesRefHash.sort()`: the sorted ids stay
+            // in the hash, read back in place.
+            hash.sort(&self.pool);
+            for &index in &hash.ids()[..size] {
+                // PERF: `terms.bytesRefHash.get(index, scratch.bytes)` refills
+                // the scratch term's bytes instead of building a term per
+                // entry.
                 let bytes = hash.get(&self.pool, index);
-                consumer(
-                    Term::new(field.clone(), crate::util::BytesRef::new(bytes.to_vec())),
-                    terms.values[index as usize],
-                );
+                let scratch_bytes = scratch.bytes_mut();
+                scratch_bytes.bytes.clear();
+                scratch_bytes.bytes.extend_from_slice(bytes);
+                scratch_bytes.offset = 0;
+                scratch_bytes.length = bytes.len();
+                consumer(&scratch, terms.values[index as usize])?;
             }
         }
+        Ok(())
     }
 }
 
@@ -517,7 +538,10 @@ pub struct BufferedUpdates {
     /// the terms' RAM apart from `bytesUsed` (`BufferedUpdates.java:182`);
     /// `toString()` renders `bytesUsed` alone, so a buffer holding nothing but
     /// deleted terms reports no `bytesUsed=` clause.
-    delete_terms: DeletedTerms,
+    ///
+    /// Crate-visible as Java's package-private field is: the flush reads it
+    /// off `SegmentWriteState.segUpdates` (`FreqProxTermsWriter.java:43-46`).
+    pub(crate) delete_terms: DeletedTerms,
     /// Delete queries mapped to their `docIDUpto`.
     ///
     /// Equivalent to `BufferedUpdates.deleteQueries`, a `Map<Query, Integer>`.
@@ -581,12 +605,12 @@ impl BufferedUpdates {
     ///
     /// Propagates [`DeletedTerms::put`]'s error for a term too long for a
     /// pool block.
-    pub fn add_term(&mut self, term: Term, doc_id_upto: i32) -> Result<()> {
-        let current = self.delete_terms.get(&term);
+    pub fn add_term(&mut self, term: &Term, doc_id_upto: i32) -> Result<()> {
+        let current = self.delete_terms.get(term);
         if current != -1 && doc_id_upto < current {
             return Ok(());
         }
-        self.delete_terms.put(&term, doc_id_upto)
+        self.delete_terms.put(term, doc_id_upto)
     }
 
     /// Records a delete-by-query applying to documents below `doc_id_upto`.
@@ -700,14 +724,24 @@ impl BufferedUpdates {
     /// Returns every buffered delete term with its `docIDUpto`, fields by name
     /// and terms by their bytes.
     ///
-    /// Equivalent to collecting `BufferedUpdates.deleteTerms.forEachOrdered`.
+    /// Equivalent to collecting `BufferedUpdates.deleteTerms.forEachOrdered`
+    /// into copies of each term. The freeze and the flush consume
+    /// [`DeletedTerms::for_each_ordered`] directly, as Java does; this copy is
+    /// for callers that keep the terms.
     ///
     /// The delete terms are sorted in place, as Java's `forEachOrdered`
     /// sorts them, so the term map cannot be probed afterwards.
     pub fn delete_terms(&self) -> Vec<TermDelete> {
         let mut out = Vec::with_capacity(self.delete_terms.size());
         self.delete_terms
-            .for_each_ordered(|term, doc_id_upto| out.push(TermDelete { term, doc_id_upto }));
+            .for_each_ordered(|term, doc_id_upto| {
+                out.push(TermDelete {
+                    term: term.clone(),
+                    doc_id_upto,
+                });
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|never| match never {});
         out
     }
 
@@ -954,26 +988,21 @@ impl FrozenBufferedUpdates {
     /// `private_segment_name` is `Some` for segment-private deletes and `None`
     /// for a global packet.
     pub fn new(mut updates: BufferedUpdates, private_segment_name: Option<String>) -> Self {
+        // `assert privateSegment == null || updates.deleteTerms.isEmpty()`
+        // (`FrozenBufferedUpdates.java:84-85`).
         debug_assert!(
-            private_segment_name.is_none() || updates.delete_terms().is_empty(),
+            private_segment_name.is_none() || updates.delete_terms.is_empty(),
             "segment private packet should only have del queries"
         );
         // `PrefixCodedTerms.Builder builder = ...;
         // updates.deleteTerms.forEachOrdered((term, doc) -> builder.add(term));`
-        // (`FrozenBufferedUpdates.java:87-89`).
-        let mut ordered = updates.delete_terms();
-        // `forEachOrdered` sorts the fields with `Map.Entry.comparingByKey()`,
-        // `String.compareTo`: UTF-16 code units (`BufferedUpdates.java:257-260`).
-        ordered.sort_by(|left, right| {
-            crate::util::compare_utf16(left.term.field(), right.term.field())
-                .then_with(|| left.term.bytes().cmp(right.term.bytes()))
-        });
+        // (`FrozenBufferedUpdates.java:87-89`): `forEachOrdered` already hands
+        // the terms over in Java's order, fields by `String.compareTo`.
         let mut builder = crate::index::PrefixCodedTermsBuilder::new();
-        for delete in &ordered {
-            builder
-                .add(&delete.term)
-                .expect("INVARIANT: the terms are added in sorted order");
-        }
+        updates
+            .delete_terms
+            .for_each_ordered(|term, _doc_id_upto| builder.add(term))
+            .expect("INVARIANT: the terms are added in sorted order");
         let delete_terms = builder.finish();
         // `updates.fieldUpdates.values().forEach(FieldUpdatesBuffer::finish)`
         // (`FrozenBufferedUpdates.java:105`); `finish` charges the sort state
@@ -1159,9 +1188,10 @@ impl FrozenBufferedUpdates {
     /// BufferedUpdatesStream.SegmentState[])`.
     ///
     /// The terms were frozen into a sorted `PrefixCodedTerms` when the packet
-    /// was built, and are walked through its [`FieldTermIterator`] to visit
-    /// each segment's term dictionary forwards
-    /// (`FrozenBufferedUpdates.java:464-482`).
+    /// was built, and are walked through its iterator to visit each segment's
+    /// term dictionary forwards (`FrozenBufferedUpdates.java:464-482`); each
+    /// term is read in the iterator's reused buffer, as Java's `iter.next()`
+    /// returns it.
     ///
     /// # Errors
     ///
@@ -1199,13 +1229,12 @@ impl FrozenBufferedUpdates {
             }
 
             let mut iter = frozen_terms.iterator();
-            let iter: &mut dyn FieldTermIterator = &mut iter;
             let mut term_docs = TermDocsIterator::new(seg_state.reader.as_ref(), true);
-            while let Some(del_term) = iter.next()? {
-                let field = iter
-                    .field()
-                    .expect("INVARIANT: a term was just read, so the iterator is on a field");
-                if !term_docs.next_term(field, &del_term)? {
+            // PERF: `while ((delTerm = iter.next()) != null)` on the iterator's
+            // reused term (`FrozenBufferedUpdates.java:464-467`), not a copy
+            // per term and segment.
+            while let Some((field, del_term)) = iter.next_field_term()? {
+                if !term_docs.next_term(field, del_term)? {
                     continue;
                 }
                 loop {
@@ -1551,7 +1580,24 @@ pub struct TermDocsIterator<'a> {
     terms_enum: Option<Box<dyn TermsEnum>>,
     postings_enum: Option<Box<dyn PostingsEnum>>,
     sorted_terms: bool,
-    reader_term: Option<BytesRef>,
+    /// Java's `readerTerm` (`FrozenBufferedUpdates.java:549`), the term the
+    /// enum's `next()` or `term()` returned (lines 580, 607), meaningful only
+    /// when [`has_reader_term`](Self::has_reader_term).
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java keeps the enum's own `BytesRef`;
+    /// the term [`TermsEnum`] lends cannot be kept while the enum moves, so it
+    /// is copied here, into one buffer reused for every term (no allocation
+    /// once it is large enough). Re-reading the enum at each comparison
+    /// (line 596) instead costs a dynamic call per requested term and
+    /// segment, where a copy is made only when the enum is positioned by
+    /// `next()` or a `NOT_FOUND` seek. Java's alias also follows the enum
+    /// after a `FOUND` seek, where this copy keeps the earlier term: every
+    /// later requested term sorts after both, so each comparison answers
+    /// "greater" either way, and only an equal requested term is sought
+    /// again instead of read from the enum, landing on the same postings.
+    reader_term: BytesRef,
+    /// `readerTerm != null`.
+    has_reader_term: bool,
     /// The last term [`next_term`](Self::next_term) was asked for; kept, as in
     /// Java, only for the assert-only `assertSorted`.
     last_term: Option<BytesRef>,
@@ -1568,7 +1614,8 @@ impl<'a> TermDocsIterator<'a> {
             terms_enum: None,
             postings_enum: None,
             sorted_terms,
-            reader_term: None,
+            reader_term: BytesRef::default(),
+            has_reader_term: false,
             last_term: None,
         }
     }
@@ -1602,14 +1649,21 @@ impl<'a> TermDocsIterator<'a> {
             match self.reader.terms(field)? {
                 Some(terms) => {
                     let mut terms_enum = terms.iterator()?;
-                    self.reader_term = if self.sorted_terms {
+                    self.has_reader_term = if self.sorted_terms {
                         // need to reset, otherwise the sortedness check below
                         // fails, since we sort per field: `assert (lastTerm =
                         // null) == null;` (`FrozenBufferedUpdates.java:577-578`)
                         self.last_term = None;
-                        terms_enum.next()?
+                        // `readerTerm = termsEnum.next()`.
+                        match terms_enum.next()? {
+                            Some(term) => {
+                                self.reader_term.copy_from(term);
+                                true
+                            }
+                            None => false,
+                        }
                     } else {
-                        None
+                        false
                     };
                     self.terms_enum = Some(terms_enum);
                 }
@@ -1643,11 +1697,11 @@ impl<'a> TermDocsIterator<'a> {
             // property; depending on the term dictionary implementation this
             // reuses internal data structures and speeds up iteration over terms
             // and docs significantly.
-            let Some(reader_term) = self.reader_term.as_ref() else {
+            if !self.has_reader_term {
                 // no more terms in this segment
                 return Ok(false);
-            };
-            match term.cmp(reader_term) {
+            }
+            match term.cmp(&self.reader_term) {
                 std::cmp::Ordering::Less => {
                     // requested term does not exist in this segment
                     return Ok(false);
@@ -1656,7 +1710,14 @@ impl<'a> TermDocsIterator<'a> {
                 std::cmp::Ordering::Greater => match terms_enum.seek_ceil(term)? {
                     SeekStatus::FOUND => return self.get_docs(),
                     SeekStatus::NOT_FOUND => {
-                        self.reader_term = terms_enum.term()?;
+                        // `readerTerm = termsEnum.term()`: the term after `term`.
+                        self.has_reader_term = match terms_enum.term()? {
+                            Some(next) => {
+                                self.reader_term.copy_from(next);
+                                true
+                            }
+                            None => false,
+                        };
                         return Ok(false);
                     }
                     SeekStatus::END => {
@@ -2091,10 +2152,13 @@ impl DeleteNode {
             DeleteItem::Sentinel => {
                 debug_assert!(false, "sentinel item must never be applied");
             }
-            DeleteItem::Term(term) => updates.add_term(term.clone(), doc_id_upto)?,
+            // `TermNode.apply` and `TermArrayNode.apply` hand the queued term
+            // itself to `addTerm` (`DocumentsWriterDeleteQueue.java:434-437,
+            // 480-485`).
+            DeleteItem::Term(term) => updates.add_term(term, doc_id_upto)?,
             DeleteItem::Terms(terms) => {
                 for term in terms {
-                    updates.add_term(term.clone(), doc_id_upto)?;
+                    updates.add_term(term, doc_id_upto)?;
                 }
             }
             DeleteItem::Query(query) => {
@@ -3596,8 +3660,28 @@ pub struct DocumentsWriterPerThread {
     last_committed_bytes_used: AtomicI64,
 
     // Lucene's `ReentrantLock lock` plus every field it guards.
-    state: Mutex<Option<DwptState>>,
+    //
+    // PERF: boxed, so taking the lock and releasing it move one pointer, as
+    // Java's `ReentrantLock` moves nothing; held inline, the ~0.5 KB state was
+    // copied by every take, put back and pass of the guard through
+    // `Result`/`Option` (#587).
+    state: Mutex<Option<Box<DwptState>>>,
     unlocked: Condvar,
+    /// How many threads are blocked on [`unlocked`](Self::unlocked), waiting
+    /// for the state to come back.
+    ///
+    /// The `ReentrantLock` Java's `unlock()` releases wakes a successor only
+    /// when one is queued (`DocumentsWriterPerThread.java:139, 829-831`); a
+    /// futex `Condvar::notify_one` makes a `FUTEX_WAKE` system call whether or
+    /// not anyone waits, which was one system call per indexed document. The
+    /// count lets [`DwptGuard`]'s `drop` notify only when a thread waits, and
+    /// a woken renderer pass the wake-up on to the next waiter
+    /// ([`Display for DocumentsWriterPerThread`](DocumentsWriterPerThread)).
+    ///
+    /// Only read or written while `state` is locked: the mutex orders every
+    /// access, so `Relaxed` is enough, and a waiter counted before it blocks
+    /// is seen by the next thread that puts the state back.
+    unlock_waiters: AtomicUsize,
     /// The lock [`TryLockable::try_lock_entry`] takes on behalf of the pool's
     /// free list, held here until the pool hands it to the polling thread or
     /// [`TryLockable::unlock_entry`] releases it.
@@ -3717,19 +3801,39 @@ impl Display for DocumentsWriterPerThread {
     /// produces the identical string from the state it is holding; going
     /// through the DWPT from that thread would wait for a guard it will not
     /// release until it returns.
+    ///
+    /// A renderer waits on the same [`unlocked`](Self::unlocked) condition as
+    /// [`lock`](Self::lock), so the one waiter a guard's drop wakes may be a
+    /// renderer, which then leaves the state where it is. A renderer that was
+    /// woken therefore passes the wake-up on to the next counted waiter, so
+    /// that, as in Java, the release reaches a thread that takes the lock:
+    /// `toString()` never queues on the `ReentrantLock`
+    /// (`DocumentsWriterPerThread.java:139, 736-752`), and the successor
+    /// `unlock()` wakes (`:829-831`) is always a locker.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut slot = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut woken = false;
         loop {
             if let Some(state) = slot.as_ref() {
-                return dwpt_to_string(self, state, f);
+                let rendered = dwpt_to_string(self, state, f);
+                // Read under the lock the count is kept under, as `DwptGuard`'s
+                // drop does; a renderer that never waited took no wake-up.
+                let waiters = if woken {
+                    self.unlock_waiters.load(Ordering::Relaxed)
+                } else {
+                    0
+                };
+                drop(slot);
+                if waiters > 0 {
+                    self.unlocked.notify_one();
+                }
+                return rendered;
             }
-            slot = self
-                .unlocked
-                .wait(slot)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot = self.wait_unlocked(slot);
+            woken = true;
         }
     }
 }
@@ -3804,7 +3908,7 @@ impl DocumentsWriterPerThread {
             has_flushed: AtomicBool::new(false),
             num_docs_in_ram: AtomicI32::new(0),
             last_committed_bytes_used: AtomicI64::new(0),
-            state: Mutex::new(Some(DwptState {
+            state: Mutex::new(Some(Box::new(DwptState {
                 indexing_chain,
                 field_infos,
                 pending_updates: BufferedUpdates::new(segment_name.clone()),
@@ -3812,8 +3916,9 @@ impl DocumentsWriterPerThread {
                 delete_doc_ids: Vec::new(),
                 files_to_delete: HashSet::new(),
                 aborting_error: None,
-            })),
+            }))),
             unlocked: Condvar::new(),
+            unlock_waiters: AtomicUsize::new(0),
             pooled_lock: Mutex::new(None),
             segment_name,
             delete_queue,
@@ -3846,11 +3951,29 @@ impl DocumentsWriterPerThread {
                     state: Some(state),
                 };
             }
-            slot = dwpt
-                .unlocked
-                .wait(slot)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot = dwpt.wait_unlocked(slot);
         }
+    }
+
+    /// Blocks on [`unlocked`](Self::unlocked) until a guard puts the state
+    /// back (or a spurious wake-up), counted in
+    /// [`unlock_waiters`](Self::unlock_waiters) for the whole wait.
+    ///
+    /// `slot` is the locked `state`: the count changes only under that lock,
+    /// and `Condvar::wait` releases it only once this thread is queued on the
+    /// condition variable, so the guard that next takes the lock sees the
+    /// count and its `notify_one` reaches this thread.
+    fn wait_unlocked<'a>(
+        &self,
+        slot: MutexGuard<'a, Option<Box<DwptState>>>,
+    ) -> MutexGuard<'a, Option<Box<DwptState>>> {
+        self.unlock_waiters.fetch_add(1, Ordering::Relaxed);
+        let slot = self
+            .unlocked
+            .wait(slot)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.unlock_waiters.fetch_sub(1, Ordering::Relaxed);
+        slot
     }
 
     /// Acquires the DWPT lock if it is free right now.
@@ -4030,13 +4153,13 @@ impl DocumentsWriterPerThread {
 /// Exclusive access to a [`DocumentsWriterPerThread`].
 ///
 /// Equivalent to holding `DocumentsWriterPerThread`'s `ReentrantLock`. Dropping
-/// the guard releases the lock and wakes one waiter, and every operation Lucene
+/// the guard releases the lock and wakes one waiter, if a thread waits, and every operation Lucene
 /// guards with `assert isHeldByCurrentThread()` is a method here, so it cannot
 /// be called without the lock.
 #[derive(Debug)]
 pub struct DwptGuard {
     dwpt: Arc<DocumentsWriterPerThread>,
-    state: Option<DwptState>,
+    state: Option<Box<DwptState>>,
 }
 
 impl Display for DwptGuard {
@@ -4076,8 +4199,14 @@ impl Drop for DwptGuard {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             *slot = Some(state);
+            // PERF: wake a waiter only when one is queued, as
+            // `ReentrantLock.unlock()` does (`DocumentsWriterPerThread.java:
+            // 829-831`); the count is read under the lock it is kept under.
+            let waiters = self.dwpt.unlock_waiters.load(Ordering::Relaxed);
             drop(slot);
-            self.dwpt.unlocked.notify_one();
+            if waiters > 0 {
+                self.dwpt.unlocked.notify_one();
+            }
         }
     }
 }
@@ -4097,13 +4226,13 @@ impl DwptGuard {
 
     fn state(&self) -> &DwptState {
         self.state
-            .as_ref()
+            .as_deref()
             .expect("INVARIANT: state is only taken in Drop")
     }
 
     fn state_mut(&mut self) -> &mut DwptState {
         self.state
-            .as_mut()
+            .as_deref_mut()
             .expect("INVARIANT: state is only taken in Drop")
     }
 
@@ -4764,11 +4893,9 @@ impl DwptGuard {
             );
             // `"flushedFiles=" + segmentInfoPerCommit.files()`: the
             // `java.util.HashSet` rendered in its own iteration order.
-            let flushed_files: Vec<String> = segment_commit_info
-                .files_ordered()?
-                .iter()
-                .cloned()
-                .collect();
+            let flushed_files = segment_commit_info.files_ordered()?;
+            let flushed_files: Vec<&str> =
+                flushed_files.iter().map(IndexFileName::as_str).collect();
             info_stream.message(
                 "DWPT",
                 &format!("flushedFiles=[{}]", flushed_files.join(", ")),
@@ -4858,10 +4985,7 @@ impl DwptGuard {
                 &mut delete_files,
             )?;
             self.state_mut().files_to_delete.extend(original_files);
-            flushed_segment
-                .segment_info
-                .info
-                .set_use_compound_file(true);
+            Arc::make_mut(&mut flushed_segment.segment_info.info).set_use_compound_file(true);
         }
 
         // Have the codec write the `SegmentInfo`. This must happen after the
@@ -7234,7 +7358,7 @@ mod tests {
     }
 
     fn term(field: &str, text: &str) -> Term {
-        Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+        Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
     }
 
     /// A real [`Query`] identified by `label`, on the field `q`.
@@ -7419,17 +7543,82 @@ mod tests {
     #[test]
     fn buffered_updates_keeps_the_highest_doc_id_upto_per_term() {
         let mut updates = BufferedUpdates::new("_0");
-        updates.add_term(term("id", "a"), 5).unwrap();
-        updates.add_term(term("id", "a"), 2).unwrap();
+        updates.add_term(&term("id", "a"), 5).unwrap();
+        updates.add_term(&term("id", "a"), 2).unwrap();
         assert_eq!(updates.terms_size(), 1, "the term must be de-duplicated");
         assert_eq!(updates.delete_term_doc_id_upto(&term("id", "a")), Some(5));
 
-        updates.add_term(term("id", "a"), 9).unwrap();
+        updates.add_term(&term("id", "a"), 9).unwrap();
         assert_eq!(updates.delete_term_doc_id_upto(&term("id", "a")), Some(9));
 
-        updates.add_term(term("other", "a"), 1).unwrap();
+        updates.add_term(&term("other", "a"), 1).unwrap();
         assert_eq!(updates.terms_size(), 2, "field is part of the term key");
         assert!(updates.ram_bytes_used() > 0);
+    }
+
+    /// `DeletedTerms.forEachOrdered` sorts the fields with `String.compareTo`
+    /// (`BufferedUpdates.java:258-259`), i.e. by UTF-16 code units: a
+    /// supplementary field name sorts before `U+FFFF`, the reverse of UTF-8
+    /// byte order. The frozen packet keeps the same order.
+    #[test]
+    fn delete_terms_are_visited_in_java_field_order() {
+        let mut updates = BufferedUpdates::new("_0");
+        updates.add_term(&term("\u{ffff}", "a"), 1).unwrap();
+        updates.add_term(&term("\u{10000}", "b"), 2).unwrap();
+        updates.add_term(&term("\u{10000}", "a"), 3).unwrap();
+        let expected = vec![
+            ("\u{10000}".to_string(), b"a".to_vec(), 3),
+            ("\u{10000}".to_string(), b"b".to_vec(), 2),
+            ("\u{ffff}".to_string(), b"a".to_vec(), 1),
+        ];
+        let visited: Vec<(String, Vec<u8>, i32)> = updates
+            .delete_terms()
+            .into_iter()
+            .map(|delete| {
+                (
+                    delete.term.field().to_string(),
+                    delete.term.bytes().slice().to_vec(),
+                    delete.doc_id_upto,
+                )
+            })
+            .collect();
+        assert_eq!(visited, expected);
+
+        let frozen = FrozenBufferedUpdates::new(updates, None);
+        let mut iterator = frozen.delete_terms_iterator();
+        let mut frozen_order = Vec::new();
+        while let Some(bytes) = iterator.next().unwrap() {
+            frozen_order.push((
+                iterator.field().expect("a field").to_string(),
+                bytes.slice().to_vec(),
+            ));
+        }
+        let expected_frozen: Vec<(String, Vec<u8>)> = expected
+            .into_iter()
+            .map(|(field, bytes, _)| (field, bytes))
+            .collect();
+        assert_eq!(frozen_order, expected_frozen);
+    }
+
+    /// `forEachOrdered` declares `throws E`: the consumer's first error ends
+    /// the visit and is returned.
+    #[test]
+    fn delete_terms_visit_stops_at_the_first_consumer_error() {
+        let mut updates = BufferedUpdates::new("_0");
+        for text in ["c", "a", "b"] {
+            updates.add_term(&term("id", text), 1).unwrap();
+        }
+        let mut seen = Vec::new();
+        let outcome = updates.delete_terms.for_each_ordered(|term, _| {
+            seen.push(term.bytes().slice().to_vec());
+            if seen.len() == 2 {
+                Err("stop")
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(outcome, Err("stop"));
+        assert_eq!(seen, vec![b"a".to_vec(), b"b".to_vec()]);
     }
 
     #[test]
@@ -7442,7 +7631,7 @@ mod tests {
         assert_eq!(updates.queries_size(), 1, "queries are de-duplicated");
         assert!(updates.any());
 
-        updates.add_term(term("id", "a"), 1).unwrap();
+        updates.add_term(&term("id", "a"), 1).unwrap();
         updates.clear_delete_terms();
         assert_eq!(updates.terms_size(), 0);
         assert!(updates.any(), "the query is still buffered");
@@ -7508,8 +7697,8 @@ mod tests {
     #[test]
     fn frozen_packet_charges_its_frozen_terms_and_the_finished_field_updates() {
         let mut updates = BufferedUpdates::new("_0");
-        updates.add_term(term("id", "b"), 3).unwrap();
-        updates.add_term(term("id", "a"), 3).unwrap();
+        updates.add_term(&term("id", "b"), 3).unwrap();
+        updates.add_term(&term("id", "a"), 3).unwrap();
         updates.add_query(label_query("q1"), 3);
         // One field and one value, so `finish()` sorts the terms.
         for (id, value) in [("c", 7), ("a", 7), ("b", 7)] {
@@ -7560,8 +7749,8 @@ mod tests {
     #[test]
     fn gap_g017_stream_charges_packet_bytes() {
         let mut updates = BufferedUpdates::new("_0");
-        updates.add_term(term("id", "a"), 3).unwrap();
-        updates.add_term(term("id", "b"), 3).unwrap();
+        updates.add_term(&term("id", "a"), 3).unwrap();
+        updates.add_term(&term("id", "b"), 3).unwrap();
         updates.add_query(label_query("q1"), 3);
         let packet = Arc::new(FrozenBufferedUpdates::new(updates, None));
         let bytes = packet.ram_bytes_used();
@@ -7675,7 +7864,7 @@ mod tests {
                         {
                             let mut updates = BufferedUpdates::new("global");
                             updates
-                                .add_term(term("id", "a"), BufferedUpdates::MAX_INT)
+                                .add_term(&term("id", "a"), BufferedUpdates::MAX_INT)
                                 .unwrap();
                             updates
                         },
@@ -7893,6 +8082,152 @@ mod tests {
         );
         drop(guard);
         assert!(DocumentsWriterPerThread::try_lock(&dwpt).is_some());
+    }
+
+    /// A thread blocked in `DocumentsWriterPerThread::lock` is counted while it
+    /// waits and woken by the guard's drop, which notifies only when a waiter
+    /// is counted (`ReentrantLock.unlock()`, `DocumentsWriterPerThread.java:
+    /// 829-831`); the count is back to zero once the waiter holds the lock.
+    #[test]
+    fn dwpt_unlock_wakes_a_blocked_locker_and_counts_it_only_while_it_waits() {
+        let fixture = new_writer(config(2, 16.0));
+        let pool = fixture.writer.per_thread_pool();
+        let guard = pool.get_and_lock().unwrap();
+        let dwpt = Arc::clone(guard.dwpt());
+        assert_eq!(dwpt.unlock_waiters.load(Ordering::Relaxed), 0);
+
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let dwpt = Arc::clone(&dwpt);
+            thread::spawn(move || {
+                let guard = DocumentsWriterPerThread::lock(&dwpt);
+                acquired_tx.send(()).unwrap();
+                drop(guard);
+            })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while dwpt.unlock_waiters.load(Ordering::Relaxed) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the locker never blocked on the held DWPT"
+            );
+            thread::yield_now();
+        }
+        assert!(
+            acquired_rx.try_recv().is_err(),
+            "the lock must stay exclusive while the guard lives"
+        );
+
+        drop(guard);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("dropping the guard must wake the counted waiter");
+        waiter.join().unwrap();
+        assert_eq!(dwpt.unlock_waiters.load(Ordering::Relaxed), 0);
+        assert!(DocumentsWriterPerThread::try_lock(&dwpt).is_some());
+    }
+
+    /// The `/proc` path of the calling thread's `stat` file.
+    #[cfg(target_os = "linux")]
+    fn own_task_stat() -> std::path::PathBuf {
+        // `/proc/thread-self` links to `<pid>/task/<tid>`.
+        std::path::Path::new("/proc")
+            .join(std::fs::read_link("/proc/thread-self").unwrap())
+            .join("stat")
+    }
+
+    /// Spins (never sleeps) until `dwpt` counts `waiters` threads blocked on
+    /// `unlocked` and the thread whose `stat` file is `stat` is asleep in the
+    /// kernel, so a `notify_one` issued now reaches the kernel's queue of
+    /// waiters instead of racing a thread still on its way into `wait`.
+    ///
+    /// Once counted, the thread's only blocking call is the condition
+    /// variable's futex wait, so the sleeping state `S` means it is queued.
+    #[cfg(target_os = "linux")]
+    fn await_parked(
+        dwpt: &DocumentsWriterPerThread,
+        waiters: usize,
+        stat: &std::path::Path,
+        deadline: std::time::Instant,
+    ) {
+        loop {
+            if dwpt.unlock_waiters.load(Ordering::Relaxed) == waiters {
+                let line = std::fs::read_to_string(stat).unwrap();
+                // `pid (comm) state ...`; `comm` may itself contain `)`.
+                let state = line[line.rfind(')').unwrap() + 1..]
+                    .trim_start()
+                    .chars()
+                    .next();
+                if state == Some('S') {
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "waiter {waiters} never parked on the held DWPT"
+            );
+            thread::yield_now();
+        }
+    }
+
+    /// Rendering a DWPT never swallows the wake-up a blocked locker is owed
+    /// (#571). Java's `toString()` takes no lock (`DocumentsWriterPerThread.
+    /// java:736-752`), so the successor `ReentrantLock.unlock()` wakes
+    /// (`:829-831`) is always a locker. Here the renderer waits on the same
+    /// condition variable as `lock()`: the test parks a renderer and then a
+    /// locker in the kernel, in that order, so the guard's `notify_one`
+    /// reaches the renderer first (Linux queues equal-priority futex waiters
+    /// in arrival order), and requires the locker to get the DWPT.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dwpt_render_passes_on_the_wake_up_a_blocked_locker_is_owed() {
+        let fixture = new_writer(config(2, 16.0));
+        let pool = fixture.writer.per_thread_pool();
+        let guard = pool.get_and_lock().unwrap();
+        let dwpt = Arc::clone(guard.dwpt());
+        let expected = guard.to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        let (stat_tx, stat_rx) = std::sync::mpsc::channel();
+        let (rendered_tx, rendered_rx) = std::sync::mpsc::channel();
+        let renderer = {
+            let dwpt = Arc::clone(&dwpt);
+            let stat_tx = stat_tx.clone();
+            thread::spawn(move || {
+                stat_tx.send(own_task_stat()).unwrap();
+                rendered_tx.send(dwpt.to_string()).unwrap();
+            })
+        };
+        await_parked(&dwpt, 1, &stat_rx.recv().unwrap(), deadline);
+
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let locker = {
+            let dwpt = Arc::clone(&dwpt);
+            thread::spawn(move || {
+                stat_tx.send(own_task_stat()).unwrap();
+                let guard = DocumentsWriterPerThread::lock(&dwpt);
+                acquired_tx.send(()).unwrap();
+                drop(guard);
+            })
+        };
+        await_parked(&dwpt, 2, &stat_rx.recv().unwrap(), deadline);
+
+        drop(guard);
+        let rendered = rendered_rx.recv_timeout(Duration::from_secs(10));
+        let acquired = acquired_rx.recv_timeout(Duration::from_secs(10));
+        if acquired.is_err() {
+            // Wake the stranded locker so that no thread outlives the test:
+            // a fresh lock finds the DWPT free and its drop notifies.
+            drop(DocumentsWriterPerThread::lock(&dwpt));
+        }
+        renderer.join().unwrap();
+        locker.join().unwrap();
+        assert_eq!(
+            rendered.expect("the renderer must finish once the guard is dropped"),
+            expected
+        );
+        acquired.expect("the blocked locker must get the DWPT once the guard is dropped");
+        assert_eq!(dwpt.unlock_waiters.load(Ordering::Relaxed), 0);
     }
 
     // -- DocumentsWriterPerThread ------------------------------------------

@@ -128,8 +128,9 @@ impl BaseCharFilter {
         let offsets = self.offsets.get_or_insert_with(|| vec![0; 64]);
         let diffs = self.diffs.get_or_insert_with(|| vec![0; 64]);
         if self.size == offsets.len() {
-            *offsets = ArrayUtil::grow_int(offsets, offsets.len() + 1);
-            *diffs = ArrayUtil::grow_int(diffs, diffs.len() + 1);
+            let (offsets_len, diffs_len) = (offsets.len(), diffs.len());
+            *offsets = ArrayUtil::grow_int(std::mem::take(offsets), offsets_len + 1);
+            *diffs = ArrayUtil::grow_int(std::mem::take(diffs), diffs_len + 1);
         }
 
         debug_assert!(

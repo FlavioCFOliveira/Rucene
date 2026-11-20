@@ -2032,7 +2032,7 @@ struct FieldEntry {
     size: i32,
     nodes_by_level: Vec<Option<Vec<i32>>>,
     /// `null` in Java when the field has no node offsets at all.
-    offsets_meta: Option<DirectMonotonicMeta>,
+    offsets_meta: Option<Arc<DirectMonotonicMeta>>,
     offsets_offset: i64,
     offsets_block_shift: i32,
     offsets_length: i64,
@@ -2806,8 +2806,11 @@ impl FieldEntry {
             if number_of_offsets > 0 {
                 let offsets_offset = input.read_long()?;
                 let offsets_block_shift = input.read_v_int()?;
-                let offsets_meta =
-                    DirectMonotonicMeta::load(input, number_of_offsets, offsets_block_shift)?;
+                let offsets_meta = Arc::new(DirectMonotonicMeta::load(
+                    input,
+                    number_of_offsets,
+                    offsets_block_shift,
+                )?);
                 let offsets_length = input.read_long()?;
                 (
                     offsets_offset,
@@ -2931,7 +2934,7 @@ impl OffHeapHnswGraph {
             vector_index.random_access_slice(entry.offsets_offset, entry.offsets_length)?;
         let offsets = match &entry.offsets_meta {
             Some(meta) => DirectMonotonicReader::with_random_access(
-                meta.clone(),
+                Arc::clone(meta),
                 crate::util::packed::shared_random_access_input(addresses_data),
             )?,
             None => return Err(LuceneError::null_pointer()),

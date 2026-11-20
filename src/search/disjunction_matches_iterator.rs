@@ -78,8 +78,10 @@ impl TermsEnumBytesRefIterator {
 }
 
 impl BytesRefIterator for TermsEnumBytesRefIterator {
+    /// The enum's term, copied: [`BytesRefIterator::next`] answers an owned
+    /// term where [`TermsEnum::next`] lends its buffer.
     fn next(&mut self) -> Result<Option<BytesRef>> {
-        self.0.next()
+        Ok(self.0.next()?.cloned())
     }
 }
 

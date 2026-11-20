@@ -307,8 +307,8 @@ impl MockIndexInputWrapper {
 
 impl DataInput for MockIndexInputWrapper {
     /// `toString()`: `MockIndexInputWrapper(<in>)`.
-    fn to_java_string(&self) -> String {
-        self.java_to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(self.java_to_string())
     }
 
     fn read_byte(&mut self) -> Result<u8> {

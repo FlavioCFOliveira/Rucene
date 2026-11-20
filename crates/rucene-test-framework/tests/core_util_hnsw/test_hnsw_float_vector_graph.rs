@@ -115,7 +115,7 @@ impl HnswCase for FloatCase {
         similarity_function: VectorSimilarityFunction,
     ) -> Result<Box<dyn IndexableField>> {
         Ok(Box::new(KnnFloatVectorField::new(
-            name,
+            name.to_string(),
             vector,
             similarity_function,
         )?))

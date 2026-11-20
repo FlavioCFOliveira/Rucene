@@ -365,9 +365,9 @@ impl PositionNBest {
     /// Equivalent to the private `PositionNBest.growForward()`.
     fn grow_forward(&mut self) {
         let min = (1 + self.forward_count) as usize;
-        self.forward_pos = ArrayUtil::grow_int(&self.forward_pos, min);
-        self.forward_id = ArrayUtil::grow_int(&self.forward_id, min);
-        self.forward_index = ArrayUtil::grow_int(&self.forward_index, min);
+        self.forward_pos = ArrayUtil::grow_int(std::mem::take(&mut self.forward_pos), min);
+        self.forward_id = ArrayUtil::grow_int(std::mem::take(&mut self.forward_id), min);
+        self.forward_index = ArrayUtil::grow_int(std::mem::take(&mut self.forward_index), min);
 
         // NOTE: sneaky: grow separately because
         // ArrayUtil.grow will otherwise pick a different

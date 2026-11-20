@@ -176,13 +176,13 @@ fn doc_of(fields: Vec<Box<dyn IndexableField>>) -> Document {
 
 /// `new NumericDocValuesField(name, value)`, boxed.
 fn ndv(name: &str, value: i64) -> Box<dyn IndexableField> {
-    Box::new(NumericDocValuesField::new(name, value))
+    Box::new(NumericDocValuesField::new(name.to_string(), value))
 }
 
 /// `new SortedDocValuesField(name, newBytesRef(s))`, boxed.
 fn sdv(name: &str, s: &str) -> Box<dyn IndexableField> {
     Box::new(SortedDocValuesField::new(
-        name,
+        name.to_string(),
         LuceneTestCase::new_bytes_ref_str(s),
     ))
 }
@@ -190,7 +190,7 @@ fn sdv(name: &str, s: &str) -> Box<dyn IndexableField> {
 /// `new BinaryDocValuesField(name, newBytesRef(s))`, boxed.
 fn bdv(name: &str, s: &str) -> Box<dyn IndexableField> {
     Box::new(BinaryDocValuesField::new(
-        name,
+        name.to_string(),
         LuceneTestCase::new_bytes_ref_str(s),
     ))
 }
@@ -198,7 +198,7 @@ fn bdv(name: &str, s: &str) -> Box<dyn IndexableField> {
 /// `new SortedSetDocValuesField(name, newBytesRef(s))`, boxed.
 fn ssdv(name: &str, s: &str) -> Box<dyn IndexableField> {
     Box::new(SortedSetDocValuesField::new(
-        name,
+        name.to_string(),
         LuceneTestCase::new_bytes_ref_str(s),
     ))
 }
@@ -366,14 +366,14 @@ fn test_length_prefix_across_two_pages() -> Result<()> {
     let bytes1 = s.lookup_ord(ord)?;
     assert_equals(&bytes.len(), &(bytes1.length as usize));
     bytes[0] = 0;
-    assert_equals(&BytesRef::new(bytes.clone()), &bytes1);
+    assert_equals(&BytesRef::new(bytes.clone()), bytes1);
 
     assert_equals(&1, &s.next_doc()?);
     let ord = s.ord_value()?;
     let bytes1 = s.lookup_ord(ord)?;
     assert_equals(&bytes.len(), &(bytes1.length as usize));
     bytes[0] = 1;
-    assert_equals(&BytesRef::new(bytes.clone()), &bytes1);
+    assert_equals(&BytesRef::new(bytes.clone()), bytes1);
     r.close()?;
     w.close()?;
     d.close()
@@ -530,12 +530,12 @@ fn too_large(field: fn(&str, BytesRef) -> Box<dyn IndexableField>) -> Result<()>
 
 /// Port of `TestDocValuesIndexing.testTooLargeSortedBytes`.
 fn test_too_large_sorted_bytes() -> Result<()> {
-    too_large(|name, b| Box::new(SortedDocValuesField::new(name, b)))
+    too_large(|name, b| Box::new(SortedDocValuesField::new(name.to_string(), b)))
 }
 
 /// Port of `TestDocValuesIndexing.testTooLargeTermSortedSetBytes`.
 fn test_too_large_term_sorted_set_bytes() -> Result<()> {
-    too_large(|name, b| Box::new(SortedSetDocValuesField::new(name, b)))
+    too_large(|name, b| Box::new(SortedSetDocValuesField::new(name.to_string(), b)))
 }
 
 // Two documents across segments

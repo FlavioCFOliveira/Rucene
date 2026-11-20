@@ -563,7 +563,7 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
             .map(drop)
     });
     misuse("dv.sorted lookupOrd out of range", &|| {
-        let dv = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
+        let mut dv = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
         let count = dv.get_value_count()?;
         dv.lookup_ord(count).map(drop)
     });
@@ -1111,8 +1111,9 @@ const fn postings_oracle(
         extensions,
         codec,
         extra_jars: TEST_FRAMEWORK_RUNTIME_JARS,
-        // Every format keeps its postings in `Lucene104PostingsWriter`'s files.
-        live_impacts_differ: true,
+        // The `live` lines are compared too: the core's live impacts are
+        // fixed (rmp #584).
+        live_impacts_differ: false,
     }
 }
 
@@ -1713,7 +1714,10 @@ fn ram_only_trace(path: &Path) -> Vec<String> {
                     hex(target.slice()),
                     probe(|| seek.seek_ceil(target).map(status))
                 ));
-                sb.push_str(&format!(":{}", probe(|| seek.term().map(X))));
+                sb.push_str(&format!(
+                    ":{}",
+                    probe(|| seek.term().map(|t| X(t.cloned())))
+                ));
                 sb.push_str(&format!(":{}", probe(|| seek.doc_freq())));
                 sb.push_str(&format!(":{}", probe(|| seek.total_term_freq())));
                 sb.push_str(&format!(
@@ -1723,7 +1727,10 @@ fn ram_only_trace(path: &Path) -> Vec<String> {
                         .ok_or_else(rucene::error::LuceneError::null_pointer)?
                         .next_doc())
                 ));
-                sb.push_str(&format!(":{}", probe(|| seek.next().map(X))));
+                sb.push_str(&format!(
+                    ":{}",
+                    probe(|| seek.next().map(|t| X(t.cloned())))
+                ));
             }
             out.push(sb);
             let mut exact = terms.iterator().unwrap();
@@ -1737,7 +1744,7 @@ fn ram_only_trace(path: &Path) -> Vec<String> {
             }
             out.push(sb);
             let mut fresh = terms.iterator().unwrap();
-            let term = probe(|| fresh.term().map(X));
+            let term = probe(|| fresh.term().map(|t| X(t.cloned())));
             let ord = probe(|| fresh.ord());
             let seek_ord = probe(|| fresh.seek_ord(0).map(|()| "null"));
             out.push(format!("  fresh term={term} ord={ord} seekOrd={seek_ord}"));

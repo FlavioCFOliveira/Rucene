@@ -952,10 +952,10 @@ impl TermsEnum for SeekCountingTermsEnum {
     fn seek_ord(&mut self, ord: i64) -> Result<()> {
         self.inner.seek_ord(ord)
     }
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.inner.next()
     }
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
     fn ord(&self) -> Result<i64> {
@@ -1032,11 +1032,11 @@ impl LeafReader for SeekCountingLeafReader {
     fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         None
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(terms) = self.inner.terms(field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(SeekCountingTerms {
+        Ok(Some(Arc::new(SeekCountingTerms {
             inner: FilterTerms::new(terms),
             seeks: Arc::clone(&self.seeks),
         })))

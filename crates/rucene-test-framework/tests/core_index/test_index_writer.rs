@@ -1024,7 +1024,10 @@ fn assert_empty_field_terms(reader: &Arc<dyn DirectoryReader>, expected: &[&str]
         .unwrap_or_else(|| npe("subreader.terms(\"\")"))
         .iterator()?;
     for term in expected {
-        assert_equals(&Some(LuceneTestCase::new_bytes_ref_str(term)), &te.next()?);
+        assert_equals(
+            &Some(LuceneTestCase::new_bytes_ref_str(term)),
+            &te.next()?.cloned(),
+        );
     }
     assert_null(&te.next()?);
     Ok(())
@@ -4693,7 +4696,7 @@ fn wait_for_docs_in_buffers(w: &IndexWriter, buffers_with_docs: usize) {
 /// methods take.
 fn soft_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -5233,7 +5236,7 @@ fn copy_document(doc: &Document) -> Result<Document> {
     let mut copy = Document::new();
     for field in doc.get_fields() {
         copy.add(StringField::new(
-            field.name(),
+            field.name().to_string(),
             field.string_value().unwrap_or_default(),
             if field.field_type().stored() {
                 Store::YES

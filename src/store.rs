@@ -209,7 +209,12 @@ pub trait DataInput {
     /// `toString()` every Java object inherits; Rust has no such method on a
     /// trait object, so the trait carries it. It has no default, so that every
     /// input states the text of its Java class rather than inherit one.
-    fn to_java_string(&self) -> String;
+    ///
+    /// The text is lent when the input holds it, as Java's
+    /// `IndexInput.toString()` returns the `resourceDescription` field itself
+    /// (`IndexInput.java:98-100`), and owned when it is built per call, as a
+    /// `toString()` that concatenates builds a new `String`.
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str>;
 
     /// Reads `len` bytes into `b[offset..offset + len]`.
     ///
@@ -765,18 +770,59 @@ pub trait DataOutput {
     ///
     /// Returns `LuceneErrorKind::IllegalArgument` when `num_bytes` is negative, and
     /// propagates whatever reading or writing raises.
-    fn copy_bytes(&mut self, input: &mut dyn DataInput, mut num_bytes: i64) -> Result<()> {
-        // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
-        // copies nothing, as Java's loop does.
-        debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
+    ///
+    /// A trait method cannot hold Java's per-instance `copyBuffer`, so this
+    /// default allocates the 16 KiB buffer per call; the outputs that copy
+    /// large files keep one buffer each instead, as Java does
+    /// ([`CopyBuffer`]).
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
         let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
-        while num_bytes > 0 {
-            let to_copy = (num_bytes as usize).min(COPY_BUFFER_SIZE);
-            input.read_bytes(Some(&mut buffer), 0, to_copy)?;
-            self.write_bytes(&buffer, 0, to_copy)?;
-            num_bytes -= to_copy as i64;
-        }
-        Ok(())
+        copy_bytes_through(self, &mut buffer, input, num_bytes)
+    }
+}
+
+/// The loop of `DataOutput.copyBytes(DataInput, long)`
+/// (`DataOutput.java:284-293`): `num_bytes` bytes, at most `buffer.len()` at a
+/// time, read from `input` and written to `out`.
+pub(crate) fn copy_bytes_through<O: DataOutput + ?Sized>(
+    out: &mut O,
+    buffer: &mut [u8],
+    input: &mut dyn DataInput,
+    mut num_bytes: i64,
+) -> Result<()> {
+    // `assert numBytes >= 0 : "numBytes=" + numBytes`; a negative count
+    // copies nothing, as Java's loop does.
+    debug_assert!(num_bytes >= 0, "numBytes={}", num_bytes);
+    while num_bytes > 0 {
+        let to_copy = (num_bytes as usize).min(buffer.len());
+        input.read_bytes(Some(buffer), 0, to_copy)?;
+        out.write_bytes(buffer, 0, to_copy)?;
+        num_bytes -= to_copy as i64;
+    }
+    Ok(())
+}
+
+/// The `copyBuffer` field of a `DataOutput` (`DataOutput.java:278-279`): the
+/// 16 KiB buffer `copyBytes` allocates on its first call
+/// (`if (copyBuffer == null) copyBuffer = new byte[COPY_BUFFER_SIZE]`,
+/// `DataOutput.java:284`) and reuses on the next ones.
+///
+/// An output that owns one copies with [`take`](Self::take), then
+/// [`copy_bytes_through`], then [`restore`](Self::restore).
+#[derive(Default)]
+pub(crate) struct CopyBuffer(Option<Box<[u8]>>);
+
+impl CopyBuffer {
+    /// The buffer, allocated on first use.
+    pub(crate) fn take(&mut self) -> Box<[u8]> {
+        self.0
+            .take()
+            .unwrap_or_else(|| vec![0u8; COPY_BUFFER_SIZE].into_boxed_slice())
+    }
+
+    /// Keeps `buffer` for the next copy.
+    pub(crate) fn restore(&mut self, buffer: Box<[u8]>) {
+        self.0 = Some(buffer);
     }
 }
 
@@ -973,12 +1019,43 @@ pub trait IndexInput: DataInput + Send + Sync {
         if slice_description.is_empty() {
             self.resource_description().to_string()
         } else {
-            format!(
-                "{} [slice={slice_description}]",
-                self.resource_description()
-            )
+            // PERF: sized once, as Java's `toString() + " [slice=" + sliceDescription
+            // + "]"` (`IndexInput.java:150`) is; `format!` grew it twice.
+            [
+                self.resource_description(),
+                " [slice=",
+                slice_description,
+                "]",
+            ]
+            .concat()
         }
     }
+}
+
+/// Concatenates `parts` into one shared immutable string, Java's `a + b + c`
+/// whose `String` every holder then shares by reference.
+///
+/// The text is assembled on the stack and copied into the shared string, so
+/// it costs one allocation, as Java's concatenation does; a text longer than
+/// the stack buffer is assembled on the heap first.
+pub(crate) fn concat_shared(parts: &[&str]) -> Arc<str> {
+    // PERF: `Arc::<str>::from(String)` would copy a concatenated `String`
+    // into a second allocation.
+    const STACK: usize = 512;
+    let len: usize = parts.iter().map(|part| part.len()).sum();
+    if len <= STACK {
+        let mut buffer = [0u8; STACK];
+        let mut at = 0;
+        for part in parts {
+            buffer[at..at + part.len()].copy_from_slice(part.as_bytes());
+            at += part.len();
+        }
+        // Whole `str`s joined end to end are always valid UTF-8.
+        if let Ok(text) = std::str::from_utf8(&buffer[..len]) {
+            return Arc::from(text);
+        }
+    }
+    Arc::from(parts.concat().as_str())
 }
 
 /// Default seek+read adapter used by [`IndexInput::random_access_slice`].
@@ -1001,8 +1078,8 @@ impl RandomAccessInputAdapter {
 
 impl DataInput for RandomAccessInputAdapter {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1189,8 +1266,8 @@ impl FilterIndexInput {
 
 impl DataInput for FilterIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1517,8 +1594,8 @@ impl BufferedIndexInput {
 
 impl DataInput for BufferedIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1999,8 +2076,8 @@ impl SlicedIndexInput {
 
 impl DataInput for SlicedIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -2708,11 +2785,11 @@ impl<'a> ByteArrayDataInput<'a> {
 
 impl DataInput for ByteArrayDataInput<'_> {
     /// `ByteArrayDataInput` overrides no `toString()`, so `Object`'s applies.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.store.ByteArrayDataInput",
             self,
-        )
+        ))
     }
 
     /// Equivalent to `ByteArrayDataInput#readByte` (`return bytes[pos++]`):
@@ -3113,11 +3190,11 @@ impl<R: Read> InputStreamDataInput<R> {
 
 impl<R: Read> DataInput for InputStreamDataInput<R> {
     /// `InputStreamDataInput` overrides no `toString()`, so `Object`'s applies.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.store.InputStreamDataInput",
             self,
-        )
+        ))
     }
 
     /// Equivalent to `InputStreamDataInput.readByte()`
@@ -3339,8 +3416,8 @@ impl MockIndexInput {
 
 impl DataInput for MockIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -3671,6 +3748,26 @@ impl_file_open_hint!(
     }
 );
 
+impl DataAccessHint {
+    /// The shared handle of this constant, for [`IOContext::with_hints`].
+    ///
+    /// Java passes the enum constant itself (`DataAccessHint.java:20`), one
+    /// object per constant, so `withHints(…, DataAccessHint.RANDOM)` allocates
+    /// no hint.
+    pub(crate) fn shared(self) -> Arc<dyn FileOpenHint> {
+        // PERF: one `Arc` per constant, cloned per call: a call allocates no
+        // hint.
+        static RANDOM: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(DataAccessHint::Random));
+        static SEQUENTIAL: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(DataAccessHint::Sequential));
+        Arc::clone(match self {
+            Self::Random => &RANDOM,
+            Self::Sequential => &SEQUENTIAL,
+        })
+    }
+}
+
 /// Port of `org.apache.lucene.store.ReadOnceHint`.
 ///
 /// Hint that the file will only be read once, sequentially.
@@ -3740,6 +3837,26 @@ impl_file_open_hint!(
     }
 );
 
+impl FileTypeHint {
+    /// The shared handle of this constant, for [`IOContext::with_hints`].
+    ///
+    /// Java passes the enum constant itself (`FileTypeHint.java:25`), one
+    /// object per constant, so `withHints(FileTypeHint.DATA)` allocates no
+    /// hint.
+    pub(crate) fn shared(self) -> Arc<dyn FileOpenHint> {
+        // PERF: one `Arc` per constant, cloned per call: a call allocates no
+        // hint.
+        static INDEX: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileTypeHint::Index));
+        static DATA: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileTypeHint::Data));
+        Arc::clone(match self {
+            Self::Index => &INDEX,
+            Self::Data => &DATA,
+        })
+    }
+}
+
 /// Hint on the type of data stored in the file.
 ///
 /// Equivalent to `org.apache.lucene.store.FileDataHint`.
@@ -3766,6 +3883,26 @@ impl_file_open_hint!(
         FileDataHint::KnnVectors => "KNN_VECTORS",
     }
 );
+
+impl FileDataHint {
+    /// The shared handle of this constant, for [`IOContext::with_hints`].
+    ///
+    /// Java passes the enum constant itself (`FileDataHint.java:20`), one
+    /// object per constant, so `withHints(…, FileDataHint.POSTINGS)`
+    /// allocates no hint.
+    pub(crate) fn shared(self) -> Arc<dyn FileOpenHint> {
+        // PERF: one `Arc` per constant, cloned per call: a call allocates no
+        // hint.
+        static POSTINGS: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileDataHint::Postings));
+        static KNN_VECTORS: std::sync::LazyLock<Arc<dyn FileOpenHint>> =
+            std::sync::LazyLock::new(|| Arc::new(FileDataHint::KnnVectors));
+        Arc::clone(match self {
+            Self::Postings => &POSTINGS,
+            Self::KnnVectors => &KNN_VECTORS,
+        })
+    }
+}
 
 /// Metadata associated with a merge [`Context`].
 ///
@@ -4173,11 +4310,14 @@ pub trait LockFactory: Send + Sync {
     /// factory prints the same digits — as every user of one of Java's
     /// singleton factories (`NativeFSLockFactory.INSTANCE`) does.
     fn lock_factory_to_string(&self) -> String {
-        format!(
-            "org.apache.lucene.store.{}@{}",
+        // PERF: sized once, as Java's concatenation is; `format!` grew it.
+        [
+            "org.apache.lucene.store.",
             java_simple_name(self.directory_type_name()),
-            crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32)
-        )
+            "@",
+            &crate::util::java_fmt::to_hex_string(self as *const Self as *const () as usize as i32),
+        ]
+        .concat()
     }
 }
 
@@ -5417,7 +5557,11 @@ impl BufferedChecksumIndexInput {
     /// the resource description for an input that overrides `toString()`
     /// (`MockIndexInputWrapper`).
     pub fn new(main: Box<dyn IndexInput>) -> Self {
-        let resource_description = format!("BufferedChecksumIndexInput({})", main.to_java_string());
+        // PERF: sized once, as Java's concatenation is
+        // (`BufferedChecksumIndexInput.java:31`); `format!` grew it. `main`
+        // lends its text, as Java's `main.toString()` returns its field.
+        let resource_description =
+            ["BufferedChecksumIndexInput(", &main.to_java_string(), ")"].concat();
         Self {
             main,
             digest: BufferedChecksum::new(),
@@ -5429,8 +5573,8 @@ impl BufferedChecksumIndexInput {
 
 impl DataInput for BufferedChecksumIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -7290,14 +7434,231 @@ pub const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
 /// `org.apache.lucene.store.ByteBuffersDataOutput.MAX_CHARS_PER_WINDOW`.
 const MAX_CHARS_PER_WINDOW: usize = 1024;
 
+/// A heap `java.nio.ByteBuffer` view of a byte block: the block's content is
+/// shared by every view of it, and each view has its own position and limit.
+///
+/// Equivalent to the heap `ByteBuffer`s a [`ByteBuffersDataInput`] reads:
+/// `ByteBuffer.wrap(byte[])` ([`wrap`](Self::wrap)), and the views
+/// `duplicate()` and `asReadOnlyBuffer()` ([`duplicate`](Self::duplicate)),
+/// which share the wrapped array and copy its position and limit. Several
+/// views of one block hold it once: `TestByteBuffersDataInput.testSlicingLargeBuffers`
+/// (`TestByteBuffersDataInput.java:255-265`) builds a 4 GB input from views of
+/// one 4 MB page, and [`ByteBuffersDataOutput::to_data_input`] hands out views
+/// of the output's own blocks (`ByteBuffersDataOutput.java:236-247`).
+///
+/// Only what `ByteBuffersDataInput` and its callers use is ported: absolute
+/// reads index the content from its start up to the limit, as Java's
+/// `get(int)` does. A view is read-only, which is the only kind
+/// `ByteBuffersDataInput` keeps (`ByteBuffersDataInput.java:58-60`).
+///
+/// `capacity()` is the block's `Vec::capacity`, the figure this port's
+/// accounting has always charged for a block (see [`ByteBuffersDataInput`]'s
+/// `ram_bytes_used`); the content readable through any view ends at the
+/// block's length, which bounds the limit as Java's capacity bounds it.
+#[derive(Clone)]
+pub struct ByteBuffer {
+    content: Arc<Vec<u8>>,
+    position: usize,
+    limit: usize,
+}
+
+impl ByteBuffer {
+    /// Wraps `array`: position 0, limit its length.
+    ///
+    /// Equivalent to `ByteBuffer.wrap(byte[])`. The vector moves into the
+    /// shared block; no byte is copied.
+    pub fn wrap(array: Vec<u8>) -> Self {
+        let limit = array.len();
+        Self {
+            content: Arc::new(array),
+            position: 0,
+            limit,
+        }
+    }
+
+    /// Wraps a block another owner already shares, as a view of its whole
+    /// content.
+    fn of_block(content: Arc<Vec<u8>>) -> Self {
+        let limit = content.len();
+        Self {
+            content,
+            position: 0,
+            limit,
+        }
+    }
+
+    /// A new view of the same content, with this view's position and limit.
+    ///
+    /// Equivalent to `ByteBuffer.duplicate()` (and, for a view that is
+    /// already read-only, `asReadOnlyBuffer()`): the content is shared, not
+    /// copied.
+    pub fn duplicate(&self) -> Self {
+        self.clone()
+    }
+
+    /// Equivalent to `ByteBuffer.position()`.
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    /// Sets the position.
+    ///
+    /// Equivalent to `ByteBuffer.position(int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("newPosition > limit: (<p> > <limit>)")`
+    /// when `new_position` exceeds the limit, as `Buffer.createPositionException`
+    /// words it.
+    pub fn set_position(&mut self, new_position: usize) -> Result<()> {
+        if new_position > self.limit {
+            return Err(LuceneError::illegal_argument(format!(
+                "newPosition > limit: ({new_position} > {})",
+                self.limit
+            )));
+        }
+        self.position = new_position;
+        Ok(())
+    }
+
+    /// Equivalent to `ByteBuffer.limit()`.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Sets the limit; a position past it moves back to it.
+    ///
+    /// Equivalent to `ByteBuffer.limit(int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("newLimit > capacity: (<l> > <length>)")`
+    /// when `new_limit` exceeds the content, as `Buffer.createLimitException`
+    /// words it.
+    pub fn set_limit(&mut self, new_limit: usize) -> Result<()> {
+        if new_limit > self.content.len() {
+            return Err(LuceneError::illegal_argument(format!(
+                "newLimit > capacity: ({new_limit} > {})",
+                self.content.len()
+            )));
+        }
+        self.limit = new_limit;
+        if self.position > new_limit {
+            self.position = new_limit;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `ByteBuffer.remaining()`: `limit - position`.
+    pub fn remaining(&self) -> usize {
+        self.limit - self.position
+    }
+
+    /// The capacity charged for the block (see the type's documentation).
+    pub fn capacity(&self) -> usize {
+        self.content.capacity()
+    }
+
+    /// The bytes up to the limit, indexed as Java's absolute `get(int)`:
+    /// from the start of the block.
+    pub fn as_slice(&self) -> &[u8] {
+        &self.content[..self.limit]
+    }
+
+    /// The whole content of the block, past the limit too.
+    #[inline]
+    fn content(&self) -> &[u8] {
+        &self.content
+    }
+}
+
+impl PartialEq for ByteBuffer {
+    /// Equivalent to `ByteBuffer.equals(Object)`: the same remaining bytes.
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice()[self.position..] == other.as_slice()[other.position..]
+    }
+}
+
+impl Eq for ByteBuffer {}
+
+impl std::hash::Hash for ByteBuffer {
+    /// The remaining bytes, consistent with [`PartialEq`].
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_slice()[self.position..].hash(state);
+    }
+}
+
+impl From<Vec<u8>> for ByteBuffer {
+    /// [`ByteBuffer::wrap`].
+    fn from(array: Vec<u8>) -> Self {
+        Self::wrap(array)
+    }
+}
+
+impl std::fmt::Debug for ByteBuffer {
+    /// The bytes up to the limit, and the position when it is not zero.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.position == 0 {
+            self.as_slice().fmt(f)
+        } else {
+            f.debug_struct("ByteBuffer")
+                .field("position", &self.position)
+                .field("bytes", &self.as_slice())
+                .finish()
+        }
+    }
+}
+
+/// The block of a [`ByteBuffersDataOutput`] as a `Vec`, for a caller that
+/// needs to own it: the block itself when no input shares it any more, or a
+/// copy of the same content and capacity when one does.
+///
+/// Java hands its very block over (to `blockReuse`, or out of
+/// `toWriteableBufferList()`) and an input still viewing it then reads
+/// whatever is written there next; Rust cannot let one owner overwrite bytes
+/// another reads, so a shared block is copied, which leaves the input with
+/// the content its view was taken over.
+fn unshare_block(block: Arc<Vec<u8>>) -> Vec<u8> {
+    Arc::try_unwrap(block).unwrap_or_else(|shared| {
+        let mut copy = Vec::with_capacity(shared.capacity());
+        copy.extend_from_slice(&shared);
+        copy
+    })
+}
+
 /// A [`DataInput`] reading from a list of in-memory byte buffers.
 ///
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput`. All buffers
 /// except the last must share an identical power-of-two length; the last may be
 /// shorter.
+///
+/// The blocks are held as `B`, by default an `Arc<[ByteBuffer]>` that every
+/// input over them shares, as Java's inputs share their `ByteBuffer`s: the
+/// constructor keeps the caller's views (`ByteBuffersDataInput.java:55-61`),
+/// which may all view one block, and [`slice`](Self::slice) — and with it
+/// every `ByteBuffersIndexInput` slice and clone — hands the new input views
+/// over the same blocks (`ByteBuffersDataInput.java:406-418, 487-523`),
+/// copying no bytes.
+///
+/// A Java view is a position and a limit over a shared block. This input is
+/// the run of `block_count` views that starts at block `first_block` of
+/// `blocks`: the first view starts at `offset` (its `position()`), the last
+/// one stops at `last_limit` (its `limit()`), and the views between are whole
+/// blocks. When a slice ends on a block boundary, Java appends the empty
+/// `ByteBuffer.allocate(0)` as its last view; `empty_tail` stands for that
+/// buffer, which belongs to no block of `blocks`.
 #[derive(Clone, Debug)]
-pub struct ByteBuffersDataInput {
-    blocks: Vec<Vec<u8>>,
+pub struct ByteBuffersDataInput<B = Arc<[ByteBuffer]>> {
+    blocks: B,
+    /// Index in `blocks` of this input's first view (Java's `blocks[0]`).
+    first_block: usize,
+    /// Java's `blocks.length`: the number of views, `empty_tail` included.
+    block_count: usize,
+    /// `limit()` of the last view (`0` for the `empty_tail`).
+    last_limit: usize,
+    /// Whether the last view is Java's `ByteBuffer.allocate(0)`
+    /// (`ByteBuffersDataInput.java:515-517`) rather than a view of a block.
+    empty_tail: bool,
     block_bits: usize,
     block_mask: usize,
     length: usize,
@@ -7315,54 +7676,103 @@ pub struct ByteBuffersDataInput {
 /// `NUM_BYTES_OBJECT_REF * blocks.length + Sum(block.capacity())`
 /// (`ByteBuffersDataInput.java:86-91`). Java charges the *capacity* of each
 /// buffer, not the bytes readable through it, and adds one object reference per
-/// block; `Vec::capacity` is this port's `ByteBuffer.capacity()` just as
-/// `Vec::len` is its `remaining()`, so the same two terms are summed here.
+/// block; [`ByteBuffer::capacity`] is the block's `Vec::capacity`, so the same
+/// two terms are summed here.
 ///
 /// Java calls this "a rough estimation for allocated blocks" and deliberately
 /// leaves out the shallow size of the object itself, so nothing is added for it
 /// here either.
-impl crate::util::Accountable for ByteBuffersDataInput {
+///
+/// A view's `capacity()` is that of the buffer it views (`asReadOnlyBuffer()`
+/// keeps it), so a slice is charged its whole blocks, and the empty tail of a
+/// slice ending on a block boundary, `ByteBuffer.allocate(0)`, nothing.
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> crate::util::Accountable
+    for ByteBuffersDataInput<B>
+{
     fn ram_bytes_used(&self) -> i64 {
-        self.blocks.len() as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
-            + self.blocks.iter().map(Vec::capacity).sum::<usize>() as i64
+        let real = self.block_count - usize::from(self.empty_tail);
+        self.block_count as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + self.blocks[self.first_block..self.first_block + real]
+                .iter()
+                .map(ByteBuffer::capacity)
+                .sum::<usize>() as i64
     }
 }
 
 impl ByteBuffersDataInput {
-    /// Creates an input over a set of contiguous byte buffers.
+    /// Creates an input over a set of contiguous byte buffers: [`ByteBuffer`]
+    /// views, or `Vec<u8>` blocks, which are wrapped without a copy.
+    ///
+    /// Equivalent to `ByteBuffersDataInput(List<ByteBuffer>)`
+    /// (`ByteBuffersDataInput.java:55-83`): the input keeps the views, which
+    /// may share their blocks, and starts at the first view's `position()`.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout assumptions
     /// are violated.
-    pub fn new(buffers: Vec<Vec<u8>>) -> Result<Self> {
-        Self::with_first_position(buffers, 0)
+    pub fn new<T: Into<ByteBuffer>>(buffers: Vec<T>) -> Result<Self> {
+        let buffers: Arc<[ByteBuffer]> = buffers.into_iter().map(Into::into).collect();
+        let first_position = buffers.first().map_or(0, ByteBuffer::position);
+        Self::over_blocks(buffers, first_position)
     }
 
     /// Creates an input over a set of contiguous byte buffers whose first
     /// buffer is positioned at `first_position`: the stream starts there, and
     /// the bytes of the first buffer before it are not part of it.
     ///
-    /// Equivalent to `ByteBuffersDataInput(List<ByteBuffer>)`
-    /// (`ByteBuffersDataInput.java:55-83`) when `buffers.get(0).position()`
-    /// is `first_position`: a Rust buffer carries no position, so it is
-    /// given here, and the first buffer holds `position() + remaining()`
-    /// bytes, what `determineBlockPage` measures.
+    /// Equivalent to `buffers.get(0).position(firstPosition)` followed by
+    /// `ByteBuffersDataInput(List<ByteBuffer>)` (`ByteBuffersDataInput.java:55-83`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
+    /// assumptions are violated or `first_position` exceeds the first buffer's
+    /// limit (`Buffer.position(int)`'s `newPosition > limit`).
+    pub fn with_first_position<T: Into<ByteBuffer>>(
+        buffers: Vec<T>,
+        first_position: usize,
+    ) -> Result<Self> {
+        let mut buffers: Vec<ByteBuffer> = buffers.into_iter().map(Into::into).collect();
+        if let Some(first) = buffers.first_mut() {
+            first.set_position(first_position)?;
+        }
+        Self::new(buffers)
+    }
+}
+
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> ByteBuffersDataInput<B> {
+    /// Creates an input over `buffers`, held as they are given, whose first
+    /// buffer is positioned at `first_position`.
+    ///
+    /// [`with_first_position`](ByteBuffersDataInput::with_first_position) for
+    /// any block storage: given a shared `B`, the input reads the shared
+    /// blocks in place, as Java's constructor keeps the caller's views
+    /// (`ByteBuffersDataInput.java:55-83`).
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the buffer layout
     /// assumptions are violated or `first_position` exceeds the first buffer.
-    pub fn with_first_position(buffers: Vec<Vec<u8>>, first_position: usize) -> Result<Self> {
+    pub(crate) fn over_blocks(buffers: B, first_position: usize) -> Result<Self> {
         ensure_assumptions(&buffers)?;
-        if first_position > buffers[0].len() {
+        if first_position > buffers[0].limit() {
             // `Buffer.position(int)`: `newPosition > limit`.
             return Err(LuceneError::illegal_argument(format!(
                 "newPosition > limit: ({first_position} > {})",
-                buffers[0].len()
+                buffers[0].limit()
             )));
         }
-        let length = buffers.iter().map(Vec::len).sum::<usize>() - first_position;
+        // `length += block.remaining()` over every view
+        // (`ByteBuffersDataInput.java:75-79`); the first view's remaining()
+        // is counted from `first_position`.
+        let length = buffers[1..]
+            .iter()
+            .map(ByteBuffer::remaining)
+            .sum::<usize>()
+            + (buffers[0].limit() - first_position);
+        let block_count = buffers.len();
+        let last_limit = buffers[block_count - 1].limit();
         let (block_bits, block_mask) = if buffers.len() == 1 {
             // Sentinel values for the single-block case; indexing is handled
             // explicitly in `block_index` / `block_offset`.
@@ -7375,12 +7785,41 @@ impl ByteBuffersDataInput {
         };
         Ok(Self {
             blocks: buffers,
+            first_block: 0,
+            block_count,
+            last_limit,
+            empty_tail: false,
             block_bits,
             block_mask,
             length,
             offset: first_position,
             pos: 0,
         })
+    }
+
+    /// The bytes of view `index` up to its `limit()`, indexed as Java indexes
+    /// the view's absolute `get(int)`: from the start of the block it views.
+    #[inline]
+    fn block(&self, index: usize) -> &[u8] {
+        if index + 1 < self.block_count {
+            self.blocks[self.first_block + index].as_slice()
+        } else if self.empty_tail {
+            &[]
+        } else {
+            &self.blocks[self.first_block + index].content()[..self.last_limit]
+        }
+    }
+
+    /// The whole block view `index` reads, for a read whose bytes are all in
+    /// the stream (`pos + width <= length`): such a read never reaches a
+    /// view's `limit()`, so the bound [`block`](Self::block) applies is not
+    /// needed, and the view is never the `empty_tail`, which holds no byte.
+    // PERF: the single-value reads (`readByte`, `readInt`, …) index the block
+    // directly, as before the blocks were shared, instead of through the
+    // limit-bounded view.
+    #[inline]
+    fn stream_block(&self, index: usize) -> &[u8] {
+        self.blocks[self.first_block + index].content()
     }
 
     /// Returns the current read position.
@@ -7420,7 +7859,7 @@ impl ByteBuffersDataInput {
     /// the `IndexOutOfBoundsException` (no message) of an offset past the
     /// block's limit. Java's `blockBits` is `32` for a single block.
     fn java_absolute_read_failure(&self, abs_pos: i64) -> LuceneError {
-        let bits = if self.blocks.len() == 1 {
+        let bits = if self.block_count == 1 {
             32
         } else {
             self.block_bits as u32
@@ -7428,8 +7867,8 @@ impl ByteBuffersDataInput {
         let Ok(index) = i32::try_from(abs_pos >> bits) else {
             return LuceneError::from(LuceneErrorKind::Arithmetic("integer overflow".to_string()));
         };
-        if index < 0 || index as usize >= self.blocks.len() {
-            array_index_out_of_bounds(i64::from(index), self.blocks.len())
+        if index < 0 || index as usize >= self.block_count {
+            array_index_out_of_bounds(i64::from(index), self.block_count)
         } else {
             index_out_of_bounds_no_message()
         }
@@ -7442,21 +7881,25 @@ impl ByteBuffersDataInput {
     /// mask is `~0`), else `readByte` byte by byte, which fails on the first
     /// byte outside the stream.
     fn java_multi_byte_read_failure(&self, pos: i64, width: i64) -> LuceneError {
-        let abs_pos = self.offset as i64 + pos;
-        let fast = self.blocks.len() != 1
+        // `long absPos = offset + pos`: Java's `long` addition wraps.
+        let abs_pos = (self.offset as i64).wrapping_add(pos);
+        let fast = self.block_count != 1
             && i64::from((abs_pos as i32) & self.block_mask as i32) + width
                 <= self.block_mask as i64;
         if fast {
             self.java_absolute_read_failure(abs_pos)
         } else {
             let first_missing = pos.max(self.length as i64);
-            self.java_absolute_read_failure(self.offset as i64 + first_missing)
+            self.java_absolute_read_failure((self.offset as i64).wrapping_add(first_missing))
         }
     }
 
     /// Java's `readByte(long)` (and the other absolute reads) at a negative
     /// position: the `ArrayIndexOutOfBoundsException` (or `ArithmeticException`)
-    /// of the block index of `offset + pos`.
+    /// of the block index of `offset + pos`. When `offset + pos` is not
+    /// negative, Java reads the first block's bytes before the stream start;
+    /// this port answers the `IndexOutOfBoundsException` of a read outside the
+    /// stream (the divergence declared on `ByteBuffersIndexInput::seek`).
     pub(crate) fn java_negative_position_failure(&self, pos: i64) -> LuceneError {
         self.java_absolute_read_failure((self.offset as i64).wrapping_add(pos))
     }
@@ -7470,11 +7913,15 @@ impl ByteBuffersDataInput {
     /// `ArrayIndexOutOfBoundsException` or an `IndexOutOfBoundsException`.
     pub fn read_byte_at(&self, pos: usize) -> Result<u8> {
         if pos >= self.length {
-            return Err(self.java_absolute_read_failure(self.offset as i64 + pos as i64));
+            // `long absPos = offset + pos`: Java's `long` addition wraps, which a
+            // slice's non-zero offset can reach for a hostile `pos`.
+            return Err(
+                self.java_absolute_read_failure((self.offset as i64).wrapping_add(pos as i64))
+            );
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
-        Ok(self.blocks[idx][off])
+        Ok(self.stream_block(idx)[off])
     }
 
     /// Reads a little-endian `i16` at the given absolute position without
@@ -7490,9 +7937,9 @@ impl ByteBuffersDataInput {
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
-        let block_len = self.blocks[idx].len();
-        if off + 2 <= block_len {
-            Ok(BitUtil::read_le_short(&self.blocks[idx], off))
+        let block = self.stream_block(idx);
+        if off + 2 <= block.len() {
+            Ok(BitUtil::read_le_short(block, off))
         } else {
             let b1 = self.read_byte_at(pos)? as u16;
             let b2 = self.read_byte_at(pos + 1)? as u16;
@@ -7513,9 +7960,9 @@ impl ByteBuffersDataInput {
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
-        let block_len = self.blocks[idx].len();
-        if off + 4 <= block_len {
-            Ok(BitUtil::read_le_int(&self.blocks[idx], off))
+        let block = self.stream_block(idx);
+        if off + 4 <= block.len() {
+            Ok(BitUtil::read_le_int(block, off))
         } else {
             let b1 = self.read_byte_at(pos)? as u32;
             let b2 = self.read_byte_at(pos + 1)? as u32;
@@ -7538,9 +7985,9 @@ impl ByteBuffersDataInput {
         }
         let idx = self.block_index(pos);
         let off = self.block_offset(pos);
-        let block_len = self.blocks[idx].len();
-        if off + 8 <= block_len {
-            Ok(BitUtil::read_le_long(&self.blocks[idx], off))
+        let block = self.stream_block(idx);
+        if off + 8 <= block.len() {
+            Ok(BitUtil::read_le_long(block, off))
         } else {
             let low = self.read_int_at(pos)? as u32 as i64;
             let high = self.read_int_at(pos + 4)? as i64;
@@ -7580,12 +8027,14 @@ impl ByteBuffersDataInput {
             }
             let idx = self.block_index(src_pos);
             let off = self.block_offset(src_pos);
-            let available = self.blocks[idx].len() - off;
+            // `block.limit() - blockPosition`: the view's limit.
+            let block = self.block(idx);
+            let available = block.len() - off;
             let chunk = remaining.min(available);
             if chunk == 0 {
                 return Err(eof_exception());
             }
-            copy_into_checked(bytes, dst_pos, &self.blocks[idx][off..off + chunk])?;
+            copy_into_checked(bytes, dst_pos, &block[off..off + chunk])?;
             src_pos += chunk;
             dst_pos += chunk;
             remaining -= chunk;
@@ -7595,23 +8044,101 @@ impl ByteBuffersDataInput {
 
     /// Returns a new input over `length` bytes starting at `offset`.
     ///
+    /// Equivalent to `ByteBuffersDataInput.slice(long, long)`
+    /// (`ByteBuffersDataInput.java:406-418`): `new
+    /// ByteBuffersDataInput(sliceBufferList(Arrays.asList(this.blocks),
+    /// offset, length))`. The new input is a run of views over this input's
+    /// blocks, shared through `B` (an `Arc` clone by default), so no byte is
+    /// copied, as Java's read-only views copy none; it starts at position `0`
+    /// whatever this input's position is.
+    ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the slice is out of bounds.
-    pub fn slice(&self, offset: usize, length: usize) -> Result<Self> {
+    pub fn slice(&self, offset: usize, length: usize) -> Result<Self>
+    where
+        B: Clone,
+    {
         if offset > self.length || length > self.length - offset {
             return Err(self.slice_out_of_bounds(offset as i64, length as i64));
         }
-        // Java hands the view list straight to the constructor, which keeps
-        // the blocks and remembers where inside the first one the slice starts
-        // (`ByteBuffersDataInput.java:406-418`). A block of this port is an
-        // owned `Vec<u8>` that carries no position, so the views are joined
-        // into the single block that holds the same bytes.
-        let mut data = Vec::with_capacity(length);
-        for view in slice_buffer_list(&self.blocks, self.offset, offset, length)? {
-            data.extend_from_slice(view);
+        Ok(self.slice_buffer_list(offset, length))
+    }
+
+    /// The input `new ByteBuffersDataInput(sliceBufferList(...))` builds over
+    /// the views of `length` bytes starting at `offset` (`sliceBufferList`,
+    /// `ByteBuffersDataInput.java:487-523`, then the constructor,
+    /// `:55-83`), for an in-bounds range.
+    ///
+    /// Java's list holds read-only views of this input's views: the first one
+    /// positioned where the slice starts, the last one limited where it ends,
+    /// whole blocks between, and the empty `ByteBuffer.allocate(0)` appended
+    /// when the slice ends on a block boundary. The new input records the same
+    /// run — its first block, its number of views, the first view's position
+    /// (Java's `offset`) and the last view's limit — over the shared `blocks`.
+    ///
+    /// `sliceBufferList` and the constructor both call `ensureAssumptions` on
+    /// the list. Neither call can fail here: this input's views already met the
+    /// assumptions, the list starts at a whole block of them (`position()` set,
+    /// `position() + remaining()` = the block size), and every later view but
+    /// the last is a whole block at position `0`.
+    fn slice_buffer_list(&self, offset: usize, length: usize) -> Self
+    where
+        B: Clone,
+    {
+        // `(first view, number of views, offset, last limit, empty tail)`.
+        let (first, count, start, last_limit, empty_tail) = if self.block_count == 1 {
+            // `cloned.position(cloned.position() + offset);
+            // cloned.limit(cloned.position() + length)` (`:491-495`): a view
+            // of the same buffer, Java's `allocate(0)` included.
+            let start = self.offset + offset;
+            (0, 1, start, start + length, self.empty_tail)
+        } else {
+            // `long absStart = buffers.get(0).position() + offset` (`:497-504`);
+            // `determineBlockPage(buffers)` is the block size, `1 <<
+            // blockBits`.
+            let abs_start = self.offset + offset;
+            let abs_end = abs_start + length;
+            let block_mask = self.block_mask;
+            let end_offset = abs_end & block_mask;
+            let from = abs_start >> self.block_bits;
+            // `subList(absStart / blockBytes, absEnd / blockBytes + (endOffset
+            // == 0 ? 0 : 1))` (`:506-513`): views of real blocks only, as a
+            // range ending on a block boundary stops before this input's own
+            // empty tail.
+            let to = (abs_end >> self.block_bits) + usize::from(end_offset != 0);
+            // `if (endOffset == 0) cloned.add(ByteBuffer.allocate(0))`
+            // (`:515-517`), then the first view's position and the last view's
+            // limit (`:519-520`).
+            let empty_tail = end_offset == 0;
+            (
+                from,
+                to - from + usize::from(empty_tail),
+                abs_start & block_mask,
+                end_offset,
+                empty_tail,
+            )
+        };
+        // The constructor (`:65-72`): one view takes the sentinel layout; more
+        // views keep this input's block size, which the first view's
+        // `position() + remaining()` reports.
+        let (block_bits, block_mask) = if count == 1 {
+            (0, 0)
+        } else {
+            (self.block_bits, self.block_mask)
+        };
+        Self {
+            blocks: self.blocks.clone(),
+            first_block: self.first_block + first,
+            block_count: count,
+            last_limit: if empty_tail { 0 } else { last_limit },
+            empty_tail,
+            block_bits,
+            block_mask,
+            length,
+            offset: start,
+            pos: 0,
         }
-        Self::new(vec![data])
     }
 
     /// The `IllegalArgumentException` of `ByteBuffersDataInput.slice(long,
@@ -7642,7 +8169,7 @@ impl ByteBuffersDataInput {
 
     /// `blockIndex(pos)` of the absolute position of `pos` (`pos + offset`).
     fn block_index(&self, pos: usize) -> usize {
-        if self.blocks.len() == 1 {
+        if self.block_count == 1 {
             0
         } else {
             (pos + self.offset) >> self.block_bits
@@ -7651,7 +8178,7 @@ impl ByteBuffersDataInput {
 
     /// `blockOffset(pos)` of the absolute position of `pos` (`pos + offset`).
     fn block_offset(&self, pos: usize) -> usize {
-        if self.blocks.len() == 1 {
+        if self.block_count == 1 {
             pos + self.offset
         } else {
             (pos + self.offset) & self.block_mask
@@ -7674,7 +8201,7 @@ impl ByteBuffersDataInput {
     fn get_float_buffer(&self, pos: usize) -> &[u8] {
         let buffer_index = self.block_index(pos);
         let alignment = (pos + self.offset) & 0x3;
-        &self.blocks[buffer_index][alignment..]
+        &self.block(buffer_index)[alignment..]
     }
 
     /// Returns the bytes a `LongBuffer` view for `pos` covers: the block that
@@ -7689,7 +8216,7 @@ impl ByteBuffersDataInput {
     fn get_long_buffer(&self, pos: usize) -> &[u8] {
         let buffer_index = self.block_index(pos);
         let alignment = (pos + self.offset) & 0x7;
-        &self.blocks[buffer_index][alignment..]
+        &self.block(buffer_index)[alignment..]
     }
 }
 
@@ -7716,10 +8243,10 @@ fn read_long_byte_by_byte(input: &mut dyn DataInput) -> Result<i64> {
     Ok((high << 32) | low)
 }
 
-impl DataInput for ByteBuffersDataInput {
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> DataInput for ByteBuffersDataInput<B> {
     /// `ByteBuffersDataInput.toString()`, ported as this type's `Display`.
-    fn to_java_string(&self) -> String {
-        self.to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(self.to_string())
     }
 
     /// Equivalent to `ByteBuffersDataInput.readByte()`
@@ -7731,7 +8258,7 @@ impl DataInput for ByteBuffersDataInput {
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
-        let b = self.blocks[idx][off];
+        let b = self.stream_block(idx)[off];
         self.pos += 1;
         Ok(b)
     }
@@ -7751,15 +8278,19 @@ impl DataInput for ByteBuffersDataInput {
             }
             let idx = self.block_index(self.pos);
             let off = self.block_offset(self.pos);
-            let available = self.blocks[idx].len() - off;
+            // `Math.min(len, block.remaining())` of the view positioned at
+            // `blockOffset`: up to the view's limit.
+            let block = self.block(idx);
+            let available = block.len() - off;
             let chunk = remaining.min(available);
             if chunk == 0 {
                 return Err(eof_exception());
             }
             // "Update pos early on for EOF detection, then try to get buffer
-            // content."
+            // content.": the position advances whether the copy fails or not.
+            let copied = copy_into_checked(b, dst_pos, &block[off..off + chunk]);
             self.pos += chunk;
-            copy_into_checked(b, dst_pos, &self.blocks[idx][off..off + chunk])?;
+            copied?;
             dst_pos += chunk;
             remaining -= chunk;
         }
@@ -7784,9 +8315,9 @@ impl DataInput for ByteBuffersDataInput {
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
-        let block_len = self.blocks[idx].len();
-        if off + 2 <= block_len {
-            let v = BitUtil::read_le_short(&self.blocks[idx], off);
+        let block = self.stream_block(idx);
+        if off + 2 <= block.len() {
+            let v = BitUtil::read_le_short(block, off);
             self.pos += 2;
             Ok(v)
         } else {
@@ -7800,9 +8331,9 @@ impl DataInput for ByteBuffersDataInput {
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
-        let block_len = self.blocks[idx].len();
-        if off + 4 <= block_len {
-            let v = BitUtil::read_le_int(&self.blocks[idx], off);
+        let block = self.stream_block(idx);
+        if off + 4 <= block.len() {
+            let v = BitUtil::read_le_int(block, off);
             self.pos += 4;
             Ok(v)
         } else {
@@ -7816,9 +8347,9 @@ impl DataInput for ByteBuffersDataInput {
         }
         let idx = self.block_index(self.pos);
         let off = self.block_offset(self.pos);
-        let block_len = self.blocks[idx].len();
-        if off + 8 <= block_len {
-            let v = BitUtil::read_le_long(&self.blocks[idx], off);
+        let block = self.stream_block(idx);
+        if off + 8 <= block.len() {
+            let v = BitUtil::read_le_long(block, off);
             self.pos += 8;
             Ok(v)
         } else {
@@ -7845,7 +8376,7 @@ impl DataInput for ByteBuffersDataInput {
             }
             let idx = self.block_index(self.pos);
             let block_off = self.block_offset(self.pos);
-            let available_bytes = self.blocks[idx].len() - block_off;
+            let available_bytes = self.block(idx).len() - block_off;
             if available_bytes < 4 {
                 floats[off] = self.read_float()?;
                 off += 1;
@@ -7887,7 +8418,7 @@ impl DataInput for ByteBuffersDataInput {
             }
             let idx = self.block_index(self.pos);
             let block_off = self.block_offset(self.pos);
-            let available_bytes = self.blocks[idx].len() - block_off;
+            let available_bytes = self.block(idx).len() - block_off;
             if available_bytes < 8 {
                 longs[off] = self.read_long()?;
                 off += 1;
@@ -7928,71 +8459,13 @@ fn is_power_of_two(v: usize) -> bool {
 /// vector's length.
 ///
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataInput#determineBlockPage`.
-fn determine_block_page(buffers: &[Vec<u8>]) -> usize {
-    buffers[0].len()
-}
-
-/// Returns the views over `buffers` that cover `length` bytes starting at
-/// `offset`.
-///
-/// A Java `ByteBuffer` view is a position and a limit over a shared backing
-/// array, and a Rust sub-slice is exactly that, so the returned views share the
-/// source blocks and copy nothing, as Lucene's do. The list keeps Lucene's
-/// shape: the first view starts inside its block, the intermediate views are
-/// whole blocks, the last view stops at the slice end, and a slice that ends on
-/// a block boundary gets the same empty trailing view Java appends.
-///
-/// Equivalent to the private
-/// `org.apache.lucene.store.ByteBuffersDataInput#sliceBufferList`.
-///
-/// # Errors
-///
-/// Returns [`LuceneErrorKind::IllegalArgument`] when `buffers` violates the block
-/// layout assumptions.
-fn slice_buffer_list(
-    buffers: &[Vec<u8>],
-    first_position: usize,
-    offset: usize,
-    length: usize,
-) -> Result<Vec<&[u8]>> {
-    ensure_assumptions(buffers)?;
-
-    if buffers.len() == 1 {
-        let start = first_position + offset;
-        return Ok(vec![&buffers[0][start..start + length]]);
-    }
-
-    // `long absStart = buffers.get(0).position() + offset;`
-    let abs_start = first_position + offset;
-    let abs_end = abs_start + length;
-
-    let block_bytes = determine_block_page(buffers);
-    let block_bits = block_bytes.trailing_zeros() as usize;
-    let block_mask = (1usize << block_bits) - 1;
-
-    let end_offset = abs_end & block_mask;
-
-    let mut cloned: Vec<&[u8]> = buffers
-        [abs_start / block_bytes..abs_end / block_bytes + if end_offset == 0 { 0 } else { 1 }]
-        .iter()
-        .map(Vec::as_slice)
-        .collect();
-
-    if end_offset == 0 {
-        cloned.push(&[]);
-    }
-
-    // The limit is set before the position so that a slice contained in a
-    // single block, where both land on the same view, ends up with the
-    // `[position, limit)` range Java gives it.
-    let last = cloned.len() - 1;
-    cloned[last] = &cloned[last][..end_offset];
-    cloned[0] = &cloned[0][abs_start & block_mask..];
-    Ok(cloned)
+fn determine_block_page(buffers: &[ByteBuffer]) -> usize {
+    // `first.position() + first.remaining()`: the first view's limit.
+    buffers[0].limit()
 }
 
 /// Validates the assumptions required by [`ByteBuffersDataInput`].
-fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
+fn ensure_assumptions(buffers: &[ByteBuffer]) -> Result<()> {
     if buffers.is_empty() {
         return Err(LuceneError::illegal_argument(
             "Buffer list must not be empty.".to_string(),
@@ -8007,8 +8480,21 @@ fn ensure_assumptions(buffers: &[Vec<u8>]) -> Result<()> {
             "The first buffer must have power-of-two position() + remaining(): 0x{block_page:x}"
         )));
     }
-    for (i, buffer) in buffers.iter().enumerate().skip(1) {
-        if i != buffers.len() - 1 && buffer.len() != block_page {
+    // `for (int i = 1, last = buffers.size() - 1; i < last; i++)`
+    // (`ByteBuffersDataInput.java:466-478`): the intermediate views.
+    for buffer in &buffers[1..buffers.len() - 1] {
+        if buffer.position() != 0 {
+            // `"... position() == 0: " + buffer`: a heap buffer's
+            // `toString()`, `java.nio.HeapByteBuffer[pos=.. lim=.. cap=..]`.
+            return Err(LuceneError::illegal_argument(format!(
+                "All buffers except for the first one must have position() == 0: \
+                 java.nio.HeapByteBuffer[pos={} lim={} cap={}]",
+                buffer.position(),
+                buffer.limit(),
+                buffer.content().len()
+            )));
+        }
+        if buffer.remaining() != block_page {
             return Err(LuceneError::illegal_argument(format!(
                 "Intermediate buffers must share an identical remaining() power-of-two block \
                  size: 0x{block_page:x}"
@@ -8136,13 +8622,23 @@ impl ByteBufferRecycler {
 /// Equivalent to `org.apache.lucene.store.ByteBuffersDataOutput`. Blocks are
 /// heap-allocated and grow from a small initial size up to a configured
 /// maximum.
+///
+/// The filled blocks are kept in shared storage, so that
+/// [`to_data_input`](Self::to_data_input) hands out views of them, as Java's
+/// `toBufferList()` does (`ByteBuffersDataOutput.java:236-247`), instead of
+/// copies.
 #[derive(Clone)]
 pub struct ByteBuffersDataOutput {
     min_bits: usize,
     max_bits: usize,
     block_bits: usize,
-    completed: Vec<Vec<u8>>,
+    completed: Vec<Arc<Vec<u8>>>,
     current: Vec<u8>,
+    /// The block being filled, while inputs may view it: set by
+    /// [`share_current_block`](Self::share_current_block), with `current` left
+    /// empty and unallocated, so that the next write finds no room in
+    /// `current` and takes it back first (see [`append_block`](Self::append_block)).
+    shared_current: Option<Arc<Vec<u8>>>,
     /// `blockAllocate`; `None` is `ALLOCATE_BB_ON_HEAP`.
     block_allocate: Option<BlockAllocator>,
     /// `blockReuse`; `None` is `NO_REUSE`.
@@ -8156,7 +8652,7 @@ impl std::fmt::Debug for ByteBuffersDataOutput {
             .field("max_bits", &self.max_bits)
             .field("block_bits", &self.block_bits)
             .field("completed", &self.completed)
-            .field("current", &self.current)
+            .field("current", self.last_block())
             .field("block_allocate", &self.block_allocate.is_some())
             .field("block_reuse", &self.block_reuse.is_some())
             .finish()
@@ -8177,10 +8673,10 @@ impl std::fmt::Debug for ByteBuffersDataOutput {
 impl crate::util::Accountable for ByteBuffersDataOutput {
     fn ram_bytes_used(&self) -> i64 {
         let mut blocks = self.completed.len();
-        let mut capacity: usize = self.completed.iter().map(Vec::capacity).sum();
-        if self.current.capacity() > 0 {
+        let mut capacity: usize = self.completed.iter().map(|block| block.capacity()).sum();
+        if self.last_block().capacity() > 0 {
             blocks += 1;
-            capacity += self.current.capacity();
+            capacity += self.last_block().capacity();
         }
         capacity as i64 + blocks as i64 * crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF
     }
@@ -8309,6 +8805,7 @@ impl ByteBuffersDataOutput {
             block_bits: min_bits,
             completed: Vec::new(),
             current: Vec::new(),
+            shared_current: None,
             block_allocate,
             block_reuse,
         })
@@ -8322,8 +8819,39 @@ impl ByteBuffersDataOutput {
 
     /// Returns the number of bytes written so far.
     pub fn size(&self) -> usize {
-        let completed_size: usize = self.completed.iter().map(Vec::len).sum();
-        completed_size + self.current.len()
+        let completed_size: usize = self.completed.iter().map(|block| block.len()).sum();
+        completed_size + self.last_block().len()
+    }
+
+    /// The block being filled (Java's `currentBlock`), wherever it is held.
+    fn last_block(&self) -> &Vec<u8> {
+        self.shared_current.as_deref().unwrap_or(&self.current)
+    }
+
+    /// Moves the block being filled into shared storage, so that the views
+    /// [`to_data_input`](Self::to_data_input) builds share it instead of
+    /// copying it. Nothing observable changes: the next write takes the
+    /// block back (without a copy unless an input still views it).
+    ///
+    /// Java needs no such step: its `toBufferList()` views every block,
+    /// the one being filled included, while the output keeps writing past
+    /// the views' limits (`ByteBuffersDataOutput.java:236-247`). Rust cannot
+    /// let an owner write into a block another value reads, so the block
+    /// being filled is shared only where the output is not written again:
+    /// [`ByteBuffersDirectory`] calls this when a file's output closes,
+    /// before `outputToInput` (`ByteBuffersDirectory.java:264-267`).
+    pub(crate) fn share_current_block(&mut self) {
+        if self.shared_current.is_none() && !self.current.is_empty() {
+            self.shared_current = Some(Arc::new(std::mem::take(&mut self.current)));
+        }
+    }
+
+    /// Takes back the block [`share_current_block`](Self::share_current_block)
+    /// shared, as `current`.
+    fn take_back_current_block(&mut self) {
+        if let Some(block) = self.shared_current.take() {
+            self.current = unshare_block(block);
+        }
     }
 
     /// Returns the current block size in bytes.
@@ -8333,9 +8861,13 @@ impl ByteBuffersDataOutput {
 
     /// Returns a list of read-only views over the current content.
     pub fn to_buffer_list(&self) -> Vec<&[u8]> {
-        let mut result: Vec<&[u8]> = self.completed.iter().map(Vec::as_slice).collect();
-        if !self.current.is_empty() {
-            result.push(&self.current);
+        let mut result: Vec<&[u8]> = self
+            .completed
+            .iter()
+            .map(|block| block.as_slice())
+            .collect();
+        if !self.last_block().is_empty() {
+            result.push(self.last_block());
         } else if result.is_empty() {
             result.push(&[]);
         }
@@ -8370,7 +8902,11 @@ impl ByteBuffersDataOutput {
     /// `ByteBuffer.capacity()`, i.e. the whole allocated block, not the bytes
     /// written into it.
     pub fn into_buffer_list(mut self) -> Vec<Vec<u8>> {
-        let mut result = std::mem::take(&mut self.completed);
+        self.take_back_current_block();
+        let mut result: Vec<Vec<u8>> = std::mem::take(&mut self.completed)
+            .into_iter()
+            .map(unshare_block)
+            .collect();
         if !self.current.is_empty() {
             result.push(std::mem::take(&mut self.current));
         } else if result.is_empty() {
@@ -8381,12 +8917,23 @@ impl ByteBuffersDataOutput {
 
     /// Equivalent to
     /// `org.apache.lucene.store.ByteBuffersDataOutput#toWriteableBufferList`.
+    ///
+    /// Java's `duplicate()` views write into the very blocks an earlier
+    /// [`to_data_input`](Self::to_data_input) views; a block an input still
+    /// views is copied first here (see `unshare_block`), so writes through
+    /// this list reach the output but not that input.
     pub fn to_writeable_buffer_list(&mut self) -> Vec<&mut [u8]> {
+        self.take_back_current_block();
         let Self {
             completed, current, ..
         } = self;
         let mut result: Vec<&mut [u8]> = Vec::with_capacity(completed.len().max(1));
         for block in completed.iter_mut() {
+            if Arc::get_mut(block).is_none() {
+                *block = Arc::new(unshare_block(Arc::clone(block)));
+            }
+            let block =
+                Arc::get_mut(block).expect("INVARIANT: a freshly copied block has no other owner");
             result.push(block.as_mut_slice());
         }
         if !current.is_empty() || result.is_empty() {
@@ -8401,13 +8948,27 @@ impl ByteBuffersDataOutput {
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] if the resulting buffer layout
     /// violates the input assumptions (should not happen for normal output).
+    ///
+    /// Equivalent to `ByteBuffersDataOutput.toDataInput()`
+    /// (`ByteBuffersDataOutput.java:277-279`) over `toBufferList()`
+    /// (`:236-247`): the input views the output's filled blocks, sharing
+    /// them, as Java's read-only views do. The block being filled is viewed
+    /// too once [`share_current_block`](Self::share_current_block) shared it
+    /// (a closing [`ByteBuffersDirectory`] file); otherwise its bytes so far
+    /// are copied, because this output keeps writing into it (see
+    /// `share_current_block`). Either way the input reads the content written
+    /// up to this call, as a Java view stops at the limit `flip()` set.
     pub fn to_data_input(&self) -> Result<ByteBuffersDataInput> {
-        let mut buffers: Vec<Vec<u8>> = self.completed.to_vec();
-        if !self.current.is_empty() {
-            buffers.push(self.current.clone());
+        let mut buffers: Vec<ByteBuffer> = Vec::with_capacity(self.completed.len() + 1);
+        buffers.extend(self.completed.iter().cloned().map(ByteBuffer::of_block));
+        if let Some(shared) = &self.shared_current {
+            buffers.push(ByteBuffer::of_block(Arc::clone(shared)));
+        } else if !self.current.is_empty() {
+            buffers.push(ByteBuffer::wrap(self.current.clone()));
         }
         if buffers.is_empty() {
-            buffers.push(Vec::new());
+            // `result.add(EMPTY)`.
+            buffers.push(ByteBuffer::wrap(Vec::new()));
         }
         ByteBuffersDataInput::new(buffers)
     }
@@ -8434,7 +8995,7 @@ impl ByteBuffersDataOutput {
         for block in &self.completed {
             result.extend_from_slice(block);
         }
-        result.extend_from_slice(&self.current);
+        result.extend_from_slice(self.last_block());
         Ok(result)
     }
 
@@ -8445,8 +9006,9 @@ impl ByteBuffersDataOutput {
         for block in &self.completed {
             output.write_bytes(block, 0, block.len())?;
         }
-        if !self.current.is_empty() {
-            output.write_bytes(&self.current, 0, self.current.len())?;
+        let last = self.last_block();
+        if !last.is_empty() {
+            output.write_bytes(last, 0, last.len())?;
         }
         Ok(())
     }
@@ -8467,10 +9029,11 @@ impl ByteBuffersDataOutput {
     /// instead (`ByteBuffersDataOutput.java:470-473`), so this output, like
     /// Java's default one, resets without error.
     pub fn reset(&mut self) -> Result<()> {
+        self.take_back_current_block();
         let current = std::mem::take(&mut self.current);
         if let Some(reuse) = &self.block_reuse {
             for block in self.completed.drain(..) {
-                reuse(block)?;
+                reuse(unshare_block(block))?;
             }
             if current.capacity() > 0 {
                 reuse(current)?;
@@ -8489,9 +9052,17 @@ impl ByteBuffersDataOutput {
     }
 
     fn append_block(&mut self) -> Result<()> {
+        if self.shared_current.is_some() {
+            // The block being filled was shared by `share_current_block`:
+            // take it back, and write on into it while it has room.
+            self.take_back_current_block();
+            if self.current.len() < self.current.capacity() {
+                return Ok(());
+            }
+        }
         if !self.current.is_empty() {
             let full = std::mem::take(&mut self.current);
-            self.completed.push(full);
+            self.completed.push(Arc::new(full));
         }
 
         if self.completed.len() >= MAX_BLOCKS_BEFORE_BLOCK_EXPANSION
@@ -8503,7 +9074,7 @@ impl ByteBuffersDataOutput {
             }
             if !self.current.is_empty() && self.current.len() == self.current.capacity() {
                 let full = std::mem::take(&mut self.current);
-                self.completed.push(full);
+                self.completed.push(Arc::new(full));
             }
         }
 
@@ -8527,13 +9098,13 @@ impl ByteBuffersDataOutput {
         // Java's `blocks` deque ends with the current block.
         if !self.current.is_empty() {
             let current = std::mem::take(&mut self.current);
-            self.completed.push(current);
+            self.completed.push(Arc::new(current));
         }
         while !self.completed.is_empty() {
             let block = self.completed.remove(0);
             cloned.write_bytes(&block, 0, block.len())?;
             if let Some(reuse) = &self.block_reuse {
-                reuse(block)?;
+                reuse(unshare_block(block))?;
             }
         }
         debug_assert!(self.completed.is_empty());
@@ -8797,7 +9368,11 @@ impl FileEntry {
         // output.size();` (`ByteBuffersDirectory.java:264-267`): a failure of
         // the conversion leaves both unset and reaches the output's `close()`.
         let on_close: Option<ByteBuffersOnClose> =
-            Some(Box::new(move |output: ByteBuffersDataOutput| {
+            Some(Box::new(move |mut output: ByteBuffersDataOutput| {
+                // PERF: the closed output is not written again, so its last
+                // block can be viewed rather than copied by the strategy's
+                // `to_data_input` (`ByteBuffersDataOutput.java:236-247`).
+                output.share_current_block();
                 let input = output_to_input(&file_name, &output)?;
                 let mut content = entry_for_close
                     .content
@@ -9179,8 +9754,8 @@ impl ByteBuffersIndexInput {
 
 impl DataInput for ByteBuffersIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -9284,7 +9859,12 @@ impl IndexInput for ByteBuffersIndexInput {
     /// stores a negative position and the next read fails with the
     /// `ArrayIndexOutOfBoundsException` of its block index; this port's
     /// position is a `usize`, which cannot hold it, so that same exception is
-    /// raised here, at the seek.
+    /// raised here, at the seek. When the stream starts inside its first block
+    /// (Java's `offset > 0`, as for most slices) and `-offset <= pos < 0`,
+    /// Java's block index is `0` and its next read returns the block's bytes
+    /// before the stream start; this port raises the
+    /// `IndexOutOfBoundsException` of a read outside the stream at the seek
+    /// instead.
     fn seek(&mut self, pos: i64) -> Result<()> {
         let input = self.input_mut()?;
         if pos < 0 {
@@ -9687,6 +10267,8 @@ pub struct OutputStreamIndexOutput<W: Write + Send + Sync> {
     crc: BufferedChecksum,
     bytes_written: i64,
     flushed_on_close: bool,
+    /// `DataOutput.copyBuffer`.
+    copy_buffer: CopyBuffer,
 }
 
 impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
@@ -9714,6 +10296,7 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
             crc: BufferedChecksum::new(),
             bytes_written: 0,
             flushed_on_close: false,
+            copy_buffer: CopyBuffer::default(),
         })
     }
 }
@@ -9723,6 +10306,16 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     /// (`IndexOutput.java:83-86`).
     fn to_java_string(&self) -> String {
         self.resource_description().to_string()
+    }
+
+    /// `DataOutput.copyBytes(DataInput, long)` through this output's own
+    /// `copyBuffer` (`DataOutput.java:281-293`).
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
+        // PERF: one buffer per output, as Java's, not one per call.
+        let mut buffer = self.copy_buffer.take();
+        let result = copy_bytes_through(self, &mut buffer, input, num_bytes);
+        self.copy_buffer.restore(buffer);
+        result
     }
 
     fn write_byte(&mut self, b: u8) -> Result<()> {
@@ -9917,6 +10510,12 @@ impl DataOutput for FSIndexOutput {
 
     fn write_long(&mut self, i: i64) -> Result<()> {
         self.0.write_long(i)
+    }
+
+    /// The `copyBytes` of the `OutputStreamIndexOutput` Java's `FSIndexOutput`
+    /// extends, whose `copyBuffer` it is.
+    fn copy_bytes(&mut self, input: &mut dyn DataInput, num_bytes: i64) -> Result<()> {
+        self.0.copy_bytes(input, num_bytes)
     }
 }
 
@@ -10119,7 +10718,9 @@ impl FSDirectory {
         }
         closed?;
         // `Arrays.sort(String[])`: UTF-16 order.
-        entries.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+        // PERF: `java_compare_to` gives that order from the UTF-8 bytes,
+        // without transcoding both names to UTF-16 per comparison.
+        entries.sort_by(|a, b| crate::util::java_collections::java_compare_to(a, b));
         Ok(entries)
     }
 
@@ -10154,12 +10755,16 @@ impl FSDirectory {
     /// `this.getClass().getSimpleName() + "@" + directory + " lockFactory=" +
     /// lockFactory`.
     pub fn directory_to_string_of(&self, dir: &dyn Directory) -> String {
-        format!(
-            "{}@{} lockFactory={}",
+        // PERF: sized once, as Java's concatenation is (`FSDirectory.java:294-296`);
+        // `format!` grew it four times. The path is its `Display` text.
+        [
             java_simple_name(dir.directory_type_name()),
-            self.directory,
-            self.base.lock_factory().lock_factory_to_string()
-        )
+            "@",
+            &self.directory.as_std_path().to_string_lossy(),
+            " lockFactory=",
+            &self.base.lock_factory().lock_factory_to_string(),
+        ]
+        .concat()
     }
 
     fn check_open(&self) -> Result<()> {
@@ -10544,8 +11149,8 @@ impl FileIndexInput {
 
 impl DataInput for FileIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -10938,8 +11543,8 @@ impl RawNioFsIndexInput {
 
 impl DataInput for RawNioFsIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -11154,8 +11759,8 @@ impl NIOFSIndexInput {
 
 impl DataInput for NIOFSIndexInput {
     /// `IndexInput.toString()` returns the resource description.
-    fn to_java_string(&self) -> String {
-        crate::store::IndexInput::resource_description(self).to_string()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(crate::store::IndexInput::resource_description(self))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -11358,7 +11963,7 @@ pub(crate) fn matches_java_text(actual: &str, pattern: &str) -> bool {
 // Object contracts: the `toString()` bodies of this module's store types
 // ---------------------------------------------------------------------------
 
-impl std::fmt::Display for ByteBuffersDataInput {
+impl<B: std::ops::Deref<Target = [ByteBuffer]>> std::fmt::Display for ByteBuffersDataInput<B> {
     /// Port of `ByteBuffersDataInput.toString()`, which is
     /// `String.format(Locale.ROOT, "%,d bytes, block size: %,d, blocks: %,d,
     /// position: %,d%s", length(), blockSize(), blocks.length, position(),
@@ -11370,10 +11975,10 @@ impl std::fmt::Display for ByteBuffersDataInput {
     ///   reports `1` for a one-block input exactly as Java's `blockSize()`
     ///   does.
     /// * `%,d` groups the digits in threes under `Locale.ROOT`.
-    ///
-    /// The `offset` suffix is never emitted, because this port's `slice()`
-    /// joins the sliced views into one block whose offset is zero — the
-    /// divergence already documented on [`ByteBuffersDataInput::slice`].
+    /// * `blocks.length` counts the input's views, the empty
+    ///   `ByteBuffer.allocate(0)` a slice ending on a block boundary appends
+    ///   included, and `offset` is the first view's position, which is not
+    ///   zero for most slices.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::util::java_fmt::format_grouped;
         let block_size = self.block_size() as i64;
@@ -11382,9 +11987,15 @@ impl std::fmt::Display for ByteBuffersDataInput {
             "{} bytes, block size: {}, blocks: {}, position: {}",
             format_grouped(self.length as i64),
             format_grouped(block_size),
-            format_grouped(self.blocks.len() as i64),
+            format_grouped(self.block_count as i64),
             format_grouped(self.pos as i64),
-        )
+        )?;
+        // `offset == 0 ? "" : String.format(Locale.ROOT, " [offset: %,d]",
+        // offset)`.
+        if self.offset != 0 {
+            write!(f, " [offset: {}]", format_grouped(self.offset as i64))?;
+        }
+        Ok(())
     }
 }
 
@@ -11403,7 +12014,7 @@ impl std::fmt::Display for ByteBuffersDataOutput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::util::java_fmt::format_grouped;
         let mut blocks = self.completed.len();
-        if self.current.capacity() > 0 {
+        if self.last_block().capacity() > 0 {
             blocks += 1;
         }
         write!(
@@ -11432,6 +12043,21 @@ mod tests {
     use std::path::Path;
     use tempfile::TempDir;
 
+    /// `concat_shared` is Java's `a + b + c`: the same text, whether it fits
+    /// the stack buffer or not.
+    #[test]
+    fn concat_shared_joins_the_parts() {
+        assert_eq!(&*concat_shared(&[]), "");
+        assert_eq!(
+            &*concat_shared(&["a(", "\u{e9}\u{1f600}", ")"]),
+            "a(\u{e9}\u{1f600})"
+        );
+        let long = "x".repeat(600);
+        assert_eq!(&*concat_shared(&["<", &long, ">"]), format!("<{long}>"));
+        let exact = "y".repeat(510);
+        assert_eq!(&*concat_shared(&["<", &exact, ">"]), format!("<{exact}>"));
+    }
+
     /// `ByteBuffersDataOutput.toArrayCopy()` refuses content larger than a
     /// Java array with `RuntimeException("Data exceeds maximum size of a
     /// single byte array: " + size)` (`ByteBuffersDataOutput.java:288-299`).
@@ -11440,7 +12066,7 @@ mod tests {
     #[test]
     fn to_array_copy_refuses_content_past_a_java_array() {
         let mut output = ByteBuffersDataOutput::new();
-        output.completed = vec![vec![0u8; 1 << 30], vec![0u8; 1 << 30]];
+        output.completed = vec![Arc::new(vec![0u8; 1 << 30]), Arc::new(vec![0u8; 1 << 30])];
         assert!(matches!(
             output.to_array_copy(),
             Err(LuceneError { kind: LuceneErrorKind::Other(ref message), .. })
@@ -12198,6 +12824,126 @@ mod tests {
         );
     }
 
+    /// `ByteBuffersDataInput.slice` (`ByteBuffersDataInput.java:406-418,
+    /// 487-523`) hands out read-only views of the same blocks: a slice, a
+    /// slice of a slice and an index input's clone read the source's bytes in
+    /// place (rmp #575: the port joined the views into a new block, a copy of
+    /// every sliced byte on each `slice`/`clone`).
+    #[test]
+    fn byte_buffers_slices_and_clones_share_the_blocks() {
+        let blocks: Vec<Vec<u8>> = (0..3u8)
+            .map(|b| (0..1024).map(|i| (i as u8) ^ b).collect())
+            .collect();
+        let expected: Vec<u8> = blocks.concat();
+        let input = ByteBuffersDataInput::with_first_position(blocks, 10).unwrap();
+        let first = input.blocks[0].as_slice().as_ptr();
+
+        let slice = input.slice(100, 2000).unwrap();
+        assert!(
+            Arc::ptr_eq(&slice.blocks, &input.blocks),
+            "no new block list"
+        );
+        assert_eq!(
+            slice.blocks[0].as_slice().as_ptr(),
+            first,
+            "no copied block"
+        );
+        let nested = slice.slice(1, 1500).unwrap();
+        assert!(Arc::ptr_eq(&nested.blocks, &input.blocks));
+        let mut read = vec![0u8; 1500];
+        nested.read_bytes_at(0, &mut read, 0, 1500).unwrap();
+        assert_eq!(read, expected[111..1611]);
+
+        let index_input = ByteBuffersIndexInput::new(input, "shared");
+        let mut clone = index_input.clone_input().unwrap();
+        clone.seek(5).unwrap();
+        assert_eq!(clone.read_byte().unwrap(), expected[15]);
+        let shared = index_input.input().unwrap();
+        assert!(Arc::ptr_eq(
+            &shared.slice(0, 5).unwrap().blocks,
+            &shared.blocks
+        ));
+    }
+
+    /// The view run of a slice reproduces Java's view list
+    /// (`ByteBuffersDataInput.java:487-523` and the constructor, `:55-83`):
+    /// `blocks.length` counts the empty `ByteBuffer.allocate(0)` a slice
+    /// ending on a block boundary appends, `offset` is the first view's
+    /// position (printed by `toString()`), the bytes past the last view's
+    /// limit are out of the stream, and `ramBytesUsed()` charges each view's
+    /// whole block.
+    #[test]
+    fn byte_buffers_slice_views_follow_java_layout() {
+        let blocks: Vec<Vec<u8>> = (0..3u8).map(|b| vec![b + 1; 1024]).collect();
+        let input = ByteBuffersDataInput::new(blocks).unwrap();
+        let ref_bytes = crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_REF;
+
+        // Ends inside block 2: views [b0 @ 1000, b1, b2 up to 1000].
+        let whole = input.slice(1000, 2048).unwrap();
+        assert_eq!(
+            whole.to_string(),
+            "2,048 bytes, block size: 1,024, blocks: 3, position: 0 [offset: 1,000]"
+        );
+        assert_eq!(
+            crate::util::Accountable::ram_bytes_used(&whole),
+            3 * ref_bytes + 3 * 1024
+        );
+        let mut all = vec![0u8; 2048];
+        whole.read_bytes_at(0, &mut all, 0, 2048).unwrap();
+        assert_eq!(all, [vec![1u8; 24], vec![2; 1024], vec![3; 1000]].concat());
+
+        // Ends on the boundary of block 1: [b0 @ 1000, b1, allocate(0)].
+        let tail = input.slice(1000, 1048).unwrap();
+        assert_eq!(
+            tail.to_string(),
+            "1,048 bytes, block size: 1,024, blocks: 3, position: 0 [offset: 1,000]"
+        );
+        assert_eq!(
+            crate::util::Accountable::ram_bytes_used(&tail),
+            3 * ref_bytes + 2 * 1024
+        );
+        assert_eq!(tail.read_byte_at(23).unwrap(), 1);
+        assert_eq!(tail.read_byte_at(24).unwrap(), 2);
+        assert_eq!(tail.read_int_at(1044).unwrap(), 0x0202_0202);
+        assert!(tail.read_byte_at(1048).is_err());
+        // A hostile absolute position: `offset + pos` wraps as Java's `long`
+        // does (an error, not an overflow panic; `fuzz_doc_values` found it).
+        assert!(tail.read_byte_at(i64::MAX as usize).is_err());
+        assert!(tail.read_long_at(i64::MAX as usize - 3).is_err());
+
+        // Inside one block: one view, Java's single-block layout.
+        let mut inner = input.slice(1030, 5).unwrap();
+        assert_eq!(
+            inner.to_string(),
+            "5 bytes, block size: 1, blocks: 1, position: 0 [offset: 6]"
+        );
+        let mut five = [0u8; 6];
+        assert!(inner.read_bytes(Some(&mut five), 0, 6).is_err(), "limit");
+        inner.seek(0).unwrap();
+        inner.read_bytes(Some(&mut five), 0, 5).unwrap();
+        assert_eq!(five, [2, 2, 2, 2, 2, 0]);
+        assert_eq!(
+            inner.slice(1, 3).unwrap().to_string(),
+            "3 bytes, block size: 1, blocks: 1, position: 0 [offset: 7]"
+        );
+
+        // Empty at a boundary: the lone allocate(0) view, charged nothing.
+        let empty = input.slice(1024, 0).unwrap();
+        assert_eq!(
+            empty.to_string(),
+            "0 bytes, block size: 1, blocks: 1, position: 0"
+        );
+        assert_eq!(crate::util::Accountable::ram_bytes_used(&empty), ref_bytes);
+        assert_eq!(input.slice(3072, 0).unwrap().length(), 0);
+
+        // Out of bounds: Java's message, with the source's `toString()`.
+        let error = whole.slice(1, 2048).unwrap_err();
+        assert!(error.to_string().contains(
+            "slice(offset=1, length=2048) is out of bounds: 2,048 bytes, block size: 1,024, \
+             blocks: 3, position: 0 [offset: 1,000]"
+        ));
+    }
+
     #[test]
     fn byte_buffers_to_array_copy_matches_content() {
         let mut out = ByteBuffersDataOutput::new();
@@ -12237,6 +12983,115 @@ mod tests {
         let mut out = ByteBuffersDataOutput::new();
         let mut input = ByteBuffersDataInput::new(vec![Vec::new()]).unwrap();
         assert!(out.copy_bytes(&mut input, -1).is_err());
+    }
+
+    /// The message of an `IllegalArgumentException`.
+    fn illegal_argument_message(error: LuceneError) -> String {
+        match error.kind {
+            LuceneErrorKind::IllegalArgument { message, .. } => message,
+            other => panic!("not an IllegalArgumentException: {other:?}"),
+        }
+    }
+
+    /// `ByteBuffer` views share their block and carry Java's position and
+    /// limit (`java.nio.Buffer.position(int)`, `limit(int)`), and an input
+    /// over views of one page — `TestByteBuffersDataInput.testSlicingLargeBuffers`
+    /// (`TestByteBuffersDataInput.java:243-265`) — holds the page once.
+    #[test]
+    fn byte_buffer_views_of_one_page_share_it() {
+        let page = ByteBuffer::wrap((0..1024u32).map(|i| i as u8).collect());
+        let mut views: Vec<ByteBuffer> = (0..4).map(|_| page.duplicate()).collect();
+        views[3].set_limit(100).unwrap();
+        views[0].set_position(10).unwrap();
+        assert!(views.iter().all(|v| Arc::ptr_eq(&v.content, &page.content)));
+        let input = ByteBuffersDataInput::new(views).unwrap();
+        assert!(input
+            .blocks
+            .iter()
+            .all(|v| Arc::ptr_eq(&v.content, &page.content)));
+        assert_eq!(input.length(), 3 * 1024 - 10 + 100);
+        assert_eq!(input.read_byte_at(0).unwrap(), 10);
+        assert_eq!(input.read_byte_at(1024 - 10).unwrap(), 0);
+        assert_eq!(input.read_byte_at(3 * 1024 - 10 + 99).unwrap(), 99);
+        assert!(input.read_byte_at(3 * 1024 - 10 + 100).is_err());
+
+        let mut view = page.duplicate();
+        assert_eq!(
+            illegal_argument_message(view.set_limit(1025).unwrap_err()),
+            "newLimit > capacity: (1025 > 1024)"
+        );
+        view.set_position(8).unwrap();
+        view.set_limit(5).unwrap();
+        assert_eq!((view.position(), view.limit(), view.remaining()), (5, 5, 0));
+        assert_eq!(
+            illegal_argument_message(view.set_position(6).unwrap_err()),
+            "newPosition > limit: (6 > 5)"
+        );
+    }
+
+    /// `ensureAssumptions` refuses an intermediate view with a position
+    /// (`ByteBuffersDataInput.java:466-471`), naming the buffer by its
+    /// `toString()`.
+    #[test]
+    fn byte_buffers_input_refuses_a_positioned_intermediate_view() {
+        let page = ByteBuffer::wrap(vec![0u8; 1024]);
+        let mut middle = page.duplicate();
+        middle.set_position(1).unwrap();
+        let error = ByteBuffersDataInput::new(vec![page.duplicate(), middle, page.duplicate()])
+            .unwrap_err();
+        assert_eq!(
+            illegal_argument_message(error),
+            "All buffers except for the first one must have position() == 0: \
+             java.nio.HeapByteBuffer[pos=1 lim=1024 cap=1024]"
+        );
+    }
+
+    /// `toDataInput()` views the output's blocks (`ByteBuffersDataOutput.java:236-247,
+    /// 277-279`): the filled blocks are shared, not copied; the block being
+    /// filled is shared once `share_current_block` moved it, and writing on
+    /// takes it back, copied only while an input still views it, so the input
+    /// keeps the content it was taken over.
+    #[test]
+    fn byte_buffers_to_data_input_shares_the_blocks() {
+        use crate::util::Accountable;
+        let bytes: Vec<u8> = (0..2500u32).map(|i| (i % 251) as u8).collect();
+        let mut out = ByteBuffersDataOutput::new();
+        out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+        let ram = out.ram_bytes_used();
+
+        let input = out.to_data_input().unwrap();
+        assert_eq!(input.blocks.len(), 3);
+        assert!(Arc::ptr_eq(&input.blocks[0].content, &out.completed[0]));
+        assert!(Arc::ptr_eq(&input.blocks[1].content, &out.completed[1]));
+
+        out.share_current_block();
+        assert_eq!((out.size(), out.ram_bytes_used()), (2500, ram));
+        assert_eq!(out.to_string(), "2,500 bytes, block size: 1,024, blocks: 3");
+        let mut shared = out.to_data_input().unwrap();
+        let last = out
+            .shared_current
+            .clone()
+            .expect("the last block is shared");
+        assert!(Arc::ptr_eq(&shared.blocks[2].content, &last));
+        drop(last);
+
+        out.write_bytes(&bytes, 0, 100).unwrap();
+        assert!(out.shared_current.is_none());
+        let mut read = vec![0u8; 2500];
+        shared.read_bytes(Some(&mut read), 0, 2500).unwrap();
+        assert_eq!(read, bytes, "the input keeps the content it viewed");
+        let mut expected = bytes.clone();
+        expected.extend_from_slice(&bytes[..100]);
+        assert_eq!(out.to_array_copy().unwrap(), expected);
+        assert_eq!(out.ram_bytes_used(), ram);
+
+        drop((input, shared));
+        out.share_current_block();
+        let block = out.shared_current.as_ref().unwrap().as_ptr();
+        out.write_byte(7).unwrap();
+        assert_eq!(out.current.as_ptr(), block, "taken back without a copy");
+        expected.push(7);
+        assert_eq!(out.to_array_copy().unwrap(), expected);
     }
 
     #[test]
@@ -12305,7 +13160,7 @@ mod tests {
     #[test]
     fn byte_buffers_input_validation_rejects_invalid_layout() {
         // Empty buffer list rejected.
-        assert!(ByteBuffersDataInput::new(vec![]).is_err());
+        assert!(ByteBuffersDataInput::new(Vec::<Vec<u8>>::new()).is_err());
         // Non-power-of-two first buffer rejected when multiple blocks.
         assert!(ByteBuffersDataInput::new(vec![vec![0u8; 100], vec![0u8; 100]]).is_err());
         // Mismatched intermediate block rejected.
@@ -12868,7 +13723,7 @@ mod tests {
             closes: Arc<AtomicUsize>,
         }
         impl DataInput for Tracked {
-            fn to_java_string(&self) -> String {
+            fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
                 self.inner.to_java_string()
             }
             fn read_byte(&mut self) -> Result<u8> {
@@ -13075,8 +13930,8 @@ mod tests {
     fn buffered_checksum_index_input_quotes_main_to_string() {
         struct Renamed(FilterIndexInput);
         impl DataInput for Renamed {
-            fn to_java_string(&self) -> String {
-                "Renamed(toString)".to_string()
+            fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+                std::borrow::Cow::Borrowed("Renamed(toString)")
             }
             fn read_byte(&mut self) -> Result<u8> {
                 self.0.read_byte()
@@ -13186,6 +14041,62 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(ok.hints().len(), 2);
+    }
+
+    /// A hint enum constant is one object, as in Java: every
+    /// [`FileTypeHint::shared`] (and `FileDataHint`, `DataAccessHint`) call
+    /// hands out the same allocation, a different one per constant, and a
+    /// context built from it carries exactly that constant.
+    #[test]
+    fn shared_hints_are_one_object_per_constant() {
+        let constants: Vec<(Arc<dyn FileOpenHint>, Arc<dyn FileOpenHint>)> = vec![
+            (FileTypeHint::Index.shared(), FileTypeHint::Index.shared()),
+            (FileTypeHint::Data.shared(), FileTypeHint::Data.shared()),
+            (
+                FileDataHint::Postings.shared(),
+                FileDataHint::Postings.shared(),
+            ),
+            (
+                FileDataHint::KnnVectors.shared(),
+                FileDataHint::KnnVectors.shared(),
+            ),
+            (
+                DataAccessHint::Random.shared(),
+                DataAccessHint::Random.shared(),
+            ),
+            (
+                DataAccessHint::Sequential.shared(),
+                DataAccessHint::Sequential.shared(),
+            ),
+        ];
+        for (i, (a, b)) in constants.iter().enumerate() {
+            assert!(Arc::ptr_eq(a, b), "constant {i} is not shared");
+            for (j, (c, _)) in constants.iter().enumerate() {
+                assert_eq!(Arc::ptr_eq(a, c), i == j, "constants {i} and {j}");
+            }
+        }
+        assert_eq!(FileTypeHint::Data.shared().java_to_string(), "DATA");
+        assert_eq!(FileDataHint::Postings.shared().java_to_string(), "POSTINGS");
+        assert_eq!(DataAccessHint::Random.shared().java_to_string(), "RANDOM");
+
+        let context = DEFAULT_IO_CONTEXT
+            .with_hints(&[FileTypeHint::Data.shared(), DataAccessHint::Random.shared()]);
+        let types: Vec<FileTypeHint> = hints_of::<FileTypeHint>(context.as_ref())
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(types, [FileTypeHint::Data]);
+        let access: Vec<DataAccessHint> = hints_of::<DataAccessHint>(context.as_ref())
+            .into_iter()
+            .copied()
+            .collect();
+        assert_eq!(access, [DataAccessHint::Random]);
+        // Two constants of one enum are still rejected, shared or not.
+        assert!(DefaultIOContext::with_hints_slice(&[
+            FileTypeHint::Data.shared(),
+            FileTypeHint::Index.shared(),
+        ])
+        .is_err());
     }
 
     // -------------------------------------------------------------------------

@@ -505,8 +505,8 @@ mod tests {
             Ok(())
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(self.terms[self.pos].clone()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos]))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -535,13 +535,13 @@ mod tests {
             ))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             if self.pos + 1 >= self.terms.len() {
                 self.pos = self.terms.len();
                 return Ok(None);
             }
             self.pos += 1;
-            Ok(Some(self.terms[self.pos].clone()))
+            Ok(Some(&self.terms[self.pos]))
         }
     }
 

@@ -40,7 +40,7 @@ use rucene::store::java_nio_file::Files;
 use rucene::store::mmap::MMapDirectory;
 use rucene::store::{
     align_offset, flush_io_context, merge_io_context, BufferedChecksum, BufferedChecksumIndexInput,
-    BufferedIndexInput, ByteArrayDataInput, ByteArrayDataOutput, ByteBufferRecycler,
+    BufferedIndexInput, ByteArrayDataInput, ByteArrayDataOutput, ByteBuffer, ByteBufferRecycler,
     ByteBuffersDataInput, ByteBuffersDataOutput, ByteBuffersDirectory, ByteBuffersIndexOutput,
     ChecksumIndexInput, DataAccessHint, DataInput, DataOutput, Directory, FSDirectory,
     FileDataHint, FileOpenHint, FileTypeHint, FilterIndexOutput, FlushInfo, IOContext, IndexInput,
@@ -369,7 +369,10 @@ impl TestBufferedIndexInput {
         // Just to see that "offset" is treated properly in readBytes(), we
         // add an arbitrary offset at the beginning of the array
         let offset = size % 10; // arbitrary
-        self.buffer = rucene::util::ArrayUtil::grow(&self.buffer, (offset + size) as usize);
+        self.buffer = rucene::util::ArrayUtil::grow(
+            std::mem::take(&mut self.buffer),
+            (offset + size) as usize,
+        );
         Assert::assert_equals(pos as i64, input.file_pointer()?);
         let left = TEST_FILE_LENGTH - input.file_pointer()?;
         if left <= 0 {
@@ -621,8 +624,8 @@ struct MyBufferedIndexInput {
 }
 
 impl DataInput for MyBufferedIndexInput {
-    fn to_java_string(&self) -> String {
-        self.description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1728,34 +1731,35 @@ fn bb_input_test_eof_on_array_read_past_buffer_size() -> Result<()> {
 
 /// `TestByteBuffersDataInput.testSlicingLargeBuffers()` (LUCENE-8625).
 ///
-/// **Divergence from Lucene 10.5.0.** Java simulates a "large" (> 4GB)
-/// input by duplicating one 4 MB `ByteBuffer` (sharing its storage); Rucene's
-/// `ByteBuffersDataInput` owns `Vec<u8>` blocks, so each duplicate is a copy
-/// of the page (the same content, its limit applied); the head shift, Java's
-/// `buffers.get(0).position(shift)`, is the first-buffer position given to
-/// `ByteBuffersDataInput::with_first_position`.
+/// As Java (`TestByteBuffersDataInput.java:243-280`), the "large" (> 4GB)
+/// input is views of one 4 MB page (`page.duplicate()`), which share its
+/// content, the last one with its limit cut, and the head shift is the first
+/// view's `position(shift)`.
 fn bb_input_test_slicing_large_buffers() -> Result<()> {
     // Simulate a "large" (> 4GB) input by duplicating
     // buffers with the same content.
     let mb = 1024 * 1024;
     let page_bytes = RandomizedTest::random_bytes_of_length(4 * mb);
+    let page = ByteBuffer::wrap(page_bytes);
 
     // Add some head shift on the first buffer.
-    let shift = RandomizedTest::random_int_between(0, page_bytes.len() as i32 / 2) as usize;
+    let shift = RandomizedTest::random_int_between(0, page.limit() as i32 / 2) as usize;
 
     let simulated_length = RandomizedTest::random_long_between(0, 2018) + 4i64 * i32::MAX as i64;
 
-    let mut buffers: Vec<Vec<u8>> = Vec::new();
+    let mut buffers: Vec<ByteBuffer> = Vec::new();
     let mut remaining = simulated_length + shift as i64;
     while remaining > 0 {
-        let mut bb = page_bytes.clone();
-        if bb.len() as i64 > remaining {
-            bb.truncate(remaining as usize);
+        let mut bb = page.duplicate();
+        if bb.remaining() as i64 > remaining {
+            bb.set_limit(bb.position() + remaining as usize)?;
         }
-        remaining -= bb.len() as i64;
+        remaining -= bb.remaining() as i64;
         buffers.push(bb);
     }
-    let dst = ByteBuffersDataInput::with_first_position(buffers, shift)?;
+    buffers[0].set_position(shift)?;
+
+    let dst = ByteBuffersDataInput::new(buffers)?;
     Assert::assert_equals(simulated_length, dst.length() as i64);
 
     let max = dst.length() as i64;
@@ -1771,7 +1775,7 @@ fn bb_input_test_slicing_large_buffers() -> Result<()> {
         // Sanity check of the content against original pages.
         for i in 0..window {
             let expected =
-                page_bytes[((shift as i64 + offset + i) % page_bytes.len() as i64) as usize] as i8;
+                page.as_slice()[((shift as i64 + offset + i) % page.limit() as i64) as usize] as i8;
             Assert::assert_equals(expected, slice.read_byte_at(i as usize)? as i8);
         }
         offset += RandomizedTest::random_int_between(mb, 4 * mb) as i64;
@@ -1899,7 +1903,7 @@ impl InterceptingChecksumIndexInput {
 }
 
 impl DataInput for InterceptingChecksumIndexInput {
-    fn to_java_string(&self) -> String {
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
         self.main.to_java_string()
     }
 
@@ -2330,7 +2334,7 @@ impl NoReadInputStreamDataInput {
 }
 
 impl DataInput for NoReadInputStreamDataInput {
-    fn to_java_string(&self) -> String {
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
         self.inner.to_java_string()
     }
 

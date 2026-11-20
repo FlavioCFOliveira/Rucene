@@ -136,7 +136,7 @@ fn canned_field(
 ) -> Result<Field> {
     let stream: Arc<AtomicRefCell<dyn TokenStream>> =
         Arc::new(AtomicRefCell::new(CannedTermFreqs::new(terms, term_freqs)?));
-    Field::new_with_token_stream(name, stream, field_type.clone())
+    Field::new_with_token_stream(name.to_string(), stream, field_type.clone())
 }
 
 /// A document holding `field`.

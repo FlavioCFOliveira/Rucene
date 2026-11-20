@@ -468,7 +468,7 @@ impl SlowMinShouldMatchScorer {
         reader: &dyn LeafReader,
         searcher: &IndexSearcher,
     ) -> Result<Self> {
-        let dv = reader
+        let mut dv = reader
             .get_sorted_set_doc_values("dv")?
             .expect("the dv field exists");
         let max_doc = reader.max_doc();

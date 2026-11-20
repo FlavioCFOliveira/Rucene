@@ -99,7 +99,7 @@ pub fn class_def() -> Arc<Class> {
 /// take.
 fn ndv(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -107,13 +107,13 @@ fn ndv(name: &str, value: i64) -> Result<Field> {
 
 /// `new NumericDocValuesField(name, (Long) null)`.
 fn ndv_null(name: &str) -> Result<Field> {
-    Field::new_with_type(name, NumericDocValuesField::type_().clone())
+    Field::new_with_type(name.to_string(), NumericDocValuesField::type_().clone())
 }
 
 /// `new StringField(name, value, Field.Store.YES)`.
 fn stored_string(name: &str, value: &str) -> Result<Box<StringField>> {
     Ok(Box::new(StringField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::YES,
     )?))

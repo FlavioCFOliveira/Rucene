@@ -320,8 +320,8 @@ impl InterceptingIndexInput {
 
 impl DataInput for InterceptingIndexInput {
     /// The inherited `IndexInput.toString()`: the resource description.
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {

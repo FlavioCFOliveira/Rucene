@@ -67,24 +67,21 @@ impl SortedNumericSelector {
     /// using the given selector and numeric type.
     ///
     /// Equivalent to
-    /// `SortedNumericSelector.wrap(SortedNumericDocValues, Type, SortField.Type)`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java first calls
-    /// `DocValues.unwrapSingleton(sortedNumeric)` and, when the field is
-    /// single-valued in practice, sorts on the underlying single-valued doc
-    /// values directly. [`DocValues::unwrap_singleton_numeric`](crate::index::DocValues::unwrap_singleton_numeric)
-    /// hands out a borrow of the wrapped values rather than the values
-    /// themselves, so this port cannot take ownership of them and always
-    /// installs the selecting view. The selectors agree with the singleton on a
-    /// single-valued document — `MIN` reads the one value, and `MAX` loops over
-    /// the one value — so only the cost of one extra delegation differs, never
-    /// the selected value.
+    /// `SortedNumericSelector.wrap(SortedNumericDocValues, Type, SortField.Type)`
+    /// (`SortedNumericSelector.java:47-80`): a field that is single-valued in
+    /// practice, but indexed as multi-valued, is sorted on its underlying
+    /// single-valued doc values directly, whatever the selector
+    /// (`DocValues.unwrapSingleton`); otherwise the selecting view is
+    /// installed.
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `numeric_type` is not one
     /// of [`SortFieldType::Int`], [`SortFieldType::Long`],
-    /// [`SortFieldType::Float`] or [`SortFieldType::Double`].
+    /// [`SortFieldType::Float`] or [`SortFieldType::Double`], and
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
+    /// when a singleton view's iterator was already used, as
+    /// `SingletonSortedNumericDocValues.getNumericDocValues()` throws.
     pub fn wrap(
         sorted_numeric: Box<dyn SortedNumericDocValues>,
         selector: SortedNumericSelectorType,
@@ -99,9 +96,18 @@ impl SortedNumericSelector {
                 "numericType must be a numeric type".to_string(),
             ));
         }
-        let view: Box<dyn NumericDocValues> = match selector {
-            SortedNumericSelectorType::MIN => Box::new(MinValue::new(sorted_numeric)),
-            SortedNumericSelectorType::MAX => Box::new(MaxValue::new(sorted_numeric)),
+        // PERF: `DocValues.unwrapSingleton(sortedNumeric)`: "regardless of
+        // selector type, this optimization is safe", and it spares the
+        // selecting view's delegation on every document.
+        let view: Box<dyn NumericDocValues> = if sorted_numeric.is_singleton() {
+            sorted_numeric
+                .into_singleton()?
+                .expect("INVARIANT: is_singleton() reported a singleton view")
+        } else {
+            match selector {
+                SortedNumericSelectorType::MIN => Box::new(MinValue::new(sorted_numeric)),
+                SortedNumericSelectorType::MAX => Box::new(MaxValue::new(sorted_numeric)),
+            }
         };
         // Undo the NumericUtils sortability.
         Ok(match numeric_type {
@@ -332,3 +338,80 @@ delegate_numeric_view!(
     "org.apache.lucene.search.SortedNumericSelector$2",
     |raw: i64| { NumericUtils::sortable_double_bits(raw) }
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::DocValues;
+
+    /// Dense single-valued doc values: doc `d` of `[0, values.len())` holds
+    /// `values[d]`.
+    struct DenseNumeric {
+        values: Vec<i64>,
+        doc: i32,
+    }
+
+    impl DocIdSetIterator for DenseNumeric {
+        fn java_to_string(&self) -> String {
+            "DenseNumeric".to_string()
+        }
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            let target = self.doc + 1;
+            self.advance(target)
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.doc = if target as usize >= self.values.len() {
+                NO_MORE_DOCS
+            } else {
+                target
+            };
+            Ok(self.doc)
+        }
+        fn cost(&self) -> i64 {
+            self.values.len() as i64
+        }
+    }
+
+    impl DocValuesIterator for DenseNumeric {
+        fn advance_exact(&mut self, target: i32) -> Result<bool> {
+            self.doc = target;
+            Ok((target as usize) < self.values.len())
+        }
+    }
+
+    impl NumericDocValues for DenseNumeric {
+        fn long_value(&self) -> Result<i64> {
+            Ok(self.values[self.doc as usize])
+        }
+    }
+
+    /// `SortedNumericSelector.wrap` sorts a single-valued field on its
+    /// underlying doc values directly, whatever the selector
+    /// (`SortedNumericSelector.java:56-61`): the view handed back is the
+    /// singleton's own values, which read the same as through a selector.
+    #[test]
+    fn wrap_sorts_a_singleton_on_its_underlying_values() {
+        for selector in [
+            SortedNumericSelectorType::MIN,
+            SortedNumericSelectorType::MAX,
+        ] {
+            let inner = DenseNumeric {
+                values: vec![7, -3, 42],
+                doc: -1,
+            };
+            let singleton = DocValues::singleton_numeric(Box::new(inner)).unwrap();
+            let mut view =
+                SortedNumericSelector::wrap(Box::new(singleton), selector, SortFieldType::Long)
+                    .unwrap();
+            assert_eq!(view.java_to_string(), "DenseNumeric", "{selector}");
+            let mut seen = Vec::new();
+            while view.next_doc().unwrap() != NO_MORE_DOCS {
+                seen.push(view.long_value().unwrap());
+            }
+            assert_eq!(seen, vec![7, -3, 42], "{selector}");
+        }
+    }
+}

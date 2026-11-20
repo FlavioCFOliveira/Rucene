@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_commit::IndexCommit;
-use crate::index::index_file_names::SEGMENTS;
+use crate::index::index_file_names::{IndexFileName, SEGMENTS};
 use crate::index::index_reader::{
     add_closed_listener_to_set, build_composite_context, CacheHelper, CacheKey, ClosedListener,
     CompositeReader, IndexReader, IndexReaderCore, StoredFields,
@@ -1132,7 +1132,7 @@ impl TermVectors for CompositeTermVectors {
         self.with_sub(doc_id, |sub, local| sub.get(local))
     }
 
-    fn get_field(&self, doc_id: i32, field: &str) -> Result<Option<Box<dyn crate::index::Terms>>> {
+    fn get_field(&self, doc_id: i32, field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
         self.with_sub(doc_id, |sub, local| sub.get_field(local, field))
     }
 }
@@ -1453,7 +1453,7 @@ struct ReaderCommit {
     /// `Collections.unmodifiableCollection(infos.files(true))`
     /// (`StandardDirectoryReader.java:593`): the `java.util.HashSet`
     /// `SegmentInfos.files` builds, iteration order included.
-    files: JavaHashSet,
+    files: JavaHashSet<IndexFileName>,
     directory: Arc<dyn Directory>,
     generation: i64,
     user_data: HashMap<String, String>,
@@ -1530,7 +1530,7 @@ impl std::fmt::Display for ReaderCommit {
     /// the files render as `AbstractCollection.toString` does, in the
     /// `HashSet`'s iteration order.
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let files: Vec<&str> = self.files.iter().map(String::as_str).collect();
+        let files: Vec<&str> = self.files.iter().map(IndexFileName::as_str).collect();
         write!(
             f,
             "StandardDirectoryReader.ReaderCommit({} files=[{}])",
@@ -2105,9 +2105,13 @@ pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCo
 ///
 /// Equivalent to `DirectoryReader.indexExists(Directory)`.
 pub fn index_exists(directory: &dyn Directory) -> Result<bool> {
-    let prefix = format!("{}_", SEGMENTS);
+    // PERF: Java's `IndexFileNames.SEGMENTS + "_"` is a compile-time constant;
+    // the prefix is matched in place instead of formatted per call.
     for file in directory.list_all()? {
-        if file.starts_with(&prefix) {
+        if file
+            .strip_prefix(SEGMENTS)
+            .is_some_and(|rest| rest.starts_with('_'))
+        {
             return Ok(true);
         }
     }

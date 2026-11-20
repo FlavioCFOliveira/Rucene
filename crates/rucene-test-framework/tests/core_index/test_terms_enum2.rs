@@ -186,7 +186,7 @@ fn test_seeking(inst: &mut TestTermsEnum2Instance) -> Result<()> {
                 } else {
                     // seek ceil
                     assert_equals(&SeekStatus::FOUND, &te.seek_ceil(term)?);
-                    Assert::assert_equals_nullable(Some(term.clone()), te.term()?);
+                    Assert::assert_equals_nullable(Some(term.clone()), te.term()?.cloned());
                 }
             }
         }
@@ -206,10 +206,10 @@ fn test_seeking_and_nexting(inst: &mut TestTermsEnum2Instance) -> Result<()> {
         for term in &inst.terms {
             let c = random().next_int_bound(3);
             if c == 0 {
-                assert_equals(&Some(term.clone()), &te.next()?);
+                assert_equals(&Some(term.clone()), &te.next()?.cloned());
             } else if c == 1 {
                 assert_equals(&SeekStatus::FOUND, &te.seek_ceil(term)?);
-                Assert::assert_equals_nullable(Some(term.clone()), te.term()?);
+                Assert::assert_equals_nullable(Some(term.clone()), te.term()?.cloned());
             } else {
                 Assert::assert_true(te.seek_exact(term)?);
             }
@@ -246,7 +246,8 @@ fn test_intersect(inst: &mut TestTermsEnum2Instance) -> Result<()> {
         while te.next()?.is_some() {
             found.insert(BytesRef::deep_copy_of(
                 &te.term()?
-                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .clone(),
             ));
         }
 

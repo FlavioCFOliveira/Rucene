@@ -1048,7 +1048,7 @@ fn unchecked_exceptions_are_lucenes() {
                 .to_string())
         }),
         ("dv-sorted-ord-count", None, |_, leaf| {
-            let v = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
+            let mut v = leaf.get_sorted_doc_values("dv_sorted")?.unwrap();
             Ok(v.lookup_ord(v.get_value_count()?)?.to_string())
         }),
         ("dv-sset-ord-neg", None, |_, leaf| {
@@ -1059,7 +1059,7 @@ fn unchecked_exceptions_are_lucenes() {
                 .to_string())
         }),
         ("dv-sset-ord-count", None, |_, leaf| {
-            let v = leaf.get_sorted_set_doc_values("dv_sset")?.unwrap();
+            let mut v = leaf.get_sorted_set_doc_values("dv_sset")?.unwrap();
             Ok(v.lookup_ord(v.get_value_count()?)?.to_string())
         }),
         ("dv-snum-past", None, |_, leaf| {

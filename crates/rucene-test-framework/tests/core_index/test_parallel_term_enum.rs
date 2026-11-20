@@ -114,7 +114,7 @@ fn tear_down(inst: &mut Instance) -> Result<()> {
 }
 
 /// `private void checkTerms(Terms terms, String... termsList)`.
-fn check_terms(terms: Option<Box<dyn Terms>>, terms_list: &[&str]) -> Result<()> {
+fn check_terms(terms: Option<Arc<dyn Terms>>, terms_list: &[&str]) -> Result<()> {
     assert_not_null(&terms);
     let terms = terms.unwrap_or_else(|| npe("terms"));
     let mut te = terms.iterator()?;

@@ -479,10 +479,10 @@ fn check_sorted_index(
         assert_equals(&id_bytes, &binary_dv.binary_value()?);
         assert_equals(
             &id_bytes,
-            &binary_sorted_dv.lookup_ord(binary_sorted_dv.ord_value()?)?,
+            binary_sorted_dv.lookup_ord(binary_sorted_dv.ord_value()?)?,
         );
         let ord = sorted_set_dv.next_ord()?;
-        assert_equals(&id_bytes, &sorted_set_dv.lookup_ord(ord)?);
+        assert_equals(&id_bytes, sorted_set_dv.lookup_ord(ord)?);
         assert_equals(&1, &sorted_set_dv.doc_value_count()?);
         assert_equals(&1, &sorted_numeric_dv.doc_value_count()?);
         assert_equals(&ids.long_value()?, &sorted_numeric_dv.next_value()?);

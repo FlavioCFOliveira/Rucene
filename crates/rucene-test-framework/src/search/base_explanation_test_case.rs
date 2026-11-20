@@ -220,7 +220,7 @@ pub fn create_doc(index: usize) -> Document {
 /// `new TermQuery(new Term(field, text))`.
 pub fn term_query(field: &str, text: &str) -> Arc<dyn Query> {
     Arc::new(TermQuery::new(Term::new(
-        field,
+        field.to_string(),
         BytesRef::from_char_sequence(text),
     )))
 }

@@ -44,7 +44,7 @@ pub fn class_def() -> Arc<Class> {
 }
 
 fn stq(field: &str, text: &str) -> Arc<dyn SpanQuery> {
-    Arc::new(SpanTermQuery::new(Term::from_text(field, text)))
+    Arc::new(SpanTermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 fn test_hashcode_equals() -> Result<()> {

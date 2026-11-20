@@ -702,9 +702,12 @@ impl NumericComparator {
     pub fn competitive_iterator(
         &self,
         leaf: &NumericLeafState,
-    ) -> Option<Box<dyn DocIdSetIterator>> {
+    ) -> Option<crate::search::CompetitiveIterator> {
+        // PERF: another handle onto the shared iterator, unboxed.
         leaf.competitive.as_ref().map(|builder| {
-            Box::new(builder.common.competitive_iterator.clone()) as Box<dyn DocIdSetIterator>
+            crate::search::CompetitiveIterator::Updateable(
+                builder.common.competitive_iterator.clone(),
+            )
         })
     }
 

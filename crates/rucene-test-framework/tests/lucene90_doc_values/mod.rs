@@ -622,7 +622,7 @@ fn do_test_sparse_doc_values_vs_stored_fields() -> Result<()> {
                     Assert::assert_equals(value, numeric.long_value()?);
                     Assert::assert_true(sorted.ord_value()? >= 0);
                     Assert::assert_true(
-                        bytes(&value.to_string()) == sorted.lookup_ord(sorted.ord_value()?)?,
+                        bytes(&value.to_string()) == *sorted.lookup_ord(sorted.ord_value()?)?,
                     );
                     Assert::assert_true(bytes(&value.to_string()) == binary.binary_value()?);
                 }
@@ -840,7 +840,8 @@ fn assert_equals_terms_enum(
             actual.seek_exact(
                 &expected
                     .term()?
-                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .clone(),
             )?,
         );
         Assert::assert_equals(expected.ord()?, actual.ord()?);
@@ -855,7 +856,8 @@ fn assert_equals_terms_enum(
                 == actual.seek_ceil(
                     &expected
                         .term()?
-                        .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                        .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                        .clone(),
                 )?,
         );
         Assert::assert_equals(expected.ord()?, actual.ord()?);
@@ -878,7 +880,8 @@ fn assert_equals_terms_enum(
         actual.seek_exact(
             &expected
                 .term()?
-                .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                .clone(),
         )?;
         Assert::assert_equals(expected.ord()?, actual.ord()?);
         Assert::assert_equals_nullable(expected.term()?, actual.term()?);
@@ -946,7 +949,7 @@ fn test_sorted_set_around_block_size(_suite: &CompressingDocValuesSuite) -> Resu
                 let mut b = vec![0u8; length];
                 input.read_bytes(Some(&mut b), 0, length)?;
                 let ord = values.next_ord()?;
-                Assert::assert_true(BytesRef::new(b) == values.lookup_ord(ord)?);
+                Assert::assert_true(BytesRef::new(b) == *values.lookup_ord(ord)?);
             }
         }
         drop((values, sr));
@@ -1354,7 +1357,7 @@ fn test_reseek_after_skip_decompression(suite: &CompressingDocValuesSuite) -> Re
         let reader =
             LuceneTestCase::get_only_leaf_reader(Arc::clone(&d_reader) as Arc<dyn IndexReader>)?;
         // Check values count.
-        let ssdv_multi = reader
+        let mut ssdv_multi = reader
             .get_sorted_doc_values("sdv")?
             .unwrap_or_else(|| npe("ssdvMulti"));
         Assert::assert_equals(doc_values as i32, ssdv_multi.get_value_count()?);
@@ -1488,26 +1491,26 @@ fn test_sorted_set_terms_dict_lookup_ord(_suite: &CompressingDocValuesSuite) -> 
 fn do_test_terms_dict_lookup_ord(te: &mut dyn TermsEnum) -> Result<()> {
     let mut terms: Vec<BytesRef> = Vec::new();
     while let Some(term) = te.next()? {
-        terms.push(BytesRef::deep_copy_of(&term));
+        terms.push(BytesRef::deep_copy_of(term));
     }
 
     // iterate in order
     for (i, term) in terms.iter().enumerate() {
         te.seek_ord(i as i64)?;
-        Assert::assert_equals_nullable(Some(term.clone()), te.term()?);
+        Assert::assert_equals_nullable(Some(term.clone()), te.term()?.cloned());
     }
 
     // iterate in reverse order
     for i in (0..terms.len()).rev() {
         te.seek_ord(i as i64)?;
-        Assert::assert_equals_nullable(Some(terms[i].clone()), te.term()?);
+        Assert::assert_equals_nullable(Some(terms[i].clone()), te.term()?.cloned());
     }
 
     // iterate in forward order with random gaps
     let mut i = random().next_int_bound(5) as usize;
     while i < terms.len() {
         te.seek_ord(i as i64)?;
-        Assert::assert_equals_nullable(Some(terms[i].clone()), te.term()?);
+        Assert::assert_equals_nullable(Some(terms[i].clone()), te.term()?.cloned());
         i += random().next_int_bound(5) as usize;
     }
     Ok(())
@@ -1538,9 +1541,9 @@ fn test_terms_enum_dictionary(_suite: &CompressingDocValuesSuite) -> Result<()> 
         .get_sorted_doc_values("field")?
         .unwrap_or_else(|| npe("values"));
     let mut terms_enum = values.terms_enum()?;
-    Assert::assert_true(Some(bytes("abc0defghijkl")) == terms_enum.next()?);
-    Assert::assert_true(Some(bytes("abc1defghijkl")) == terms_enum.next()?);
-    Assert::assert_true(Some(bytes("abc2defghijkl")) == terms_enum.next()?);
+    Assert::assert_true(Some(bytes("abc0defghijkl")) == terms_enum.next()?.cloned());
+    Assert::assert_true(Some(bytes("abc1defghijkl")) == terms_enum.next()?.cloned());
+    Assert::assert_true(Some(bytes("abc2defghijkl")) == terms_enum.next()?.cloned());
     Assert::assert_true(terms_enum.next()?.is_none());
 
     drop((terms_enum, leaf_reader));
@@ -1599,10 +1602,13 @@ fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()>
     // ... and before any other term in the index
     Assert::assert_equals(0, terms_enum.ord()?);
 
-    Assert::assert_equals_nullable(Some(bytes(&string_supplier(0))), terms_enum.term()?);
+    Assert::assert_equals_nullable(
+        Some(bytes(&string_supplier(0))),
+        terms_enum.term()?.cloned(),
+    );
     // read more than one block of terms to trigger next block decompression
     for i in 1..num_terms {
-        Assert::assert_true(Some(bytes(&string_supplier(i))) == terms_enum.next()?);
+        Assert::assert_true(Some(bytes(&string_supplier(i))) == terms_enum.next()?.cloned());
     }
     Assert::assert_true(terms_enum.next()?.is_none());
     drop((terms_enum, leaf_reader));
@@ -1743,8 +1749,8 @@ impl std::fmt::Debug for NoSliceIndexInput {
 }
 
 impl DataInput for NoSliceIndexInput {
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     fn read_byte(&mut self) -> Result<u8> {

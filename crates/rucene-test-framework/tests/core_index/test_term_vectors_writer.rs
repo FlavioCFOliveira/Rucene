@@ -181,7 +181,7 @@ fn test_double_offset_counting() -> Result<()> {
     // Token "abcd" occurred three times
     assert_equals(
         &Some(BytesRef::from_char_sequence("abcd")),
-        &terms_enum.next()?,
+        &terms_enum.next()?.cloned(),
     );
     let mut dp_enum = terms_enum
         .postings(Some(dp_enum), POSTINGS_ENUM_ALL)?

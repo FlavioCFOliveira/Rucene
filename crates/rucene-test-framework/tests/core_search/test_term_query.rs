@@ -57,7 +57,7 @@ pub fn class_def() -> Arc<Class> {
 
 /// `new Term(field, text)`.
 fn t(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// Port of `TestTermQuery.testEquals`.
@@ -499,7 +499,7 @@ impl TermsEnum for NoSeekTermsEnum {
         Err(no_seek())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.inner.term()
     }
 
@@ -531,7 +531,7 @@ impl TermsEnum for NoSeekTermsEnum {
         self.inner.term_state()
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.inner.next()
     }
 }
@@ -583,12 +583,12 @@ impl LeafReader for NoSeekLeafReader {
     fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
         self.inner.get_delegate().get_reader_cache_helper()
     }
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let terms = self.inner.terms(field)?;
         Ok(terms.map(|terms| {
-            Box::new(NoSeekTerms {
+            Arc::new(NoSeekTerms {
                 inner: FilterTerms::new(terms),
-            }) as Box<dyn Terms>
+            }) as Arc<dyn Terms>
         }))
     }
     fn get_numeric_doc_values(

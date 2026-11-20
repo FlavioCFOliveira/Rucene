@@ -48,7 +48,7 @@ use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::DocAndFloatFeatureBuffer;
 use rucene::index::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, Fields, FreqAndNormBuffer,
-    Impacts, ImpactsEnum, ImpactsSource, IntersectVisitor, NumericDocValues, PointTree,
+    Impacts, ImpactsEnum, ImpactsRef, ImpactsSource, IntersectVisitor, NumericDocValues, PointTree,
     PointValues, PostingsEnum, Relation, SeekStatus, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues, TermState, Terms, TermsEnum, POSTINGS_ENUM_FREQS,
 };
@@ -150,11 +150,11 @@ impl Fields for AssertingFields {
         self.r#in.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         assert_thread("Fields", &self.creation_thread)?;
         Ok(match self.r#in.terms(field)? {
             None => None,
-            Some(terms) => Some(Box::new(AssertingTerms::new(terms))),
+            Some(terms) => Some(Arc::new(AssertingTerms::new(terms))),
         })
     }
 
@@ -172,12 +172,12 @@ impl Fields for AssertingFields {
 /// wraps a [`Terms`] but with additional asserts.
 pub struct AssertingTerms {
     creation_thread: Thread,
-    r#in: Box<dyn Terms>,
+    r#in: Arc<dyn Terms>,
 }
 
 impl AssertingTerms {
     /// `new AssertingTerms(in)`.
-    pub fn new(r#in: Box<dyn Terms>) -> Self {
+    pub fn new(r#in: Arc<dyn Terms>) -> Self {
         AssertingTerms {
             creation_thread: Thread::current(),
             r#in,
@@ -417,7 +417,7 @@ impl TermsEnum for AssertingTermsEnum {
         )))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         assert_thread("Terms enums", &self.creation_thread)?;
         java_assert!(
             self.state == TermsEnumState::Initial || self.state == TermsEnumState::Positioned,
@@ -469,7 +469,7 @@ impl TermsEnum for AssertingTermsEnum {
         Ok(ttf)
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         assert_thread("Terms enums", &self.creation_thread)?;
         java_assert!(
             self.state == TermsEnumState::Positioned,
@@ -996,20 +996,24 @@ impl ImpactsSource for AssertingImpactsEnum {
         self.asserting_postings.unwrap_mut().advance_shallow(target)
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         java_assert!(
             self.doc_id() >= 0 || self.last_shallow_target >= 0,
             "Cannot get impacts until the iterator is positioned or advanceShallow has been called"
         );
-        let impacts = self.asserting_postings.unwrap_mut().get_impacts()?;
+        // `Math.max(docID(), lastShallowTarget)`, read before the delegate's
+        // view borrows it: `getImpacts()` does not move the enum.
         let valid_for = self.doc_id().max(self.last_shallow_target);
-        rucene::index::check_index::check_impacts(impacts.as_ref(), valid_for)?;
-        Ok(Box::new(AssertingImpacts {
+        let position = Arc::clone(&self.position);
+        let creation_thread = self.asserting_postings.creation_thread.clone();
+        let mut impacts = self.asserting_postings.unwrap_mut().get_impacts()?;
+        rucene::index::check_index::check_impacts(&mut *impacts, valid_for)?;
+        Ok(ImpactsRef::Owned(Box::new(AssertingImpacts {
             r#in: impacts,
-            position: Arc::clone(&self.position),
+            position,
             valid_for,
-            creation_thread: self.asserting_postings.creation_thread.clone(),
-        }))
+            creation_thread,
+        })))
     }
 }
 
@@ -1094,17 +1098,17 @@ impl ImpactsEnum for AssertingImpactsEnum {}
 /// **Divergence** (declared): `AssertingPostingsEnum.docID()` also asserts
 /// `doc == in.docID()` against the enum's delegate
 /// (`AssertingLeafReader.java:529-534`), which these impacts cannot reach: the
-/// enum owns its delegate, and the impacts outlive the `&mut` borrow they are
-/// handed out under. That check runs at the enum's own next `docID()`.
-struct AssertingImpacts {
-    r#in: Box<dyn Impacts>,
+/// enum owns its delegate, and the impacts hold the delegate's view, a `&mut`
+/// borrow of it. That check runs at the enum's own next `docID()`.
+struct AssertingImpacts<'a> {
+    r#in: ImpactsRef<'a>,
     position: Arc<AtomicI32>,
     valid_for: i32,
     /// The creating thread of the enum's `AssertingPostingsEnum`.
     creation_thread: Thread,
 }
 
-impl AssertingImpacts {
+impl AssertingImpacts<'_> {
     fn assert_valid_for(&self) {
         // `impactsEnum.docID()` runs inside the `assert`, under `-ea` only.
         if cfg!(debug_assertions) {
@@ -1117,7 +1121,7 @@ impl AssertingImpacts {
     }
 }
 
-impl Impacts for AssertingImpacts {
+impl Impacts for AssertingImpacts<'_> {
     fn num_levels(&self) -> i32 {
         self.assert_valid_for();
         self.r#in.num_levels()
@@ -1128,7 +1132,7 @@ impl Impacts for AssertingImpacts {
         self.r#in.doc_id_up_to(level)
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         self.assert_valid_for();
         let impacts = self.r#in.get_impacts(level);
         java_assert_unchecked!(impacts.size > 0);
@@ -1542,15 +1546,15 @@ impl SortedDocValues for AssertingSortedDocValues {
         Ok(value_count)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         assert_thread("Sorted doc values", &self.creation_thread)?;
         java_assert!(ord >= 0 && ord < self.value_count);
         let result = self.r#in.lookup_ord(ord)?;
-        assert_valid(&result)?;
+        assert_valid(result)?;
         Ok(result)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         assert_thread("Sorted doc values", &self.creation_thread)?;
         assert_valid(key)?;
         let result = self.r#in.lookup_term(key)?;
@@ -1849,11 +1853,11 @@ impl SortedSetDocValues for AssertingSortedSetDocValues {
         self.r#in.doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         assert_thread("Sorted set doc values", &self.creation_thread)?;
         java_assert!(ord >= 0 && ord < self.value_count);
         let result = self.r#in.lookup_ord(ord)?;
-        assert_valid(&result)?;
+        assert_valid(result)?;
         Ok(result)
     }
 
@@ -1864,7 +1868,7 @@ impl SortedSetDocValues for AssertingSortedSetDocValues {
         Ok(value_count)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         assert_thread("Sorted set doc values", &self.creation_thread)?;
         assert_valid(key)?;
         let result = self.r#in.lookup_term(key)?;
@@ -2459,12 +2463,12 @@ impl LeafReader for AssertingLeafReader {
         get_meta_data,
     );
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         LeafReader::core(&self.base).ensure_open()?;
         Ok(self
             .r#in
             .terms(field)?
-            .map(|terms| Box::new(AssertingTerms::new(terms)) as Box<dyn Terms>))
+            .map(|terms| Arc::new(AssertingTerms::new(terms)) as Arc<dyn Terms>))
     }
 
     fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
@@ -3071,7 +3075,7 @@ mod tests {
     }
 
     /// One level of impacts.
-    struct OneLevel;
+    struct OneLevel(FreqAndNormBuffer);
 
     impl Impacts for OneLevel {
         fn num_levels(&self) -> i32 {
@@ -3080,10 +3084,10 @@ mod tests {
         fn doc_id_up_to(&self, _level: i32) -> i32 {
             NO_MORE_DOCS
         }
-        fn get_impacts(&self, _level: i32) -> FreqAndNormBuffer {
-            let mut buffer = FreqAndNormBuffer::new();
-            buffer.add(1, 1);
-            buffer
+        fn get_impacts(&mut self, _level: i32) -> &FreqAndNormBuffer {
+            self.0.size = 0;
+            self.0.add(1, 1);
+            &self.0
         }
     }
 
@@ -3095,7 +3099,7 @@ mod tests {
             .join()
             .expect("the other thread");
         let impacts = AssertingImpacts {
-            r#in: Box::new(OneLevel),
+            r#in: ImpactsRef::Owned(Box::new(OneLevel(FreqAndNormBuffer::new()))),
             position: Arc::new(AtomicI32::new(3)),
             valid_for: 3,
             creation_thread: other,
@@ -3116,6 +3120,8 @@ mod tests {
     /// breaking its contract.
     struct NullPostings {
         attributes: AttributeSource,
+        /// The term `term()` and `next()` lend: `a`.
+        term: BytesRef,
     }
 
     impl fmt::Display for NullPostings {
@@ -3134,8 +3140,8 @@ mod tests {
         fn seek_ord(&mut self, _ord: i64) -> Result<()> {
             Ok(())
         }
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::new(b"a".to_vec())))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.term))
         }
         fn ord(&self) -> Result<i64> {
             Ok(0)
@@ -3156,8 +3162,8 @@ mod tests {
         fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
             Err(npe())
         }
-        fn next(&mut self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::new(b"a".to_vec())))
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.term))
         }
     }
 
@@ -3170,6 +3176,7 @@ mod tests {
         let mut terms_enum = AssertingTermsEnum::new(
             Box::new(NullPostings {
                 attributes: AttributeSource::new(),
+                term: BytesRef::new(b"a".to_vec()),
             }),
             true,
         );
@@ -3275,7 +3282,7 @@ mod tests {
         fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
             None
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
         fn get_numeric_doc_values(

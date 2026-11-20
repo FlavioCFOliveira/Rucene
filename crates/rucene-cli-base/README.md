@@ -27,9 +27,12 @@ domain**.
 **No dataset file is committed.** The ingestion script downloads the files
 when they are needed into a git-ignored cache, by default
 `crates/rucene-cli-base/data/base/` (`raw/` downloads, `clean/` and `cli/`
-intermediate JSON Lines, and the default index root `index/`). A full run
-needs about **14 GB** of cache (1.4 GB downloads, 7.1 GB clean and 4.8 GB bulk
-JSON Lines) plus the indices (see [Ingestion](#ingestion)). Only the small
+intermediate JSON Lines, and the default index root `index/`). After a full
+run the cache holds about **16 GB**: 1.3 GB downloads, 7.6 GB clean and 5.1 GB
+bulk JSON Lines, and 2.2 GB of indices (see [Ingestion](#ingestion)). While it
+runs, the per-file line files of `prep/` and the files being replaced add to
+that: a full run over a cache holding a previous run peaked at **24 GB**
+(measured every 0.5 s; `prep/` held at most 8.8 GB). Only the small
 test fixtures under `tests/fixtures/` and `scripts/tests/fixtures/` are in the
 repository.
 
@@ -55,7 +58,7 @@ Python 3 (standard library).
 python3 -I scripts/ingest_base.py fetch  [--cache DIR] [--only ENTITIES] [--force]
 python3 -I scripts/ingest_base.py ingest [--cache DIR] [--only ENTITIES] [--root DIR]
                                          [--binary PATH] [--offline DIR] [--limit N]
-                                         [--jobs N]
+                                         [--jobs N] [--prep-jobs N]
 python3 -I scripts/ingest_base.py status [--cache DIR] [--verify]
 ```
 
@@ -73,38 +76,57 @@ python3 -I scripts/ingest_base.py status [--cache DIR] [--verify]
   indices with their aggregates, writes the bulk JSON Lines and loads them:
   `rucene-base <entity> create <root>`, then one `add --file` per part of
   250,000 records, then `count`, which must equal the number of records
-  written. The indices are independent (`<root>/<entity>`, one writer each),
-  so **all of them load side by side**, one `rucene-base` process per index,
-  started largest first, each keeping the order of its parts; `--jobs N` caps
-  how many load at once. `--offline DIR` reads the dataset files from `DIR`; `--only`
-  restricts the run to some indices; `--limit N` makes a sample run.
+  written. **The source files are read and cleaned in parallel**, one file
+  per task, by `--prep-jobs N` worker processes (default: one per CPU, at most
+  as many as half the memory limit, cgroup or physical, holds at 384 MiB
+  each); each worker writes its file's clean and bulk lines to `<cache>/prep`,
+  and the main process merges them in the order of a one-process run
+  (modifications by year, announcements and contracts newest year first),
+  then derives the entity indices from the unique contracts in that order,
+  so the files and the report are the same for any `--prep-jobs`. The
+  indices are independent (`<root>/<entity>`, one writer each), so **each
+  index starts loading as soon as its bulk files are written and checked**,
+  while the others are still being prepared, one `rucene-base` process per
+  index, each keeping the order of its parts; `--jobs N` caps how many load
+  at once, the others waiting in the order they became ready. A missing
+  `rucene-base` binary fails the run before any preparation. `--offline DIR`
+  reads the dataset files from `DIR`; `--only` restricts the run to some
+  indices; `--limit N` makes a sample run.
 * **`status`** lists the cached files per dataset (size, publication date,
   download time, ok / missing / bad size / bad SHA-1, incomplete years),
   without network; it exits 1 when something is missing or bad.
 
 ### Figures of a full run
 
-A full `ingest --offline` run on the files published on 2026-11-15
-(rmp #535; 16-core x86-64 machine, NVMe disk, release build, all ten indices
-loading at once) took **18 min 40 s**: 635 s to read, clean, derive and write
-the bulk files (single-threaded Python, peak 959 MB) and 485 s to load, bounded
-by `contratos`. The summed resident memory of the ten `rucene-base` processes
-peaked at 755 MB (largest single process 768 MB).
+A full `ingest` run from a complete cache (the files published on 2026-11-15,
+no download), measured on 2026-11-19 on a 16-thread (8-core) x86-64 machine
+with an NVMe disk, release build, inside a systemd scope capped at 6 GiB of
+memory, all ten indices loading as they became ready, took **6 min 28 s**
+(388 s). The default 8 preparation processes (the memory bound) had written
+the `contratos` bulk files after about 105 s, and every bulk file after
+258 s; the run is bounded by the `contratos` load (283 s). All processes of
+the run used 1,150 s of CPU (the scope's cgroup `cpu.stat`), 296 % of one CPU
+on average. The largest single process peaked at 712,708 kB resident
+(`/usr/bin/time -v`, which does not see the preparation processes; alone on
+the largest files, one of those peaked at 315,368 kB). On the same files
+with one process, the preparation took 631 s and the load that followed it
+274 s.
 
 | Index | Documents | Load (s) | On disk |
 | --- | ---: | ---: | ---: |
-| `contratos` | 2,295,074 | 485.4 | 1.5 GB |
-| `procedimentos` | 1,938,286 | 78.0 | 387 MB |
-| `anuncios` | 268,733 | 28.0 | 112 MB |
-| `fornecedores` | 95,318 | 5.9 | 33 MB |
-| `modificacoes` | 90,135 | 3.1 | 9.3 MB |
-| `convidadas` | 78,446 | 1.7 | 9.9 MB |
-| `adjudicantes` | 11,209 | 0.4 | 2.3 MB |
+| `contratos` | 2,295,074 | 283.3 | 1.6 GB |
+| `procedimentos` | 1,938,286 | 47.6 | 387 MB |
+| `anuncios` | 268,733 | 17.6 | 112 MB |
+| `fornecedores` | 95,318 | 3.5 | 33 MB |
+| `modificacoes` | 90,135 | 1.8 | 9.3 MB |
+| `convidadas` | 78,446 | 1.1 | 9.9 MB |
+| `adjudicantes` | 11,209 | 0.3 | 2.3 MB |
 | `cpv` | 7,669 | 0.2 | 1.2 MB |
 | `locais` | 477 | 0.1 | 108 KB |
 | `nuts` | 288 | 0.1 | 68 KB |
 
-Every index's `count` equals the number of records the script wrote. The ten
+Every index's `count` equals the number of records the script wrote, and
+every clean and bulk file is byte-identical to the one-process run's. The ten
 indices take 2.1 GB.
 
 ## Commands
@@ -169,7 +191,7 @@ optional or prohibited.
 | `--phrase WORDS` | the phrase in any default text field |
 | `--phrase-in FIELD=WORDS` | the phrase in that field (`QueryBuilder.createPhraseQuery`) |
 | `--term FIELD=VALUE` | the exact value: `TermQuery` on ids, `KeywordField.newExactQuery` on codes, flags and names (on the `_exact` copy), `newExactQuery` of the point field on numbers and dates |
-| `--terms FIELD=V1,V2` | any of the values (`TermInSetQuery`, `newSetQuery`) |
+| `--terms FIELD=V1,V2` | any of the values (`TermInSetQuery`, `newSetQuery`); `\,` is a comma inside a value and `\\` a backslash, e.g. `--terms 'local=Portugal\, Lisboa,Porto'` |
 | `--range FIELD=LO..HI` | an inclusive number or date range; either bound may be empty |
 | `--key KEY` | the document key |
 
@@ -581,6 +603,16 @@ Java-oracle harness of `rucene-analysis-common` and needs a JDK (`java` on the
 path) and the Lucene 10.5.0 jars `lucene-core` and `lucene-analysis-common` in
 the local Maven repository (`~/.m2/repository/org/apache/lucene/`).
 
+**Question set** ([`perguntas-portal-base.md`](perguntas-portal-base.md)): 100 pt-PT
+questions on public-procurement transparency, each answered from at least two
+indices, with its request plan, complexity (R requests, I indices) and the
+answer validated on the full root. From the repository root,
+`python3 -I crates/rucene-cli-base/scripts/perguntas_portal_base.py [--only ID,...] [--write-md]`
+runs every plan (read-only commands only); `--write-md` regenerates the document.
+
 The script's tests (`scripts/tests/`) cover cleaning, deduplication, merging,
 the derived aggregates, the bulk format, the load against a fake CLI and
-`fetch`/`status` on local `file://` resources.
+`fetch`/`status` on local `file://` resources; `test_perguntas_portal_base.py`
+checks the structure of the question set (count, ids, order, R and I,
+read-only commands, the document, NIF masking) without the binary or the
+indices.

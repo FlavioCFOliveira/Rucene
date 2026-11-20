@@ -29,6 +29,7 @@ use randomizedtesting::jdk::exception::{register_class, Throwable};
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::store::java_nio_file;
 
+use crate::store::mock_directory_wrapper::FAKE_IO_EXCEPTION;
 use crate::util::LuceneTestCase;
 
 /// The superclass of each exception class the mapping produces.
@@ -104,6 +105,10 @@ const HIERARCHY: &[(&str, &str)] = &[
         "org.apache.lucene.index.CorruptIndexException",
         "java.io.IOException",
     ),
+    // `public static class FakeIOException extends IOException {}`
+    // (`MockDirectoryWrapper.java:1114`): what a `MockDirectoryWrapper.Failure`
+    // throws, caught by the tests' `catch (IOException e)`.
+    (FAKE_IO_EXCEPTION, "java.io.IOException"),
     (
         "org.apache.lucene.index.IndexFormatTooOldException",
         "org.apache.lucene.index.CorruptIndexException",

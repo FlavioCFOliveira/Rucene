@@ -916,7 +916,7 @@ fn do_test_random_top_docs(num_fields: usize, freqs: &[f64]) -> Result<()> {
                 builder.push_str(&random().next_int().to_string());
             }
             doc.add(TextField::new_with_reader(
-                &j.to_string(),
+                j.to_string(),
                 Box::new(StringCharReader::new(&builder)),
             )?);
         }

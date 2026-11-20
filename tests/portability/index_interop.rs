@@ -152,7 +152,7 @@ fn bytes(text: &str) -> BytesRef {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 /// `IndexInteropFixture.doc(int)`.
@@ -420,7 +420,7 @@ fn print_doc_values(out: &mut String, leaves: &[Arc<LeafReaderContext>], doc: i3
     if let Some(mut v) = leaf.get_sorted_doc_values("dv_sorted").unwrap() {
         if v.advance_exact(local).unwrap() {
             let ord = v.ord_value().unwrap();
-            sorted = format!("{ord}:{}", utf8(&v.lookup_ord(ord).unwrap()));
+            sorted = format!("{ord}:{}", utf8(v.lookup_ord(ord).unwrap()));
         }
     }
     writeln!(out, "  dv dv_sorted {sorted}").unwrap();
@@ -445,7 +445,7 @@ fn print_doc_values(out: &mut String, leaves: &[Arc<LeafReaderContext>], doc: i3
             present = true;
             for _ in 0..v.doc_value_count().unwrap() {
                 let ord = v.next_ord().unwrap();
-                write!(line, " {ord}:{}", utf8(&v.lookup_ord(ord).unwrap())).unwrap();
+                write!(line, " {ord}:{}", utf8(v.lookup_ord(ord).unwrap())).unwrap();
             }
         }
     }
@@ -479,7 +479,7 @@ fn print_term_vectors(out: &mut String, reader: &Arc<dyn IndexReader>, doc: i32)
         while let Some(text) = te.next().unwrap() {
             let mut line = format!(
                 "   term {} freq={}",
-                utf8(&text),
+                utf8(text),
                 te.total_term_freq().unwrap()
             );
             let mut pe = te.postings(None, POSTINGS_ENUM_ALL).unwrap().unwrap();

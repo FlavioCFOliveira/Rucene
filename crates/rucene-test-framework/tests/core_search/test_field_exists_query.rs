@@ -119,7 +119,7 @@ fn tq(field: &str, text: &str) -> Arc<dyn Query> {
 /// `new StringField(name, value, Store.NO)`.
 fn string_field(name: &str, value: &str) -> Result<Box<StringField>> {
     Ok(Box::new(StringField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::NO,
     )?))
@@ -128,7 +128,7 @@ fn string_field(name: &str, value: &str) -> Result<Box<StringField>> {
 /// `new TextField(name, value, Store.NO)`.
 fn text_field(name: &str, value: &str) -> Result<Box<TextField>> {
     Ok(Box::new(TextField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::NO,
     )?))
@@ -736,7 +736,10 @@ fn assert_norms_count_with_shortcut(
 
 /// `new KnnFloatVectorField(name, vector)`.
 fn knn(name: &str, vector: &[f32]) -> Result<Box<KnnFloatVectorField>> {
-    Ok(Box::new(KnnFloatVectorField::with_euclidean(name, vector)?))
+    Ok(Box::new(KnnFloatVectorField::with_euclidean(
+        name.to_string(),
+        vector,
+    )?))
 }
 
 fn test_knn_vector_random() -> Result<()> {

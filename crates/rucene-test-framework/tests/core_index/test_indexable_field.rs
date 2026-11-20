@@ -237,7 +237,7 @@ impl IndexableField for MyField {
 
 /// `new TermQuery(new Term(field, text))`.
 fn tq(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::from_text(field, text)))
+    Arc::new(TermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 /// Silly test showing how to index documents w/o using Lucene's core
@@ -351,7 +351,7 @@ fn test_arbitrary_fields() -> Result<()> {
                     let mut terms_enum = tfv.unwrap_or_else(|| npe("tfv")).iterator()?;
                     assert_equals(
                         &Some(LuceneTestCase::new_bytes_ref_str(&counter.to_string())),
-                        &terms_enum.next()?,
+                        &terms_enum.next()?.cloned(),
                     );
                     assert_equals(&1, &terms_enum.total_term_freq()?);
                     let mut dp_enum = terms_enum
@@ -363,7 +363,7 @@ fn test_arbitrary_fields() -> Result<()> {
 
                     assert_equals(
                         &Some(LuceneTestCase::new_bytes_ref_str("text")),
-                        &terms_enum.next()?,
+                        &terms_enum.next()?.cloned(),
                     );
                     assert_equals(&1, &terms_enum.total_term_freq()?);
                     let mut dp_enum = terms_enum

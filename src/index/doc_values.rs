@@ -210,15 +210,21 @@ pub trait SortedDocValues: DocValuesIterator {
 
     /// Looks up the binary value for the given ordinal.
     ///
-    /// The returned [`BytesRef`] may be reused across calls; copy it with
-    /// [`BytesRef::deep_copy_of`] if it must outlive the call.
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef>;
+    /// Equivalent to `SortedDocValues.lookupOrd(int)`
+    /// (`SortedDocValues.java:45-53`): the returned [`BytesRef`] is lent from
+    /// these values and may be reused by the next call, so a caller that keeps
+    /// it copies it ([`BytesRef::deep_copy_of`], or into its own
+    /// [`BytesRefBuilder`]), as a Java caller
+    /// does. The borrow ends at the next call on these values.
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef>;
 
     /// If `key` exists, returns its ordinal, else returns `-insertion_point - 1`,
     /// like a binary search.
     ///
-    /// Equivalent to `SortedDocValues.lookupTerm(BytesRef)`.
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    /// Equivalent to `SortedDocValues.lookupTerm(BytesRef)`
+    /// (`SortedDocValues.java:69-88`), which reads each probed value through
+    /// [`lookup_ord`](Self::lookup_ord).
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         let mut low = 0i32;
         let mut high = self.get_value_count()? - 1;
         while low <= high {
@@ -370,7 +376,12 @@ pub trait SortedSetDocValues: DocValuesIterator {
     fn doc_value_count(&self) -> Result<i32>;
 
     /// Looks up the binary value for the given ordinal.
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef>;
+    ///
+    /// Equivalent to `SortedSetDocValues.lookupOrd(long)`
+    /// (`SortedSetDocValues.java:52-60`): the returned [`BytesRef`] is lent
+    /// from these values and may be reused by the next call; see
+    /// [`SortedDocValues::lookup_ord`].
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef>;
 
     /// Returns the number of unique values.
     fn get_value_count(&self) -> Result<i64>;
@@ -400,8 +411,10 @@ pub trait SortedSetDocValues: DocValuesIterator {
     /// If `key` exists, returns its ordinal, else returns `-insertion_point - 1`,
     /// like a binary search.
     ///
-    /// Equivalent to `SortedSetDocValues.lookupTerm(BytesRef)`.
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    /// Equivalent to `SortedSetDocValues.lookupTerm(BytesRef)`
+    /// (`SortedSetDocValues.java:76-95`), which reads each probed value
+    /// through [`lookup_ord`](Self::lookup_ord).
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         let mut low = 0i64;
         let mut high = self.get_value_count()? - 1;
         while low <= high {
@@ -965,6 +978,17 @@ impl BinaryDocValues for EmptyBinaryDocValues {
     }
 }
 
+/// The value every ordinal of [`EmptySortedDocValues`] and
+/// [`EmptySortedSetDocValues`] looks up: Java's `final BytesRef empty = new
+/// BytesRef()` of `DocValues.emptySorted()` (`DocValues.java:108-109`). One
+/// shared value instead of one per instance: it is only ever lent, so no
+/// caller can tell them apart, and the empty iterators stay `Copy`.
+static EMPTY_VALUE: BytesRef = BytesRef {
+    bytes: Vec::new(),
+    offset: 0,
+    length: 0,
+};
+
 /// A no-op sorted doc-values iterator that returns no documents.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EmptySortedDocValues {
@@ -1020,8 +1044,9 @@ impl SortedDocValues for EmptySortedDocValues {
         Ok(0)
     }
 
-    fn lookup_ord(&self, _ord: i32) -> Result<BytesRef> {
-        Ok(BytesRef::new(Vec::new()))
+    /// `return empty;` (`DocValues.java:146-149`): the one empty value.
+    fn lookup_ord(&mut self, _ord: i32) -> Result<&BytesRef> {
+        Ok(&EMPTY_VALUE)
     }
 }
 
@@ -1142,8 +1167,10 @@ impl SortedSetDocValues for EmptySortedSetDocValues {
         Ok(0)
     }
 
-    fn lookup_ord(&self, _ord: i64) -> Result<BytesRef> {
-        Ok(BytesRef::new(Vec::new()))
+    /// `singleton(emptySorted()).lookupOrd(ord)` (`DocValues.java:146-149,
+    /// 164-166`): the one empty value.
+    fn lookup_ord(&mut self, _ord: i64) -> Result<&BytesRef> {
+        Ok(&EMPTY_VALUE)
     }
 
     fn get_value_count(&self) -> Result<i64> {
@@ -1370,7 +1397,7 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
         Ok(1)
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord as i32)
     }
 
@@ -1378,7 +1405,7 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
         self.inner.get_value_count().map(|v| v as i64)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         self.inner.lookup_term(key).map(|v| v as i64)
     }
 
@@ -1651,11 +1678,11 @@ impl SortedDocValues for FilterSortedDocValues {
         self.inner.get_value_count()
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord)
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i32> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         self.inner.lookup_term(key)
     }
 
@@ -1797,7 +1824,7 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
         self.inner.doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         self.inner.lookup_ord(ord)
     }
 
@@ -1805,7 +1832,7 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
         self.inner.get_value_count()
     }
 
-    fn lookup_term(&self, key: &BytesRef) -> Result<i64> {
+    fn lookup_term(&mut self, key: &BytesRef) -> Result<i64> {
         self.inner.lookup_term(key)
     }
 
@@ -2077,9 +2104,12 @@ impl OrdinalMap {
             }
         }
 
+        // PERF: one state per build, refilled per global ordinal
+        // (`OrdinalMap.java:277, 282`).
+        let mut top_state = TermsEnumIndexState::default();
         let mut global_ord = 0i64;
         while queue.size() > 0 {
-            let top_state = TermsEnumIndexState::copy_from(queue.top().unwrap());
+            top_state.copy_from(queue.top().unwrap());
             let mut first_segment_index = usize::MAX;
             let mut global_ord_delta = i64::MAX;
 
@@ -2516,7 +2546,7 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
                 Ok(SeekStatus::END)
             } else {
                 let term = self.values.lookup_ord(self.current_ord as i32)?;
-                self.scratch.copy_ref(&term);
+                self.scratch.copy_ref(term);
                 Ok(SeekStatus::NOT_FOUND)
             }
         }
@@ -2540,12 +2570,12 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         let ord = ord as i32;
         self.current_ord = i64::from(ord);
         let term = self.values.lookup_ord(ord)?;
-        self.scratch.copy_ref(&term);
+        self.scratch.copy_ref(term);
         Ok(())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.scratch.get()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.scratch.get_ref()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2587,15 +2617,15 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
         }))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.current_ord += 1;
         let value_count = self.values.get_value_count()? as i64;
         if self.current_ord >= value_count {
             return Ok(None);
         }
         let term = self.values.lookup_ord(self.current_ord as i32)?;
-        self.scratch.copy_ref(&term);
-        Ok(Some(self.scratch.get()))
+        self.scratch.copy_ref(term);
+        Ok(Some(self.scratch.get_ref()))
     }
 }
 
@@ -2656,7 +2686,7 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
                 Ok(SeekStatus::END)
             } else {
                 let term = self.values.lookup_ord(self.current_ord)?;
-                self.scratch.copy_ref(&term);
+                self.scratch.copy_ref(term);
                 Ok(SeekStatus::NOT_FOUND)
             }
         }
@@ -2680,12 +2710,12 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         debug_assert!(ord >= 0 && ord < self.values.get_value_count()?);
         self.current_ord = i64::from(ord as i32);
         let term = self.values.lookup_ord(self.current_ord)?;
-        self.scratch.copy_ref(&term);
+        self.scratch.copy_ref(term);
         Ok(())
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.scratch.get()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(self.scratch.get_ref()))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2727,15 +2757,15 @@ impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V
         }))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.current_ord += 1;
         let value_count = self.values.get_value_count()?;
         if self.current_ord >= value_count {
             return Ok(None);
         }
         let term = self.values.lookup_ord(self.current_ord)?;
-        self.scratch.copy_ref(&term);
-        Ok(Some(self.scratch.get()))
+        self.scratch.copy_ref(term);
+        Ok(Some(self.scratch.get_ref()))
     }
 }
 
@@ -2914,7 +2944,7 @@ mod tests {
 
     /// Sorted doc values backed by a dictionary and per-document ordinals.
     pub(super) struct VecSortedDocValues {
-        dictionary: Vec<Vec<u8>>,
+        dictionary: Vec<BytesRef>,
         ords: Vec<i32>,
         idx: i32,
     }
@@ -2922,7 +2952,7 @@ mod tests {
     impl VecSortedDocValues {
         pub(super) fn new(dictionary: Vec<Vec<u8>>, ords: Vec<i32>) -> Self {
             Self {
-                dictionary,
+                dictionary: dictionary.into_iter().map(BytesRef::new).collect(),
                 ords,
                 idx: -1,
             }
@@ -2983,14 +3013,14 @@ mod tests {
             Ok(self.dictionary.len() as i32)
         }
 
-        fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+        fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
             if ord < 0 || ord as usize >= self.dictionary.len() {
                 return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ord} out of range [0, {})",
                     self.dictionary.len()
                 )));
             }
-            Ok(BytesRef::new(self.dictionary[ord as usize].clone()))
+            Ok(&self.dictionary[ord as usize])
         }
     }
 
@@ -3087,7 +3117,7 @@ mod tests {
 
     /// Sorted-set doc values backed by a dictionary and per-document ord lists.
     struct VecSortedSetDocValues {
-        dictionary: Vec<Vec<u8>>,
+        dictionary: Vec<BytesRef>,
         ords: Vec<Vec<i64>>,
         idx: i32,
         ord_idx: usize,
@@ -3096,7 +3126,7 @@ mod tests {
     impl VecSortedSetDocValues {
         fn new(dictionary: Vec<Vec<u8>>, ords: Vec<Vec<i64>>) -> Self {
             Self {
-                dictionary,
+                dictionary: dictionary.into_iter().map(BytesRef::new).collect(),
                 ords,
                 idx: -1,
                 ord_idx: 0,
@@ -3177,14 +3207,14 @@ mod tests {
             Ok(self.ords[self.idx as usize].len() as i32)
         }
 
-        fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
             if ord < 0 || ord as usize >= self.dictionary.len() {
                 return Err(LuceneError::illegal_argument(format!(
                     "ordinal {ord} out of range [0, {})",
                     self.dictionary.len()
                 )));
             }
-            Ok(BytesRef::new(self.dictionary[ord as usize].clone()))
+            Ok(&self.dictionary[ord as usize])
         }
 
         fn get_value_count(&self) -> Result<i64> {
@@ -3328,7 +3358,7 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "assertion failed: false"))]
     fn empty_sorted_doc_values_has_empty_dictionary() {
-        let values = EmptySortedDocValues::new();
+        let mut values = EmptySortedDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
         assert_eq!(values.ord_value().unwrap(), -1);
@@ -3343,7 +3373,7 @@ mod tests {
 
     #[test]
     fn empty_sorted_set_doc_values_has_empty_dictionary() {
-        let values = EmptySortedSetDocValues::new();
+        let mut values = EmptySortedSetDocValues::new();
         assert_eq!(values.get_value_count().unwrap(), 0);
         assert_eq!(values.lookup_ord(0).unwrap().length, 0);
     }

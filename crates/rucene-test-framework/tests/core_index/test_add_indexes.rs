@@ -195,7 +195,7 @@ fn mock_ram_copy_of(dir: &Arc<dyn Directory>) -> Result<MockDirectoryWrapper> {
 /// update and soft-delete methods take.
 fn ndv_field(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -2498,7 +2498,7 @@ fn test_set_diagnostics() -> Result<()> {
                     merge.set_set_merge_info_override(Arc::new(|merge, info| {
                         merge.super_set_merge_info(info);
                         if let Some(info) = merge.info().as_mut() {
-                            info.info.add_diagnostics(HashMap::from([(
+                            Arc::make_mut(&mut info.info).add_diagnostics(HashMap::from([(
                                 "merge_policy".to_string(),
                                 "my_merge_policy".to_string(),
                             )]));

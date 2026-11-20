@@ -8,7 +8,6 @@ use crate::index::LeafReaderContext;
 use crate::search::comparators::numeric_comparator::{
     NumericComparator, NumericDocValuesSource, NumericLeafState,
 };
-use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::field_comparator::{java_float_compare, SlotComparator, SortValue};
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
@@ -235,7 +234,7 @@ impl SlotComparator for FloatComparator {
     fn competitive_iterator(
         &mut self,
         leaf: &mut NumericLeafState,
-    ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    ) -> Result<Option<crate::search::CompetitiveIterator>> {
         Ok(self.base.competitive_iterator(leaf))
     }
 

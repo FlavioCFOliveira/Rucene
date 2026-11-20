@@ -62,7 +62,11 @@ fn test_basics_filter() -> Result<()> {
 fn string_doc(field: &str, values: &[&str]) -> Result<Document> {
     let mut doc = Document::new();
     for value in values {
-        doc.add(StringField::new(field, value.to_string(), Store::NO)?);
+        doc.add(StringField::new(
+            field.to_string(),
+            value.to_string(),
+            Store::NO,
+        )?);
     }
     Ok(doc)
 }
@@ -70,7 +74,7 @@ fn string_doc(field: &str, values: &[&str]) -> Result<Document> {
 /// `new ConstantScoreQuery(new TermQuery(new Term(field, text)))`.
 fn cs_term(field: &str, text: &str) -> Arc<dyn Query> {
     Arc::new(ConstantScoreQuery::new(Arc::new(TermQuery::new(
-        Term::from_text(field, text),
+        Term::from_text(field.to_string(), text),
     ))))
 }
 
@@ -331,7 +335,7 @@ fn bool2(
 
 /// `new TermQuery(new Term(field, text))`.
 fn term_q(field: &str, text: &str) -> Arc<dyn Query> {
-    Arc::new(TermQuery::new(Term::from_text(field, text)))
+    Arc::new(TermQuery::new(Term::from_text(field.to_string(), text)))
 }
 
 /// `new RandomApproximationQuery(query, random())`.

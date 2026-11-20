@@ -38,11 +38,19 @@ impl DefaultVectorUtilSupport {
     ///
     /// Equivalent to the private static `DefaultVectorUtilSupport.fma(float,
     /// float, float)` (`DefaultVectorUtilSupport.java:29-36`), which picks the
-    /// fused form on `Constants.HAS_FAST_SCALAR_FMA`, read here through
-    /// [`vector_util::use_fma`] (evaluated once, as Java's `static final`).
-    #[inline]
-    fn fma(a: f32, b: f32, c: f32) -> f32 {
-        if vector_util::use_fma() {
+    /// fused form on `Constants.HAS_FAST_SCALAR_FMA`. `HAS_FAST_SCALAR_FMA` is
+    /// the value of [`vector_util::use_fma`] (evaluated once, as Java's
+    /// `static final`), which each float kernel reads once per call and passes
+    /// here as a constant.
+    ///
+    /// PERF: Java's `static final` is a JIT constant, so its check costs nothing
+    /// per element; reading the `LazyLock` here per element cost a load, a
+    /// compare and a branch per element (cycle 5, #588 item 1). The kernels are
+    /// monomorphised on the flag instead: same operations, same order, so the
+    /// results are bit-identical.
+    #[inline(always)]
+    fn fma<const HAS_FAST_SCALAR_FMA: bool>(a: f32, b: f32, c: f32) -> f32 {
+        if HAS_FAST_SCALAR_FMA {
             a.mul_add(b, c)
         } else {
             a * b + c
@@ -326,16 +334,17 @@ impl ScalarQuantizer {
     }
 }
 
-/// `a * b + c`, or `Math.fma(a, b, c)` when `Constants.HAS_FAST_SCALAR_FMA`.
-#[inline]
-fn fma(a: f32, b: f32, c: f32) -> f32 {
-    DefaultVectorUtilSupport::fma(a, b, c)
+/// `a * b + c`, or `Math.fma(a, b, c)` when `Constants.HAS_FAST_SCALAR_FMA`
+/// (`FMA`, read once per kernel call).
+#[inline(always)]
+fn fma<const FMA: bool>(a: f32, b: f32, c: f32) -> f32 {
+    DefaultVectorUtilSupport::fma::<FMA>(a, b, c)
 }
 
 /// The body of `DefaultVectorUtilSupport.dotProduct(float[], float[])`: four
 /// accumulators beyond 32 elements, then a scalar tail; the summation order is
 /// observable in the result.
-fn dot_product_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+fn dot_product_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
     let mut res = 0.0f32;
     let mut i = 0usize;
 
@@ -346,24 +355,24 @@ fn dot_product_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
         let mut acc4 = 0.0f32;
         let upper_bound = a.len() & !3;
         while i < upper_bound {
-            acc1 = fma(a[i], b[i], acc1);
-            acc2 = fma(a[i + 1], b[i + 1], acc2);
-            acc3 = fma(a[i + 2], b[i + 2], acc3);
-            acc4 = fma(a[i + 3], b[i + 3], acc4);
+            acc1 = fma::<FMA>(a[i], b[i], acc1);
+            acc2 = fma::<FMA>(a[i + 1], b[i + 1], acc2);
+            acc3 = fma::<FMA>(a[i + 2], b[i + 2], acc3);
+            acc4 = fma::<FMA>(a[i + 3], b[i + 3], acc4);
             i += 4;
         }
         res += acc1 + acc2 + acc3 + acc4;
     }
 
     while i < a.len() {
-        res = fma(a[i], b[i], res);
+        res = fma::<FMA>(a[i], b[i], res);
         i += 1;
     }
     res
 }
 
 /// The body of `DefaultVectorUtilSupport.cosine(float[], float[])`.
-fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+fn cosine_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
     let mut sum = 0.0f32;
     let mut norm1 = 0.0f32;
     let mut norm2 = 0.0f32;
@@ -379,13 +388,13 @@ fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
 
         let upper_bound = a.len() & !1;
         while i < upper_bound {
-            sum1 = fma(a[i], b[i], sum1);
-            norm1_1 = fma(a[i], a[i], norm1_1);
-            norm2_1 = fma(b[i], b[i], norm2_1);
+            sum1 = fma::<FMA>(a[i], b[i], sum1);
+            norm1_1 = fma::<FMA>(a[i], a[i], norm1_1);
+            norm2_1 = fma::<FMA>(b[i], b[i], norm2_1);
 
-            sum2 = fma(a[i + 1], b[i + 1], sum2);
-            norm1_2 = fma(a[i + 1], a[i + 1], norm1_2);
-            norm2_2 = fma(b[i + 1], b[i + 1], norm2_2);
+            sum2 = fma::<FMA>(a[i + 1], b[i + 1], sum2);
+            norm1_2 = fma::<FMA>(a[i + 1], a[i + 1], norm1_2);
+            norm2_2 = fma::<FMA>(b[i + 1], b[i + 1], norm2_2);
             i += 2;
         }
         sum += sum1 + sum2;
@@ -394,9 +403,9 @@ fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
     }
 
     while i < a.len() {
-        sum = fma(a[i], b[i], sum);
-        norm1 = fma(a[i], a[i], norm1);
-        norm2 = fma(b[i], b[i], norm2);
+        sum = fma::<FMA>(a[i], b[i], sum);
+        norm1 = fma::<FMA>(a[i], a[i], norm1);
+        norm2 = fma::<FMA>(b[i], b[i], norm2);
         i += 1;
     }
 
@@ -404,7 +413,7 @@ fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
 }
 
 /// The body of `DefaultVectorUtilSupport.squareDistance(float[], float[])`.
-fn square_distance_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+fn square_distance_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
     let mut res = 0.0f32;
     let mut i = 0usize;
 
@@ -417,16 +426,16 @@ fn square_distance_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
         let upper_bound = a.len() & !3;
         while i < upper_bound {
             let diff1 = a[i] - b[i];
-            acc1 = fma(diff1, diff1, acc1);
+            acc1 = fma::<FMA>(diff1, diff1, acc1);
 
             let diff2 = a[i + 1] - b[i + 1];
-            acc2 = fma(diff2, diff2, acc2);
+            acc2 = fma::<FMA>(diff2, diff2, acc2);
 
             let diff3 = a[i + 2] - b[i + 2];
-            acc3 = fma(diff3, diff3, acc3);
+            acc3 = fma::<FMA>(diff3, diff3, acc3);
 
             let diff4 = a[i + 3] - b[i + 3];
-            acc4 = fma(diff4, diff4, acc4);
+            acc4 = fma::<FMA>(diff4, diff4, acc4);
             i += 4;
         }
         res += acc1 + acc2 + acc3 + acc4;
@@ -434,10 +443,40 @@ fn square_distance_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
 
     while i < a.len() {
         let diff = a[i] - b[i];
-        res = fma(diff, diff, res);
+        res = fma::<FMA>(diff, diff, res);
         i += 1;
     }
     res
+}
+
+/// `DefaultVectorUtilSupport.dotProduct(float[], float[])`: reads
+/// `Constants.HAS_FAST_SCALAR_FMA` once and runs the kernel specialised on it.
+fn dot_product_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    if vector_util::use_fma() {
+        dot_product_f32_kernel_impl::<true>(a, b)
+    } else {
+        dot_product_f32_kernel_impl::<false>(a, b)
+    }
+}
+
+/// `DefaultVectorUtilSupport.cosine(float[], float[])`: reads
+/// `Constants.HAS_FAST_SCALAR_FMA` once and runs the kernel specialised on it.
+fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    if vector_util::use_fma() {
+        cosine_f32_kernel_impl::<true>(a, b)
+    } else {
+        cosine_f32_kernel_impl::<false>(a, b)
+    }
+}
+
+/// `DefaultVectorUtilSupport.squareDistance(float[], float[])`: reads
+/// `Constants.HAS_FAST_SCALAR_FMA` once and runs the kernel specialised on it.
+fn square_distance_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    if vector_util::use_fma() {
+        square_distance_f32_kernel_impl::<true>(a, b)
+    } else {
+        square_distance_f32_kernel_impl::<false>(a, b)
+    }
 }
 
 impl VectorUtilSupport for DefaultVectorUtilSupport {

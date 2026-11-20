@@ -728,7 +728,7 @@ impl SlotComparator for LongValuesComparator {
     fn competitive_iterator(
         &mut self,
         leaf: &mut LongValuesLeaf,
-    ) -> Result<Option<Box<dyn crate::search::DocIdSetIterator>>> {
+    ) -> Result<Option<crate::search::CompetitiveIterator>> {
         self.inner.competitive_iterator(&mut leaf.leaf)
     }
 

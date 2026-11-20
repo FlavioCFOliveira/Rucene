@@ -27,11 +27,13 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::index::LeafReaderContext;
 use crate::search::collection_terminated_exception::CollectionResult;
+use crate::search::comparators::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::doc_id_stream::{DocIdStream, RangeDocIdStream};
 use crate::search::scorable::Scorable;
 use crate::search::score_mode::ScoreMode;
 use crate::search::weight::Weight;
+use crate::util::FixedBitSet;
 
 /// Gathers raw results from a search, implementing sorting, custom result
 /// filtering, collation and the like.
@@ -106,6 +108,107 @@ impl<T: Collector + ?Sized> Collector for Box<T> {
 
     fn set_weight(&mut self, weight: Arc<dyn Weight>) {
         (**self).set_weight(weight);
+    }
+}
+
+/// The iterator [`LeafCollector::competitive_iterator`] and
+/// [`LeafFieldComparator::competitive_iterator`](crate::search::LeafFieldComparator::competitive_iterator)
+/// hand out: Java's `DocIdSetIterator` reference.
+///
+/// Java returns the comparator's own iterator object, the same one on every
+/// call (`TopFieldCollector.java:142-144`). A comparator's iterator is a shared
+/// handle here ([`UpdateableDocIdSetIterator`]), so another handle onto it
+/// costs one reference-count increment; any other iterator is owned. Either
+/// way the value is a [`DocIdSetIterator`] that delegates every call to the
+/// iterator it holds.
+pub enum CompetitiveIterator {
+    /// A handle onto a comparator's updateable iterator.
+    // PERF: handed out without a box; Java's callers ask for the iterator once
+    // per scored window (`ConstantScoreBulkScorer.java:68`, `Weight.java:255`).
+    Updateable(UpdateableDocIdSetIterator),
+    /// Any other iterator, owned.
+    Boxed(Box<dyn DocIdSetIterator>),
+}
+
+impl CompetitiveIterator {
+    /// The iterator as an owned trait object.
+    pub fn into_boxed(self) -> Box<dyn DocIdSetIterator> {
+        match self {
+            CompetitiveIterator::Updateable(iterator) => Box::new(iterator),
+            CompetitiveIterator::Boxed(iterator) => iterator,
+        }
+    }
+
+    fn inner(&self) -> &dyn DocIdSetIterator {
+        match self {
+            CompetitiveIterator::Updateable(iterator) => iterator,
+            CompetitiveIterator::Boxed(iterator) => &**iterator,
+        }
+    }
+
+    fn inner_mut(&mut self) -> &mut dyn DocIdSetIterator {
+        match self {
+            CompetitiveIterator::Updateable(iterator) => iterator,
+            CompetitiveIterator::Boxed(iterator) => &mut **iterator,
+        }
+    }
+}
+
+impl From<Box<dyn DocIdSetIterator>> for CompetitiveIterator {
+    fn from(iterator: Box<dyn DocIdSetIterator>) -> Self {
+        CompetitiveIterator::Boxed(iterator)
+    }
+}
+
+impl From<UpdateableDocIdSetIterator> for CompetitiveIterator {
+    fn from(iterator: UpdateableDocIdSetIterator) -> Self {
+        CompetitiveIterator::Updateable(iterator)
+    }
+}
+
+impl DocIdSetIterator for CompetitiveIterator {
+    fn java_to_string(&self) -> String {
+        self.inner().java_to_string()
+    }
+
+    fn wraps_two_phase_iterator(&self) -> bool {
+        self.inner().wraps_two_phase_iterator()
+    }
+
+    fn doc_id(&self) -> i32 {
+        self.inner().doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        self.inner_mut().next_doc()
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.inner_mut().advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner().cost()
+    }
+
+    fn slow_advance(&mut self, target: i32) -> Result<i32> {
+        self.inner_mut().slow_advance(target)
+    }
+
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.inner_mut().into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&mut self) -> Result<i32> {
+        self.inner_mut().doc_id_run_end()
+    }
+
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        self.inner().disi_as_any()
+    }
+
+    fn disi_as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.inner_mut().disi_as_any_mut()
     }
 }
 
@@ -219,7 +322,7 @@ pub trait LeafCollector {
     /// # Errors
     ///
     /// Propagates any I/O error raised while building the iterator.
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<CompetitiveIterator>> {
         Ok(None)
     }
 
@@ -265,7 +368,7 @@ impl<T: LeafCollector + ?Sized> LeafCollector for &mut T {
         (**self).collect_stream(stream, scorer)
     }
 
-    fn competitive_iterator(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+    fn competitive_iterator(&mut self) -> Result<Option<CompetitiveIterator>> {
         (**self).competitive_iterator()
     }
 
@@ -495,5 +598,42 @@ impl<L: LeafCollector> LeafCollector for FilterLeafCollector<L> {
 
     fn finish(&mut self) -> Result<()> {
         self.inner.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::doc_id_set_iterator::{range, NO_MORE_DOCS};
+
+    /// The comparator's handle is handed out as is: the collector's view and
+    /// the comparator's are one iterator, as Java's single object is
+    /// (`TopFieldCollector.java:142-144`), and an update the comparator makes
+    /// is seen through it.
+    #[test]
+    fn an_updateable_competitive_iterator_is_the_comparators_own() {
+        let own = UpdateableDocIdSetIterator::new();
+        own.update(Box::new(range(2, 6).unwrap()));
+        let mut handed_out = CompetitiveIterator::from(own.clone());
+        assert!(matches!(handed_out, CompetitiveIterator::Updateable(_)));
+        assert_eq!(handed_out.next_doc().unwrap(), 2);
+        assert_eq!(own.doc_id(), 2, "the comparator sees the collector's move");
+        own.update(Box::new(range(4, 5).unwrap()));
+        assert_eq!(handed_out.advance(3).unwrap(), 4);
+        assert_eq!(handed_out.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+
+    /// Any other iterator is owned and every call reaches it.
+    #[test]
+    fn a_boxed_competitive_iterator_delegates_every_call() {
+        let mut it =
+            CompetitiveIterator::from(Box::new(range(1, 4).unwrap()) as Box<dyn DocIdSetIterator>);
+        assert_eq!(it.cost(), 3);
+        assert_eq!(it.doc_id(), -1);
+        assert_eq!(it.advance(2).unwrap(), 2);
+        assert_eq!(it.doc_id_run_end().unwrap(), 4);
+        assert_eq!(it.next_doc().unwrap(), 3);
+        let boxed = it.into_boxed();
+        assert_eq!(boxed.doc_id(), 3);
     }
 }

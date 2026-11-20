@@ -213,7 +213,7 @@ impl LeafReader for FieldFilterLeafReader {
         }))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.has_field(field) {
             LeafReader::core(&self.base).ensure_open()?;
             self.r#in.terms(field)
@@ -332,7 +332,7 @@ impl Fields for FieldFilterFields {
         )
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         if self.filter.has_field(field) {
             self.r#in.terms(field)
         } else {
@@ -384,27 +384,27 @@ struct FieldFilterVisitor<'a> {
 }
 
 impl StoredFieldVisitor for FieldFilterVisitor<'_> {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+    fn binary_field(&mut self, field_info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
         self.visitor.binary_field(field_info, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+    fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
         self.visitor.string_field(field_info, value)
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+    fn int_field(&mut self, field_info: &Arc<FieldInfo>, value: i32) -> Result<()> {
         self.visitor.int_field(field_info, value)
     }
 
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+    fn long_field(&mut self, field_info: &Arc<FieldInfo>, value: i64) -> Result<()> {
         self.visitor.long_field(field_info, value)
     }
 
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+    fn float_field(&mut self, field_info: &Arc<FieldInfo>, value: f32) -> Result<()> {
         self.visitor.float_field(field_info, value)
     }
 
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+    fn double_field(&mut self, field_info: &Arc<FieldInfo>, value: f64) -> Result<()> {
         self.visitor.double_field(field_info, value)
     }
 

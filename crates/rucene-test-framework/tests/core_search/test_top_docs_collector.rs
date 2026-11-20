@@ -886,7 +886,8 @@ fn test_realistic_concurrent_minimum_score(_f: &mut TopDocsCollectorTest) -> Res
             let term = BytesRef::deep_copy_of(
                 &terms_enum
                     .term()?
-                    .ok_or_else(rucene::error::LuceneError::null_pointer)?,
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?
+                    .clone(),
             );
             let query: Arc<dyn Query> = Arc::new(TermQuery::new(Term::new("body", term)));
 

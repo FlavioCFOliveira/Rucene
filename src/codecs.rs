@@ -748,7 +748,7 @@ pub(crate) mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::codecs::postings::Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::codecs::postings::Terms>>> {
             Ok(None)
         }
 
@@ -1002,7 +1002,7 @@ pub(crate) mod tests {
 
         fn get_compound_reader(
             &self,
-            _dir: &dyn crate::store::Directory,
+            _dir: &std::sync::Arc<dyn crate::store::Directory>,
             _segment_info: &SegmentInfo,
         ) -> crate::error::Result<Box<dyn CompoundDirectory>> {
             Ok(Box::new(EmptyCompoundDirectory))
@@ -1341,7 +1341,7 @@ pub(crate) mod tests {
     }
 
     impl crate::store::DataInput for TrackedInput {
-        fn to_java_string(&self) -> String {
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
             self.inner.to_java_string()
         }
 

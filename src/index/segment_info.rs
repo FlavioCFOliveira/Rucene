@@ -11,7 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::codecs::Codec;
 use crate::error::{LuceneError, Result};
-use crate::index::index_file_names::{is_codec_file, CODEC_FILE_PATTERN};
+use crate::index::index_file_names::{is_codec_file, IndexFileName, CODEC_FILE_PATTERN};
 use crate::index::reader_context::IndexReaderContext;
 use crate::index::IndexReader;
 use crate::search::sort::{MissingValue, SortFieldKind, SortFieldType};
@@ -98,7 +98,9 @@ pub struct SegmentInfo {
     /// `Lucene99SegmentInfoFormat.write` serialises it with
     /// `DataOutput.writeSetOfStrings` and `SegmentInfo.setFiles` builds it with
     /// `new HashSet<>()` plus one `add` per name (`SegmentInfo.java:309-320`).
-    files: RwLock<Option<JavaHashSet>>,
+    /// The names are held shared, so that the sets built from this one share
+    /// them, as Java's do.
+    files: RwLock<Option<JavaHashSet<IndexFileName>>>,
 }
 
 impl SegmentInfo {
@@ -406,12 +408,29 @@ impl SegmentInfo {
     /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
     /// computed.
     pub fn files_ordered(&self) -> Result<JavaHashSet> {
+        // A copy of the set, its table and order included, holding `String`s.
+        self.with_files(|files| files.map_elements(|name| name.as_str().to_owned()))
+    }
+
+    /// Runs `read` over the files referenced by this segment, in place.
+    ///
+    /// Equivalent to reading `SegmentInfo.files()`, an unmodifiable view of
+    /// the `HashSet` itself (`SegmentInfo.java:205-212`): nothing is copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LuceneErrorKind::IllegalState` if the file set has not been
+    /// computed.
+    pub(crate) fn with_files<R>(
+        &self,
+        read: impl FnOnce(&JavaHashSet<IndexFileName>) -> R,
+    ) -> Result<R> {
         let files = self
             .files
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match files.as_ref() {
-            Some(f) => Ok(f.clone()),
+            Some(f) => Ok(read(f)),
             None => Err(LuceneError::illegal_state(format!(
                 "files were not computed yet; segment={} maxDoc={}",
                 self.name, self.max_doc
@@ -442,7 +461,7 @@ impl SegmentInfo {
         *self
             .files
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(JavaHashSet::new());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(JavaHashSet::default());
         // `addFiles(files)`.
         self.add_files(&files)
     }
@@ -494,13 +513,13 @@ impl SegmentInfo {
         match guard.as_mut() {
             Some(set) => {
                 for f in files {
-                    set.insert(self.named_for_this_segment(f));
+                    set.insert(self.shared_name_for_this_segment(f));
                 }
             }
             None => {
-                let mut set = JavaHashSet::new();
+                let mut set = JavaHashSet::default();
                 for f in files {
-                    set.insert(self.named_for_this_segment(f));
+                    set.insert(self.shared_name_for_this_segment(f));
                 }
                 *guard = Some(set);
             }
@@ -522,7 +541,23 @@ impl SegmentInfo {
 
     /// Strips any segment name from `file` and renames it with this segment's name.
     pub fn named_for_this_segment(&self, file: &str) -> String {
-        format!("{}{}", self.name, strip_segment_name(file))
+        // PERF: sized once, as Java's `name + IndexFileNames.stripSegmentName(file)`
+        // is; `format!` grew it.
+        [self.name.as_str(), strip_segment_name(file)].concat()
+    }
+
+    /// [`named_for_this_segment`](Self::named_for_this_segment), held shared:
+    /// the name `addFiles` and `addFile` record (`SegmentInfo.java:315-326`).
+    fn shared_name_for_this_segment(&self, file: &str) -> IndexFileName {
+        let stripped = strip_segment_name(file);
+        // PERF: a file that already carries this segment's name is
+        // `name + stripSegmentName(file)` itself, so it is shared directly:
+        // one allocation per name, as the concatenation made.
+        if file.len() == self.name.len() + stripped.len() && file.starts_with(self.name.as_str()) {
+            IndexFileName::shared(file)
+        } else {
+            IndexFileName::shared(&self.named_for_this_segment(file))
+        }
     }
 
     /// Returns a short debug representation, optionally including a deletion count.
@@ -615,7 +650,9 @@ impl Clone for SegmentInfo {
             id: self.id,
             attributes: RwLock::new(self.get_attributes_ordered()),
             index_sort: self.index_sort.clone(),
-            files: RwLock::new(Some(self.files_ordered().unwrap_or_default())),
+            files: RwLock::new(Some(
+                self.with_files(JavaHashSet::clone).unwrap_or_default(),
+            )),
         }
     }
 }
@@ -674,7 +711,15 @@ fn strip_segment_name(name: &str) -> &str {
 /// `equals`.
 pub struct SegmentCommitInfo {
     /// The `SegmentInfo` wrapped by this commit info.
-    pub info: SegmentInfo,
+    ///
+    /// Java's `public final SegmentInfo info` (`SegmentCommitInfo.java:38`)
+    /// is a reference that `clone()` passes on (`SegmentCommitInfo.java:383-386`),
+    /// so every commit info over one segment holds the one `SegmentInfo`; the
+    /// [`Arc`] is that reference, which [`Clone`] and
+    /// [`java_clone`](Self::java_clone) share. The setters that take
+    /// `&mut SegmentInfo` reach it through [`Arc::make_mut`], which writes in
+    /// place when this is the only holder and into a private copy otherwise.
+    pub info: Arc<SegmentInfo>,
 
     /// The per-commit state every holder of this object shares.
     state: Arc<std::sync::Mutex<CommitState>>,
@@ -740,7 +785,7 @@ impl SegmentCommitInfo {
     /// constructor can throw and because the callers of this constructor sit on
     /// fallible paths.
     pub fn new(
-        info: SegmentInfo,
+        info: impl Into<Arc<SegmentInfo>>,
         del_count: i32,
         soft_del_count: i32,
         del_gen: i64,
@@ -749,7 +794,7 @@ impl SegmentCommitInfo {
         id: [u8; ID_LENGTH],
     ) -> Result<Self> {
         Ok(Self {
-            info,
+            info: info.into(),
             state: Arc::new(std::sync::Mutex::new(CommitState {
                 id,
                 del_count,
@@ -813,7 +858,10 @@ impl SegmentCommitInfo {
             buffered_deletes_gen: -1,
         };
         Self {
-            info: self.info.clone(),
+            // PERF: `new SegmentCommitInfo(info, ...)` shares `info`
+            // (`SegmentCommitInfo.java:383-386`); a deep copy cost its name,
+            // diagnostics, attributes and files.
+            info: Arc::clone(&self.info),
             state: Arc::new(std::sync::Mutex::new(copy)),
         }
     }
@@ -1109,14 +1157,20 @@ impl SegmentCommitInfo {
     /// and then adds the live-docs files, the doc-values update files and the
     /// field-infos files, in that order.
     ///
-    pub fn files_ordered(&self) -> Result<JavaHashSet> {
-        let mut files = JavaHashSet::from_collection(self.info.files_ordered()?);
+    /// The segment's own names are shared with its
+    /// [`SegmentInfo`], as Java's set shares the `String` objects; the other
+    /// names are held by this set alone.
+    pub fn files_ordered(&self) -> Result<JavaHashSet<IndexFileName>> {
+        // PERF: `new HashSet<>(info.files())` copies the segment's set once,
+        // read in place, not a clone of it, and shares its names
+        // (`SegmentCommitInfo.java:241`) instead of copying each one.
+        let mut files = self.info.with_files(JavaHashSet::from_set)?;
 
         if self.has_deletions() {
             if let Some(codec) = self.info.codec() {
                 let mut live_docs_files = Vec::new();
                 codec.live_docs_format().files(self, &mut live_docs_files)?;
-                files.extend(live_docs_files);
+                files.extend(live_docs_files.into_iter().map(IndexFileName::from));
             }
         }
 
@@ -1128,10 +1182,10 @@ impl SegmentCommitInfo {
             )
         };
         for set in dv_updates_files.values() {
-            files.extend(set.iter().cloned());
+            files.extend(set.iter().cloned().map(IndexFileName::from));
         }
 
-        files.extend(field_infos_files.iter().cloned());
+        files.extend(field_infos_files.iter().cloned().map(IndexFileName::from));
 
         Ok(files)
     }
@@ -1199,7 +1253,7 @@ impl Debug for SegmentCommitInfo {
 impl Clone for SegmentCommitInfo {
     fn clone(&self) -> Self {
         Self {
-            info: self.info.clone(),
+            info: Arc::clone(&self.info),
             state: Arc::clone(&self.state),
         }
     }
@@ -1572,6 +1626,33 @@ mod tests {
     /// file is renamed for this segment, a name that is not a codec file name
     /// or ends in `.tmp` is refused with Java's message, and a refusal leaves
     /// the new, empty set behind.
+    /// `public final SegmentInfo info` (`SegmentCommitInfo.java:38`): a copied
+    /// reference and Java's `clone()` (`SegmentCommitInfo.java:383-386`) both
+    /// hold the one `SegmentInfo`, so `setFiles` through one is seen through
+    /// every other.
+    #[test]
+    fn commit_info_clones_share_their_segment_info() {
+        let commit = SegmentCommitInfo::new(
+            test_segment_info("_0", 10),
+            0,
+            0,
+            -1,
+            -1,
+            -1,
+            StringHelper::random_id(),
+        )
+        .unwrap();
+        let reference = commit.clone();
+        let java_clone = commit.java_clone();
+        assert!(Arc::ptr_eq(&commit.info, &reference.info));
+        assert!(Arc::ptr_eq(&commit.info, &java_clone.info));
+        assert!(!java_clone.same_object(&commit));
+
+        java_clone.info.set_files(["_0.fdt".to_string()]).unwrap();
+        assert!(commit.info.files().unwrap().contains("_0.fdt"));
+        assert!(reference.info.files().unwrap().contains("_0.fdt"));
+    }
+
     #[test]
     fn set_files_validates_and_renames_as_java() {
         let info = test_segment_info("_0", 10);
@@ -1608,6 +1689,56 @@ mod tests {
             )
             .to_string()
         );
+    }
+
+    /// `SegmentCommitInfo.files()` starts from `new HashSet<>(info.files())`
+    /// (`SegmentCommitInfo.java:241`), which copies references: every segment
+    /// name in the commit set is the segment set's own allocation, renamed
+    /// names included, and the set iterates as the same `String` set would.
+    /// Positive control: [`SegmentInfo::files_ordered`] still returns copies.
+    #[test]
+    fn commit_files_share_the_segment_names_in_java_hash_set_order() {
+        let names: Vec<String> = [
+            "_0.fdt",
+            "_0.fdx",
+            "_0.fdm",
+            "_0.fnm",
+            "_0.si",
+            "_0_Lucene104_0.doc",
+            "_0_Lucene104_0.tim",
+            "_7.nvd",
+        ]
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+        let info = test_segment_info("_0", 10);
+        info.set_files(names.clone()).unwrap();
+        let commit =
+            SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap();
+
+        let files = commit.files_ordered().unwrap();
+        let renamed: JavaHashSet = names
+            .iter()
+            .map(|name| commit.info.named_for_this_segment(name))
+            .collect();
+        let expected = JavaHashSet::from_set(&renamed);
+        assert_eq!(files.table_length(), expected.table_length());
+        assert_eq!(
+            files.iter().map(IndexFileName::as_str).collect::<Vec<_>>(),
+            expected.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert!(files.contains("_0.nvd"), "`_7.nvd` renamed");
+
+        let same_allocation = |name: &str| {
+            commit
+                .info
+                .with_files(|own| own.iter().any(|held| std::ptr::eq(held.as_str(), name)))
+                .unwrap()
+        };
+        assert!(files.iter().all(|name| same_allocation(name.as_str())));
+        let copies = commit.info.files_ordered().unwrap();
+        assert_eq!(copies.len(), files.len());
+        assert!(copies.iter().all(|name| !same_allocation(name)));
     }
 
     #[test]

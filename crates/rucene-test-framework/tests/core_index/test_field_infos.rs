@@ -97,7 +97,7 @@ fn test_field_infos() -> Result<()> {
     let mut d1 = Document::new();
     for i in 0..15 {
         d1.add(StringField::new(
-            &format!("f{i}"),
+            format!("f{i}"),
             format!("v{i}"),
             Store::YES,
         )?);
@@ -161,7 +161,7 @@ fn stored_type() -> Result<FieldType> {
 
 /// `fi.getAttribute(key)`.
 fn attribute(fi: &FieldInfo, key: &str) -> Option<String> {
-    fi.get_attribute(key)
+    fi.get_attribute(key).map(|value| value.as_str().to_owned())
 }
 
 /// Port of `TestFieldInfos.testFieldAttributes`.

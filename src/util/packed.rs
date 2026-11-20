@@ -1216,16 +1216,24 @@ impl DirectMonotonicMeta {
         }
         let num_blocks = num_blocks as usize;
 
-        // `num_values` comes off disk, so `num_blocks` does too. Java reaches
-        // `new long[(int) numBlocks]` here and answers an absurd value with a
-        // catchable `OutOfMemoryError`; Rust cannot catch a failed allocation,
-        // so nothing is reserved up front. Each block costs 21 bytes of
-        // metadata, so a corrupt count runs out of input long before the four
-        // vectors grow large.
-        let mut mins = Vec::new();
-        let mut avgs = Vec::new();
-        let mut offsets = Vec::new();
-        let mut bpvs = Vec::new();
+        // `new long[numBlocks]` and its siblings (`DirectMonotonicReader.java:55-58`):
+        // each array is sized once. `num_values` comes off disk, so
+        // `num_blocks` does too, and Java answers an absurd value with a
+        // catchable `OutOfMemoryError`. The reservations are therefore only
+        // attempted: one the allocator refuses leaves its vector empty, the
+        // reads below grow it, and a corrupt count still ends on the input's
+        // end, 21 bytes of metadata per block, as it did before anything was
+        // reserved.
+        // PERF: one allocation per array, as Java's; growing by `push` from
+        // empty reallocated every array past four blocks.
+        let mut mins: Vec<i64> = Vec::new();
+        let mut avgs: Vec<f32> = Vec::new();
+        let mut offsets: Vec<i64> = Vec::new();
+        let mut bpvs: Vec<i8> = Vec::new();
+        let _ = mins.try_reserve_exact(num_blocks);
+        let _ = avgs.try_reserve_exact(num_blocks);
+        let _ = offsets.try_reserve_exact(num_blocks);
+        let _ = bpvs.try_reserve_exact(num_blocks);
 
         let mut all_values_zero = true;
         for _ in 0..num_blocks {
@@ -1241,7 +1249,31 @@ impl DirectMonotonicMeta {
 
         // Save heap in case all values are zero.
         if all_values_zero {
-            return Ok(Self::single_zero_block());
+            // `Meta.SINGLE_ZERO_BLOCK` (`DirectMonotonicReader.java:39,82`).
+            // PERF: Java discards the arrays it just filled for a shared
+            // constant; this port returns the constant's value, built in the
+            // vectors it already holds rather than in four new ones.
+            if num_blocks == 0 {
+                return Ok(Self::single_zero_block());
+            }
+            mins.truncate(1);
+            avgs.truncate(1);
+            offsets.truncate(1);
+            bpvs.truncate(1);
+            mins.shrink_to_fit();
+            avgs.shrink_to_fit();
+            offsets.shrink_to_fit();
+            bpvs.shrink_to_fit();
+            // Every `min`, `avg` and `bpv` read was zero; `offset` need not be.
+            offsets[0] = 0;
+            return Ok(Self {
+                block_shift: 63,
+                num_blocks: 1,
+                mins,
+                avgs,
+                offsets,
+                bpvs,
+            });
         }
 
         Ok(Self {
@@ -1499,13 +1531,15 @@ pub struct DirectMonotonicReader {
     block_shift: i32,
     block_mask: i64,
     readers: Vec<MonotonicBlockReader>,
-    mins: Vec<i64>,
-    avgs: Vec<f32>,
-    bpvs: Vec<i8>,
+    /// The metadata whose `mins`, `avgs` and `bpvs` the reader reads: Java's
+    /// reader keeps references to the meta's arrays
+    /// (`DirectMonotonicReader.java:109, 119-131`), and the meta is shared
+    /// with its owner, which builds readers over it again and again.
+    meta: Arc<DirectMonotonicMeta>,
 }
 
 impl DirectMonotonicReader {
-    pub fn new(meta: DirectMonotonicMeta, data: Vec<u8>) -> Result<Self> {
+    pub fn new(meta: impl Into<Arc<DirectMonotonicMeta>>, data: Vec<u8>) -> Result<Self> {
         let data_input = ByteBuffersDataInput::new(vec![data])?;
         let index_input = ByteBuffersIndexInput::new(data_input, "direct-monotonic-data");
         Self::with_random_access(meta, shared_random_access_input(Box::new(index_input)))
@@ -1517,7 +1551,7 @@ impl DirectMonotonicReader {
     /// RandomAccessInput data)`: the block readers all address the same slice,
     /// so nothing is copied out of the file to answer a lookup.
     pub fn with_random_access(
-        meta: DirectMonotonicMeta,
+        meta: impl Into<Arc<DirectMonotonicMeta>>,
         input: SharedRandomAccessInput,
     ) -> Result<Self> {
         Self::with_random_access_merging(meta, input, false)
@@ -1537,11 +1571,12 @@ impl DirectMonotonicReader {
     /// Returns [`LuceneErrorKind::IllegalArgument`] when a block's width is not one
     /// [`DirectWriter`] can produce.
     pub fn with_random_access_merging(
-        meta: DirectMonotonicMeta,
+        meta: impl Into<Arc<DirectMonotonicMeta>>,
         input: SharedRandomAccessInput,
         merging: bool,
     ) -> Result<Self> {
         count_monotonic_reader_construction();
+        let meta = meta.into();
         let mut readers = Vec::with_capacity(meta.num_blocks);
         for i in 0..meta.num_blocks {
             if meta.bpvs[i] == 0 {
@@ -1574,9 +1609,7 @@ impl DirectMonotonicReader {
             block_shift: meta.block_shift,
             block_mask,
             readers,
-            mins: meta.mins,
-            avgs: meta.avgs,
-            bpvs: meta.bpvs,
+            meta,
         })
     }
 
@@ -1625,8 +1658,8 @@ impl DirectMonotonicReader {
         let block = block as usize;
         let block_index = index & self.block_mask;
         let delta = self.readers[block].get_checked(block_index)?;
-        Ok(self.mins[block]
-            .wrapping_add((self.avgs[block] * block_index as f32) as i64)
+        Ok(self.meta.mins[block]
+            .wrapping_add((self.meta.avgs[block] * block_index as f32) as i64)
             .wrapping_add(delta))
     }
 
@@ -1650,10 +1683,10 @@ impl DirectMonotonicReader {
         let block = crate::error::to_int_exact(
             (index as u64).wrapping_shr(self.block_shift as u32) as i64,
         )?;
-        if block as usize >= self.mins.len() {
+        if block as usize >= self.meta.mins.len() {
             return Err(crate::store::array_index_out_of_bounds(
                 i64::from(block),
-                self.mins.len(),
+                self.meta.mins.len(),
             ));
         }
         let block = block as usize;
@@ -1662,13 +1695,15 @@ impl DirectMonotonicReader {
         // every term comes off disk, so the sums have to wrap here too rather
         // than abort a debug build on bytes Lucene reads without complaint.
         let lower_bound =
-            self.mins[block].wrapping_add((self.avgs[block] * block_index as f32) as i64);
+            self.meta.mins[block].wrapping_add((self.meta.avgs[block] * block_index as f32) as i64);
         // Java's `1L << bpvs[block]` takes the shift distance modulo 64, so a
         // width of 64 yields 1 instead of overflowing; `wrapping_shl` does the
         // same, and the `== 64` test below then answers the saturated bounds.
-        let upper_bound =
-            lower_bound.wrapping_add(1i64.wrapping_shl(self.bpvs[block] as u32).wrapping_sub(1));
-        if self.bpvs[block] == 64 || upper_bound < lower_bound {
+        let upper_bound = lower_bound.wrapping_add(
+            1i64.wrapping_shl(self.meta.bpvs[block] as u32)
+                .wrapping_sub(1),
+        );
+        if self.meta.bpvs[block] == 64 || upper_bound < lower_bound {
             // overflow
             Ok([i64::MIN, i64::MAX])
         } else {
@@ -2256,6 +2291,55 @@ mod tests {
         }
     }
 
+    /// `return allValuesZero ? Meta.SINGLE_ZERO_BLOCK : meta`
+    /// (`DirectMonotonicReader.java:82`): blocks whose `min`, `avg` and `bpv`
+    /// are all zero load as the single zero block whatever their offsets, and
+    /// the vectors that held them are cut down to its one entry.
+    #[test]
+    fn direct_monotonic_all_zero_blocks_load_as_the_single_zero_block() {
+        for num_blocks in [1usize, 3] {
+            let mut meta_out = ByteBuffersIndexOutput::new(
+                crate::store::ByteBuffersDataOutput::new(),
+                "meta",
+                "meta",
+            );
+            for block in 0..num_blocks {
+                meta_out.write_long(0).unwrap();
+                meta_out.write_int(0).unwrap();
+                meta_out.write_long(7 + block as i64).unwrap();
+                meta_out.write_byte(0).unwrap();
+            }
+            let meta_bytes = meta_out.to_array_copy().unwrap();
+            let mut meta_input = ByteArrayDataInput::new(&meta_bytes);
+            // Block shift 2: four values per block.
+            let meta =
+                DirectMonotonicMeta::load(&mut meta_input, 4 * num_blocks as i64, 2).unwrap();
+            assert_eq!(
+                format!("{meta:?}"),
+                format!("{:?}", DirectMonotonicMeta::single_zero_block())
+            );
+            assert_eq!(meta.offsets, vec![0]);
+            assert_eq!(
+                [
+                    meta.mins.capacity(),
+                    meta.avgs.capacity(),
+                    meta.offsets.capacity(),
+                    meta.bpvs.capacity()
+                ],
+                [1, 1, 1, 1]
+            );
+        }
+    }
+
+    /// A count the input cannot back still fails on the input's end, as it did
+    /// before each array was reserved at the block count.
+    #[test]
+    fn direct_monotonic_corrupt_count_fails_on_the_input_end() {
+        let bytes = [0u8; 21];
+        let mut meta_input = ByteArrayDataInput::new(&bytes);
+        assert!(DirectMonotonicMeta::load(&mut meta_input, i64::from(i32::MAX) << 2, 2).is_err());
+    }
+
     #[test]
     fn direct_monotonic_round_trip() {
         for &block_shift in &[3i32, 6, 10] {
@@ -2331,6 +2415,31 @@ mod tests {
         let meta =
             DirectMonotonicMeta::load(&mut meta_input, values.len() as i64, block_shift).unwrap();
         (meta, data_out.to_array_copy().unwrap())
+    }
+
+    /// `DirectMonotonicReader.getInstance(meta, data)` keeps references to the
+    /// meta's arrays (`DirectMonotonicReader.java:92-109`), and its owners
+    /// (`FieldsIndexReader.java:89-90, 110-111`,
+    /// `Lucene90DocValuesProducer.java:1594-1600`) build reader after reader
+    /// over one meta: every reader shares the meta it was given, none copies
+    /// it, and each answers the values the meta describes.
+    #[test]
+    fn direct_monotonic_readers_share_their_meta() {
+        let values: Vec<i64> = (0..300i64).map(|i| i * 5 + (i % 3)).collect();
+        let (meta, data) = write_monotonic(&values, 6);
+        let meta = Arc::new(meta);
+        let first = DirectMonotonicReader::new(Arc::clone(&meta), data.clone()).unwrap();
+        let second = DirectMonotonicReader::new(Arc::clone(&meta), data).unwrap();
+        assert_eq!(
+            Arc::strong_count(&meta),
+            3,
+            "both readers hold the one meta"
+        );
+        assert!(Arc::ptr_eq(&first.meta, &meta) && Arc::ptr_eq(&second.meta, &meta));
+        for (i, &value) in values.iter().enumerate() {
+            assert_eq!(first.get_checked(i as i64).unwrap(), value);
+            assert_eq!(second.get_checked(i as i64).unwrap(), value);
+        }
     }
 
     /// `binarySearch(0, Long.MAX_VALUE, 9)` over ten values written with

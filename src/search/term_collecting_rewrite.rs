@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::index::TermStates;
-use crate::index::{IndexReaderContext, LeafReaderContext, Term, Terms, TermsEnum};
+use crate::index::{IndexReaderContext, LeafReaderContext, Term, TermsEnum};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::multi_term_query::{MultiTermQuery, RewriteMethod};
 use crate::search::query::Query;
@@ -155,20 +155,27 @@ pub fn collect_terms(
     collector: &mut dyn TermCollector,
 ) -> Result<()> {
     let top_reader_context = searcher.get_top_reader_context().clone();
+    // The current term, copied out of the terms enum (see the term loop).
+    let mut term = BytesRef::default();
     for context in searcher.get_leaf_contexts() {
         let Some(terms) = context.leaf_reader().terms(query.get_field())? else {
             // The field does not exist.
             continue;
         };
-        let terms: Arc<dyn Terms> = Arc::from(terms);
 
         let mut terms_enum =
             rewrite_method.get_terms_enum(query, &terms, collector.attributes())?;
 
         collector.set_reader_context(&top_reader_context, context)?;
         collector.set_next_enum(&mut *terms_enum)?;
+        // `while ((bytes = termsEnum.next()) != null) collector.collect(bytes)`.
+        // PERF: `next()` lends the enum's own term buffer, which cannot stay
+        // borrowed while `collect` is handed the enum (Java's collector reads
+        // the enum it was given through `setNextEnum`), so the term is copied
+        // into one buffer reused for every term (no allocation per term).
         while let Some(bytes) = terms_enum.next()? {
-            if !collector.collect(&bytes, &mut *terms_enum)? {
+            term.copy_from(bytes);
+            if !collector.collect(&term, &mut *terms_enum)? {
                 // Interrupt the whole term collection, so do not iterate the
                 // other sub-readers either.
                 return Ok(());

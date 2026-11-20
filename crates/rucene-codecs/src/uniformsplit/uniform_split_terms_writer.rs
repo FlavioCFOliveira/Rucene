@@ -520,7 +520,7 @@ impl WriterParts<'_> {
         postings.postings_writer.set_field(field_info)?;
         let mut dictionary_builder = fst_dictionary::Builder::new()?;
         let mut last_term: Option<BytesRef> = None;
-        while let Some(term) = terms_enum.next()? {
+        while let Some(term) = terms_enum.next()?.cloned() {
             let block_term_state = postings.write_posting_line(
                 &term,
                 terms_enum,

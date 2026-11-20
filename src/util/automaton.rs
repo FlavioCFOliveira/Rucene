@@ -237,8 +237,8 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
-            Ok(Some(self.terms[self.pos].clone()))
+        fn term(&self) -> crate::error::Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos]))
         }
 
         fn postings(
@@ -308,16 +308,15 @@ mod tests {
             ))
         }
 
-        fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+        fn next(&mut self) -> crate::error::Result<Option<&BytesRef>> {
             if std::mem::take(&mut self.sought) {
                 self.pos += 1;
             }
             if self.pos >= self.terms.len() {
                 Ok(None)
             } else {
-                let term = self.terms[self.pos].clone();
                 self.pos += 1;
-                Ok(Some(term))
+                Ok(Some(&self.terms[self.pos - 1]))
             }
         }
     }
@@ -325,12 +324,15 @@ mod tests {
     #[derive(Debug)]
     struct IntersectTermsEnum {
         atts: crate::util::attribute::AttributeSource,
+        /// The term `term()` lends: `intersect`.
+        term: BytesRef,
     }
 
     impl IntersectTermsEnum {
         fn new() -> Self {
             Self {
                 atts: crate::util::attribute::AttributeSource::new(),
+                term: BytesRef::new(b"intersect".to_vec()),
             }
         }
     }
@@ -349,8 +351,8 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::new(b"intersect".to_vec())))
+        fn term(&self) -> crate::error::Result<Option<&BytesRef>> {
+            Ok(Some(&self.term))
         }
 
         fn postings(
@@ -411,7 +413,7 @@ mod tests {
             ))
         }
 
-        fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+        fn next(&mut self) -> crate::error::Result<Option<&BytesRef>> {
             Ok(None)
         }
     }
@@ -494,7 +496,7 @@ mod tests {
         // ALL returns the full iterator positioned on the first term.
         let all = CompiledAutomaton::new(Automata::make_any_string(), false, true, false).unwrap();
         let it = all.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.term().unwrap(), Some(BytesRef::new(b"alpha".to_vec())));
+        assert_eq!(it.term().unwrap(), Some(&BytesRef::new(b"alpha".to_vec())));
 
         // SINGLE returns a SingleTermsEnum, which seeks to the fixed term and
         // enumerates exactly it (`CompiledAutomaton.java:354-355`).
@@ -506,7 +508,7 @@ mod tests {
         )
         .unwrap();
         let mut it = single.get_terms_enum(&terms).unwrap();
-        assert_eq!(it.next().unwrap(), Some(BytesRef::new(b"beta".to_vec())));
+        assert_eq!(it.next().unwrap(), Some(&BytesRef::new(b"beta".to_vec())));
         assert_eq!(it.next().unwrap(), None);
 
         // NORMAL delegates to Terms::intersect.
@@ -519,7 +521,7 @@ mod tests {
         assert!(terms.intersect_called.load(Ordering::SeqCst));
         assert_eq!(
             it.term().unwrap(),
-            Some(BytesRef::new(b"intersect".to_vec()))
+            Some(&BytesRef::new(b"intersect".to_vec()))
         );
     }
 

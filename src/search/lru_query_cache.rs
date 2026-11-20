@@ -374,6 +374,18 @@ fn top_level_stats(context: &LeafReaderContext) -> (i32, usize) {
     }
 }
 
+/// Returns the top-level reader's `maxDoc`.
+///
+/// Equivalent to `ReaderUtil.getTopLevelContext(context).reader().maxDoc()`,
+/// all `CachingWrapperWeight.shouldCache` reads (`LRUQueryCache.java:790-795`);
+/// unlike [`top_level_stats`] it does not list the leaves.
+fn top_level_max_doc(context: &LeafReaderContext) -> i32 {
+    match IndexReaderContext::parent(context).and_then(|parent| parent.upgrade()) {
+        None => context.leaf_reader().max_doc(),
+        Some(parent) => get_top_level_context(parent).reader().max_doc(),
+    }
+}
+
 /// The state a [`LRUQueryCache`] shares with the weights it wraps.
 ///
 /// **Divergence from Lucene 10.5.0.** Java's `CachingWrapperWeight` is an inner
@@ -1452,8 +1464,9 @@ impl CachingWrapperWeightImpl {
     /// Equivalent to the private
     /// `CachingWrapperWeight.shouldCache(LeafReaderContext)`.
     fn should_cache(&self, context: &LeafReaderContext) -> bool {
-        let (top_level_max_doc, _) = top_level_stats(context);
-        self.cache_entry_has_reasonable_worst_case_size(top_level_max_doc)
+        // PERF: only the top-level `maxDoc`; the leaf list was copied and
+        // dropped unread.
+        self.cache_entry_has_reasonable_worst_case_size(top_level_max_doc(context))
             && (self.state.leaves_to_cache)(context)
     }
 

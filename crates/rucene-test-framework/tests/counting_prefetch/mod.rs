@@ -119,8 +119,8 @@ impl std::fmt::Debug for CountingPrefetchIndexInput {
 }
 
 impl DataInput for CountingPrefetchIndexInput {
-    fn to_java_string(&self) -> String {
-        self.resource_description.clone()
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.resource_description)
     }
 
     /// `FilterIndexInput.readByte()`.

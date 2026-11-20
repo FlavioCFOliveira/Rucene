@@ -1133,6 +1133,23 @@ impl Path {
         }
     }
 
+    /// The path of a directory entry's `name`, as the operating system
+    /// returned it.
+    ///
+    /// Equivalent to the package-private `UnixPath(UnixFileSystem, byte[])`
+    /// constructor `UnixDirectoryStream` builds its entries with: the bytes
+    /// are kept as they are, because a name `readdir` returns holds neither a
+    /// separator nor a NUL, so [`new`](Self::new)'s normalization could not
+    /// change it.
+    // PERF: the name moves into the path; `new` normalized it into a fresh
+    // buffer and copied that buffer again, two allocations per listed entry.
+    fn from_os_name(fs: Arc<dyn FileSystem>, name: OsString) -> Path {
+        Path {
+            fs,
+            path: PathBuf::from(name),
+        }
+    }
+
     /// The same string bound to `fs`: how a filter filesystem wraps a delegate
     /// path (`wrapPath`) and unwraps its own (`toDelegate`).
     pub fn with_file_system(&self, fs: Arc<dyn FileSystem>) -> Path {
@@ -1210,8 +1227,10 @@ impl Path {
         if bytes.is_empty() {
             return Some(self.derive(b""));
         }
-        let offsets = name_offsets(&bytes);
-        let (start, end) = *offsets.last()?;
+        // PERF: only the last name's offsets, found from the end; building
+        // every name's offsets grew a vector through each component of the
+        // path at every call.
+        let (start, end) = last_name_offsets(&bytes)?;
         if start == 0 && end == bytes.len() {
             return Some(self.clone());
         }
@@ -1425,12 +1444,19 @@ impl Path {
         if a.is_empty() {
             return other.clone();
         }
-        let mut out = a.to_vec();
+        // PERF: sized once and moved into the path, as `UnixPath.resolve(byte[],
+        // byte[])` fills one `new byte[baseLength + 1 + childLength]`; the
+        // buffer used to be copied from `a`, grown, and copied again.
+        let mut out = Vec::with_capacity(a.len() + SEPARATOR_BYTES.len() + b.len());
+        out.extend_from_slice(&a);
         if out.as_slice() != SEPARATOR_BYTES {
             out.extend_from_slice(SEPARATOR_BYTES);
         }
         out.extend_from_slice(&b);
-        self.derive(&out)
+        Path {
+            fs: Arc::clone(&self.fs),
+            path: owned_bytes_to_path(out),
+        }
     }
 
     /// `resolveSibling(Path)`: `getParent().resolve(other)`, or `other` when
@@ -1667,12 +1693,32 @@ fn bytes_to_path(bytes: &[u8]) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
+/// [`bytes_to_path`] for a buffer the caller no longer needs: on Unix the
+/// buffer becomes the path without a copy.
+#[cfg(unix)]
+fn owned_bytes_to_path(bytes: Vec<u8>) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    PathBuf::from(OsString::from_vec(bytes))
+}
+
+#[cfg(not(unix))]
+fn owned_bytes_to_path(bytes: Vec<u8>) -> PathBuf {
+    bytes_to_path(&bytes)
+}
+
 fn is_separator(b: u8) -> bool {
     b == b'/' || (cfg!(not(unix)) && b == b'\\')
 }
 
 /// `UnixPath.normalizeAndCheck`: redundant and trailing separators removed,
 /// a NUL refused.
+///
+/// The path's bytes are made once, as `UnixPath(UnixFileSystem, String)`
+/// makes them (`UnixPath.java:74-77`): an already-normal input is returned
+/// itself by `normalizeAndCheck` (`:81-94`) and copied once by `encode`
+/// (`:124-132`); only an input with a redundant separator is rebuilt.
+// PERF: one allocation per path; the bytes used to be normalized into a
+// buffer that was then copied into the path, two allocations per path.
 fn normalize_and_check(path: &OsStr) -> PathBuf {
     let bytes = os_bytes(path);
     if bytes.contains(&0) {
@@ -1683,6 +1729,12 @@ fn normalize_and_check(path: &OsStr) -> PathBuf {
                 String::from_utf8_lossy(&bytes)
             )),
         )
+    }
+    if is_normal(&bytes) {
+        return match bytes {
+            Cow::Borrowed(normal) => bytes_to_path(normal),
+            Cow::Owned(normal) => owned_bytes_to_path(normal),
+        };
     }
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut prev_sep = false;
@@ -1697,8 +1749,34 @@ fn normalize_and_check(path: &OsStr) -> PathBuf {
     if out.len() > 1 && is_separator(*out.last().expect("non-empty")) {
         out.pop();
     }
-    let _ = OsString::new();
-    bytes_to_path(&out)
+    owned_bytes_to_path(out)
+}
+
+/// Whether [`normalize_and_check`] would leave `bytes` unchanged: no
+/// separator follows another, none is a non-native separator, and none ends
+/// a path longer than one byte (`UnixPath.normalizeAndCheck`'s two `return
+/// normalize(...)` conditions, `UnixPath.java:86-92`).
+fn is_normal(bytes: &[u8]) -> bool {
+    let mut prev_sep = false;
+    for &b in bytes {
+        let sep = is_separator(b);
+        if sep && (prev_sep || b != SEPARATOR_BYTES[0]) {
+            return false;
+        }
+        prev_sep = sep;
+    }
+    !(prev_sep && bytes.len() > 1)
+}
+
+/// The `(start, end)` byte offsets of the last name of a path: the last
+/// entry of [`name_offsets`], or `None` when the path has no name.
+fn last_name_offsets(bytes: &[u8]) -> Option<(usize, usize)> {
+    let end = bytes.iter().rposition(|&b| !is_separator(b))? + 1;
+    let start = bytes[..end]
+        .iter()
+        .rposition(|&b| is_separator(b))
+        .map_or(0, |separator| separator + 1);
+    Some((start, end))
 }
 
 /// The `(start, end)` byte offsets of the names of a normalized path.

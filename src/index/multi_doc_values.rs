@@ -1181,7 +1181,7 @@ impl SortedDocValues for MultiSortedDocValues {
         Ok(self.mapping.get_global_ords(index).get(segment_ord as i64) as i32)
     }
 
-    fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
         let sub_index = self.mapping.get_first_segment_number(ord as i64);
         let segment_ord = self.mapping.get_first_segment_ord(ord as i64);
         self.values[sub_index].lookup_ord(segment_ord as i32)
@@ -1381,7 +1381,7 @@ impl SortedSetDocValues for MultiSortedSetDocValues {
         self.values[index].doc_value_count()
     }
 
-    fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+    fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
         let sub_index = self.mapping.get_first_segment_number(ord);
         let segment_ord = self.mapping.get_first_segment_ord(ord);
         self.values[sub_index].lookup_ord(segment_ord)
@@ -1658,7 +1658,7 @@ mod tests {
     /// [`SortedDocValues`] over a term dictionary plus a `(doc, ord)` list.
     struct ListSorted {
         cursor: Cursor,
-        terms: Vec<String>,
+        terms: Vec<BytesRef>,
         ords: Vec<i32>,
     }
 
@@ -1666,7 +1666,10 @@ mod tests {
         fn boxed(terms: &[&str], entries: &[(i32, i32)]) -> Box<dyn SortedDocValues> {
             Box::new(Self {
                 cursor: Cursor::new(entries.iter().map(|(d, _)| *d).collect()),
-                terms: terms.iter().map(|t| t.to_string()).collect(),
+                terms: terms
+                    .iter()
+                    .map(|t| BytesRef::new(t.as_bytes().to_vec()))
+                    .collect(),
                 ords: entries.iter().map(|(_, o)| *o).collect(),
             })
         }
@@ -1702,10 +1705,9 @@ mod tests {
             Ok(self.terms.len() as i32)
         }
 
-        fn lookup_ord(&self, ord: i32) -> Result<BytesRef> {
+        fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
             self.terms
                 .get(ord as usize)
-                .map(|t| BytesRef::new(t.as_bytes().to_vec()))
                 .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
         }
     }
@@ -1713,7 +1715,7 @@ mod tests {
     /// [`SortedSetDocValues`] over a term dictionary plus a `(doc, ords)` list.
     struct ListSortedSet {
         cursor: Cursor,
-        terms: Vec<String>,
+        terms: Vec<BytesRef>,
         ords: Vec<Vec<i64>>,
         ord_upto: usize,
     }
@@ -1722,7 +1724,10 @@ mod tests {
         fn boxed(terms: &[&str], entries: &[(i32, &[i64])]) -> Box<dyn SortedSetDocValues> {
             Box::new(Self {
                 cursor: Cursor::new(entries.iter().map(|(d, _)| *d).collect()),
-                terms: terms.iter().map(|t| t.to_string()).collect(),
+                terms: terms
+                    .iter()
+                    .map(|t| BytesRef::new(t.as_bytes().to_vec()))
+                    .collect(),
                 ords: entries.iter().map(|(_, o)| o.to_vec()).collect(),
                 ord_upto: 0,
             })
@@ -1765,10 +1770,9 @@ mod tests {
             Ok(self.ords[self.cursor.index()?].len() as i32)
         }
 
-        fn lookup_ord(&self, ord: i64) -> Result<BytesRef> {
+        fn lookup_ord(&mut self, ord: i64) -> Result<&BytesRef> {
             self.terms
                 .get(ord as usize)
-                .map(|t| BytesRef::new(t.as_bytes().to_vec()))
                 .ok_or_else(|| LuceneError::illegal_argument(format!("ord {ord} out of range")))
         }
 
@@ -2031,7 +2035,7 @@ mod tests {
         fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
             None
         }
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -2189,7 +2193,7 @@ mod tests {
                 return out;
             }
             let ord = values.ord_value().unwrap();
-            out.push((doc, ord, text(&values.lookup_ord(ord).unwrap())));
+            out.push((doc, ord, text(values.lookup_ord(ord).unwrap())));
         }
     }
 
@@ -2851,12 +2855,12 @@ mod tests {
                 .sorted("s", &["a", "b"], &[(0, 1), (1, 0)])
                 .build(),
         ]);
-        let values = MultiDocValues::get_sorted_values(&reader, "s")
+        let mut values = MultiDocValues::get_sorted_values(&reader, "s")
             .unwrap()
             .unwrap();
-        assert_eq!(text(&values.lookup_ord(0).unwrap()), "a");
-        assert_eq!(text(&values.lookup_ord(1).unwrap()), "b");
-        assert_eq!(text(&values.lookup_ord(2).unwrap()), "c");
+        assert_eq!(text(values.lookup_ord(0).unwrap()), "a");
+        assert_eq!(text(values.lookup_ord(1).unwrap()), "b");
+        assert_eq!(text(values.lookup_ord(2).unwrap()), "c");
     }
 
     /// The acceptance criterion for this task: a leaf that does not have the
@@ -3066,11 +3070,11 @@ mod tests {
     #[test]
     fn sorted_set_values_lookup_ord_resolves_every_global_ordinal() {
         let reader = sorted_set_composite();
-        let values = MultiDocValues::get_sorted_set_values(&reader, "ss")
+        let mut values = MultiDocValues::get_sorted_set_values(&reader, "ss")
             .unwrap()
             .unwrap();
         let terms: Vec<String> = (0..4)
-            .map(|ord| text(&values.lookup_ord(ord).unwrap()))
+            .map(|ord| text(values.lookup_ord(ord).unwrap()))
             .collect();
         assert_eq!(terms, vec!["a", "b", "c", "d"]);
     }

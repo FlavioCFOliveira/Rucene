@@ -312,6 +312,24 @@ public final class ObjectContractsFixture {
     multi.seek(1030);
     out("ByteBuffersDataInput.toString/three-1024-pos1030", multi.toString());
 
+    // Slices are views of the same blocks (ByteBuffersDataInput.java:406-418, 487-523): the
+    // number of views (with the empty buffer a slice ending on a block boundary appends), the
+    // first view's position and the capacities charged.
+    ByteBuffersDataInput three =
+        new ByteBuffersDataInput(
+            Arrays.asList(
+                ByteBuffer.allocate(1024), ByteBuffer.allocate(1024), ByteBuffer.allocate(1024)));
+    long[][] ranges = {{1000, 2048}, {1000, 1048}, {1030, 5}, {1024, 0}, {3072, 0}, {0, 3072}};
+    for (long[] range : ranges) {
+      ByteBuffersDataInput slice = three.slice(range[0], range[1]);
+      String key = "ByteBuffersDataInput.slice/" + range[0] + "-" + range[1];
+      out(key + "/toString", slice.toString());
+      out(key + "/ramBytesUsed", Long.toString(slice.ramBytesUsed()));
+      if (range[1] >= 2) {
+        out(key + "/slice-1/toString", slice.slice(1, range[1] - 2).toString());
+      }
+    }
+
     // NRTCachingDirectory: only the megabyte figures are portable; the wrapped
     // directory renders with an identity hash.
     try (Directory delegate = new ByteBuffersDirectory();

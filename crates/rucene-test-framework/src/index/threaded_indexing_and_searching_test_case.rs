@@ -417,7 +417,7 @@ fn doc_get(doc: &Document, name: &str) -> Option<String> {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, BytesRef::new(text.as_bytes().to_vec()))
+    Term::new(field.to_string(), BytesRef::new(text.as_bytes().to_vec()))
 }
 
 /// `new TermQuery(new Term(field, text))`.
@@ -1025,7 +1025,10 @@ fn search_once(
                 // search 30 terms
                 if (seen_term_count + shift) % trigger == 0 {
                     tot_hits.fetch_add(
-                        run_query(searcher, Arc::new(TermQuery::new(Term::new("body", term))))?,
+                        run_query(
+                            searcher,
+                            Arc::new(TermQuery::new(Term::new("body", term.clone()))),
+                        )?,
                         Ordering::SeqCst,
                     );
                 }

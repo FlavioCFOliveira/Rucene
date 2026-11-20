@@ -165,7 +165,7 @@ impl LeafReader for MergeReaderWrapper {
         &self.core
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.core.ensure_open()?;
         // We could check the FieldInfo IndexOptions but there's no point since
         //   PostingsReader will simply return null for fields that don't exist or that have no terms

@@ -1222,7 +1222,11 @@ pub fn get_index_store<C: VectorSimilarityCase>(
                 &vectors[i],
                 f.function(),
             )?));
-            doc.add(IntField::new(f.id_field(), i as i32, Store::YES));
+            doc.add(IntField::new(
+                f.id_field().to_string(),
+                i as i32,
+                Store::YES,
+            ));
             writer.add_document(&doc)?;
         }
         Ok(())

@@ -130,7 +130,16 @@ impl MemorySegmentIndexInputProvider {
         arenas: &SharedArenas,
     ) -> Result<MemorySegmentIndexInput> {
         let path = path.into_nio_path();
-        let resource_description = format!("MemorySegmentIndexInput(path=\"{path}\")");
+        // PERF: one concatenation (`MemorySegmentIndexInputProvider.java:57`),
+        // built straight into the string the input and its clones share; the
+        // same `String` is handed to `map` and `newInstance`
+        // (`MemorySegmentIndexInputProvider.java:57-75`). The path is its
+        // `Display` text (`Path.toString()`).
+        let resource_description = crate::store::concat_shared(&[
+            "MemorySegmentIndexInput(path=\"",
+            &path.as_std_path().to_string_lossy(),
+            "\")",
+        ]);
 
         // Work around for JDK-8259028: we need to unwrap our test-only file
         // system layers.
@@ -161,7 +170,7 @@ impl MemorySegmentIndexInputProvider {
                     file_size,
                 )?;
                 MemorySegmentIndexInput::new_instance(
-                    resource_description.clone(),
+                    Arc::clone(&resource_description),
                     Arc::clone(&arena),
                     segments,
                     file_size,

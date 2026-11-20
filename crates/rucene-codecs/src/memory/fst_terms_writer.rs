@@ -179,7 +179,7 @@ impl FieldsConsumer for FSTTermsWriter {
             let mut sum_doc_freq = 0i64;
             let mut docs_seen = FixedBitSet::new(self.max_doc as usize);
 
-            while let Some(term) = terms_enum.next()? {
+            while let Some(term) = terms_enum.next()?.cloned() {
                 let term_state = self.postings_writer.write_term(
                     &term,
                     terms_enum.as_mut(),

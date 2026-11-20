@@ -828,7 +828,7 @@ pub fn create_document(n: i32, num_fields: i32) -> Result<Document> {
     sb.push_str(&n.to_string());
     for i in 1..num_fields {
         doc.add(TextField::new(
-            &format!("field{}", i + 1),
+            format!("field{}", i + 1),
             sb.clone(),
             Store::YES,
         )?);
@@ -1537,7 +1537,7 @@ fn test_delete_index_files_while_reader_still_open() -> Result<()> {
 /// `new StringField(name, value, Field.Store.YES)`.
 fn stored_string(name: &str, value: &str) -> Result<Box<StringField>> {
     Ok(Box::new(StringField::new(
-        name,
+        name.to_string(),
         value.to_string(),
         Store::YES,
     )?))

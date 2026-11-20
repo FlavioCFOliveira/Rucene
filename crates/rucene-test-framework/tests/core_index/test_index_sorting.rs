@@ -350,34 +350,44 @@ fn bytes_ref(s: &str) -> BytesRef {
 
 /// `new NumericDocValuesField(name, value)`.
 fn ndv(name: &str, value: i64) -> Box<NumericDocValuesField> {
-    Box::new(NumericDocValuesField::new(name, value))
+    Box::new(NumericDocValuesField::new(name.to_string(), value))
 }
 
 /// `new SortedNumericDocValuesField(name, value)`.
 fn sndv(name: &str, value: i64) -> Box<SortedNumericDocValuesField> {
-    Box::new(SortedNumericDocValuesField::new(name, value))
+    Box::new(SortedNumericDocValuesField::new(name.to_string(), value))
 }
 
 /// `new SortedSetDocValuesField(name, newBytesRef(value))`.
 fn ssdv(name: &str, value: &str) -> Box<SortedSetDocValuesField> {
-    Box::new(SortedSetDocValuesField::new(name, bytes_ref(value)))
+    Box::new(SortedSetDocValuesField::new(
+        name.to_string(),
+        bytes_ref(value),
+    ))
 }
 
 /// `new SortedDocValuesField(name, newBytesRef(value))`.
 fn sdv(name: &str, value: &str) -> Box<SortedDocValuesField> {
-    Box::new(SortedDocValuesField::new(name, bytes_ref(value)))
+    Box::new(SortedDocValuesField::new(
+        name.to_string(),
+        bytes_ref(value),
+    ))
 }
 
 /// `new StringField(name, value, stored)`.
 fn string_field(name: &str, value: &str, stored: Store) -> Result<Box<StringField>> {
-    Ok(Box::new(StringField::new(name, value.to_string(), stored)?))
+    Ok(Box::new(StringField::new(
+        name.to_string(),
+        value.to_string(),
+        stored,
+    )?))
 }
 
 /// `new NumericDocValuesField(name, value)` as the `Field` the doc-values
 /// update methods take.
 fn ndv_update(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -385,7 +395,7 @@ fn ndv_update(name: &str, value: i64) -> Result<Field> {
 
 /// `new Term(field, text)`.
 fn term(field: &str, text: &str) -> Term {
-    Term::from_text(field, text)
+    Term::from_text(field.to_string(), text)
 }
 
 /// `leaf.getNumericDocValues(field)`, dereferenced.
@@ -904,12 +914,12 @@ fn long_dv(name: &str, value: f64) -> Box<dyn rucene::index::IndexableField> {
 
 /// `new DoubleDocValuesField(name, value)`.
 fn double_dv(name: &str, value: f64) -> Box<dyn rucene::index::IndexableField> {
-    Box::new(DoubleDocValuesField::new(name, value))
+    Box::new(DoubleDocValuesField::new(name.to_string(), value))
 }
 
 /// `new FloatDocValuesField(name, (float) value)`.
 fn float_dv(name: &str, value: f64) -> Box<dyn rucene::index::IndexableField> {
-    Box::new(FloatDocValuesField::new(name, value as f32))
+    Box::new(FloatDocValuesField::new(name.to_string(), value as f32))
 }
 
 /// Port of `TestIndexSorting.testMissingLongFirst`.
@@ -2942,7 +2952,7 @@ fn test_sort_docs() -> Result<()> {
         .terms("field")?
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
-    assert_equals(&Some(utf8("a")), &field_terms.next()?);
+    assert_equals(&Some(utf8("a")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(None, POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -2950,7 +2960,7 @@ fn test_sort_docs() -> Result<()> {
     assert_equals(&1, &postings.next_doc()?);
     assert_equals(&3, &postings.next_doc()?);
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
-    assert_equals(&Some(utf8("b")), &field_terms.next()?);
+    assert_equals(&Some(utf8("b")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(Some(postings), POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3030,7 +3040,7 @@ fn test_sort_docs_and_freqs() -> Result<()> {
         .terms("field")?
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
-    assert_equals(&Some(utf8("a")), &field_terms.next()?);
+    assert_equals(&Some(utf8("a")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(None, POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3038,7 +3048,7 @@ fn test_sort_docs_and_freqs() -> Result<()> {
     assert_doc_freq(&mut *postings, 1, 2)?;
     assert_doc_freq(&mut *postings, 3, 1)?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
-    assert_equals(&Some(utf8("b")), &field_terms.next()?);
+    assert_equals(&Some(utf8("b")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(Some(postings), POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3088,7 +3098,7 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
         .unwrap_or_else(|| npe("terms(\"field\")"))
         .iterator()?;
     let o = |start: i32, end: i32| if offsets { Some((start, end)) } else { None };
-    assert_equals(&Some(utf8("a")), &field_terms.next()?);
+    assert_equals(&Some(utf8("a")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(None, POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;
@@ -3100,7 +3110,7 @@ fn sort_docs_and_positions(offsets: bool) -> Result<()> {
     assert_doc_freq(&mut *postings, 3, 1)?;
     assert_position(&mut *postings, 0, o(0, 1))?;
     assert_equals(&NO_MORE_DOCS, &postings.next_doc()?);
-    assert_equals(&Some(utf8("b")), &field_terms.next()?);
+    assert_equals(&Some(utf8("b")), &field_terms.next()?.cloned());
     let mut postings = field_terms
         .postings(Some(postings), POSTINGS_ENUM_ALL)?
         .ok_or_else(rucene::error::LuceneError::null_pointer)?;

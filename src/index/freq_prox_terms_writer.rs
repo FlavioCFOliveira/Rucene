@@ -61,7 +61,7 @@
 //!   has [`TermsHashPerField::intern`] return a [`TermSlot`] and lets the caller
 //!   dispatch, which is the same control flow without the inheritance.
 //! * **Flush hands out `Arc` snapshots.** `Fields::terms` returns
-//!   `Box<dyn Terms>`, which is `'static`, so the read-back view cannot borrow
+//!   `Arc<dyn Terms>`, which is `'static`, so the read-back view cannot borrow
 //!   the writer. At flush the buffers are moved — not copied — behind an
 //!   [`Arc`], which every terms view, terms enum and postings enum then
 //!   shares.
@@ -95,7 +95,7 @@ use std::sync::Arc;
 use crate::codecs::norms::NormsProducer;
 use crate::codecs::state::SegmentWriteState;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
-use crate::index::documents_writer::TermDelete;
+use crate::index::documents_writer::DeletedTerms;
 use crate::index::filter_reader::{FilterFields, FilterTerms, FilterTermsEnum};
 use crate::index::index_sorter::SorterDocMap;
 use crate::index::indexing_chain::FieldInvertState;
@@ -443,11 +443,11 @@ impl<'a> PooledSliceReader<'a> {
 
 impl DataInput for PooledSliceReader<'_> {
     /// `Object.toString()` of `org.apache.lucene.index.ByteSliceReader`, which declares no `toString()`.
-    fn to_java_string(&self) -> String {
-        crate::index::index_reader::java_object_to_string(
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
             "org.apache.lucene.index.ByteSliceReader",
             self,
-        )
+        ))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -1900,11 +1900,11 @@ impl Fields for FreqProxFields {
         Box::new(self.fields.iter().map(|field| field.field_name.clone()))
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(self.by_name.get(field).map(|index| {
-            Box::new(FreqProxTerms {
+            Arc::new(FreqProxTerms {
                 field: Arc::clone(&self.fields[*index]),
-            }) as Box<dyn Terms>
+            }) as Arc<dyn Terms>
         }))
     }
 
@@ -1986,7 +1986,10 @@ struct FreqProxTermsEnum {
     ord: i64,
     /// Java's `scratch`: the bytes of the term last read from the pool,
     /// which `term()` returns whatever the position (empty before any).
-    scratch: Vec<u8>,
+    /// Its `bytes` hold exactly the term (`offset` 0, `length ==
+    /// bytes.len()`), so that [`TermsEnum::term`] and [`TermsEnum::next`]
+    /// lend it as Java returns `scratch`.
+    scratch: BytesRef,
     attributes: AttributeSource,
 }
 
@@ -1997,7 +2000,7 @@ impl FreqProxTermsEnum {
             field,
             num_terms,
             ord: -1,
-            scratch: Vec::new(),
+            scratch: BytesRef::default(),
             attributes: AttributeSource::new(),
         }
     }
@@ -2029,8 +2032,12 @@ impl FreqProxTermsEnum {
     /// `termsPool.fillBytesRef(scratch, textStarts[sortedTermIDs[ord]])` for
     /// an `ord` in `[0, numTerms)`.
     fn fill_scratch(&mut self, ord: usize) {
-        self.scratch.clear();
-        self.scratch.extend_from_slice(self.field.term_bytes(ord));
+        self.scratch.bytes.clear();
+        self.scratch
+            .bytes
+            .extend_from_slice(self.field.term_bytes(ord));
+        self.scratch.offset = 0;
+        self.scratch.length = self.scratch.bytes.len();
     }
 }
 
@@ -2060,7 +2067,7 @@ impl TermsEnum for FreqProxTermsEnum {
         while high >= low {
             let mid = (low + high) >> 1;
             self.fill_scratch(mid as usize);
-            match self.scratch.as_slice().cmp(target) {
+            match self.scratch.slice().cmp(target) {
                 std::cmp::Ordering::Less => low = mid + 1,
                 std::cmp::Ordering::Greater => high = mid - 1,
                 std::cmp::Ordering::Equal => {
@@ -2075,7 +2082,7 @@ impl TermsEnum for FreqProxTermsEnum {
             Ok(SeekStatus::END)
         } else {
             self.fill_scratch(self.ord as usize);
-            debug_assert!(self.scratch.as_slice() > target);
+            debug_assert!(self.scratch.slice() > target);
             Ok(SeekStatus::NOT_FOUND)
         }
     }
@@ -2092,8 +2099,8 @@ impl TermsEnum for FreqProxTermsEnum {
 
     /// `return scratch;` (`FreqProxFields.java:199-202`): the term last read,
     /// empty before any.
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(BytesRef::new(self.scratch.clone())))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.scratch))
     }
 
     fn ord(&self) -> Result<i64> {
@@ -2206,13 +2213,13 @@ impl TermsEnum for FreqProxTermsEnum {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.ord += 1;
         if self.ord as usize >= self.num_terms {
             Ok(None)
         } else {
             self.fill_scratch(self.ord as usize);
-            Ok(Some(BytesRef::new(self.scratch.clone())))
+            Ok(Some(&self.scratch))
         }
     }
 }
@@ -2708,9 +2715,10 @@ impl FreqProxTermsWriter {
 
     /// Writes the buffered postings into the segment described by `state`.
     ///
-    /// Equivalent to `FreqProxTermsWriter.flush`. Segment-private delete terms
-    /// are applied first, so `state.live_docs` and `state.del_count_on_flush`
-    /// may be updated before the codec runs.
+    /// Equivalent to `FreqProxTermsWriter.flush`. Segment-private delete terms,
+    /// read off `state.seg_updates` as Java reads `state.segUpdates`, are
+    /// applied first, so `state.live_docs` and `state.del_count_on_flush` may
+    /// be updated before the codec runs.
     ///
     /// # Errors
     ///
@@ -2724,7 +2732,6 @@ impl FreqProxTermsWriter {
     pub fn flush(
         &mut self,
         state: &mut SegmentWriteState<'_>,
-        delete_terms: &[TermDelete],
         sort_map: Option<&SorterDocMap>,
         norms: Option<&dyn NormsProducer>,
     ) -> Result<()> {
@@ -2736,7 +2743,7 @@ impl FreqProxTermsWriter {
             return Ok(());
         }
 
-        apply_deletes(state, &fields, delete_terms)?;
+        apply_deletes(state, &fields)?;
 
         let codec = state
             .segment_info
@@ -2787,7 +2794,7 @@ impl Fields for SortingFields<'_> {
 
     /// Equivalent to the anonymous class's `terms(String)`: the buffered terms,
     /// wrapped with the field's index options and the document map.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         let Some(terms) = self.base.get_delegate().terms(field)? else {
             return Ok(None);
         };
@@ -2797,7 +2804,7 @@ impl Fields for SortingFields<'_> {
             // `infos.fieldInfo(field).getIndexOptions()` on `null`.
             .ok_or_else(LuceneError::null_pointer)?
             .index_options;
-        Ok(Some(Box::new(SortingTerms::new(
+        Ok(Some(Arc::new(SortingTerms::new(
             terms,
             index_options,
             Arc::clone(&self.doc_map),
@@ -2828,7 +2835,7 @@ impl SortingTerms {
     ///
     /// Equivalent to `SortingTerms(Terms, IndexOptions, Sorter.DocMap)`.
     pub fn new(
-        inner: Box<dyn Terms>,
+        inner: Arc<dyn Terms>,
         index_options: IndexOptions,
         doc_map: Arc<SorterDocMap>,
     ) -> Self {
@@ -2958,11 +2965,11 @@ impl TermsEnum for SortingTermsEnum {
         self.base.seek_ord(ord)
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         self.base.next()
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
+    fn term(&self) -> Result<Option<&BytesRef>> {
         self.base.term()
     }
 
@@ -3522,22 +3529,21 @@ impl PostingsEnum for SortingPostingsEnum {
 
 /// Applies this segment's buffered delete-by-term to the flushing segment.
 ///
-/// Equivalent to `FreqProxTermsWriter.applyDeletes`. Each delete term removes
-/// every document strictly below its `docIDUpto`, which is the document count
-/// at the moment the delete was buffered.
+/// Equivalent to `FreqProxTermsWriter.applyDeletes`
+/// (`FreqProxTermsWriter.java:53-80`), which reads the terms off
+/// `state.segUpdates.deleteTerms`. Each delete term removes every document
+/// strictly below its `docIDUpto`, which is the document count at the moment
+/// the delete was buffered.
 ///
 /// # Errors
 ///
 /// Propagates errors raised while reading the buffered postings.
-fn apply_deletes(
-    state: &mut SegmentWriteState<'_>,
-    fields: &FreqProxFields,
-    delete_terms: &[TermDelete],
-) -> Result<()> {
+fn apply_deletes(state: &mut SegmentWriteState<'_>, fields: &FreqProxFields) -> Result<()> {
+    let seg_updates = state.seg_updates;
     let max_doc = state.segment_info.max_doc()?;
     apply_deletes_to(
         fields,
-        delete_terms,
+        &seg_updates.delete_terms,
         max_doc,
         &mut state.live_docs,
         &mut state.del_count_on_flush,
@@ -3552,7 +3558,7 @@ fn apply_deletes(
 /// Propagates errors raised while reading the buffered postings.
 fn apply_deletes_to(
     fields: &FreqProxFields,
-    delete_terms: &[TermDelete],
+    delete_terms: &DeletedTerms,
     max_doc: i32,
     live_docs: &mut Option<FixedBitSet>,
     del_count_on_flush: &mut i32,
@@ -3561,40 +3567,33 @@ fn apply_deletes_to(
         return Ok(());
     }
 
-    // Lucene iterates the delete terms grouped by field and sorted inside each
-    // field so that one terms enum can be reused; the resulting deletions are
+    // `segDeletes.forEachOrdered(...)` hands the terms over grouped by field
+    // (fields by `String.compareTo`, UTF-16 code units) and sorted inside each
+    // field, so one terms enum serves each field; the resulting deletions are
     // the same in any order.
-    let mut ordered: Vec<&TermDelete> = delete_terms.iter().collect();
-    // `BufferedUpdates.DeletedTerms.forEachOrdered` sorts the fields with
-    // `Map.Entry.comparingByKey()`, `String.compareTo`: UTF-16 code units.
-    ordered.sort_by(|left, right| {
-        crate::util::compare_utf16(left.term.field(), right.term.field())
-            .then_with(|| left.term.bytes().slice().cmp(right.term.bytes().slice()))
-    });
-
     let mut current_field: Option<String> = None;
     let mut terms_enum: Option<Box<dyn TermsEnum>> = None;
-    for delete in ordered {
-        if current_field.as_deref() != Some(delete.term.field()) {
-            current_field = Some(delete.term.field().to_string());
-            terms_enum = match fields.terms(delete.term.field())? {
+    delete_terms.for_each_ordered(|term, doc_id_upto| -> Result<()> {
+        if current_field.as_deref() != Some(term.field()) {
+            current_field = Some(term.field().to_string());
+            terms_enum = match fields.terms(term.field())? {
                 Some(terms) => Some(terms.iterator()?),
                 None => None,
             };
         }
         let Some(enumerator) = terms_enum.as_mut() else {
-            continue;
+            return Ok(());
         };
-        if !enumerator.seek_exact(delete.term.bytes())? {
-            continue;
+        if !enumerator.seek_exact(term.bytes())? {
+            return Ok(());
         }
         let mut postings = enumerator
             .postings(None, 0)?
             .ok_or_else(LuceneError::null_pointer)?;
-        debug_assert!(delete.doc_id_upto < NO_MORE_DOCS);
+        debug_assert!(doc_id_upto < NO_MORE_DOCS);
         loop {
             let doc = postings.next_doc()?;
-            if doc >= delete.doc_id_upto || doc == NO_MORE_DOCS {
+            if doc >= doc_id_upto || doc == NO_MORE_DOCS {
                 break;
             }
             let bits = live_docs.get_or_insert_with(|| {
@@ -3609,8 +3608,8 @@ fn apply_deletes_to(
                 *del_count_on_flush += 1;
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 impl PartialEq for TermsHashPerField {
@@ -3815,7 +3814,7 @@ mod tests {
         let has_freqs = terms.has_freqs();
         let mut enumerator = terms.iterator().expect("iterator");
         let mut out = Vec::new();
-        while let Some(term) = enumerator.next().expect("next term") {
+        while let Some(term) = enumerator.next().expect("next term").cloned() {
             let flags = if has_positions {
                 if has_offsets && has_payloads {
                     crate::index::POSTINGS_ENUM_ALL
@@ -4781,10 +4780,10 @@ mod tests {
 
         let mut live_docs = None;
         let mut del_count = 0;
-        let deletes = vec![TermDelete {
-            term: Term::new("body", BytesRef::new(b"alpha".to_vec())),
-            doc_id_upto: 3,
-        }];
+        let mut deletes = DeletedTerms::new();
+        deletes
+            .put(&Term::new("body", BytesRef::new(b"alpha".to_vec())), 3)
+            .expect("put");
         apply_deletes_to(&fields, &deletes, 6, &mut live_docs, &mut del_count).expect("deletes");
 
         assert_eq!(del_count, 3, "docs 0, 1 and 2 carry the deleted term");
@@ -4803,16 +4802,13 @@ mod tests {
 
         let mut live_docs = None;
         let mut del_count = 0;
-        let deletes = vec![
-            TermDelete {
-                term: Term::new("body", BytesRef::new(b"missing".to_vec())),
-                doc_id_upto: 10,
-            },
-            TermDelete {
-                term: Term::new("other", BytesRef::new(b"alpha".to_vec())),
-                doc_id_upto: 10,
-            },
-        ];
+        let mut deletes = DeletedTerms::new();
+        deletes
+            .put(&Term::new("body", BytesRef::new(b"missing".to_vec())), 10)
+            .expect("put");
+        deletes
+            .put(&Term::new("other", BytesRef::new(b"alpha".to_vec())), 10)
+            .expect("put");
         apply_deletes_to(&fields, &deletes, 1, &mut live_docs, &mut del_count).expect("deletes");
         assert_eq!(del_count, 0);
         assert!(
@@ -5336,8 +5332,8 @@ mod tests {
             Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(self.terms[self.pos - 1].0.clone()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos - 1].0))
         }
 
         fn ord(&self) -> Result<i64> {
@@ -5378,9 +5374,9 @@ mod tests {
             Err(LuceneError::unsupported_operation("not used".to_string()))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             self.pos += 1;
-            Ok(self.terms.get(self.pos - 1).map(|(term, _)| term.clone()))
+            Ok(self.terms.get(self.pos - 1).map(|(term, _)| term))
         }
     }
 

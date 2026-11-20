@@ -4,7 +4,7 @@
 //! read from the `.tmd` file, plus the file pointers into the `.tim` and `.tip`
 //! files that a terms cursor starts from.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::codecs::lucene103::trie_reader::TrieReader;
 use crate::error::{LuceneError, Result};
@@ -81,13 +81,25 @@ pub struct FieldReader {
     sum_doc_freq: i64,
     doc_count: i32,
     min_term: BytesRef,
-    max_term: BytesRef,
+    /// The largest term, or `None` when it is [`Self::min_term`]: Java's
+    /// `maxTerm = minTerm` alias for a field with a single term
+    /// (`Lucene103BlockTreeTermsReader.java:181-185`).
+    // PERF: the alias, not a second copy of the term.
+    max_term: Option<BytesRef>,
     /// Offset in the `.tip` file where this field's trie starts.
     index_start: i64,
     /// Offset of the trie root, relative to `index_start`.
     root_fp: i64,
     /// Offset in the `.tip` file where this field's trie ends.
     index_end: i64,
+    /// The one shared copy of this reader that the [`Terms`] handles of
+    /// `Lucene103BlockTreeTermsReader::terms` and the terms enums hold, made
+    /// the first time one is needed; see [`handle`](Self::handle).
+    shared_self: OnceLock<Arc<FieldReader>>,
+    /// On the shared copy, the copy itself; empty on the field map's reader.
+    /// It lets the shared copy, which `terms()` hands out, give its enums
+    /// itself rather than a further copy.
+    self_handle: Weak<FieldReader>,
 }
 
 impl std::fmt::Debug for FieldReader {
@@ -114,7 +126,7 @@ impl FieldReader {
         sum_doc_freq: i64,
         doc_count: i32,
         min_term: BytesRef,
-        max_term: BytesRef,
+        max_term: Option<BytesRef>,
         meta_in: &mut dyn crate::store::DataInput,
     ) -> Result<Self> {
         // The terms reader rejects `numTerms <= 0` before it builds the field
@@ -136,11 +148,82 @@ impl FieldReader {
             index_start,
             root_fp,
             index_end,
+            shared_self: OnceLock::new(),
+            self_handle: Weak::new(),
         })
+    }
+
+    /// Returns the shared copy of this reader, making it on first use.
+    ///
+    /// Java's `terms(field)` returns the field map's `FieldReader` itself
+    /// (`Lucene103BlockTreeTermsReader.java:292-296`) and every terms enum
+    /// keeps a reference to it (`FieldReader.java:139-141`), so nothing is
+    /// copied. The [`Arc<dyn Terms>`](Terms) `terms()` returns and every enum
+    /// must own what they hold, so they share one copy through an [`Arc`]; it
+    /// is made the first time a handle is asked for rather than at open,
+    /// because most fields of an opened segment are never queried. Asked of
+    /// the shared copy, the handle is the copy itself.
+    pub(crate) fn handle(&self) -> Arc<FieldReader> {
+        if let Some(shared) = self.self_handle.upgrade() {
+            return shared;
+        }
+        // PERF: one copy per field for the reader's lifetime, instead of one
+        // copy (two term buffers) per `terms()` and per `iterator()`.
+        Arc::clone(self.shared_self.get_or_init(|| {
+            Arc::new_cyclic(|shared| FieldReader {
+                shared_self: OnceLock::new(),
+                self_handle: Weak::clone(shared),
+                ..self.clone()
+            })
+        }))
+    }
+
+    /// The [`Terms`] that `Lucene103BlockTreeTermsReader::terms` returns for
+    /// this field: its shared reader itself, as Java returns the field map's
+    /// `FieldReader` (`Lucene103BlockTreeTermsReader.java:292-296`).
+    // PERF: a reference count, not a box per call.
+    pub(crate) fn shared_terms(&self) -> Arc<dyn Terms> {
+        self.handle()
+    }
+
+    /// Equivalent to `FieldReader.intersect(CompiledAutomaton, BytesRef)`
+    /// (`FieldReader.java:162-178`) over the shared reader `field`.
+    fn intersect_shared(
+        field: Arc<FieldReader>,
+        compiled: &crate::util::automaton::CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        use crate::util::automaton::AutomatonType;
+        if compiled.automaton_type != AutomatonType::Normal {
+            return Err(LuceneError::illegal_argument(
+                "please use CompiledAutomaton.getTermsEnum instead".to_string(),
+            ));
+        }
+        // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`
+        // (`FieldReader.java:176-177`): the DFA's two objects, or the query's
+        // one `NFARunAutomaton` for both, which the clone shares.
+        let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
+            // A `null` transition accessor or byte runnable, dereferenced by
+            // the enum: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
+        Ok(Box::new(
+            crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
+                field,
+                Box::new(view.clone()),
+                Box::new(view),
+                compiled.common_suffix_ref.clone(),
+                start_term.cloned(),
+            )?,
+        ))
     }
 
     /// Returns the field's metadata.
     pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    /// The shared handle onto the field's one `FieldInfo` object.
+    pub(crate) fn field_info_shared(&self) -> &Arc<FieldInfo> {
         &self.field_info
     }
 
@@ -200,14 +283,14 @@ impl FieldReader {
     ///
     /// Equivalent to `FieldReader.getMax()`.
     pub fn get_max(&self) -> &BytesRef {
-        &self.max_term
+        self.max_term.as_ref().unwrap_or(&self.min_term)
     }
 }
 
 impl Terms for FieldReader {
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
         Ok(Box::new(
-            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.clone())?,
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.handle())?,
         ))
     }
 
@@ -222,28 +305,7 @@ impl Terms for FieldReader {
         compiled: &crate::util::automaton::CompiledAutomaton,
         start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
-        use crate::util::automaton::AutomatonType;
-        if compiled.automaton_type != AutomatonType::Normal {
-            return Err(LuceneError::illegal_argument(
-                "please use CompiledAutomaton.getTermsEnum instead".to_string(),
-            ));
-        }
-        // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`
-        // (`FieldReader.java:176-177`): the DFA's two objects, or the query's
-        // one `NFARunAutomaton` for both, which the clone shares.
-        let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
-            // A `null` transition accessor or byte runnable, dereferenced by
-            // the enum: the JVM's `NullPointerException`.
-            .ok_or_else(LuceneError::null_pointer)?;
-        Ok(Box::new(
-            crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
-                self.clone(),
-                Box::new(view.clone()),
-                Box::new(view),
-                compiled.common_suffix_ref.clone(),
-                start_term.cloned(),
-            )?,
-        ))
+        Self::intersect_shared(self.handle(), compiled, start_term)
     }
 
     fn size(&self) -> Result<i64> {
@@ -289,7 +351,7 @@ impl Terms for FieldReader {
     }
 
     fn max(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.max_term.clone()))
+        Ok(Some(self.get_max().clone()))
     }
 
     /// Walks every block of the field and reports the statistics `CheckIndex`
@@ -324,7 +386,7 @@ impl FieldReader {
     /// Returns whatever opening the cursor or reading a block raises.
     pub fn get_stats(&self) -> Result<crate::codecs::lucene103::blocktree::Stats> {
         let mut terms_enum =
-            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.clone())?;
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.handle())?;
         terms_enum.compute_block_stats()
     }
 }

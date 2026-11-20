@@ -116,8 +116,8 @@ impl TermsEnum for SingleTermsEnum {
         &mut self.atts
     }
 
-    fn term(&self) -> Result<Option<BytesRef>> {
-        Ok(Some(self.term.clone()))
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.term))
     }
 
     fn postings(
@@ -174,7 +174,7 @@ impl TermsEnum for SingleTermsEnum {
         ))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         Ok(None)
     }
 }
@@ -283,7 +283,7 @@ impl Fields for SharedFieldsProducer {
         self.0.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         self.0.terms(field)
     }
 
@@ -1016,6 +1016,13 @@ impl<T: PushPostingsWriterBase + ?Sized> PostingsWriterBase for T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The empty term the test enums below lend.
+    static EMPTY_TERM: BytesRef = BytesRef {
+        bytes: Vec::new(),
+        offset: 0,
+        length: 0,
+    };
     use crate::search::DocIdSetIterator;
     use std::sync::Arc;
 
@@ -1028,7 +1035,7 @@ mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -1057,8 +1064,8 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::default()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&EMPTY_TERM))
         }
 
         fn postings(
@@ -1107,7 +1114,7 @@ mod tests {
             ))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             Ok(None)
         }
     }
@@ -1227,15 +1234,19 @@ mod tests {
             Ok(())
         }
 
-        fn get_impacts(&mut self) -> Result<Box<dyn crate::index::Impacts>> {
-            Ok(Box::new(StubImpacts))
+        fn get_impacts(&mut self) -> Result<crate::index::ImpactsRef<'_>> {
+            Ok(crate::index::ImpactsRef::Owned(Box::new(
+                StubImpacts::default(),
+            )))
         }
     }
 
     impl ImpactsEnum for StubImpactsEnum {}
 
     #[derive(Debug, Default, Clone)]
-    struct StubImpacts;
+    struct StubImpacts {
+        buffer: crate::index::FreqAndNormBuffer,
+    }
 
     impl crate::index::Impacts for StubImpacts {
         fn num_levels(&self) -> i32 {
@@ -1246,10 +1257,10 @@ mod tests {
             i32::MAX
         }
 
-        fn get_impacts(&self, _level: i32) -> crate::index::FreqAndNormBuffer {
-            let mut buf = crate::index::FreqAndNormBuffer::new();
-            buf.add(1, 1);
-            buf
+        fn get_impacts(&mut self, _level: i32) -> &crate::index::FreqAndNormBuffer {
+            self.buffer.size = 0;
+            self.buffer.add(1, 1);
+            &self.buffer
         }
     }
 
@@ -1288,7 +1299,7 @@ mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
             Ok(None)
         }
 
@@ -1777,8 +1788,8 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::default()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&EMPTY_TERM))
         }
 
         fn postings(
@@ -1817,7 +1828,7 @@ mod tests {
             Ok(Box::new(StubImpactsEnum))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             Ok(None)
         }
     }
@@ -1957,8 +1968,8 @@ mod tests {
             &mut self.atts
         }
 
-        fn term(&self) -> Result<Option<BytesRef>> {
-            Ok(Some(BytesRef::default()))
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&EMPTY_TERM))
         }
 
         fn postings(
@@ -1997,7 +2008,7 @@ mod tests {
             Ok(Box::new(StubImpactsEnum))
         }
 
-        fn next(&mut self) -> Result<Option<BytesRef>> {
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
             Ok(None)
         }
     }

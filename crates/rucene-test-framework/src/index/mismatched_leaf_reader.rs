@@ -214,42 +214,44 @@ impl<'a> MismatchedVisitor<'a> {
 
     /// `renumber(original)`: the shuffled info of the same name, or the
     /// `AssertionError` (thrown, not asserted) when there is none.
-    fn renumber(&self, original: &FieldInfo) -> Result<&'a FieldInfo> {
-        self.shuffled.field_info(&original.name).ok_or_else(|| {
-            LuceneError::from(LuceneErrorKind::AssertionError(
-                "stored fields sending bogus infos!".to_string(),
-            ))
-        })
+    fn renumber(&self, original: &FieldInfo) -> Result<&'a Arc<FieldInfo>> {
+        self.shuffled
+            .shared_field_info(&original.name)
+            .ok_or_else(|| {
+                LuceneError::from(LuceneErrorKind::AssertionError(
+                    "stored fields sending bogus infos!".to_string(),
+                ))
+            })
     }
 }
 
 impl StoredFieldVisitor for MismatchedVisitor<'_> {
-    fn binary_field(&mut self, field_info: &FieldInfo, value: &[u8]) -> Result<()> {
+    fn binary_field(&mut self, field_info: &Arc<FieldInfo>, value: &[u8]) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.binary_field(renumbered, value)
     }
 
-    fn string_field(&mut self, field_info: &FieldInfo, value: String) -> Result<()> {
+    fn string_field(&mut self, field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.string_field(renumbered, value)
     }
 
-    fn int_field(&mut self, field_info: &FieldInfo, value: i32) -> Result<()> {
+    fn int_field(&mut self, field_info: &Arc<FieldInfo>, value: i32) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.int_field(renumbered, value)
     }
 
-    fn long_field(&mut self, field_info: &FieldInfo, value: i64) -> Result<()> {
+    fn long_field(&mut self, field_info: &Arc<FieldInfo>, value: i64) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.long_field(renumbered, value)
     }
 
-    fn float_field(&mut self, field_info: &FieldInfo, value: f32) -> Result<()> {
+    fn float_field(&mut self, field_info: &Arc<FieldInfo>, value: f32) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.float_field(renumbered, value)
     }
 
-    fn double_field(&mut self, field_info: &FieldInfo, value: f64) -> Result<()> {
+    fn double_field(&mut self, field_info: &Arc<FieldInfo>, value: f64) -> Result<()> {
         let renumbered = self.renumber(field_info)?;
         self.r#in.double_field(renumbered, value)
     }

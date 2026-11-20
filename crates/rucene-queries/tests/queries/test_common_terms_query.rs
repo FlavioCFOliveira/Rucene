@@ -570,7 +570,7 @@ fn test_random_index() -> Result<()> {
         let mut high_freq_queue = PriorityQueue::new(5, HighFreqLessThan)?;
 
         let mut iterator = terms.iterator()?;
-        while let Some(t) = iterator.next()? {
+        while let Some(t) = iterator.next()?.cloned() {
             let doc_freq = iterator.doc_freq()?;
             if high_freq_queue.size() < 5 {
                 high_freq_queue.add(TermAndFreq {

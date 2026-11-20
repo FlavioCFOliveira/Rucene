@@ -105,7 +105,7 @@ fn bytes(text: &str) -> BytesRef {
 }
 
 fn term(field: &str, text: &str) -> Term {
-    Term::new(field, bytes(text))
+    Term::new(field.to_string(), bytes(text))
 }
 
 /// `MultiTermQueryFixture.doc(int)`; the perturbed corpus gives document 0 a
@@ -523,7 +523,7 @@ fn query_report(path: &Path) -> String {
                 .unwrap()
                 .expect("the field has terms in every leaf");
             let mut te = terms.intersect(&compiled, start.as_ref()).unwrap();
-            while let Some(t) = te.next().unwrap() {
+            while let Some(t) = te.next().unwrap().cloned() {
                 write!(
                     line,
                     " {}={}",

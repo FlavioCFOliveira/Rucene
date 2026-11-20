@@ -18,8 +18,8 @@
 //! asserting views, and `PointsStackTracker` over an index of 5000 points.
 //!
 //! Rows whose outcome the port cannot reproduce for a declared reason are
-//! listed in [`DECLARED`] with the reason, and the dump's `   live` lines
-//! (rmp #334) are compared apart; every other row must match.
+//! listed in [`DECLARED`] with the reason; every other row, the digest of
+//! the dump's `   live` lines included (rmp #584), must match.
 
 #[path = "../../rucene-codecs/tests/oracle/mod.rs"]
 mod oracle;
@@ -1339,7 +1339,7 @@ fn misuse(rows: &mut Rows, c: &str, reader: &Arc<dyn DirectoryReader>) {
     rows.row(c, "misuse", "dv_thread", "not expressible".to_string());
     rows.rec(c, "misuse", "mismatched_bogus", || {
         let infos = r#in.get_field_infos();
-        let fi = infos.field_info("s_str").unwrap();
+        let fi = infos.shared_field_info("s_str").unwrap();
         let empty = FieldInfos::new(Vec::new())?;
         let mut yes = YesVisitor;
         MismatchedVisitor::new(&mut yes, &empty).string_field(fi, "x".to_string())?;
@@ -1717,29 +1717,6 @@ fn index_wrappers_match_the_java_oracle() {
 
     let mut actual = rows.0;
     let mut expected = expected;
-    // The dump's `   live` lines read the impacts of a postings enum through a
-    // view; core's `BlockPostingsEnum::get_impacts` returns a snapshot (rmp
-    // #334, the exclusion of `oracle::assert_same_lines_but_live`). They are
-    // compared apart and must still differ somewhere, so that this exclusion
-    // fails once the core is fixed.
-    let live_keys: Vec<String> = expected
-        .keys()
-        .filter(|k| k.ends_with(".dumplive"))
-        .cloned()
-        .collect();
-    let mut live_differences = 0;
-    for key in live_keys {
-        let e = expected.remove(&key);
-        let a = actual.remove(&key);
-        assert!(a.is_some(), "missing {key}");
-        if e != a {
-            live_differences += 1;
-        }
-    }
-    assert!(
-        live_differences > 0,
-        "every dumplive row matches: the core's live impacts are fixed, remove the exclusion"
-    );
     for (suffix, how, _reason) in DECLARED {
         let keys: Vec<String> = expected
             .keys()

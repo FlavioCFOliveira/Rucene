@@ -249,7 +249,7 @@ pub fn create_index(do_multi_segment: bool) -> Result<()> {
 }
 
 fn stored_int(name: &str, value: i32) -> Result<StoredField> {
-    StoredField::new_number(name, NumericValue::Int(value))
+    StoredField::new_number(name.to_string(), NumericValue::Int(value))
 }
 
 fn add_doc(iw: &RandomIndexWriter, i: i32) -> Result<()> {

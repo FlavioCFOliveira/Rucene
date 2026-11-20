@@ -191,7 +191,7 @@ const ORACLES: [FormatOracle; 3] = [
         extensions: &["tib", "tii"],
         codec: fixed_gap_codec,
         extra_jars: TEST_FRAMEWORK_JARS,
-        live_impacts_differ: true,
+        live_impacts_differ: false,
     },
     FormatOracle {
         prefix: "vargap_fixed",
@@ -199,7 +199,7 @@ const ORACLES: [FormatOracle; 3] = [
         extensions: &["tib", "tiv", "tmv"],
         codec: var_gap_fixed_codec,
         extra_jars: TEST_FRAMEWORK_JARS,
-        live_impacts_differ: true,
+        live_impacts_differ: false,
     },
     FormatOracle {
         prefix: "vargap_docfreq",
@@ -207,7 +207,7 @@ const ORACLES: [FormatOracle; 3] = [
         extensions: &["tib", "tiv", "tmv"],
         codec: var_gap_doc_freq_codec,
         extra_jars: TEST_FRAMEWORK_JARS,
-        live_impacts_differ: true,
+        live_impacts_differ: false,
     },
 ];
 

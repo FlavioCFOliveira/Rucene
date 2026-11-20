@@ -108,10 +108,10 @@ impl Fields for AssertingFieldsProducer {
         self.r#in.iterator()
     }
 
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(match self.r#in.terms(field)? {
             None => None,
-            Some(terms) => Some(Box::new(AssertingTerms::new(terms))),
+            Some(terms) => Some(Arc::new(AssertingTerms::new(terms))),
         })
     }
 
@@ -210,8 +210,8 @@ impl FieldsConsumer for AssertingFieldsConsumer<'_> {
             java_assert!(has_offsets == terms.has_offsets());
 
             while let Some(term) = terms_enum.next()? {
-                java_assert!(last_term.as_ref().is_none_or(|last| *last < term));
-                last_term = Some(BytesRef::deep_copy_of(&term));
+                java_assert!(last_term.as_ref().is_none_or(|last| *last < term.clone()));
+                last_term = Some(BytesRef::deep_copy_of(term));
 
                 let mut flags = 0;
                 if !has_positions {
@@ -314,7 +314,7 @@ mod tests {
                 fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
                     Box::new(std::iter::empty())
                 }
-                fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+                fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
                     Ok(None)
                 }
                 fn size(&self) -> i32 {

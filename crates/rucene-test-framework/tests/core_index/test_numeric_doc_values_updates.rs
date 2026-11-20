@@ -164,14 +164,14 @@ fn doc_val(id: i32, val: i64) -> Result<Document> {
 
 /// `new NumericDocValuesField(name, value)`.
 fn ndv_field(name: &str, value: i64) -> Box<NumericDocValuesField> {
-    Box::new(NumericDocValuesField::new(name, value))
+    Box::new(NumericDocValuesField::new(name.to_string(), value))
 }
 
 /// `new NumericDocValuesField(name, value)` as the `Field` `updateDocValues`
 /// takes.
 fn ndv_update(name: &str, value: i64) -> Result<Field> {
     Field::new_with_number(
-        name,
+        name.to_string(),
         NumericValue::Long(value),
         NumericDocValuesField::type_().clone(),
     )
@@ -699,7 +699,7 @@ fn test_multiple_doc_values_types() -> Result<()> {
         assert_equals(&LuceneTestCase::new_bytes_ref_str(&i.to_string()), &term);
         assert_equals(&i, &sdv.next_doc()?);
         let term = sdv.lookup_ord(sdv.ord_value()?)?;
-        assert_equals(&LuceneTestCase::new_bytes_ref_str(&i.to_string()), &term);
+        assert_equals(&LuceneTestCase::new_bytes_ref_str(&i.to_string()), term);
         assert_equals(&i, &ssdv.next_doc()?);
 
         let mut ord = ssdv.next_ord()?;
@@ -869,7 +869,7 @@ fn test_different_dv_format_per_field() -> Result<()> {
         assert_equals(&17, &ndv.long_value()?);
         assert_equals(&i, &sdv.next_doc()?);
         let term = sdv.lookup_ord(sdv.ord_value()?)?;
-        assert_equals(&LuceneTestCase::new_bytes_ref_str("value"), &term);
+        assert_equals(&LuceneTestCase::new_bytes_ref_str("value"), term);
     }
 
     reader.close()?;
