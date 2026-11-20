@@ -1995,3 +1995,40 @@ mod census_gap_index_sort_tests {
         assert!(text.ends_with("to new indexSort=<long: \"foo\">"), "{text}");
     }
 }
+
+#[cfg(test)]
+mod numeric_field_reader_context_comparator_tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    fn comparator(reverse: bool) -> NumericFieldReaderContextComparator {
+        NumericFieldReaderContextComparator {
+            field: "f".to_string(),
+            reverse,
+            missing_value: None,
+            point_decoder: |_| 0,
+        }
+    }
+
+    /// #594: `NumericFieldReaderContextComparator.compare` is
+    /// `reverse ? Long.compare(v2, v1) : Long.compare(v1, v2)`
+    /// (`SegmentOrder.java`). The former negated sort key
+    /// (`value.saturating_neg()`) tied `i64::MIN` and `i64::MIN + 1` in a
+    /// reversed sort; `Long.compare` puts the larger one first.
+    #[test]
+    fn reverse_compare_orders_min_and_min_plus_one_like_long_compare() {
+        let reversed = comparator(true);
+        assert_eq!(reversed.compare(i64::MIN + 1, i64::MIN), Ordering::Less);
+        assert_eq!(reversed.compare(i64::MIN, i64::MIN + 1), Ordering::Greater);
+        assert_eq!(reversed.compare(i64::MAX, i64::MAX), Ordering::Equal);
+        let forward = comparator(false);
+        assert_eq!(forward.compare(i64::MIN, i64::MIN + 1), Ordering::Less);
+        assert_eq!(forward.compare(5, -5), Ordering::Greater);
+
+        // A stable reversed sort of the leaf values, as `Arrays.sort` does.
+        let values = [i64::MIN, i64::MIN + 1, 3, i64::MIN];
+        let mut order: Vec<usize> = (0..values.len()).collect();
+        order.sort_by(|&a, &b| reversed.compare(values[a], values[b]));
+        assert_eq!(order, vec![2, 1, 0, 3]);
+    }
+}

@@ -39,6 +39,22 @@ impl Token {
     fn pos_inc(&self) -> i32 {
         self.pos_inc
     }
+
+    /// Equivalent to `Token.toString()`: `attSource.toString()`
+    /// (`GraphTokenFilter.java:269-272`).
+    ///
+    /// Java's token owns `attSource`, a clone of the stream's attributes
+    /// (`input.cloneAttributes()`) holding the token's values. This token keeps
+    /// only the captured state, so `attSource` is rebuilt the same way: a clone
+    /// of `source`, the stream's attributes, restored to the token's state.
+    #[allow(dead_code)] // Java's `toString` has no caller in Lucene: debugging only.
+    fn to_java_string(&self, source: &crate::util::attribute::AttributeSource) -> String {
+        let att_source = source.clone_attributes();
+        att_source
+            .restore_state(&self.state)
+            .expect("INVARIANT: the state was captured from the stream these attributes clone");
+        att_source.to_string()
+    }
 }
 
 /// Walks the paths through a token graph.
@@ -545,6 +561,25 @@ mod tests {
             .get_attribute_interface::<dyn CharTermAttribute>()
             .expect("added at construction");
         term_att.buffer()[..term_att.length()].iter().collect()
+    }
+
+    /// #594: `Token.toString()` is `attSource.toString()`
+    /// (`GraphTokenFilter.java:269-272`): `AttributeSource@<identity hash> `
+    /// followed by `reflectAsString(false)` of the token's own attributes,
+    /// which equal the stream's attributes when that token was current.
+    #[test]
+    fn token_to_string_is_its_attribute_source_to_string() {
+        let mut graph = GraphTokenFilter::new(Box::new(GraphTokenizer::new("a b"))).unwrap();
+        graph.input.reset().unwrap();
+        assert!(graph.increment_base_token().unwrap());
+        let live_a = graph.input.attribute_source().reflect_as_string(false);
+        let base = graph.base_token.expect("the base token is cached");
+        assert!(graph.increment_graph_token().unwrap());
+        assert_eq!(term(&graph), "b");
+        let rendered = graph.tokens[base].to_java_string(graph.input.attribute_source());
+        let (class_and_hash, reflected) = rendered.split_once(' ').unwrap();
+        assert!(class_and_hash.starts_with("AttributeSource@"), "{rendered}");
+        assert_eq!(reflected, live_a);
     }
 
     /// `cachedTokenCount` counts the tokens the lookahead cache has allocated,

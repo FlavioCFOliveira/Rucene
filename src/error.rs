@@ -451,6 +451,9 @@ pub struct LuceneError {
     pub kind: LuceneErrorKind,
     /// `getSuppressed()`, in the order the exceptions were added.
     suppressed: Vec<Arc<LuceneError>>,
+    /// Java's `enableSuppression`: `false` for the throwables the JVM builds
+    /// with suppression disabled ([`LuceneError::jvm_out_of_memory`]).
+    suppression_enabled: bool,
     /// The stack at creation, Java's `fillInStackTrace()`: captured with
     /// [`Backtrace::capture`](std::backtrace::Backtrace::capture), which costs
     /// nothing unless `RUST_LIB_BACKTRACE` (or `RUST_BACKTRACE`) enables it.
@@ -479,6 +482,7 @@ impl From<LuceneErrorKind> for LuceneError {
         Self {
             kind,
             suppressed: Vec::new(),
+            suppression_enabled: true,
             backtrace: {
                 let backtrace = std::backtrace::Backtrace::capture();
                 (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
@@ -570,8 +574,15 @@ impl LuceneError {
 
     /// [`add_suppressed`](Self::add_suppressed) of an exception that is
     /// shared, as Java suppresses the same object it may also keep.
+    ///
+    /// A throwable built with suppression disabled keeps none: Java's
+    /// `addSuppressed` returns without recording when `suppressedExceptions`
+    /// is `null` (`Throwable.java`, `enableSuppression`); see
+    /// [`jvm_out_of_memory`](Self::jvm_out_of_memory).
     pub fn add_suppressed_shared(&mut self, exception: Arc<LuceneError>) {
-        self.suppressed.push(exception);
+        if self.suppression_enabled {
+            self.suppressed.push(exception);
+        }
     }
 
     /// `Throwable.getSuppressed()`: the exceptions suppressed into this one,
@@ -645,6 +656,7 @@ impl LuceneError {
         Self {
             kind: self.kind.duplicate(),
             suppressed: self.suppressed.clone(),
+            suppression_enabled: self.suppression_enabled,
             backtrace: self.backtrace.clone(),
         }
     }
@@ -1067,6 +1079,20 @@ impl LuceneError {
             message: Some(message.into()),
             cause: None,
         })
+    }
+
+    /// The `OutOfMemoryError` the JVM itself raises, such as `new T[n]`'s
+    /// `Requested array size exceeds VM limit` or `Java heap space`.
+    ///
+    /// HotSpot builds these with suppression disabled: `addSuppressed` on
+    /// them records nothing (observed on JDK 25.0.5.1:
+    /// `getSuppressed().length == 0` after `addSuppressed` for both
+    /// messages), so [`add_suppressed`](Self::add_suppressed) records nothing
+    /// on this error either.
+    pub fn jvm_out_of_memory(message: impl Into<String>) -> Self {
+        let mut error = Self::unchecked("java.lang.OutOfMemoryError", message);
+        error.suppression_enabled = false;
+        error
     }
 
     /// `new <class>(message)` for an unchecked Java exception no other

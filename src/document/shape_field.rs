@@ -1018,3 +1018,78 @@ impl IndexableField for LateInteractionField {
         None
     }
 }
+
+#[cfg(test)]
+mod decoded_triangle_and_set_triangle_value_tests {
+    use super::*;
+
+    fn decoded(values: [i32; 6], edges: [bool; 3]) -> DecodedTriangle {
+        DecodedTriangle {
+            a_x: values[0],
+            a_y: values[1],
+            b_x: values[2],
+            b_y: values[3],
+            c_x: values[4],
+            c_y: values[5],
+            ab: edges[0],
+            bc: edges[1],
+            ca: edges[2],
+            ..DecodedTriangle::default()
+        }
+    }
+
+    /// #594: `DecodedTriangle.toString()` is `aX + ", " + aY + " " + bX +
+    /// ", " + bY + " " + cX + ", " + cY + " [" + ab + "," + bc + "," + ca +
+    /// "]"`.
+    #[test]
+    fn decoded_triangle_to_string_matches_java() {
+        assert_eq!(
+            decoded([1, 2, 3, 4, 5, 6], [true, false, true]).to_string(),
+            "1, 2 3, 4 5, 6 [true,false,true]"
+        );
+    }
+
+    /// #594: `DecodedTriangle.hashCode()` is `Objects.hash(aX, aY, bX, bY,
+    /// cX, cY, ab, bc, ca)` (`Boolean.hashCode` 1231/1237), the type left
+    /// out. Expected values computed with Java's formula.
+    #[test]
+    fn decoded_triangle_hash_code_matches_java() {
+        assert_eq!(
+            decoded([1, 2, 3, 4, 5, 6], [true, false, true]).hash_code(),
+            -30_268_027
+        );
+        let mut other = decoded([-7, 0, i32::MAX, i32::MIN, 10, 20], [false, false, true]);
+        assert_eq!(other.hash_code(), -1_305_678_468);
+        other.triangle_type = TriangleType::Line;
+        assert_eq!(other.hash_code(), -1_305_678_468, "the type is left out");
+    }
+
+    /// #594: `Triangle.setTriangleValue` encodes into the `7 * BYTES` value
+    /// the constructor allocated; both constructors produce the bytes
+    /// `ShapeField.encodeTriangle` writes.
+    #[test]
+    fn set_triangle_value_reencodes_into_the_same_value() {
+        let expected = |ax, ay, ab, bx, by, bc, cx, cy, ca| {
+            let mut bytes = vec![0u8; 7 * BYTES];
+            ShapeField::encode_triangle(&mut bytes, ay, ax, ab, by, bx, bc, cy, cx, ca).unwrap();
+            bytes
+        };
+        let mut triangle = Triangle::new("f", 0, 0, 10, 0, 0, 10).unwrap();
+        let value = triangle.binary_value().unwrap();
+        assert_eq!(
+            value.slice(),
+            expected(0, 0, true, 10, 0, true, 0, 10, true)
+        );
+        let address = value.bytes.as_ptr();
+
+        triangle
+            .set_triangle_value(5, 5, false, 20, 5, true, 5, 20, false)
+            .unwrap();
+        let value = triangle.binary_value().unwrap();
+        assert_eq!(
+            value.slice(),
+            expected(5, 5, false, 20, 5, true, 5, 20, false)
+        );
+        assert_eq!(value.bytes.as_ptr(), address, "the same array");
+    }
+}

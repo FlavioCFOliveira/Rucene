@@ -93,16 +93,13 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
             // `try_reserve_exact`. Each `FieldInfo` is then allocated as it is
             // read, as Java allocates each `new FieldInfo(...)`.
             if size > i32::MAX - 2 {
-                return Err(LuceneError::unchecked(
-                    "java.lang.OutOfMemoryError",
+                return Err(LuceneError::jvm_out_of_memory(
                     "Requested array size exceeds VM limit",
                 ));
             }
             Vec::<Box<FieldInfo>>::new()
                 .try_reserve_exact(size as usize)
-                .map_err(|_| {
-                    LuceneError::unchecked("java.lang.OutOfMemoryError", "Java heap space")
-                })?;
+                .map_err(|_| LuceneError::jvm_out_of_memory("Java heap space"))?;
             let mut infos = Vec::new();
             // previous field's attribute map, we share when possible:
             // `lastAttributes = Collections.emptyMap()`

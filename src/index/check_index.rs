@@ -7080,3 +7080,56 @@ mod census_gap_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod options_out_tests {
+    use super::*;
+    use crate::document::{Document, Store, StringField};
+    use crate::store::ByteBuffersDirectory;
+    use crate::util::print_stream::ByteArrayPrintStream;
+
+    fn one_doc_index() -> Arc<dyn Directory> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(StringField::new("id", "1".to_string(), Store::YES).unwrap());
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+        dir
+    }
+
+    /// #594: `doCheck(Options)` reports to `opts.out`, which
+    /// `Options.setOut(PrintStream)` sets; with `out == null` the first
+    /// `opts.out.println(...)` throws `NullPointerException`.
+    #[test]
+    fn do_check_reports_to_options_out_and_npes_without_it() {
+        let dir = one_doc_index();
+
+        let mut checker = CheckIndex::new(Arc::clone(&dir)).unwrap();
+        let error = checker.do_check(&Options::new()).unwrap_err();
+        assert!(
+            matches!(
+                error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        checker.close().unwrap();
+
+        let out = ByteArrayPrintStream::new();
+        let mut opts = Options::new();
+        opts.set_out(Some(Arc::new(out.clone())));
+        let mut checker = CheckIndex::new(dir).unwrap();
+        assert_eq!(checker.do_check(&opts).unwrap(), 0);
+        checker.close().unwrap();
+        let report = out.to_string_utf8();
+        assert!(
+            report.contains("No problems were detected with this index."),
+            "{report}"
+        );
+    }
+}

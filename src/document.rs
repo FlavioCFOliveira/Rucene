@@ -10337,3 +10337,38 @@ mod shared_char_reader_tests {
         assert!(!handle.ready().unwrap());
     }
 }
+
+#[cfg(test)]
+mod date_tools_resolution_to_string_tests {
+    use super::*;
+
+    /// #594: `DateTools.Resolution.toString()` is the constant's name in
+    /// lowercase (`super.toString().toLowerCase(Locale.ROOT)`).
+    #[test]
+    fn resolution_to_string_is_the_lowercase_constant_name() {
+        let rendered: Vec<String> = [
+            Resolution::YEAR,
+            Resolution::MONTH,
+            Resolution::DAY,
+            Resolution::HOUR,
+            Resolution::MINUTE,
+            Resolution::SECOND,
+            Resolution::MILLISECOND,
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(
+            rendered,
+            [
+                "year",
+                "month",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond"
+            ]
+        );
+    }
+}

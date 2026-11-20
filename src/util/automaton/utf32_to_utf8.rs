@@ -373,3 +373,22 @@ impl UTF32ToUTF8 {
         self.utf8.finish()
     }
 }
+
+#[cfg(test)]
+mod utf8_sequence_to_string_tests {
+    use super::*;
+
+    /// #594: `UTF8Sequence.toString()` is each byte as
+    /// `Integer.toBinaryString(byteAt(i))`, separated by a space
+    /// (`UTF32ToUTF8.java:131-140`).
+    #[test]
+    fn utf8_sequence_to_string_matches_java() {
+        let mut sequence = UTF8Sequence::default();
+        sequence.set(0xE9);
+        assert_eq!(sequence.to_string(), "11000011 10101001");
+        sequence.set(i32::from(b'a'));
+        assert_eq!(sequence.to_string(), "1100001");
+        sequence.set(0x1F600);
+        assert_eq!(sequence.to_string(), "11110000 10011111 10011000 10000000");
+    }
+}

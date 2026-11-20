@@ -11298,6 +11298,8 @@ mod tests {
     struct SyncRecordingDirectory {
         inner: Arc<dyn Directory>,
         synced: Mutex<Vec<Vec<String>>>,
+        /// The address of each name of every `sync` call, in order.
+        addresses: Mutex<Vec<Vec<usize>>>,
     }
 
     impl Directory for SyncRecordingDirectory {
@@ -11335,6 +11337,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(names.iter().map(|name| name.to_string()).collect());
+            self.addresses
+                .lock()
+                .unwrap()
+                .push(names.iter().map(|name| name.as_ptr() as usize).collect());
             self.inner.sync(names)
         }
 
@@ -11378,6 +11384,7 @@ mod tests {
         let recording = Arc::new(SyncRecordingDirectory {
             inner: Arc::clone(&inner),
             synced: Mutex::new(Vec::new()),
+            addresses: Mutex::new(Vec::new()),
         });
         let writer = IndexWriter::new(
             Arc::clone(&recording) as Arc<dyn Directory>,
@@ -11411,6 +11418,57 @@ mod tests {
             .find(|names| names.len() > 1)
             .expect("the commit synced its files");
         assert_eq!(commit_sync, &expected);
+    }
+
+    /// #602: `startCommit` hands `directory.sync` the names of the file set
+    /// itself (`IndexWriter.java:5773-5774`, `sync(toSync.files(false))`):
+    /// every name the commit syncs is the segment's own shared name, not a
+    /// copy made for the call.
+    #[test]
+    fn a_commit_syncs_the_segments_own_file_names_without_copying_them() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let recording = Arc::new(SyncRecordingDirectory {
+            inner: Arc::new(ByteBuffersDirectory::new()),
+            synced: Mutex::new(Vec::new()),
+            addresses: Mutex::new(Vec::new()),
+        });
+        let writer = IndexWriter::new(
+            Arc::clone(&recording) as Arc<dyn Directory>,
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
+        for segment in 0..2 {
+            for i in 0..3 {
+                let mut doc = Document::new();
+                doc.add(StringField::new("id", format!("{segment}-{i}"), Store::YES).unwrap());
+                writer.add_document(&doc).unwrap();
+            }
+            writer.flush().unwrap();
+        }
+        writer.commit().unwrap();
+
+        let infos = writer.clone_segment_infos().unwrap();
+        let mut owned: HashSet<usize> = HashSet::new();
+        for info in infos.iter() {
+            info.info
+                .with_files(|files| {
+                    owned.extend(files.iter().map(|name| name.as_ptr() as usize));
+                })
+                .unwrap();
+        }
+        let addresses = recording.addresses.lock().unwrap().clone();
+        let commit_sync = addresses
+            .iter()
+            .rev()
+            .find(|names| names.len() > 1)
+            .expect("the commit synced its files");
+        for address in commit_sync {
+            assert!(
+                owned.contains(address),
+                "a synced name is a copy, not the segment's own name"
+            );
+        }
+        writer.close().unwrap();
     }
 
     fn recording_writer() -> (Arc<RecordingInfoStream>, Arc<IndexWriter>) {

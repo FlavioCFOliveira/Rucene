@@ -309,3 +309,75 @@ impl RewriteMethod for ConstantScoreBooleanRewrite {
         )
     }
 }
+
+#[cfg(test)]
+pub(crate) mod shared_field_tests {
+    use super::*;
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::{IndexReader, IndexWriterConfig};
+    use crate::search::boolean_query::BooleanQuery;
+    use crate::search::multi_term_query::RewriteMethod;
+    use crate::search::prefix_query::PrefixQuery;
+    use crate::search::term_query::TermQuery;
+    use crate::store::{ByteBuffersDirectory, Directory};
+
+    /// A searcher over one segment whose field `f` holds `a0`..`a4` and `b`.
+    pub(crate) fn searcher() -> IndexSearcher {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for term in ["a0", "a1", "a2", "a3", "a4", "b"] {
+            let mut doc = Document::new();
+            doc.add(StringField::new("f", term.to_string(), Store::NO).unwrap());
+            writer.add_document(&doc).unwrap();
+        }
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(dir).unwrap();
+        IndexSearcher::new(reader as Arc<dyn IndexReader>).unwrap()
+    }
+
+    /// The field addresses of the `TermQuery` clauses of a rewritten
+    /// `BooleanQuery`, in clause order.
+    pub(crate) fn clause_field_addresses(query: &Arc<dyn Query>) -> Vec<usize> {
+        let boolean = query
+            .as_any()
+            .downcast_ref::<BooleanQuery>()
+            .expect("a boolean query of term clauses");
+        boolean
+            .clauses()
+            .iter()
+            .map(|clause| {
+                let term_query = clause
+                    .query()
+                    .as_any()
+                    .downcast_ref::<TermQuery>()
+                    .expect("a term clause");
+                assert_eq!(term_query.get_term().field(), "f");
+                term_query.get_term().field().as_ptr() as usize
+            })
+            .collect()
+    }
+
+    /// Rewrites `f:a*` with `method` and returns the clause field addresses.
+    pub(crate) fn rewritten_field_addresses(method: Arc<dyn RewriteMethod>) -> Vec<usize> {
+        let searcher = searcher();
+        let query: Arc<dyn Query> =
+            Arc::new(PrefixQuery::with_rewrite_method(Term::from_text("f", "a"), method).unwrap());
+        clause_field_addresses(&searcher.rewrite(query).unwrap())
+    }
+
+    /// #602: `ScoringRewrite.rewrite` builds every term with the query's own
+    /// field `String` (`new Term(query.getField(), ...)`): the five rewritten
+    /// clauses share one field name, not a copy each.
+    #[test]
+    fn scoring_rewrite_terms_share_one_field_name() {
+        let addresses =
+            rewritten_field_addresses(crate::search::multi_term_query::scoring_boolean_rewrite());
+        assert_eq!(addresses.len(), 5);
+        assert!(
+            addresses.iter().all(|&a| a == addresses[0]),
+            "each term copied the field name: {addresses:?}"
+        );
+    }
+}

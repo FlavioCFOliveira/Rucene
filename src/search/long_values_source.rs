@@ -392,6 +392,8 @@ impl LongValuesSource for FieldValuesSource {
         self
     }
 
+    /// Equivalent to `FieldValuesSource.equals(Object)`: same class and
+    /// `Objects.equals(field, that.field)` (`LongValuesSource.java:245-250`).
     fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
         match other.as_any().downcast_ref::<FieldValuesSource>() {
             Some(other) => self.field == other.field,
@@ -407,6 +409,8 @@ impl LongValuesSource for FieldValuesSource {
         ))
     }
 
+    /// Equivalent to `FieldValuesSource.toString()`: `"long(" + field + ")"`
+    /// (`LongValuesSource.java:253-255`).
     fn to_source_string(&self) -> String {
         format!("long({})", self.field)
     }
@@ -739,5 +743,22 @@ impl SlotComparator for LongValuesComparator {
 
     fn set_hits_threshold_reached(&mut self, leaf: &mut LongValuesLeaf) -> Result<()> {
         self.inner.set_hits_threshold_reached(&mut leaf.leaf)
+    }
+}
+
+#[cfg(test)]
+mod field_values_source_member_tests {
+    use super::*;
+
+    /// #594: `FieldValuesSource.equals(Object)` is same class and
+    /// `Objects.equals(field, that.field)`; `toString()` is
+    /// `"long(" + field + ")"` (`LongValuesSource.java:245-255`).
+    #[test]
+    fn field_values_source_equals_and_to_string_match_java() {
+        let source = from_long_field("price");
+        assert_eq!(source.to_source_string(), "long(price)");
+        assert!(source.source_eq(from_long_field("price").as_ref()));
+        assert!(!source.source_eq(from_long_field("cost").as_ref()));
+        assert!(!source.source_eq(constant(7).as_ref()));
     }
 }

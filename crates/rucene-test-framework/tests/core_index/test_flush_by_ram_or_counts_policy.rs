@@ -140,8 +140,8 @@ fn run_flush_by_ram(num_threads: i32, max_ram_mb: f64, ensure_not_stalled: bool)
     iwc.set_max_buffered_docs(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)?;
     let ram_buffer_size_mb = iwc.ram_buffer_size_mb();
     let writer = IndexWriter::new(dir.as_directory(), iwc)?;
-    Assert::assert_false(flush_policy.inner.flush_on_doc_count());
-    Assert::assert_true(flush_policy.inner.flush_on_ram());
+    Assert::assert_false(flush_policy.flush_on_doc_count());
+    Assert::assert_true(flush_policy.flush_on_ram());
     let docs_writer = Arc::clone(writer.get_docs_writer());
     let flush_control = docs_writer.flush_control();
     assert_equals_msg(
@@ -196,8 +196,8 @@ fn test_flush_doc_count() -> Result<()> {
         iwc.set_ram_buffer_size_mb(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH as f64)?;
         let max_buffered_docs = iwc.max_buffered_docs();
         let writer = IndexWriter::new(dir.as_directory(), iwc)?;
-        Assert::assert_true(flush_policy.inner.flush_on_doc_count());
-        Assert::assert_false(flush_policy.inner.flush_on_ram());
+        Assert::assert_true(flush_policy.flush_on_doc_count());
+        Assert::assert_false(flush_policy.flush_on_ram());
         let docs_writer = Arc::clone(writer.get_docs_writer());
         let flush_control = docs_writer.flush_control();
         assert_equals_msg(
@@ -264,7 +264,7 @@ fn test_random() -> Result<()> {
     );
     assert_equals(&num_documents_to_index, &writer.get_doc_stats()?.num_docs);
     assert_equals(&num_documents_to_index, &writer.get_doc_stats()?.max_doc);
-    if flush_policy.inner.flush_on_ram() && !flush_policy.inner.flush_on_doc_count() {
+    if flush_policy.flush_on_ram() && !flush_policy.flush_on_doc_count() {
         let max_ram_bytes = (ram_buffer_size_mb * 1024.0 * 1024.0) as i64;
         Assert::assert_true_msg(
             "peak bytes without flush exceeded watermark",
@@ -286,7 +286,7 @@ fn test_random() -> Result<()> {
     let r = directory_reader::open(dir.as_directory())?;
     assert_equals(&num_documents_to_index, &r.num_docs());
     assert_equals(&num_documents_to_index, &r.max_doc());
-    if !flush_policy.inner.flush_on_ram() {
+    if !flush_policy.flush_on_ram() {
         Assert::assert_false_msg(
             "never stall if we don't flush on RAM",
             flush_control.stall_control.was_stalled(),
@@ -428,6 +428,18 @@ impl MockDefaultFlushPolicy {
             .and_then(Weak::upgrade)
             .unwrap_or_else(|| npe("indexWriterConfig"))
     }
+
+    /// The inherited `flushOnDocCount()`, over the `indexWriterConfig` this
+    /// policy's `init` recorded.
+    fn flush_on_doc_count(&self) -> bool {
+        self.inner.flush_on_doc_count(&self.index_writer_config())
+    }
+
+    /// The inherited `flushOnRAM()`, over the `indexWriterConfig` this
+    /// policy's `init` recorded.
+    fn flush_on_ram(&self) -> bool {
+        self.inner.flush_on_ram(&self.index_writer_config())
+    }
 }
 
 /// `list.remove(o)`: removes the first element that is `o`, by identity.
@@ -460,11 +472,10 @@ impl FlushPolicy for MockDefaultFlushPolicy {
         // the branches mirror the Java policy's separate conditions
         let to_flush: Option<&DocumentsWriterPerThread> = if dwpt.is_flush_pending() {
             Some(dwpt)
-        } else if self.inner.flush_on_doc_count()
-            && dwpt.num_docs_in_ram() >= config.max_buffered_docs()
+        } else if self.flush_on_doc_count() && dwpt.num_docs_in_ram() >= config.max_buffered_docs()
         {
             Some(dwpt)
-        } else if self.inner.flush_on_ram()
+        } else if self.flush_on_ram()
             && active_bytes >= (config.ram_buffer_size_mb() * 1024.0 * 1024.0) as i64
         {
             largest = self.find_largest_non_pending_writer(control, dwpt);

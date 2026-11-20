@@ -94,10 +94,10 @@ impl<T: Clone + Default> FSTPath<T> {
 }
 
 impl<T: std::fmt::Display> std::fmt::Display for FSTPath<T> {
-    /// Equivalent to `FSTPath.toString()`: `"input=" + input.get() + " output="
-    /// + output + " context=" + context + " boost=" + boost + " payload=" +
-    /// payload`, the output by its own `toString()` and a `null` context as
-    /// `null`.
+    /// Equivalent to `FSTPath.toString()`:
+    /// `"input=" + input.get() + " output=" + output + " context=" + context +
+    /// " boost=" + boost + " payload=" + payload`, the output by its own
+    /// `toString()` and a `null` context as `null`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

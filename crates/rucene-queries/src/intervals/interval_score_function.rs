@@ -174,6 +174,8 @@ impl IntervalScoreFunction for SaturationFunction {
         )
     }
 
+    /// Equivalent to `SaturationFunction.equals(Object)`: same class and
+    /// `Float.compare(that.pivot, pivot) == 0`.
     fn function_eq(&self, other: &dyn IntervalScoreFunction) -> bool {
         other
             .as_any()
@@ -188,6 +190,8 @@ impl IntervalScoreFunction for SaturationFunction {
         31i32.wrapping_add(java_float_hash_code(self.pivot))
     }
 
+    /// Equivalent to `SaturationFunction.toString()`:
+    /// `"SaturationFunction(pivot=" + pivot + ")"`.
     fn function_to_string(&self) -> String {
         format!("SaturationFunction(pivot={})", float_to_string(self.pivot))
     }
@@ -278,6 +282,9 @@ impl IntervalScoreFunction for SigmoidFunction {
         )
     }
 
+    /// Equivalent to `SigmoidFunction.equals(Object)`: same class,
+    /// `Float.compare(that.pivot, pivot) == 0` and
+    /// `Float.compare(that.a, a) == 0`.
     fn function_eq(&self, other: &dyn IntervalScoreFunction) -> bool {
         other
             .as_any()
@@ -297,6 +304,8 @@ impl IntervalScoreFunction for SigmoidFunction {
             .wrapping_add(java_float_hash_code(self.a))
     }
 
+    /// Equivalent to `SigmoidFunction.toString()`:
+    /// `"SigmoidFunction(pivot=" + pivot + ", a=" + a + ")"`.
     fn function_to_string(&self) -> String {
         format!(
             "SigmoidFunction(pivot={}, a={})",
@@ -307,5 +316,35 @@ impl IntervalScoreFunction for SigmoidFunction {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod function_member_tests {
+    use super::*;
+
+    /// #596: `SaturationFunction`/`SigmoidFunction` `equals` (same class,
+    /// `Float.compare` of each parameter) and `toString`
+    /// (`IntervalScoreFunction.java:91-106, 150-165`).
+    #[test]
+    fn saturation_and_sigmoid_equals_and_to_string_match_java() {
+        let saturation = saturation_function(2.5).unwrap();
+        assert_eq!(
+            saturation.function_to_string(),
+            "SaturationFunction(pivot=2.5)"
+        );
+        assert!(saturation.function_eq(saturation_function(2.5).unwrap().as_ref()));
+        assert!(!saturation.function_eq(saturation_function(3.0).unwrap().as_ref()));
+
+        let sigmoid = sigmoid_function(1.0, 0.5).unwrap();
+        assert_eq!(
+            sigmoid.function_to_string(),
+            "SigmoidFunction(pivot=1.0, a=0.5)"
+        );
+        assert!(sigmoid.function_eq(sigmoid_function(1.0, 0.5).unwrap().as_ref()));
+        assert!(!sigmoid.function_eq(sigmoid_function(1.0, 0.75).unwrap().as_ref()));
+        assert!(!sigmoid.function_eq(sigmoid_function(2.0, 0.5).unwrap().as_ref()));
+        assert!(!sigmoid.function_eq(saturation.as_ref()));
+        assert!(!saturation.function_eq(sigmoid.as_ref()));
     }
 }

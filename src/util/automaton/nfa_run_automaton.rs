@@ -745,3 +745,32 @@ impl Accountable for NFARunAutomaton {
             + RamUsageEstimator::size_of_int(&self.classmap)
     }
 }
+
+#[cfg(test)]
+mod dstate_equals_tests {
+    use super::*;
+
+    /// #594: `DState.equals(Object)` is `hashCode == other.hashCode &&
+    /// Arrays.equals(nfaStates, other.nfaStates)`
+    /// (`NFARunAutomaton.java:437-443`): the transitions computed so far take
+    /// no part.
+    #[test]
+    fn dstate_equals_compares_hash_code_and_nfa_states() {
+        let mut automaton = Automaton::new();
+        for _ in 0..3 {
+            automaton.create_state();
+        }
+        automaton.set_accept(2, true);
+        automaton.finish_state();
+        let a = DState::new(vec![0, 2], &automaton);
+        let mut b = DState::new(vec![0, 2], &automaton);
+        b.transitions = Some(vec![1, 2, 3]);
+        b.computed_transitions = 1;
+        assert_eq!(a, b);
+        assert_ne!(a, DState::new(vec![0, 1], &automaton));
+        assert_ne!(a, DState::new(vec![0, 2, 1], &automaton));
+        let mut forged = DState::new(vec![0, 2], &automaton);
+        forged.hash_code = a.hash_code.wrapping_add(1);
+        assert_ne!(a, forged, "a different hash code alone breaks equality");
+    }
+}

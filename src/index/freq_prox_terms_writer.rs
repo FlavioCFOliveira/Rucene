@@ -4459,6 +4459,25 @@ mod tests {
 
     // -- Terms enum contract ----------------------------------------------
 
+    /// #594: `FreqProxTerms.iterator()` calls `FreqProxTermsEnum.reset()`
+    /// (`FreqProxFields.java`), so a fresh enum sits at `ord == -1` and
+    /// `term()` before `next()` is the empty `scratch`; `next()` then reads the
+    /// first term at ord 0.
+    #[test]
+    fn iterator_returns_an_enum_reset_before_the_first_term() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        assert_eq!(enumerator.ord().expect("ord"), -1);
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"");
+        assert_eq!(enumerator.next().expect("next").unwrap().slice(), b"alpha");
+        assert_eq!(enumerator.ord().expect("ord"), 0);
+    }
+
     #[test]
     fn seek_ceil_finds_terms_and_reports_the_next_one_otherwise() {
         let mut harness = Harness::new(IndexOptions::DOCS);

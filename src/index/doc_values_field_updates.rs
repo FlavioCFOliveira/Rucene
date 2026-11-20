@@ -1599,3 +1599,78 @@ mod census_gap_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod iterator_doc_values_tests {
+    use super::*;
+    use crate::error::LuceneErrorKind;
+
+    fn is_unsupported(result: Result<bool>) -> bool {
+        matches!(
+            result,
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        )
+    }
+
+    /// #594: `DocValuesFieldUpdates.Iterator.advanceExact(int)` is final and
+    /// throws `UnsupportedOperationException`, for one buffer's iterator and
+    /// for the merged view.
+    #[test]
+    fn iterator_advance_exact_is_unsupported() {
+        let mut updates = DocValuesFieldUpdates::new(10, 1, "n", DocValuesType::NUMERIC);
+        updates.add_long(2, 20).unwrap();
+        updates.finish().unwrap();
+        assert!(is_unsupported(DocValuesIterator::advance_exact(
+            &mut updates.iterator(),
+            2
+        )));
+        let mut merged = merged_iterator(vec![updates.iterator()]);
+        assert!(is_unsupported(DocValuesIterator::advance_exact(
+            &mut merged,
+            2
+        )));
+    }
+
+    /// #594: `Iterator.asNumericDocValues(it)` forwards `nextDoc`/`docID`/
+    /// `longValue` and throws `UnsupportedOperationException` from its own
+    /// `advanceExact`; `Iterator.asBinaryDocValues(it)` forwards everything,
+    /// so its `advanceExact` reaches the iterator's, which throws too.
+    #[test]
+    fn as_numeric_and_as_binary_doc_values_forward_to_the_iterator() {
+        let mut updates = DocValuesFieldUpdates::new(10, 1, "n", DocValuesType::NUMERIC);
+        updates.add_long(4, 40).unwrap();
+        updates.add_long(1, 10).unwrap();
+        updates.finish().unwrap();
+        let mut numeric = as_numeric_doc_values(updates.iterator());
+        assert_eq!(numeric.next_doc().unwrap(), 1);
+        assert_eq!(numeric.doc_id(), 1);
+        assert_eq!(numeric.long_value().unwrap(), 10);
+        // `Iterator.advance(int)` is final and throws
+        // (`DocValuesFieldUpdates.java:55-57`); the wrapper forwards it.
+        assert!(matches!(
+            numeric.advance(3),
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
+        assert_eq!(numeric.next_doc().unwrap(), 4);
+        assert_eq!(numeric.long_value().unwrap(), 40);
+        assert!(is_unsupported(numeric.advance_exact(4)));
+        assert_eq!(numeric.next_doc().unwrap(), NO_MORE_DOCS);
+
+        let mut updates = DocValuesFieldUpdates::new(10, 1, "b", DocValuesType::BINARY);
+        updates
+            .add_binary(3, &BytesRef::new(b"three".to_vec()))
+            .unwrap();
+        updates.finish().unwrap();
+        let mut binary = as_binary_doc_values(merged_iterator(vec![updates.iterator()]));
+        assert_eq!(binary.next_doc().unwrap(), 3);
+        assert_eq!(binary.binary_value().unwrap().slice(), b"three");
+        assert!(is_unsupported(binary.advance_exact(3)));
+        assert_eq!(binary.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+}

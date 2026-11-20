@@ -807,3 +807,19 @@ impl LinkedStrings {
         }
     }
 }
+
+#[cfg(test)]
+mod weighted_to_string_tests {
+    use super::*;
+
+    /// #597: `Weighted.toString()` is `word + "(" + score + ")"`
+    /// (`GeneratingSuggester.java`), for a `Root` word (`Root.toString()` is
+    /// the word) and a `String` word.
+    #[test]
+    fn weighted_to_string_is_word_then_score_in_parentheses() {
+        let root = Weighted::new(Root::new("abc".encode_utf16().collect(), 7), 5);
+        assert_eq!(root.to_string(), "abc(5)");
+        let word = Weighted::new("caf\u{e9}".encode_utf16().collect::<Vec<u16>>(), -3);
+        assert_eq!(word.to_string(), "caf\u{e9}(-3)");
+    }
+}

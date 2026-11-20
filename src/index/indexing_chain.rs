@@ -8493,3 +8493,30 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod per_field_compare_to_tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    /// #594: `PerField.compareTo(PerField)` is
+    /// `this.fieldName.compareTo(other.fieldName)`, `String.compareTo`'s
+    /// UTF-16 order: a supplementary character (surrogate `0xD83D`) sorts
+    /// before U+FFFD, the reverse of the code-point order.
+    #[test]
+    fn per_field_compare_to_is_string_compare_to_of_field_names() {
+        let config = Arc::new(LiveIndexWriterConfig::new(None));
+        let mut chain = DefaultIndexingChain::new(config);
+        let a = chain.get_or_add_per_field("a");
+        let b = chain.get_or_add_per_field("b");
+        let emoji = chain.get_or_add_per_field("\u{1F600}");
+        let replacement = chain.get_or_add_per_field("\u{FFFD}");
+        let a2 = chain.get_or_add_per_field("a");
+        let pf = |i: usize| &chain.per_fields[i];
+        assert_eq!(a, a2);
+        assert_eq!(pf(a).compare_to(pf(b)), Ordering::Less);
+        assert_eq!(pf(b).compare_to(pf(a)), Ordering::Greater);
+        assert_eq!(pf(a).compare_to(pf(a2)), Ordering::Equal);
+        assert_eq!(pf(emoji).compare_to(pf(replacement)), Ordering::Less);
+    }
+}

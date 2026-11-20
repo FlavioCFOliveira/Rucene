@@ -1993,3 +1993,114 @@ mod census_gap_wrong_field_info_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod merge_helper_member_tests {
+    use super::*;
+    use crate::index::postings_enum::{EmptyPostingsEnum, ImpactsEnum, PostingsEnum};
+    use crate::index::terms::AcceptStatus;
+    use crate::index::DocValues;
+
+    /// A terms enum positioned at a settable ordinal: all
+    /// `BitsFilteredTermsEnum.accept` reads.
+    struct OrdTermsEnum {
+        ord: i64,
+        term: BytesRef,
+        atts: AttributeSource,
+    }
+
+    impl fmt::Display for OrdTermsEnum {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("OrdTermsEnum")
+        }
+    }
+
+    impl TermsEnum for OrdTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Ok(SeekStatus::END)
+        }
+        fn seek_ord(&mut self, ord: i64) -> Result<()> {
+            self.ord = ord;
+            Ok(())
+        }
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.term))
+        }
+        fn ord(&self) -> Result<i64> {
+            Ok(self.ord)
+        }
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
+        }
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::illegal_state("no impacts".to_string()))
+        }
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            Ok(None)
+        }
+    }
+
+    /// #594: `BitsFilteredTermsEnum.accept(BytesRef)` answers `YES` iff
+    /// `liveTerms.get(ord())` (`DocValuesConsumer.java:1064-1071`).
+    #[test]
+    fn bits_filtered_terms_enum_accepts_exactly_the_live_ordinals() {
+        let mut live_terms = LongBitSet::new(4).unwrap();
+        live_terms.set(1);
+        live_terms.set(3);
+        let mut filtered = BitsFilteredTermsEnum::new(
+            Box::new(OrdTermsEnum {
+                ord: 0,
+                term: BytesRef::default(),
+                atts: AttributeSource::new(),
+            }),
+            live_terms,
+        );
+        let mut accepted = Vec::new();
+        for ord in 0..4 {
+            filtered.inner.seek_ord(ord).unwrap();
+            accepted.push(filtered.accept().unwrap());
+        }
+        assert_eq!(
+            accepted,
+            vec![
+                AcceptStatus::No,
+                AcceptStatus::Yes,
+                AcceptStatus::No,
+                AcceptStatus::Yes
+            ]
+        );
+    }
+
+    /// #594: `SortedSetDocValuesSub.toString()` is
+    /// `"SortedSetDocValuesSub(mappedDocID=" + mappedDocID + " values=" +
+    /// values + ")"`, `mappedDocID` starting at `-1`.
+    #[test]
+    fn sorted_set_doc_values_sub_to_string_matches_java() {
+        let values: Box<dyn SortedSetDocValues> = Box::new(DocValues::empty_sorted_set());
+        let expected_values = values.java_to_string();
+        let sub = SortedSetDocValuesSub {
+            doc_map: crate::index::merge::identity_doc_map(0, 0),
+            values,
+            map: Arc::new(OrdinalMap::build(None, Vec::new(), &[], COMPACT).unwrap()),
+            segment: 0,
+            mapped_doc_id: -1,
+        };
+        assert_eq!(
+            sub.to_string(),
+            format!("SortedSetDocValuesSub(mappedDocID=-1 values={expected_values})")
+        );
+    }
+}

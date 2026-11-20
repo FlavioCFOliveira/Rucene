@@ -29,7 +29,9 @@ pub type ComparableProvider = Box<dyn Fn(i32) -> Result<i64>>;
 
 /// Orders two documents of the same segment.
 ///
-/// Equivalent to `IndexSorter.DocComparator`.
+/// Equivalent to `IndexSorter.DocComparator`, a functional interface.
+/// Equivalent to `DocComparator.compare(int, int)` when called; the
+/// [`Ordering`] carries the sign of Java's `int` result.
 pub type DocComparator = Box<dyn Fn(i32, i32) -> Ordering + Send + Sync>;
 
 /// Caches the sort value of the current document of every segment being

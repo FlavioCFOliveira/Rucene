@@ -267,6 +267,21 @@ impl Tessellation {
         self.nodes[n].previous
     }
 
+    /// Equivalent to `Node.toString()` (`Tessellator.java:1675-1684`) for the
+    /// node at `n`: `previous.idx + " <- " + idx + " -> " + next.idx`.
+    ///
+    /// Java renders a `null` link as `||-` (previous) or ` -||` (next); the
+    /// arena links every node to a node when it is created, as Java's
+    /// `insertNode` links it before returning, so no link here is `null`.
+    #[allow(dead_code)] // Java's `toString` has no caller in Lucene: debugging only.
+    fn node_to_string(&self, n: usize) -> String {
+        let node = &self.nodes[n];
+        format!(
+            "{} <- {} -> {}",
+            self.nodes[node.previous].idx, node.idx, self.nodes[node.next].idx
+        )
+    }
+
     /// Creates a node and optionally links it with a previous node in a
     /// circular doubly-linked list.
     ///
@@ -2497,5 +2512,30 @@ mod census_gap_monitor_tests {
         assert!(tessellation
             .notify_monitor_split(0, &mut detached, None, None)
             .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod node_to_string_tests {
+    use super::*;
+
+    /// #594: `Node.toString()` is `previous.idx + " <- " + idx + " -> " +
+    /// next.idx` (`Tessellator.java:1675-1684`) for a linked node.
+    #[test]
+    fn node_to_string_names_the_linked_neighbours() {
+        let x = [0.0, 1.0, 1.0];
+        let y = [0.0, 0.0, 1.0];
+        let mut tessellation = Tessellation::new();
+        let first = tessellation.insert_node(&x, &y, 0, 0, None, false).unwrap();
+        assert_eq!(tessellation.node_to_string(first), "0 <- 0 -> 0");
+        let second = tessellation
+            .insert_node(&x, &y, 1, 1, Some(first), false)
+            .unwrap();
+        let third = tessellation
+            .insert_node(&x, &y, 2, 2, Some(second), false)
+            .unwrap();
+        assert_eq!(tessellation.node_to_string(first), "2 <- 0 -> 1");
+        assert_eq!(tessellation.node_to_string(second), "0 <- 1 -> 2");
+        assert_eq!(tessellation.node_to_string(third), "1 <- 2 -> 0");
     }
 }

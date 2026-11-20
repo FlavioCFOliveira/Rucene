@@ -2071,3 +2071,24 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reader_clone_tests {
+    use super::*;
+
+    /// #594: `Reader.clone()` is `new Reader(ShapeDocValues.this.data)`: a
+    /// reader over the same bytes that reads from offset 0, whatever the
+    /// position of the reader it was cloned from.
+    #[test]
+    fn reader_clone_reads_from_the_start() {
+        let bytes = [7u8, 8, 9];
+        let mut reader = SliceDataInput::new(&bytes);
+        assert_eq!(reader.read_byte().unwrap(), 7);
+        assert_eq!(reader.read_byte().unwrap(), 8);
+        let mut clone = reader.clone_reader();
+        assert_eq!(clone.position(), 0);
+        assert_eq!(clone.read_byte().unwrap(), 7);
+        assert_eq!(reader.position(), 2, "the original keeps its position");
+        assert_eq!(reader.read_byte().unwrap(), 9);
+    }
+}

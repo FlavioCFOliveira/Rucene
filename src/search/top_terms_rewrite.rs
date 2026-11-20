@@ -351,3 +351,24 @@ where
     }
     builder.build()
 }
+
+#[cfg(test)]
+mod shared_field_tests {
+    use crate::search::multi_term_query::TopTermsScoringBooleanQueryRewrite;
+    use crate::search::scoring_rewrite::shared_field_tests::rewritten_field_addresses;
+    use std::sync::Arc;
+
+    /// #602: `TopTermsRewrite.rewrite` builds every term with the query's
+    /// own field `String` (`new Term(query.field, bytes)`): the rewritten
+    /// clauses share one field name, not a copy each.
+    #[test]
+    fn top_terms_rewrite_terms_share_one_field_name() {
+        let addresses =
+            rewritten_field_addresses(Arc::new(TopTermsScoringBooleanQueryRewrite::new(10)));
+        assert_eq!(addresses.len(), 5);
+        assert!(
+            addresses.iter().all(|&a| a == addresses[0]),
+            "each term copied the field name: {addresses:?}"
+        );
+    }
+}

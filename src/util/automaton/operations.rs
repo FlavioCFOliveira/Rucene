@@ -1446,3 +1446,55 @@ impl Operations {
         Ok(upto)
     }
 }
+
+#[cfg(test)]
+mod point_transition_member_tests {
+    use super::*;
+    use std::hash::{BuildHasher, RandomState};
+
+    fn transition(min: i32, max: i32) -> Transition {
+        Transition {
+            min,
+            max,
+            ..Transition::default()
+        }
+    }
+
+    /// #594: `PointTransitionSet.toString()` lists each point as
+    /// `point:startsCount,endsCount`, separated by a space
+    /// (`Operations.java:642-655`).
+    #[test]
+    fn point_transition_set_to_string_matches_java() {
+        let mut set = PointTransitionSet::default();
+        assert_eq!(set.to_string(), "");
+        set.add(&transition(97, 97));
+        assert_eq!(set.to_string(), "97:1,0 98:0,1");
+        set.add(&transition(97, 99));
+        assert_eq!(set.to_string(), "97:2,0 98:0,1 100:0,1");
+    }
+
+    /// #594: `PointTransitions.equals` and `hashCode` depend on the point
+    /// alone, and `compareTo` is `point - other.point` with `int` overflow.
+    #[test]
+    fn point_transitions_equality_hash_and_compare_follow_the_point() {
+        let mut a = PointTransitions::default();
+        a.reset(97);
+        a.starts.add(&transition(97, 97));
+        let mut b = PointTransitions::default();
+        b.reset(97);
+        assert_eq!(a, b, "the transition lists do not take part");
+        let hasher = RandomState::new();
+        assert_eq!(hasher.hash_one(&a), hasher.hash_one(&b));
+        let mut c = PointTransitions::default();
+        c.reset(98);
+        assert_ne!(a, c);
+        assert_eq!(a.compare_to(&c), -1);
+        assert_eq!(c.compare_to(&a), 1);
+        assert_eq!(a.compare_to(&b), 0);
+        let mut min = PointTransitions::default();
+        min.reset(i32::MIN);
+        let mut one = PointTransitions::default();
+        one.reset(1);
+        assert_eq!(min.compare_to(&one), i32::MAX, "Java's int wrap");
+    }
+}

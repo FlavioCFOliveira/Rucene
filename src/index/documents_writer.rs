@@ -3259,7 +3259,7 @@ impl Debug for FlushControlHandle<'_> {
     }
 }
 
-impl FlushControlHandle<'_> {
+impl<'a> FlushControlHandle<'a> {
     /// Bytes buffered by DWPTs that are not pending flush.
     ///
     /// Equivalent to `DocumentsWriterFlushControl.activeBytes()`.
@@ -3304,8 +3304,22 @@ impl FlushControlHandle<'_> {
     }
 
     /// Returns the info stream of the enclosing writer.
-    pub fn info_stream(&self) -> &dyn InfoStream {
+    ///
+    /// The flush control's own info stream, which [`FlushByRamOrCountsPolicy`]
+    /// reads where Java's policy reads its `infoStream` field.
+    pub fn info_stream(&self) -> &'a dyn InfoStream {
         self.control.info_stream()
+    }
+
+    /// Returns the live configuration of the enclosing writer: the
+    /// `LiveIndexWriterConfig` the flush control was built with, which
+    /// `FlushPolicy::init` receives.
+    ///
+    /// Equivalent to the `config` field of `DocumentsWriterFlushControl`;
+    /// [`FlushByRamOrCountsPolicy`] reads it where Java's policy reads its
+    /// `indexWriterConfig` field.
+    pub fn index_writer_config(&self) -> &'a LiveIndexWriterConfig {
+        &self.control.config
     }
 
     /// Returns a snapshot of every currently active DWPT.
@@ -3381,70 +3395,48 @@ pub trait FlushPolicy: Send + Sync + Debug {
 ///
 /// Equivalent to `org.apache.lucene.index.FlushByRamOrCountsPolicy`.
 ///
-/// Java's `FlushPolicy.init` keeps a strong reference to the writer's
-/// `LiveIndexWriterConfig`, which itself holds this policy; the garbage
-/// collector reclaims that cycle. With reference counting it would keep the
-/// config — and whatever it holds, such as the `IndexCommit` a writer was
-/// opened on, with that commit's reader and directory — alive after the
-/// writer is gone, so the policy keeps a [`Weak`](std::sync::Weak) reference,
-/// upgraded on use (the config outlives every flush decision, which the
-/// writer makes while it holds the config).
+/// **Divergence.** Lucene's `FlushPolicy` keeps the writer's
+/// `LiveIndexWriterConfig` and its `InfoStream` as the fields
+/// `indexWriterConfig` and `infoStream` (`FlushPolicy.java:43-44`), set by
+/// every `init` (`FlushPolicy.java:61-64`), and `onChange` reads them. This
+/// port records nothing in `init`: `on_change` reads the configuration and the
+/// info stream of the [`DocumentsWriterFlushControl`] that calls it
+/// ([`FlushControlHandle::index_writer_config`],
+/// [`FlushControlHandle::info_stream`]), which are the very objects `init`
+/// receives (`DocumentsWriterFlushControl::new`). The results differ only when
+/// one policy instance is shared by two writer configs: Java's last `init`
+/// wins for both writers, where here each writer's flush decisions follow its
+/// own config. The Java field cannot be kept because the config owns the
+/// policy (`LiveIndexWriterConfig.flushPolicy`): a strong policy-to-config
+/// `Arc` would form a cycle that never drops the config and what it holds (the
+/// `IndexCommit` a writer was opened on, its reader and directory), and a weak
+/// or replaceable reference costs a lock and an upgrade on every buffered
+/// document.
 #[derive(Debug, Default)]
-pub struct FlushByRamOrCountsPolicy {
-    /// Java's `FlushPolicy.indexWriterConfig` and `FlushPolicy.infoStream`
-    /// (`FlushPolicy.java:43-44`), both set by every `init`.
-    initialized: RwLock<Option<FlushPolicyInit>>,
-}
-
-/// What `FlushPolicy.init` records: the configuration and its info stream.
-struct FlushPolicyInit {
-    config: std::sync::Weak<LiveIndexWriterConfig>,
-    info_stream: Arc<dyn InfoStream>,
-}
-
-impl Debug for FlushPolicyInit {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FlushPolicyInit").finish_non_exhaustive()
-    }
-}
+pub struct FlushByRamOrCountsPolicy;
 
 impl FlushByRamOrCountsPolicy {
-    /// Creates an uninitialised policy.
+    /// Creates a policy.
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The configuration the last `init` recorded, while it is alive.
-    fn index_writer_config(&self) -> Option<Arc<LiveIndexWriterConfig>> {
-        self.initialized
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|init| init.config.upgrade())
-    }
-
-    /// The info stream the last `init` recorded: Java's
-    /// `FlushPolicy.infoStream`.
-    fn policy_info_stream(&self) -> Option<Arc<dyn InfoStream>> {
-        self.initialized
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|init| Arc::clone(&init.info_stream))
+        Self
     }
 
     /// Returns `true` when flushing by buffered document count is enabled.
-    pub fn flush_on_doc_count(&self) -> bool {
-        self.index_writer_config().is_some_and(|config| {
-            config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
-        })
+    ///
+    /// Equivalent to `FlushByRamOrCountsPolicy.flushOnDocCount()`, reading
+    /// `config` where Java reads its `indexWriterConfig` field (see the type's
+    /// divergence note).
+    pub fn flush_on_doc_count(&self, config: &LiveIndexWriterConfig) -> bool {
+        config.max_buffered_docs() != LiveIndexWriterConfig::DISABLE_AUTO_FLUSH
     }
 
     /// Returns `true` when flushing by buffered RAM is enabled.
-    pub fn flush_on_ram(&self) -> bool {
-        self.index_writer_config().is_some_and(|config| {
-            config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
-        })
+    ///
+    /// Equivalent to `FlushByRamOrCountsPolicy.flushOnRAM()`, reading `config`
+    /// where Java reads its `indexWriterConfig` field (see the type's
+    /// divergence note).
+    pub fn flush_on_ram(&self, config: &LiveIndexWriterConfig) -> bool {
+        config.ram_buffer_size_mb() != f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH)
     }
 
     fn flush_deletes(
@@ -3507,15 +3499,14 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         control: &mut FlushControlHandle<'_>,
         per_thread: Option<&DocumentsWriterPerThread>,
     ) {
-        let (Some(config), Some(info_stream)) =
-            (self.index_writer_config(), self.policy_info_stream())
-        else {
-            debug_assert!(false, "FlushPolicy::init must be called before on_change");
-            return;
-        };
+        // Java's `indexWriterConfig` and `infoStream` fields: the flush
+        // control's own, which `init` received (see the type's divergence
+        // note).
+        let config = control.index_writer_config();
+        let info_stream = control.info_stream();
 
         if let Some(per_thread) = per_thread {
-            if self.flush_on_doc_count()
+            if self.flush_on_doc_count(config)
                 && per_thread.num_docs_in_ram() >= config.max_buffered_docs()
             {
                 control.set_flush_pending(per_thread);
@@ -3523,7 +3514,7 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
             }
         }
 
-        if !self.flush_on_ram() {
+        if !self.flush_on_ram(config) {
             return;
         }
 
@@ -3535,31 +3526,24 @@ impl FlushPolicy for FlushByRamOrCountsPolicy {
         // `Some` pattern.
         match per_thread {
             Some(per_thread) if deletes_ram >= limit && active_ram >= limit => {
-                self.flush_deletes(control, &config, info_stream.as_ref());
-                self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
+                self.flush_deletes(control, config, info_stream);
+                self.flush_active_bytes(control, config, info_stream, per_thread);
             }
             _ if deletes_ram >= limit => {
-                self.flush_deletes(control, &config, info_stream.as_ref());
+                self.flush_deletes(control, config, info_stream);
             }
             Some(per_thread) if active_ram + deletes_ram >= limit => {
-                self.flush_active_bytes(control, &config, info_stream.as_ref(), per_thread);
+                self.flush_active_bytes(control, config, info_stream, per_thread);
             }
             _ => {}
         }
     }
 
     /// `protected synchronized void init(LiveIndexWriterConfig)`
-    /// (`FlushPolicy.java:61-64`): both fields are replaced on every call.
-    fn init(&self, config: Arc<LiveIndexWriterConfig>) {
-        let info_stream = config.info_stream();
-        *self
-            .initialized
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FlushPolicyInit {
-            config: Arc::downgrade(&config),
-            info_stream,
-        });
-    }
+    /// (`FlushPolicy.java:61-64`) records the config and its info stream;
+    /// this policy reads both from the calling flush control instead (see the
+    /// type's divergence note), so there is nothing to record.
+    fn init(&self, _config: Arc<LiveIndexWriterConfig>) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -7764,19 +7748,89 @@ mod tests {
         );
     }
 
-    /// G-303: `FlushPolicy.init(LiveIndexWriterConfig)` replaces the
-    /// configuration (and its info stream) on every call
-    /// (`FlushPolicy.java:61-64`); a later init wins.
+    /// Adds one document through the locked DWPT `guard` and returns the DWPT
+    /// the flush policy marked pending, if any.
+    fn add_and_check(
+        control: &DocumentsWriterFlushControl,
+        guard: &mut DwptGuard,
+        body: &str,
+    ) -> Option<Arc<DocumentsWriterPerThread>> {
+        guard
+            .update_documents(Some(&[doc(body)]), None, &NoOpFlushNotifications, || {})
+            .unwrap();
+        control.do_after_document(guard)
+    }
+
+    /// #598: `FlushByRamOrCountsPolicy.onChange` reads the writer's
+    /// `LiveIndexWriterConfig` on every change (`FlushByRamOrCountsPolicy.java`
+    /// `onChange`, `flushOnDocCount`, `flushOnRAM`), so a limit changed on the
+    /// live config after the writer was built (Java's
+    /// `IndexWriter.getConfig().setMaxBufferedDocs/setRAMBufferSizeMB`) governs
+    /// the next flush decision.
     #[test]
-    fn gap_g303_flush_policy_init_replaces_the_config() {
-        let policy = FlushByRamOrCountsPolicy::default();
-        assert!(policy.index_writer_config().is_none());
-        let first = Arc::new(LiveIndexWriterConfig::new(None));
-        let second = Arc::new(LiveIndexWriterConfig::new(None));
-        policy.init(Arc::clone(&first));
-        assert!(Arc::ptr_eq(&policy.index_writer_config().unwrap(), &first));
-        policy.init(Arc::clone(&second));
-        assert!(Arc::ptr_eq(&policy.index_writer_config().unwrap(), &second));
+    fn flush_policy_reads_the_live_limits_of_its_writer_config() {
+        // Document count: disabled at build time, set to 2 live.
+        let live = config(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH, 16.0);
+        let fixture = new_writer(Arc::clone(&live));
+        let control = fixture.writer.flush_control();
+        let mut guard = control.obtain_and_lock().unwrap();
+        assert!(add_and_check(control, &mut guard, "a").is_none());
+        live.set_max_buffered_docs(2).unwrap();
+        let flushing =
+            add_and_check(control, &mut guard, "b").expect("the live maxBufferedDocs is reached");
+        assert!(flushing.is_flush_pending());
+        assert_eq!(flushing.num_docs_in_ram(), 2);
+
+        // RAM: one megabyte per document under a 16 MB buffer, lowered to
+        // 1 MB live.
+        let live = config(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH, 16.0);
+        let fixture = new_writer_with_chain(
+            Arc::clone(&live),
+            Arc::new(|_| Box::new(ScriptedChain::new(1024 * 1024))),
+        );
+        let control = fixture.writer.flush_control();
+        let mut guard = control.obtain_and_lock().unwrap();
+        assert!(add_and_check(control, &mut guard, "a").is_none());
+        live.set_ram_buffer_size_mb(1.0).unwrap();
+        let flushing =
+            add_and_check(control, &mut guard, "b").expect("the live RAM buffer is full");
+        assert!(flushing.is_flush_pending());
+        assert_eq!(flushing.num_docs_in_ram(), 2);
+    }
+
+    /// #598, the declared divergence of [`FlushByRamOrCountsPolicy`]: one
+    /// policy instance shared by two writer configs decides each writer's
+    /// flushes by that writer's own config. (Java's `FlushPolicy.init` keeps
+    /// the last config, `FlushPolicy.java:61-64`, so both writers would follow
+    /// the second one's `maxBufferedDocs` of 3.)
+    #[test]
+    fn flush_policy_shared_by_two_configs_follows_each_writers_own_config() {
+        use crate::index::IndexWriterConfig;
+        ensure_default_codec();
+        let policy: Arc<dyn FlushPolicy> = Arc::new(FlushByRamOrCountsPolicy::new());
+        let live = |max_buffered_docs: i32| {
+            let iwc = IndexWriterConfig::new();
+            iwc.set_flush_policy(Arc::clone(&policy)).unwrap();
+            iwc.set_max_buffered_docs(max_buffered_docs).unwrap();
+            iwc.set_ram_buffer_size_mb(f64::from(LiveIndexWriterConfig::DISABLE_AUTO_FLUSH))
+                .unwrap();
+            iwc.into_live()
+        };
+        let first = new_writer(live(2));
+        let second = new_writer(live(3));
+        let first_control = first.writer.flush_control();
+        let mut guard = first_control.obtain_and_lock().unwrap();
+        assert!(add_and_check(first_control, &mut guard, "a").is_none());
+        let flushing =
+            add_and_check(first_control, &mut guard, "b").expect("the first config's limit of 2");
+        assert_eq!(flushing.num_docs_in_ram(), 2);
+        let second_control = second.writer.flush_control();
+        let mut guard = second_control.obtain_and_lock().unwrap();
+        assert!(add_and_check(second_control, &mut guard, "a").is_none());
+        assert!(add_and_check(second_control, &mut guard, "b").is_none());
+        let flushing =
+            add_and_check(second_control, &mut guard, "c").expect("the second config's limit of 3");
+        assert_eq!(flushing.num_docs_in_ram(), 3);
     }
 
     /// G-017: `BufferedUpdatesStream.push` charges `packet.bytesUsed` and
@@ -8901,6 +8955,72 @@ mod tests {
             !fixture.writer.flush_one_dwpt().unwrap(),
             "there is nothing left to flush"
         );
+    }
+
+    /// #594: `FlushTicket.getFlushedSegment()` returns the segment without
+    /// removing it, and `lockAndAbortAll` subtracts each pending ticket's
+    /// `segmentInfo.info.maxDoc()` from `pendingNumDocs` through it
+    /// (`DocumentsWriter.java` `lockAndAbortAll`).
+    #[test]
+    fn flush_ticket_lends_its_segment_and_abort_all_releases_its_docs() {
+        let fixture = new_writer(config(1_000_000, 16.0));
+        for i in 0..3 {
+            fixture
+                .writer
+                .update_document(&doc(&format!("doc {i}")), None)
+                .unwrap();
+        }
+        assert!(fixture.writer.flush_one_dwpt().unwrap());
+        assert_eq!(fixture.pending_num_docs.load(Ordering::Acquire), 3);
+        {
+            let _guard = fixture.writer.lock_and_abort_all().unwrap();
+            assert_eq!(
+                fixture.pending_num_docs.load(Ordering::Acquire),
+                0,
+                "the flushed but unpublished segment's documents are released"
+            );
+        }
+
+        let fixture = new_writer(config(1_000_000, 16.0));
+        fixture.writer.update_document(&doc("a"), None).unwrap();
+        fixture.writer.update_document(&doc("b"), None).unwrap();
+        assert!(fixture.writer.flush_one_dwpt().unwrap());
+        let mut seen = 0;
+        fixture
+            .writer
+            .purge_flush_tickets(true, |ticket| {
+                let max_doc = ticket.get_flushed_segment(|segment| {
+                    segment.map(|segment| segment.segment_info.info.max_doc().unwrap())
+                });
+                if max_doc.is_some() {
+                    assert_eq!(max_doc, Some(2));
+                    assert!(
+                        ticket.take_flushed_segment().is_some(),
+                        "getFlushedSegment leaves the segment in the ticket"
+                    );
+                    seen += 1;
+                }
+                ticket.mark_published();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, 1);
+    }
+
+    /// #594: `DeletedTerms.keySet()` is the set of every buffered
+    /// `(field, bytes)` term (`BufferedUpdates.java:238-244, 315-323`).
+    #[test]
+    fn deleted_terms_key_set_holds_every_buffered_term() {
+        let mut deleted = DeletedTerms::new();
+        assert!(deleted.key_set().is_empty());
+        deleted.put(&term("id", "1"), 4).unwrap();
+        deleted.put(&term("id", "2"), 5).unwrap();
+        deleted.put(&term("id", "1"), 7).unwrap();
+        deleted.put(&term("other", "1"), 1).unwrap();
+        let expected: HashSet<Term> = [term("id", "1"), term("id", "2"), term("other", "1")]
+            .into_iter()
+            .collect();
+        assert_eq!(deleted.key_set(), expected);
     }
 
     #[test]

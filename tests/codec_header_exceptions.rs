@@ -35,6 +35,15 @@
 //! (`CodecUtil.java:606-621`, naming the input it was given, not its clone),
 //! `readCRC` (`CodecUtil.java:629-635`) and `checkFooter`
 //! (`CodecUtil.java:432-445`).
+//!
+//! A `.fnm` whose field count is huge (task #601) fails as Lucene's
+//! `Lucene94FieldInfosFormat.read` does on JDK 25 (`HugeFnmCountFixture`,
+//! same harness): `new FieldInfo[count]` (`Lucene94FieldInfosFormat.java:148`)
+//! raises `OutOfMemoryError: Requested array size exceeds VM limit` above
+//! HotSpot's array maximum, `OutOfMemoryError: Java heap space` when the heap
+//! cannot hold the array, and otherwise the read runs out of file and
+//! `checkFooter` raises `checksum status indeterminate` with the `EOFException`
+//! suppressed. Rucene never aborts on the count.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -483,4 +492,164 @@ fn header_failures_raise_lucenes_exceptions() {
     let dir = tempfile::tempdir().unwrap();
     let rust = rucene_report(dir.path());
     assert_eq!(rust, java_report(dir.path()));
+}
+
+/// The `HugeFnmCountFixture` counts: the two above HotSpot's array maximum
+/// (`Integer.MAX_VALUE - 2`), three whose `FieldInfo[]` depends on the heap,
+/// and a small one whose array always fits.
+const HUGE_FNM_COUNTS: [i32; 6] = [
+    i32::MAX,
+    i32::MAX - 1,
+    i32::MAX - 2,
+    i32::MAX - 8,
+    1_000_000_000,
+    3,
+];
+
+/// `getClass().getSimpleName() + "|" + getMessage()` of the errors a
+/// field-infos read raises, as `HugeFnmCountFixture.describe` prints them.
+fn java_describe(error: &LuceneError) -> String {
+    use rucene::store::java_nio_file::{java_class_of, java_message_of};
+    match &error.kind {
+        LuceneErrorKind::CorruptIndex { message, .. } => {
+            format!("{}|{message}", error.java_simple_name())
+        }
+        LuceneErrorKind::Unchecked { message, .. } => format!(
+            "{}|{}",
+            error.java_simple_name(),
+            message.as_deref().unwrap_or("null")
+        ),
+        LuceneErrorKind::Io(io) => {
+            let class = java_class_of(io);
+            format!(
+                "{}|{}",
+                class.rsplit('.').next().unwrap_or(class),
+                java_message_of(io).unwrap_or_else(|| "null".to_string())
+            )
+        }
+        other => panic!("unexpected error kind {other:?}"),
+    }
+}
+
+/// Rucene's outcome in the fixture's format: the `RESULT` line, then one
+/// `SUPPRESSED` line per suppressed exception.
+fn rucene_fnm_outcome(base: &Path, count: i32) -> Vec<String> {
+    use rucene::codecs::{FieldInfosFormat, Lucene94FieldInfosFormat};
+    use rucene::index::SegmentInfo;
+    use rucene::store::FSDirectory;
+    use rucene::util::Version;
+
+    let mut id = [0u8; 16];
+    for (i, b) in id.iter_mut().enumerate() {
+        *b = i as u8;
+    }
+    let dir: std::sync::Arc<dyn Directory> =
+        std::sync::Arc::new(FSDirectory::open(base.join(count.to_string())).unwrap());
+    let info = SegmentInfo::new_without_codec(
+        std::sync::Arc::clone(&dir),
+        Version::LATEST,
+        Some(Version::LATEST),
+        "_0".to_string(),
+        1,
+        false,
+        false,
+        std::collections::HashMap::new(),
+        id,
+        std::collections::HashMap::new(),
+        None,
+    )
+    .unwrap();
+    match Lucene94FieldInfosFormat::new().read(dir.as_ref(), &info, "", &*DEFAULT_IO_CONTEXT) {
+        Ok(_) => vec![format!("RESULT {count} OK")],
+        Err(error) => std::iter::once(format!("RESULT {count} {}", java_describe(&error)))
+            .chain(
+                error
+                    .get_suppressed()
+                    .iter()
+                    .map(|s| format!("SUPPRESSED {count} {}", java_describe(s))),
+            )
+            .collect(),
+    }
+}
+
+/// Runs `HugeFnmCountFixture` on a 512 MB heap: it writes every crafted
+/// `.fnm` under `base` and prints Lucene's outcome for each.
+fn java_fnm_outcomes(base: &Path) -> String {
+    let jar = Path::new(&std::env::var("HOME").unwrap())
+        .join(".m2/repository/org/apache/lucene/lucene-core/10.5.0/lucene-core-10.5.0.jar");
+    assert!(
+        jar.is_file(),
+        "the Lucene 10.5.0 jar is required: {}",
+        jar.display()
+    );
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
+         HugeFnmCountFixture.java",
+    );
+    let output = Command::new("java")
+        .arg("-Xmx512m")
+        .arg("-cp")
+        .arg(jar)
+        .arg(fixture)
+        .arg(base)
+        .args(HUGE_FNM_COUNTS.map(|c| c.to_string()))
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
+    assert!(
+        output.status.success(),
+        "HugeFnmCountFixture failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// #601: a `.fnm` with a huge positive field count fails as Lucene 10.5.0
+/// does on JDK 25, never aborting. Above `Integer.MAX_VALUE - 2` and for a
+/// count whose array fits, Rucene's outcome equals Lucene's line for line.
+/// For the three heap-dependent counts Lucene's outcome depends on the heap
+/// (`Java heap space` on this 512 MB heap; the `checksum status
+/// indeterminate` failure, with the same message as for count 3, on a heap
+/// that holds the array, observed with `-Xmx64g` in #601); Rucene's "heap" is
+/// the memory it may reserve, so its outcome must be one of those two.
+#[test]
+fn huge_fnm_field_count_fails_as_lucene_does() {
+    let base = tempfile::tempdir().unwrap();
+    let java = java_fnm_outcomes(base.path());
+    let java_lines = |count: i32| -> Vec<String> {
+        java.lines()
+            .filter(|line| {
+                line.starts_with(&format!("RESULT {count} "))
+                    || line.starts_with(&format!("SUPPRESSED {count} "))
+            })
+            .map(str::to_string)
+            .collect()
+    };
+    let small = 3;
+    for count in HUGE_FNM_COUNTS {
+        let rucene = rucene_fnm_outcome(base.path(), count);
+        let lucene = java_lines(count);
+        assert!(!lucene.is_empty(), "no Lucene outcome for {count}:\n{java}");
+        if count > i32::MAX - 2 || count == small {
+            assert_eq!(rucene, lucene, "count {count}");
+        } else {
+            assert_eq!(
+                lucene,
+                [format!("RESULT {count} OutOfMemoryError|Java heap space")],
+                "count {count} on a 512 MB heap"
+            );
+            // Lucene's outcome when the heap holds the array: count 3's,
+            // naming this count's file.
+            let fits: Vec<String> = java_lines(small)
+                .iter()
+                .map(|line| {
+                    line.replacen(&format!(" {small} "), &format!(" {count} "), 1)
+                        .replace(&format!("/{small}/_0.fnm"), &format!("/{count}/_0.fnm"))
+                })
+                .collect();
+            assert!(
+                rucene == lucene || rucene == fits,
+                "count {count}: {rucene:?} is neither {lucene:?} nor {fits:?}"
+            );
+        }
+    }
 }

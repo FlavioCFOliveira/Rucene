@@ -1827,6 +1827,41 @@ mod tests {
         stream.close().unwrap();
     }
 
+    /// #594: `FeatureField.tokenStream(analyzer, reuse)` reuses a
+    /// `FeatureTokenStream` passed as `reuse` and calls `setValues` on it
+    /// (`FeatureField.java:177-188`): the same stream object comes back,
+    /// carrying the second field's term and frequency.
+    #[test]
+    fn feature_field_token_stream_reuses_a_feature_token_stream() {
+        let analyzer = StandardAnalyzer::new();
+        let first = FeatureField::new("feat", "pagerank", 3.0).unwrap();
+        let stream = first.token_stream(Some(&analyzer), &mut None).unwrap();
+        let address = stream.as_ref() as *const dyn TokenStream as *const u8;
+        let mut reuse = Some(stream);
+
+        let second = FeatureField::new("feat", "popularity", 5.0).unwrap();
+        let mut stream = second.token_stream(Some(&analyzer), &mut reuse).unwrap();
+        assert!(reuse.is_none(), "the reused stream is handed back");
+        assert_eq!(
+            stream.as_ref() as *const dyn TokenStream as *const u8,
+            address,
+            "the same FeatureTokenStream object"
+        );
+        stream.reset().unwrap();
+        assert!(stream.increment_token().unwrap());
+        let source = stream.attribute_source();
+        let term = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        let text: String = term.buffer()[..term.length()].iter().collect();
+        assert_eq!(text, "popularity");
+        drop(term);
+        let freq = source
+            .get_attribute_interface::<dyn TermFrequencyAttribute>()
+            .unwrap();
+        assert_eq!(freq.get_term_frequency(), encode_feature_value(5.0));
+    }
+
     #[test]
     fn feature_field_token_stream_uses_the_default_token_attribute_factory() {
         // Regression test. `FeatureTokenStream` used a factory that knew only

@@ -759,9 +759,7 @@ fn crash(r: &mut Recorder, sd: i64, always_corrupt: bool) {
             written.and(closed)
         });
     }
-    r.rec_void("sync", || {
-        d.sync(&["_0.dat", "_3.dat"])
-    });
+    r.rec_void("sync", || d.sync(&["_0.dat", "_3.dat"]));
     r.rec_void("crash", || d.crash());
     r.rec("files", || digest(d.get_delegate().as_ref()));
     next_long(r, &d);
