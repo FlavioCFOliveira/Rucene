@@ -351,6 +351,52 @@ class Surface:
                 for v in td.get("variants", ()):
                     decls.append((f"variant {name}::{v['name']}", v["doc"]))
             self.file_decls[f] = decls
+        # The files declaring each Rust type or trait name, so an `impl`, a
+        # derive or a field is bound to the declaration it belongs to.
+        self.decl_files = defaultdict(set)
+        for name, sites in list(self.type_decl.items()) + list(self.trait_decls.items()):
+            self.decl_files[name] |= {f for f, _ in sites}
+
+    @staticmethod
+    def nearest(files, near):
+        """The members of `files` closest to the file `near`: the same file,
+        then the same directory, then the same top-level module (`src/<top>`),
+        and only then every one."""
+        files = sorted(files)
+        if len(files) <= 1 or not near:
+            return files
+        d = os.path.dirname(near)
+        top = near.split("/")[1] if near.startswith("src/") else ""
+        for pick in (lambda f: f == near,
+                     lambda f: os.path.dirname(f) == d,
+                     lambda f: f.startswith(f"src/{top}") if top else False):
+            hit = [f for f in files if pick(f)]
+            if hit:
+                return hit
+        return files
+
+    def binds(self, rtype, rfile, site):
+        """Whether an item at `site` (an `impl` of `rtype`, its declaration or
+        a field of it) belongs to the `rtype` that `rfile` declares.
+
+        Rust type names are not unique across the crate: `FieldValuesSource`
+        is declared by both `long_values_source.rs` and
+        `double_values_source.rs`. Keyed by simple name alone, the impls of one
+        answered for the other, and `LongValuesSource$FieldValuesSource.hashCode`
+        was credited to `impl DoubleValuesSource for FieldValuesSource`. When
+        the name is declared in several files, an item binds to the
+        declaration nearest to it (`nearest`); a name declared once, or a
+        caller that names no file, keeps every site.
+        """
+        decls = self.decl_files.get(rtype, ())
+        if rfile is None or len(decls) <= 1 or rfile not in decls:
+            return True
+        return rfile in self.nearest(decls, site)
+
+    def fields(self, rtype, rfile=None):
+        """`(file, field)` of the struct `rtype` that `rfile` declares."""
+        return [(f, fd) for f, fd in self.fields_of.get(rtype, ())
+                if self.binds(rtype, rfile, f)]
 
     def is_closure_type(self, ty, depth=0):
         """Whether a field type is a closure (`Fn`/`FnMut`/`FnOnce`), through
@@ -369,18 +415,19 @@ class Surface:
         """Trait names `rtype` implements, plus their supertraits and derives."""
         out = set()
         for f, im in self.impls_of.get(rtype, ()):
+            if not self.binds(rtype, rfile, f):
+                continue
             if im["trait"]:
                 out.add(im["trait"])
                 for t, _tf, _rec in self.trait_closure(im["trait"], f):
                     out.add(t)
-        for f, td in self.type_decl.get(rtype, ()):
-            out |= set(td["derives"])
-        return out
+        return out | self.derived_traits(rtype, rfile)
 
-    def derived_traits(self, rtype):
+    def derived_traits(self, rtype, rfile=None):
         out = set()
         for f, td in self.type_decl.get(rtype, ()):
-            out |= {d for d in td["derives"]}
+            if self.binds(rtype, rfile, f):
+                out |= set(td["derives"])
         return out
 
     def resolve_trait(self, name, near):
@@ -435,12 +482,15 @@ class Surface:
             for f, _td in self.type_decl.get(rtype, ()):
                 near = f
                 break
+        # (`trait_closure` resolves a trait by proximity already.)
         # The port of a Lucene interface is a Rust trait, so when the item
         # itself is a trait its own declarations are the members.
         for t, f, rec in self.trait_closure(rtype, near):
             for fn in rec["fns"]:
                 got.setdefault(fn["name"], (f"{f}: trait {t}", fn["doc"]))
         for f, im in self.impls_of.get(rtype, ()):
+            if not self.binds(rtype, rfile, f):
+                continue
             head = (f"impl {im['trait']} for {im['self']}" if im["trait"]
                     else f"impl {im['self']}")
             for fn in im["fns"]:
@@ -588,7 +638,7 @@ def classify(pair, ctx):
     if java in CONTRACT_TRAITS:
         for rt, rf in rtypes:
             impl_traits = S.traits_of(rt, rf)
-            derived = S.derived_traits(rt)
+            derived = S.derived_traits(rt, rf)
             if not impl_traits:
                 # macro-generated: the impls carry the template's `$name`
                 impl_traits = set()
@@ -637,7 +687,7 @@ def classify(pair, ctx):
     #     ports this one, and its name must be the member's.
     java_kind = ctx["kinds"].get(cls)
     for rt, rf in rtypes:
-        for f, fd in S.fields_of.get(rt, ()):
+        for f, fd in S.fields(rt, rf):
             nm = fd["name"][2:] if fd["name"].startswith("r#") else fd["name"]
             if nm not in name_candidates(java):
                 continue
@@ -800,7 +850,7 @@ def classify(pair, ctx):
     #      runs only after every claim and name rule has had its chance.
     if java == "toString":
         for rt, rf in rtypes:
-            if "Debug" in S.traits_of(rt, rf) and "Debug" not in S.derived_traits(rt):
+            if "Debug" in S.traits_of(rt, rf) and "Debug" not in S.derived_traits(rt, rf):
                 return ("renamed", "debug-impl[own]", f"{rt}: impl Debug -> fmt")
 
     # 4d. A doc comment that *opens* with this member (`RE_DOC_LEAD`), on a
@@ -813,7 +863,7 @@ def classify(pair, ctx):
     for rt, rf in rtypes:
         for n, (w, d) in S.item_fns(rt, rf).items():
             sites.append((f"{n} in {w}", d, True))
-        for f, fd in S.fields_of.get(rt, ()):
+        for f, fd in S.fields(rt, rf):
             sites.append((f"field {rt}.{fd['name']} in {f}:{fd['line']}", fd["doc"], True))
     file_only_related = {f: ctx["file_classes"].get(f, set()) <= related for f in files}
     for f in files:

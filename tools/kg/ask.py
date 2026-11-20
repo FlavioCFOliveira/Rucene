@@ -11,6 +11,7 @@ are escaped as Cypher literals.
     python3 tools/kg/ask.py divergences --type org.apache.lucene.index.IndexWriter
     python3 tools/kg/ask.py item IndexWriter            # where it lives, what it ports
     python3 tools/kg/ask.py refs rucene::index::index_writer::IndexWriter::commit
+    python3 tools/kg/ask.py refs DwptGuard               # or `IndexWriter::commit`
     python3 tools/kg/ask.py lucene-callers rucene::index::index_writer::IndexWriter::commit
     python3 tools/kg/ask.py no-caller --subsystem search --unverified
     python3 tools/kg/ask.py awaits                      # W-blocked items, by Java caller
@@ -94,6 +95,27 @@ def q_item_fqn(fqn):
             "RETURN coalesce(t.file, c.file), coalesce(labels(t)[0], 'Class'), "
             "coalesce(t.qualifiedName, c.qualifiedName), c.qualifiedName, "
             "coalesce(e.evidence, c.portStateEvidence), coalesce(e.note, c.portStateNote)")
+
+
+REF_TARGET_LABELS = ("RustFn",) + TYPE_LABELS
+
+
+def q_ref_targets(label, name):
+    """The `label` nodes `refs` may mean by `name`: the node whose
+    `qualifiedName` is `name`, or, for a name without its crate path
+    (`DwptGuard`, `IndexWriter::commit`), every node whose `qualifiedName`
+    ends with `::<name>`. Exact matches sort first."""
+    return (f"MATCH (x:{label}) WHERE x.qualifiedName = " + esc(name) + " "
+            "OR x.qualifiedName ENDS WITH " + esc("::" + name) + " "
+            "RETURN x.qualifiedName, x.qualifiedName = " + esc(name) + " AS exact")
+
+
+def ref_targets(name):
+    """The qualified names `refs` reports on: the exact match when one exists,
+    else every suffix match, so a simple name never silently answers nothing."""
+    rows = [r for label in REF_TARGET_LABELS for r in read(R, q_ref_targets(label, name))]
+    exact = sorted({qn for qn, ex in rows if ex})
+    return exact or sorted({qn for qn, _ in rows})
 
 
 def q_refs(qn):
@@ -189,7 +211,13 @@ def cmd_item(a):
 
 
 def cmd_refs(a):
-    emit(read(R, q_refs(a.qn)), ["label", "referrer", "prodRefs", "testRefs"])
+    targets = ref_targets(a.qn)
+    if not targets:
+        print(json.dumps({"error": f"no Rust item is named {a.qn}"}), file=sys.stderr)
+        return
+    for qn in targets:
+        emit([[qn] + r for r in read(R, q_refs(qn))],
+             ["target", "label", "referrer", "prodRefs", "testRefs"])
 
 
 def cmd_lucene_callers(a):

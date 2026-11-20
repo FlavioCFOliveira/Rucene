@@ -329,14 +329,6 @@
    }
   }
  },
- "org.apache.lucene.analysis.compound.hyphenation.TernaryTree$Iterator$Item": {
-  "memberVerdicts": {
-   "clone": {
-    "triageClass": "na",
-    "triageReason": "`clone()` returns `new Item(parent, child)`, a field copy; the port's `Item` derives `Clone, Copy` (crates/rucene-analysis-common/src/analysis/compound/hyphenation/ternary_tree.rs:484-485). The triage's derive rule misses it because the parser keys the associated `type Item = Vec<u16>` of the iterator impl (:671) over the struct."
-   }
-  }
- },
  "org.apache.lucene.search.TimeLimitingBulkScorer$TimeExceededException": {
   "memberVerdicts": {
    "fillInStackTrace": {

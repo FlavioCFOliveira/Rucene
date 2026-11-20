@@ -247,3 +247,74 @@ def test_a_module_claim_is_still_dropped_when_an_item_of_the_file_claims(monkeyp
                    "scope": "item", "lucene": fqn, "note": None}],
                  types=[("ExplanationState", f)], fns=[("class", f)])
     assert [(r["name"], r["file"]) for r in rows] == [("class", f)]
+
+
+# --- rmp #603: the triage binds a Rust type to the file that ports it ---------
+
+ITEM_RS = textwrap.dedent("""\
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Item {
+        parent: u16,
+    }
+
+    pub(crate) type Alias = Vec<u8>;
+
+    pub(crate) struct Iter;
+
+    impl Iterator for Iter {
+        type Item = Vec<u16>;
+        fn next(&mut self) -> Option<Self::Item> { None }
+    }
+
+    trait Source {
+        type Item;
+    }
+    """)
+
+
+def test_an_associated_type_does_not_replace_the_files_type():
+    types = rust_surface.parse("x/ternary_tree.rs", ITEM_RS)["types"]
+    assert types["Item"]["kind"] == "struct"
+    assert types["Item"]["derives"] == ["Clone", "Copy", "Debug"]
+    assert types["Alias"]["kind"] == "type"
+
+
+def _two_same_named_types():
+    import triage_members as tm
+    long_rs = textwrap.dedent("""\
+        struct FieldValuesSource {
+            field: String,
+        }
+        impl LongValuesSource for FieldValuesSource {
+            /// Equivalent to `FieldValuesSource.hashCode()`.
+            fn source_hash(&self) -> i32 { 0 }
+        }
+        """)
+    double_rs = textwrap.dedent("""\
+        #[derive(PartialEq)]
+        struct FieldValuesSource {
+            field: String,
+        }
+        impl DoubleValuesSource for FieldValuesSource {
+            fn double_hash(&self) -> i32 { 0 }
+        }
+        """)
+    other_rs = "impl Shared for FieldValuesSource {\n    fn shared(&self) {}\n}\n"
+    tree = {f: rust_surface.parse(f, t) for f, t in (
+        ("src/search/long_values_source.rs", long_rs),
+        ("src/search/double_values_source.rs", double_rs),
+        ("src/index/other.rs", other_rs))}
+    return tm.Surface(tree)
+
+
+def test_impls_derives_and_fields_bind_to_the_declaring_file():
+    S = _two_same_named_types()
+    lf, df = "src/search/long_values_source.rs", "src/search/double_values_source.rs"
+    assert set(S.item_fns("FieldValuesSource", lf)) == {"source_hash", "shared"}
+    assert set(S.item_fns("FieldValuesSource", df)) == {"double_hash", "shared"}
+    assert "DoubleValuesSource" not in S.traits_of("FieldValuesSource", lf)
+    assert S.derived_traits("FieldValuesSource", lf) == set()
+    assert S.derived_traits("FieldValuesSource", df) == {"PartialEq"}
+    assert [f for f, _ in S.fields("FieldValuesSource", lf)] == [lf]
+    # No file named: every site, as before.
+    assert set(S.item_fns("FieldValuesSource")) >= {"source_hash", "double_hash"}
