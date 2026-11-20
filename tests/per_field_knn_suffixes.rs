@@ -7,6 +7,9 @@
 //! (`tests/fixtures/java-codec-harness`) writes the same segment with Lucene
 //! 10.5.0 and prints its vector files; Rucene's must be the same names.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -89,14 +92,16 @@ fn lucene_files(shared: bool) -> Vec<String> {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          PerFieldKnnSuffixFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(dir.path().join("idx"))
-        .arg(shared.to_string())
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(dir.path().join("idx"))
+            .arg(shared.to_string()),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "PerFieldKnnSuffixFixture failed:\n{}",

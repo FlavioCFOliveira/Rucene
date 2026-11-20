@@ -24,6 +24,9 @@
 //!   their RAM is estimated by other components (the postings pools and the
 //!   per-segment `DocValuesFieldUpdates`).
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -63,13 +66,15 @@ fn run_java(case: &str) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          DeleteRamFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .arg(case)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .arg(case),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "DeleteRamFixture {case} failed:\n{}",

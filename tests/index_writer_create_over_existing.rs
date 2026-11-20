@@ -16,6 +16,9 @@
 //! document and commits, and prints the generation, version, counter and
 //! segments of the commit before and after, and the files left behind.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -72,13 +75,15 @@ fn create_over_an_existing_index_continues_its_commit_as_lucene_does() {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          CreateOverFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(java_tmp.path())
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(java_tmp.path()),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "CreateOverFixture failed:\n{}",

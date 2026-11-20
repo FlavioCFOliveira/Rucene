@@ -36,6 +36,9 @@
 //!   `PERTURB`, which only shifts those hash codes. The test asserts that every
 //!   point it uses is unchanged by `PERTURB` before comparing.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -82,14 +85,16 @@ fn run_java_with_env(args: &str, key: &str, value: &str) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          IndexingRamFixture.java",
     );
-    let output = Command::new("java")
-        .env(key, value)
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .args(args.split(' '))
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .env(key, value)
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .args(args.split(' ')),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "IndexingRamFixture {args} failed:\n{}",

@@ -11,6 +11,9 @@
 //! resizes split tree bins (`TreeNode.split`). The port runs the same script
 //! and must print the same lines.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -77,8 +80,7 @@ fn iteration_order_matches_java_hash_map_with_treeified_bins() {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          LongHashMapOrderFixture.java",
     );
-    let output = Command::new("java")
-        .arg(&fixture)
+    let output = jvm_fixture::launch(Command::new("java").arg(&fixture))
         .output()
         .expect("a JDK is required to run the HashMap order fixture");
     assert!(

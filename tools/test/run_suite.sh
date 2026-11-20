@@ -22,8 +22,9 @@ mkdir -p "$TMPDIR"
 CARGO=${CARGO_WRAPPER:-$HOME/.local/bin/rucene-cargo}
 cd "$REPO"
 
-# The Java harness once, so each test's `mvn -q compile` has nothing to do.
-(cd tests/fixtures/java-codec-harness && mvn -q -o compile) || { echo "harness compile failed"; exit 2; }
+# The Java harness (tests/fixtures/java-codec-harness) is not compiled here: the
+# test helper tests/jvm_fixture compiles it and resolves its class path once,
+# under a cross-process file lock, and again only when pom.xml or src/ change.
 
 # Build everything first (outside the test slice), then run.
 "$CARGO" nextest run --workspace --exclude randomizedtesting --no-run -j 6 > "$OUT/build.log" 2>&1 \

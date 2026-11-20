@@ -19,6 +19,9 @@
 //!   (`IndexWriter.java:2642-2645`), so whoever sees the lock released sees
 //!   the writer closed.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -60,12 +63,14 @@ fn run_java() -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          WriterStateFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "WriterStateFixture failed:\n{}",

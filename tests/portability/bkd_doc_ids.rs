@@ -33,6 +33,9 @@
 //! report success while proving nothing. This matches the other tests under
 //! `tests/portability/`.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -105,19 +108,25 @@ fn harness_dir() -> PathBuf {
 static HARNESS_LOCK: Mutex<()> = Mutex::new(());
 
 fn which_mvn() -> Result<String, String> {
-    for candidate in ["mvn", "mvnw"] {
-        if Command::new(candidate)
-            .arg("-v")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
-            return Ok(candidate.to_string());
-        }
-    }
-    Err("Maven is not available on PATH".to_string())
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            for candidate in ["mvn", "mvnw"] {
+                if Command::new(candidate)
+                    .arg("-v")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+                {
+                    return Ok(candidate.to_string());
+                }
+            }
+            Err("Maven is not available on PATH".to_string())
+        })
+        .clone()
 }
 
 /// Fails the test when Maven is unavailable.
@@ -136,18 +145,20 @@ fn run_fixture(out_dir: &Path, mode: &str) -> Result<String, String> {
         return Err(format!("pom.xml not found in {}", harness.display()));
     }
     let mvn = which_mvn()?;
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dlucene.useScalarFMA=false")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.BkdDocIdsFixture")
-        .arg(format!("-Dexec.args={} {mode}", out_dir.display()))
-        .current_dir(&harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to spawn Maven: {e}"))?;
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dlucene.useScalarFMA=false")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.BkdDocIdsFixture")
+            .arg(format!("-Dexec.args={} {mode}", out_dir.display()))
+            .current_dir(&harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .map_err(|e| format!("failed to spawn Maven: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

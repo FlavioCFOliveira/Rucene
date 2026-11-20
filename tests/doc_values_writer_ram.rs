@@ -25,6 +25,9 @@
 //! than 16 `PagedBytes` blocks, which grows the blocks array
 //! (`PagedBytes.java:165-168`).
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -59,15 +62,14 @@ fn field(name: &str, number: i32, doc_values_type: DocValuesType) -> FieldInfo {
 
 #[test]
 fn the_doc_values_writers_charge_what_lucene_charges() {
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(
+    let output = jvm_fixture::launch(Command::new("java").arg("-cp").arg(lucene_jar()).arg(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(
             "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
              DocValuesRamFixture.java",
-        ))
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+        ),
+    ))
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "DocValuesRamFixture failed:\n{}",

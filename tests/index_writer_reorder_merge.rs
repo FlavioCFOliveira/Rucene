@@ -17,6 +17,9 @@
 //! segment id is replaced by Rucene's; the footer's checksum is checked on its
 //! own.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -163,13 +166,15 @@ fn java_merge() -> JavaMerge {
     );
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("reordered");
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(&dir)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(&dir),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "ReorderMergeFixture failed:\n{}",

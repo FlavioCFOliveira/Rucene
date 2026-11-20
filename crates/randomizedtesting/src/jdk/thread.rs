@@ -383,6 +383,24 @@ impl Thread {
         })
     }
 
+    /// `this == Thread.currentThread()`, without taking a handle to the
+    /// current thread.
+    ///
+    /// PERF: the thread checks of the asserting readers make this test on
+    /// every call; comparing through [`current`](Self::current) clones the
+    /// handle's `Arc` and drops it each time. Testing in place removed 3.6 %
+    /// of the instructions of `TestBlockMaxConjunction` at opt-level 0
+    /// (rmp #606, W7). A calling thread without a
+    /// handle yet is not `self` (its handle, once created, is a new
+    /// identity), so it answers `false` without creating one.
+    pub fn is_current(&self) -> bool {
+        CURRENT.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&current.0 .0, &self.0))
+        })
+    }
+
     /// Captures, on the calling (creating) thread, what a Java thread takes
     /// from its creator — its `ThreadGroup` and daemon status — and returns
     /// what the created thread runs its body with: it adopts that thread,
@@ -957,5 +975,33 @@ impl fmt::Display for Thread {
 impl fmt::Debug for Thread {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `is_current` answers `this == Thread.currentThread()` (rmp #606, W7):
+    /// true for the calling thread's handle, false for another thread's, and
+    /// false on a thread that has no handle yet, without creating one.
+    #[test]
+    fn is_current_is_identity_with_the_current_thread() {
+        let me = Thread::current();
+        assert!(me.is_current());
+        assert!(me.clone().is_current());
+        let other = std::thread::spawn(Thread::current).join().unwrap();
+        assert!(!other.is_current());
+        assert!(other != me);
+        std::thread::spawn(move || {
+            assert!(!me.is_current());
+            let has_none = CURRENT.with(|slot| slot.borrow().is_none());
+            assert!(has_none, "is_current created a handle");
+            let mine = Thread::current();
+            assert!(mine.is_current());
+            assert!(mine != me);
+        })
+        .join()
+        .unwrap();
     }
 }

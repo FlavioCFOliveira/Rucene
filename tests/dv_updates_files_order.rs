@@ -11,6 +11,9 @@
 //! operations; its `segments_N` must be Lucene's byte for byte once Lucene's
 //! ids are replaced by Rucene's.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -76,13 +79,15 @@ fn segments_n_lists_doc_values_update_files_in_lucenes_order() {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          DvUpdatesFilesFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(java_tmp.path())
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(java_tmp.path()),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "DvUpdatesFilesFixture failed:\n{}",

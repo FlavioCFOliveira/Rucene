@@ -10,6 +10,9 @@
 //!   configure [soft] as soft-deletes; this index uses [soft] as
 //!   non-soft-deletes already".
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::sync::Arc;
 
 use rucene::codecs::Lucene104Codec;
@@ -262,12 +265,14 @@ fn lucene_num_deletes_to_merge() -> Vec<(String, i32)> {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          SoftDeletesToMergeFixture.java",
     );
-    let output = std::process::Command::new("java")
-        .arg("-cp")
-        .arg(jar)
-        .arg(fixture)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        std::process::Command::new("java")
+            .arg("-cp")
+            .arg(jar)
+            .arg(fixture),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "{}",

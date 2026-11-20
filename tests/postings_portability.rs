@@ -32,6 +32,9 @@
 //! (`java -cp lucene-core-10.5.0.jar PostingsSkipFixture.java <dir>`) writes
 //! the index and prints what Lucene's own reader returns.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -105,14 +108,16 @@ fn java_run() -> &'static JavaRun {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("index");
         let impacts_dir = tmp.path().join("impacts");
-        let output = Command::new("java")
-            .arg("-cp")
-            .arg(lucene_jar())
-            .arg(&fixture)
-            .arg(&dir)
-            .arg(&impacts_dir)
-            .output()
-            .expect("a JDK is required to run the Lucene oracle");
+        let output = jvm_fixture::launch(
+            Command::new("java")
+                .arg("-cp")
+                .arg(lucene_jar())
+                .arg(&fixture)
+                .arg(&dir)
+                .arg(&impacts_dir),
+        )
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
         assert!(
             output.status.success(),
             "PostingsSkipFixture failed:\n{}",

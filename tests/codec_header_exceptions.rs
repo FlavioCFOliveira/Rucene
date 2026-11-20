@@ -45,6 +45,9 @@
 //! `checkFooter` raises `checksum status indeterminate` with the `EOFException`
 //! suppressed. Rucene never aborts on the count.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
@@ -468,14 +471,16 @@ fn java_report(path: &Path) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          CodecHeaderFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(jar)
-        .arg(fixture)
-        .arg("read")
-        .arg(path)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(jar)
+            .arg(fixture)
+            .arg("read")
+            .arg(path),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "CodecHeaderFixture failed:\n{}",
@@ -586,15 +591,17 @@ fn java_fnm_outcomes(base: &Path) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          HugeFnmCountFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-Xmx512m")
-        .arg("-cp")
-        .arg(jar)
-        .arg(fixture)
-        .arg(base)
-        .args(HUGE_FNM_COUNTS.map(|c| c.to_string()))
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-Xmx512m")
+            .arg("-cp")
+            .arg(jar)
+            .arg(fixture)
+            .arg(base)
+            .args(HUGE_FNM_COUNTS.map(|c| c.to_string())),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "HugeFnmCountFixture failed:\n{}",

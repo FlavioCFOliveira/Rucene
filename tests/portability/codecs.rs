@@ -15,6 +15,9 @@
 //! files carry per-segment random ids; the helper `assert_directories_equal`
 //! is unused.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -45,17 +48,19 @@ fn run_java_harness(out_dir: &Path, shape: &str) -> Result<String, String> {
 
     let mvn = which_mvn()?;
     let args = format!("{} {}", out_dir.display(), shape);
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.CodecIndexWriter")
-        .arg(format!("-Dexec.args={}", args))
-        .current_dir(&harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to spawn Maven: {}", e))?;
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.CodecIndexWriter")
+            .arg(format!("-Dexec.args={}", args))
+            .current_dir(&harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .map_err(|e| format!("failed to spawn Maven: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -79,18 +84,24 @@ fn run_java_harness(out_dir: &Path, shape: &str) -> Result<String, String> {
 
 /// Locates the `mvn` executable.
 fn which_mvn() -> Result<PathBuf, String> {
-    let candidates = ["mvn", "mvn.cmd"];
-    for name in candidates {
-        if let Ok(output) = Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Ok(PathBuf::from(path));
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            let candidates = ["mvn", "mvn.cmd"];
+            for name in candidates {
+                if let Ok(output) = Command::new("which").arg(name).output() {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !path.is_empty() {
+                            return Ok(PathBuf::from(path));
+                        }
+                    }
                 }
             }
-        }
-    }
-    Err("mvn not found on PATH".to_string())
+            Err("mvn not found on PATH".to_string())
+        })
+        .clone()
 }
 
 /// Collects the names of regular files in `dir`, excluding transient lock files.

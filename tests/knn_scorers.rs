@@ -31,6 +31,9 @@
 //! The oracle is run from source on the Lucene 10.5.0 jar (`java -cp
 //! lucene-core-10.5.0.jar KnnScorerFixture.java <case>`).
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -104,14 +107,16 @@ fn run_fixture_with(jvm_args: &[&str], args: &[&str], kinds: &[&str]) -> String 
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          KnnScorerFixture.java",
     );
-    let output = Command::new("java")
-        .args(jvm_args)
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .args(args)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .args(jvm_args)
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .args(args),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "KnnScorerFixture {args:?} failed:\n{}",

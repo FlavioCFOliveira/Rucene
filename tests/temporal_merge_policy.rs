@@ -11,6 +11,9 @@
 //! (`TemporalMergePolicy.java:592-700`), so both sides plan from what Lucene
 //! wrote — no ranges are supplied by hand.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -45,13 +48,15 @@ fn run_java(index_dir: &Path) -> HashMap<String, String> {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          TemporalMergeFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .arg(index_dir)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .arg(index_dir),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "TemporalMergeFixture failed:\n{}",

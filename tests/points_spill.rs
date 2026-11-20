@@ -23,6 +23,9 @@
 //!   the merged points files are byte for byte those of the same merge with
 //!   Lucene's default budget, which keeps every point in heap.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -228,13 +231,15 @@ fn bkd_writer_spills_and_writes_what_lucene_writes() {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          BkdSpillFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(java_tmp.path())
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(java_tmp.path()),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "BkdSpillFixture failed:\n{}",

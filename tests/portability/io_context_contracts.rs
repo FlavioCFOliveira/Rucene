@@ -53,6 +53,9 @@
 //! are asserted against the record's own rendering, parsed; the rendering
 //! itself is a separate surface and is not claimed here.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -78,35 +81,43 @@ fn harness_dir() -> PathBuf {
 }
 
 fn which_mvn() -> Result<String, String> {
-    for candidate in ["mvn", "/usr/bin/mvn", "/usr/local/bin/mvn"] {
-        if Command::new(candidate)
-            .arg("-v")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
-            return Ok(candidate.to_string());
-        }
-    }
-    Err("Maven is not available on PATH".to_string())
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            for candidate in ["mvn", "/usr/bin/mvn", "/usr/local/bin/mvn"] {
+                if Command::new(candidate)
+                    .arg("-v")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+                {
+                    return Ok(candidate.to_string());
+                }
+            }
+            Err("Maven is not available on PATH".to_string())
+        })
+        .clone()
 }
 
 /// Runs the Java fixture and returns its `key=value` lines.
 fn run_fixture() -> Measured {
     let mvn = which_mvn()
         .unwrap_or_else(|e| panic!("the IOContext portability test needs Maven and a JDK: {e}"));
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.store.RuceneIOContextFixture")
-        .current_dir(harness_dir())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn Maven: {e}"));
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.store.RuceneIOContextFixture")
+            .current_dir(harness_dir()),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .unwrap_or_else(|e| panic!("failed to spawn Maven: {e}"));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(

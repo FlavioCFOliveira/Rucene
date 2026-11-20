@@ -30,6 +30,9 @@
 //! A missing Maven or JDK is a hard failure: a portability test has nothing to
 //! assert without the reference implementation.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -60,17 +63,19 @@ fn harness_dir() -> PathBuf {
 
 fn run_java(out_dir: &Path) -> Vec<String> {
     let _guard = HARNESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let output = Command::new("mvn")
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.DocValuesSkipperFixture")
-        .arg(format!("-Dexec.args={}", out_dir.display()))
-        .current_dir(harness_dir())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("doc-values skipper portability tests need Maven: {e}"));
+    let output = jvm_fixture::launch(
+        Command::new("mvn")
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.DocValuesSkipperFixture")
+            .arg(format!("-Dexec.args={}", out_dir.display()))
+            .current_dir(harness_dir()),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .unwrap_or_else(|e| panic!("doc-values skipper portability tests need Maven: {e}"));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         output.status.success() && stdout.lines().any(|l| l.trim() == "done=true"),

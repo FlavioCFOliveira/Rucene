@@ -262,6 +262,18 @@ path = "tests/fuzz/vectors.rs"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# Test builds (`cargo test`, `cargo nextest`) at opt-level 1 (user decision
+# 2026-11-20, rmp #606 W1); `cargo build` keeps the `dev` profile at opt-level 0.
+# The `test` profile governs every unit a test build compiles: the test targets,
+# the workspace libraries linked into them and their dependencies. Assertions
+# and overflow checks stay on, the counterpart of Lucene's tests running with
+# `-ea`. Measured (#604, #606, seed DEADBEEF): 6.2-8.1x less CPU on four
+# tests of three crates; the cold test build costs 2.4x the wall time.
+[profile.test]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
 [[test]]
 name = "search_on_disk"
 path = "tests/search_on_disk.rs"

@@ -28,6 +28,9 @@
 //! * Positive control: one flipped byte in a copy of `R` makes Lucene's
 //!   `CheckIndex` report the index as not clean.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -959,14 +962,16 @@ fn run_java(mode: &str, dir: &Path) -> (bool, String, String) {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          IndexInteropFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .arg(mode)
-        .arg(dir)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .arg(mode)
+            .arg(dir),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     (
         output.status.success(),
         String::from_utf8_lossy(&output.stdout).into_owned(),

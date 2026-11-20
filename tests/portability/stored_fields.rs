@@ -23,6 +23,9 @@
 //! heuristic takes part: a byte difference can only come from the stored-fields
 //! consumer or from the compressing stored-fields codec.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -365,19 +368,25 @@ fn harness_dir() -> PathBuf {
 }
 
 fn which_mvn() -> Result<String, String> {
-    for candidate in ["mvn", "/usr/bin/mvn", "/usr/local/bin/mvn"] {
-        if Command::new(candidate)
-            .arg("-v")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
-            return Ok(candidate.to_string());
-        }
-    }
-    Err("Maven is not available on PATH".to_string())
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            for candidate in ["mvn", "/usr/bin/mvn", "/usr/local/bin/mvn"] {
+                if Command::new(candidate)
+                    .arg("-v")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+                {
+                    return Ok(candidate.to_string());
+                }
+            }
+            Err("Maven is not available on PATH".to_string())
+        })
+        .clone()
 }
 
 /// Fails the test when Maven is unavailable.
@@ -413,22 +422,24 @@ fn run_java_fixture(out_dir: &Path, case: &str, mode: Mode) -> Result<JavaSegmen
         return Err(format!("pom.xml not found in {}", harness.display()));
     }
     let mvn = which_mvn()?;
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.StoredFieldsFixture")
-        .arg(format!(
-            "-Dexec.args={} {} {}",
-            out_dir.display(),
-            case,
-            mode.fixture_name()
-        ))
-        .current_dir(&harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to spawn Maven: {e}"))?;
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.StoredFieldsFixture")
+            .arg(format!(
+                "-Dexec.args={} {} {}",
+                out_dir.display(),
+                case,
+                mode.fixture_name()
+            ))
+            .current_dir(&harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .map_err(|e| format!("failed to spawn Maven: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -518,32 +529,34 @@ fn read_with_java(
         .iter()
         .map(|info| format!("{}:{}", info.name, info.number))
         .collect();
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.StoredFieldsReaderFixture")
-        .arg(format!(
-            "-Dexec.args={} {} {} {} {} {}",
-            dir.display(),
-            segment_name,
-            id_hex,
-            max_doc,
-            mode.fixture_name(),
-            // A segment can legitimately have no field at all — every document
-            // stored nothing — and an empty argument would silently vanish from
-            // the Maven command line.
-            if fields.is_empty() {
-                "-".to_string()
-            } else {
-                fields.join(",")
-            }
-        ))
-        .current_dir(harness_dir())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("failed to spawn Maven: {e}"))?;
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.StoredFieldsReaderFixture")
+            .arg(format!(
+                "-Dexec.args={} {} {} {} {} {}",
+                dir.display(),
+                segment_name,
+                id_hex,
+                max_doc,
+                mode.fixture_name(),
+                // A segment can legitimately have no field at all — every document
+                // stored nothing — and an empty argument would silently vanish from
+                // the Maven command line.
+                if fields.is_empty() {
+                    "-".to_string()
+                } else {
+                    fields.join(",")
+                }
+            ))
+            .current_dir(harness_dir()),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .map_err(|e| format!("failed to spawn Maven: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

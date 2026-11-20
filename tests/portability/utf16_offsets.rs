@@ -15,6 +15,9 @@
 //! * Rucene writes the same documents into `R`; Lucene's dump of `R` and
 //!   Rucene's own must both equal Lucene's dump of `L`.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -185,14 +188,16 @@ fn run_java(mode: &str, dir: &Path) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          Utf16OffsetsFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .arg(mode)
-        .arg(dir)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .arg(mode)
+            .arg(dir),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "Utf16OffsetsFixture {mode} failed: {}",

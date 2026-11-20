@@ -8,6 +8,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../../../../tests/jvm_fixture/mod.rs"]
+pub mod jvm_fixture;
+
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -2364,14 +2367,16 @@ impl FormatOracle {
             .join(":");
         let rust_dir = TempDir::new(&format!("{}-forjava-{case}", self.prefix));
         write(&rust_dir.0);
-        let output = std::process::Command::new("java")
-            .arg("-ea")
-            .arg("-cp")
-            .arg(&classpath)
-            .arg(&source)
-            .arg(&rust_dir.0)
-            .output()
-            .expect("a JDK is required to run the Lucene oracle");
+        let output = jvm_fixture::launch(
+            std::process::Command::new("java")
+                .arg("-ea")
+                .arg("-cp")
+                .arg(&classpath)
+                .arg(&source)
+                .arg(&rust_dir.0),
+        )
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
         assert!(
             output.status.success(),
             "{}: SimpleTextReadOracle failed on Rucene's {case} index:\n{}",

@@ -32,6 +32,9 @@
     ))
 ))]
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -66,7 +69,7 @@ fn java(mode: &str, dir: &Path) -> Command {
         .arg(fixture())
         .arg(mode)
         .arg(dir);
-    command
+    jvm_fixture::launch(&command)
 }
 
 /// What `LockInteropFixture try <dir>` printed.

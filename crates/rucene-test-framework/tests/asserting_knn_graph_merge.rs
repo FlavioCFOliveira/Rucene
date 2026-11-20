@@ -41,6 +41,9 @@
 //! vector files must be Lucene's, once Lucene's random segment id is replaced
 //! by Rucene's (each side's footer checksum is checked on its own).
 
+#[path = "../../../tests/jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -227,17 +230,19 @@ fn lucene(case: &str) -> Merged {
             path
         })
         .collect();
-    let output = Command::new("java")
-        .current_dir(work.path())
-        .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
-        .arg("-Xmx512m")
-        .arg("-cp")
-        .arg(std::env::join_paths(&jars).expect("a class path"))
-        .arg(&source)
-        .arg(&index)
-        .arg(case)
-        .output()
-        .expect("a JDK 25 is required");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .current_dir(work.path())
+            .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
+            .arg("-Xmx512m")
+            .arg("-cp")
+            .arg(std::env::join_paths(&jars).expect("a class path"))
+            .arg(&source)
+            .arg(&index)
+            .arg(case),
+    )
+    .output()
+    .expect("a JDK 25 is required");
     assert!(
         output.status.success(),
         "AssertingGraphMerge.java {case} failed:\n{}",

@@ -25,6 +25,9 @@
 //! fields are). The two reports — the gate values, then one line per
 //! operation with every float as its `floatToIntBits` — must be identical.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -846,16 +849,17 @@ fn run_java(config: Config, corpus: &Path) -> (String, String) {
     if config.vector {
         cmd.arg("--add-modules").arg("jdk.incubator.vector");
     }
-    let output = cmd
-        .arg(format!("-Dlucene.useVectorFMA={}", config.vector_fma))
-        .arg(format!("-Dlucene.useScalarFMA={}", config.scalar_fma))
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .arg(corpus)
-        .arg(JAVA_PASSES)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        cmd.arg(format!("-Dlucene.useVectorFMA={}", config.vector_fma))
+            .arg(format!("-Dlucene.useScalarFMA={}", config.scalar_fma))
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .arg(corpus)
+            .arg(JAVA_PASSES),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),

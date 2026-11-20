@@ -43,6 +43,8 @@
 //! Positive controls: [`negative_control_detects_a_changed_result`] shows
 //! that one wrong result fails the comparison.
 
+use analysis_oracle::jvm_fixture;
+
 mod analysis_oracle;
 
 use std::collections::BTreeSet;
@@ -86,13 +88,15 @@ fn run_java(args: &[&str]) -> String {
         lucene_jar("lucene-analysis-common"),
     ])
     .expect("a class path");
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(class_path)
-        .arg(oracle_source())
-        .args(args)
-        .output()
-        .expect("a JDK is required to run the BreakIterator oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(class_path)
+            .arg(oracle_source())
+            .args(args),
+    )
+    .output()
+    .expect("a JDK is required to run the BreakIterator oracle");
     assert!(
         output.status.success(),
         "BreakIteratorOracle.java failed:\n{}",

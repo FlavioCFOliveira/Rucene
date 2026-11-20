@@ -44,6 +44,9 @@
 //!   (`IndexWriter.java:2726-2785`), so a merge of the deleted segments cannot
 //!   bring their documents back.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -97,13 +100,15 @@ fn run_java(case: &str) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          WriterTragedyFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .args(case.split(' '))
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .args(case.split(' ')),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "WriterTragedyFixture {case} failed:\n{}",
@@ -124,13 +129,15 @@ fn run_java_matching_assertions(case: &str) -> String {
     if cfg!(debug_assertions) {
         command.arg("-ea");
     }
-    let output = command
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .args(case.split(' '))
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        command
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .args(case.split(' ')),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "WriterTragedyFixture {case} failed:\n{}",

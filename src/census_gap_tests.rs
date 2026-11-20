@@ -3,6 +3,9 @@
 //! needs an index. Each test names its gap (`gap_gNNN_...`) and cites the
 //! Lucene 10.5.0 source that defines the expected behaviour.
 
+#[path = "../tests/jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::sync::Arc;
 
 use crate::codecs::{register_codec, Lucene104Codec};
@@ -211,15 +214,17 @@ pub(crate) fn run_oracle(jvm_args: &[&str], case_args: &[&str]) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          CensusGapFixture.java",
     );
-    let output = std::process::Command::new("java")
-        .arg("--enable-native-access=ALL-UNNAMED")
-        .args(jvm_args)
-        .arg("-cp")
-        .arg(jar)
-        .arg(fixture)
-        .args(case_args)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        std::process::Command::new("java")
+            .arg("--enable-native-access=ALL-UNNAMED")
+            .args(jvm_args)
+            .arg("-cp")
+            .arg(jar)
+            .arg(fixture)
+            .args(case_args),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "CensusGapFixture {case_args:?} failed:\n{}",
