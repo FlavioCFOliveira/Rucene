@@ -42,6 +42,9 @@
 //! cannot reach the parser through `rucene`'s `CharTermAttribute` (its
 //! declared divergence).
 
+#[path = "../../../tests/jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -65,26 +68,28 @@ fn oracle_source() -> PathBuf {
 /// Runs the oracle with `args` (with the JDK-internal access the generator
 /// needs) and returns its standard output.
 fn run_oracle(args: &[&str]) -> String {
-    let output = Command::new("java")
-        .args([
-            "-Xmx2g",
-            "--add-exports",
-            "java.base/sun.util.locale.provider=ALL-UNNAMED",
-            "--add-exports",
-            "java.base/sun.util.resources=ALL-UNNAMED",
-            "--add-opens",
-            "java.base/sun.util.cldr=ALL-UNNAMED",
-            "--add-opens",
-            "java.base/sun.util.locale.provider=ALL-UNNAMED",
-            "--add-opens",
-            "java.base/sun.util.calendar=ALL-UNNAMED",
-            "--add-opens",
-            "java.base/java.text=ALL-UNNAMED",
-        ])
-        .arg(oracle_source())
-        .args(args)
-        .output()
-        .expect("a JDK 25 is required to run the date-parsing oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .args([
+                "-Xmx2g",
+                "--add-exports",
+                "java.base/sun.util.locale.provider=ALL-UNNAMED",
+                "--add-exports",
+                "java.base/sun.util.resources=ALL-UNNAMED",
+                "--add-opens",
+                "java.base/sun.util.cldr=ALL-UNNAMED",
+                "--add-opens",
+                "java.base/sun.util.locale.provider=ALL-UNNAMED",
+                "--add-opens",
+                "java.base/sun.util.calendar=ALL-UNNAMED",
+                "--add-opens",
+                "java.base/java.text=ALL-UNNAMED",
+            ])
+            .arg(oracle_source())
+            .args(args),
+    )
+    .output()
+    .expect("a JDK 25 is required to run the date-parsing oracle");
     assert!(
         output.status.success(),
         "JdkDateParseOracle failed:\n{}",

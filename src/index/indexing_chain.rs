@@ -773,6 +773,13 @@ struct PerField {
 }
 
 impl PerField {
+    /// Equivalent to `PerField.compareTo(PerField)`:
+    /// `this.fieldName.compareTo(other.fieldName)`, Java's UTF-16 order.
+    #[allow(dead_code)] // `PerField implements Comparable`; Lucene 10.5.0 never sorts them.
+    fn compare_to(&self, other: &PerField) -> std::cmp::Ordering {
+        crate::util::java_collections::java_compare_to(&self.field_name, &other.field_name)
+    }
+
     /// Starts the field's first instance in a document.
     ///
     /// Equivalent to `PerField.reset(int, IndexableFieldType)`
@@ -1854,6 +1861,47 @@ impl DefaultIndexingChain {
         Ok(())
     }
 
+    /// Equivalent to `PerField.setInvertState()` (`IndexingChain.java:1832-1846`),
+    /// called for an indexed field once its `FieldInfo` is set. It is a method
+    /// of the chain because the consumers it registers the field with
+    /// (`termsHash.addField`) and the RAM counter belong to the chain, which
+    /// Java's inner class reaches through its enclosing instance.
+    fn set_invert_state(&mut self, pf: usize, field_info: &FieldInfo) {
+        // `PerField.setInvertState()` builds *both* per-field consumers
+        // through `TermsHash.addField`, and tells the term-vectors consumer
+        // that the segment has vectors as soon as a field says so
+        // (`IndexingChain.java:1836-1845`).
+        let writer_index = self.terms_writer.add_field(field_info);
+        let vectors_index = match self.term_vectors_consumer.as_mut() {
+            Some(consumer) => {
+                let index = consumer.add_field(field_info);
+                if field_info.has_term_vectors() {
+                    consumer.set_has_vectors();
+                }
+                Some(index)
+            }
+            None => None,
+        };
+        let per_field = &mut self.per_fields[pf];
+        per_field.invert_state = FieldInvertState::new(
+            self.config.index_created_version_major(),
+            field_info.name.clone(),
+            field_info.index_options,
+        );
+        per_field.writer_index = Some(writer_index);
+        per_field.vectors_index = vectors_index;
+        // `PerField.setInvertState()` creates the norms buffer for every
+        // indexed field that does not omit norms, *before* any document is
+        // seen: "Even if no documents actually succeed in setting a norm,
+        // we still write norms for this segment"
+        // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
+        // `indexOptions != NONE && omitNorms == false`.
+        debug_assert!(per_field.norms.is_none());
+        per_field.norms = field_info
+            .has_norms()
+            .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
+    }
+
     /// Creates the field's `FieldInfo` from its accumulated schema, registers
     /// it with the segment, and builds the per-field writers it calls for.
     ///
@@ -1937,39 +1985,8 @@ impl DefaultIndexingChain {
         self.per_fields[pf].field_info = Some(field_info.clone());
         let indexed = field_info.index_options != IndexOptions::NONE;
         if indexed {
-            // `PerField.setInvertState()` builds *both* per-field consumers
-            // through `TermsHash.addField`, and tells the term-vectors consumer
-            // that the segment has vectors as soon as a field says so
-            // (`IndexingChain.java:1836-1845`).
-            let writer_index = self.terms_writer.add_field(field_info);
-            let vectors_index = match self.term_vectors_consumer.as_mut() {
-                Some(consumer) => {
-                    let index = consumer.add_field(field_info);
-                    if field_info.has_term_vectors() {
-                        consumer.set_has_vectors();
-                    }
-                    Some(index)
-                }
-                None => None,
-            };
-            let per_field = &mut self.per_fields[pf];
-            per_field.invert_state = FieldInvertState::new(
-                self.config.index_created_version_major(),
-                field_info.name.clone(),
-                field_info.index_options,
-            );
-            per_field.writer_index = Some(writer_index);
-            per_field.vectors_index = vectors_index;
-            // `PerField.setInvertState()` creates the norms buffer for every
-            // indexed field that does not omit norms, *before* any document is
-            // seen: "Even if no documents actually succeed in setting a norm,
-            // we still write norms for this segment"
-            // (`IndexingChain.java:1837-1841`). `has_norms()` is exactly Java's
-            // `indexOptions != NONE && omitNorms == false`.
-            debug_assert!(per_field.norms.is_none());
-            per_field.norms = field_info
-                .has_norms()
-                .then(|| NormValuesWriter::new(field_info.clone(), Arc::clone(&self.bytes_used)));
+            // `pf.setInvertState()` (`IndexingChain.java:1345-1347`).
+            self.set_invert_state(pf, field_info);
         }
         // `initializeFieldInfo`'s `DocValuesType` switch creates the doc-values
         // writer of every field that declares one, indexed or not
@@ -8474,5 +8491,32 @@ mod tests {
             vec![3, 0, 1, 2, 4],
             "the stale-mask bug produced [3, 4, 0, 1, 2] here"
         );
+    }
+}
+
+#[cfg(test)]
+mod per_field_compare_to_tests {
+    use super::*;
+    use std::cmp::Ordering;
+
+    /// #594: `PerField.compareTo(PerField)` is
+    /// `this.fieldName.compareTo(other.fieldName)`, `String.compareTo`'s
+    /// UTF-16 order: a supplementary character (surrogate `0xD83D`) sorts
+    /// before U+FFFD, the reverse of the code-point order.
+    #[test]
+    fn per_field_compare_to_is_string_compare_to_of_field_names() {
+        let config = Arc::new(LiveIndexWriterConfig::new(None));
+        let mut chain = DefaultIndexingChain::new(config);
+        let a = chain.get_or_add_per_field("a");
+        let b = chain.get_or_add_per_field("b");
+        let emoji = chain.get_or_add_per_field("\u{1F600}");
+        let replacement = chain.get_or_add_per_field("\u{FFFD}");
+        let a2 = chain.get_or_add_per_field("a");
+        let pf = |i: usize| &chain.per_fields[i];
+        assert_eq!(a, a2);
+        assert_eq!(pf(a).compare_to(pf(b)), Ordering::Less);
+        assert_eq!(pf(b).compare_to(pf(a)), Ordering::Greater);
+        assert_eq!(pf(a).compare_to(pf(a2)), Ordering::Equal);
+        assert_eq!(pf(emoji).compare_to(pf(replacement)), Ordering::Less);
     }
 }

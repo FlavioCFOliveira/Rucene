@@ -93,6 +93,24 @@ impl<T: Clone + Default> FSTPath<T> {
     }
 }
 
+impl<T: std::fmt::Display> std::fmt::Display for FSTPath<T> {
+    /// Equivalent to `FSTPath.toString()`:
+    /// `"input=" + input.get() + " output=" + output + " context=" + context +
+    /// " boost=" + boost + " payload=" + payload`, the output by its own
+    /// `toString()` and a `null` context as `null`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "input={} output={} context={} boost={} payload={}",
+            self.input.get(),
+            self.output,
+            self.context.as_deref().unwrap_or("null"),
+            crate::util::java_fmt::float_to_string(self.boost),
+            self.payload
+        )
+    }
+}
+
 /// Hooks a caller can use to filter the paths a [`TopNSearcher`] considers.
 ///
 /// Equivalent to the three `protected` methods of `Util.TopNSearcher` that
@@ -209,7 +227,8 @@ where
 ///
 /// Equivalent to the record `Util.TieBreakByInputComparator<T>`
 /// (package-private in Java; public for the port of `TestFSTs`, whose
-/// anonymous `TopNSearcher` subclasses use it as their default).
+/// anonymous `TopNSearcher` subclasses use it as their default). The returned
+/// closure is `TieBreakByInputComparator.compare(FSTPath, FSTPath)`.
 pub fn tie_break_by_input_comparator<T: Clone + Default + 'static>(
     comparator: OutputComparator<T>,
 ) -> PathComparator<T> {

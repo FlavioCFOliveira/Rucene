@@ -75,6 +75,9 @@ impl FilteringIntervalIterator {
     }
 
     /// Equivalent to the protected `FilteringIntervalIterator.reset()`.
+    ///
+    /// Equivalent to the abstract `ConjunctionIntervalIterator.reset()` this subclass
+    /// implements, which `conjunction_interval_iterator_disi!` calls on each document.
     fn reset(&mut self) -> Result<()> {
         self.bpos = self.b.next_interval()? != NO_MORE_INTERVALS;
         Ok(())

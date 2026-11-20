@@ -516,6 +516,47 @@ fn writer_output_stream_undersized_buffer_hangs_as_java() {
     assert_eq!(wos_bounded(1, "a\u{1F600}"), (true, 1, "a".to_string()));
 }
 
+/// The environment variable that marks the child process of
+/// [`in_own_process`], holding the test it runs.
+const OWN_PROCESS_TEST: &str = "RANDOMIZEDTESTING_OWN_PROCESS_TEST";
+
+/// Whether the calling test is to run its body here: `true` in the child
+/// process this starts, `false` in the parent once the child passed.
+///
+/// randomizedtesting runs a suite alone in its JVM, and the runner's
+/// thread-leak check and default-handler check read JVM-wide state (every
+/// live thread of the `main` group tree, `Thread.defaultUncaughtExceptionHandler`).
+/// The crate's lib tests share one process, where the threads and handlers of
+/// concurrently running tests would reach a suite's checks as the JVM never
+/// lets them. A test that runs a suite under the runner therefore re-runs
+/// itself, alone, in a child process of this test binary (`--exact test`),
+/// and the parent asserts that the child ran it and passed.
+fn in_own_process(test: &str) -> bool {
+    let path = format!(
+        "{}::{test}",
+        module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, rest)| rest)
+    );
+    if std::env::var(OWN_PROCESS_TEST).is_ok_and(|t| t == path) {
+        return true;
+    }
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let out = std::process::Command::new(exe)
+        .args(["--exact", &path, "--test-threads=1"])
+        .env(OWN_PROCESS_TEST, &path)
+        .output()
+        .expect("start the test binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{path} in its own process: {}\n{stdout}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    false
+}
+
 /// Runs `class` under the ported runner: `description\tclass: message <- cause…`
 /// per failure.
 fn run_failures(class: &std::sync::Arc<crate::jdk::reflect::Class>) -> Vec<String> {
@@ -541,6 +582,9 @@ fn run_failures(class: &std::sync::Arc<crate::jdk::reflect::Class>) -> Vec<Strin
 /// rows `{"x", "y"}`).
 #[test]
 fn constructor_argument_count_mismatch_is_wrapped_as_java() {
+    if !in_own_process("constructor_argument_count_mismatch_is_wrapped_as_java") {
+        return;
+    }
     use crate::annotations::ParametersFactory;
     use crate::jdk::reflect::{modifier, Class, Constructor, Method};
     use crate::junit::Test;
@@ -581,6 +625,9 @@ fn constructor_argument_count_mismatch_is_wrapped_as_java() {
 /// handler of `Runner529$Handler`).
 #[test]
 fn replaced_default_handler_message_names_its_class_as_java() {
+    if !in_own_process("replaced_default_handler_message_names_its_class_as_java") {
+        return;
+    }
     use crate::jdk::exception::Throwable as T;
     use crate::jdk::reflect::{modifier, Class, Constructor, Method};
     use crate::jdk::thread::{Thread, UncaughtExceptionHandler};

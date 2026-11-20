@@ -68,6 +68,7 @@ impl IntervalFunction for Extend {
         ))
     }
 
+    /// Equivalent to `Extend.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:extend({} {} {})",

@@ -38,6 +38,9 @@
 //! A missing JDK or Lucene jar is a hard failure, not a skip: these tests have
 //! nothing to assert without the reference implementation.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -314,14 +317,16 @@ fn java_merge(case: Case) -> JavaMerge {
     );
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join(case.name);
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(&dir)
-        .arg(case.name)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(&dir)
+            .arg(case.name),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "MergedFieldsFixture {} failed:\n{}",

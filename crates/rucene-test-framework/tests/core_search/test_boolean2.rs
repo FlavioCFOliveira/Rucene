@@ -94,7 +94,7 @@ fn copy_of(dir: &TestDirectory) -> Result<TestDirectory> {
             continue;
         }
         to.copy_from(&*from, &name, &name, &*DEFAULT_IO_CONTEXT)?;
-        to.sync(&[name])?;
+        to.sync(&[name.as_str()])?;
     }
     Ok(copy)
 }
@@ -167,7 +167,7 @@ fn before_class() -> Result<()> {
                 continue;
             }
             to.copy_from(&*from, &file_name, &file_name, &*DEFAULT_IO_CONTEXT)?;
-            to.sync(&[file_name])?;
+            to.sync(&[file_name.as_str()])?;
         }
     }
 

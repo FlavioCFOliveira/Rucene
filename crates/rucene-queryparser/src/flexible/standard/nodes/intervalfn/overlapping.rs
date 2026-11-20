@@ -66,6 +66,7 @@ impl IntervalFunction for Overlapping {
         ))
     }
 
+    /// Equivalent to `Overlapping.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:overlapping({} {})",

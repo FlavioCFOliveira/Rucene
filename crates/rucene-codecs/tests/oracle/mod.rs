@@ -8,10 +8,13 @@
 
 #![allow(dead_code)]
 
+#[path = "../../../../tests/jvm_fixture/mod.rs"]
+pub mod jvm_fixture;
+
 use rucene::util::atomic_ref_cell::AtomicRefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Once, OnceLock};
 
 use rucene::analysis::tokenattributes::{
     CharTermAttribute, OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute,
@@ -37,9 +40,11 @@ use rucene::index::{
 };
 use rucene::search::knn::TopKnnCollector;
 use rucene::search::{BitsAcceptDocs, KnnCollector, Sort, SortField, SortFieldType, NO_MORE_DOCS};
+use rucene::store::java_nio_file::{default_file_system, FileSystem, FileSystemProvider};
 use rucene::store::{Directory, NIOFSDirectory};
 use rucene::util::resource_loader::ClassLoader;
 use rucene::util::{AttributeSource, BytesRef};
+use rucene_test_framework::mockfile::DisableFsyncFS;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -367,7 +372,29 @@ pub fn new_config(codec: Arc<dyn Codec>) -> IndexWriterConfig {
     config
 }
 
+/// The default filesystem wrapped in `DisableFsyncFS`, created once: the
+/// filesystem every [`open_dir`] directory lives on.
+///
+/// Lucene's test framework wraps the suite filesystem the same way 99 % of the
+/// time, "to speed up tests by omitting actual fsync calls to the hardware"
+/// (`TestRuleTemporaryFilesCleanup.java:131-135`, ported in
+/// `test_rule_temporary_files_cleanup.rs`). No test that includes this module
+/// checks durability, and the bytes written and read are unchanged; the
+/// directories the Java oracle opens are not affected.
+fn no_fsync_file_system() -> &'static Arc<dyn FileSystem> {
+    static FS: OnceLock<Arc<dyn FileSystem>> = OnceLock::new();
+    FS.get_or_init(|| {
+        FileSystemProvider::get_file_system(&*DisableFsyncFS::new(default_file_system()))
+    })
+}
+
+/// A `NIOFSDirectory` over `path`, opened on [`no_fsync_file_system`]: its
+/// `sync` and `syncMetaData` reach `FileChannel.force`, which does nothing.
 pub fn open_dir(path: &Path) -> Arc<dyn Directory> {
+    let path = path
+        .to_str()
+        .unwrap_or_else(|| panic!("temporary path {path:?} is not UTF-8"));
+    let path = Arc::clone(no_fsync_file_system()).get_path(path, &[]);
     Arc::new(NIOFSDirectory::open(path).unwrap())
 }
 
@@ -2364,14 +2391,16 @@ impl FormatOracle {
             .join(":");
         let rust_dir = TempDir::new(&format!("{}-forjava-{case}", self.prefix));
         write(&rust_dir.0);
-        let output = std::process::Command::new("java")
-            .arg("-ea")
-            .arg("-cp")
-            .arg(&classpath)
-            .arg(&source)
-            .arg(&rust_dir.0)
-            .output()
-            .expect("a JDK is required to run the Lucene oracle");
+        let output = jvm_fixture::launch(
+            std::process::Command::new("java")
+                .arg("-ea")
+                .arg("-cp")
+                .arg(&classpath)
+                .arg(&source)
+                .arg(&rust_dir.0),
+        )
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
         assert!(
             output.status.success(),
             "{}: SimpleTextReadOracle failed on Rucene's {case} index:\n{}",

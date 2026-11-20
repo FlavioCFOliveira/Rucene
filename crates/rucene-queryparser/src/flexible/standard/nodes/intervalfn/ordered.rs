@@ -62,6 +62,7 @@ impl IntervalFunction for Ordered {
         )?))
     }
 
+    /// Equivalent to `Ordered.toString()`.
     fn to_java_string(&self) -> String {
         format!("fn:ordered({})", join(&self.sources))
     }

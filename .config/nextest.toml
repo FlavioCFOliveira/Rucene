@@ -11,8 +11,9 @@
 #       cargo nextest run --workspace --exclude randomizedtesting --no-fail-fast
 #       cargo test -p randomizedtesting   (its two harness=false targets cannot
 #                                          be listed by nextest)
-# Before a run, compile the Java harness once:
-#       (cd tests/fixtures/java-codec-harness && mvn -q -o compile)
+# The Java harness (tests/fixtures/java-codec-harness) needs no preparation:
+# the test helper tests/jvm_fixture compiles it and resolves its class path once,
+# under a cross-process file lock, and again only when pom.xml or src/ change.
 
 [profile.default]
 # 16 CPUs: leave headroom for the session, rust-analyzer and the JVMs the
@@ -25,19 +26,112 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 status-level = "fail"
 final-status-level = "slow"
 
-[test-groups]
-# Tests that run `mvn -q compile exec:java` in the shared harness directory
-# (tests/fixtures/java-codec-harness): concurrent `compile` goals race on
-# target/classes, so they run one at a time (still in parallel with all others).
-maven-harness = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'binary(=portability_bkd_doc_ids) | binary(=portability_bkd_writer_layout) | binary(=portability_byte_block_pool_accounting) | binary(=portability_codecs) | binary(=portability_compressing_accounting) | binary(=portability_delete_by_query) | binary(=portability_deletion_policy) | binary(=portability_doc_values) | binary(=portability_doc_values_skipper) | binary(=portability_flush_files) | binary(=portability_fst_arcs_buffer) | binary(=portability_fst_enum_reader) | binary(=portability_hnsw_graph) | binary(=portability_index_file_deleter) | binary(=portability_indexing_chain) | binary(=portability_io_context_contracts) | binary(=portability_java_collections) | binary(=portability_member_contracts) | binary(=portability_norms) | binary(=portability_object_contract_core) | binary(=portability_object_contract_search) | binary(=portability_points) | binary(=portability_prefix_coded_terms) | binary(=portability_scalar_quantized_vectors) | binary(=portability_seal_bytes) | binary(=portability_search_domain) | binary(=portability_store_analysis_contracts) | binary(=portability_stored_fields) | binary(=portability_term_vectors) | binary(=portability_token_stream_to_automaton) | binary(=portability_vector_point) | binary(=portability_vectors)'
-test-group = "maven-harness"
-
-# Memory-heavy randomized fuzz targets (up to several GB each): each takes four
-# of the twelve slots, so at most three run at once.
+# The randomized fuzz targets: long byte sweeps, so a longer slow period. Each
+# takes one slot, like every other test: measured over the 66 `fuzz_*` tests
+# (rmp #604, 2026-11-20), peak RSS at most 46 MB and CPU/wall at most 1.0, so
+# reserving four slots each (rmp #606 W3) only left slots idle.
 [[profile.default.overrides]]
 filter = 'binary(/^fuzz_/)'
-threads-required = 4
 slow-timeout = { period = "300s", terminate-after = 12 }
+
+# Scheduling (rmp #608 R4): nextest starts higher `priority` tests sooner
+# (range -100..100, default 0). The suite is slot-bound, so a long test that
+# starts late extends the span. Walls are those of the cycle-1 validation run
+# (`.rucene-perf/test-cycles/cycle1-validate/per_test_costs.csv`); the tests the
+# oracle helper's `DisableFsyncFS` shortened (R1) are ranked by their walls
+# after it. Scheduling only: no test changes what it runs.
+# Tests of 30 s or more wall (7 tests).
+[[profile.default.overrides]]
+filter = '''
+(binary_id(=rucene-analysis-common::analysis_email_tests) & test(=test_uax29_url_email_tokenizer_nightly))
+| (binary_id(=rucene-analysis-common::date_parse_jdk_oracle) & test(=parse_results_equal_jdk_25))
+| (binary_id(=rucene-codecs::base_doc_values_format_codecs) & test(=test_simple_text_doc_values_format))
+| (binary_id(=rucene::fuzz_doc_values) & test(=every_value_at_every_byte_of_the_data_file_is_survived))
+| (binary_id(=rucene::fuzz_norms) & test(=every_value_at_every_byte_of_the_data_file_is_survived))
+| (binary_id(=rucene::fuzz_term_vectors) & test(=every_value_at_every_byte_of_the_data_file_is_survived))
+| (binary_id(=rucene::indexing_ram) & test(=ram_flushes_cut_lucenes_segments))
+'''
+priority = 90
+
+# Tests of 10 to 30 s wall (44 tests).
+[[profile.default.overrides]]
+filter = '''
+(binary_id(=rucene-analysis-common::analysis_oracle_hunspell_compound_morph_collation) & test(/^(collation_oracle|hunspell_api_oracle|token_stream_oracle)$/))
+| (binary_id(=rucene-analysis-common::analysis_oracle_lang) & test(/^(oracle_468_analyzers_and_factories|oracle_468_vocabularies|oracle_469_analyzers_and_factories|oracle_470_analyzers_and_factories|oracle_470_vocabularies|oracle_471_analyzers_and_factories)$/))
+| (binary_id(=rucene-analysis-common::analysis_oracle_snowball_jflex_pattern_ngram_path) & test(/^(oracle_454_stemmer_vocabularies|oracle_454_to_460_factories_and_scenarios|oracle_455_stemmer_vocabularies)$/))
+| (binary_id(=rucene-analysis-common::analysis_pattern_tests) & test(=test_pattern_tokenizer_nightly))
+| (binary_id(=rucene-codecs::base_postings_format_codecs) & test(=test_ords_block_tree))
+| (binary_id(=rucene-codecs::base_stored_fields_format_codecs) & test(=test_simple_text_stored_fields_format))
+| (binary_id(=rucene-codecs::base_term_vectors_format_codecs) & test(=test_simple_text_term_vectors_format))
+| (binary_id(=rucene-queryparser::jdk_format_oracle) & test(/^(jdk_formats_shard_04|jdk_formats_shard_06|jdk_formats_shard_08)$/))
+| (binary_id(=rucene-test-framework::base_compound_format_suites) & test(=test_compound_suite_draws_match_lucene))
+| (binary_id(=rucene-test-framework::base_doc_values_format_suites) & test(/^(test_doc_values_suite_draws_match_lucene|test_lucene90_doc_values_format|test_lucene90_doc_values_format_merge_instance|test_per_field_doc_values_format)$/))
+| (binary_id(=rucene-test-framework::base_norms_format_suites) & test(=test_norms_suite_draws_match_lucene))
+| (binary_id(=rucene-test-framework::base_postings_format_suites) & test(=test_postings_suite_draws_match_lucene))
+| (binary_id(=rucene-test-framework::base_term_vectors_format_suites) & test(=test_term_vectors_suite_draws_match_lucene))
+| (binary_id(=rucene-test-framework::core_codecs_tests) & test(/^(test_indexed_disi|test_trie)$/))
+| (binary_id(=rucene-test-framework::core_index_tests) & test(/^(test_index_file_deleter|test_index_sorting|test_index_writer|test_index_writer_exceptions)$/))
+| (binary_id(=rucene-test-framework::core_search_explanations_tests) & test(=test_simple_explanations_with_filler_docs))
+| (binary_id(=rucene-test-framework::core_search_tests) & test(/^(test_index_or_doc_values_query|test_late_interaction_rescorer)$/))
+| (binary_id(=rucene-test-framework::core_thread_leak) & test(=a_reopen_thread_left_running_is_a_thread_leak))
+| (binary_id(=rucene-test-framework::test_codecs_oracle) & test(=lucene_reads_what_postings_formats_write))
+| (binary_id(=rucene::fuzz_doc_values) & test(=hostile_metadata_that_passes_its_checksum_is_survived))
+| (binary_id(=rucene::fuzz_stored_fields) & test(=every_value_at_every_byte_of_the_data_file_is_survived))
+| (binary_id(=rucene::index_writer_tragedy) & test(=a_failure_closing_the_merge_readers_hangs_the_merge_thread_as_lucene_does))
+| (binary_id(=rucene::portability_index_interop) & test(=rucene_and_lucene_accept_each_others_indexes))
+| (binary_id(=rucene::portability_scalar_quantized_vectors) & test(=scalar_quantized_vectors_match_lucene_byte_for_byte))
+| (binary_id(=rucene::portability_similarity_scores) & test(=similarity_scores_and_explanations_match_lucene))
+'''
+priority = 60
+
+# Tests of 5 to 10 s wall (78 tests).
+[[profile.default.overrides]]
+filter = '''
+(binary_id(=rucene-analysis-common::analysis_lang_tests) & test(/^(analysis_lang_generated::test_finnish_light_stem_filter|analysis_lang_generated::test_italian_light_stem_filter|analysis_lang_generated::test_russian_light_stem_filter)$/))
+| (binary_id(=rucene-analysis-common::analysis_oracle_snowball_jflex_pattern_ngram_path) & test(/^(oracle_456_stemmer_vocabularies|oracle_457_464_charfilter_classic_wikipedia|oracle_459_min_hash|oracle_465_email)$/))
+| (binary_id(=rucene-analysis-common::date_parse_jdk_oracle) & test(=locale_class_keys_equal_the_jdk_dumpers))
+| (binary_id(=rucene-codecs::base_compound_format_codecs) & test(=test_simple_text_compound_format))
+| (binary_id(=rucene-codecs::base_norms_format_codecs) & test(=test_simple_text_norms_format))
+| (binary_id(=rucene-codecs::base_postings_format_codecs) & test(/^(test_bloom_postings_format|test_direct_postings_format|test_fixed_gap_postings_format|test_fst_postings_format|test_st_uniform_split_posting_format|test_uniform_split_posting_format|test_var_gap_doc_freq_interval_postings_format|test_var_gap_fixed_interval_postings_format)$/))
+| (binary_id(=rucene-codecs::blockterms_oracle) & test(=lucene_reads_what_rucene_writes))
+| (binary_id(=rucene-codecs::uniformsplit_oracle) & test(=lucene_reads_what_rucene_writes))
+| (binary_id(=rucene-queries::payloads_tests) & test(=test_payload_score_query))
+| (binary_id(=rucene-queries::spans_tests) & test(=test_basics))
+| (binary_id(=rucene-queryparser::jdk_format_oracle) & test(/^(jdk_formats_shard_00|jdk_formats_shard_01|jdk_formats_shard_02|jdk_formats_shard_03|jdk_formats_shard_05|jdk_formats_shard_07|jdk_formats_shard_09|jdk_formats_shard_10|jdk_formats_shard_11)$/))
+| (binary_id(=rucene-test-framework::base_compound_format_suites) & test(=test_lucene90_compound_format))
+| (binary_id(=rucene-test-framework::base_doc_values_format_suites) & test(/^(test_asserting_doc_values_format|test_lucene90_doc_values_format_variable_skip_interval)$/))
+| (binary_id(=rucene-test-framework::base_geo_point_suites) & test(=test_geo_point_suite_draws_match_lucene))
+| (binary_id(=rucene-test-framework::base_norms_format_suites) & test(=test_lucene90_norms_format_merge_instance))
+| (binary_id(=rucene-test-framework::base_postings_format_suites) & test(/^(test_asserting_postings_format|test_lucene104_postings_format|test_per_field_postings_format)$/))
+| (binary_id(=rucene-test-framework::base_stored_fields_format_suites) & test(/^(test_compressing_stored_fields_format|test_stored_fields_suite_draws_match_lucene)$/))
+| (binary_id(=rucene-test-framework::base_term_vectors_format_suites) & test(=test_compressing_term_vectors_format))
+| (binary_id(=rucene-test-framework::core_index_tests) & test(/^(test_default_codec_parallelizes_io|test_index_writer_on_disk_full|test_index_writer_reader)$/))
+| (binary_id(=rucene-test-framework::core_search_explanations_tests) & test(=test_simple_explanations))
+| (binary_id(=rucene-test-framework::core_search_tests) & test(/^(test_late_interaction_float_values_source|test_term_in_set_query|test_term_ord_val_comparator_adaptive_skipping)$/))
+| (binary_id(=rucene-test-framework::core_util_bkd_tests) & test(=test_bkd))
+| (binary_id(=rucene-test-framework::core_util_hnsw_tests) & test(=test_hnsw_byte_vector_graph))
+| (binary_id(=rucene-test-framework::core_util_tests) & test(=test_offline_sorter))
+| (binary_id(=rucene-test-framework::readers_close_inputs) & test(=every_reader_closes_every_input_it_opens))
+| (binary_id(=rucene-test-framework::threaded_indexing_and_searching_suites) & test(=test_threaded_suite_draws_match_lucene))
+| (binary_id(=rucene::fuzz_doc_values) & test(=every_value_at_every_byte_of_the_metadata_file_is_survived))
+| (binary_id(=rucene::fuzz_vectors) & test(/^(boundary_values_at_every_byte_of_the_graph_are_survived|boundary_values_at_every_byte_of_the_vector_data_are_survived)$/))
+| (binary_id(=rucene::index_writer_merge_fields) & test(=a_merge_of_every_kind_of_field_with_deletions_is_lucenes))
+| (binary_id(=rucene::index_writer_tragedy) & test(=an_assertion_failure_in_a_full_flush_is_a_writer_tragedy_as_lucene_under_ea))
+| (binary_id(=rucene::indexing_ram) & test(=per_document_ram_is_lucenes))
+| (binary_id(=rucene::portability_codecs) & test(=java_harness_supports_all_document_shapes))
+| (binary_id(=rucene::portability_delete_by_query) & test(=live_documents_side_by_side))
+| (binary_id(=rucene::portability_doc_values) & test(/^(per_block_ordinals_match_lucene|random_corruption_of_per_block_values_never_panics)$/))
+| (binary_id(=rucene::portability_dv_range_feature_queries) & test(=doc_values_range_and_feature_queries_and_selector_sorts_match_lucene))
+| (binary_id(=rucene::portability_flush_files) & test(=file_listings_side_by_side))
+| (binary_id(=rucene::portability_geo_shapes) & test(=geo_points_and_shapes_match_lucene))
+| (binary_id(=rucene::portability_index_interop) & test(=force_merge_deletes_selects_the_merges_lucene_selects))
+| (binary_id(=rucene::portability_inet_address_point) & test(=inet_address_point_queries_match_lucene))
+| (binary_id(=rucene::portability_knn_variants) & test(=knn_query_variants_match_lucene))
+| (binary_id(=rucene::portability_multi_term_queries) & test(=multi_term_queries_match_lucene))
+| (binary_id(=rucene::portability_panama_vectorization) & test(=panama_and_scalar_kernels_match_lucene))
+| (binary_id(=rucene::portability_points) & test(/^(a_deep_multi_dimension_tree_matches_lucene|the_kdm_field_order_follows_the_field_hash|two_dimensional_points_match_lucene)$/))
+| (binary_id(=rucene::portability_scoring_queries) & test(=scoring_queries_paging_and_merge_match_lucene))
+| (binary_id(=rucene::portability_seal_bytes) & test(=lucenes_own_si_diagnostics_order_is_not_stable_between_jvms))
+| (binary_id(=rucene::portability_terms_dictionary) & test(=terms_dictionary_add_indexes_and_check_index_match_lucene))
+'''
+priority = 30

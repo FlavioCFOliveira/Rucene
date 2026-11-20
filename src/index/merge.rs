@@ -23,7 +23,9 @@ use crate::util::{Bits, InfoStream, NoOutputInfoStream};
 ///
 /// Returns the mapped doc ID or `-1` if the document is not mapped (deleted).
 ///
-/// Equivalent to `MergeState.DocMap`.
+/// Equivalent to `MergeState.DocMap`, a functional interface.
+/// Equivalent to `DocMap.get(int)` when called: the mapped docID, or `-1`
+/// if the given doc is not mapped.
 pub type DocMap = Arc<dyn Fn(i32) -> i32 + Send + Sync>;
 
 /// Helper that builds an identity doc map (no deletions) for a segment of

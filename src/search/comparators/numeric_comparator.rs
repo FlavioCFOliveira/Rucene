@@ -133,6 +133,29 @@ struct CompetitiveDisiBuilder {
     kind: CompetitiveKind,
 }
 
+impl CompetitiveDisiBuilder {
+    /// Are there documents in this segment with no value for the comparator
+    /// to use.
+    ///
+    /// Equivalent to the abstract `CompetitiveDISIBuilder.hasMissingDocs()`:
+    /// `pointValues.getDocCount() != maxDoc` for the points-backed builder,
+    /// `skipper.docCount() != maxDoc` for the skipper-backed one
+    /// (`NumericComparator.java:386-388`, `:516-518`).
+    fn has_missing_docs(&self) -> Result<bool> {
+        Ok(match &self.kind {
+            CompetitiveKind::Points { point_values, .. } => {
+                point_values.doc_count()? != self.common.max_doc
+            }
+            CompetitiveKind::Skipper { doc_count, .. } => *doc_count != self.common.max_doc,
+        })
+    }
+
+    /// Equivalent to the private `CompetitiveDISIBuilder.setMaxDocVisited(int)`.
+    fn set_max_doc_visited(&mut self, max_doc_visited: i32) {
+        self.common.max_doc_visited = max_doc_visited;
+    }
+}
+
 /// Abstract numeric comparator for comparing numeric values.
 ///
 /// Equivalent to the state and the `final` logic of the abstract class
@@ -625,8 +648,8 @@ impl NumericComparator {
     /// half — copying the document's value into the slot — the concrete
     /// comparators perform before calling this.
     pub fn copy(&mut self, leaf: &mut NumericLeafState, doc: i32) {
-        if let Some(common) = leaf.competitive_common_mut() {
-            common.max_doc_visited = doc;
+        if let Some(builder) = leaf.competitive.as_mut() {
+            builder.set_max_doc_visited(doc);
         }
     }
 
@@ -724,32 +747,19 @@ impl NumericComparator {
         if !self.hits_threshold_reached {
             return Ok(());
         }
-        let (leaf_top_set, has_missing_docs) = {
-            let builder = leaf
-                .competitive
-                .as_ref()
-                .expect("INVARIANT: the builder was just observed to be present");
-            let has_missing = match &builder.kind {
-                CompetitiveKind::Points { point_values, .. } => {
-                    point_values.doc_count()? != builder.common.max_doc
-                }
-                CompetitiveKind::Skipper { doc_count, .. } => *doc_count != builder.common.max_doc,
-            };
-            (builder.common.leaf_top_set, has_missing)
-        };
-        if !leaf_top_set && !self.queue_full {
+        let builder = leaf
+            .competitive
+            .as_ref()
+            .expect("INVARIANT: the builder was just observed to be present");
+        if !builder.common.leaf_top_set && !self.queue_full {
             return Ok(());
         }
 
         // If some documents have missing points, check that missing values
         // prohibit the optimization.
-        if has_missing_docs {
+        if builder.has_missing_docs()? {
             let competitive = {
-                let common = &leaf
-                    .competitive
-                    .as_ref()
-                    .expect("INVARIANT: the builder was just observed to be present")
-                    .common;
+                let common = &builder.common;
                 self.is_missing_value_competitive(
                     common,
                     bottom_as_comparable_long,

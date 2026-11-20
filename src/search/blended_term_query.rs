@@ -120,6 +120,7 @@ impl BlendedRewriteMethod for DisjunctionMaxRewrite {
         self
     }
 
+    /// Equivalent to `DisjunctionMaxRewrite.equals(Object)`.
     fn method_eq(&self, other: &dyn BlendedRewriteMethod) -> bool {
         match other.as_any().downcast_ref::<DisjunctionMaxRewrite>() {
             Some(other) => self.tie_breaker_multiplier == other.tie_breaker_multiplier,

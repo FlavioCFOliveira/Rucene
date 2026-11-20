@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::{
@@ -733,7 +733,10 @@ pub struct IndexSearcher {
     reader: Arc<dyn IndexReader>,
     reader_context: Arc<dyn IndexReaderContext>,
     leaf_contexts: Vec<Arc<LeafReaderContext>>,
-    leaf_slices: OnceLock<std::result::Result<Vec<LeafSlice>, String>>,
+    /// Java's `volatile LeafSlice[] leafSlices`: set once, on success only.
+    leaf_slices: OnceLock<Vec<LeafSlice>>,
+    /// The monitor of the `synchronized computeAndCacheSlices()`.
+    compute_slices_lock: Mutex<()>,
     /// Used internally to load-balance the threads executing a query.
     task_executor: Arc<TaskExecutor>,
     similarity: Arc<dyn Similarity>,
@@ -767,6 +770,7 @@ impl Clone for IndexSearcher {
             reader_context: Arc::clone(&self.reader_context),
             leaf_contexts: self.leaf_contexts.clone(),
             leaf_slices: self.leaf_slices.clone(),
+            compute_slices_lock: Mutex::new(()),
             task_executor: Arc::clone(&self.task_executor),
             similarity: Arc::clone(&self.similarity),
             query_cache: self.query_cache.clone(),
@@ -869,7 +873,7 @@ impl IndexSearcher {
             } else {
                 vec![LeafSlice::entire_segments(&leaf_contexts)?]
             };
-            let _ = leaf_slices.set(Ok(slices));
+            let _ = leaf_slices.set(slices);
         }
 
         Ok(Self {
@@ -878,6 +882,7 @@ impl IndexSearcher {
             reader_context: context,
             leaf_contexts,
             leaf_slices,
+            compute_slices_lock: Mutex::new(()),
             task_executor,
             similarity: Arc::clone(&DEFAULT_SIMILARITY),
             query_cache: DEFAULT_QUERY_CACHE
@@ -1226,10 +1231,9 @@ impl IndexSearcher {
     /// partitions of the same leaf, and propagates the slice construction
     /// error.
     pub fn get_slices(&self) -> Result<&[LeafSlice]> {
-        let cached = self.compute_and_cache_slices();
-        match cached {
-            Ok(slices) => Ok(slices),
-            Err(message) => Err(LuceneError::illegal_state(message.clone())),
+        match self.leaf_slices.get() {
+            Some(slices) => Ok(slices),
+            None => self.compute_and_cache_slices(),
         }
     }
 
@@ -1246,34 +1250,33 @@ impl IndexSearcher {
     /// Computes the leaf slices once and caches them.
     ///
     /// Equivalent to the private `synchronized
-    /// IndexSearcher.computeAndCacheSlices()`. The `OnceLock` provides the
-    /// once-only, synchronised initialisation Java gets from the `synchronized`
-    /// modifier plus the double null check on `leafSlices`; the failure Java
-    /// throws out of the method is cached alongside the value, because a
-    /// `OnceLock` cannot be initialised twice.
-    fn compute_and_cache_slices(&self) -> &std::result::Result<Vec<LeafSlice>, String> {
-        self.leaf_slices.get_or_init(|| {
-            let slices = match self.slices(&self.leaf_contexts) {
-                Ok(slices) => slices,
-                Err(err) => return Err(err.to_string()),
-            };
-            // Enforce that there are not multiple leaf partitions within the
-            // same leaf slice pointing to the same leaf context. It is a
-            // requirement that Collector::get_leaf_collector is called once per
-            // leaf context; it also makes no sense to partition a segment and
-            // then search those partitions as part of the same slice, because
-            // the goal of partitioning is parallel searching, which happens at
-            // the slice level.
-            for leaf_slice in &slices {
-                if leaf_slice.partitions.len() <= 1 {
-                    continue;
-                }
-                if let Err(err) = Self::enforce_distinct_leaves(leaf_slice) {
-                    return Err(err.to_string());
-                }
+    /// IndexSearcher.computeAndCacheSlices()`: under the searcher's monitor
+    /// ([`compute_slices_lock`](Self::compute_slices_lock)), the cached slices
+    /// are rechecked, else computed, checked and stored. As in Java, only
+    /// success is stored: a failure of `slices` or of the distinct-leaves check
+    /// propagates unchanged and the next call computes again.
+    fn compute_and_cache_slices(&self) -> Result<&[LeafSlice]> {
+        let _monitor = self
+            .compute_slices_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(slices) = self.leaf_slices.get() {
+            return Ok(slices);
+        }
+        let slices = self.slices(&self.leaf_contexts)?;
+        // Enforce that there are not multiple leaf partitions within the same
+        // leaf slice pointing to the same leaf context. It is a requirement
+        // that Collector::get_leaf_collector is called once per leaf context;
+        // it also makes no sense to partition a segment and then search those
+        // partitions as part of the same slice, because the goal of
+        // partitioning is parallel searching, which happens at the slice level.
+        for leaf_slice in &slices {
+            if leaf_slice.partitions.len() <= 1 {
+                continue;
             }
-            Ok(slices)
-        })
+            Self::enforce_distinct_leaves(leaf_slice)?;
+        }
+        Ok(self.leaf_slices.get_or_init(|| slices))
     }
 
     /// Equivalent to the private `IndexSearcher.enforceDistinctLeaves`.

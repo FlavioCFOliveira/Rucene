@@ -2076,20 +2076,20 @@ impl CheckIndex {
     ///
     /// Equivalent to `CheckIndex.doCheck(Options)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java carries the `PrintStream` to
-    /// report on in `Options.out`, which `doMain` sets to `System.out`. This
-    /// port's [`Options`] is a plain `Debug + Clone` value and cannot hold an
-    /// [`InfoStream`], so the sink is passed here instead.
+    /// The report goes to `opts.out`, which `doMain` sets to `System.out`;
+    /// the info stream is `opts.out` too (`setInfoStream(opts.out,
+    /// opts.verbose)`).
     ///
     /// # Errors
     ///
     /// Returns [`LuceneErrorKind::IllegalArgument`] when `opts` holds an out of
-    /// range level or thread count, and propagates whatever
+    /// range level or thread count, Java's `NullPointerException` when a
+    /// report is due and `opts.out` is `None`, and propagates whatever
     /// [`CheckIndex::check_index_segments`] and [`CheckIndex::exorcise_index`]
     /// raise.
-    pub fn do_check(&mut self, opts: &Options, out: Arc<dyn PrintStream>) -> Result<i32> {
+    pub fn do_check(&mut self, opts: &Options) -> Result<i32> {
         self.set_level(opts.level)?;
-        self.set_info_stream_verbose(Some(Arc::clone(&out)), opts.verbose);
+        self.set_info_stream_verbose(opts.out.clone(), opts.verbose);
         // A thread count given on the command line overrides the default.
         if opts.thread_count > 0 {
             self.set_thread_count(opts.thread_count)?;
@@ -2103,7 +2103,12 @@ impl CheckIndex {
             Some(opts.only_segments.as_slice())
         };
         let mut result = self.check_index_segments(only_segments)?;
-        let out = Some(out.as_ref() as &dyn PrintStream);
+        // `opts.out.println(...)`: a `null` stream throws `NullPointerException`.
+        let out = || -> Result<Option<&dyn PrintStream>> {
+            Ok(Some(
+                opts.out.as_deref().ok_or_else(LuceneError::null_pointer)?,
+            ))
+        };
 
         if result.missing_segments {
             return Ok(1);
@@ -2112,7 +2117,7 @@ impl CheckIndex {
         if !result.clean {
             if !opts.do_exorcise {
                 msg(
-                    out,
+                    out()?,
                     &format!(
                         "WARNING: would write new segments file, and {} documents would be lost, \
                          if -exorcise were specified\n",
@@ -2121,14 +2126,14 @@ impl CheckIndex {
                 );
             } else {
                 msg(
-                    out,
+                    out()?,
                     &format!(
                         "WARNING: {} documents will be lost\n",
                         result.tot_lose_doc_count
                     ),
                 );
                 msg(
-                    out,
+                    out()?,
                     &format!(
                         "NOTE: will write new segments file in 5 seconds; this will remove {} \
                          docs from the index. YOU WILL LOSE DATA. THIS IS YOUR LAST CHANCE TO \
@@ -2138,13 +2143,13 @@ impl CheckIndex {
                 );
                 for s in 0..5 {
                     std::thread::sleep(Duration::from_secs(1));
-                    msg(out, &format!("  {}...", 5 - s));
+                    msg(out()?, &format!("  {}...", 5 - s));
                 }
-                msg(out, "Writing...");
+                msg(out()?, "Writing...");
                 self.exorcise_index(&mut result)?;
-                msg(out, "OK");
+                msg(out()?, "OK");
                 msg(
-                    out,
+                    out()?,
                     &format!(
                         "Wrote new segments file \"{}\"",
                         result
@@ -2156,7 +2161,7 @@ impl CheckIndex {
                 );
             }
         }
-        msg(out, "");
+        msg(out()?, "");
 
         Ok(if result.clean { 0 } else { 1 })
     }
@@ -4440,7 +4445,7 @@ pub fn test_postings(
 /// Run-time configuration options for `CheckIndex` commands.
 ///
 /// Equivalent to `CheckIndex.Options`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Options {
     /// Whether to actually write a new `segments_N`, removing bad segments.
     pub do_exorcise: bool,
@@ -4456,6 +4461,25 @@ pub struct Options {
     pub index_path: Option<String>,
     /// The name of the `FSDirectory` implementation to use.
     pub dir_impl: Option<String>,
+    /// The `PrintStream` to report results on; `None` is Java's `null`.
+    ///
+    /// Equivalent to `CheckIndex.Options.out`.
+    pub out: Option<Arc<dyn PrintStream>>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("do_exorcise", &self.do_exorcise)
+            .field("verbose", &self.verbose)
+            .field("level", &self.level)
+            .field("thread_count", &self.thread_count)
+            .field("only_segments", &self.only_segments)
+            .field("index_path", &self.index_path)
+            .field("dir_impl", &self.dir_impl)
+            .field("out", &self.out.as_ref().map(|_| "PrintStream"))
+            .finish()
+    }
 }
 
 impl Default for Options {
@@ -4468,6 +4492,7 @@ impl Default for Options {
             only_segments: Vec::new(),
             index_path: None,
             dir_impl: None,
+            out: None,
         }
     }
 }
@@ -4490,6 +4515,13 @@ impl Options {
     /// Equivalent to `CheckIndex.Options.getIndexPath`.
     pub fn index_path(&self) -> Option<&str> {
         self.index_path.as_deref()
+    }
+
+    /// Set the `PrintStream` to use for reporting results.
+    ///
+    /// Equivalent to `CheckIndex.Options.setOut(PrintStream)`.
+    pub fn set_out(&mut self, out: Option<Arc<dyn PrintStream>>) {
+        self.out = out;
     }
 }
 
@@ -4736,7 +4768,10 @@ pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
     // checker releases the write lock when it is dropped, and the directory when
     // its last handle goes.
     let mut checker = CheckIndex::new(directory)?;
-    let exit_code = checker.do_check(&opts, Arc::clone(&out))?;
+    // `opts.out = System.out`.
+    let mut opts = opts;
+    opts.out = Some(Arc::clone(&out));
+    let exit_code = checker.do_check(&opts)?;
     checker.close()?;
     Ok(exit_code)
 }
@@ -7042,6 +7077,59 @@ mod census_gap_tests {
                 }
             ),
             "{error:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod options_out_tests {
+    use super::*;
+    use crate::document::{Document, Store, StringField};
+    use crate::store::ByteBuffersDirectory;
+    use crate::util::print_stream::ByteArrayPrintStream;
+
+    fn one_doc_index() -> Arc<dyn Directory> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(StringField::new("id", "1".to_string(), Store::YES).unwrap());
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+        dir
+    }
+
+    /// #594: `doCheck(Options)` reports to `opts.out`, which
+    /// `Options.setOut(PrintStream)` sets; with `out == null` the first
+    /// `opts.out.println(...)` throws `NullPointerException`.
+    #[test]
+    fn do_check_reports_to_options_out_and_npes_without_it() {
+        let dir = one_doc_index();
+
+        let mut checker = CheckIndex::new(Arc::clone(&dir)).unwrap();
+        let error = checker.do_check(&Options::new()).unwrap_err();
+        assert!(
+            matches!(
+                error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        checker.close().unwrap();
+
+        let out = ByteArrayPrintStream::new();
+        let mut opts = Options::new();
+        opts.set_out(Some(Arc::new(out.clone())));
+        let mut checker = CheckIndex::new(dir).unwrap();
+        assert_eq!(checker.do_check(&opts).unwrap(), 0);
+        checker.close().unwrap();
+        let report = out.to_string_utf8();
+        assert!(
+            report.contains("No problems were detected with this index."),
+            "{report}"
         );
     }
 }

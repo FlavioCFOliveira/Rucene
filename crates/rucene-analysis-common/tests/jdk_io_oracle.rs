@@ -29,6 +29,9 @@
 //! ZIP streams of stored and deflated entries (with data descriptors), then
 //! corrupted and truncated copies of each.
 
+#[path = "../../../tests/jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::io::{Cursor, Read};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -52,9 +55,7 @@ fn oracle_source() -> PathBuf {
 }
 
 fn run_java(args: &[&str]) -> String {
-    let output = Command::new("java")
-        .arg(oracle_source())
-        .args(args)
+    let output = jvm_fixture::launch(Command::new("java").arg(oracle_source()).args(args))
         .output()
         .expect("a JDK is required to run the JDK I/O oracle");
     assert!(

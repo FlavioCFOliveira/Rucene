@@ -8,6 +8,9 @@
 //! readers whose keys tie across readers — `[1, 2]`, `[1, 2]` and `[2]` — and
 //! prints every document's merged number; Rucene must produce the same.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -53,10 +56,7 @@ fn java_doc_maps() -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          MultiSorterTieFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(jar)
-        .arg(fixture)
+    let output = jvm_fixture::launch(Command::new("java").arg("-cp").arg(jar).arg(fixture))
         .output()
         .expect("a JDK is required to run the Lucene oracle");
     assert!(

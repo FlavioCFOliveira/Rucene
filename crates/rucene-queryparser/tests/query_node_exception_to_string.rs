@@ -23,6 +23,8 @@
 //! `toString()` of the same exception, computed by Lucene 10.5.0 on the
 //! local JDK 25 in a work directory of its own under `TMPDIR`.
 
+use query_oracle::jvm_fixture;
+
 #[path = "../../rucene-queries/tests/query_oracle/mod.rs"]
 mod query_oracle;
 
@@ -72,15 +74,17 @@ fn java_lines() -> Vec<String> {
     let file = work.path().join("ToStringOracle.java");
     std::fs::write(&file, SOURCE).expect("write the Java source");
     let class_path = std::env::join_paths(lucene_jars()).expect("a class path");
-    let output = Command::new("java")
-        .current_dir(work.path())
-        .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
-        .arg("-Xmx512m")
-        .arg("-cp")
-        .arg(class_path)
-        .arg(&file)
-        .output()
-        .expect("a JDK 25 is required");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .current_dir(work.path())
+            .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
+            .arg("-Xmx512m")
+            .arg("-cp")
+            .arg(class_path)
+            .arg(&file),
+    )
+    .output()
+    .expect("a JDK 25 is required");
     assert!(
         output.status.success(),
         "ToStringOracle.java failed:\n{}",

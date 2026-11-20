@@ -9,7 +9,13 @@
 //! debug information the build keeps:
 //!
 //! * with `debug = "limited"` or `"full"`, every frame, inlined ones included,
-//!   carries its path: both the class and the method are known;
+//!   carries its path: both the class and the method are known. `limited`
+//!   (`debug = 1`) is the least the walker needs, and the level the workspace
+//!   `[profile.test]` sets (rmp #608): it keeps the DWARF names and inline
+//!   records the symboliser reads, and drops the variable and type
+//!   information it never reads. Against `full`, it cuts the peak RSS of
+//!   the tests that walk the stack by about 40 % (the memory std's backtrace
+//!   symboliser takes to load the DWARF) and gives the same answers;
 //! * with `debug = "line-tables-only"`, the frames of a crate built that way
 //!   carry only their bare DWARF name (`flush`, `into<A, B>`): the method is
 //!   known and the class is not, so it is reported empty. `callStackContainsAnyOf`
@@ -19,9 +25,16 @@
 //!   symbol are reported;
 //! * at every level, a call the optimizer turned into a tail call (a jump)
 //!   leaves no frame for its caller.
+//!
+//! The frames of a call stack are rendered once per process and then served
+//! from a cache keyed by the stack's return addresses (see [`frames`]).
+
+use std::backtrace::Backtrace;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 
 /// One frame: the class (the Rust type path) and the method name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StackFrame {
     /// `getClassName()`: the Rust path of the type (or module) the function
     /// belongs to; empty when the build records only the function's bare
@@ -140,8 +153,123 @@ fn frames_of(trace: &str) -> Vec<StackFrame> {
 
 /// The frames of the current thread, innermost first, starting with the
 /// caller of this function.
-pub fn frames() -> Vec<StackFrame> {
-    frames_of(&std::backtrace::Backtrace::force_capture().to_string())
+///
+/// PERF: rendering a [`std::backtrace::Backtrace`] resolves every frame's
+/// symbol, file and line and demangles it; done on every
+/// `callStackContains` of a failure hook, it was 45 % of
+/// `TestIndexFileDeleter` and 32 % of `TestIndexWriterExceptions` (rmp #606,
+/// W5). The frames are therefore cached by the call stack's return
+/// addresses: the same addresses in the same process are the same stack, so
+/// a hit returns exactly the frames a fresh render would. Only a stack seen
+/// for the first time is rendered. Each distinct frame is stored once and
+/// shared by the stacks that contain it.
+pub fn frames() -> Arc<[Arc<StackFrame>]> {
+    let Some(key) = return_addresses::walk() else {
+        return render().into_iter().map(Arc::new).collect();
+    };
+    if let Some(cached) = cache().stacks.get(&key) {
+        return Arc::clone(cached);
+    }
+    let rendered = render();
+    let mut cache = cache();
+    let interned: Arc<[Arc<StackFrame>]> = rendered
+        .into_iter()
+        .map(|frame| cache.intern(frame))
+        .collect();
+    cache.stacks.insert(key, Arc::clone(&interned));
+    interned
+}
+
+/// The frames of the calling thread's stack, read from a rendered
+/// backtrace; called from [`frames`] only, whose frame and the frames
+/// inside it are dropped.
+fn render() -> Vec<StackFrame> {
+    frames_of(&Backtrace::force_capture().to_string())
+}
+
+/// The frames of every call stack [`frames`] has seen, by its return
+/// addresses, and the distinct frames those stacks share.
+#[derive(Default)]
+struct Cache {
+    stacks: HashMap<Box<[usize]>, Arc<[Arc<StackFrame>]>>,
+    frames: HashSet<Arc<StackFrame>>,
+}
+
+impl Cache {
+    /// The shared copy of `frame`.
+    fn intern(&mut self, frame: StackFrame) -> Arc<StackFrame> {
+        if let Some(shared) = self.frames.get(&frame) {
+            return Arc::clone(shared);
+        }
+        let shared = Arc::new(frame);
+        self.frames.insert(Arc::clone(&shared));
+        shared
+    }
+}
+
+fn cache() -> MutexGuard<'static, Cache> {
+    static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Mutex::default);
+    CACHE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The return addresses of the calling thread's stack, walked with the
+/// `_Unwind_Backtrace` of the platform unwinder — the walk the standard
+/// library's [`Backtrace`] makes on these targets — without resolving them.
+#[cfg(all(unix, not(target_arch = "arm")))]
+#[allow(unsafe_code)]
+mod return_addresses {
+    use std::ffi::{c_int, c_void};
+
+    /// `struct _Unwind_Context`, opaque.
+    #[repr(C)]
+    struct UnwindContext {
+        _opaque: [u8; 0],
+    }
+
+    /// `_URC_NO_REASON`: continue the walk.
+    const URC_NO_REASON: c_int = 0;
+
+    type TraceFn = extern "C" fn(*mut UnwindContext, *mut c_void) -> c_int;
+
+    // The unwinder `std` links on these targets (`libgcc_s`, or the
+    // system/LLVM `libunwind`); its ABI is the Itanium C++ ABI's level 1
+    // unwind interface (`_Unwind_GetIP` is a macro only on ARM EHABI, which
+    // the `cfg` above excludes).
+    extern "C" {
+        fn _Unwind_Backtrace(trace: TraceFn, arg: *mut c_void) -> c_int;
+        fn _Unwind_GetIP(ctx: *mut UnwindContext) -> usize;
+    }
+
+    extern "C" fn push(ctx: *mut UnwindContext, arg: *mut c_void) -> c_int {
+        // SAFETY: `arg` is the `&mut Vec<usize>` that `walk` passed to
+        // `_Unwind_Backtrace`, which calls this function synchronously
+        // during `walk`, on the same thread, while that borrow is live and
+        // not otherwise used; `ctx` is the unwinder's live context for the
+        // current frame, valid for the duration of this callback.
+        let (addresses, ip) = unsafe { (&mut *arg.cast::<Vec<usize>>(), _Unwind_GetIP(ctx)) };
+        addresses.push(ip);
+        URC_NO_REASON
+    }
+
+    /// The return addresses, innermost first; `None` when the walk failed.
+    pub(super) fn walk() -> Option<Box<[usize]>> {
+        let mut addresses: Vec<usize> = Vec::with_capacity(64);
+        // SAFETY: `push` matches `_Unwind_Trace_Fn` and only touches the
+        // `Vec` passed as `arg`, which outlives the call; the walk does not
+        // retain `arg` or `push` after it returns.
+        unsafe {
+            _Unwind_Backtrace(push, (&raw mut addresses).cast::<c_void>());
+        }
+        (!addresses.is_empty()).then(|| addresses.into_boxed_slice())
+    }
+}
+
+/// No unwinder interface to walk with: every call renders.
+#[cfg(not(all(unix, not(target_arch = "arm"))))]
+mod return_addresses {
+    pub(super) fn walk() -> Option<Box<[usize]>> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -197,6 +325,63 @@ mod tests {
             split("<a::Dir<u32> as a::Directory<u8>>::sync"),
             frame("a::Dir<u32>", "sync")
         );
+    }
+
+    #[inline(never)]
+    fn probe_inner() -> Arc<[Arc<StackFrame>]> {
+        let frames = frames();
+        std::hint::black_box(&frames);
+        frames
+    }
+
+    #[inline(never)]
+    fn probe_outer() -> Arc<[Arc<StackFrame>]> {
+        let frames = probe_inner();
+        std::hint::black_box(&frames);
+        frames
+    }
+
+    /// The cache (rmp #606, W5) serves a stack seen before without
+    /// rendering it again, and what it serves is what the render found: the
+    /// caller's frames, by class and method, innermost first.
+    #[test]
+    fn caches_the_frames_of_a_stack_by_its_return_addresses() {
+        // One call site walked three times. The counter passes through
+        // `black_box`, so the trip count is opaque and no opt level can
+        // unroll the loop into several call sites, each its own stack.
+        let mut seen = Vec::new();
+        let mut walks = 0;
+        while std::hint::black_box(walks) < 3 {
+            seen.push(probe_outer());
+            walks += 1;
+        }
+        // The class is empty in a `line-tables-only` build (module docs).
+        let class = if seen[0][0].class_name.is_empty() {
+            ""
+        } else {
+            module_path!()
+        };
+        let methods: Vec<(&str, &str)> = seen[0]
+            .iter()
+            .take(2)
+            .map(|f| (f.class_name.as_str(), f.method_name.as_str()))
+            .collect();
+        assert_eq!(
+            methods,
+            [(class, "probe_inner"), (class, "probe_outer")],
+            "{:?}",
+            seen[0]
+        );
+        // Same call site, same stack: the second and third walks hit.
+        if cfg!(all(unix, not(target_arch = "arm"))) {
+            assert!(Arc::ptr_eq(&seen[0], &seen[1]));
+            assert!(Arc::ptr_eq(&seen[0], &seen[2]));
+        }
+        // A different stack (another call site) is rendered on its own, and
+        // finds the same frames above it.
+        let other = probe_outer();
+        assert!(!Arc::ptr_eq(&seen[0], &other));
+        assert_eq!(other[..2], seen[0][..2]);
     }
 
     /// The frames of a `line-tables-only` capture: the machinery and the

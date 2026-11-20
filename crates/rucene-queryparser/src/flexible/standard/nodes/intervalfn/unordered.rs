@@ -62,6 +62,7 @@ impl IntervalFunction for Unordered {
         )?))
     }
 
+    /// Equivalent to `Unordered.toString()`.
     fn to_java_string(&self) -> String {
         format!("fn:unordered({})", join(&self.sources))
     }

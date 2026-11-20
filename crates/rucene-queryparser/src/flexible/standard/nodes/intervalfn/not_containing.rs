@@ -66,6 +66,7 @@ impl IntervalFunction for NotContaining {
         )
     }
 
+    /// Equivalent to `NotContaining.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:notContaining({} {})",

@@ -66,6 +66,7 @@ impl IntervalFunction for Containing {
         )
     }
 
+    /// Equivalent to `Containing.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:containing({} {})",

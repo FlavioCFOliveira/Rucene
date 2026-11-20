@@ -139,17 +139,31 @@ pub(crate) struct GeneratingSuggester<'a> {
 pub(crate) trait WeightedWord {
     /// Equivalent to `compareTo(T)`.
     fn compare_word(&self, other: &Self) -> Ordering;
+
+    /// Equivalent to `toString()`, the string concatenation `word + ...` calls.
+    fn fmt_word(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
 }
 
 impl WeightedWord for Root {
     fn compare_word(&self, other: &Self) -> Ordering {
         self.compare_to(other)
     }
+
+    /// `Root.toString()`.
+    fn fmt_word(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
 }
 
 impl WeightedWord for Vec<u16> {
     fn compare_word(&self, other: &Self) -> Ordering {
         self.cmp(other)
+    }
+
+    /// `String.toString()`: the word itself, its UTF-16 units decoded as
+    /// [`Root`]'s `Display` decodes them.
+    fn fmt_word(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&String::from_utf16_lossy(self))
     }
 }
 
@@ -173,6 +187,14 @@ impl<T: WeightedWord> Weighted<T> {
         o.score
             .cmp(&self.score)
             .then_with(|| self.word.compare_word(&o.word))
+    }
+}
+
+impl<T: WeightedWord> std::fmt::Display for Weighted<T> {
+    /// Equivalent to `Weighted.toString()`: `word + "(" + score + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.word.fmt_word(f)?;
+        write!(f, "({})", self.score)
     }
 }
 
@@ -783,5 +805,21 @@ impl LinkedStrings {
         if self.seen.insert(item.clone()) {
             self.items.push(item);
         }
+    }
+}
+
+#[cfg(test)]
+mod weighted_to_string_tests {
+    use super::*;
+
+    /// #597: `Weighted.toString()` is `word + "(" + score + ")"`
+    /// (`GeneratingSuggester.java`), for a `Root` word (`Root.toString()` is
+    /// the word) and a `String` word.
+    #[test]
+    fn weighted_to_string_is_word_then_score_in_parentheses() {
+        let root = Weighted::new(Root::new("abc".encode_utf16().collect(), 7), 5);
+        assert_eq!(root.to_string(), "abc(5)");
+        let word = Weighted::new("caf\u{e9}".encode_utf16().collect::<Vec<u16>>(), -3);
+        assert_eq!(word.to_string(), "caf\u{e9}(-3)");
     }
 }

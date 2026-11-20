@@ -195,6 +195,7 @@ impl QueryNode for PointRangeQueryNode {
         self.base.range_to_query_string(escape_syntax_parser)
     }
 
+    /// Equivalent to `PointRangeQueryNode.toString()`.
     fn to_java_string(&self) -> Result<String> {
         let numeric_config = self
             .numeric_config

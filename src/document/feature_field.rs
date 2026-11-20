@@ -601,12 +601,23 @@ impl IndexableField for FeatureField {
     fn token_stream(
         &self,
         _analyzer: Option<&dyn Analyzer>,
-        _reuse: &mut Option<Box<dyn TokenStream>>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>> {
-        Ok(Box::new(FeatureTokenStream::new(
-            self.feature_name.clone(),
-            encode_feature_value(*self.feature_value.borrow()),
-        )))
+        // `reuse instanceof FeatureTokenStream ? reuse : new
+        // FeatureTokenStream()`, then `stream.setValues(...)`
+        // (`FeatureField.java:177-188`).
+        let freq = encode_feature_value(*self.feature_value.borrow());
+        if let Some(stream) = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FeatureTokenStream>())
+        {
+            stream.set_values(self.feature_name.clone(), freq);
+            return Ok(reuse.take().expect("INVARIANT: matched above"));
+        }
+        let mut stream = FeatureTokenStream::new();
+        stream.set_values(self.feature_name.clone(), freq);
+        Ok(Box::new(stream))
     }
 
     fn binary_value(&self) -> Option<crate::util::BytesRef> {
@@ -641,13 +652,16 @@ impl IndexableField for FeatureField {
 #[derive(Debug)]
 struct FeatureTokenStream {
     source: AttributeSource,
-    feature_name: String,
+    /// Java's `value`; `None` until `setValues`.
+    feature_name: Option<String>,
     freq: i32,
     used: bool,
 }
 
 impl FeatureTokenStream {
-    fn new(feature_name: String, freq: i32) -> Self {
+    /// Equivalent to `new FeatureTokenStream()`: no value yet (Java's
+    /// `null`), a frequency of `0`, and `used` until the next `reset()`.
+    fn new() -> Self {
         // `extends TokenStream` with the no-argument constructor: the source
         // uses `DEFAULT_TOKEN_ATTRIBUTE_FACTORY` (`TokenStream.java:81-90`),
         // and the two attributes are added by interface
@@ -664,10 +678,18 @@ impl FeatureTokenStream {
             .expect("INVARIANT: the default token attribute factory serves TermFrequencyAttribute");
         Self {
             source,
-            feature_name,
-            freq,
+            feature_name: None,
+            freq: 0,
             used: true,
         }
+    }
+
+    /// Sets the values.
+    ///
+    /// Equivalent to `FeatureTokenStream.setValues(String, int)`.
+    fn set_values(&mut self, value: String, freq: i32) {
+        self.feature_name = Some(value);
+        self.freq = freq;
     }
 }
 
@@ -682,7 +704,7 @@ impl TokenStream for FeatureTokenStream {
         self.source
             .get_attribute_interface_mut::<dyn CharTermAttribute>()
             .expect("INVARIANT: the attribute is added in new")
-            .append_string(Some(&feature_name));
+            .append_string(feature_name.as_deref());
         self.source
             .get_attribute_interface_mut::<dyn TermFrequencyAttribute>()
             .expect("INVARIANT: the attribute is added in new")
@@ -707,6 +729,14 @@ impl TokenStream for FeatureTokenStream {
 
     fn attribute_source_mut(&mut self) -> &mut AttributeSource {
         &mut self.source
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -1795,6 +1825,41 @@ mod tests {
         assert!(!stream.increment_token().unwrap());
         stream.end().unwrap();
         stream.close().unwrap();
+    }
+
+    /// #594: `FeatureField.tokenStream(analyzer, reuse)` reuses a
+    /// `FeatureTokenStream` passed as `reuse` and calls `setValues` on it
+    /// (`FeatureField.java:177-188`): the same stream object comes back,
+    /// carrying the second field's term and frequency.
+    #[test]
+    fn feature_field_token_stream_reuses_a_feature_token_stream() {
+        let analyzer = StandardAnalyzer::new();
+        let first = FeatureField::new("feat", "pagerank", 3.0).unwrap();
+        let stream = first.token_stream(Some(&analyzer), &mut None).unwrap();
+        let address = stream.as_ref() as *const dyn TokenStream as *const u8;
+        let mut reuse = Some(stream);
+
+        let second = FeatureField::new("feat", "popularity", 5.0).unwrap();
+        let mut stream = second.token_stream(Some(&analyzer), &mut reuse).unwrap();
+        assert!(reuse.is_none(), "the reused stream is handed back");
+        assert_eq!(
+            stream.as_ref() as *const dyn TokenStream as *const u8,
+            address,
+            "the same FeatureTokenStream object"
+        );
+        stream.reset().unwrap();
+        assert!(stream.increment_token().unwrap());
+        let source = stream.attribute_source();
+        let term = source
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        let text: String = term.buffer()[..term.length()].iter().collect();
+        assert_eq!(text, "popularity");
+        drop(term);
+        let freq = source
+            .get_attribute_interface::<dyn TermFrequencyAttribute>()
+            .unwrap();
+        assert_eq!(freq.get_term_frequency(), encode_feature_value(5.0));
     }
 
     #[test]

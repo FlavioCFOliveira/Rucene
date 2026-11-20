@@ -190,8 +190,18 @@ def parse(rel, text):
         own = owner_of(m.start())
         (own["fns"] if own else free).append(rec)
 
+    # An associated type (`type Item = Vec<u16>;` in an `impl Iterator`, or
+    # `type Item;` in a trait) is a member of its block, not a module-level
+    # alias. Keyed as one, it replaced the same-named type of the file:
+    # `ternary_tree.rs` declares `struct Item` (derives `Clone, Copy`) and the
+    # iterator's `type Item = Vec<u16>`, and the derive rule then read the
+    # alias, leaving `TernaryTree$Iterator$Item.clone` absent.
+    blocks = [(c["start"], c["end"]) for c in impls + traits]
+    aliases = [m for m in RE_ALIAS.finditer(masked)
+               if not any(s <= m.start() < e for s, e in blocks)]
+
     types = {}
-    for m in list(RE_TYPE_DECL.finditer(masked)) + list(RE_ALIAS.finditer(masked)):
+    for m in list(RE_TYPE_DECL.finditer(masked)) + aliases:
         ln = lineno(m.start())
         # derives sit in the attribute block directly above the declaration
         i, ders = ln - 2, []

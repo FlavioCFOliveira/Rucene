@@ -1246,7 +1246,7 @@ impl SegmentInfos {
             );
             self.write_to_output(output.as_mut())?;
             output.close()?;
-            directory.sync(std::slice::from_ref(&segment_file_name))?;
+            directory.sync(&[segment_file_name.as_str()])?;
             Ok(())
         })();
         match outcome {

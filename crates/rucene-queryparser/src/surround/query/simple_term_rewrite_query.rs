@@ -78,6 +78,7 @@ impl Query for SimpleTermRewriteQuery {
         self
     }
 
+    /// Equivalent to the abstract `RewriteQuery.rewrite(IndexSearcher)`, as `SimpleTermRewriteQuery` implements it.
     fn rewrite(&self, index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         struct Collect<'a> {
             lucene_sub_queries: Vec<Arc<dyn Query>>,
@@ -111,6 +112,7 @@ impl Query for SimpleTermRewriteQuery {
         }))
     }
 
+    /// Equivalent to the inherited `RewriteQuery.equals(Object)`: `sameClassAs(other) && equalsTo(...)`.
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
             && other

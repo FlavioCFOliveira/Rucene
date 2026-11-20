@@ -87,6 +87,20 @@ impl UTF8Sequence {
     }
 }
 
+impl std::fmt::Display for UTF8Sequence {
+    /// Equivalent to `UTF8Sequence.toString()`: each byte as
+    /// `Integer.toBinaryString(byteAt(i))`, separated by a space.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for i in 0..self.len {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{:b}", self.byte_at(i))?;
+        }
+        Ok(())
+    }
+}
+
 /// Converts UTF-32 automata to the equivalent UTF-8 representation.
 ///
 /// Equivalent to `org.apache.lucene.util.automaton.UTF32ToUTF8`. The byte ranges
@@ -357,5 +371,24 @@ impl UTF32ToUTF8 {
         }
 
         self.utf8.finish()
+    }
+}
+
+#[cfg(test)]
+mod utf8_sequence_to_string_tests {
+    use super::*;
+
+    /// #594: `UTF8Sequence.toString()` is each byte as
+    /// `Integer.toBinaryString(byteAt(i))`, separated by a space
+    /// (`UTF32ToUTF8.java:131-140`).
+    #[test]
+    fn utf8_sequence_to_string_matches_java() {
+        let mut sequence = UTF8Sequence::default();
+        sequence.set(0xE9);
+        assert_eq!(sequence.to_string(), "11000011 10101001");
+        sequence.set(i32::from(b'a'));
+        assert_eq!(sequence.to_string(), "1100001");
+        sequence.set(0x1F600);
+        assert_eq!(sequence.to_string(), "11110000 10011111 10011000 10000000");
     }
 }

@@ -48,6 +48,9 @@
 //! Those two stay at one entry in the cases below, which is all that can be
 //! compared.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -123,19 +126,25 @@ fn harness_dir() -> PathBuf {
 static HARNESS_LOCK: Mutex<()> = Mutex::new(());
 
 fn which_mvn() -> Result<String, String> {
-    for candidate in ["mvn", "mvnw"] {
-        if Command::new(candidate)
-            .arg("-v")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-        {
-            return Ok(candidate.to_string());
-        }
-    }
-    Err("Maven is not available on PATH".to_string())
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            for candidate in ["mvn", "mvnw"] {
+                if Command::new(candidate)
+                    .arg("-v")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+                {
+                    return Ok(candidate.to_string());
+                }
+            }
+            Err("Maven is not available on PATH".to_string())
+        })
+        .clone()
 }
 
 /// Fails the test when Maven is unavailable.
@@ -160,17 +169,19 @@ fn run_java_fixture(out_dir: &Path, case: &str) {
         harness.display()
     );
     let mvn = which_mvn().expect("Maven");
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.SealBytesFixture")
-        .arg(format!("-Dexec.args={} {}", out_dir.display(), case))
-        .current_dir(&harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("spawn Maven");
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.SealBytesFixture")
+            .arg(format!("-Dexec.args={} {}", out_dir.display(), case))
+            .current_dir(&harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .expect("spawn Maven");
     assert!(
         output.status.success(),
         "Java harness failed for case {case}:\nstdout:\n{}\nstderr:\n{}",

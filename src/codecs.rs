@@ -1470,7 +1470,7 @@ pub(crate) mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             if self.log.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(crate::error::LuceneError::from(
                     crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(

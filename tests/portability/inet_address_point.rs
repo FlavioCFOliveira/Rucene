@@ -21,6 +21,9 @@
 //! * Positive control: a perturbed Rucene corpus (document 1 indexes one more
 //!   address) must change the report, with the same document counts.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -481,13 +484,15 @@ fn run_java(args: &[&str]) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          InetAddressPointFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .args(args)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .args(args),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "InetAddressPointFixture {args:?} failed:\n{}",

@@ -61,6 +61,7 @@ impl IntervalFunction for Wildcard {
         }
     }
 
+    /// Equivalent to `Wildcard.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:wildcard({}{})",

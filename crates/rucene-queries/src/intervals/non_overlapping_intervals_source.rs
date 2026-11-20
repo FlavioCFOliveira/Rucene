@@ -133,7 +133,7 @@ pub(crate) struct NonOverlappingIterator {
 }
 
 impl NonOverlappingIterator {
-    /// The class's `nextInterval()`.
+    /// Equivalent to `NonOverlappingIterator.nextInterval()`.
     fn next_interval_impl(base: &mut RelativeIterator) -> Result<i32> {
         if !base.bpos {
             return base.a.next_interval();

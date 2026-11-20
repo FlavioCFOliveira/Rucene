@@ -66,6 +66,7 @@ impl IntervalFunction for Before {
         )
     }
 
+    /// Equivalent to `Before.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:before({} {})",

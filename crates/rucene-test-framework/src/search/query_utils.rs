@@ -97,8 +97,15 @@ fn same_reader(a: &Arc<dyn LeafReader>, b: &Arc<dyn LeafReader>) -> bool {
 pub struct QueryUtils;
 
 /// The anonymous "whacky" query of `checkHashEquals`: equal only to itself.
-#[derive(Debug)]
-struct WhackyQuery;
+///
+/// Its identity is its address (`o == this`). The type is not zero-sized on
+/// purpose: Rust gives distinct addresses only to live values of non-zero
+/// size, and two zero-sized values may share one (two locals do at
+/// `opt-level = 1`), whereas two Java `new` objects are never `==`.
+#[derive(Debug, Default)]
+struct WhackyQuery {
+    _identity: u8,
+}
 
 impl Query for WhackyQuery {
     fn to_query_string(&self, _field: &str) -> String {
@@ -152,7 +159,7 @@ impl QueryUtils {
         Self::check_equal(q, q);
         // test that a class check is done so that no exception is thrown in
         // the implementation of equals()
-        let whacky: Arc<dyn Query> = Arc::new(WhackyQuery);
+        let whacky: Arc<dyn Query> = Arc::new(WhackyQuery::default());
         Self::check_unequal(q, &*whacky);
     }
 
@@ -1176,7 +1183,7 @@ mod tests {
     /// adds the class names.
     #[test]
     fn check_equal_of_same_strings_names_the_classes() {
-        let (a, b) = (WhackyQuery, WhackyQuery);
+        let (a, b) = (WhackyQuery::default(), WhackyQuery::default());
         let t = thrown(|| QueryUtils::check_equal(&a, &b));
         assert_eq!(t.class_name(), "java.lang.AssertionError");
         assert_eq!(

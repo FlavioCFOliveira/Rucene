@@ -88,7 +88,7 @@ impl Lucene99MemorySegmentScalarQuantizedVectorScorer {
             target,
             &mut target_bytes,
             similarity_function,
-            &base.quantizer,
+            base.get_quantizer(),
         )?;
         Ok(Box::new(HeapQueryScorer {
             base,
@@ -295,14 +295,7 @@ impl QuantizedScorerBase {
             }
         };
 
-        // Equivalent to `checkInvariants()`.
-        if input.length() < (node_size as i64) * i64::from(max_ord) {
-            return Err(LuceneError::illegal_argument(
-                "input length is less than expected vector data".to_string(),
-            ));
-        }
-
-        Ok(Self {
+        let base = Self {
             const_multiplier: quantizer.get_constant_multiplier(),
             quantizer,
             similarity_function,
@@ -313,7 +306,29 @@ impl QuantizedScorerBase {
             max_ord,
             scratch: Vec::new(),
             values,
-        })
+        };
+        base.check_invariants()?;
+        Ok(base)
+    }
+
+    /// Equivalent to the final `RandomVectorScorerBase.checkInvariants()`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("input length is less than expected vector
+    /// data")` when the input cannot hold `maxOrd` nodes.
+    fn check_invariants(&self) -> Result<()> {
+        if self.input.length() < (self.node_size as i64) * i64::from(self.max_ord) {
+            return Err(LuceneError::illegal_argument(
+                "input length is less than expected vector data".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `RandomVectorScorerBase.getQuantizer()`.
+    fn get_quantizer(&self) -> &ScalarQuantizer {
+        &self.quantizer
     }
 
     /// Equivalent to `AbstractRandomVectorScorer.ordToDoc(int)`.

@@ -2097,6 +2097,8 @@ impl<O: StringSorterOps + ?Sized> MSBRadixSorterOps for StringRadixOps<'_, O> {
         self.ops.swap(i, j);
     }
 
+    /// Equivalent to `MSBStringRadixSorter.getFallbackSorter(int)` followed by its
+    /// `sort(from, to)`: `fallbackSorter((o1, o2) -> cmp.compare(o1, o2, k))`.
     fn fallback_sort(&mut self, from: usize, to: usize, k: usize, _max_length: usize) {
         let cmp = self.cmp;
         let f = move |o1: &BytesRef, o2: &BytesRef| cmp.compare_from(o1, o2, k);

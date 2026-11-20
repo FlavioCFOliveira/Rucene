@@ -487,6 +487,7 @@ impl ComplexPhraseQuery {
 }
 
 impl Query for ComplexPhraseQuery {
+    /// Equivalent to `ComplexPhraseQuery.toString(String)`.
     fn to_query_string(&self, field: &str) -> String {
         let mut sb = String::new();
         if self.field != field {
@@ -614,6 +615,8 @@ impl Query for ComplexPhraseQuery {
         Ok(Some(Arc::new(SpanNotQuery::new(include, exclude)?)))
     }
 
+    /// Equivalent to `ComplexPhraseQuery.equals(Object)`, with the private
+    /// `ComplexPhraseQuery.equalsTo(ComplexPhraseQuery)` inlined in the closure.
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
             && other.as_any().downcast_ref::<Self>().is_some_and(|other| {

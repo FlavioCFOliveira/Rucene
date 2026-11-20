@@ -539,6 +539,9 @@ const PARALLEL_BYTES_PER_POSTING: i64 = 3 * 4;
 /// (`FreqProxTermsWriterPerField.java:292-305`): the three base columns,
 /// `lastDocIDs` and `lastDocCodes`, and one more `int` for each of
 /// `lastPositions`, `lastOffsets` and `termFreqs` the index options allocate.
+/// It overrides the base `ParallelPostingsArray.bytesPerPosting()`, which
+/// returns [`PARALLEL_BYTES_PER_POSTING`] and which only the two subclasses'
+/// overrides (this one and [`TERM_VECTORS_BYTES_PER_POSTING`]) reach.
 ///
 /// **Divergence from Lucene 10.5.0.** The columns are fields of one
 /// [`FreqProxPosting`] struct per term (see the module notes), which holds
@@ -1923,7 +1926,9 @@ struct FreqProxTerms {
 
 impl Terms for FreqProxTerms {
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
-        Ok(Box::new(FreqProxTermsEnum::new(Arc::clone(&self.field))))
+        let mut terms_enum = FreqProxTermsEnum::new(Arc::clone(&self.field));
+        terms_enum.reset();
+        Ok(Box::new(terms_enum))
     }
 
     /// Throws `UnsupportedOperationException`, as Java's does: the buffers
@@ -2003,6 +2008,11 @@ impl FreqProxTermsEnum {
             scratch: BytesRef::default(),
             attributes: AttributeSource::new(),
         }
+    }
+
+    /// Equivalent to `FreqProxTermsEnum.reset()`: `ord = -1`.
+    fn reset(&mut self) {
+        self.ord = -1;
     }
 
     /// `sortedTermIDs[ord]`, which the JVM bounds-checks.
@@ -4448,6 +4458,25 @@ mod tests {
     }
 
     // -- Terms enum contract ----------------------------------------------
+
+    /// #594: `FreqProxTerms.iterator()` calls `FreqProxTermsEnum.reset()`
+    /// (`FreqProxFields.java`), so a fresh enum sits at `ord == -1` and
+    /// `term()` before `next()` is the empty `scratch`; `next()` then reads the
+    /// first term at ord 0.
+    #[test]
+    fn iterator_returns_an_enum_reset_before_the_first_term() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        assert_eq!(enumerator.ord().expect("ord"), -1);
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"");
+        assert_eq!(enumerator.next().expect("next").unwrap().slice(), b"alpha");
+        assert_eq!(enumerator.ord().expect("ord"), 0);
+    }
 
     #[test]
     fn seek_ceil_finds_terms_and_reports_the_next_one_otherwise() {

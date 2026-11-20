@@ -266,7 +266,7 @@ impl Directory for FakeDirectory {
         unsupported()
     }
 
-    fn sync(&self, _names: &[String]) -> Result<()> {
+    fn sync(&self, _names: &[&str]) -> Result<()> {
         unsupported()
     }
 

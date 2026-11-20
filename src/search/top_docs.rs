@@ -72,6 +72,18 @@ impl ShardRef {
     }
 }
 
+impl std::fmt::Display for ShardRef {
+    /// Equivalent to `ShardRef.toString()`:
+    /// `"ShardRef(shardIndex=" + shardIndex + " hitIndex=" + hitIndex + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ShardRef(shardIndex={} hitIndex={})",
+            self.shard_index, self.hit_index
+        )
+    }
+}
+
 /// Internal comparator on the shard index.
 ///
 /// Equivalent to `TopDocs.SHARD_INDEX_TIE_BREAKER`.
@@ -581,5 +593,26 @@ impl TopDocs {
         let total_hits =
             TotalHits::new(total_hit_count, TotalHitsRelation::GREATER_THAN_OR_EQUAL_TO)?;
         Ok(TopDocs::new(total_hits, rrf_score_docs))
+    }
+}
+
+#[cfg(test)]
+mod shard_ref_to_string_tests {
+    use super::*;
+
+    /// #594: `ShardRef.toString()` is
+    /// `"ShardRef(shardIndex=" + shardIndex + " hitIndex=" + hitIndex + ")"`
+    /// (`TopDocs.java`).
+    #[test]
+    fn shard_ref_to_string_matches_java() {
+        let shard_ref = ShardRef {
+            shard_index: 1,
+            hit_index: 2,
+        };
+        assert_eq!(shard_ref.to_string(), "ShardRef(shardIndex=1 hitIndex=2)");
+        assert_eq!(
+            ShardRef::new(0).to_string(),
+            "ShardRef(shardIndex=0 hitIndex=0)"
+        );
     }
 }

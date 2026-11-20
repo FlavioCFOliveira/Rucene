@@ -627,6 +627,8 @@ impl DoubleValuesSource for MultiplicativeBoostValuesSource {
     }
 
     /// `Objects.hash(boost)`.
+    ///
+    /// Equivalent to `MultiplicativeBoostValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[self.boost.source_hash()])
     }
@@ -739,6 +741,8 @@ impl DoubleValuesSource for QueryBoostValuesSource {
     }
 
     /// `Objects.hash(query, boost)`.
+    ///
+    /// Equivalent to `QueryBoostValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         objects_hash(&[self.query.source_hash(), java_float_hash_code(self.boost)])
     }

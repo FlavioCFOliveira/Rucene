@@ -400,8 +400,11 @@ impl Directory for SyncRecordingDirectory {
     ) -> rucene::Result<Box<dyn rucene::store::IndexOutput>> {
         self.inner.create_temp_output(prefix, suffix, context)
     }
-    fn sync(&self, names: &[String]) -> rucene::Result<()> {
-        self.synced.lock().unwrap().extend(names.iter().cloned());
+    fn sync(&self, names: &[&str]) -> rucene::Result<()> {
+        self.synced
+            .lock()
+            .unwrap()
+            .extend(names.iter().map(|name| name.to_string()));
         self.inner.sync(names)
     }
     fn sync_metadata(&self) -> rucene::Result<()> {

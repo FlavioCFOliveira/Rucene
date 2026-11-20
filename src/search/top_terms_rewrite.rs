@@ -332,8 +332,12 @@ where
         .collect();
     score_terms.sort_by(|a, b| a.bytes.cmp(&b.bytes));
 
+    // `new Term(query.field, bytes)` hands every term the query's own field
+    // `String`; one shared name stands for it rather than a copy per term.
+    let mut field: Option<Arc<str>> = None;
     for st in score_terms {
-        let term = Term::new(query.get_field().to_string(), st.bytes);
+        let field = Arc::clone(field.get_or_insert_with(|| Arc::from(query.get_field())));
+        let term = Term::new(field, st.bytes);
         let doc_freq = st.term_state.doc_freq()?;
         // Negative term scores are allowed while collecting the terms — fuzzy
         // query produces them — but such boosts are truncated to `0` when
@@ -346,4 +350,25 @@ where
         )?;
     }
     builder.build()
+}
+
+#[cfg(test)]
+mod shared_field_tests {
+    use crate::search::multi_term_query::TopTermsScoringBooleanQueryRewrite;
+    use crate::search::scoring_rewrite::shared_field_tests::rewritten_field_addresses;
+    use std::sync::Arc;
+
+    /// #602: `TopTermsRewrite.rewrite` builds every term with the query's
+    /// own field `String` (`new Term(query.field, bytes)`): the rewritten
+    /// clauses share one field name, not a copy each.
+    #[test]
+    fn top_terms_rewrite_terms_share_one_field_name() {
+        let addresses =
+            rewritten_field_addresses(Arc::new(TopTermsScoringBooleanQueryRewrite::new(10)));
+        assert_eq!(addresses.len(), 5);
+        assert!(
+            addresses.iter().all(|&a| a == addresses[0]),
+            "each term copied the field name: {addresses:?}"
+        );
+    }
 }

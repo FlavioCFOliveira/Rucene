@@ -66,6 +66,7 @@ impl IntervalFunction for NonOverlapping {
         ))
     }
 
+    /// Equivalent to `NonOverlapping.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:nonOverlapping({} {})",

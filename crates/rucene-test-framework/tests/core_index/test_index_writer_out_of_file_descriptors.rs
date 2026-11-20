@@ -201,7 +201,7 @@ fn test_() -> Result<()> {
                     }
                 }
             }
-            copy.sync(&files)?;
+            copy.sync(&files.iter().map(String::as_str).collect::<Vec<_>>())?;
             // Have IW kiss the dir so we remove any leftover
             // files ... we can easily have leftover files at
             // the time we take a copy because we are holding

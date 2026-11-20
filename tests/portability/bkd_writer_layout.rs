@@ -14,6 +14,9 @@
 //! A missing Maven or JDK is a hard failure, as in the other portability tests:
 //! without the reference implementation there is nothing to compare.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -245,17 +248,19 @@ fn harness_dir() -> PathBuf {
 
 /// Runs the Java fixture, which writes every scenario into `dir`.
 fn write_java(dir: &Path) {
-    let output = Command::new("mvn")
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.BkdWriterLayoutFixture")
-        .arg(format!("-Dexec.args={}", dir.display()))
-        .current_dir(harness_dir())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("the BKD layout portability test needs Maven and a JDK: {e}"));
+    let output = jvm_fixture::launch(
+        Command::new("mvn")
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.BkdWriterLayoutFixture")
+            .arg(format!("-Dexec.args={}", dir.display()))
+            .current_dir(harness_dir()),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .unwrap_or_else(|e| panic!("the BKD layout portability test needs Maven and a JDK: {e}"));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && stdout.lines().any(|l| l.trim() == "write_ok=true"),

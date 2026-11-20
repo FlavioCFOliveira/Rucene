@@ -32,6 +32,16 @@ struct DState {
     outgoing_transitions: i32,
 }
 
+impl PartialEq for DState {
+    /// Equivalent to `DState.equals(Object)`: equal hash codes and equal NFA
+    /// state arrays (`NFARunAutomaton.java:437-443`).
+    fn eq(&self, other: &Self) -> bool {
+        self.hash_code == other.hash_code && self.nfa_states == other.nfa_states
+    }
+}
+
+impl Eq for DState {}
+
 impl DState {
     fn new(nfa_states: Vec<i32>, automaton: &Automaton) -> Self {
         debug_assert!(!nfa_states.is_empty());
@@ -453,6 +463,10 @@ impl Inner {
     }
 
     /// Determinizes this state only.
+    ///
+    /// Equivalent to the private `DState.determinize()`, for the state at
+    /// `ord`: Java's inner class reaches the automaton, its points and the
+    /// registry through its enclosing instance, which this port passes in.
     fn determinize_state(
         &mut self,
         ord: i32,
@@ -729,5 +743,34 @@ impl Accountable for NFARunAutomaton {
             + registry
             + d_states
             + RamUsageEstimator::size_of_int(&self.classmap)
+    }
+}
+
+#[cfg(test)]
+mod dstate_equals_tests {
+    use super::*;
+
+    /// #594: `DState.equals(Object)` is `hashCode == other.hashCode &&
+    /// Arrays.equals(nfaStates, other.nfaStates)`
+    /// (`NFARunAutomaton.java:437-443`): the transitions computed so far take
+    /// no part.
+    #[test]
+    fn dstate_equals_compares_hash_code_and_nfa_states() {
+        let mut automaton = Automaton::new();
+        for _ in 0..3 {
+            automaton.create_state();
+        }
+        automaton.set_accept(2, true);
+        automaton.finish_state();
+        let a = DState::new(vec![0, 2], &automaton);
+        let mut b = DState::new(vec![0, 2], &automaton);
+        b.transitions = Some(vec![1, 2, 3]);
+        b.computed_transitions = 1;
+        assert_eq!(a, b);
+        assert_ne!(a, DState::new(vec![0, 1], &automaton));
+        assert_ne!(a, DState::new(vec![0, 2, 1], &automaton));
+        let mut forged = DState::new(vec![0, 2], &automaton);
+        forged.hash_code = a.hash_code.wrapping_add(1);
+        assert_ne!(a, forged, "a different hash code alone breaks equality");
     }
 }

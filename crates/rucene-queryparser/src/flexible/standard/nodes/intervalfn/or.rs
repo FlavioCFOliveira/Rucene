@@ -58,6 +58,7 @@ impl IntervalFunction for Or {
         Intervals::or(sources_of(&self.sources, field, analyzer)?)
     }
 
+    /// Equivalent to `Or.toString()`.
     fn to_java_string(&self) -> String {
         format!("fn:or({})", join(&self.sources))
     }

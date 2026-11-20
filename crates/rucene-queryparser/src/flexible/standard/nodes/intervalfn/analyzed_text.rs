@@ -72,6 +72,7 @@ impl IntervalFunction for AnalyzedText {
         })
     }
 
+    /// Equivalent to `AnalyzedText.toString()`.
     fn to_java_string(&self) -> String {
         if Self::requires_quotes(&self.term) {
             format!("\"{}\"", self.term)

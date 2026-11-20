@@ -1112,7 +1112,7 @@ impl PersistentSnapshotDeletionPolicy {
         }
         written?;
 
-        self.dir.sync(std::slice::from_ref(&file_name))?;
+        self.dir.sync(&[file_name.as_str()])?;
 
         if *next_write_gen > 0 {
             let last_save_file = format!("{SNAPSHOTS_PREFIX}{}", *next_write_gen - 1);
@@ -2651,7 +2651,7 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
 

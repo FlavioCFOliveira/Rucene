@@ -300,7 +300,9 @@ pub struct BKDUtil;
 /// `ArrayUtil.ByteArrayComparator`, applied as a common-prefix length).
 type PrefixLengthComparator = dyn Fn(&[u8], usize, &[u8], usize) -> usize + Send + Sync;
 
-/// Equivalent to `BKDUtil.ByteArrayPredicate`.
+/// Equivalent to `BKDUtil.ByteArrayPredicate`, a functional interface.
+/// Equivalent to `ByteArrayPredicate.test(byte[], int, byte[], int)` when
+/// called: test bytes starting from the given offsets.
 type ByteArrayPredicate = dyn Fn(&[u8], usize, &[u8], usize) -> bool + Send + Sync;
 impl BKDUtil {
     /// Returns the length of the common prefix across the next `num_bytes`
@@ -7196,7 +7198,7 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
 

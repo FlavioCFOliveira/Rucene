@@ -130,6 +130,8 @@ pub trait QueryNode: Any + Send + Sync + fmt::Debug {
     /// # Errors
     ///
     /// The unchecked exceptions of the class's implementation.
+    ///
+    /// Equivalent to `QueryNode.toString()`.
     fn to_java_string(&self) -> Result<String> {
         Ok(self.query_node_impl().object_to_string())
     }

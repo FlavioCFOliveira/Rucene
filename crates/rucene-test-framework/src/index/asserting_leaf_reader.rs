@@ -70,8 +70,10 @@ fn thread_message(object: &str, creation_thread: &Thread, current: &Thread) -> S
 /// `AssertionError` (always, not under `-ea` only) when the calling thread is
 /// not the one that created the object.
 pub(crate) fn assert_thread(object: &str, creation_thread: &Thread) -> Result<()> {
-    let current = Thread::current();
-    if *creation_thread != current {
+    // PERF: identity test without cloning the current handle (rmp #606, W7);
+    // the handle is taken only for the message.
+    if !creation_thread.is_current() {
+        let current = Thread::current();
         return Err(LuceneError::from(LuceneErrorKind::AssertionError(
             thread_message(object, creation_thread, &current),
         )));
@@ -82,8 +84,8 @@ pub(crate) fn assert_thread(object: &str, creation_thread: &Thread) -> Result<()
 /// [`assert_thread`] where the Rust signature cannot fail: the
 /// `AssertionError` panics.
 pub(crate) fn assert_thread_unchecked(object: &str, creation_thread: &Thread) {
-    let current = Thread::current();
-    if *creation_thread != current {
+    if !creation_thread.is_current() {
+        let current = Thread::current();
         exception::throw(
             ASSERTION_ERROR,
             thread_message(object, creation_thread, &current),

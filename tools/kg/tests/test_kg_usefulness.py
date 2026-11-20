@@ -1,5 +1,6 @@
 """The 2026-11-03 KG additions: declared divergences, #269 verdicts, labelled
 routing of the Rust item pattern, and the rmp closings export."""
+import json
 import divergences_kg as dv
 import kgio
 import no_caller_verdicts_kg as nv
@@ -174,3 +175,51 @@ def test_a_span_starting_past_the_text_reads_no_attributes():
     assert rr._preceding_attributes(["fn f() {}"], 5) == []
     # a start one past an attribute line reads it
     assert rr._preceding_attributes(["#[cfg(test)]"], 1) == ["#[cfg(test)]"]
+
+
+# --- rmp #603: `refs` resolves a name without its crate path -----------------
+
+class _RefsGraph:
+    """`read` stub: two `DwptGuard`-like nodes and one REFERENCES row each."""
+    QNS = {"RustStruct": ["rucene::index::documents_writer::DwptGuard",
+                          "rucene::other::DwptGuard"],
+           "RustFn": ["rucene::index::documents_writer::DocumentsWriterPerThread::lock"]}
+
+    def __call__(self, _r, q):
+        if q.startswith("MATCH (x:"):
+            label = q[len("MATCH (x:"):q.index(")")]
+            name = q.split("x.qualifiedName = '", 1)[1].split("'", 1)[0]
+            return [[qn, qn == name] for qn in self.QNS.get(label, ())
+                    if qn == name or qn.endswith("::" + name)]
+        if q.startswith("MATCH (r)-[e:REFERENCES]->(x)"):
+            target = q.split("x.qualifiedName = '", 1)[1].split("'", 1)[0]
+            return [["File", "src/index/documents_writer.rs", 4, 0]] if "DwptGuard" in target else []
+        raise AssertionError(q)
+
+
+def test_refs_of_a_simple_name_reports_every_item_of_that_name(monkeypatch, capsys):
+    import ask
+    monkeypatch.setattr(ask, "read", _RefsGraph())
+    ask.main(["refs", "DwptGuard"])
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r["target"] for r in rows] == ["rucene::index::documents_writer::DwptGuard",
+                                           "rucene::other::DwptGuard"]
+    assert rows[0]["referrer"] == "src/index/documents_writer.rs"
+
+
+def test_refs_of_a_qualified_name_keeps_the_exact_item(monkeypatch, capsys):
+    import ask
+    monkeypatch.setattr(ask, "read", _RefsGraph())
+    ask.main(["refs", "rucene::index::documents_writer::DwptGuard"])
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [r["target"] for r in rows] == ["rucene::index::documents_writer::DwptGuard"]
+    assert ask.ref_targets("DocumentsWriterPerThread::lock") == [
+        "rucene::index::documents_writer::DocumentsWriterPerThread::lock"]
+
+
+def test_refs_of_an_unknown_name_says_so(monkeypatch, capsys):
+    import ask
+    monkeypatch.setattr(ask, "read", _RefsGraph())
+    ask.main(["refs", "NoSuchItem"])
+    out = capsys.readouterr()
+    assert out.out == "" and "no Rust item is named NoSuchItem" in out.err

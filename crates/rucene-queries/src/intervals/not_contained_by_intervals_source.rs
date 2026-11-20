@@ -149,7 +149,7 @@ pub(crate) struct NotContainedByIterator {
 }
 
 impl NotContainedByIterator {
-    /// The class's `nextInterval()`.
+    /// Equivalent to `NotContainedByIterator.nextInterval()`.
     fn next_interval_impl(base: &mut RelativeIterator) -> Result<i32> {
         if !base.bpos {
             return base.a.next_interval();

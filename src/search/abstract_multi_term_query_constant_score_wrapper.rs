@@ -183,7 +183,11 @@ pub fn rewrite_as_boolean_query(
     collected_terms: &[TermAndState],
 ) -> Result<WeightOrDocIdSetIterator> {
     let mut bq = BooleanQueryBuilder::new();
+    // `new Term(q.field, t.term)` hands every term the query's own field
+    // `String`; one shared name stands for it rather than a copy per term.
+    let mut field: Option<Arc<str>> = None;
     for t in collected_terms {
+        let field = Arc::clone(field.get_or_insert_with(|| Arc::from(state.query.get_field())));
         let mut term_states = TermStates::new(state.searcher.get_top_reader_context())?;
         term_states.register(
             t.state.clone_box(),
@@ -193,7 +197,7 @@ pub fn rewrite_as_boolean_query(
         );
         bq.add(
             Arc::new(TermQuery::with_states(
-                Term::new(state.query.get_field().to_string(), t.term.clone()),
+                Term::new(field, t.term.clone()),
                 Arc::new(term_states),
             )),
             Occur::SHOULD,
@@ -336,6 +340,19 @@ impl RewritingScorerSupplier {
         }
     }
 
+    /// Equivalent to the private
+    /// `RewritingWeight.scorerForIterator(DocIdSetIterator)`:
+    /// `new ConstantScoreScorer(score(), scoreMode, iterator)`. Java returns
+    /// `null` for a `null` iterator; the iterator of
+    /// [`WeightOrDocIdSetIterator::Iterator`] is never absent.
+    fn scorer_for_iterator(&self, iterator: Box<dyn DocIdSetIterator>) -> Box<dyn Scorer> {
+        Box::new(ConstantScoreScorer::from_iterator(
+            self.state.score,
+            self.state.score_mode,
+            iterator,
+        ))
+    }
+
     fn empty_scorer(&self) -> Result<ConstantScoreScorer> {
         Ok(ConstantScoreScorer::from_iterator(
             self.state.score,
@@ -351,11 +368,7 @@ impl ScorerSupplier for RewritingScorerSupplier {
         let scorer: Option<Box<dyn Scorer>> = match weight_or_iterator {
             WeightOrDocIdSetIterator::Weight(weight) => weight.scorer(&self.context)?,
             WeightOrDocIdSetIterator::Iterator(iterator) => {
-                Some(Box::new(ConstantScoreScorer::from_iterator(
-                    self.state.score,
-                    self.state.score_mode,
-                    iterator,
-                )))
+                Some(self.scorer_for_iterator(iterator))
             }
         };
         // It is against the API contract to return a null scorer from a
@@ -644,5 +657,71 @@ impl AbstractMultiTermQueryConstantScoreWrapper {
                 .query
                 .accountable_ram_bytes_used()
                 .unwrap_or(RamUsageEstimator::QUERY_DEFAULT_RAM_BYTES_USED)
+    }
+}
+
+#[cfg(test)]
+mod shared_field_tests {
+    use super::*;
+    use crate::search::prefix_query::PrefixQuery;
+    use crate::search::scoring_rewrite::shared_field_tests::{clause_field_addresses, searcher};
+
+    /// Never called: the test calls `rewrite_as_boolean_query` itself.
+    #[derive(Debug)]
+    struct Unused;
+
+    impl RewriteInner for Unused {
+        fn rewrite_inner(
+            &self,
+            _state: &RewritingState,
+            _context: &Arc<LeafReaderContext>,
+            _field_doc_count: i32,
+            _terms: &dyn Terms,
+            _terms_enum: &mut dyn TermsEnum,
+            _collected_terms: &[TermAndState],
+            _lead_cost: i64,
+        ) -> Result<WeightOrDocIdSetIterator> {
+            unreachable!("not called by this test")
+        }
+    }
+
+    /// #602: `RewritingWeight.rewriteAsBooleanQuery` builds every term with
+    /// the query's own field `String` (`new Term(q.field, t.term)`): the
+    /// clauses of the boolean query it rewrites to share one field name, not
+    /// a copy each.
+    #[test]
+    fn rewrite_as_boolean_query_terms_share_one_field_name() {
+        let searcher = searcher();
+        let query: Arc<dyn MultiTermQuery> =
+            Arc::new(PrefixQuery::new(Term::from_text("f", "a")).unwrap());
+        let context = Arc::clone(&Arc::clone(searcher.get_index_reader()).leaves().unwrap()[0]);
+        let leaf = context.leaf_reader();
+        let terms = leaf.terms("f").unwrap().expect("field f");
+        let mut terms_enum = terms.iterator().unwrap();
+        let mut collected = Vec::new();
+        assert!(collect_terms(-1, terms_enum.as_mut(), &mut collected).unwrap());
+        assert_eq!(collected.len(), 6);
+        let state = RewritingState {
+            query,
+            score_mode: ScoreMode::COMPLETE_NO_SCORES,
+            searcher: searcher.clone(),
+            score: 1.0,
+            inner: Arc::new(Unused),
+        };
+        let WeightOrDocIdSetIterator::Weight(weight) =
+            rewrite_as_boolean_query(&state, &context, &collected).unwrap()
+        else {
+            panic!("a weight");
+        };
+        let mut query = weight.get_query();
+        if let Some(constant) = query.as_any().downcast_ref::<ConstantScoreQuery>() {
+            query = constant.get_query();
+        }
+        let addresses = clause_field_addresses(&query);
+        assert_eq!(addresses.len(), 6);
+        assert!(
+            addresses.iter().all(|&a| a == addresses[0]),
+            "each term copied the field name: {addresses:?}"
+        );
     }
 }

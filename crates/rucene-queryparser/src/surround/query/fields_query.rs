@@ -129,6 +129,7 @@ impl SrndQuery for FieldsQuery {
         self.make_lucene_query_no_boost(qf) /* use this.fieldNames instead of fieldName */
     }
 
+    /// Equivalent to `FieldsQuery.toString()`.
     fn srnd_to_string(&self) -> String {
         let mut r = String::new();
         r.push('(');

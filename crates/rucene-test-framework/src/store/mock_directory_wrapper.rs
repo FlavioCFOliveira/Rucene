@@ -1593,7 +1593,7 @@ impl Directory for MockDirectoryWrapper {
 
     /// `sync(names)`: refused after a crash; each file may throw a random
     /// `IOException`, then is synced in the delegate and no longer unsynced.
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         let _monitor = self.core.monitor.enter();
         self.maybe_yield();
         self.maybe_throw_deterministic_exception()?;
@@ -1603,7 +1603,7 @@ impl Directory for MockDirectoryWrapper {
         for name in names {
             // randomly fail with IOE on any file
             self.maybe_throw_io_exception(Some(name))?;
-            self.core.delegate.sync(std::slice::from_ref(name))?;
+            self.core.delegate.sync(&[*name])?;
             lock(&self.core.state).un_synced_files.remove(name);
         }
         Ok(())

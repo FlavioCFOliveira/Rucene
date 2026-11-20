@@ -235,6 +235,10 @@ impl QueryNodeImpl {
     /// # Errors
     ///
     /// The exceptions of cloning a child.
+    ///
+    /// With [`cloned_state`](Self::cloned_state), equivalent to `QueryNodeImpl.cloneTree()`:
+    /// each node's `clone_tree` composes the two, as a Java subclass reaches
+    /// `super.cloneTree()`.
     pub fn clone_children(&self) -> Result<Option<Vec<QueryNodeRef>>> {
         let clauses = lock(&self.clauses).clone();
         match clauses {

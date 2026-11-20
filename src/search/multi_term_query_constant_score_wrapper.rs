@@ -163,6 +163,7 @@ impl ConstantScoreWeightImpl for RewritingWeightImpl {
         rewriting_scorer_supplier(self.weight.state(), context)
     }
 
+    /// Equivalent to the inherited `RewritingWeight.isCacheable(LeafReaderContext)`: `true`.
     fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
         true
     }

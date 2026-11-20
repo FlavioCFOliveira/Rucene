@@ -21,6 +21,9 @@
 //! * a flush under an index sort over a field without doc values, or without
 //!   a `FieldInfo`, fails and closes the writer as Lucene's does.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -163,13 +166,15 @@ fn run_java(args: &[&str]) -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          StoredDocValuesFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .args(args)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .args(args),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "StoredDocValuesFixture {args:?} failed:\n{}",

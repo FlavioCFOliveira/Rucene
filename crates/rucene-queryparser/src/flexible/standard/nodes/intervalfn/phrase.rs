@@ -58,6 +58,7 @@ impl IntervalFunction for Phrase {
         Intervals::phrase(sources_of(&self.sources, field, analyzer)?)
     }
 
+    /// Equivalent to `Phrase.toString()`.
     fn to_java_string(&self) -> String {
         format!("fn:phrase({})", join(&self.sources))
     }

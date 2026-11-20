@@ -68,6 +68,7 @@ impl IntervalFunction for AtLeast {
         ))
     }
 
+    /// Equivalent to `AtLeast.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:atLeast({} {})",

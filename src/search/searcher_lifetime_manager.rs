@@ -43,6 +43,14 @@ impl SearcherTracker {
         })
     }
 
+    /// Newer searchers sort before older ones.
+    ///
+    /// Equivalent to `SearcherTracker.compareTo(SearcherTracker)`:
+    /// `Double.compare(other.recordTimeSec, recordTimeSec)`.
+    fn compare_to(&self, other: &SearcherTracker) -> std::cmp::Ordering {
+        crate::util::java_double_compare(other.record_time_sec, self.record_time_sec)
+    }
+
     /// Releases the reference this tracker holds.
     ///
     /// Equivalent to the `synchronized SearcherTracker.close()`; the
@@ -269,12 +277,8 @@ impl SearcherLifetimeManager {
                 .unwrap_or_else(PoisonError::into_inner);
             searchers.values().map(Arc::clone).collect()
         };
-        // Newer searchers sort before older ones.
-        trackers.sort_by(|a, b| {
-            b.record_time_sec
-                .partial_cmp(&a.record_time_sec)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // `Collections.sort(trackers)`: newer searchers sort before older ones.
+        trackers.sort_by(|a, b| a.compare_to(b));
 
         let mut last_record_time_sec: Option<f64> = None;
         let now = self.now_sec();
@@ -348,5 +352,45 @@ impl SearcherLifetimeManager {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod searcher_tracker_compare_to_tests {
+    use super::*;
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::IndexWriterConfig;
+    use crate::search::searcher_factory::DefaultSearcherFactory;
+    use crate::search::searcher_manager::get_searcher;
+    use crate::store::{ByteBuffersDirectory, Directory};
+
+    /// #594: `SearcherTracker.compareTo` is
+    /// `Double.compare(other.recordTimeSec, recordTimeSec)`: newer trackers
+    /// first, `NaN` above every number and `0.0` above `-0.0`, as
+    /// `Double.compare` orders them.
+    #[test]
+    fn searcher_tracker_compare_to_is_reverse_double_compare() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new())
+            .unwrap()
+            .close()
+            .unwrap();
+        let reader = crate::index::directory_reader::open(dir).unwrap();
+        let searcher = Arc::new(get_searcher(&DefaultSearcherFactory, reader, None).unwrap());
+        let times = [1.0, 3.0, f64::NAN, -0.0, 2.0, 0.0];
+        let mut trackers: Vec<SearcherTracker> = times
+            .iter()
+            .map(|&t| SearcherTracker::new(Arc::clone(&searcher), t).unwrap())
+            .collect();
+        trackers.sort_by(|a, b| a.compare_to(b));
+        let sorted: Vec<String> = trackers
+            .iter()
+            .map(|t| format!("{:?}", t.record_time_sec))
+            .collect();
+        assert_eq!(sorted, ["NaN", "3.0", "2.0", "1.0", "0.0", "-0.0"]);
+        for tracker in &trackers {
+            tracker.close().unwrap();
+        }
     }
 }

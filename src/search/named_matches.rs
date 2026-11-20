@@ -139,6 +139,7 @@ impl NamedQuery {
 }
 
 impl Query for NamedQuery {
+    /// Equivalent to `NamedQuery.toString(String)`.
     fn to_query_string(&self, field: &str) -> String {
         format!(
             "NamedQuery({},{})",

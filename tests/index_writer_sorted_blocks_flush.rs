@@ -25,6 +25,9 @@
 //! `maxDoc`, compound flag, blocks flag, file set, attributes, and the
 //! index-sort block (`Lucene99SegmentInfoFormat.java:185-237`), byte for byte.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -154,13 +157,15 @@ fn java_flush() -> JavaSegment {
     );
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("sorted-blocks");
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(&fixture)
-        .arg(&dir)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(&fixture)
+            .arg(&dir),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "SortedBlocksFlushFixture failed:\n{}",

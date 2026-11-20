@@ -585,7 +585,8 @@ pub mod event_queue {
     use super::IndexWriter;
     use crate::error::{LuceneError, Result};
 
-    /// `IndexWriter.Event`: `void process(IndexWriter writer)`.
+    /// `IndexWriter.Event`, a functional interface.
+    /// Equivalent to `Event.process(IndexWriter)` when called.
     pub type Event = Box<dyn FnOnce(&IndexWriter) -> Result<()> + Send>;
 
     /// The `Semaphore(Integer.MAX_VALUE)`: the permits held, and whether
@@ -3260,11 +3261,12 @@ impl IndexWriter {
             // false; pendingCommit = null; toSync.rollbackCommit(directory); } }`
             // (`IndexWriter.java:5770-5782`): listing the files is guarded too.
             let synced_files = synced.files_ordered(false).and_then(|files| {
-                // `Directory::sync` takes owned names: a shared name is copied
-                // here, where Java passes the set itself.
-                let files_to_sync: Vec<String> = files.into_iter().map(String::from).collect();
+                // Java passes the set itself; the names are borrowed from it,
+                // not copied.
+                let files_to_sync: Vec<&str> = files.iter().map(|name| &**name).collect();
                 self.directory.sync(&files_to_sync)?;
-                Ok(files_to_sync)
+                drop(files_to_sync);
+                Ok(files)
             });
             let files_to_sync = match synced_files {
                 Ok(files_to_sync) => files_to_sync,
@@ -3283,7 +3285,14 @@ impl IndexWriter {
                     // `"done all syncs: " + filesToSync`: `AbstractCollection.toString()`.
                     .message(
                         IW,
-                        &format!("done all syncs: [{}]", files_to_sync.join(", ")),
+                        &format!(
+                            "done all syncs: [{}]",
+                            files_to_sync
+                                .iter()
+                                .map(|name| &**name)
+                                .collect::<Vec<&str>>()
+                                .join(", ")
+                        ),
                     );
             }
             self.test_point("midStartCommitSuccess");
@@ -6580,7 +6589,7 @@ impl Directory for SharedDirectory {
         self.0.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.0.sync(names)
     }
 
@@ -11289,6 +11298,8 @@ mod tests {
     struct SyncRecordingDirectory {
         inner: Arc<dyn Directory>,
         synced: Mutex<Vec<Vec<String>>>,
+        /// The address of each name of every `sync` call, in order.
+        addresses: Mutex<Vec<Vec<usize>>>,
     }
 
     impl Directory for SyncRecordingDirectory {
@@ -11321,8 +11332,15 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
-            self.synced.lock().unwrap().push(names.to_vec());
+        fn sync(&self, names: &[&str]) -> Result<()> {
+            self.synced
+                .lock()
+                .unwrap()
+                .push(names.iter().map(|name| name.to_string()).collect());
+            self.addresses
+                .lock()
+                .unwrap()
+                .push(names.iter().map(|name| name.as_ptr() as usize).collect());
             self.inner.sync(names)
         }
 
@@ -11366,6 +11384,7 @@ mod tests {
         let recording = Arc::new(SyncRecordingDirectory {
             inner: Arc::clone(&inner),
             synced: Mutex::new(Vec::new()),
+            addresses: Mutex::new(Vec::new()),
         });
         let writer = IndexWriter::new(
             Arc::clone(&recording) as Arc<dyn Directory>,
@@ -11399,6 +11418,57 @@ mod tests {
             .find(|names| names.len() > 1)
             .expect("the commit synced its files");
         assert_eq!(commit_sync, &expected);
+    }
+
+    /// #602: `startCommit` hands `directory.sync` the names of the file set
+    /// itself (`IndexWriter.java:5773-5774`, `sync(toSync.files(false))`):
+    /// every name the commit syncs is the segment's own shared name, not a
+    /// copy made for the call.
+    #[test]
+    fn a_commit_syncs_the_segments_own_file_names_without_copying_them() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let recording = Arc::new(SyncRecordingDirectory {
+            inner: Arc::new(ByteBuffersDirectory::new()),
+            synced: Mutex::new(Vec::new()),
+            addresses: Mutex::new(Vec::new()),
+        });
+        let writer = IndexWriter::new(
+            Arc::clone(&recording) as Arc<dyn Directory>,
+            IndexWriterConfig::new(),
+        )
+        .unwrap();
+        for segment in 0..2 {
+            for i in 0..3 {
+                let mut doc = Document::new();
+                doc.add(StringField::new("id", format!("{segment}-{i}"), Store::YES).unwrap());
+                writer.add_document(&doc).unwrap();
+            }
+            writer.flush().unwrap();
+        }
+        writer.commit().unwrap();
+
+        let infos = writer.clone_segment_infos().unwrap();
+        let mut owned: HashSet<usize> = HashSet::new();
+        for info in infos.iter() {
+            info.info
+                .with_files(|files| {
+                    owned.extend(files.iter().map(|name| name.as_ptr() as usize));
+                })
+                .unwrap();
+        }
+        let addresses = recording.addresses.lock().unwrap().clone();
+        let commit_sync = addresses
+            .iter()
+            .rev()
+            .find(|names| names.len() > 1)
+            .expect("the commit synced its files");
+        for address in commit_sync {
+            assert!(
+                owned.contains(address),
+                "a synced name is a copy, not the segment's own name"
+            );
+        }
+        writer.close().unwrap();
     }
 
     fn recording_writer() -> (Arc<RecordingInfoStream>, Arc<IndexWriter>) {
@@ -13964,7 +14034,7 @@ mod tests {
             self.inner.create_temp_output(prefix, suffix, context)
         }
 
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
 

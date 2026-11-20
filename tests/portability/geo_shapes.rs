@@ -39,6 +39,9 @@
 //!   the same document counts, and its masked points files must differ from
 //!   `L`'s.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -764,7 +767,7 @@ fn run_java(mode: &str, dir: Option<&Path>) -> (bool, String, String) {
     if let Some(dir) = dir {
         command.arg(dir);
     }
-    let output = command
+    let output = jvm_fixture::launch(&command)
         .output()
         .expect("a JDK is required to run the Lucene oracle");
     (

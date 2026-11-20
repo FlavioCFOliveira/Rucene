@@ -19,6 +19,9 @@
 //! Lucene's index and must return the same documents, with and without an
 //! executor that runs every slice on a thread of its own.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
@@ -59,13 +62,15 @@ fn java_run() -> &'static JavaRun {
         );
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("index");
-        let output = Command::new("java")
-            .arg("-cp")
-            .arg(lucene_jar())
-            .arg(&fixture)
-            .arg(&dir)
-            .output()
-            .expect("a JDK is required to run the Lucene oracle");
+        let output = jvm_fixture::launch(
+            Command::new("java")
+                .arg("-cp")
+                .arg(lucene_jar())
+                .arg(&fixture)
+                .arg(&dir),
+        )
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
         assert!(
             output.status.success(),
             "SortedSearchFixture failed:\n{}",

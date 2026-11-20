@@ -13,6 +13,9 @@
 //! document blocks, with and without a parent field, cover the block half of
 //! `Sorter.sort(LeafReader)` (`Sorter.java:190-207`).
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -276,10 +279,7 @@ fn java_report() -> String {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          SortingCodecReaderWrapFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(jar)
-        .arg(fixture)
+    let output = jvm_fixture::launch(Command::new("java").arg("-cp").arg(jar).arg(fixture))
         .output()
         .expect("a JDK is required to run the Lucene oracle");
     assert!(

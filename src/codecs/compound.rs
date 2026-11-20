@@ -91,7 +91,7 @@ impl Directory for EmptyCompoundDirectory {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 
-    fn sync(&self, _names: &[String]) -> Result<()> {
+    fn sync(&self, _names: &[&str]) -> Result<()> {
         Err(LuceneError::unsupported_operation(String::new()))
     }
 

@@ -42,6 +42,9 @@
 //! Rust `&str` and is counted and skipped, as a query string carrying one
 //! cannot reach the parser; number inputs are parsed as UTF-16 units.
 
+#[path = "../../../tests/jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -75,16 +78,18 @@ fn run_oracle(shard: usize) -> String {
         std::process::id()
     ));
     std::fs::create_dir_all(&work).expect("create the work directory");
-    let output = Command::new("java")
-        .current_dir(&work)
-        .arg(format!("-Djava.io.tmpdir={}", work.display()))
-        .arg("-Xmx1g")
-        .arg(oracle_source())
-        .arg(SEED.to_string())
-        .arg(shard.to_string())
-        .arg(SHARDS.to_string())
-        .output()
-        .expect("a JDK 25 is required to run the format oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .current_dir(&work)
+            .arg(format!("-Djava.io.tmpdir={}", work.display()))
+            .arg("-Xmx1g")
+            .arg(oracle_source())
+            .arg(SEED.to_string())
+            .arg(shard.to_string())
+            .arg(SHARDS.to_string()),
+    )
+    .output()
+    .expect("a JDK 25 is required to run the format oracle");
     let _ = std::fs::remove_dir_all(&work);
     assert!(
         output.status.success(),

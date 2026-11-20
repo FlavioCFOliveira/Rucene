@@ -247,6 +247,9 @@ impl UnorderedIntervalIterator {
     }
 
     /// Equivalent to the protected `UnorderedIntervalIterator.reset()`.
+    ///
+    /// Equivalent to the abstract `ConjunctionIntervalIterator.reset()` this subclass
+    /// implements, which `conjunction_interval_iterator_disi!` calls on each document.
     fn reset(&mut self) -> Result<()> {
         self.queue_end = -1;
         self.start = -1;

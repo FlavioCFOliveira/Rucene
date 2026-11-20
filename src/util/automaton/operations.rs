@@ -57,7 +57,30 @@ pub(crate) struct PointTransitions {
     pub(crate) starts: TransitionList,
 }
 
+impl PartialEq for PointTransitions {
+    /// Equivalent to `PointTransitions.equals(Object)`: the points alone.
+    fn eq(&self, other: &Self) -> bool {
+        other.point == self.point
+    }
+}
+
+impl Eq for PointTransitions {}
+
+impl std::hash::Hash for PointTransitions {
+    /// Equivalent to `PointTransitions.hashCode()`: hashes the point, which
+    /// Java's returns.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.point.hash(state);
+    }
+}
+
 impl PointTransitions {
+    /// Equivalent to `PointTransitions.compareTo(PointTransitions)`:
+    /// `point - other.point`, with Java's `int` wrap.
+    pub(crate) fn compare_to(&self, other: &PointTransitions) -> i32 {
+        self.point.wrapping_sub(other.point)
+    }
+
     fn reset(&mut self, point: i32) {
         self.point = point;
         self.ends.next = 0;
@@ -74,6 +97,20 @@ pub(crate) struct PointTransitionSet {
     pub(crate) points: Vec<PointTransitions>,
     map: HashMap<i32, usize>,
     use_hash: bool,
+}
+
+impl std::fmt::Display for PointTransitionSet {
+    /// Equivalent to `PointTransitionSet.toString()`: each point as
+    /// `point:starts,ends` (transition counts), separated by a space.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, p) in self.points[..self.count].iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{}:{},{}", p.point, p.starts.next / 3, p.ends.next / 3)?;
+        }
+        Ok(())
+    }
 }
 
 impl PointTransitionSet {
@@ -126,10 +163,10 @@ impl PointTransitionSet {
     }
 
     pub(crate) fn sort(&mut self) {
-        // Tim sort performs well on already sorted arrays; the points are unique so
-        // an unstable sort produces the same permutation.
+        // Tim sort performs well on already sorted arrays: `ArrayUtil.timSort`
+        // with `PointTransitions.compareTo`, a stable sort.
         if self.count > 1 {
-            self.points[0..self.count].sort_by_key(|p| p.point);
+            self.points[0..self.count].sort_by(|a, b| a.compare_to(b).cmp(&0));
         }
     }
 
@@ -1407,5 +1444,57 @@ impl Operations {
             }
         }
         Ok(upto)
+    }
+}
+
+#[cfg(test)]
+mod point_transition_member_tests {
+    use super::*;
+    use std::hash::{BuildHasher, RandomState};
+
+    fn transition(min: i32, max: i32) -> Transition {
+        Transition {
+            min,
+            max,
+            ..Transition::default()
+        }
+    }
+
+    /// #594: `PointTransitionSet.toString()` lists each point as
+    /// `point:startsCount,endsCount`, separated by a space
+    /// (`Operations.java:642-655`).
+    #[test]
+    fn point_transition_set_to_string_matches_java() {
+        let mut set = PointTransitionSet::default();
+        assert_eq!(set.to_string(), "");
+        set.add(&transition(97, 97));
+        assert_eq!(set.to_string(), "97:1,0 98:0,1");
+        set.add(&transition(97, 99));
+        assert_eq!(set.to_string(), "97:2,0 98:0,1 100:0,1");
+    }
+
+    /// #594: `PointTransitions.equals` and `hashCode` depend on the point
+    /// alone, and `compareTo` is `point - other.point` with `int` overflow.
+    #[test]
+    fn point_transitions_equality_hash_and_compare_follow_the_point() {
+        let mut a = PointTransitions::default();
+        a.reset(97);
+        a.starts.add(&transition(97, 97));
+        let mut b = PointTransitions::default();
+        b.reset(97);
+        assert_eq!(a, b, "the transition lists do not take part");
+        let hasher = RandomState::new();
+        assert_eq!(hasher.hash_one(&a), hasher.hash_one(&b));
+        let mut c = PointTransitions::default();
+        c.reset(98);
+        assert_ne!(a, c);
+        assert_eq!(a.compare_to(&c), -1);
+        assert_eq!(c.compare_to(&a), 1);
+        assert_eq!(a.compare_to(&b), 0);
+        let mut min = PointTransitions::default();
+        min.reset(i32::MIN);
+        let mut one = PointTransitions::default();
+        one.reset(1);
+        assert_eq!(min.compare_to(&one), i32::MAX, "Java's int wrap");
     }
 }

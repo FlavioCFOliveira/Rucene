@@ -1,6 +1,7 @@
 //! Port of `org.apache.lucene.util.automaton.StringsToAutomaton`.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use crate::error::{LuceneError, Result};
 use crate::util::{BytesRef, UnicodeUtil};
@@ -26,9 +27,74 @@ struct State {
     is_final: bool,
 }
 
-/// Key used to intern states in the registry: two states are equal if they have the
-/// same finality, the same labels, and the same (already interned) target states.
-type StateKey = (bool, Vec<i32>, Vec<usize>);
+impl State {
+    /// Equivalent to `State.equals(Object)`: two states are equal if they have
+    /// the same finality, the same labels, and the same (already interned)
+    /// target states, compared by reference
+    /// (`StringsToAutomaton.java:88-94`). Reference identity is arena-index
+    /// identity here (see the type's doc).
+    fn equals(&self, other: &State) -> bool {
+        self.is_final == other.is_final
+            && self.labels == other.labels
+            && Self::reference_equals(&self.states, &other.states)
+    }
+
+    /// Equivalent to `State.hashCode()`: the hash code of the *current* status
+    /// of this state (`StringsToAutomaton.java:96-115`). Java mixes in
+    /// `System.identityHashCode` of every target state; the target's arena
+    /// index stands in for that identity hash (see the type's doc).
+    fn hash_code(&self) -> i32 {
+        let mut hash: i32 = i32::from(self.is_final);
+
+        hash ^= hash.wrapping_mul(31).wrapping_add(self.labels.len() as i32);
+        for &c in &self.labels {
+            hash ^= hash.wrapping_mul(31).wrapping_add(c);
+        }
+
+        // Compare the right-language of this state using reference-identity of
+        // outgoing states. This is possible because states are interned (stored
+        // in registry) and traversed in post-order, so any outgoing transitions
+        // are already interned.
+        for &s in &self.states {
+            hash ^= s as i32;
+        }
+
+        hash
+    }
+
+    /// Equivalent to the private static
+    /// `State.referenceEquals(Object[], Object[])`: compares two lists of
+    /// states for reference equality (`StringsToAutomaton.java:162-175`).
+    fn reference_equals(a1: &[usize], a2: &[usize]) -> bool {
+        if a1.len() != a2.len() {
+            return false;
+        }
+
+        for (s1, s2) in a1.iter().zip(a2) {
+            if s1 != s2 {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl PartialEq for State {
+    /// [`State::equals`], so the registry interns by Java's `equals`.
+    fn eq(&self, other: &Self) -> bool {
+        self.equals(other)
+    }
+}
+
+impl Eq for State {}
+
+impl Hash for State {
+    /// [`State::hash_code`], so the registry hashes by Java's `hashCode`.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_i32(self.hash_code());
+    }
+}
 
 /// Builds a minimal, deterministic [`Automaton`] that accepts a set of strings.
 ///
@@ -42,7 +108,7 @@ pub struct StringsToAutomaton {
     /// Arena holding every state; index 0 is the root.
     arena: Vec<State>,
     /// A "registry" for state interning.
-    state_registry: Option<HashMap<StateKey, usize>>,
+    state_registry: Option<HashMap<State, usize>>,
     /// Used for input order checking.
     previous: Option<BytesRef>,
 }
@@ -147,11 +213,6 @@ impl StringsToAutomaton {
         let s = &mut self.arena[state];
         let idx = s.states.len() - 1;
         s.states[idx] = target;
-    }
-
-    fn key_of(&self, state: usize) -> StateKey {
-        let s = &self.arena[state];
-        (s.is_final, s.labels.clone(), s.states.clone())
     }
 
     /// Internal recursive traversal for conversion.
@@ -283,7 +344,7 @@ impl StringsToAutomaton {
             self.replace_or_register(child);
         }
 
-        let key = self.key_of(child);
+        let key = self.arena[child].clone();
         let registered = self
             .state_registry
             .as_ref()
@@ -299,5 +360,67 @@ impl StringsToAutomaton {
                     .insert(key, child);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod state_member_tests {
+    use super::*;
+    use std::hash::{BuildHasher, RandomState};
+
+    fn state(is_final: bool, labels: &[i32], states: &[usize]) -> State {
+        State {
+            labels: labels.to_vec(),
+            states: states.to_vec(),
+            is_final,
+        }
+    }
+
+    /// #594: `State.equals(Object)` compares finality, labels, and target
+    /// states by reference (here, arena index); `referenceEquals` compares
+    /// two target lists element by element.
+    #[test]
+    fn state_equals_and_reference_equals_match_java() {
+        let a = state(true, &[97, 98], &[3, 5]);
+        assert!(a.equals(&state(true, &[97, 98], &[3, 5])));
+        assert!(!a.equals(&state(false, &[97, 98], &[3, 5])));
+        assert!(!a.equals(&state(true, &[97, 99], &[3, 5])));
+        assert!(!a.equals(&state(true, &[97, 98], &[3, 6])));
+        assert!(State::reference_equals(&[1, 2], &[1, 2]));
+        assert!(!State::reference_equals(&[1, 2], &[1]));
+        assert!(!State::reference_equals(&[1, 2], &[2, 1]));
+        assert!(State::reference_equals(&[], &[]));
+        assert_eq!(a, state(true, &[97, 98], &[3, 5]), "PartialEq is equals");
+    }
+
+    /// #594: `State.hashCode()` (`StringsToAutomaton.java:96-115`), with the
+    /// arena index standing in for `System.identityHashCode`; the expected
+    /// value is Java's formula over `isFinal = true`, labels `{97, 98}` and
+    /// targets 3 and 5.
+    #[test]
+    fn state_hash_code_matches_java_formula() {
+        let a = state(true, &[97, 98], &[3, 5]);
+        assert_eq!(a.hash_code(), EXPECTED_HASH);
+        assert_eq!(state(false, &[], &[]).hash_code(), 0);
+        let hasher = RandomState::new();
+        assert_eq!(
+            hasher.hash_one(&a),
+            hasher.hash_one(state(true, &[97, 98], &[3, 5]))
+        );
+    }
+
+    const EXPECTED_HASH: i32 = 35_910;
+
+    /// #594: the registry interns states by `equals`/`hashCode`, so states
+    /// with the same right language are shared: `{"ab", "cb"}` builds the
+    /// minimal three-state automaton.
+    #[test]
+    fn registry_interns_states_with_the_same_right_language() {
+        let automaton = StringsToAutomaton::build(
+            [BytesRef::new(b"ab".to_vec()), BytesRef::new(b"cb".to_vec())],
+            false,
+        )
+        .unwrap();
+        assert_eq!(automaton.get_num_states(), 3);
     }
 }

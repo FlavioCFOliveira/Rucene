@@ -66,6 +66,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../../../../tests/jvm_fixture/mod.rs"]
+pub mod jvm_fixture;
+
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -1089,13 +1092,15 @@ pub fn run_java_file(source: &Path, args: &[&str]) -> (bool, String, String) {
         lucene_jar("lucene-analysis-common"),
     ])
     .expect("a class path");
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(class_path)
-        .arg(source)
-        .args(args)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(class_path)
+            .arg(source)
+            .args(args),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     (
         output.status.success(),
         String::from_utf8(output.stdout).expect("the oracle prints UTF-8"),

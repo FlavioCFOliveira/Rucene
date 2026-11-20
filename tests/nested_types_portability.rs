@@ -26,6 +26,9 @@
 //! A missing JDK or Lucene jar is a hard failure, not a skip: these tests have
 //! nothing to assert without the reference implementation.
 
+#[path = "jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -147,7 +150,7 @@ fn run_java(case: &str, variant: &str) -> JavaRun {
     if !variant.is_empty() {
         command.arg(variant);
     }
-    let output = command
+    let output = jvm_fixture::launch(&command)
         .output()
         .expect("a JDK is required to run the Lucene oracle");
     assert!(

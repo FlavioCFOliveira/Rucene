@@ -12,6 +12,9 @@
 //!
 //! A missing Maven or JDK is a hard failure.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -299,16 +302,18 @@ fn rucene_lines() -> Vec<String> {
 fn java_lines() -> Vec<String> {
     let harness =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/java-codec-harness");
-    let output = Command::new("mvn")
-        .arg("-q")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.TokenStreamToAutomatonFixture")
-        .current_dir(harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("TokenStreamToAutomaton portability tests need Maven: {e}"));
+    let output = jvm_fixture::launch(
+        Command::new("mvn")
+            .arg("-q")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.TokenStreamToAutomatonFixture")
+            .current_dir(harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .unwrap_or_else(|e| panic!("TokenStreamToAutomaton portability tests need Maven: {e}"));
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         output.status.success() && stdout.lines().any(|l| l.trim() == "done=true"),

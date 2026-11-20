@@ -82,7 +82,7 @@ impl Directory for LockValidatingDirectoryWrapper {
         self.inner.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.write_lock.ensure_valid()?;
         self.inner.sync(names)
     }

@@ -71,6 +71,7 @@ impl IntervalFunction for Within {
         )
     }
 
+    /// Equivalent to `Within.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:within({} {} {})",

@@ -23,6 +23,8 @@
 //! oracle harness), each JVM in a work directory of its own under `TMPDIR`,
 //! so the tests run in parallel safely.
 
+use query_oracle::jvm_fixture;
+
 #[path = "../../rucene-queries/tests/query_oracle/mod.rs"]
 mod query_oracle;
 
@@ -89,16 +91,18 @@ fn run_jvm(class: &str, source: &str, args: &[String]) -> String {
     let file = work.path().join(format!("{class}.java"));
     std::fs::write(&file, source).expect("write the Java source");
     let class_path = std::env::join_paths(lucene_jars()).expect("a class path");
-    let output = Command::new("java")
-        .current_dir(work.path())
-        .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
-        .arg("-Xmx512m")
-        .arg("-cp")
-        .arg(class_path)
-        .arg(&file)
-        .args(args)
-        .output()
-        .expect("a JDK 25 is required");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .current_dir(work.path())
+            .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
+            .arg("-Xmx512m")
+            .arg("-cp")
+            .arg(class_path)
+            .arg(&file)
+            .args(args),
+    )
+    .output()
+    .expect("a JDK 25 is required");
     assert!(
         output.status.success(),
         "{class}.java failed:\n{}",

@@ -65,6 +65,14 @@ struct RefCount {
     count: i32,
 }
 
+/// `Thread.currentThread().getName()`, which the count assertions print first
+/// (`FileDeleter.java:267-282`): the Rust thread's name, and `main` for an
+/// unnamed thread, as [`crate::util::info_stream::PrintStreamInfoStream`]
+/// names it.
+fn current_thread_name() -> String {
+    std::thread::current().name().unwrap_or("main").to_string()
+}
+
 impl RefCount {
     fn new(file_name: &str) -> Self {
         Self {
@@ -81,7 +89,8 @@ impl RefCount {
         if self.init_done {
             debug_assert!(
                 self.count > 0,
-                "RefCount is 0 pre-increment for file \"{}\"",
+                "{}: RefCount is 0 pre-increment for file \"{}\"",
+                current_thread_name(),
                 self.file_name
             );
         } else {
@@ -103,11 +112,13 @@ impl RefCount {
     /// count is then left unchanged, as the failed `assert` throws before
     /// `--count`. It is an error rather than a panic because Java's caller,
     /// `decRef(Collection)`, catches it and goes on (`FileDeleter.java:98-106`).
-    /// Java prefixes the message with the thread's name; this port does not.
+    /// The message starts with the thread's name, as Java's
+    /// `Thread.currentThread().getName() + ": "` (`FileDeleter.java:278-282`).
     fn dec_ref(&mut self) -> Result<i32> {
         if cfg!(debug_assertions) && self.count <= 0 {
             return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
-                "RefCount is 0 pre-decrement for file \"{}\"",
+                "{}: RefCount is 0 pre-decrement for file \"{}\"",
+                current_thread_name(),
                 self.file_name
             ))));
         }
@@ -190,12 +201,13 @@ impl FileDeleter {
     ///
     /// Equivalent to `FileDeleter.incRef(String)`.
     pub fn inc_ref(&mut self, file_name: &str) {
-        let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
-        let pre = rc.count;
-        rc.inc_ref();
+        // `FileDeleter.java:83-89`: the message goes out before `rc.incRef()`,
+        // so a failed count assertion follows it.
+        let pre = Self::ref_count_internal(&mut self.ref_counts, file_name).count;
         self.message(MsgType::Ref, || {
             format!("IncRef \"{file_name}\": pre-incr count is {pre}")
         });
+        Self::ref_count_internal(&mut self.ref_counts, file_name).inc_ref();
     }
 
     /// Decrements the reference count of every file in `file_names`, deleting
@@ -392,7 +404,15 @@ impl FileDeleter {
     /// each pass walks `to_delete` in its iteration order.
     fn delete_all(&mut self, to_delete: &JavaHashSet) -> Result<()> {
         self.message(MsgType::File, || {
-            format!("now delete {} files: {to_delete:?}", to_delete.len())
+            // `"now delete " + toDelete.size() + " files: " + toDelete`
+            // (`FileDeleter.java:209`): the set as
+            // `AbstractCollection.toString()` prints it, `[a, b]`.
+            let names: Vec<&str> = to_delete.iter().map(String::as_str).collect();
+            format!(
+                "now delete {} files: [{}]",
+                to_delete.len(),
+                names.join(", ")
+            )
         });
 
         for file_name in to_delete.iter() {
@@ -583,7 +603,7 @@ mod tests {
         ) -> Result<Box<dyn crate::store::IndexOutput>> {
             self.inner.create_temp_output(prefix, suffix, context)
         }
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
         fn sync_metadata(&self) -> Result<()> {
@@ -788,10 +808,28 @@ mod tests {
     /// (`FileDeleter.java:95-130, 276-283`; `IOUtils.useOrSuppress`). The
     /// expected results are those of Lucene 10.5.0's own `FileDeleter` on
     /// JDK 25.0.5 for the same calls, run with `-ea` (this port's
-    /// `debug_assertions`) and without it. Java prefixes the assertion
-    /// message with the thread's name (`main: `); the port does not.
+    /// `debug_assertions`) and without it. The assertion message starts with
+    /// the thread's name (`main: `), so the body runs on a thread named
+    /// `main`, as Java's oracle ran.
     #[test]
     fn dec_ref_files_keeps_going_after_a_failed_count_assertion() {
+        on_thread_named(
+            "main",
+            dec_ref_files_keeps_going_after_a_failed_count_assertion_body,
+        );
+    }
+
+    /// Runs `body` on a thread named `name` and propagates its panic.
+    fn on_thread_named(name: &str, body: fn()) {
+        std::thread::Builder::new()
+            .name(name.to_string())
+            .spawn(body)
+            .unwrap()
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    }
+
+    fn dec_ref_files_keeps_going_after_a_failed_count_assertion_body() {
         let tracked = ["segments_1", "_0.si", "_0.cfs", "_0.cfe"];
         let inner = dir();
         for name in tracked {
@@ -821,8 +859,8 @@ mod tests {
         let (expected_errors, untracked_count) = if cfg!(debug_assertions) {
             (
                 vec![
-                    "AssertionError: RefCount is 0 pre-decrement for file \"_x.si\"",
-                    "AssertionError: RefCount is 0 pre-decrement for file \"_y.si\"",
+                    "AssertionError: main: RefCount is 0 pre-decrement for file \"_x.si\"",
+                    "AssertionError: main: RefCount is 0 pre-decrement for file \"_y.si\"",
                     "IOException: fake delete failure: _0.cfe",
                 ],
                 0,
@@ -951,5 +989,94 @@ mod tests {
 
         assert_eq!(deleter.get_ref_count("_0.si"), 0);
         assert!(directory.list_all().unwrap().is_empty());
+    }
+
+    /// A messenger that records every message, and the log it fills.
+    #[allow(clippy::type_complexity)]
+    fn recording_messenger() -> (Messenger, Arc<std::sync::Mutex<Vec<(MsgType, String)>>>) {
+        let log: Arc<std::sync::Mutex<Vec<(MsgType, String)>>> = Arc::default();
+        let sink = Arc::clone(&log);
+        let messenger: Messenger = Arc::new(move |t, m| {
+            sink.lock().unwrap().push((t, m.to_string()));
+        });
+        (messenger, log)
+    }
+
+    /// #600: the `RefCount` assertion messages start with
+    /// `Thread.currentThread().getName() + ": "` (`FileDeleter.java:267-282`).
+    #[test]
+    fn ref_count_assertion_messages_start_with_the_thread_name() {
+        if !cfg!(debug_assertions) {
+            return; // Java's `assert` runs under `-ea` only.
+        }
+        on_thread_named("Lucene Merge Thread #3", || {
+            let mut deleter = FileDeleter::new(dir(), None);
+            let error = deleter.dec_ref_files(["_x.si"]).unwrap_err();
+            assert_eq!(
+                messages(&error),
+                ["AssertionError: Lucene Merge Thread #3: RefCount is 0 pre-decrement for file \"_x.si\""]
+            );
+
+            // `incRef`'s assertion: a count of 0 after the first increment,
+            // forged because the public calls remove a file at 0.
+            deleter.inc_ref("_0.si");
+            deleter.ref_counts.get_mut("_0.si").unwrap().count = 0;
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                deleter.inc_ref("_0.si");
+            }))
+            .unwrap_err();
+            let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+            assert_eq!(
+                message,
+                "Lucene Merge Thread #3: RefCount is 0 pre-increment for file \"_0.si\""
+            );
+        });
+    }
+
+    /// #600: `incRef(String)` sends `IncRef "<file>": pre-incr count is N`
+    /// before `rc.incRef()` (`FileDeleter.java:83-89`), so the message is
+    /// out even when the increment's assertion fails.
+    #[test]
+    fn inc_ref_message_goes_out_before_the_increment() {
+        let (messenger, log) = recording_messenger();
+        let mut deleter = FileDeleter::new(dir(), Some(messenger));
+        deleter.inc_ref("_0.si");
+        deleter.ref_counts.get_mut("_0.si").unwrap().count = 0;
+        log.lock().unwrap().clear();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            deleter.inc_ref("_0.si");
+        }));
+        assert_eq!(outcome.is_err(), cfg!(debug_assertions));
+        assert_eq!(
+            *log.lock().unwrap(),
+            [(
+                MsgType::Ref,
+                "IncRef \"_0.si\": pre-incr count is 0".to_string()
+            )]
+        );
+    }
+
+    /// #600: `delete(Collection)` prints `"now delete " + toDelete.size() +
+    /// " files: " + toDelete`, the `HashSet` as `AbstractCollection.toString()`
+    /// renders it: `[a, b]` in the set's iteration order (`_0.si` hashes to
+    /// bucket 2 and `_0.cfs` to bucket 4 of the 16-entry table).
+    #[test]
+    fn delete_prints_the_file_set_as_a_java_collection() {
+        let directory = dir();
+        write_file(directory.as_ref(), "_0.cfs");
+        write_file(directory.as_ref(), "_0.si");
+        let (messenger, log) = recording_messenger();
+        let mut deleter = FileDeleter::new(directory, Some(messenger));
+        deleter.inc_ref_files(["_0.cfs", "_0.si"]);
+        log.lock().unwrap().clear();
+        deleter.dec_ref_files(["_0.cfs", "_0.si"]).unwrap();
+        let file_messages: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _)| *t == MsgType::File)
+            .map(|(_, m)| m.clone())
+            .collect();
+        assert_eq!(file_messages[0], "now delete 2 files: [_0.si, _0.cfs]");
     }
 }

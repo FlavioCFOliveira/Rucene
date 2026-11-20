@@ -19,6 +19,8 @@
 //! `intersect`); compare the errors of corrupted copies; and resolve the
 //! formats' service names.
 
+use oracle::jvm_fixture;
+
 mod oracle;
 
 use std::sync::Arc;
@@ -385,14 +387,16 @@ fn lucene_dump(dir: &Path) -> Vec<String> {
         lucene_jar("lucene-core").display(),
         lucene_jar("lucene-codecs").display()
     );
-    let output = std::process::Command::new("java")
-        .arg("-ea")
-        .arg("-cp")
-        .arg(&classpath)
-        .arg(&source)
-        .arg(dir)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        std::process::Command::new("java")
+            .arg("-ea")
+            .arg("-cp")
+            .arg(&classpath)
+            .arg(&source)
+            .arg(dir),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "SimpleTextReadOracle failed:\n{}",

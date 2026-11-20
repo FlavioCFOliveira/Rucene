@@ -419,7 +419,7 @@ impl Directory for CorruptingFilterDirectory {
             Ok(out)
         }
     }
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.r#in.sync(names)
     }
     fn sync_metadata(&self) -> Result<()> {

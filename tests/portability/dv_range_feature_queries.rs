@@ -33,6 +33,9 @@
 //!   gains the sorted-numeric value 7 and its `num` becomes 100); its report
 //!   must differ from Lucene's report on `L` with the same document counts.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -797,14 +800,16 @@ fn run_java(mode: &str, root: &Path) -> (bool, String, String) {
         "tests/fixtures/java-codec-harness/src/main/java/org/apache/lucene/rucene/codec/\
          DvRangeFeatureFixture.java",
     );
-    let output = Command::new("java")
-        .arg("-cp")
-        .arg(lucene_jar())
-        .arg(fixture)
-        .arg(mode)
-        .arg(root)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .arg("-cp")
+            .arg(lucene_jar())
+            .arg(fixture)
+            .arg(mode)
+            .arg(root),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     (
         output.status.success(),
         String::from_utf8_lossy(&output.stdout).into_owned(),

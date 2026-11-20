@@ -1445,7 +1445,7 @@ mod tests {
         ) -> Result<Box<dyn crate::store::IndexOutput>> {
             self.inner.create_temp_output(prefix, suffix, context)
         }
-        fn sync(&self, names: &[String]) -> Result<()> {
+        fn sync(&self, names: &[&str]) -> Result<()> {
             self.inner.sync(names)
         }
         fn sync_metadata(&self) -> Result<()> {

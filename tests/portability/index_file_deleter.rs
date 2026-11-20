@@ -20,6 +20,9 @@
 //! indexes; it can only consume one. That is why every shape here starts from a
 //! Java-written directory rather than from a Rucene-written one.
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -57,18 +60,20 @@ fn run_java_fixture(out_dir: &Path, shape: &str) -> String {
         harness.display()
     );
 
-    let output = Command::new(which_mvn())
-        .arg("-q")
-        .arg("-o")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.IndexFileDeleterFixture")
-        .arg(format!("-Dexec.args={} {}", out_dir.display(), shape))
-        .current_dir(&harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn Maven");
+    let output = jvm_fixture::launch(
+        Command::new(which_mvn())
+            .arg("-q")
+            .arg("-o")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.IndexFileDeleterFixture")
+            .arg(format!("-Dexec.args={} {}", out_dir.display(), shape))
+            .current_dir(&harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .expect("failed to spawn Maven");
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -86,17 +91,23 @@ fn run_java_fixture(out_dir: &Path, shape: &str) -> String {
 
 /// Locates the `mvn` executable.
 fn which_mvn() -> PathBuf {
-    for name in ["mvn", "mvn.cmd"] {
-        if let Ok(output) = Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return PathBuf::from(path);
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            for name in ["mvn", "mvn.cmd"] {
+                if let Ok(output) = Command::new("which").arg(name).output() {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !path.is_empty() {
+                            return PathBuf::from(path);
+                        }
+                    }
                 }
             }
-        }
-    }
-    panic!("mvn not found on PATH; it is required by the Lucene portability harness");
+            panic!("mvn not found on PATH; it is required by the Lucene portability harness");
+        })
+        .clone()
 }
 
 /// Returns the value of a `key=value` line emitted by the fixture.

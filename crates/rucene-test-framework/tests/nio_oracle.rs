@@ -619,7 +619,7 @@ fn store_calls_match_lucene_over_a_recording_provider() {
         o.write_bytes(&[0u8; 64], 0, 64)?;
         o.close()
     });
-    step(r, &ds, "sync", || dir.sync(&["_0.cfs".to_string()]));
+    step(r, &ds, "sync", || dir.sync(&["_0.cfs"]));
     let mut temp_name = String::new();
     step(r, &ds, "createTempOutput", || {
         let mut o = dir.create_temp_output("pending", "tmp", ctx)?;

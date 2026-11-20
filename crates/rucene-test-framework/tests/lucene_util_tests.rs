@@ -1140,7 +1140,7 @@ fn test_fail_if_unreferenced_files() {
                             .write_string("i am unreferenced!")
                             .unwrap_or_else(|e| rethrow_lucene(e));
                         IndexOutput::close(&mut *output).unwrap_or_else(|e| rethrow_lucene(e));
-                        dir.sync(&["_hello.world".to_string()])
+                        dir.sync(&["_hello.world"])
                             .unwrap_or_else(|e| rethrow_lucene(e));
                         dir.close().unwrap_or_else(|e| rethrow_lucene(e));
                     }),

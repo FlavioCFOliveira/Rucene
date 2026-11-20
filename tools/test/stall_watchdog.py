@@ -18,8 +18,10 @@ counters (`/proc/<pid>/stat`, `/proc/<pid>/task/*/stat`):
 * GROWING  -- resident memory above `--rss-alert` MiB and higher at every one
   of the last `--rss-samples` samples: a probable leak. One dump is taken.
 
-Attaching needs the test to be traceable: `ptracer_exec.py` (wired into
-`~/.local/bin/rucene-mem-runner`) declares it with `PR_SET_PTRACER_ANY`.
+Attaching needs the test to be traceable: the compiled `ptracer_exec` helper
+(`tools/test/ptracer_exec.c`, built by `tools/test/build_ptracer_exec.sh`; the
+fallback is `ptracer_exec.py`), wired into `~/.local/bin/rucene-mem-runner`,
+declares it with `PR_SET_PTRACER_ANY`.
 Alerts go to `--log` (one line `ALERT <kind> pid=... name=...` followed by the
 dump), so a waiter on that file notifies at the first alert.
 

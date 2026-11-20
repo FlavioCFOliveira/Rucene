@@ -123,9 +123,10 @@ impl AbstractWordsFileFilterFactory {
     /// defaults.
     ///
     /// Equivalent to `AbstractWordsFileFilterFactory.inform(ResourceLoader)`;
-    /// `create_default_words` is the concrete factory's
-    /// `createDefaultWords()`, the default word set (`None` for Java's
-    /// `null`), called when no `words` file was named.
+    /// `create_default_words` is the concrete factory's override of the
+    /// abstract `AbstractWordsFileFilterFactory.createDefaultWords()`, the
+    /// default word set (`None` for Java's `null`), called when no `words`
+    /// file was named.
     ///
     /// # Errors
     ///

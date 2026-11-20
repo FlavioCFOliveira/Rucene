@@ -220,7 +220,7 @@ impl Directory for FaultyFSDirectory {
     ) -> Result<Box<dyn IndexOutput>> {
         self.r#in.create_temp_output(prefix, suffix, context)
     }
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.r#in.sync(names)
     }
     fn sync_metadata(&self) -> Result<()> {

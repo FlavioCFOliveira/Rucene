@@ -72,6 +72,9 @@
 
 #![allow(dead_code)]
 
+#[path = "../../../../tests/jvm_fixture/mod.rs"]
+pub mod jvm_fixture;
+
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1312,22 +1315,24 @@ pub fn run_java(spec: &str) -> String {
     let spec_path = work.path().join("spec.tsv");
     std::fs::write(&spec_path, spec).expect("write the spec file");
     let class_path = std::env::join_paths(jars).expect("a class path");
-    let output = Command::new("java")
-        .current_dir(work.path())
-        .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
-        .arg("-Xmx1g")
-        // Lucene's test JVMs run with assertions on (`tests.asserts` defaults
-        // to true: `jvmArgs("-ea", "-esa")`, `gradle/testing/randomization.gradle:76,182-183`),
-        // as Rucene's test builds evaluate Java's `assert` (`debug_assertions`)
-        .arg("-ea")
-        .arg("-esa")
-        .arg(format!("-Dtests.seed={seed}"))
-        .arg("-cp")
-        .arg(class_path)
-        .arg(fixture())
-        .arg(&spec_path)
-        .output()
-        .expect("a JDK is required to run the Lucene oracle");
+    let output = jvm_fixture::launch(
+        Command::new("java")
+            .current_dir(work.path())
+            .arg(format!("-Djava.io.tmpdir={}", work.path().display()))
+            .arg("-Xmx1g")
+            // Lucene's test JVMs run with assertions on (`tests.asserts` defaults
+            // to true: `jvmArgs("-ea", "-esa")`, `gradle/testing/randomization.gradle:76,182-183`),
+            // as Rucene's test builds evaluate Java's `assert` (`debug_assertions`)
+            .arg("-ea")
+            .arg("-esa")
+            .arg(format!("-Dtests.seed={seed}"))
+            .arg("-cp")
+            .arg(class_path)
+            .arg(fixture())
+            .arg(&spec_path),
+    )
+    .output()
+    .expect("a JDK is required to run the Lucene oracle");
     assert!(
         output.status.success(),
         "QueryOracle.java failed:\n{}",

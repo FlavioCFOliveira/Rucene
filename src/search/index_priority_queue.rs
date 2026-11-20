@@ -79,17 +79,17 @@ impl<T, O: IndexOrder<T>> IndexPriorityQueue<T, O> {
 
     /// Returns the entry stored at 1-based heap slot `i + 1`.
     ///
-    /// Equivalent to reading `getHeapArray()[1 + i]`, which
-    /// `BooleanScorer.TailPriorityQueue.get(int)` does.
+    /// Equivalent to `BooleanScorer.TailPriorityQueue.get(int)`:
+    /// `Objects.checkIndex(i, size())`, then `getHeapArray()[1 + i]`.
     ///
     /// # Panics
     ///
-    /// Panics when `i` is not less than [`size`](Self::size), matching
-    /// `Objects.checkIndex`.
+    /// Panics when `i` is not less than [`size`](Self::size), with the
+    /// message of the `IndexOutOfBoundsException` `Objects.checkIndex` throws.
     pub fn get(&self, i: usize) -> usize {
         assert!(
             i < self.size,
-            "index {i} out of bounds for size {}",
+            "Index {i} out of bounds for length {}",
             self.size
         );
         self.heap[1 + i]

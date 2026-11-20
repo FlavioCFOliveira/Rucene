@@ -39,6 +39,8 @@
 //! `simpletext_formats.rs` pins the id and the diagnostics and compares
 //! bytes.
 
+use oracle::jvm_fixture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
@@ -610,14 +612,16 @@ fn lucene_reads_what_rucene_writes() {
     for case in ["nocfs", "cfs", "edge"] {
         let rust_dir = TempDir::new(&format!("simpletext-forjava-{case}"));
         write_case(case, &rust_dir.0);
-        let output = Command::new("java")
-            .arg("-ea")
-            .arg("-cp")
-            .arg(&classpath)
-            .arg(&source)
-            .arg(&rust_dir.0)
-            .output()
-            .expect("a JDK is required to run the Lucene oracle");
+        let output = jvm_fixture::launch(
+            Command::new("java")
+                .arg("-ea")
+                .arg("-cp")
+                .arg(&classpath)
+                .arg(&source)
+                .arg(&rust_dir.0),
+        )
+        .output()
+        .expect("a JDK is required to run the Lucene oracle");
         assert!(
             output.status.success(),
             "SimpleTextReadOracle failed on Rucene's {case} index:\n{}",

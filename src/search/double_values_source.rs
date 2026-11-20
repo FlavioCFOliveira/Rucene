@@ -406,6 +406,7 @@ impl DoubleValuesSource for ConstantValuesSource {
         }
     }
 
+    /// Equivalent to `ConstantValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(value)` (`DoubleValuesSource.java:414-416`).
         31i32.wrapping_add(crate::util::java_collections::java_double_hash_code(
@@ -506,6 +507,7 @@ impl DoubleValuesSource for FieldValuesSource {
         }
     }
 
+    /// Equivalent to `FieldValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(field, decoder)` (`DoubleValuesSource.java:478-480`). The
         // decoder is a method reference or lambda, whose hash is a JVM identity
@@ -592,6 +594,7 @@ impl DoubleValuesSource for QueryDoubleValuesSource {
         }
     }
 
+    /// Equivalent to `QueryDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(query)` (`DoubleValuesSource.java:672-674`).
         31i32.wrapping_add(self.query.query_hash())
@@ -719,6 +722,7 @@ impl DoubleValuesSource for WeightDoubleValuesSource {
         }
     }
 
+    /// Equivalent to `WeightDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(weight)` (`DoubleValuesSource.java:771-773`); a `Weight`'s
         // hash is a JVM identity hash, replaced by the stable stand-in of
@@ -821,6 +825,7 @@ impl LongValuesSource for LongDoubleValuesSource {
         }
     }
 
+    /// Equivalent to `LongDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `Objects.hash(inner)` (`DoubleValuesSource.java:235-237`).
         31i32.wrapping_add(self.inner.source_hash())
@@ -877,6 +882,7 @@ impl LongValuesSource for SortableLongDoubleValuesSource {
         }
     }
 
+    /// Equivalent to `SortableLongDoubleValuesSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         // `inner.hashCode()` (`DoubleValuesSource.java:164-166`).
         self.inner.source_hash()

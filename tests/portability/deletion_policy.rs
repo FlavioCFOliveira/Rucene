@@ -20,6 +20,9 @@
 //! order, which Rucene reproduces, so the files are byte-identical — also for
 //! generations whose bucket order is not ascending (`{2, 17}`).
 
+#[path = "../jvm_fixture/mod.rs"]
+mod jvm_fixture;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -66,18 +69,20 @@ fn run_java_fixture(out_dir: &Path, shape: &str) -> String {
     );
 
     let mvn = which_mvn();
-    let output = Command::new(mvn)
-        .arg("-q")
-        .arg("-o")
-        .arg("compile")
-        .arg("exec:java")
-        .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.DeletionPolicyFixture")
-        .arg(format!("-Dexec.args={} {}", out_dir.display(), shape))
-        .current_dir(&harness)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn Maven");
+    let output = jvm_fixture::launch(
+        Command::new(mvn)
+            .arg("-q")
+            .arg("-o")
+            .arg("compile")
+            .arg("exec:java")
+            .arg("-Dexec.mainClass=org.apache.lucene.rucene.codec.DeletionPolicyFixture")
+            .arg(format!("-Dexec.args={} {}", out_dir.display(), shape))
+            .current_dir(&harness),
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .output()
+    .expect("failed to spawn Maven");
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -95,17 +100,23 @@ fn run_java_fixture(out_dir: &Path, shape: &str) -> String {
 
 /// Locates the `mvn` executable.
 fn which_mvn() -> PathBuf {
-    for name in ["mvn", "mvn.cmd"] {
-        if let Ok(output) = Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return PathBuf::from(path);
+    // Probed once per process: the answer cannot change during a run.
+    static PROBE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            for name in ["mvn", "mvn.cmd"] {
+                if let Ok(output) = Command::new("which").arg(name).output() {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !path.is_empty() {
+                            return PathBuf::from(path);
+                        }
+                    }
                 }
             }
-        }
-    }
-    panic!("mvn not found on PATH; it is required by the Lucene portability harness");
+            panic!("mvn not found on PATH; it is required by the Lucene portability harness");
+        })
+        .clone()
 }
 
 /// Returns the value of a `key=value` line emitted by the fixture.
@@ -1053,7 +1064,7 @@ impl Directory for FailingCloseDirectory {
         self.inner.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 

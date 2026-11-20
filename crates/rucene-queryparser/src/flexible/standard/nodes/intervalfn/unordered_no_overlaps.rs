@@ -66,6 +66,7 @@ impl IntervalFunction for UnorderedNoOverlaps {
         )
     }
 
+    /// Equivalent to `UnorderedNoOverlaps.toString()`.
     fn to_java_string(&self) -> String {
         format!(
             "fn:unorderedNoOverlaps({} {})",
