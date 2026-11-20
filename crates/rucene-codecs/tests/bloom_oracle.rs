@@ -43,7 +43,7 @@ const BLOOM: FormatOracle = FormatOracle {
     extensions: &["blm"],
     codec: bloom_codec,
     extra_jars: &[],
-    live_impacts_differ: true,
+    live_impacts_differ: false,
 };
 
 #[test]

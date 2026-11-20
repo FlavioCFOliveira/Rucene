@@ -124,8 +124,8 @@ pub use point_values::{
 };
 pub use postings_enum::{
     feature_requested, DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum,
-    ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
-    POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
+    ImpactsRef, ImpactsSource, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
+    POSTINGS_ENUM_NONE, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
 pub use reader_context::{CompositeReaderContext, IndexReaderContext, LeafReaderContext};
 pub use segment_info::{

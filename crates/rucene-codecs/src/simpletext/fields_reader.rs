@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use rucene::codecs::{FieldsProducer, SegmentReadState};
 use rucene::error::{LuceneError, Result};
 use rucene::index::{
-    feature_requested, FieldInfo, FieldInfos, Fields, Impacts, ImpactsEnum, ImpactsSource,
+    feature_requested, FieldInfo, FieldInfos, Fields, ImpactsEnum, ImpactsRef, ImpactsSource,
     IndexOptions, PostingsEnum, SeekStatus, SlowImpactsEnum, Terms, TermsEnum,
     POSTINGS_ENUM_POSITIONS,
 };
@@ -628,9 +628,9 @@ impl ImpactsSource for SimpleTextDocsEnum {
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         self.advance_shallow(self.doc_id)?;
-        Ok(Box::new(self.skip_reader.get_impacts()))
+        Ok(ImpactsRef::Owned(Box::new(self.skip_reader.get_impacts())))
     }
 }
 
@@ -873,9 +873,9 @@ impl ImpactsSource for SimpleTextPostingsEnum {
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         self.advance_shallow(self.doc_id)?;
-        Ok(Box::new(self.skip_reader.get_impacts()))
+        Ok(ImpactsRef::Owned(Box::new(self.skip_reader.get_impacts())))
     }
 }
 

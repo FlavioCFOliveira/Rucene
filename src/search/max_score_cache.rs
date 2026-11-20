@@ -178,12 +178,12 @@ impl MaxScoreCache {
         level: i32,
     ) -> Result<f32> {
         debug_assert!(level >= 0, "level must not be a negative integer");
-        let impacts = impacts_source.get_impacts()?;
+        let mut impacts = impacts_source.get_impacts()?;
         self.ensure_cache_size(level as usize + 1);
         let level_up_to = impacts.doc_id_up_to(level);
         if self.max_score_cache_up_to[level as usize] < level_up_to {
             let buffer = impacts.get_impacts(level);
-            let max_score = self.compute_max_score(&buffer);
+            let max_score = self.compute_max_score(buffer);
             self.max_score_cache[level as usize] = max_score;
             self.max_score_cache_up_to[level as usize] = level_up_to;
         }

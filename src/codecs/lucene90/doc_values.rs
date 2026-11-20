@@ -1798,7 +1798,7 @@ struct BinaryEntry {
     min_length: i32,
     max_length: i32,
     addresses_offset: i64,
-    addresses_meta: Option<DirectMonotonicMeta>,
+    addresses_meta: Option<Arc<DirectMonotonicMeta>>,
     addresses_length: i64,
 }
 
@@ -1809,13 +1809,13 @@ struct BinaryEntry {
 #[derive(Debug, Clone)]
 struct TermsDictEntry {
     terms_dict_size: i64,
-    terms_addresses_meta: DirectMonotonicMeta,
+    terms_addresses_meta: Arc<DirectMonotonicMeta>,
     terms_data_offset: i64,
     terms_data_length: i64,
     terms_addresses_offset: i64,
     terms_addresses_length: i64,
     terms_dict_index_shift: i32,
-    terms_index_addresses_meta: DirectMonotonicMeta,
+    terms_index_addresses_meta: Arc<DirectMonotonicMeta>,
     terms_index_offset: i64,
     terms_index_length: i64,
     terms_index_addresses_offset: i64,
@@ -1838,7 +1838,7 @@ struct SortedNumericEntry {
     numeric: NumericEntry,
     num_docs_with_field: i32,
     addresses_offset: i64,
-    addresses_meta: Option<DirectMonotonicMeta>,
+    addresses_meta: Option<Arc<DirectMonotonicMeta>>,
     addresses_length: i64,
 }
 
@@ -2758,7 +2758,11 @@ impl Lucene90DocValuesProducer {
             addresses_offset = meta.read_long()?;
             let num_addresses = i64::from(num_docs_with_field).wrapping_add(1);
             let block_shift = meta.read_v_int()?;
-            addresses_meta = Some(DirectMonotonicMeta::load(meta, num_addresses, block_shift)?);
+            addresses_meta = Some(Arc::new(DirectMonotonicMeta::load(
+                meta,
+                num_addresses,
+                block_shift,
+            )?));
             addresses_length = meta.read_long()?;
         }
         Ok(BinaryEntry {
@@ -2806,11 +2810,11 @@ impl Lucene90DocValuesProducer {
         if i64::from(num_docs_with_field) != numeric.num_values {
             addresses_offset = meta.read_long()?;
             let block_shift = meta.read_v_int()?;
-            addresses_meta = Some(DirectMonotonicMeta::load(
+            addresses_meta = Some(Arc::new(DirectMonotonicMeta::load(
                 meta,
                 i64::from(num_docs_with_field).wrapping_add(1),
                 block_shift,
-            )?);
+            )?));
             addresses_length = meta.read_long()?;
         }
         Ok(SortedNumericEntry {
@@ -2826,7 +2830,11 @@ impl Lucene90DocValuesProducer {
         let terms_dict_size = meta.read_v_long()?;
         let block_shift = meta.read_int()?;
         let addresses_size = shift_up_round(terms_dict_size, TERMS_DICT_BLOCK_LZ4_SHIFT as u32);
-        let terms_addresses_meta = DirectMonotonicMeta::load(meta, addresses_size, block_shift)?;
+        let terms_addresses_meta = Arc::new(DirectMonotonicMeta::load(
+            meta,
+            addresses_size,
+            block_shift,
+        )?);
         let max_term_length = meta.read_int()?;
         let max_block_length = meta.read_int()?;
         let terms_data_offset = meta.read_long()?;
@@ -2835,8 +2843,11 @@ impl Lucene90DocValuesProducer {
         let terms_addresses_length = meta.read_long()?;
         let terms_dict_index_shift = meta.read_int()?;
         let index_size = shift_up_round(terms_dict_size, terms_dict_index_shift as u32);
-        let terms_index_addresses_meta =
-            DirectMonotonicMeta::load(meta, index_size.wrapping_add(1), block_shift)?;
+        let terms_index_addresses_meta = Arc::new(DirectMonotonicMeta::load(
+            meta,
+            index_size.wrapping_add(1),
+            block_shift,
+        )?);
         let terms_index_offset = meta.read_long()?;
         let terms_index_length = meta.read_long()?;
         let terms_index_addresses_offset = meta.read_long()?;
@@ -3816,7 +3827,7 @@ impl TermsDict {
             entry.terms_addresses_length,
         )?;
         let block_addresses = DirectMonotonicReader::with_random_access(
-            entry.terms_addresses_meta.clone(),
+            Arc::clone(&entry.terms_addresses_meta),
             addresses,
         )?;
         let bytes = data.slice("terms", entry.terms_data_offset, entry.terms_data_length)?;
@@ -3826,7 +3837,7 @@ impl TermsDict {
             entry.terms_index_addresses_length,
         )?;
         let index_addresses = DirectMonotonicReader::with_random_access(
-            entry.terms_index_addresses_meta.clone(),
+            Arc::clone(&entry.terms_index_addresses_meta),
             index_addresses_slice,
         )?;
         let index_bytes =

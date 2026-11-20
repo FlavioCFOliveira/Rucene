@@ -5,8 +5,8 @@
 
 use crate::error::Result;
 use crate::index::{
-    DocAndFloatFeatureBuffer, Impacts, ImpactsEnum, ImpactsSource, NumericDocValues, PostingsEnum,
-    SlowImpactsEnum,
+    DocAndFloatFeatureBuffer, ImpactsEnum, ImpactsRef, ImpactsSource, NumericDocValues,
+    PostingsEnum, SlowImpactsEnum,
 };
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::impacts_disi::ImpactsDISI;
@@ -106,7 +106,7 @@ impl ImpactsSource for BoxedImpactsEnum {
         self.0.advance_shallow(target)
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         self.0.get_impacts()
     }
 }

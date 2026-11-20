@@ -2088,9 +2088,9 @@ impl RandomPostingsTester {
             }
             if doc > max {
                 impacts_enum.advance_shallow(doc)?;
-                let impacts = impacts_enum.get_impacts()?;
-                access.check_impacts(&*impacts, doc)?;
-                impacts_copy = copy_of(&impacts.get_impacts(0));
+                let mut impacts = impacts_enum.get_impacts()?;
+                access.check_impacts(&mut *impacts, doc)?;
+                impacts_copy = copy_of(impacts.get_impacts(0));
             }
             let freq = impacts_enum.freq()?;
             let norm = doc_to_norm_fn(doc);
@@ -2128,12 +2128,12 @@ impl RandomPostingsTester {
                 max = target.wrapping_add(delta);
 
                 impacts_enum.advance_shallow(target)?;
-                let impacts = impacts_enum.get_impacts()?;
-                access.check_impacts(&*impacts, target)?;
+                let mut impacts = impacts_enum.get_impacts()?;
+                access.check_impacts(&mut *impacts, target)?;
                 impacts_copy = vec![Impact::new(i32::MAX, 1)];
                 for level in 0..impacts.num_levels() {
                     if impacts.doc_id_up_to(level) >= max {
-                        impacts_copy = copy_of(&impacts.get_impacts(level));
+                        impacts_copy = copy_of(impacts.get_impacts(level));
                         break;
                     }
                 }
@@ -2188,12 +2188,12 @@ impl RandomPostingsTester {
             if doc > max {
                 let delta = (1 + random.next_int_bound(512)).min(NO_MORE_DOCS.wrapping_sub(doc));
                 max = doc.wrapping_add(delta);
-                let impacts = impacts_enum.get_impacts()?;
-                access.check_impacts(&*impacts, doc)?;
+                let mut impacts = impacts_enum.get_impacts()?;
+                access.check_impacts(&mut *impacts, doc)?;
                 impacts_copy = vec![Impact::new(i32::MAX, 1)];
                 for level in 0..impacts.num_levels() {
                     if impacts.doc_id_up_to(level) >= max {
-                        impacts_copy = copy_of(&impacts.get_impacts(level));
+                        impacts_copy = copy_of(impacts.get_impacts(level));
                         break;
                     }
                 }

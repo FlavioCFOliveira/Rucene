@@ -11188,7 +11188,7 @@ impl crate::internal::tests_hooks::IndexPackageAccess for IndexPackageAccessImpl
         }))
     }
 
-    fn check_impacts(&self, impacts: &dyn crate::index::Impacts, max: i32) -> Result<()> {
+    fn check_impacts(&self, impacts: &mut dyn crate::index::Impacts, max: i32) -> Result<()> {
         crate::index::check_index::check_impacts(impacts, max)
     }
 }

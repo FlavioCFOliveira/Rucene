@@ -57,8 +57,10 @@ pub struct OrdToDocDISIReaderConfiguration {
     pub docs_with_field_length: i64,
     /// See `OrdToDocDISIReaderConfiguration`.
     pub dense_rank_power: i8,
-    /// See `OrdToDocDISIReaderConfiguration`.
-    pub meta: DirectMonotonicMeta,
+    /// See `OrdToDocDISIReaderConfiguration`. Shared by reference, as Java's
+    /// `meta` field is with every reader built over it
+    /// (`OrdToDocDISIReaderConfiguration.java:138, 211`).
+    pub meta: Arc<DirectMonotonicMeta>,
 }
 
 impl std::fmt::Debug for OrdToDocDISIReaderConfiguration {
@@ -80,14 +82,7 @@ impl Clone for OrdToDocDISIReaderConfiguration {
             docs_with_field_offset: self.docs_with_field_offset,
             docs_with_field_length: self.docs_with_field_length,
             dense_rank_power: self.dense_rank_power,
-            meta: DirectMonotonicMeta {
-                block_shift: self.meta.block_shift,
-                num_blocks: self.meta.num_blocks,
-                mins: self.meta.mins.clone(),
-                avgs: self.meta.avgs.clone(),
-                offsets: self.meta.offsets.clone(),
-                bpvs: self.meta.bpvs.clone(),
-            },
+            meta: Arc::clone(&self.meta),
         }
     }
 }
@@ -193,6 +188,7 @@ impl OrdToDocDISIReaderConfiguration {
             meta = DirectMonotonicMeta::load(input, size as i64, block_shift)?;
             addresses_length = input.read_long()?;
         }
+        let meta = Arc::new(meta);
 
         Ok(Self {
             size,
@@ -257,7 +253,7 @@ impl OrdToDocDISIReaderConfiguration {
         let addresses_data: Box<dyn RandomAccessInput> =
             data_in.random_access_slice(self.addresses_offset, self.addresses_length)?;
         Ok(Arc::new(DirectMonotonicReader::with_random_access(
-            self.meta.clone(),
+            Arc::clone(&self.meta),
             crate::util::packed::shared_random_access_input(addresses_data),
         )?))
     }

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::error::{LuceneError, Result};
 use crate::index::TermStates;
 use crate::index::{
-    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsSource, LeafReaderContext, NumericDocValues,
-    SlowImpactsEnum, Term, POSTINGS_ENUM_FREQS,
+    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsRef, ImpactsSource, LeafReaderContext,
+    NumericDocValues, SlowImpactsEnum, Term, POSTINGS_ENUM_FREQS,
 };
 use crate::search::boolean_clause::Occur;
 use crate::search::boolean_query::Builder as BooleanQueryBuilder;
@@ -1068,8 +1068,15 @@ impl ImpactsSource for SynonymImpactsSource {
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
-        let mut impacts: Vec<Box<dyn Impacts>> = Vec::with_capacity(self.impacts_enums.len());
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
+        // The doc IDs are read before the views are taken: a shared enum's
+        // view holds its `RefCell` borrow.
+        let doc_ids: Vec<i32> = self
+            .impacts_enums
+            .iter()
+            .map(DocIdSetIterator::doc_id)
+            .collect();
+        let mut impacts: Vec<ImpactsRef<'_>> = Vec::with_capacity(self.impacts_enums.len());
         // Use the impacts that have the lower next boundary as a lead; it
         // decides on the number of levels and the block boundaries.
         let mut lead_index = 0usize;
@@ -1082,27 +1089,24 @@ impl ImpactsSource for SynonymImpactsSource {
                 lead_set = true;
             }
         }
-        let doc_ids: Vec<i32> = self
-            .impacts_enums
-            .iter()
-            .map(DocIdSetIterator::doc_id)
-            .collect();
-        Ok(Box::new(SynonymImpacts {
+        Ok(ImpactsRef::Owned(Box::new(SynonymImpacts {
             impacts,
             lead_index,
-            boosts: self.boosts.clone(),
+            boosts: &self.boosts,
             doc_ids,
-        }))
+            merged_impacts: FreqAndNormBuffer::new(),
+        })))
     }
 }
 
 /// The merged view of the impacts of several synonyms.
 ///
-/// Equivalent to the anonymous `Impacts` of `SynonymQuery.mergeImpacts`.
-struct SynonymImpacts {
-    impacts: Vec<Box<dyn Impacts>>,
+/// Equivalent to the anonymous `Impacts` of `SynonymQuery.mergeImpacts`, which
+/// reads the synonyms' views and the source's `boosts`.
+struct SynonymImpacts<'a> {
+    impacts: Vec<ImpactsRef<'a>>,
     lead_index: usize,
-    boosts: Vec<f32>,
+    boosts: &'a [f32],
     /// The doc ID of each impacts enum, read when the impacts were taken.
     ///
     /// **Divergence from Lucene 10.5.0.** Java reads `impactsEnums[i].docID()`
@@ -1111,14 +1115,19 @@ struct SynonymImpacts {
     /// when `getImpacts()` builds it, and nothing advances the enums in
     /// between.
     doc_ids: Vec<i32>,
+    /// The buffer the last [`Impacts::get_impacts`] call merged or boosted
+    /// into. Java builds a `new FreqAndNormBuffer()` per call; the previous
+    /// one cannot be read once the next call is made (the borrow forbids it),
+    /// so one buffer serves them all.
+    merged_impacts: FreqAndNormBuffer,
 }
 
 /// One synonym's impact list, walked in parallel with the others.
 ///
 /// Equivalent to the static nested `SubIterator` of
 /// `SynonymQuery.mergeImpacts`.
-struct SubIterator {
-    buffer: FreqAndNormBuffer,
+struct SubIterator<'b> {
+    buffer: &'b FreqAndNormBuffer,
     index: usize,
     previous_freq: i32,
     freq: i32,
@@ -1126,8 +1135,8 @@ struct SubIterator {
     exhausted: bool,
 }
 
-impl SubIterator {
-    fn new(buffer: FreqAndNormBuffer) -> Self {
+impl<'b> SubIterator<'b> {
+    fn new(buffer: &'b FreqAndNormBuffer) -> Self {
         let mut it = Self {
             buffer,
             index: 0,
@@ -1159,12 +1168,12 @@ impl SubIterator {
 /// `SynonymQuery.mergeImpacts`; see
 /// [`ExactPhraseMatcher`](crate::search::ExactPhraseMatcher) for why the heap
 /// is local rather than [`crate::util::PriorityQueue`].
-struct SubIteratorQueue {
-    heap: Vec<Option<SubIterator>>,
+struct SubIteratorQueue<'b> {
+    heap: Vec<Option<SubIterator<'b>>>,
     size: usize,
 }
 
-impl SubIteratorQueue {
+impl<'b> SubIteratorQueue<'b> {
     fn new(max_size: usize) -> Self {
         let heap_size = if max_size == 0 { 2 } else { max_size + 1 };
         Self {
@@ -1183,20 +1192,20 @@ impl SubIteratorQueue {
         (a.norm as u64) < (b.norm as u64)
     }
 
-    fn add(&mut self, element: SubIterator) {
+    fn add(&mut self, element: SubIterator<'b>) {
         let index = self.size + 1;
         self.heap[index] = Some(element);
         self.size = index;
         self.up_heap(index);
     }
 
-    fn top(&self) -> &SubIterator {
+    fn top(&self) -> &SubIterator<'b> {
         self.heap[1]
             .as_ref()
             .expect("INVARIANT: the queue is not empty while merging impacts")
     }
 
-    fn top_mut(&mut self) -> &mut SubIterator {
+    fn top_mut(&mut self) -> &mut SubIterator<'b> {
         self.heap[1]
             .as_mut()
             .expect("INVARIANT: the queue is not empty while merging impacts")
@@ -1254,7 +1263,7 @@ impl SubIteratorQueue {
     }
 }
 
-impl SynonymImpacts {
+impl SynonymImpacts<'_> {
     /// Returns the minimum level whose impacts are valid up to `doc_id_up_to`,
     /// or `-1` if there is no such level.
     ///
@@ -1269,7 +1278,7 @@ impl SynonymImpacts {
     }
 }
 
-impl Impacts for SynonymImpacts {
+impl Impacts for SynonymImpacts<'_> {
     fn num_levels(&self) -> i32 {
         // Delegate to the lead.
         self.impacts[self.lead_index].num_levels()
@@ -1280,15 +1289,26 @@ impl Impacts for SynonymImpacts {
         self.impacts[self.lead_index].doc_id_up_to(level)
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         let doc_id_up_to = self.doc_id_up_to(level);
+        let Self {
+            impacts,
+            boosts,
+            doc_ids,
+            merged_impacts,
+            ..
+        } = self;
+        let num_impacts = impacts.len();
 
-        let mut to_merge: Vec<FreqAndNormBuffer> = Vec::new();
-        let mut merged_impacts = FreqAndNormBuffer::new();
+        // A boosted copy is Java's `new FreqAndNormBuffer()`; an unboosted
+        // list is the synonym's own buffer.
+        let mut to_merge: Vec<std::borrow::Cow<'_, FreqAndNormBuffer>> = Vec::new();
 
-        for i in 0..self.impacts.len() {
-            if self.doc_ids[i] <= doc_id_up_to {
-                let impacts_level = Self::get_level(&*self.impacts[i], doc_id_up_to);
+        for ((impacts, &doc_id), &boost) in
+            impacts.iter_mut().zip(doc_ids.iter()).zip(boosts.iter())
+        {
+            if doc_id <= doc_id_up_to {
+                let impacts_level = Self::get_level(&**impacts, doc_id_up_to);
                 if impacts_level == -1 {
                     // One instance does not have impacts that cover up to
                     // `doc_id_up_to`; return impacts that trigger the maximum
@@ -1299,20 +1319,19 @@ impl Impacts for SynonymImpacts {
                     merged_impacts.size = 1;
                     return merged_impacts;
                 }
-                let impact_list = if self.boosts[i] != 1.0 {
-                    let unboosted = self.impacts[i].get_impacts(impacts_level);
+                let impact_list = if boost != 1.0 {
+                    let unboosted = impacts.get_impacts(impacts_level);
                     let mut boosted = FreqAndNormBuffer::new();
                     boosted.grow_no_copy(unboosted.size);
                     boosted.size = unboosted.size;
                     boosted.norms[..unboosted.size]
                         .copy_from_slice(&unboosted.norms[..unboosted.size]);
-                    let boost = self.boosts[i];
                     for j in 0..unboosted.size {
                         boosted.freqs[j] = (unboosted.freqs[j] as f32 * boost).ceil() as i32;
                     }
-                    boosted
+                    std::borrow::Cow::Owned(boosted)
                 } else {
-                    self.impacts[i].get_impacts(impacts_level)
+                    std::borrow::Cow::Borrowed(impacts.get_impacts(impacts_level))
                 };
                 to_merge.push(impact_list);
             }
@@ -1323,11 +1342,19 @@ impl Impacts for SynonymImpacts {
 
         if to_merge.len() == 1 {
             // Common when one synonym is common and the other one is rare.
-            return to_merge.remove(0);
+            return match to_merge.remove(0) {
+                std::borrow::Cow::Borrowed(impact_list) => impact_list,
+                std::borrow::Cow::Owned(boosted) => {
+                    *merged_impacts = boosted;
+                    merged_impacts
+                }
+            };
         }
 
-        let mut pq = SubIteratorQueue::new(self.impacts.len().max(to_merge.len()));
-        for impacts in to_merge {
+        // Java's `new FreqAndNormBuffer()` for the merge.
+        merged_impacts.size = 0;
+        let mut pq = SubIteratorQueue::new(num_impacts.max(to_merge.len()));
+        for impacts in &to_merge {
             pq.add(SubIterator::new(impacts));
         }
 

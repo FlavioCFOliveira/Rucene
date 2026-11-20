@@ -4212,7 +4212,7 @@ mod tests {
         it.next().unwrap().expect("alpha");
 
         let mut impacts = it.impacts(POSTINGS_ENUM_POSITIONS).unwrap();
-        let read = impacts.get_impacts().unwrap();
+        let mut read = impacts.get_impacts().unwrap();
         assert_eq!(read.num_levels(), 1);
         assert_eq!(read.doc_id_up_to(0), NO_MORE_DOCS);
         let buffer = read.get_impacts(0);
@@ -4220,6 +4220,7 @@ mod tests {
             (buffer.size, buffer.freqs[0], buffer.norms[0]),
             (1, i32::MAX, 1)
         );
+        drop(read);
         assert_eq!(
             impacts.freq().unwrap_err().to_string(),
             "illegal state: DocsEnum not started"

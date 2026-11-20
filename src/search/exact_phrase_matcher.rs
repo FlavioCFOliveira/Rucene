@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::Result;
-use crate::index::{FreqAndNormBuffer, Impacts, ImpactsSource};
+use crate::index::{FreqAndNormBuffer, Impacts, ImpactsRef, ImpactsSource};
 use crate::search::conjunction_utils::ConjunctionUtils;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::impacts_disi::ImpactsDISI;
@@ -295,41 +295,48 @@ impl ImpactsSource for MergedImpactsSource {
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         let mut impacts = Vec::with_capacity(self.impacts_enums.len());
         for impacts_enum in &mut self.impacts_enums {
             impacts.push(impacts_enum.get_impacts()?);
         }
-        Ok(Box::new(MergedImpacts {
+        // `mergedImpacts.growNoCopy(1)` (`ExactPhraseMatcher.java:253-257`).
+        let mut merged_impacts = FreqAndNormBuffer::new();
+        merged_impacts.grow_no_copy(1);
+        Ok(ImpactsRef::Owned(Box::new(MergedImpacts {
             impacts,
             lead_index: self.lead_index,
-        }))
+            merged_impacts,
+        })))
     }
 }
 
 /// The merged view of the impacts of every phrase term.
 ///
 /// Equivalent to the anonymous `Impacts` of
-/// `ExactPhraseMatcher.mergeImpacts`.
-struct MergedImpacts {
-    impacts: Vec<Box<dyn Impacts>>,
+/// `ExactPhraseMatcher.mergeImpacts`, which reads the terms' views.
+struct MergedImpacts<'a> {
+    impacts: Vec<ImpactsRef<'a>>,
     lead_index: usize,
+    /// Java's `mergedImpacts` field, refilled by every
+    /// [`Impacts::get_impacts`] call that merges.
+    merged_impacts: FreqAndNormBuffer,
 }
 
 /// One term's impact list, walked in parallel with the others.
 ///
 /// Equivalent to the static nested `SubIterator` of
 /// `ExactPhraseMatcher.mergeImpacts`.
-struct SubIterator {
-    buffer: FreqAndNormBuffer,
+struct SubIterator<'b> {
+    buffer: &'b FreqAndNormBuffer,
     index: usize,
     freq: i32,
     norm: i64,
     exhausted: bool,
 }
 
-impl SubIterator {
-    fn new(buffer: FreqAndNormBuffer) -> Self {
+impl<'b> SubIterator<'b> {
+    fn new(buffer: &'b FreqAndNormBuffer) -> Self {
         let mut it = Self {
             buffer,
             index: 0,
@@ -363,12 +370,12 @@ impl SubIterator {
 /// shared queue cannot express: its `top()` hands out a shared reference.
 /// `up_heap` and `down_heap` reproduce `org.apache.lucene.util.PriorityQueue`
 /// exactly.
-struct SubIteratorQueue {
-    heap: Vec<Option<SubIterator>>,
+struct SubIteratorQueue<'b> {
+    heap: Vec<Option<SubIterator<'b>>>,
     size: usize,
 }
 
-impl SubIteratorQueue {
+impl<'b> SubIteratorQueue<'b> {
     fn new(max_size: usize) -> Self {
         let heap_size = if max_size == 0 { 2 } else { max_size + 1 };
         Self {
@@ -381,26 +388,26 @@ impl SubIteratorQueue {
         a.freq < b.freq
     }
 
-    fn add(&mut self, element: SubIterator) {
+    fn add(&mut self, element: SubIterator<'b>) {
         let index = self.size + 1;
         self.heap[index] = Some(element);
         self.size = index;
         self.up_heap(index);
     }
 
-    fn top(&self) -> &SubIterator {
+    fn top(&self) -> &SubIterator<'b> {
         self.heap[1]
             .as_ref()
             .expect("INVARIANT: the queue is not empty while merging impacts")
     }
 
-    fn top_mut(&mut self) -> &mut SubIterator {
+    fn top_mut(&mut self) -> &mut SubIterator<'b> {
         self.heap[1]
             .as_mut()
             .expect("INVARIANT: the queue is not empty while merging impacts")
     }
 
-    fn iter(&self) -> impl Iterator<Item = &SubIterator> {
+    fn iter(&self) -> impl Iterator<Item = &SubIterator<'b>> {
         self.heap[1..=self.size].iter().filter_map(|s| s.as_ref())
     }
 
@@ -456,7 +463,7 @@ impl SubIteratorQueue {
     }
 }
 
-impl MergedImpacts {
+impl MergedImpacts<'_> {
     /// Returns the minimum level whose impacts are valid up to `doc_id_up_to`,
     /// or `-1` if there is no such level.
     ///
@@ -471,7 +478,7 @@ impl MergedImpacts {
     }
 }
 
-impl Impacts for MergedImpacts {
+impl Impacts for MergedImpacts<'_> {
     fn num_levels(&self) -> i32 {
         // Delegate to the lead.
         self.impacts[self.lead_index].num_levels()
@@ -482,15 +489,18 @@ impl Impacts for MergedImpacts {
         self.impacts[self.lead_index].doc_id_up_to(level)
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         let doc_id_up_to = self.doc_id_up_to(level);
-        let mut merged_impacts = FreqAndNormBuffer::new();
-        merged_impacts.grow_no_copy(1);
+        let Self {
+            impacts,
+            merged_impacts,
+            ..
+        } = self;
 
         let mut has_impacts = false;
-        let mut only_impact_list: Option<FreqAndNormBuffer> = None;
-        let mut sub_iterators: Vec<SubIterator> = Vec::with_capacity(self.impacts.len());
-        for impacts in &self.impacts {
+        let mut only_impact_list: Option<&FreqAndNormBuffer> = None;
+        let mut sub_iterators: Vec<SubIterator<'_>> = Vec::with_capacity(impacts.len());
+        for impacts in impacts.iter_mut() {
             let impacts_level = Self::get_level(&**impacts, doc_id_up_to);
             if impacts_level == -1 {
                 // This instance does not have useful impacts; ignoring it is
@@ -507,7 +517,7 @@ impl Impacts for MergedImpacts {
 
             if !has_impacts {
                 has_impacts = true;
-                only_impact_list = Some(impact_list.clone());
+                only_impact_list = Some(impact_list);
             } else {
                 // There are multiple impacts.
                 only_impact_list = None;

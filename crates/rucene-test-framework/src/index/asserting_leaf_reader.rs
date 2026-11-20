@@ -48,7 +48,7 @@ use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::index::DocAndFloatFeatureBuffer;
 use rucene::index::{
     BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, Fields, FreqAndNormBuffer,
-    Impacts, ImpactsEnum, ImpactsSource, IntersectVisitor, NumericDocValues, PointTree,
+    Impacts, ImpactsEnum, ImpactsRef, ImpactsSource, IntersectVisitor, NumericDocValues, PointTree,
     PointValues, PostingsEnum, Relation, SeekStatus, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues, TermState, Terms, TermsEnum, POSTINGS_ENUM_FREQS,
 };
@@ -996,20 +996,24 @@ impl ImpactsSource for AssertingImpactsEnum {
         self.asserting_postings.unwrap_mut().advance_shallow(target)
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         java_assert!(
             self.doc_id() >= 0 || self.last_shallow_target >= 0,
             "Cannot get impacts until the iterator is positioned or advanceShallow has been called"
         );
-        let impacts = self.asserting_postings.unwrap_mut().get_impacts()?;
+        // `Math.max(docID(), lastShallowTarget)`, read before the delegate's
+        // view borrows it: `getImpacts()` does not move the enum.
         let valid_for = self.doc_id().max(self.last_shallow_target);
-        rucene::index::check_index::check_impacts(impacts.as_ref(), valid_for)?;
-        Ok(Box::new(AssertingImpacts {
+        let position = Arc::clone(&self.position);
+        let creation_thread = self.asserting_postings.creation_thread.clone();
+        let mut impacts = self.asserting_postings.unwrap_mut().get_impacts()?;
+        rucene::index::check_index::check_impacts(&mut *impacts, valid_for)?;
+        Ok(ImpactsRef::Owned(Box::new(AssertingImpacts {
             r#in: impacts,
-            position: Arc::clone(&self.position),
+            position,
             valid_for,
-            creation_thread: self.asserting_postings.creation_thread.clone(),
-        }))
+            creation_thread,
+        })))
     }
 }
 
@@ -1094,17 +1098,17 @@ impl ImpactsEnum for AssertingImpactsEnum {}
 /// **Divergence** (declared): `AssertingPostingsEnum.docID()` also asserts
 /// `doc == in.docID()` against the enum's delegate
 /// (`AssertingLeafReader.java:529-534`), which these impacts cannot reach: the
-/// enum owns its delegate, and the impacts outlive the `&mut` borrow they are
-/// handed out under. That check runs at the enum's own next `docID()`.
-struct AssertingImpacts {
-    r#in: Box<dyn Impacts>,
+/// enum owns its delegate, and the impacts hold the delegate's view, a `&mut`
+/// borrow of it. That check runs at the enum's own next `docID()`.
+struct AssertingImpacts<'a> {
+    r#in: ImpactsRef<'a>,
     position: Arc<AtomicI32>,
     valid_for: i32,
     /// The creating thread of the enum's `AssertingPostingsEnum`.
     creation_thread: Thread,
 }
 
-impl AssertingImpacts {
+impl AssertingImpacts<'_> {
     fn assert_valid_for(&self) {
         // `impactsEnum.docID()` runs inside the `assert`, under `-ea` only.
         if cfg!(debug_assertions) {
@@ -1117,7 +1121,7 @@ impl AssertingImpacts {
     }
 }
 
-impl Impacts for AssertingImpacts {
+impl Impacts for AssertingImpacts<'_> {
     fn num_levels(&self) -> i32 {
         self.assert_valid_for();
         self.r#in.num_levels()
@@ -1128,7 +1132,7 @@ impl Impacts for AssertingImpacts {
         self.r#in.doc_id_up_to(level)
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         self.assert_valid_for();
         let impacts = self.r#in.get_impacts(level);
         java_assert_unchecked!(impacts.size > 0);
@@ -3071,7 +3075,7 @@ mod tests {
     }
 
     /// One level of impacts.
-    struct OneLevel;
+    struct OneLevel(FreqAndNormBuffer);
 
     impl Impacts for OneLevel {
         fn num_levels(&self) -> i32 {
@@ -3080,10 +3084,10 @@ mod tests {
         fn doc_id_up_to(&self, _level: i32) -> i32 {
             NO_MORE_DOCS
         }
-        fn get_impacts(&self, _level: i32) -> FreqAndNormBuffer {
-            let mut buffer = FreqAndNormBuffer::new();
-            buffer.add(1, 1);
-            buffer
+        fn get_impacts(&mut self, _level: i32) -> &FreqAndNormBuffer {
+            self.0.size = 0;
+            self.0.add(1, 1);
+            &self.0
         }
     }
 
@@ -3095,7 +3099,7 @@ mod tests {
             .join()
             .expect("the other thread");
         let impacts = AssertingImpacts {
-            r#in: Box::new(OneLevel),
+            r#in: ImpactsRef::Owned(Box::new(OneLevel(FreqAndNormBuffer::new()))),
             position: Arc::new(AtomicI32::new(3)),
             valid_for: 3,
             creation_thread: other,

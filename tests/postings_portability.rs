@@ -230,14 +230,14 @@ const IMPACT_TARGETS: [i32; 22] = [
 
 /// `PostingsSkipFixture.describe(Impacts)`: `level:docIdUpTo:freq/norm,...`
 /// per level.
-fn describe_impacts(impacts: &dyn rucene::index::Impacts) -> String {
+fn describe_impacts(impacts: &mut dyn rucene::index::Impacts) -> String {
     let mut out = String::new();
     for level in 0..impacts.num_levels() {
-        let buffer = impacts.get_impacts(level);
         if level > 0 {
             out.push(' ');
         }
         out.push_str(&format!("{level}:{}:", impacts.doc_id_up_to(level)));
+        let buffer = impacts.get_impacts(level);
         for k in 0..buffer.size {
             if k > 0 {
                 out.push(',');
@@ -273,7 +273,7 @@ fn impacts_of_each_level_match_lucene() {
         impacts.advance_shallow(target).unwrap();
         rust.push(format!(
             "{target} {}",
-            describe_impacts(impacts.get_impacts().unwrap().as_ref())
+            describe_impacts(&mut *impacts.get_impacts().unwrap())
         ));
     }
     let java: Vec<String> = java_lines("impacts")

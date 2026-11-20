@@ -179,6 +179,7 @@ impl SharedSkipReader {
     pub(crate) fn get_impacts(&self) -> SimpleTextImpacts {
         SimpleTextImpacts {
             reader: self.clone(),
+            buffer: FreqAndNormBuffer::new(),
         }
     }
 
@@ -197,6 +198,9 @@ impl SharedSkipReader {
 /// reader's current state.
 pub(crate) struct SimpleTextImpacts {
     reader: SharedSkipReader,
+    /// The copy of the reader's buffer the last
+    /// [`Impacts::get_impacts`] call returned.
+    buffer: FreqAndNormBuffer,
 }
 
 impl Impacts for SimpleTextImpacts {
@@ -208,12 +212,14 @@ impl Impacts for SimpleTextImpacts {
         self.reader.lock().inner.skip_doc(level)
     }
 
-    /// Java returns the reader's `FreqAndNormBuffer` itself; the port's
-    /// `Impacts::get_impacts` returns an owned buffer, a copy of it.
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    /// Java returns the reader's `FreqAndNormBuffer` itself; the reader is
+    /// shared behind a lock here, which a returned borrow cannot outlive, so
+    /// the view returns a copy of it, held until the next call.
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         let reader = self.reader.lock();
         debug_assert!(level < reader.num_levels);
-        reader.inner.skip_data_reader().per_level_impacts[level as usize].clone()
+        self.buffer = reader.inner.skip_data_reader().per_level_impacts[level as usize].clone();
+        &self.buffer
     }
 }
 

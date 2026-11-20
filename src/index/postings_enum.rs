@@ -190,7 +190,68 @@ pub trait ImpactsSource {
     fn advance_shallow(&mut self, target: i32) -> Result<()>;
 
     /// Returns information about upcoming impacts.
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>>;
+    ///
+    /// Java's `getImpacts()` returns either a view the source keeps as a field
+    /// (`Lucene104PostingsReader.BlockPostingsEnum.impacts`,
+    /// `Lucene104PostingsReader.java:1353-1408`) or a `new Impacts()` built by
+    /// the call (`SlowImpactsEnum.java:85-88`, `ExactPhraseMatcher.java:245-251`,
+    /// `SynonymQuery.java:441-453`); [`ImpactsRef`] carries either. The view
+    /// borrows the source, so the source cannot move while it is read, which
+    /// is Java's contract: the impacts are only valid until the source is
+    /// advanced.
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>>;
+}
+
+/// The [`Impacts`] an [`ImpactsSource::get_impacts`] call returns.
+///
+/// Java returns an `Impacts` reference, which is either a field of the source
+/// or a new object; Rust names the two cases. Both dereference to the view.
+pub enum ImpactsRef<'a> {
+    /// A view the source owns and lends: Java's `return impacts;` of a field
+    /// (`Lucene104PostingsReader.java:1353-1408`).
+    Borrowed(&'a mut (dyn Impacts + 'static)),
+    /// A view built by the call: Java's `return new Impacts() { ... }`. It may
+    /// borrow the source, as Java's anonymous classes read its fields.
+    Owned(Box<dyn Impacts + 'a>),
+    /// A view a source shared through a `RefCell` lends, held with the
+    /// `RefCell`'s borrow: the
+    /// [`SharedPostings`](crate::search::phrase_matcher::SharedPostings)
+    /// divergence (Java hands one `ImpactsEnum` object to several
+    /// collaborators), with the view of the shared enum itself.
+    Guarded(std::cell::RefMut<'a, dyn Impacts + 'static>),
+}
+
+impl std::fmt::Debug for ImpactsRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            Self::Borrowed(_) => "Borrowed",
+            Self::Owned(_) => "Owned",
+            Self::Guarded(_) => "Guarded",
+        };
+        f.debug_tuple("ImpactsRef").field(&kind).finish()
+    }
+}
+
+impl<'a> std::ops::Deref for ImpactsRef<'a> {
+    type Target = dyn Impacts + 'a;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(view) => &**view,
+            Self::Owned(view) => &**view,
+            Self::Guarded(view) => &**view,
+        }
+    }
+}
+
+impl std::ops::DerefMut for ImpactsRef<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Self::Borrowed(view) => &mut **view,
+            Self::Owned(view) => &mut **view,
+            Self::Guarded(view) => &mut **view,
+        }
+    }
 }
 
 /// Extension of [`PostingsEnum`] that also exposes impacts.
@@ -210,8 +271,27 @@ pub trait Impacts {
     fn doc_id_up_to(&self, level: i32) -> i32;
 
     /// Returns the impacts at the given level.
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer;
+    ///
+    /// Equivalent to `Impacts.getImpacts(int)`, which returns a buffer the view
+    /// may refill on the next call (`Lucene104PostingsReader.java:1375-1393`
+    /// returns the enum's one `impactBuffer`): the borrow keeps the returned
+    /// buffer valid exactly that long.
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer;
 }
+
+/// The single impact `(Integer.MAX_VALUE, 1L)` the dummy impacts report: the
+/// buffer `SlowImpactsEnum.getImpacts()` (`SlowImpactsEnum.java:85-109`) and
+/// `SloppyPhraseMatcher`'s impacts (`SloppyPhraseMatcher.java:111-131`) build
+/// for every view and fill with that one constant entry.
+///
+/// PERF: one shared, never-written buffer instead of one per view; its content
+/// is the constant every such buffer holds.
+pub(crate) static DUMMY_IMPACT: std::sync::LazyLock<FreqAndNormBuffer> =
+    std::sync::LazyLock::new(|| {
+        let mut buffer = FreqAndNormBuffer::new();
+        buffer.add(i32::MAX, 1);
+        buffer
+    });
 
 /// Buffer of term frequencies paired with length-normalization factors.
 ///

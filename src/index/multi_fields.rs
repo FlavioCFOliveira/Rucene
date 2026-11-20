@@ -44,7 +44,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::error::{LuceneError, Result};
 use crate::index::leaf_reader::LeafReader;
-use crate::index::postings_enum::{Impacts, ImpactsEnum, ImpactsSource, PostingsEnum};
+use crate::index::postings_enum::{
+    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsRef, ImpactsSource, PostingsEnum,
+};
 use crate::index::reader_context::LeafReaderContext;
 use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, Terms, TermsEnum};
 use crate::index::terms_enum_index::TermsEnumIndex;
@@ -1868,6 +1870,9 @@ impl SlowImpactsEnum {
     }
 }
 
+/// The `new Impacts()` `SlowImpactsEnum.getImpacts()` builds per call
+/// (`SlowImpactsEnum.java:85-109`); its buffer always holds the one dummy
+/// impact, [`DUMMY_IMPACT`](crate::index::postings_enum::DUMMY_IMPACT).
 struct SlowImpacts;
 
 impl SlowImpacts {
@@ -1935,8 +1940,8 @@ impl ImpactsSource for SlowImpactsEnum {
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
-        Ok(Box::new(SlowImpacts::new()))
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
+        Ok(ImpactsRef::Owned(Box::new(SlowImpacts::new())))
     }
 }
 
@@ -1951,10 +1956,10 @@ impl Impacts for SlowImpacts {
         crate::search::NO_MORE_DOCS
     }
 
-    fn get_impacts(&self, _level: i32) -> crate::index::postings_enum::FreqAndNormBuffer {
-        let mut buf = crate::index::postings_enum::FreqAndNormBuffer::new();
-        buf.add(i32::MAX, 1);
-        buf
+    fn get_impacts(&mut self, _level: i32) -> &FreqAndNormBuffer {
+        // `impacts.freqs[0] = Integer.MAX_VALUE; impacts.norms[0] = 1L;
+        // impacts.size = 1;` (`SlowImpactsEnum.java:104-108`).
+        &crate::index::postings_enum::DUMMY_IMPACT
     }
 }
 

@@ -2341,7 +2341,7 @@ fn check_doc_id_runs<I: DocIdSetIterator + ?Sized>(iterator: &mut I) -> Result<(
 ///
 /// Returns [`LuceneErrorKind::CheckIndex`] when the impacts are missing, out of
 /// order, duplicated, or fail to dominate the level below.
-pub fn check_impacts(impacts: &dyn Impacts, last_target: i32) -> Result<()> {
+pub fn check_impacts(impacts: &mut dyn Impacts, last_target: i32) -> Result<()> {
     let num_levels = impacts.num_levels();
     if num_levels < 1 {
         return Err(check_index_error(format!(
@@ -2408,14 +2408,17 @@ pub fn check_impacts(impacts: &dyn Impacts, last_target: i32) -> Result<()> {
 
         if impacts_level > 0 {
             // Impacts at level N must trigger better scores than at level N-1.
+            // Both levels may be served from one buffer, so each is copied
+            // before the other is read (`ArrayUtil.copyOfSubArray`,
+            // `CheckIndex.java:2579-2586`).
             let size = per_level_impacts.size;
-            let freqs = &per_level_impacts.freqs[..size];
-            let norms = &per_level_impacts.norms[..size];
+            let freqs = per_level_impacts.freqs[..size].to_vec();
+            let norms = per_level_impacts.norms[..size].to_vec();
 
             let prev_level_impacts = impacts.get_impacts(impacts_level - 1);
             let prev_size = prev_level_impacts.size;
-            let prev_freqs = &prev_level_impacts.freqs[..prev_size];
-            let prev_norms = &prev_level_impacts.norms[..prev_size];
+            let prev_freqs = prev_level_impacts.freqs[..prev_size].to_vec();
+            let prev_norms = prev_level_impacts.norms[..prev_size].to_vec();
 
             let mut prev_index = 0usize;
             let mut freq = freqs[0];
@@ -3960,8 +3963,8 @@ fn check_fields(
                         }
                         if doc > max {
                             impacts_enum.advance_shallow(doc)?;
-                            let impacts = impacts_enum.get_impacts()?;
-                            check_impacts(impacts.as_ref(), doc)?;
+                            let mut impacts = impacts_enum.get_impacts()?;
+                            check_impacts(&mut *impacts, doc)?;
                             max = impacts.doc_id_up_to(0);
                             let impacts0 = impacts.get_impacts(0);
                             max_freq = impacts0.freqs[impacts0.size - 1];
@@ -4008,8 +4011,8 @@ fn check_fields(
                             .min(NO_MORE_DOCS.wrapping_sub(target));
                         max = target.wrapping_add(delta);
                         impacts_enum.advance_shallow(target)?;
-                        let impacts = impacts_enum.get_impacts()?;
-                        check_impacts(impacts.as_ref(), doc)?;
+                        let mut impacts = impacts_enum.get_impacts()?;
+                        check_impacts(&mut *impacts, doc)?;
                         max_freq = i32::MAX;
                         for impacts_level in 0..impacts.num_levels() {
                             if impacts.doc_id_up_to(impacts_level) >= max {
@@ -4048,8 +4051,8 @@ fn check_fields(
                             .min(NO_MORE_DOCS - doc);
                         max = doc + delta;
                         impacts_enum.advance_shallow(doc)?;
-                        let impacts = impacts_enum.get_impacts()?;
-                        check_impacts(impacts.as_ref(), doc)?;
+                        let mut impacts = impacts_enum.get_impacts()?;
+                        check_impacts(&mut *impacts, doc)?;
                         max_freq = i32::MAX;
                         for impacts_level in 0..impacts.num_levels() {
                             if impacts.doc_id_up_to(impacts_level) >= max {
@@ -6107,6 +6110,12 @@ pub fn test_term_vectors(
         };
         let mut vectors_reader = vectors_reader.get_merge_instance()?;
 
+        // `PostingsEnum postings = null;` and `PostingsEnum postingsDocs = null;`
+        // (`CheckIndex.java:3966, 3969`): one of each for the whole check,
+        // handed back to every `postings(reuse, flags)` call of the slow
+        // cross-check (`:4052, 4073`).
+        let mut reuse = CrossCheckReuse::default();
+
         for j in 0..reader.max_doc() {
             if (j & 0x03) == 0 {
                 vectors_reader.prefetch(j)?;
@@ -6161,6 +6170,7 @@ pub fn test_term_vectors(
                     field_info,
                     &field,
                     j,
+                    &mut reuse,
                 )?;
             }
         }
@@ -6202,6 +6212,20 @@ pub fn test_term_vectors(
     Ok(status)
 }
 
+/// The state `CheckIndex.testTermVectors` keeps across documents and fields
+/// for its slow cross-check: the two postings enums it reuses
+/// (`CheckIndex.java:3966, 3969`), and the copy of the current term this port
+/// needs (see [`cross_check_vector_field_against_postings`]).
+#[derive(Default)]
+struct CrossCheckReuse {
+    /// Java's `postings`: the term vector's own postings.
+    postings: Option<Box<dyn PostingsEnum>>,
+    /// Java's `postingsDocs`: the inverted index's postings.
+    postings_docs: Option<Box<dyn PostingsEnum>>,
+    /// The current term of the term vector's enum.
+    term: BytesRef,
+}
+
 /// Checks that one document's term vectors for one field agree with the
 /// inverted index.
 ///
@@ -6215,6 +6239,7 @@ fn cross_check_vector_field_against_postings(
     field_info: &FieldInfo,
     field: &str,
     doc: i32,
+    reuse: &mut CrossCheckReuse,
 ) -> Result<()> {
     // `Terms terms = tfv.terms(field); TermsEnum termsEnum = terms.iterator();`
     // (`CheckIndex.java:4028-4029`): a vector field the vectors list but whose
@@ -6245,13 +6270,24 @@ fn cross_check_vector_field_against_postings(
 
     let mut seek_exact_counter = 0i32;
 
+    let CrossCheckReuse {
+        postings: postings_reuse,
+        postings_docs: postings_docs_reuse,
+        term,
+    } = reuse;
     // The term is copied: it is still read after `postings` moves the enum's
-    // borrow on (Java keeps the enum's own `BytesRef`).
-    while let Some(term) = terms_enum.next()?.cloned() {
-        // This is the term vector's own postings.
-        let postings = terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+    // borrow on (Java keeps the enum's own `BytesRef`). PERF: into one buffer
+    // for the whole check, which a copy per term allocated.
+    while let Some(next) = terms_enum.next()? {
+        term.bytes.clone_from(&next.bytes);
+        term.offset = next.offset;
+        term.length = next.length;
+        let term = &*term;
+        // This is the term vector's own postings:
+        // `postings = termsEnum.postings(postings, PostingsEnum.ALL)`.
+        let postings = terms_enum.postings(postings_reuse.take(), POSTINGS_ENUM_ALL)?;
         debug_assert!(postings.is_some());
-        let mut postings = postings.ok_or_else(LuceneError::null_pointer)?;
+        let postings = postings_reuse.insert(postings.ok_or_else(LuceneError::null_pointer)?);
 
         // Java alternates every other term between `seekExact(BytesRef)` and
         // `prepareSeekExact(BytesRef)`, so that a codec's deferred-seek path is
@@ -6262,9 +6298,9 @@ fn cross_check_vector_field_against_postings(
             let counter = seek_exact_counter;
             seek_exact_counter += 1;
             if counter & 0x01 == 0 {
-                postings_terms_enum.seek_exact(&term)?
+                postings_terms_enum.seek_exact(term)?
             } else {
-                match postings_terms_enum.prepare_seek_exact(&term)? {
+                match postings_terms_enum.prepare_seek_exact(term)? {
                     Some(mut term_exists_supplier) => term_exists_supplier.get()?,
                     None => false,
                 }
@@ -6276,10 +6312,13 @@ fn cross_check_vector_field_against_postings(
             )));
         }
 
-        // This is the inverted index — the "real" postings.
-        let postings_docs = postings_terms_enum.postings(None, POSTINGS_ENUM_ALL)?;
+        // This is the inverted index — the "real" postings:
+        // `postingsDocs = postingsTermsEnum.postings(postingsDocs, PostingsEnum.ALL)`.
+        let postings_docs =
+            postings_terms_enum.postings(postings_docs_reuse.take(), POSTINGS_ENUM_ALL)?;
         debug_assert!(postings_docs.is_some());
-        let mut postings_docs = postings_docs.ok_or_else(LuceneError::null_pointer)?;
+        let postings_docs =
+            postings_docs_reuse.insert(postings_docs.ok_or_else(LuceneError::null_pointer)?);
         let advance_doc = postings_docs.advance(doc)?;
         if advance_doc != doc {
             return Err(check_index_error(format!(
@@ -6381,6 +6420,86 @@ mod tests {
     use crate::index::point_values::{
         InMemoryPointValues, IntersectVisitor, PointValues, Relation,
     };
+
+    /// `testTermVectors` declares `postings` and `postingsDocs` once
+    /// (`CheckIndex.java:3966, 3969`) and hands them back to every
+    /// `postings(reuse, PostingsEnum.ALL)` of its slow cross-check
+    /// (`:4052, 4073`): the cross-check of the next document reuses the two
+    /// enums the previous one left, rather than building new ones.
+    #[test]
+    fn term_vector_cross_check_reuses_its_two_postings_enums() {
+        use crate::document::{Document, Field, FieldType};
+        use crate::store::{ByteBuffersDirectory, Directory};
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let field_type = FieldType::new();
+        field_type.set_tokenized(true).unwrap();
+        field_type
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        field_type.set_store_term_vectors(true).unwrap();
+        field_type.freeze();
+        for text in ["alpha beta beta", "beta gamma delta", "alpha delta"] {
+            let mut doc = Document::new();
+            doc.add(Field::new("body", text.to_string(), field_type.clone()).unwrap());
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            infos.index_created_version_major(),
+            &*DEFAULT_IO_CONTEXT,
+        )
+        .unwrap();
+        let postings_fields = reader
+            .get_postings_reader()
+            .unwrap()
+            .unwrap()
+            .get_merge_instance()
+            .unwrap();
+        let vectors = reader
+            .get_term_vectors_reader()
+            .unwrap()
+            .unwrap()
+            .get_merge_instance()
+            .unwrap();
+        let field_infos = reader.get_field_infos();
+        let info = field_infos.field_info("body").unwrap();
+
+        fn address(slot: &Option<Box<dyn PostingsEnum>>) -> *const () {
+            slot.as_deref().map_or(std::ptr::null(), |postings| {
+                postings as *const dyn PostingsEnum as *const ()
+            })
+        }
+        let mut reuse = CrossCheckReuse::default();
+        let mut addresses = Vec::new();
+        for doc in 0..3 {
+            let tfv = vectors.get(doc).unwrap().unwrap();
+            cross_check_vector_field_against_postings(
+                tfv.as_ref(),
+                Some(&*postings_fields),
+                info,
+                "body",
+                doc,
+                &mut reuse,
+            )
+            .unwrap();
+            addresses.push((address(&reuse.postings), address(&reuse.postings_docs)));
+        }
+        assert!(!addresses[0].0.is_null() && !addresses[0].1.is_null());
+        assert_eq!(
+            addresses[1], addresses[0],
+            "the second document reuses both enums"
+        );
+        assert_eq!(
+            addresses[2], addresses[0],
+            "the third document reuses both enums"
+        );
+    }
 
     /// `CheckIndex.bitsCardinality` counts the set bits of a `Bits`, 1024 at a
     /// time and none past `length()` (`CheckIndex.java:1312-1326`) — for bits
@@ -6905,9 +7024,15 @@ mod census_gap_tests {
             }
         }
         let info = FieldInfo::new("f", 0);
-        let error =
-            cross_check_vector_field_against_postings(&ListsButHasNoTerms, None, &info, "f", 0)
-                .unwrap_err();
+        let error = cross_check_vector_field_against_postings(
+            &ListsButHasNoTerms,
+            None,
+            &info,
+            "f",
+            0,
+            &mut CrossCheckReuse::default(),
+        )
+        .unwrap_err();
         assert!(
             matches!(
                 error.kind,

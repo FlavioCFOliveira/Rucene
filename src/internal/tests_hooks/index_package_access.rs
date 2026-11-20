@@ -60,7 +60,7 @@ pub trait IndexPackageAccess: Send + Sync + Debug {
     ///
     /// Returns [`crate::LuceneErrorKind::IllegalState`] describing the first
     /// violated invariant. Java raises an `AssertionError` instead.
-    fn check_impacts(&self, impacts: &dyn Impacts, max: i32) -> Result<()>;
+    fn check_impacts(&self, impacts: &mut dyn Impacts, max: i32) -> Result<()>;
 }
 
 /// Public type exposing the internal [`FieldInfos`] builder.

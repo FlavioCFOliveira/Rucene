@@ -1234,15 +1234,19 @@ mod tests {
             Ok(())
         }
 
-        fn get_impacts(&mut self) -> Result<Box<dyn crate::index::Impacts>> {
-            Ok(Box::new(StubImpacts))
+        fn get_impacts(&mut self) -> Result<crate::index::ImpactsRef<'_>> {
+            Ok(crate::index::ImpactsRef::Owned(Box::new(
+                StubImpacts::default(),
+            )))
         }
     }
 
     impl ImpactsEnum for StubImpactsEnum {}
 
     #[derive(Debug, Default, Clone)]
-    struct StubImpacts;
+    struct StubImpacts {
+        buffer: crate::index::FreqAndNormBuffer,
+    }
 
     impl crate::index::Impacts for StubImpacts {
         fn num_levels(&self) -> i32 {
@@ -1253,10 +1257,10 @@ mod tests {
             i32::MAX
         }
 
-        fn get_impacts(&self, _level: i32) -> crate::index::FreqAndNormBuffer {
-            let mut buf = crate::index::FreqAndNormBuffer::new();
-            buf.add(1, 1);
-            buf
+        fn get_impacts(&mut self, _level: i32) -> &crate::index::FreqAndNormBuffer {
+            self.buffer.size = 0;
+            self.buffer.add(1, 1);
+            &self.buffer
         }
     }
 

@@ -20,7 +20,7 @@ use rucene::index::directory_reader::{self, DirectoryReader};
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::OpenMode;
 use rucene::index::{
-    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsSource, IndexReader, PostingsEnum,
+    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsRef, ImpactsSource, IndexReader, PostingsEnum,
 };
 use rucene::search::exact_phrase_matcher::merge_impacts;
 use rucene::search::index_searcher::IndexSearcher;
@@ -1021,7 +1021,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(5, 11), imp(8, 13), imp(12, 14)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     // Merge with dummy impacts
@@ -1032,7 +1032,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(5, 11), imp(8, 13), imp(12, 14)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     // Merge with dummy impacts that we don't special case
@@ -1043,7 +1043,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(5, 11), imp(8, 13), imp(12, 14)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     // First level of impacts2 doesn't cover the first level of impacts1
@@ -1060,7 +1060,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(5, 11), imp(7, 13)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     // Second level of impacts2 doesn't cover the first level of impacts1
@@ -1077,7 +1077,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(5, 11), imp(8, 13), imp(12, 14)], // same as impacts1
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     impacts2.reset(
@@ -1100,7 +1100,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(5, 11), imp(8, 13), imp(12, 14)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     // Make sure negative norms are treated as unsigned
@@ -1124,17 +1124,17 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 10), imp(8, -4), imp(12, -3)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
     Ok(())
 }
 
 /// `private static void assertEquals(Impact[][] impacts, int[] docIdUpTo, Impacts actual)`.
-fn assert_impacts(impacts: &[Vec<Impact>], doc_id_up_to: &[i32], actual: &dyn Impacts) {
+fn assert_impacts(impacts: &[Vec<Impact>], doc_id_up_to: &[i32], actual: &mut dyn Impacts) {
     assert_equals(&(impacts.len() as i32), &actual.num_levels());
     for i in 0..impacts.len() {
         assert_equals(&doc_id_up_to[i], &actual.doc_id_up_to(i as i32));
-        assert_equals(&impacts[i], &copy_of(&actual.get_impacts(i as i32)));
+        assert_equals(&impacts[i], &copy_of(actual.get_impacts(i as i32)));
     }
 }
 
@@ -1244,12 +1244,13 @@ impl ImpactsSource for DummyImpactsEnum {
         Err(uoe())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         let state = self.state.borrow();
-        Ok(Box::new(DummyImpacts {
+        Ok(ImpactsRef::Owned(Box::new(DummyImpacts {
             impacts: state.impacts.clone(),
             doc_id_up_to: state.doc_id_up_to.clone(),
-        }))
+            buffer: FreqAndNormBuffer::new(),
+        })))
     }
 }
 
@@ -1259,6 +1260,8 @@ impl ImpactsEnum for DummyImpactsEnum {}
 struct DummyImpacts {
     impacts: Vec<Vec<Impact>>,
     doc_id_up_to: Vec<i32>,
+    /// The buffer the last `get_impacts(level)` filled.
+    buffer: FreqAndNormBuffer,
 }
 
 impl Impacts for DummyImpacts {
@@ -1270,12 +1273,13 @@ impl Impacts for DummyImpacts {
         self.doc_id_up_to[level as usize]
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         let mut buffer = FreqAndNormBuffer::new();
         self.impacts[level as usize]
             .iter()
             .for_each(|impact| buffer.add(impact.freq, impact.norm));
-        buffer
+        self.buffer = buffer;
+        &self.buffer
     }
 }
 

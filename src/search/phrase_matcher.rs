@@ -8,7 +8,8 @@ use std::rc::Rc;
 
 use crate::error::Result;
 use crate::index::{
-    DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsSource, PostingsEnum,
+    DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsRef, ImpactsSource,
+    PostingsEnum,
 };
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::search::impacts_disi::ImpactsDISI;
@@ -114,8 +115,33 @@ impl ImpactsSource for SharedPostings {
         self.inner.borrow_mut().advance_shallow(target)
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
-        self.inner.borrow_mut().get_impacts()
+    /// The shared enum's own view, lent with the `RefCell` borrow held for as
+    /// long as the view lives ([`ImpactsRef::Guarded`]): Java returns the
+    /// enum's view, which reads the enum's fields until it is advanced. A
+    /// view the enum builds per call (Java's `new Impacts()`) cannot outlive
+    /// that borrow here, so it is copied, level by level, into an owned
+    /// [`CopiedImpacts`].
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
+        let mut built: Option<Result<CopiedImpacts>> = None;
+        let lent = std::cell::RefMut::filter_map(self.inner.borrow_mut(), |inner| {
+            match inner.get_impacts() {
+                Ok(ImpactsRef::Borrowed(view)) => Some(view),
+                Ok(mut view) => {
+                    built = Some(Ok(CopiedImpacts::copy_of(&mut *view)));
+                    None
+                }
+                Err(error) => {
+                    built = Some(Err(error));
+                    None
+                }
+            }
+        });
+        match lent {
+            Ok(view) => Ok(ImpactsRef::Guarded(view)),
+            Err(_) => Ok(ImpactsRef::Owned(Box::new(built.expect(
+                "INVARIANT: the closure records a view or an error when it lends none",
+            )?))),
+        }
     }
 }
 
@@ -229,7 +255,7 @@ impl<I: DocIdSetIterator> ImpactsSource for IteratorWithImpacts<I> {
         self.impacts.advance_shallow(target)
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         self.impacts.get_impacts()
     }
 }
@@ -401,14 +427,23 @@ impl ImpactsSource for DummyImpactsSource {
         Ok(())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
-        Ok(Box::new(DummyImpacts))
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
+        Ok(ImpactsRef::Owned(Box::new(DummyImpacts::new())))
     }
 }
 
-/// The single dummy impact [`DummyImpactsSource`] reports.
+/// The single dummy impact [`DummyImpactsSource`] reports: the `new Impacts()`
+/// built per call, whose `impactBuffer` holds `(Integer.MAX_VALUE, 1)`
+/// (`SloppyPhraseMatcher.java:111-131`), the constant
+/// [`DUMMY_IMPACT`](crate::index::postings_enum::DUMMY_IMPACT).
 #[derive(Debug, Default, Clone, Copy)]
 struct DummyImpacts;
+
+impl DummyImpacts {
+    fn new() -> Self {
+        Self
+    }
+}
 
 impl Impacts for DummyImpacts {
     fn num_levels(&self) -> i32 {
@@ -419,9 +454,57 @@ impl Impacts for DummyImpacts {
         NO_MORE_DOCS
     }
 
-    fn get_impacts(&self, _level: i32) -> FreqAndNormBuffer {
-        let mut buffer = FreqAndNormBuffer::new();
-        buffer.add(i32::MAX, 1);
-        buffer
+    fn get_impacts(&mut self, _level: i32) -> &FreqAndNormBuffer {
+        &crate::index::postings_enum::DUMMY_IMPACT
+    }
+}
+
+/// A copy of every level of an [`Impacts`] view.
+///
+/// **This has no counterpart in Lucene 10.5.0.** It exists only for the
+/// [`SharedPostings`] divergence: a view the shared enum builds per call
+/// (Java's `new Impacts()`, such as `SlowImpactsEnum`'s) may borrow the enum,
+/// and cannot outlive the `RefCell` borrow that reached it, so
+/// [`SharedPostings`] answers with a copy of what it reports. The enum is not
+/// advanced while the copy is read (Java's contract for the view), so every
+/// answer is the one the view would give.
+struct CopiedImpacts {
+    doc_id_up_to: Vec<i32>,
+    levels: Vec<FreqAndNormBuffer>,
+}
+
+impl CopiedImpacts {
+    fn copy_of(view: &mut dyn Impacts) -> Self {
+        let num_levels = view.num_levels().max(0) as usize;
+        let mut doc_id_up_to = Vec::with_capacity(num_levels);
+        let mut levels = Vec::with_capacity(num_levels);
+        for level in 0..num_levels as i32 {
+            doc_id_up_to.push(view.doc_id_up_to(level));
+            let impacts = view.get_impacts(level);
+            let mut copy = FreqAndNormBuffer::new();
+            copy.grow_no_copy(impacts.size);
+            copy.freqs[..impacts.size].copy_from_slice(&impacts.freqs[..impacts.size]);
+            copy.norms[..impacts.size].copy_from_slice(&impacts.norms[..impacts.size]);
+            copy.size = impacts.size;
+            levels.push(copy);
+        }
+        Self {
+            doc_id_up_to,
+            levels,
+        }
+    }
+}
+
+impl Impacts for CopiedImpacts {
+    fn num_levels(&self) -> i32 {
+        self.levels.len() as i32
+    }
+
+    fn doc_id_up_to(&self, level: i32) -> i32 {
+        self.doc_id_up_to[level as usize]
+    }
+
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
+        &self.levels[level as usize]
     }
 }

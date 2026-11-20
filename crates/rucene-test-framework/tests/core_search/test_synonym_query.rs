@@ -12,8 +12,8 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::directory_reader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::{
-    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsSource, IndexReader, MultiReader, PostingsEnum,
-    Term,
+    FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsRef, ImpactsSource, IndexReader, MultiReader,
+    PostingsEnum, Term,
 };
 use rucene::search::index_searcher::IndexSearcher;
 use rucene::search::phrase_matcher::SharedPostings;
@@ -409,7 +409,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(i32::MAX, 1)],
         ],
         &[90, 1000],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     let mut merged_boosted_impacts = merge_impacts(
@@ -425,7 +425,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(i32::MAX, 1)],
         ],
         &[90, 1000],
-        &*merged_boosted_impacts.get_impacts()?,
+        &mut *merged_boosted_impacts.get_impacts()?,
     );
 
     // docID is > the first doIdUpTo of impacts1
@@ -443,7 +443,7 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 9), imp(10, 11), imp(15, 13), imp(19, 14)],
         ],
         &[110, 945],
-        &*merged_impacts.get_impacts()?,
+        &mut *merged_impacts.get_impacts()?,
     );
 
     assert_impacts(
@@ -452,17 +452,17 @@ fn test_merge_impacts() -> Result<()> {
             vec![imp(3, 9), imp(7, 11), imp(10, 13), imp(11, 14)],
         ],
         &[110, 945],
-        &*merged_boosted_impacts.get_impacts()?,
+        &mut *merged_boosted_impacts.get_impacts()?,
     );
     Ok(())
 }
 
 /// `private static void assertEquals(Impact[][] impacts, int[] docIdUpTo, Impacts actual)`.
-fn assert_impacts(impacts: &[Vec<Impact>], doc_id_up_to: &[i32], actual: &dyn Impacts) {
+fn assert_impacts(impacts: &[Vec<Impact>], doc_id_up_to: &[i32], actual: &mut dyn Impacts) {
     assert_equals(&(impacts.len() as i32), &actual.num_levels());
     for i in 0..impacts.len() {
         assert_equals(&doc_id_up_to[i], &actual.doc_id_up_to(i as i32));
-        assert_equals(&impacts[i], &copy_of(&actual.get_impacts(i as i32)));
+        assert_equals(&impacts[i], &copy_of(actual.get_impacts(i as i32)));
     }
 }
 
@@ -572,11 +572,12 @@ impl ImpactsSource for DummyImpactsEnum {
         Err(uoe())
     }
 
-    fn get_impacts(&mut self) -> Result<Box<dyn Impacts>> {
+    fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         // The anonymous `Impacts` reads the enum's fields when called.
-        Ok(Box::new(DummyImpacts {
+        Ok(ImpactsRef::Owned(Box::new(DummyImpacts {
             state: Rc::clone(&self.state),
-        }))
+            buffer: FreqAndNormBuffer::new(),
+        })))
     }
 }
 
@@ -585,6 +586,8 @@ impl ImpactsEnum for DummyImpactsEnum {}
 /// The anonymous `Impacts` of `DummyImpactsEnum.getImpacts()`.
 struct DummyImpacts {
     state: Rc<RefCell<DummyState>>,
+    /// The buffer the last `get_impacts(level)` filled.
+    buffer: FreqAndNormBuffer,
 }
 
 impl Impacts for DummyImpacts {
@@ -596,12 +599,13 @@ impl Impacts for DummyImpacts {
         self.state.borrow().doc_id_up_to[level as usize]
     }
 
-    fn get_impacts(&self, level: i32) -> FreqAndNormBuffer {
+    fn get_impacts(&mut self, level: i32) -> &FreqAndNormBuffer {
         let mut buffer = FreqAndNormBuffer::new();
         self.state.borrow().impacts[level as usize]
             .iter()
             .for_each(|impact| buffer.add(impact.freq, impact.norm));
-        buffer
+        self.buffer = buffer;
+        &self.buffer
     }
 }
 

@@ -485,8 +485,11 @@ pub(crate) struct FieldsIndexReader {
     max_doc: i32,
     block_shift: i32,
     num_chunks: i32,
-    docs_meta: DirectMonotonicMeta,
-    start_pointers_meta: DirectMonotonicMeta,
+    /// Java's `docsMeta`, shared by reference with every clone and with the
+    /// readers built over it (`FieldsIndexReader.java:93-98, 145-152`).
+    docs_meta: Arc<DirectMonotonicMeta>,
+    /// Java's `startPointersMeta`, shared as [`docs_meta`](Self::docs_meta).
+    start_pointers_meta: Arc<DirectMonotonicMeta>,
     /// The `.fdx` file, which Java keeps open and slices.
     index_input: Box<dyn IndexInput>,
     docs_start_pointer: i64,
@@ -523,11 +526,18 @@ impl FieldsIndexReader {
         let block_shift = meta_in.read_int()?;
         let num_chunks = meta_in.read_int()?;
         let docs_start_pointer = meta_in.read_long()?;
-        let docs_meta = DirectMonotonicMeta::load(meta_in, i64::from(num_chunks), block_shift)?;
+        let docs_meta = Arc::new(DirectMonotonicMeta::load(
+            meta_in,
+            i64::from(num_chunks),
+            block_shift,
+        )?);
         let docs_end_pointer = meta_in.read_long()?;
         let start_pointers_start_pointer = docs_end_pointer;
-        let start_pointers_meta =
-            DirectMonotonicMeta::load(meta_in, i64::from(num_chunks), block_shift)?;
+        let start_pointers_meta = Arc::new(DirectMonotonicMeta::load(
+            meta_in,
+            i64::from(num_chunks),
+            block_shift,
+        )?);
         let start_pointers_end_pointer = meta_in.read_long()?;
         let max_pointer = meta_in.read_long()?;
 
@@ -601,8 +611,8 @@ impl FieldsIndexReader {
     /// refused by `randomAccessSlice` with an `IllegalArgumentException`.
     fn monotonic_readers(
         index_input: &dyn IndexInput,
-        docs_meta: &DirectMonotonicMeta,
-        start_pointers_meta: &DirectMonotonicMeta,
+        docs_meta: &Arc<DirectMonotonicMeta>,
+        start_pointers_meta: &Arc<DirectMonotonicMeta>,
         [docs_start, docs_end, start_pointers_start, start_pointers_end]: [i64; 4],
     ) -> Result<(DirectMonotonicReader, DirectMonotonicReader)> {
         let docs_slice =
@@ -612,11 +622,11 @@ impl FieldsIndexReader {
             start_pointers_end.wrapping_sub(start_pointers_start),
         )?;
         let docs = DirectMonotonicReader::with_random_access(
-            docs_meta.clone(),
+            Arc::clone(docs_meta),
             shared_random_access_input(docs_slice),
         )?;
         let start_pointers = DirectMonotonicReader::with_random_access(
-            start_pointers_meta.clone(),
+            Arc::clone(start_pointers_meta),
             shared_random_access_input(start_pointers_slice),
         )?;
         Ok((docs, start_pointers))
@@ -717,8 +727,8 @@ impl FieldsIndex for FieldsIndexReader {
             max_doc: self.max_doc,
             block_shift: self.block_shift,
             num_chunks: self.num_chunks,
-            docs_meta: self.docs_meta.clone(),
-            start_pointers_meta: self.start_pointers_meta.clone(),
+            docs_meta: Arc::clone(&self.docs_meta),
+            start_pointers_meta: Arc::clone(&self.start_pointers_meta),
             index_input,
             docs_start_pointer: self.docs_start_pointer,
             docs_end_pointer: self.docs_end_pointer,

@@ -1206,7 +1206,7 @@ pub fn dump_terms(
             let mut im = "   imp".to_string();
             for target in ADVANCE_TARGETS {
                 ie.advance_shallow(target)?;
-                let impacts = ie.get_impacts()?;
+                let mut impacts = ie.get_impacts()?;
                 im.push_str(&format!(" @{target} levels={}", impacts.num_levels()));
                 for level in 0..impacts.num_levels() {
                     im.push_str(&format!(" L{level} upTo={}", impacts.doc_id_up_to(level)));
@@ -1215,6 +1215,7 @@ pub fn dump_terms(
                         im.push_str(&format!(" {}/{}", buf.freqs[i], buf.norms[i]));
                     }
                 }
+                drop(impacts);
                 if ie.doc_id() < target {
                     ie.advance(target)?;
                 }
@@ -1223,14 +1224,15 @@ pub fn dump_terms(
                 }
             }
             out.push(im);
-            // The `Impacts` `get_impacts` returns is a view of the enum: one
-            // taken before the first `advance_shallow` reports the state each
-            // later one leaves.
+            // The `Impacts` `get_impacts` returns is a view of the enum: Java's
+            // one, taken before the first `advance_shallow`, reports the state
+            // each later one leaves. The port's view borrows the enum, so it
+            // is taken again after each move: the same view of the same state.
             let mut held = te.impacts(POSTINGS_ENUM_FREQS)?;
-            let view = held.get_impacts()?;
             let mut lv = "   live".to_string();
             for target in ADVANCE_TARGETS {
                 held.advance_shallow(target)?;
+                let mut view = held.get_impacts()?;
                 lv.push_str(&format!(" @{target} levels={}", view.num_levels()));
                 for level in 0..view.num_levels() {
                     lv.push_str(&format!(" L{level} upTo={}", view.doc_id_up_to(level)));
@@ -1239,6 +1241,7 @@ pub fn dump_terms(
                         lv.push_str(&format!(" {}/{}", buf.freqs[i], buf.norms[i]));
                     }
                 }
+                drop(view);
                 if held.doc_id() < target {
                     held.advance(target)?;
                 }
@@ -1853,25 +1856,28 @@ pub fn mask_crc(message: &str) -> String {
     out
 }
 
-// A defect of Rucene's core that these tests meet but do not own
-// (rmp #334 reports it; the task that owns the core class fixes it):
-// `BlockPostingsEnum::get_impacts` (`src/codecs/lucene104/postings_reader.rs`,
-// `Ok(Box::new(self.impacts.clone()))`) returns a snapshot, where Lucene's
+// A defect of Rucene's core that these tests met (rmp #334): its
+// `BlockPostingsEnum::get_impacts` returned a snapshot, where Lucene's
 // `getImpacts()` returns the enum's own `Impacts` object, a view of every
-// later `advanceShallow`. The dump's `   live` lines read such a view; every
-// format here keeps its postings in `Lucene104PostingsWriter`'s files, so
-// those lines differ. [`assert_same_lines_but_live`] compares every other
-// line and requires the `live` lines to still differ, so the exclusion fails
-// once the core is fixed.
+// later `advanceShallow`. The port's `get_impacts` now lends the enum's own
+// view (rmp #584), so the dump's `   live` lines, which read the view after
+// each move, are compared like every other line. A format whose `live` lines
+// still differed would set `live_must_differ`, which requires a difference so
+// that the exclusion fails once it is fixed.
 
-/// [`assert_same_lines`] except the dump's `   live` lines (the core defect
-/// above), which must still differ somewhere when `live_must_differ`.
+/// [`assert_same_lines`], except that the dump's `   live` lines are skipped
+/// and must still differ somewhere when `live_must_differ` (a core defect
+/// above that a format still meets).
 pub fn assert_same_lines_but_live(
     what: &str,
     actual: &[String],
     expected: &[String],
     live_must_differ: bool,
 ) {
+    if !live_must_differ {
+        assert_same_lines(what, actual, expected);
+        return;
+    }
     assert_eq!(actual.len(), expected.len(), "{what}: line count");
     let mut live_differences = 0;
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
@@ -1883,12 +1889,10 @@ pub fn assert_same_lines_but_live(
         }
         assert_eq!(a, e, "{what}: line {} differs", i + 1);
     }
-    if live_must_differ {
-        assert!(
-            live_differences > 0,
-            "{what}: every `live` line matches: the core's live impacts are fixed, remove the exclusion"
-        );
-    }
+    assert!(
+        live_differences > 0,
+        "{what}: every `live` line matches: the core's live impacts are fixed, remove the exclusion"
+    );
 }
 
 /// `PostingsFormatOracle.REGEXPS`.

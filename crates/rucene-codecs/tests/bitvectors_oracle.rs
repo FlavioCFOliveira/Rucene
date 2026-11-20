@@ -40,7 +40,7 @@ const BITVECTORS: FormatOracle = FormatOracle {
     extensions: &["vem", "vex", "vemf", "vec"],
     codec: bitvectors_codec,
     extra_jars: &[],
-    live_impacts_differ: true,
+    live_impacts_differ: false,
 };
 
 #[test]

@@ -37,7 +37,7 @@ const BLOCK_TREE_ORDS: FormatOracle = FormatOracle {
     extensions: &["tio", "tipo"],
     codec: block_tree_ords_codec,
     extra_jars: &[],
-    live_impacts_differ: true,
+    live_impacts_differ: false,
 };
 
 #[test]
