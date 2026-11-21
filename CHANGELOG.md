@@ -10,7 +10,7 @@ roadmap.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-11-20
+## [0.1.0] - 2026-11-21
 
 First release. It covers the whole history of the `develop` branch up to
 `83d13c9`: 583 commits, 16 sprints, 565 completed `rmp` tasks.
@@ -172,6 +172,17 @@ all ported):
   (codec headers, stored fields, term vectors, norms, doc values, index file
   deleter, points, vectors).
 
+### Added — licensing and attribution
+
+* **`NOTICE`** at the repository root. It carries the Apache Lucene 10.5.0
+  attributions, taken from Lucene's `NOTICE.txt` and limited to the material
+  Rucene embeds: Brics Automaton, the moman/finenight Levenshtein tables,
+  `WeakIdentityMap`, LZ4, the Snowball stemmers and stopword lists, KStem, the
+  Jacques Savoy stopword lists and light stemmers, and the Unicode-derived
+  word-break test data. It also attributes the ICU 79.1 Thai word list
+  (`crates/rucene-analysis-common/resources/icu/thaidict.txt`), distributed
+  under the Unicode License V3.
+
 ### Known limitations
 
 * **Out-of-scope Lucene modules (28)**, not ported: `analysis/icu`,
@@ -211,7 +222,8 @@ all ported):
   for this release, except: the licence mismatch (sprint 7) is resolved, every
   manifest declares MIT; the 91 `clippy` errors (sprint 10) are resolved,
   `clippy -D warnings` passes; the assertions-off failures (sprint 15) were
-  fixed by rmp #576; the missing `NOTICE` file (sprint 12) is still missing.
+  fixed by rmp #576; the missing `NOTICE` file (sprint 12) is added in this
+  release (see [Licensing and attribution](#added--licensing-and-attribution)).
 
 [Unreleased]: https://github.com/FlavioCFOliveira/Rucene/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/FlavioCFOliveira/Rucene/releases/tag/v0.1.0

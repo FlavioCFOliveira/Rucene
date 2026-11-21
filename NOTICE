@@ -1,0 +1,109 @@
+Rucene
+Copyright (c) 2026 Flávio CF Oliveira
+
+Rucene is a Rust port of Apache Lucene 10.5.0. It contains code translated
+from Apache Lucene and resources copied from it, together with the third-party
+material listed below. The attributions for Apache Lucene are taken from the
+NOTICE.txt file of Apache Lucene 10.5.0, limited to the material Rucene embeds.
+
+===========================================================================
+Apache Lucene
+===========================================================================
+
+Apache Lucene
+Copyright 2001-2025 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+Brics Automaton (under core/src/java/org/apache/lucene/util/automaton) is
+BSD-licensed, created by Anders Møller. See http://www.brics.dk/automaton/
+Rucene port: src/util/automaton/
+
+The levenshtein automata tables (under core/src/java/org/apache/lucene/util/automaton) were
+automatically generated with the moman/finenight FSA library, created by
+Jean-Philippe Barrette-LaPierre. This library is available under an MIT license,
+see http://sites.google.com/site/rrettesite/moman and
+http://bitbucket.org/jpbarrette/moman/overview/
+Rucene port: src/util/automaton/lev1_parametric_description.rs,
+lev1t_parametric_description.rs, lev2_parametric_description.rs,
+lev2t_parametric_description.rs
+
+The class org.apache.lucene.util.WeakIdentityMap was derived from
+the Apache CXF project and is Apache License 2.0.
+Rucene port: src/util/concurrent.rs
+
+The class org.apache.lucene.util.compress.LZ4 is a Java rewrite of the LZ4
+compression library (https://github.com/lz4/lz4/tree/dev/lib) that is licensed
+under the 2-clause BSD license.
+(https://opensource.org/licenses/bsd-license.php)
+Rucene port: src/util/compress.rs
+
+The snowball stemmers in
+  analysis/common/src/java/net/sf/snowball
+were developed by Martin Porter and Richard Boulton.
+The snowball stopword lists in
+  analysis/common/src/resources/org/apache/lucene/analysis/snowball
+were developed by Martin Porter and Richard Boulton.
+The full snowball package is available from
+  https://snowballstem.org/
+Rucene port: crates/rucene-analysis-common/src/tartarus/ and
+crates/rucene-analysis-common/resources/org/apache/lucene/analysis/snowball/
+
+The KStem stemmer in
+  analysis/common/src/org/apache/lucene/analysis/en
+was developed by Bob Krovetz and Sergio Guzman-Lara (CIIR-UMass Amherst)
+under the BSD-license.
+Rucene port: crates/rucene-analysis-common/src/analysis/en/kstem*.rs
+
+The Arabic,Persian,Romanian,Bulgarian, Hindi and Bengali analyzers (common) come with a default
+stopword list that is BSD-licensed created by Jacques Savoy.  These files reside in:
+analysis/common/src/resources/org/apache/lucene/analysis/ar/stopwords.txt,
+analysis/common/src/resources/org/apache/lucene/analysis/fa/stopwords.txt,
+analysis/common/src/resources/org/apache/lucene/analysis/ro/stopwords.txt,
+analysis/common/src/resources/org/apache/lucene/analysis/bg/stopwords.txt,
+analysis/common/src/resources/org/apache/lucene/analysis/hi/stopwords.txt,
+analysis/common/src/resources/org/apache/lucene/analysis/bn/stopwords.txt
+See http://members.unine.ch/jacques.savoy/clef/index.html.
+Rucene copies: crates/rucene-analysis-common/resources/org/apache/lucene/analysis/{ar,fa,ro,bg,hi,bn}/stopwords.txt
+
+The German,Spanish,Finnish,French,Hungarian,Italian,Portuguese,Russian and Swedish light stemmers
+(common) are based on BSD-licensed reference implementations created by Jacques Savoy and
+Ljiljana Dolamic. These files reside in:
+analysis/common/src/java/org/apache/lucene/analysis/de/GermanLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/de/GermanMinimalStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/es/SpanishLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/fi/FinnishLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/fr/FrenchLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/fr/FrenchMinimalStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/hu/HungarianLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/it/ItalianLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/pt/PortugueseLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/ru/RussianLightStemmer.java
+analysis/common/src/java/org/apache/lucene/analysis/sv/SwedishLightStemmer.java
+Rucene port: the corresponding *_light_stemmer.rs and *_minimal_stemmer.rs files
+under crates/rucene-analysis-common/src/analysis/{de,es,fi,fr,hu,it,pt,ru,sv}/
+
+WordBreakTestUnicode_*.java (under modules/analysis/common/src/test/)
+is derived from Unicode data such as the Unicode Character Database.
+See http://unicode.org/copyright.html for more details.
+Rucene port: crates/rucene-test-framework/src/analysis/standard/word_break_test_unicode_12_1_0.rs
+
+===========================================================================
+ICU Thai word list
+===========================================================================
+
+crates/rucene-analysis-common/resources/icu/thaidict.txt is the Thai word list
+of ICU 79.1 (icu4c/source/data/brkitr/dictionaries/thaidict.txt at tag
+release-79.1, SHA-256
+3166abde40c0f44ab91c28f5ce96d7d1472cb7882e1c0bda0a72f8f69dba4274), embedded
+unchanged. Its header reads:
+
+  Copyright (C) 2016 and later: Unicode, Inc. and others.
+  License & terms of use: http://www.unicode.org/copyright.html
+  Copyright (c) 2006-2015 International Business Machines Corporation,
+  Apple Inc., and others. All Rights Reserved.
+
+It is distributed under the Unicode License V3, whose full text is in
+crates/rucene-analysis-common/resources/icu/LICENSE
+(Copyright © 1991-2026 Unicode, Inc.).

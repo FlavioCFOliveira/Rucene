@@ -18,11 +18,16 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 ## Project structure
 
 - `src/` — the `rucene` crate (`lucene/core`). Its top-level modules mirror Lucene Core's packages: `analysis`, `codecs`, `document`, `geo`, `index`, `internal`, `search`, `store`, `util`, plus `error`.
-- `crates/` — the other workspace members, one per ported module:
+- `crates/` — the other nine workspace members: seven ported modules and two command-line examples:
   - `rucene-codecs` — `lucene/codecs` (the `org.apache.lucene.codecs.*` formats outside core);
+  - `rucene-analysis-common` — `lucene/analysis/common` (see [Analysis: `rucene-analysis-common`](#analysis-rucene-analysis-common));
+  - `rucene-queries` — `lucene/queries` (function queries and value sources, intervals, spans, payload queries, more-like-this);
+  - `rucene-queryparser` — `lucene/queryparser` (classic, flexible, simple, surround, complex-phrase, extendable and XML query parsers);
+  - `rucene-sandbox` — `lucene/sandbox`, limited to `FuzzyLikeThisQuery`;
   - `randomizedtesting` — randomizedtesting 2.8.1 (`com.carrotsearch.randomizedtesting`), the runner of Lucene's tests;
   - `rucene-test-framework` — `lucene/test-framework`;
-  - `rucene-analysis-common` — `lucene/analysis/common` (see [Analysis: `rucene-analysis-common`](#analysis-rucene-analysis-common)).
+  - `rucene-cli-example` — not a Lucene module: the `rucene-cli` example, which indexes and searches the USGS earthquake catalog;
+  - `rucene-cli-base` — not a Lucene module: the `rucene-base` example, one index per Portal BASE (Portuguese public procurement) entity with pt-PT accent-insensitive search.
 - `tests/` — integration tests, portability tests (`tests/portability/`), fuzz tests (`tests/fuzz/`), and the Java oracle harness (`tests/fixtures/java-codec-harness/`).
 - `specs/` — specifications: overview, architecture, compatibility, security, testing, workflow, and one file per module (`specs/modules/`).
 - `tools/` — development tooling, not part of any crate:

@@ -23,10 +23,10 @@ Portability tests are first-class citizens. They must:
 
 ## 3. Benchmarks
 
-- Benchmark harness lives under `benches/` and uses `criterion` with async Tokio support.
-- Benchmarks compare indexing throughput, query latency (p50/p99), and memory usage against Java Lucene 10.5.0.
+- **No benchmark harness exists yet.** The repository has no `benches/` directory and no `[[bench]]` target; `criterion` (with `async_tokio`) is declared as a dev-dependency of `rucene` but no target uses it.
+- When a harness is added, it compares indexing throughput, query latency (p50/p99), and memory usage against Java Lucene 10.5.0, on a documented hardware/OS configuration.
 - The target is to be **equal or better** than Java Lucene 10.5.0 across all dimensions.
-- Benchmarks run per release on a documented hardware/OS configuration.
+- No benchmark ran for release 0.1.0.
 
 ## 4. Fuzzing
 

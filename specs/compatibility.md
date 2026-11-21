@@ -108,6 +108,34 @@ automatically:
 cargo test --test portability_codecs
 ```
 
-The test currently verifies that the harness produces a valid Lucene index
-for every supported shape. Byte-for-byte comparisons with Rucene output will be
-added once the corresponding Rust codec writers are implemented.
+`portability_codecs` validates the reference side only: the harness produces a
+deterministic, well-formed Lucene index for every supported shape. It makes no
+byte comparison of whole directories, because the files carry per-segment
+random ids; its helper `assert_directories_equal` is unused.
+
+Rucene's output is compared with Lucene's by these tests:
+
+| Test file | What it compares byte for byte with Lucene 10.5.0 |
+|---|---|
+| `tests/portability/stored_fields.rs` | the stored-fields files (`.fdt`, `.fdx`, `.fdm`) |
+| `tests/portability/term_vectors.rs` | the term-vectors files |
+| `tests/portability/norms.rs` | the norms files |
+| `tests/portability/doc_values.rs` | the doc-values files (`.dvd`, `.dvm`) |
+| `tests/portability/points.rs` | the points files |
+| `tests/portability/bkd_writer_layout.rs` | the files `BKDWriter` writes through `add()` and `finish()` |
+| `tests/portability/vectors.rs` | the kNN-vectors files |
+| `tests/portability/scalar_quantized_vectors.rs` | the files of `Lucene104ScalarQuantizedVectorsFormat` and its raw delegate |
+| `tests/portability/indexing_chain.rs` | the postings files |
+| `tests/portability/seal_bytes.rs` | the three files that seal a flushed segment: `.fnm`, the compound file and `.si` |
+
+Whole indexes are exchanged by `tests/portability/index_interop.rs`: Rucene and
+Lucene write the same corpus, each side opens the other's index, runs
+`CheckIndex` at its maximum level and runs the same query set, and the reports
+must agree.
+
+The formats of `lucene/codecs` are compared by
+`crates/rucene-codecs/tests/*_oracle.rs`. Their `*writes_lucenes_bytes` tests
+check that Rucene writes the same file listing as Lucene and every file of the
+format under test byte for byte, once Lucene's segment id is replaced by
+Rucene's (`crates/rucene-codecs/tests/oracle/mod.rs`,
+`assert_writes_lucenes_bytes`).
