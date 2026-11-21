@@ -1,0 +1,2186 @@
+//! Geometry shapes ported from `org.apache.lucene.geo`.
+//!
+//! The shapes a spatial query is built from, in both the geographic
+//! (latitude/longitude) and the cartesian (x/y) coordinate systems.
+
+use crate::error::{LuceneError, Result};
+use crate::geo::component2d::Component2D;
+use crate::geo::encoding::{next_up_f32, GeoUtils, WindingOrder, XYEncodingUtils};
+use crate::geo::simple_geojson_polygon_parser::SimpleGeoJSONPolygonParser;
+use crate::geo::{Circle2D, Line2D, ParseException, Point2D, Polygon2D, Rectangle2D};
+use crate::util::SloppyMath;
+use std::f64::consts::PI;
+use std::sync::Arc;
+
+// -----------------------------------------------------------------------------
+// Java hash-code primitives
+// -----------------------------------------------------------------------------
+
+/// Hashes a `f64` the way `java.lang.Double#hashCode(double)` does.
+fn double_hash_code(value: f64) -> i32 {
+    let bits = value.to_bits();
+    (bits ^ (bits >> 32)) as i32
+}
+
+/// Hashes a `f32` the way `java.lang.Float#hashCode(float)` does.
+fn float_hash_code(value: f32) -> i32 {
+    value.to_bits() as i32
+}
+
+/// Hashes a `f64` slice the way `java.util.Arrays#hashCode(double[])` does.
+fn double_array_hash_code(values: &[f64]) -> i32 {
+    let mut result = 1i32;
+    for &value in values {
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(value));
+    }
+    result
+}
+
+/// Hashes a `f32` slice the way `java.util.Arrays#hashCode(float[])` does.
+fn float_array_hash_code(values: &[f32]) -> i32 {
+    let mut result = 1i32;
+    for &value in values {
+        result = result.wrapping_mul(31).wrapping_add(float_hash_code(value));
+    }
+    result
+}
+
+/// Hashes the holes of a [`Polygon`] the way `java.util.Arrays#hashCode(Object[])`
+/// does. Java admits null elements, which contribute `0`; a `Vec<Polygon>` cannot
+/// hold one, so every element is hashed.
+fn polygon_array_hash_code(values: &[Polygon]) -> i32 {
+    let mut result = 1i32;
+    for value in values {
+        result = result.wrapping_mul(31).wrapping_add(value.hash_code());
+    }
+    result
+}
+
+/// Hashes the holes of an [`XYPolygon`] the way `java.util.Arrays#hashCode(Object[])`
+/// does. Java admits null elements, which contribute `0`; a `Vec<XYPolygon>` cannot
+/// hold one, so every element is hashed.
+fn xy_polygon_array_hash_code(values: &[XYPolygon]) -> i32 {
+    let mut result = 1i32;
+    for value in values {
+        result = result.wrapping_mul(31).wrapping_add(value.hash_code());
+    }
+    result
+}
+
+/// A single point on the globe.
+///
+/// Equivalent to `org.apache.lucene.geo.Point`.
+#[derive(Clone, Copy, Debug)]
+pub struct Point {
+    lat: f64,
+    lon: f64,
+}
+
+impl Point {
+    /// Creates the point, checking both coordinates.
+    pub fn new(lat: f64, lon: f64) -> Result<Self> {
+        GeoUtils::check_latitude(lat)?;
+        GeoUtils::check_longitude(lon)?;
+        Ok(Self { lat, lon })
+    }
+
+    /// Returns the latitude.
+    pub fn lat(&self) -> f64 {
+        self.lat
+    }
+
+    /// Returns the longitude.
+    pub fn lon(&self) -> f64 {
+        self.lon
+    }
+
+    /// Returns this point's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Point#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = double_hash_code(self.lat);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.lon))
+    }
+}
+
+/// An axis-aligned box on the globe.
+///
+/// Equivalent to `org.apache.lucene.geo.Rectangle`.
+///
+/// [`PartialEq`], [`Eq`] and [`Hash`] are written out rather than derived,
+/// because Java compares the four coordinates with `Double.compare` and hashes
+/// them with `Double.doubleToLongBits`. Those two agree with each other but not
+/// with IEEE 754 equality, which a derive would use: `Double.compare` makes
+/// `NaN` equal to itself and `-0.0` different from `0.0`, and
+/// `doubleToLongBits` canonicalises every `NaN` to one bit pattern, so hashing
+/// the bits is exactly consistent with comparing them.
+#[derive(Clone, Copy, Debug)]
+pub struct Rectangle {
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+}
+
+impl Rectangle {
+    /// Creates the box. A box whose minimum longitude exceeds its maximum
+    /// crosses the dateline, which Lucene allows.
+    ///
+    /// Lucene only asserts `maxLat >= minLat` (`Rectangle.java:94`); the port
+    /// keeps that as a `debug_assert!` and raises no error of its own for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when a coordinate is out of
+    /// range, as `GeoUtils.checkLatitude` / `checkLongitude` throw.
+    pub fn new(min_lat: f64, max_lat: f64, min_lon: f64, max_lon: f64) -> Result<Self> {
+        GeoUtils::check_latitude(min_lat)?;
+        GeoUtils::check_latitude(max_lat)?;
+        GeoUtils::check_longitude(min_lon)?;
+        GeoUtils::check_longitude(max_lon)?;
+        let rectangle = Self {
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+        };
+        debug_assert!(max_lat >= min_lat);
+
+        // NOTE: cannot assert maxLon >= minLon since this rect could cross the dateline
+        Ok(rectangle)
+    }
+
+    /// Returns the smallest latitude.
+    pub fn min_lat(&self) -> f64 {
+        self.min_lat
+    }
+
+    /// Returns the largest latitude.
+    pub fn max_lat(&self) -> f64 {
+        self.max_lat
+    }
+
+    /// Returns the smallest longitude.
+    pub fn min_lon(&self) -> f64 {
+        self.min_lon
+    }
+
+    /// Returns the largest longitude.
+    pub fn max_lon(&self) -> f64 {
+        self.max_lon
+    }
+
+    /// Returns whether the box spans the dateline.
+    ///
+    /// Equivalent to `Rectangle.crossesDateline()`.
+    pub fn crosses_dateline(&self) -> bool {
+        self.max_lon < self.min_lon
+    }
+
+    /// Returns whether `(lat, lon)` falls inside the box.
+    pub fn contains(&self, lat: f64, lon: f64) -> bool {
+        if lat < self.min_lat || lat > self.max_lat {
+            return false;
+        }
+        if self.crosses_dateline() {
+            lon >= self.min_lon || lon <= self.max_lon
+        } else {
+            lon >= self.min_lon && lon <= self.max_lon
+        }
+    }
+
+    /// Returns this box's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Rectangle#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result = double_hash_code(self.min_lat);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.min_lon));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.max_lat));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.max_lon))
+    }
+}
+
+/// A connected sequence of points on the globe.
+///
+/// Equivalent to `org.apache.lucene.geo.Line`.
+#[derive(Clone, Debug)]
+pub struct Line {
+    lats: Vec<f64>,
+    lons: Vec<f64>,
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+}
+
+impl Line {
+    /// Creates the line from parallel coordinate arrays.
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`lats must not be null`, `lons must not be null`).
+    pub fn new(
+        lats: impl Into<Option<Vec<f64>>>,
+        lons: impl Into<Option<Vec<f64>>>,
+    ) -> Result<Self> {
+        let Some(lats) = lats.into() else {
+            return Err(LuceneError::illegal_argument(
+                "lats must not be null".to_string(),
+            ));
+        };
+        let Some(lons) = lons.into() else {
+            return Err(LuceneError::illegal_argument(
+                "lons must not be null".to_string(),
+            ));
+        };
+        if lats.len() != lons.len() {
+            return Err(LuceneError::illegal_argument(
+                "lats and lons must be equal length".to_string(),
+            ));
+        }
+        if lats.len() < 2 {
+            return Err(LuceneError::illegal_argument(
+                "at least 2 line points required".to_string(),
+            ));
+        }
+        // compute bounding box
+        let mut min_lat = lats[0];
+        let mut min_lon = lons[0];
+        let mut max_lat = lats[0];
+        let mut max_lon = lons[0];
+        for i in 0..lats.len() {
+            GeoUtils::check_latitude(lats[i])?;
+            GeoUtils::check_longitude(lons[i])?;
+            min_lat = lats[i].min(min_lat);
+            min_lon = lons[i].min(min_lon);
+            max_lat = lats[i].max(max_lat);
+            max_lon = lons[i].max(max_lon);
+        }
+        Ok(Self {
+            lats,
+            lons,
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+        })
+    }
+
+    /// Returns the smallest latitude of this line's bounding box.
+    ///
+    /// Equivalent to the public field `Line.minLat`.
+    pub fn min_lat(&self) -> f64 {
+        self.min_lat
+    }
+
+    /// Returns the largest latitude of this line's bounding box.
+    ///
+    /// Equivalent to the public field `Line.maxLat`.
+    pub fn max_lat(&self) -> f64 {
+        self.max_lat
+    }
+
+    /// Returns the smallest longitude of this line's bounding box.
+    ///
+    /// Equivalent to the public field `Line.minLon`.
+    pub fn min_lon(&self) -> f64 {
+        self.min_lon
+    }
+
+    /// Returns the largest longitude of this line's bounding box.
+    ///
+    /// Equivalent to the public field `Line.maxLon`.
+    pub fn max_lon(&self) -> f64 {
+        self.max_lon
+    }
+
+    /// Returns the latitude at `vertex`.
+    ///
+    /// Equivalent to `Line.getLat(int)`.
+    pub fn get_lat(&self, vertex: usize) -> f64 {
+        self.lats[vertex]
+    }
+
+    /// Returns the longitude at `vertex`.
+    ///
+    /// Equivalent to `Line.getLon(int)`.
+    pub fn get_lon(&self, vertex: usize) -> f64 {
+        self.lons[vertex]
+    }
+
+    /// Renders the line's vertices as GeoJSON.
+    ///
+    /// Equivalent to `Line.toGeoJSON()`.
+    pub fn to_geojson(&self) -> String {
+        format!("[{}]", Polygon::vertices_to_geojson(&self.lats, &self.lons))
+    }
+
+    /// Returns how many vertices the line has.
+    pub fn num_points(&self) -> usize {
+        self.lats.len()
+    }
+
+    /// Returns the latitudes.
+    pub fn lats(&self) -> &[f64] {
+        &self.lats
+    }
+
+    /// Returns the longitudes.
+    pub fn lons(&self) -> &[f64] {
+        &self.lons
+    }
+
+    /// Returns this line's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Line#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = double_array_hash_code(&self.lats);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_array_hash_code(&self.lons))
+    }
+}
+
+/// A closed ring on the globe, optionally with holes.
+///
+/// Equivalent to `org.apache.lucene.geo.Polygon`.
+#[derive(Clone, Debug)]
+pub struct Polygon {
+    lats: Vec<f64>,
+    lons: Vec<f64>,
+    holes: Vec<Polygon>,
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+    winding_order: WindingOrder,
+}
+
+impl Polygon {
+    /// Creates the polygon. The ring must be closed — the first and last
+    /// vertices equal — as Lucene requires.
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`polyLats must not be null`, `polyLons must not be null`).
+    pub fn new(
+        lats: impl Into<Option<Vec<f64>>>,
+        lons: impl Into<Option<Vec<f64>>>,
+        holes: Vec<Polygon>,
+    ) -> Result<Self> {
+        let Some(lats) = lats.into() else {
+            return Err(LuceneError::illegal_argument(
+                "polyLats must not be null".to_string(),
+            ));
+        };
+        let Some(lons) = lons.into() else {
+            return Err(LuceneError::illegal_argument(
+                "polyLons must not be null".to_string(),
+            ));
+        };
+        if lats.len() != lons.len() {
+            return Err(LuceneError::illegal_argument(
+                "polyLats and polyLons must be equal length".to_string(),
+            ));
+        }
+        if lats.len() < 4 {
+            return Err(LuceneError::illegal_argument(
+                "at least 4 polygon points required".to_string(),
+            ));
+        }
+        if lats[0] != lats[lats.len() - 1] {
+            // `Polygon.java:79-96`.
+            return Err(LuceneError::illegal_argument(format!(
+                "first and last points of the polygon must be the same (it must close itself): \
+                 polyLats[0]={} polyLats[{}]={}",
+                crate::util::java_fmt::double_to_string(lats[0]),
+                lats.len() - 1,
+                crate::util::java_fmt::double_to_string(lats[lats.len() - 1])
+            )));
+        }
+        if lons[0] != lons[lons.len() - 1] {
+            // `Polygon.java:79-96`.
+            return Err(LuceneError::illegal_argument(format!(
+                "first and last points of the polygon must be the same (it must close itself): \
+                 polyLons[0]={} polyLons[{}]={}",
+                crate::util::java_fmt::double_to_string(lons[0]),
+                lons.len() - 1,
+                crate::util::java_fmt::double_to_string(lons[lons.len() - 1])
+            )));
+        }
+        for i in 0..lats.len() {
+            GeoUtils::check_latitude(lats[i])?;
+            GeoUtils::check_longitude(lons[i])?;
+        }
+        for inner in &holes {
+            if !inner.holes.is_empty() {
+                return Err(LuceneError::illegal_argument(
+                    "holes may not contain holes: polygons may not nest.".to_string(),
+                ));
+            }
+        }
+
+        // compute bounding box
+        let mut min_lat = lats[0];
+        let mut max_lat = lats[0];
+        let mut min_lon = lons[0];
+        let mut max_lon = lons[0];
+
+        let mut winding_sum = 0.0f64;
+        let num_pts = lats.len() - 1;
+        let mut j = 0usize;
+        for i in 1..num_pts {
+            min_lat = lats[i].min(min_lat);
+            max_lat = lats[i].max(max_lat);
+            min_lon = lons[i].min(min_lon);
+            max_lon = lons[i].max(max_lon);
+            // compute signed area
+            winding_sum += (lons[j] - lons[num_pts]) * (lats[i] - lats[num_pts])
+                - (lats[j] - lats[num_pts]) * (lons[i] - lons[num_pts]);
+            j = i;
+        }
+        let winding_order = if winding_sum < 0.0 {
+            WindingOrder::CCW
+        } else {
+            WindingOrder::CW
+        };
+
+        Ok(Self {
+            lats,
+            lons,
+            holes,
+            min_lat,
+            max_lat,
+            min_lon,
+            max_lon,
+            winding_order,
+        })
+    }
+
+    /// Returns the smallest latitude of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `Polygon.minLat`.
+    pub fn min_lat(&self) -> f64 {
+        self.min_lat
+    }
+
+    /// Returns the largest latitude of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `Polygon.maxLat`.
+    pub fn max_lat(&self) -> f64 {
+        self.max_lat
+    }
+
+    /// Returns the smallest longitude of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `Polygon.minLon`.
+    pub fn min_lon(&self) -> f64 {
+        self.min_lon
+    }
+
+    /// Returns the largest longitude of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `Polygon.maxLon`.
+    pub fn max_lon(&self) -> f64 {
+        self.max_lon
+    }
+
+    /// Returns the winding order of the polygon shell.
+    ///
+    /// Equivalent to `Polygon.getWindingOrder()`.
+    pub fn get_winding_order(&self) -> WindingOrder {
+        self.winding_order
+    }
+
+    /// Returns the number of holes.
+    ///
+    /// Equivalent to `Polygon.numHoles()`.
+    pub fn num_holes(&self) -> usize {
+        self.holes.len()
+    }
+
+    /// Returns the hole at `i`.
+    ///
+    /// Equivalent to the package-private `Polygon.getHole(int)`.
+    pub fn get_hole(&self, i: usize) -> &Polygon {
+        &self.holes[i]
+    }
+
+    /// Returns the latitude at `vertex`.
+    ///
+    /// Equivalent to `Polygon.getPolyLat(int)`.
+    pub fn get_polylat(&self, vertex: usize) -> f64 {
+        self.lats[vertex]
+    }
+
+    /// Returns the longitude at `vertex`.
+    ///
+    /// Equivalent to `Polygon.getPolyLon(int)`.
+    pub fn get_polylon(&self, vertex: usize) -> f64 {
+        self.lons[vertex]
+    }
+
+    /// Renders a vertex ring as a GeoJSON coordinate array.
+    ///
+    /// Equivalent to `Polygon.verticesToGeoJSON(double[], double[])`.
+    pub fn vertices_to_geojson(lats: &[f64], lons: &[f64]) -> String {
+        let mut sb = String::from("[");
+        for i in 0..lats.len() {
+            // `StringBuilder.append(double)`: Java's `Double.toString`.
+            sb.push_str(&format!(
+                "[{}, {}]",
+                crate::util::java_fmt::double_to_string(lons[i]),
+                crate::util::java_fmt::double_to_string(lats[i])
+            ));
+            if i != lats.len() - 1 {
+                sb.push_str(", ");
+            }
+        }
+        sb.push(']');
+        sb
+    }
+
+    /// Renders the polygon and its holes as GeoJSON.
+    ///
+    /// Equivalent to `Polygon.toGeoJSON()`.
+    pub fn to_geojson(&self) -> String {
+        let mut sb = String::from("[");
+        sb.push_str(&Self::vertices_to_geojson(&self.lats, &self.lons));
+        for hole in &self.holes {
+            sb.push(',');
+            sb.push_str(&Self::vertices_to_geojson(&hole.lats, &hole.lons));
+        }
+        sb.push(']');
+        sb
+    }
+
+    /// Parses a standard GeoJSON polygon string.
+    ///
+    /// The type of the incoming GeoJSON object must be `Polygon` or
+    /// `MultiPolygon`, optionally embedded under a `type: Feature`. A `Polygon`
+    /// returns a length-1 vector, a `MultiPolygon` one or more.
+    ///
+    /// Equivalent to `Polygon.fromGeoJSON(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseException`] describing the offending character offset,
+    /// exactly as Java's `java.text.ParseException` does.
+    pub fn from_geojson(geojson: &str) -> std::result::Result<Vec<Polygon>, ParseException> {
+        SimpleGeoJSONPolygonParser::new(geojson).parse()
+    }
+
+    /// Returns how many vertices the outer ring has.
+    pub fn num_points(&self) -> usize {
+        self.lats.len()
+    }
+
+    /// Returns the outer ring's latitudes.
+    pub fn get_polylats(&self) -> &[f64] {
+        &self.lats
+    }
+
+    /// Returns the outer ring's longitudes.
+    pub fn get_polylons(&self) -> &[f64] {
+        &self.lons
+    }
+
+    /// Returns the holes.
+    pub fn get_holes(&self) -> &[Polygon] {
+        &self.holes
+    }
+
+    /// Returns the bounding box of the outer ring.
+    pub fn bounding_box(&self) -> Result<Rectangle> {
+        let min_lat = self.lats.iter().copied().fold(f64::MAX, f64::min);
+        let max_lat = self.lats.iter().copied().fold(f64::MIN, f64::max);
+        let min_lon = self.lons.iter().copied().fold(f64::MAX, f64::min);
+        let max_lon = self.lons.iter().copied().fold(f64::MIN, f64::max);
+        Rectangle::new(min_lat, max_lat, min_lon, max_lon)
+    }
+
+    /// Returns this polygon's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Polygon#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result = 1i32;
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(polygon_array_hash_code(&self.holes));
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(double_array_hash_code(&self.lats));
+        result
+            .wrapping_mul(PRIME)
+            .wrapping_add(double_array_hash_code(&self.lons))
+    }
+}
+
+/// A circle on the globe, given by a centre and a radius in metres.
+///
+/// Equivalent to `org.apache.lucene.geo.Circle`.
+#[derive(Clone, Copy, Debug)]
+pub struct Circle {
+    lat: f64,
+    lon: f64,
+    radius_meters: f64,
+}
+
+impl Circle {
+    /// Creates the circle.
+    pub fn new(lat: f64, lon: f64, radius_meters: f64) -> Result<Self> {
+        GeoUtils::check_latitude(lat)?;
+        GeoUtils::check_longitude(lon)?;
+        if radius_meters <= 0.0 || !radius_meters.is_finite() {
+            return Err(LuceneError::illegal_argument(format!(
+                "radiusMeters: '{}' is invalid",
+                crate::util::java_fmt::double_to_string(radius_meters)
+            )));
+        }
+        Ok(Self {
+            lat,
+            lon,
+            radius_meters,
+        })
+    }
+
+    /// Returns the centre's latitude.
+    pub fn get_lat(&self) -> f64 {
+        self.lat
+    }
+
+    /// Returns the centre's longitude.
+    pub fn get_lon(&self) -> f64 {
+        self.lon
+    }
+
+    /// Returns the radius, in metres.
+    pub fn get_radius(&self) -> f64 {
+        self.radius_meters
+    }
+
+    /// Returns this circle's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.Circle#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result = double_hash_code(self.lat);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.lon));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(double_hash_code(self.radius_meters))
+    }
+}
+
+/// A single point in the cartesian plane.
+///
+/// Equivalent to `org.apache.lucene.geo.XYPoint`.
+#[derive(Clone, Copy, Debug)]
+pub struct XYPoint {
+    x: f32,
+    y: f32,
+}
+
+impl XYPoint {
+    /// Creates the point, checking both coordinates are finite.
+    pub fn new(x: f32, y: f32) -> Result<Self> {
+        Ok(Self {
+            x: XYEncodingUtils::check_val(x)?,
+            y: XYEncodingUtils::check_val(y)?,
+        })
+    }
+
+    /// Returns the x coordinate.
+    pub fn get_x(&self) -> f32 {
+        self.x
+    }
+
+    /// Returns the y coordinate.
+    pub fn get_y(&self) -> f32 {
+        self.y
+    }
+
+    /// Returns this point's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYPoint#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = float_hash_code(self.x);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(float_hash_code(self.y))
+    }
+}
+
+/// An axis-aligned box in the cartesian plane.
+///
+/// Equivalent to `org.apache.lucene.geo.XYRectangle`.
+#[derive(Clone, Copy, Debug)]
+pub struct XYRectangle {
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+impl XYRectangle {
+    /// Creates the box.
+    pub fn new(min_x: f32, max_x: f32, min_y: f32, max_y: f32) -> Result<Self> {
+        let min_x = XYEncodingUtils::check_val(min_x)?;
+        let max_x = XYEncodingUtils::check_val(max_x)?;
+        let min_y = XYEncodingUtils::check_val(min_y)?;
+        let max_y = XYEncodingUtils::check_val(max_y)?;
+        if min_x > max_x {
+            return Err(LuceneError::illegal_argument(
+                "minX must be lower than maxX".to_string(),
+            ));
+        }
+        if min_y > max_y {
+            return Err(LuceneError::illegal_argument(
+                "minY must be lower than maxY".to_string(),
+            ));
+        }
+        Ok(Self {
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        })
+    }
+
+    /// Returns the smallest x.
+    pub fn min_x(&self) -> f32 {
+        self.min_x
+    }
+
+    /// Returns the largest x.
+    pub fn max_x(&self) -> f32 {
+        self.max_x
+    }
+
+    /// Returns the smallest y.
+    pub fn min_y(&self) -> f32 {
+        self.min_y
+    }
+
+    /// Returns the largest y.
+    pub fn max_y(&self) -> f32 {
+        self.max_y
+    }
+
+    /// Returns whether `(x, y)` falls inside the box.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
+    }
+
+    /// Returns this box's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYRectangle#hashCode`. Java widens
+    /// the `int` returned by `Float.floatToIntBits` into the `long` `temp`
+    /// before folding it with `temp >>> 32`, so a negative bit pattern is
+    /// sign-extended and the fold inverts it. That widening is reproduced here.
+    pub fn hash_code(&self) -> i32 {
+        let mut temp = i64::from(self.min_x.to_bits() as i32);
+        let mut result = (temp ^ ((temp as u64) >> 32) as i64) as i32;
+        temp = i64::from(self.min_y.to_bits() as i32);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add((temp ^ ((temp as u64) >> 32) as i64) as i32);
+        temp = i64::from(self.max_x.to_bits() as i32);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add((temp ^ ((temp as u64) >> 32) as i64) as i32);
+        temp = i64::from(self.max_y.to_bits() as i32);
+        result
+            .wrapping_mul(31)
+            .wrapping_add((temp ^ ((temp as u64) >> 32) as i64) as i32)
+    }
+}
+
+/// A connected sequence of points in the cartesian plane.
+///
+/// Equivalent to `org.apache.lucene.geo.XYLine`.
+#[derive(Clone, Debug)]
+pub struct XYLine {
+    xs: Vec<f32>,
+    ys: Vec<f32>,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+impl XYLine {
+    /// Creates the line from parallel coordinate arrays.
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`x must not be null`, `y must not be null`).
+    pub fn new(xs: impl Into<Option<Vec<f32>>>, ys: impl Into<Option<Vec<f32>>>) -> Result<Self> {
+        let Some(xs) = xs.into() else {
+            return Err(LuceneError::illegal_argument(
+                "x must not be null".to_string(),
+            ));
+        };
+        let Some(ys) = ys.into() else {
+            return Err(LuceneError::illegal_argument(
+                "y must not be null".to_string(),
+            ));
+        };
+        if xs.len() != ys.len() {
+            return Err(LuceneError::illegal_argument(
+                "x and y must be equal length".to_string(),
+            ));
+        }
+        if xs.len() < 2 {
+            return Err(LuceneError::illegal_argument(
+                "at least 2 line points required".to_string(),
+            ));
+        }
+        // compute bounding box
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = -f32::MAX;
+        let mut max_y = -f32::MAX;
+        for i in 0..xs.len() {
+            min_x = XYEncodingUtils::check_val(xs[i])?.min(min_x);
+            min_y = XYEncodingUtils::check_val(ys[i])?.min(min_y);
+            max_x = xs[i].max(max_x);
+            max_y = ys[i].max(max_y);
+        }
+        Ok(Self {
+            xs,
+            ys,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        })
+    }
+
+    /// Returns the smallest x of this line's bounding box.
+    ///
+    /// Equivalent to the public field `XYLine.minX`.
+    pub fn min_x(&self) -> f32 {
+        self.min_x
+    }
+
+    /// Returns the largest x of this line's bounding box.
+    ///
+    /// Equivalent to the public field `XYLine.maxX`.
+    pub fn max_x(&self) -> f32 {
+        self.max_x
+    }
+
+    /// Returns the smallest y of this line's bounding box.
+    ///
+    /// Equivalent to the public field `XYLine.minY`.
+    pub fn min_y(&self) -> f32 {
+        self.min_y
+    }
+
+    /// Returns the largest y of this line's bounding box.
+    ///
+    /// Equivalent to the public field `XYLine.maxY`.
+    pub fn max_y(&self) -> f32 {
+        self.max_y
+    }
+
+    /// Returns the x coordinate at `vertex`.
+    ///
+    /// Equivalent to `XYLine.getX(int)`.
+    pub fn get_x_at(&self, vertex: usize) -> f32 {
+        self.xs[vertex]
+    }
+
+    /// Returns the y coordinate at `vertex`.
+    ///
+    /// Equivalent to `XYLine.getY(int)`.
+    pub fn get_y_at(&self, vertex: usize) -> f32 {
+        self.ys[vertex]
+    }
+
+    /// Returns how many vertices the line has.
+    pub fn num_points(&self) -> usize {
+        self.xs.len()
+    }
+
+    /// Returns the x coordinates.
+    pub fn get_x(&self) -> &[f32] {
+        &self.xs
+    }
+
+    /// Returns the y coordinates.
+    pub fn get_y(&self) -> &[f32] {
+        &self.ys
+    }
+
+    /// Returns this line's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYLine#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let result = float_array_hash_code(&self.xs);
+        result
+            .wrapping_mul(31)
+            .wrapping_add(float_array_hash_code(&self.ys))
+    }
+}
+
+/// A closed ring in the cartesian plane, optionally with holes.
+///
+/// Equivalent to `org.apache.lucene.geo.XYPolygon`.
+#[derive(Clone, Debug)]
+pub struct XYPolygon {
+    xs: Vec<f32>,
+    ys: Vec<f32>,
+    holes: Vec<XYPolygon>,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+    winding_order: WindingOrder,
+}
+
+impl XYPolygon {
+    /// Creates the polygon. The ring must close itself.
+    ///
+    /// A `null` array (`None`) raises Java's `IllegalArgumentException`
+    /// (`x must not be null`, `y must not be null`).
+    pub fn new(
+        xs: impl Into<Option<Vec<f32>>>,
+        ys: impl Into<Option<Vec<f32>>>,
+        holes: Vec<XYPolygon>,
+    ) -> Result<Self> {
+        let Some(xs) = xs.into() else {
+            return Err(LuceneError::illegal_argument(
+                "x must not be null".to_string(),
+            ));
+        };
+        let Some(ys) = ys.into() else {
+            return Err(LuceneError::illegal_argument(
+                "y must not be null".to_string(),
+            ));
+        };
+        if xs.len() != ys.len() {
+            return Err(LuceneError::illegal_argument(
+                "x and y must be equal length".to_string(),
+            ));
+        }
+        if xs.len() < 4 {
+            return Err(LuceneError::illegal_argument(
+                "at least 4 polygon points required".to_string(),
+            ));
+        }
+        if xs[0] != xs[xs.len() - 1] || ys[0] != ys[ys.len() - 1] {
+            return Err(LuceneError::illegal_argument(
+                "first and last points of the polygon must be the same (it must close itself)"
+                    .to_string(),
+            ));
+        }
+        for inner in &holes {
+            if !inner.holes.is_empty() {
+                return Err(LuceneError::illegal_argument(
+                    "holes may not contain holes: polygons may not nest.".to_string(),
+                ));
+            }
+        }
+
+        // compute bounding box
+        let mut min_x = XYEncodingUtils::check_val(xs[0])?;
+        let mut max_x = xs[0];
+        let mut min_y = XYEncodingUtils::check_val(ys[0])?;
+        let mut max_y = ys[0];
+
+        let mut winding_sum = 0.0f64;
+        let num_pts = xs.len() - 1;
+        let mut j = 0usize;
+        for i in 1..num_pts {
+            min_x = XYEncodingUtils::check_val(xs[i])?.min(min_x);
+            max_x = xs[i].max(max_x);
+            min_y = XYEncodingUtils::check_val(ys[i])?.min(min_y);
+            max_y = ys[i].max(max_y);
+            // compute signed area
+            winding_sum += f64::from(
+                (xs[j] - xs[num_pts]) * (ys[i] - ys[num_pts])
+                    - (ys[j] - ys[num_pts]) * (xs[i] - xs[num_pts]),
+            );
+            j = i;
+        }
+        // Java only validates the vertices the bounding-box loop visits; the
+        // closing vertex equals the first one, which was validated above.
+        let winding_order = if winding_sum < 0.0 {
+            WindingOrder::CCW
+        } else {
+            WindingOrder::CW
+        };
+
+        Ok(Self {
+            xs,
+            ys,
+            holes,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            winding_order,
+        })
+    }
+
+    /// Returns the smallest x of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `XYPolygon.minX`.
+    pub fn min_x(&self) -> f32 {
+        self.min_x
+    }
+
+    /// Returns the largest x of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `XYPolygon.maxX`.
+    pub fn max_x(&self) -> f32 {
+        self.max_x
+    }
+
+    /// Returns the smallest y of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `XYPolygon.minY`.
+    pub fn min_y(&self) -> f32 {
+        self.min_y
+    }
+
+    /// Returns the largest y of this polygon's bounding box.
+    ///
+    /// Equivalent to the public field `XYPolygon.maxY`.
+    pub fn max_y(&self) -> f32 {
+        self.max_y
+    }
+
+    /// Returns the winding order of the polygon shell.
+    ///
+    /// Equivalent to `XYPolygon.getWindingOrder()`.
+    pub fn get_winding_order(&self) -> WindingOrder {
+        self.winding_order
+    }
+
+    /// Returns the number of holes.
+    ///
+    /// Equivalent to `XYPolygon.numHoles()`.
+    pub fn num_holes(&self) -> usize {
+        self.holes.len()
+    }
+
+    /// Returns the hole at `i`.
+    ///
+    /// Equivalent to the package-private `XYPolygon.getHole(int)`.
+    pub fn get_hole(&self, i: usize) -> &XYPolygon {
+        &self.holes[i]
+    }
+
+    /// Returns the x coordinate at `vertex`.
+    ///
+    /// Equivalent to `XYPolygon.getPolyX(int)`.
+    pub fn get_polyx_at(&self, vertex: usize) -> f32 {
+        self.xs[vertex]
+    }
+
+    /// Returns the y coordinate at `vertex`.
+    ///
+    /// Equivalent to `XYPolygon.getPolyY(int)`.
+    pub fn get_polyy_at(&self, vertex: usize) -> f32 {
+        self.ys[vertex]
+    }
+
+    /// Renders a vertex ring as a GeoJSON coordinate array.
+    ///
+    /// Equivalent to `XYPolygon.verticesToGeoJSON(float[], float[])`.
+    pub fn vertices_to_geojson(xs: &[f32], ys: &[f32]) -> String {
+        let mut sb = String::from("[");
+        for i in 0..xs.len() {
+            // `StringBuilder.append(float)`: Java's `Float.toString`.
+            sb.push_str(&format!(
+                "[{}, {}]",
+                crate::util::java_fmt::float_to_string(xs[i]),
+                crate::util::java_fmt::float_to_string(ys[i])
+            ));
+            if i != xs.len() - 1 {
+                sb.push_str(", ");
+            }
+        }
+        sb.push(']');
+        sb
+    }
+
+    /// Returns how many vertices the outer ring has.
+    pub fn num_points(&self) -> usize {
+        self.xs.len()
+    }
+
+    /// Returns the outer ring's x coordinates.
+    pub fn get_polyx(&self) -> &[f32] {
+        &self.xs
+    }
+
+    /// Returns the outer ring's y coordinates.
+    pub fn get_polyy(&self) -> &[f32] {
+        &self.ys
+    }
+
+    /// Returns the holes.
+    pub fn get_holes(&self) -> &[XYPolygon] {
+        &self.holes
+    }
+
+    /// Returns this polygon's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYPolygon#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result = 1i32;
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(xy_polygon_array_hash_code(&self.holes));
+        result = result
+            .wrapping_mul(PRIME)
+            .wrapping_add(float_array_hash_code(&self.xs));
+        result
+            .wrapping_mul(PRIME)
+            .wrapping_add(float_array_hash_code(&self.ys))
+    }
+}
+
+/// A circle in the cartesian plane.
+///
+/// Equivalent to `org.apache.lucene.geo.XYCircle`.
+#[derive(Clone, Copy, Debug)]
+pub struct XYCircle {
+    x: f32,
+    y: f32,
+    radius: f32,
+}
+
+impl XYCircle {
+    /// Creates the circle.
+    ///
+    /// Equivalent to `XYCircle(float x, float y, float radius)`
+    /// (`XYCircle.java:44-54`): the radius is checked first, positive then
+    /// finite, then the centre.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with Java's message for a radius that
+    /// is not positive or not finite, or an invalid centre coordinate.
+    pub fn new(x: f32, y: f32, radius: f32) -> Result<Self> {
+        if radius <= 0.0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be bigger than 0, got {}",
+                crate::util::java_fmt::float_to_string(radius)
+            )));
+        }
+        if !radius.is_finite() {
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be finite, got {}",
+                crate::util::java_fmt::float_to_string(radius)
+            )));
+        }
+        let x = XYEncodingUtils::check_val(x)?;
+        let y = XYEncodingUtils::check_val(y)?;
+        Ok(Self { x, y, radius })
+    }
+
+    /// Returns the centre's x coordinate.
+    pub fn get_x(&self) -> f32 {
+        self.x
+    }
+
+    /// Returns the centre's y coordinate.
+    pub fn get_y(&self) -> f32 {
+        self.y
+    }
+
+    /// Returns the radius.
+    pub fn get_radius(&self) -> f32 {
+        self.radius
+    }
+
+    /// Returns this circle's hash code.
+    ///
+    /// Equivalent to `org.apache.lucene.geo.XYCircle#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        let mut result = float_hash_code(self.x);
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(float_hash_code(self.y));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(float_hash_code(self.radius))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Rectangle: static helpers
+// -----------------------------------------------------------------------------
+
+impl Rectangle {
+    /// Maximum error of [`Rectangle::axis_lat`]; callers must be prepared to
+    /// handle it.
+    ///
+    /// Equivalent to `Rectangle.AXISLAT_ERROR`.
+    pub const AXISLAT_ERROR: f64 = (0.1 / GeoUtils::EARTH_MEAN_RADIUS_METERS) * (180.0 / PI);
+
+    /// Returns whether the rectangle given by the four bounds contains the
+    /// `(lat, lon)` point.
+    ///
+    /// Equivalent to `Rectangle.containsPoint(...)`. Note this static helper,
+    /// unlike [`Rectangle::contains`], does not handle dateline crossing.
+    pub fn contains_point(
+        lat: f64,
+        lon: f64,
+        min_lat: f64,
+        max_lat: f64,
+        min_lon: f64,
+        max_lon: f64,
+    ) -> bool {
+        lat >= min_lat && lat <= max_lat && lon >= min_lon && lon <= max_lon
+    }
+
+    /// Computes the bounding box of a circle using WGS-84 parameters.
+    ///
+    /// Equivalent to `Rectangle.fromPointDistance(double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the centre coordinates are
+    /// out of range.
+    pub fn from_point_distance(
+        center_lat: f64,
+        center_lon: f64,
+        radius_meters: f64,
+    ) -> Result<Rectangle> {
+        GeoUtils::check_latitude(center_lat)?;
+        GeoUtils::check_longitude(center_lon)?;
+        let rad_lat = center_lat.to_radians();
+        let rad_lon = center_lon.to_radians();
+        // LUCENE-7143
+        let rad_distance = (radius_meters + 7E-2) / GeoUtils::EARTH_MEAN_RADIUS_METERS;
+        let mut min_lat = rad_lat - rad_distance;
+        let mut max_lat = rad_lat + rad_distance;
+        let min_lon;
+        let max_lon;
+
+        if min_lat > GeoUtils::min_lat_radians() && max_lat < GeoUtils::max_lat_radians() {
+            let delta_lon =
+                SloppyMath::asin(SloppyMath::sin(rad_distance) / SloppyMath::cos(rad_lat));
+            let mut lo = rad_lon - delta_lon;
+            if lo < GeoUtils::min_lon_radians() {
+                lo += 2.0 * PI;
+            }
+            let mut hi = rad_lon + delta_lon;
+            if hi > GeoUtils::max_lon_radians() {
+                hi -= 2.0 * PI;
+            }
+            min_lon = lo;
+            max_lon = hi;
+        } else {
+            // a pole is within the distance
+            min_lat = min_lat.max(GeoUtils::min_lat_radians());
+            max_lat = max_lat.min(GeoUtils::max_lat_radians());
+            min_lon = GeoUtils::min_lon_radians();
+            max_lon = GeoUtils::max_lon_radians();
+        }
+
+        Rectangle::new(
+            min_lat.to_degrees(),
+            max_lat.to_degrees(),
+            min_lon.to_degrees(),
+            max_lon.to_degrees(),
+        )
+    }
+
+    /// Calculates the latitude at which a circle touches the meridians of its
+    /// bounding box.
+    ///
+    /// Equivalent to `Rectangle.axisLat(double, double)`. The returned value is
+    /// within [`Rectangle::AXISLAT_ERROR`] of the exact one.
+    pub fn axis_lat(center_lat: f64, radius_meters: f64) -> f64 {
+        // A spherical triangle with:
+        // r is the radius of the circle in radians
+        // l1 is the latitude of the circle center
+        // l2 is the latitude of the point at which the circle intersects its bbox longitudes
+        // We know r is tangent to the bbox meridians at l2, therefore it is a right angle, and
+        // from the law of cosines cos(l1) = cos(r) * cos(l2), so l2 = acos(cos(l1) / cos(r)).
+        const PIO2: f64 = PI / 2.0;
+        let mut l1 = center_lat.to_radians();
+        let r = (radius_meters + 7E-2) / GeoUtils::EARTH_MEAN_RADIUS_METERS;
+
+        // if we are within radius range of a pole, the lat is the pole itself
+        if l1.abs() + r >= GeoUtils::max_lat_radians() {
+            return if center_lat >= 0.0 {
+                GeoUtils::MAX_LAT_INCL
+            } else {
+                GeoUtils::MIN_LAT_INCL
+            };
+        }
+
+        // adjust l1 as distance from closest pole, to form a right triangle with bbox meridians
+        // and ensure it is in the range (0, PI/2]
+        l1 = if center_lat >= 0.0 {
+            PIO2 - l1
+        } else {
+            l1 + PIO2
+        };
+
+        let mut l2 = (l1.cos() / r.cos()).acos();
+        debug_assert!(!l2.is_nan());
+
+        // now adjust back to range [-pi/2, pi/2], ie latitude in radians
+        l2 = if center_lat >= 0.0 {
+            PIO2 - l2
+        } else {
+            l2 - PIO2
+        };
+
+        l2.to_degrees()
+    }
+
+    /// Returns the bounding box over an array of polygons.
+    ///
+    /// Equivalent to `Rectangle.fromPolygon(Polygon[])`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the resulting bounds are
+    /// not a valid rectangle, which for an empty input is always the case.
+    pub fn from_polygon(polygons: &[Polygon]) -> Result<Rectangle> {
+        // compute bounding box
+        let mut min_lat = f64::INFINITY;
+        let mut max_lat = f64::NEG_INFINITY;
+        let mut min_lon = f64::INFINITY;
+        let mut max_lon = f64::NEG_INFINITY;
+
+        for p in polygons {
+            min_lat = p.min_lat().min(min_lat);
+            max_lat = p.max_lat().max(max_lat);
+            min_lon = p.min_lon().min(min_lon);
+            max_lon = p.max_lon().max(max_lon);
+        }
+
+        Rectangle::new(min_lat, max_lat, min_lon, max_lon)
+    }
+}
+
+impl std::fmt::Display for Rectangle {
+    /// Equivalent to `Rectangle.toString()`.
+    ///
+    /// The coordinates go through
+    /// `double_to_string`
+    /// because Java concatenates them with `Double.toString`, which prints
+    /// `10.0` where Rust's `Display` prints `10`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Rectangle(lat={} TO {} lon={} TO {}",
+            crate::search::similarities::java_fmt::double_to_string(self.min_lat),
+            crate::search::similarities::java_fmt::double_to_string(self.max_lat),
+            crate::search::similarities::java_fmt::double_to_string(self.min_lon),
+            crate::search::similarities::java_fmt::double_to_string(self.max_lon)
+        )?;
+        if self.max_lon < self.min_lon {
+            write!(f, " [crosses dateline!]")?;
+        }
+        write!(f, ")")
+    }
+}
+
+// -----------------------------------------------------------------------------
+// XYRectangle: static helpers
+// -----------------------------------------------------------------------------
+
+impl XYRectangle {
+    /// Computes the bounding box of a circle in cartesian geometry.
+    ///
+    /// Equivalent to `XYRectangle.fromPointDistance(float, float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the centre is not finite,
+    /// or when the radius is negative or not finite.
+    pub fn from_point_distance(x: f32, y: f32, radius: f32) -> Result<XYRectangle> {
+        XYEncodingUtils::check_val(x)?;
+        XYEncodingUtils::check_val(y)?;
+        if radius < 0.0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be bigger than 0, got {}",
+                crate::util::java_fmt::float_to_string(radius)
+            )));
+        }
+        if !radius.is_finite() {
+            return Err(LuceneError::illegal_argument(format!(
+                "radius must be finite, got {}",
+                crate::util::java_fmt::float_to_string(radius)
+            )));
+        }
+        // LUCENE-9243: We round up the bounding box to avoid numerical errors.
+        let distance_box = next_up_f32(radius);
+        let min_x = (-f32::MAX).max(x - distance_box);
+        let max_x = f32::MAX.min(x + distance_box);
+        let min_y = (-f32::MAX).max(y - distance_box);
+        let max_y = f32::MAX.min(y + distance_box);
+        XYRectangle::new(min_x, max_x, min_y, max_y)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Geometry / LatLonGeometry / XYGeometry
+// -----------------------------------------------------------------------------
+
+/// Base behaviour shared by [`LatLonGeometry`] and [`XYGeometry`].
+///
+/// Equivalent to `org.apache.lucene.geo.Geometry`. Java declares
+/// `toComponent2D()` `protected`; Rust has no `protected`, so the method is
+/// part of the public trait surface.
+pub trait Geometry {
+    /// Returns the [`Component2D`] this geometry relates against.
+    ///
+    /// Equivalent to `Geometry.toComponent2D()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the geometry cannot be
+    /// turned into a component, mirroring the `IllegalArgumentException` the
+    /// Java factories throw.
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>>;
+}
+
+/// A geometry expressed in latitude/longitude degrees.
+///
+/// Equivalent to `org.apache.lucene.geo.LatLonGeometry`.
+pub trait LatLonGeometry: Geometry {}
+
+impl dyn LatLonGeometry + '_ {
+    /// Creates a [`Component2D`] from the provided geometries.
+    ///
+    /// Equivalent to `LatLonGeometry.create(LatLonGeometry...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `geometries` is empty, as
+    /// Java throws `IllegalArgumentException`. Java also rejects `null`
+    /// entries; Rust's type system rules those out.
+    pub fn create(geometries: &[&dyn LatLonGeometry]) -> Result<Arc<dyn Component2D>> {
+        if geometries.is_empty() {
+            return Err(LuceneError::illegal_argument(
+                "geometries must not be empty".to_string(),
+            ));
+        }
+        if geometries.len() == 1 {
+            return geometries[0].to_component2d();
+        }
+        let mut components = Vec::with_capacity(geometries.len());
+        for g in geometries {
+            components.push(g.to_component2d()?);
+        }
+        Ok(crate::geo::ComponentTree::create(components))
+    }
+}
+
+/// A geometry expressed in cartesian coordinates.
+///
+/// Equivalent to `org.apache.lucene.geo.XYGeometry`.
+pub trait XYGeometry: Geometry {}
+
+impl dyn XYGeometry + '_ {
+    /// Creates a [`Component2D`] from the provided geometries.
+    ///
+    /// Equivalent to `XYGeometry.create(XYGeometry...)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `geometries` is empty, as
+    /// Java throws `IllegalArgumentException`.
+    pub fn create(geometries: &[&dyn XYGeometry]) -> Result<Arc<dyn Component2D>> {
+        if geometries.is_empty() {
+            return Err(LuceneError::illegal_argument(
+                "geometries must not be empty".to_string(),
+            ));
+        }
+        if geometries.len() == 1 {
+            return geometries[0].to_component2d();
+        }
+        let mut components = Vec::with_capacity(geometries.len());
+        for g in geometries {
+            components.push(g.to_component2d()?);
+        }
+        Ok(crate::geo::ComponentTree::create(components))
+    }
+}
+
+impl Geometry for Point {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Point2D::create_from_point(self)
+    }
+}
+impl LatLonGeometry for Point {}
+
+impl Geometry for Rectangle {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Rectangle2D::create_from_rectangle(self)
+    }
+}
+impl LatLonGeometry for Rectangle {}
+
+impl Geometry for Line {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Ok(Line2D::create_from_line(self))
+    }
+}
+impl LatLonGeometry for Line {}
+
+impl Geometry for Polygon {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Polygon2D::create_from_polygon(self)
+    }
+}
+impl LatLonGeometry for Polygon {}
+
+impl Geometry for Circle {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Circle2D::create_from_circle(self)
+    }
+}
+impl LatLonGeometry for Circle {}
+
+impl Geometry for XYPoint {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Ok(Point2D::create_from_xy_point(self))
+    }
+}
+impl XYGeometry for XYPoint {}
+
+impl Geometry for XYRectangle {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Ok(Rectangle2D::create_from_xy_rectangle(self))
+    }
+}
+impl XYGeometry for XYRectangle {}
+
+impl Geometry for XYLine {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Ok(Line2D::create_from_xy_line(self))
+    }
+}
+impl XYGeometry for XYLine {}
+
+impl Geometry for XYPolygon {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Polygon2D::create_from_xy_polygon(self)
+    }
+}
+impl XYGeometry for XYPolygon {}
+
+impl Geometry for XYCircle {
+    fn to_component2d(&self) -> Result<Arc<dyn Component2D>> {
+        Ok(Circle2D::create_from_xy_circle(self))
+    }
+}
+impl XYGeometry for XYCircle {}
+
+// -----------------------------------------------------------------------------
+// Object contract: `toString`
+// -----------------------------------------------------------------------------
+//
+// Lucene builds every one of these strings by concatenation, so the exact text
+// depends on `Double.toString` and `Float.toString` rather than on Rust's own
+// float rendering, which prints `35` where Java prints `35.0` and
+// `0.0001` where Java prints `1.0E-4`. The renderings live in
+// [`java_fmt`](crate::search::similarities::java_fmt) and are used verbatim
+// here.
+
+use crate::search::similarities::java_fmt::{double_to_string, float_to_string};
+
+impl std::fmt::Display for Point {
+    /// Equivalent to `Point.toString()`, which prints the longitude first.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Point({},{})",
+            double_to_string(self.lon),
+            double_to_string(self.lat)
+        )
+    }
+}
+
+impl std::fmt::Display for Line {
+    /// Equivalent to `Line.toString()`, which prints one `[lon, lat]` pair per
+    /// vertex with no separator between pairs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Line(")?;
+        for i in 0..self.lats.len() {
+            write!(
+                f,
+                "[{}, {}]",
+                double_to_string(self.lons[i]),
+                double_to_string(self.lats[i])
+            )?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::fmt::Display for Polygon {
+    /// Equivalent to `Polygon.toString()`, which prints one `[lat, lon] ` pair
+    /// per vertex — note the trailing space — and appends the holes through
+    /// `Arrays.toString` when there are any.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Polygon")?;
+        for i in 0..self.lats.len() {
+            write!(
+                f,
+                "[{}, {}] ",
+                double_to_string(self.lats[i]),
+                double_to_string(self.lons[i])
+            )?;
+        }
+        if !self.holes.is_empty() {
+            f.write_str(", holes=")?;
+            write_java_array(f, &self.holes)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Circle {
+    /// Equivalent to `Circle.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Circle([{},{}] radius = {} meters)",
+            double_to_string(self.lat),
+            double_to_string(self.lon),
+            double_to_string(self.radius_meters)
+        )
+    }
+}
+
+impl std::fmt::Display for XYPoint {
+    /// Equivalent to `XYPoint.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYPoint({},{})",
+            float_to_string(self.x),
+            float_to_string(self.y)
+        )
+    }
+}
+
+impl std::fmt::Display for XYRectangle {
+    /// Equivalent to `XYRectangle.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYRectangle(x={} TO {} y={} TO {})",
+            float_to_string(self.min_x),
+            float_to_string(self.max_x),
+            float_to_string(self.min_y),
+            float_to_string(self.max_y)
+        )
+    }
+}
+
+impl std::fmt::Display for XYCircle {
+    /// Equivalent to `XYCircle.toString()`, which — unlike
+    /// [`Circle`] — prints no unit after the radius.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "XYCircle([{},{}] radius = {})",
+            float_to_string(self.x),
+            float_to_string(self.y),
+            float_to_string(self.radius)
+        )
+    }
+}
+
+impl std::fmt::Display for XYLine {
+    /// Equivalent to `XYLine.toString()`, which prints one `[x, y]` pair per
+    /// vertex with no separator between pairs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("XYLine(")?;
+        for i in 0..self.xs.len() {
+            write!(
+                f,
+                "[{}, {}]",
+                float_to_string(self.xs[i]),
+                float_to_string(self.ys[i])
+            )?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl std::fmt::Display for XYPolygon {
+    /// Equivalent to `XYPolygon.toString()`, which prints one `[x, y] ` pair
+    /// per vertex — note the trailing space — and appends the holes through
+    /// `Arrays.toString` when there are any.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("XYPolygon")?;
+        for i in 0..self.xs.len() {
+            write!(
+                f,
+                "[{}, {}] ",
+                float_to_string(self.xs[i]),
+                float_to_string(self.ys[i])
+            )?;
+        }
+        if !self.holes.is_empty() {
+            f.write_str(", holes=")?;
+            write_java_array(f, &self.holes)?;
+        }
+        Ok(())
+    }
+}
+
+/// Renders a slice the way `java.util.Arrays.toString(Object[])` does:
+/// `[first, second]`, with each element rendered by its own `toString`.
+fn write_java_array<T: std::fmt::Display>(
+    f: &mut std::fmt::Formatter<'_>,
+    values: &[T],
+) -> std::fmt::Result {
+    f.write_str("[")?;
+    for (i, value) in values.iter().enumerate() {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{value}")?;
+    }
+    f.write_str("]")
+}
+
+/// The bits `java.lang.Double.doubleToLongBits(double)` produces: the raw bits,
+/// except that every `NaN` collapses to the canonical quiet `NaN`.
+///
+/// It is what makes Java's `equals`/`hashCode` pairs on floating-point fields
+/// consistent, and reproducing it is the only way a port can be consistent in
+/// the same way.
+pub(crate) fn java_double_to_long_bits(value: f64) -> u64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        value.to_bits()
+    }
+}
+
+/// The bits `java.lang.Float.floatToIntBits(float)` produces, the `f32`
+/// counterpart of [`java_double_to_long_bits`]: `Float.compare` and
+/// `Arrays.equals(float[], float[])` both decide equality on them, so the XY
+/// geometries below must too.
+pub(crate) fn java_float_to_int_bits(value: f32) -> u32 {
+    if value.is_nan() {
+        0x7fc0_0000
+    } else {
+        value.to_bits()
+    }
+}
+
+impl PartialEq for Rectangle {
+    /// Equivalent to `Rectangle.equals(Object)`, which compares each coordinate
+    /// with `Double.compare` rather than with `==`.
+    fn eq(&self, other: &Self) -> bool {
+        java_double_to_long_bits(self.min_lat) == java_double_to_long_bits(other.min_lat)
+            && java_double_to_long_bits(self.min_lon) == java_double_to_long_bits(other.min_lon)
+            && java_double_to_long_bits(self.max_lat) == java_double_to_long_bits(other.max_lat)
+            && java_double_to_long_bits(self.max_lon) == java_double_to_long_bits(other.max_lon)
+    }
+}
+
+impl Eq for Rectangle {}
+
+impl std::hash::Hash for Rectangle {
+    /// Consistent with [`PartialEq`], and built from the same bits Java's
+    /// `Rectangle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_double_to_long_bits(self.min_lat).hash(state);
+        java_double_to_long_bits(self.min_lon).hash(state);
+        java_double_to_long_bits(self.max_lat).hash(state);
+        java_double_to_long_bits(self.max_lon).hash(state);
+    }
+}
+
+impl PartialEq for Point {
+    /// Equivalent to `Point.equals(Object)`: Point.equals compares each coordinate with `Double.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_double_to_long_bits(self.lat) == java_double_to_long_bits(other.lat)
+            && java_double_to_long_bits(self.lon) == java_double_to_long_bits(other.lon)
+    }
+}
+
+impl Eq for Point {}
+
+impl std::hash::Hash for Point {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Point.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_double_to_long_bits(self.lat).hash(state);
+        java_double_to_long_bits(self.lon).hash(state);
+    }
+}
+
+impl PartialEq for Circle {
+    /// Equivalent to `Circle.equals(Object)`: Circle.equals compares lat, lon and radiusMeters with `Double.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_double_to_long_bits(self.lat) == java_double_to_long_bits(other.lat)
+            && java_double_to_long_bits(self.lon) == java_double_to_long_bits(other.lon)
+            && java_double_to_long_bits(self.radius_meters)
+                == java_double_to_long_bits(other.radius_meters)
+    }
+}
+
+impl Eq for Circle {}
+
+impl std::hash::Hash for Circle {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Circle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_double_to_long_bits(self.lat).hash(state);
+        java_double_to_long_bits(self.lon).hash(state);
+        java_double_to_long_bits(self.radius_meters).hash(state);
+    }
+}
+
+impl PartialEq for XYPoint {
+    /// Equivalent to `XYPoint.equals(Object)`: XYPoint.equals compares x and y with `Float.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_float_to_int_bits(self.x) == java_float_to_int_bits(other.x)
+            && java_float_to_int_bits(self.y) == java_float_to_int_bits(other.y)
+    }
+}
+
+impl Eq for XYPoint {}
+
+impl std::hash::Hash for XYPoint {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYPoint.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_float_to_int_bits(self.x).hash(state);
+        java_float_to_int_bits(self.y).hash(state);
+    }
+}
+
+impl PartialEq for XYCircle {
+    /// Equivalent to `XYCircle.equals(Object)`: XYCircle.equals compares x, y and radius with `Float.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_float_to_int_bits(self.x) == java_float_to_int_bits(other.x)
+            && java_float_to_int_bits(self.y) == java_float_to_int_bits(other.y)
+            && java_float_to_int_bits(self.radius) == java_float_to_int_bits(other.radius)
+    }
+}
+
+impl Eq for XYCircle {}
+
+impl std::hash::Hash for XYCircle {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYCircle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_float_to_int_bits(self.x).hash(state);
+        java_float_to_int_bits(self.y).hash(state);
+        java_float_to_int_bits(self.radius).hash(state);
+    }
+}
+
+impl PartialEq for XYRectangle {
+    /// Equivalent to `XYRectangle.equals(Object)`: XYRectangle.equals compares its four bounds with `Float.compare`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        java_float_to_int_bits(self.min_x) == java_float_to_int_bits(other.min_x)
+            && java_float_to_int_bits(self.max_x) == java_float_to_int_bits(other.max_x)
+            && java_float_to_int_bits(self.min_y) == java_float_to_int_bits(other.min_y)
+            && java_float_to_int_bits(self.max_y) == java_float_to_int_bits(other.max_y)
+    }
+}
+
+impl Eq for XYRectangle {}
+
+impl std::hash::Hash for XYRectangle {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYRectangle.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        java_float_to_int_bits(self.min_x).hash(state);
+        java_float_to_int_bits(self.max_x).hash(state);
+        java_float_to_int_bits(self.min_y).hash(state);
+        java_float_to_int_bits(self.max_y).hash(state);
+    }
+}
+
+impl PartialEq for Line {
+    /// Equivalent to `Line.equals(Object)`: Line.equals compares its coordinate arrays with `Arrays.equals(double[], double[])`, which decides on `doubleToLongBits`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.lats
+            .iter()
+            .map(|v| java_double_to_long_bits(*v))
+            .eq(other.lats.iter().map(|v| java_double_to_long_bits(*v)))
+            && self
+                .lons
+                .iter()
+                .map(|v| java_double_to_long_bits(*v))
+                .eq(other.lons.iter().map(|v| java_double_to_long_bits(*v)))
+    }
+}
+
+impl Eq for Line {}
+
+impl std::hash::Hash for Line {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Line.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for v in &self.lats {
+            java_double_to_long_bits(*v).hash(state);
+        }
+        for v in &self.lons {
+            java_double_to_long_bits(*v).hash(state);
+        }
+    }
+}
+
+impl PartialEq for XYLine {
+    /// Equivalent to `XYLine.equals(Object)`: XYLine.equals compares its coordinate arrays with `Arrays.equals(float[], float[])`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.xs
+            .iter()
+            .map(|v| java_float_to_int_bits(*v))
+            .eq(other.xs.iter().map(|v| java_float_to_int_bits(*v)))
+            && self
+                .ys
+                .iter()
+                .map(|v| java_float_to_int_bits(*v))
+                .eq(other.ys.iter().map(|v| java_float_to_int_bits(*v)))
+    }
+}
+
+impl Eq for XYLine {}
+
+impl std::hash::Hash for XYLine {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYLine.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for v in &self.xs {
+            java_float_to_int_bits(*v).hash(state);
+        }
+        for v in &self.ys {
+            java_float_to_int_bits(*v).hash(state);
+        }
+    }
+}
+
+impl PartialEq for Polygon {
+    /// Equivalent to `Polygon.equals(Object)`: Polygon.equals compares the holes and the coordinate arrays, the latter with `Arrays.equals(double[], double[])`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.holes == other.holes
+            && self
+                .lats
+                .iter()
+                .map(|v| java_double_to_long_bits(*v))
+                .eq(other.lats.iter().map(|v| java_double_to_long_bits(*v)))
+            && self
+                .lons
+                .iter()
+                .map(|v| java_double_to_long_bits(*v))
+                .eq(other.lons.iter().map(|v| java_double_to_long_bits(*v)))
+    }
+}
+
+impl Eq for Polygon {}
+
+impl std::hash::Hash for Polygon {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `Polygon.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.holes.hash(state);
+        for v in &self.lats {
+            java_double_to_long_bits(*v).hash(state);
+        }
+        for v in &self.lons {
+            java_double_to_long_bits(*v).hash(state);
+        }
+    }
+}
+
+impl PartialEq for XYPolygon {
+    /// Equivalent to `XYPolygon.equals(Object)`: XYPolygon.equals compares the holes and the coordinate arrays with `Arrays.equals(float[], float[])`, not with `==`. The two
+    /// disagree on signed zero, and Lucene's choice is the one the query cache
+    /// sees.
+    fn eq(&self, other: &Self) -> bool {
+        self.holes == other.holes
+            && self
+                .xs
+                .iter()
+                .map(|v| java_float_to_int_bits(*v))
+                .eq(other.xs.iter().map(|v| java_float_to_int_bits(*v)))
+            && self
+                .ys
+                .iter()
+                .map(|v| java_float_to_int_bits(*v))
+                .eq(other.ys.iter().map(|v| java_float_to_int_bits(*v)))
+    }
+}
+
+impl Eq for XYPolygon {}
+
+impl std::hash::Hash for XYPolygon {
+    /// Consistent with [`PartialEq`], over the same bits Java's
+    /// `XYPolygon.hashCode()` folds together.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.holes.hash(state);
+        for v in &self.xs {
+            java_float_to_int_bits(*v).hash(state);
+        }
+        for v in &self.ys {
+            java_float_to_int_bits(*v).hash(state);
+        }
+    }
+}
+
+#[cfg(test)]
+mod signed_zero_equality_tests {
+
+    /// Regression test (rmp #358, `BaseXYPointTestCase.testDistanceInf`):
+    /// `XYCircle.java:44-54` rejects an infinite radius as not finite and a
+    /// negative one as not bigger than 0, with Java's messages.
+    #[test]
+    fn xy_circle_rejects_a_bad_radius_with_java_messages() {
+        let message = |r: f32| match XYCircle::new(18.0, 19.0, r) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
+                ..
+            }) => m,
+            other => panic!("expected IllegalArgumentException, got {other:?}"),
+        };
+        assert_eq!(
+            message(f32::INFINITY),
+            "radius must be finite, got Infinity"
+        );
+        assert_eq!(
+            message(f32::NEG_INFINITY),
+            "radius must be bigger than 0, got -Infinity"
+        );
+        assert_eq!(message(0.0), "radius must be bigger than 0, got 0.0");
+        assert_eq!(message(f32::NAN), "radius must be finite, got NaN");
+    }
+
+    use super::*;
+
+    use crate::error::LuceneErrorKind;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of<T: Hash>(value: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Lucene decides these types' equality with `Double.compare`,
+    /// `Float.compare` or `Arrays.equals`, all of which compare the *bits*.
+    /// Rust's derived `PartialEq` is IEEE 754, and the two disagree on signed
+    /// zero: `-0.0 == 0.0` is true for IEEE and false for `Double.compare`.
+    /// These geometries reach `LRUQueryCache` through the spatial queries, where
+    /// equality and hashing decide whether a cached entry may be served, so the
+    /// difference is observable rather than academic.
+    ///
+    /// Each case fails if a type goes back to deriving `PartialEq`.
+    #[test]
+    fn negative_zero_is_not_equal_to_positive_zero() {
+        assert_ne!(
+            Point::new(-0.0, 1.0).unwrap(),
+            Point::new(0.0, 1.0).unwrap(),
+            "Point compares coordinates with Double.compare"
+        );
+        assert_ne!(
+            Circle::new(-0.0, 1.0, 5.0).unwrap(),
+            Circle::new(0.0, 1.0, 5.0).unwrap(),
+            "Circle compares lat, lon and radiusMeters with Double.compare"
+        );
+        assert_ne!(
+            XYPoint::new(-0.0, 1.0).unwrap(),
+            XYPoint::new(0.0, 1.0).unwrap(),
+            "XYPoint compares x and y with Float.compare"
+        );
+        assert_ne!(
+            XYCircle::new(-0.0, 1.0, 5.0).unwrap(),
+            XYCircle::new(0.0, 1.0, 5.0).unwrap(),
+            "XYCircle compares x, y and radius with Float.compare"
+        );
+        assert_ne!(
+            XYRectangle::new(-0.0, 1.0, 2.0, 3.0).unwrap(),
+            XYRectangle::new(0.0, 1.0, 2.0, 3.0).unwrap(),
+            "XYRectangle compares its four bounds with Float.compare"
+        );
+        assert_ne!(
+            Rectangle::new(-0.0, 1.0, 2.0, 3.0).unwrap(),
+            Rectangle::new(0.0, 1.0, 2.0, 3.0).unwrap(),
+            "Rectangle compares its four bounds with Double.compare"
+        );
+    }
+
+    /// The array-valued geometries decide on `Arrays.equals`, which compares
+    /// `doubleToLongBits`/`floatToIntBits` element by element.
+    #[test]
+    fn negative_zero_is_not_equal_inside_a_coordinate_array() {
+        let a = Line::new(vec![-0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        let b = Line::new(vec![0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        assert_ne!(a, b, "Line compares its arrays with Arrays.equals");
+
+        let a = XYLine::new(vec![-0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        let b = XYLine::new(vec![0.0, 1.0], vec![2.0, 3.0]).unwrap();
+        assert_ne!(a, b, "XYLine compares its arrays with Arrays.equals");
+
+        let a = Polygon::new(vec![-0.0, 1.0, 1.0, -0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        let b = Polygon::new(vec![0.0, 1.0, 1.0, 0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        assert_ne!(a, b, "Polygon compares its arrays with Arrays.equals");
+
+        let a =
+            XYPolygon::new(vec![-0.0, 1.0, 1.0, -0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        let b = XYPolygon::new(vec![0.0, 1.0, 1.0, 0.0], vec![0.0, 0.0, 1.0, 0.0], vec![]).unwrap();
+        assert_ne!(a, b, "XYPolygon compares its arrays with Arrays.equals");
+    }
+
+    /// `Hash` must agree with `Eq`: two values that compare equal must hash
+    /// alike, and the signed-zero pair above must not be forced to.
+    #[test]
+    fn hashing_agrees_with_equality() {
+        let a = Point::new(1.5, 2.5).unwrap();
+        let b = Point::new(1.5, 2.5).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(hash_of(&a), hash_of(&b), "equal points must hash alike");
+
+        let neg = Point::new(-0.0, 2.5).unwrap();
+        let pos = Point::new(0.0, 2.5).unwrap();
+        assert_ne!(neg, pos);
+        assert_ne!(
+            hash_of(&neg),
+            hash_of(&pos),
+            "Java hashes these from doubleToLongBits, which differ"
+        );
+    }
+}

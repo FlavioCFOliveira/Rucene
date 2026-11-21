@@ -1,0 +1,17 @@
+[package]
+name = "rucene-cli-example"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Command-line example that indexes and searches the USGS earthquake catalog with rucene."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[dependencies]
+rucene = { path = "../.." }
+
+[[bin]]
+name = "rucene-cli"
+path = "src/main.rs"

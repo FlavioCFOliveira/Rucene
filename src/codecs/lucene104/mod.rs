@@ -6,8 +6,7 @@
 //! * [`ForUtil`] — bit-packs 256 integers per block.
 //! * [`PForUtil`] — patched frame-of-reference encoder/decoder.
 //! * [`PostingIndexInput`] — `IndexInput` + `ForUtil` decoding wrapper.
-//! * [`PostingDecodingUtil`] — scalar `split_ints` primitive.
-//! * [`PostingsUtil`] — variable-length postings block helpers.
+//! * [`postings_util`] (`PostingsUtil`) — variable-length postings block helpers.
 //! * [`Lucene104PostingsFormat`] — the postings format wrapper.
 //! * [`Lucene104PostingsWriter`] / [`Lucene104PostingsReader`] — low-level
 //!   postings encode/decode skeletons.
@@ -15,17 +14,16 @@
 pub mod codec;
 pub mod for_util;
 pub mod p_for_util;
-pub mod posting_decoding_util;
 pub mod posting_index_input;
 pub mod postings_format;
 pub mod postings_reader;
 pub mod postings_util;
 pub mod postings_writer;
+pub mod scalar_quantized_vectors;
 
 pub use codec::{Lucene104Codec, Mode};
 pub use for_util::{ForUtil, BLOCK_SIZE as FOR_BLOCK_SIZE, BLOCK_SIZE_LOG2 as FOR_BLOCK_SIZE_LOG2};
 pub use p_for_util::PForUtil;
-pub use posting_decoding_util::PostingDecodingUtil;
 pub use posting_index_input::PostingIndexInput;
 pub use postings_format::{
     Lucene104PostingsFormat, BLOCK_MASK, BLOCK_SIZE, BLOCK_SIZE_LOG2, DOC_CODEC, DOC_EXTENSION,

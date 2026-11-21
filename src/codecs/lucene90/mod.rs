@@ -7,6 +7,9 @@ pub mod points;
 pub mod stored_fields;
 pub mod term_vectors;
 
+pub use crate::codecs::compressing::{
+    DeflateWithPresetDictCompressionMode, LZ4WithPresetDictCompressionMode,
+};
 pub use compound::{Lucene90CompoundFormat, Lucene90CompoundReader};
 pub use doc_values::{
     Lucene90DocValuesConsumer, Lucene90DocValuesFormat, Lucene90DocValuesProducer,

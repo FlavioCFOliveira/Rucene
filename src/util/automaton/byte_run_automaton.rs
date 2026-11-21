@@ -1,0 +1,126 @@
+//! Port of `org.apache.lucene.util.automaton.ByteRunAutomaton`.
+
+use crate::error::{LuceneError, Result};
+use crate::util::Accountable;
+
+use super::automaton::Automaton;
+use super::operations::Operations;
+use super::run_automaton::{ByteRunnable, RunAutomaton};
+use super::utf32_to_utf8::UTF32ToUTF8;
+
+/// Automaton representation for matching UTF-8 bytes.
+///
+/// Equivalent to `org.apache.lucene.util.automaton.ByteRunAutomaton`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ByteRunAutomaton {
+    inner: RunAutomaton,
+}
+
+impl ByteRunAutomaton {
+    /// Java's `hashCode()`, which `ByteRunAutomaton` inherits from
+    /// `RunAutomaton` (`RunAutomaton.java`): see [`RunAutomaton::hash_code`].
+    pub fn hash_code(&self) -> i32 {
+        self.inner.hash_code()
+    }
+
+    /// Converts the incoming automaton to byte-based (with
+    /// [`UTF32ToUTF8`]) first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
+    /// deterministic.
+    pub fn from_utf32(a: Automaton) -> Result<Self> {
+        Self::new(a, false)
+    }
+
+    /// Expert: if `is_binary` is true, the input is already byte-based.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
+    /// deterministic.
+    pub fn new(a: Automaton, is_binary: bool) -> Result<Self> {
+        let binary = if is_binary { a } else { Self::convert(&a)? };
+        Ok(Self {
+            inner: RunAutomaton::new(binary, 256)?,
+        })
+    }
+
+    /// Converts a UTF-32 automaton to the equivalent byte automaton.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the automaton is not
+    /// deterministic, and a resource-limit error if determinizing the byte automaton
+    /// exceeds the work limit.
+    pub fn convert(a: &Automaton) -> Result<Automaton> {
+        if !a.is_deterministic() {
+            return Err(LuceneError::illegal_argument(
+                "Automaton must be deterministic".to_string(),
+            ));
+        }
+        // we checked the input is a DFA, according to Mike this determinization is
+        // contained :)
+        let utf8 = UTF32ToUTF8::new().convert(a);
+        Ok(Operations::determinize(&utf8, i32::MAX)?)
+    }
+
+    /// Returns a reference to the underlying run table.
+    pub fn run_automaton(&self) -> &RunAutomaton {
+        &self.inner
+    }
+
+    /// Returns the source automaton used to build this table.
+    pub fn automaton(&self) -> &Automaton {
+        self.inner.automaton()
+    }
+
+    /// Returns the number of states in the automaton.
+    pub fn size(&self) -> i32 {
+        self.inner.size()
+    }
+
+    /// Returns the acceptance status for the given state.
+    pub fn is_accept(&self, state: i32) -> bool {
+        self.inner.is_accept(state)
+    }
+
+    /// Returns the state obtained by reading the given byte from the given state.
+    pub fn step(&self, state: i32, c: i32) -> i32 {
+        self.inner.step(state, c)
+    }
+
+    /// Returns the array of codepoint class interval start points.
+    pub fn get_char_intervals(&self) -> &[i32] {
+        self.inner.get_char_intervals()
+    }
+}
+
+impl ByteRunnable for ByteRunAutomaton {
+    fn step(&self, state: i32, c: i32) -> i32 {
+        self.inner.step(state, c)
+    }
+
+    fn is_accept(&self, state: i32) -> bool {
+        self.inner.is_accept(state)
+    }
+
+    fn size(&self) -> i32 {
+        self.inner.size()
+    }
+}
+
+impl Accountable for ByteRunAutomaton {
+    /// Returns an estimate of the heap this automaton occupies.
+    ///
+    /// Java's `ByteRunAutomaton extends RunAutomaton` and adds no field of its
+    /// own, so it inherits `RunAutomaton.ramBytesUsed()` unchanged — measured
+    /// against `lucene-core-10.5.0.jar`,
+    /// `shallowSizeOfInstance(ByteRunAutomaton.class)` equals
+    /// `shallowSizeOfInstance(RunAutomaton.class)`. This port composes instead
+    /// of inheriting, so the estimate delegates to the wrapped run automaton.
+    fn ram_bytes_used(&self) -> i64 {
+        self.inner.ram_bytes_used()
+    }
+}

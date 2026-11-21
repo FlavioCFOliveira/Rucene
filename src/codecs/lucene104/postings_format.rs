@@ -1,8 +1,10 @@
 //! Lucene 10.4 postings format.
 //!
-//! This module provides the format wrapper, constants, and skeleton reader/writer
-//! for the Lucene 10.4 postings format. It delegates the terms dictionary side
-//! to the `Lucene103BlockTreeTermsWriter` / `Lucene103BlockTreeTermsReader` from
+//! This module provides the format wrapper and constants of the Lucene 10.4
+//! postings format. The postings themselves are written and read by
+//! `Lucene104PostingsWriter` and `Lucene104PostingsReader` (`postings_writer`,
+//! `postings_reader`); the terms dictionary side is delegated to the
+//! `Lucene103BlockTreeTermsWriter` / `Lucene103BlockTreeTermsReader` from
 //! `crate::codecs::lucene103::blocktree`.
 //!
 //! Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat`.
@@ -13,11 +15,12 @@ use crate::codecs::lucene103::blocktree::{
     Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, DEFAULT_MAX_BLOCK_SIZE,
     DEFAULT_MIN_BLOCK_SIZE,
 };
-use crate::codecs::lucene104::postings_reader::Lucene104PostingsReader;
+use crate::codecs::lucene104::postings_reader::{BlockPostingsEnum, Lucene104PostingsReader};
 use crate::codecs::lucene104::postings_writer::Lucene104PostingsWriter;
 use crate::codecs::postings::{FieldsConsumer, FieldsProducer, PostingsFormat};
 use crate::codecs::state::{SegmentReadState, SegmentWriteState};
 use crate::error::{LuceneError, Result};
+use std::any::TypeId;
 
 // -----------------------------------------------------------------------------
 // Format constants
@@ -131,7 +134,7 @@ impl Lucene104PostingsFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `min_block_size` or
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `min_block_size` or
     /// `max_block_size` are invalid.
     pub fn with_block_sizes(min_term_block_size: i32, max_term_block_size: i32) -> Self {
         Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)
@@ -147,18 +150,20 @@ impl Lucene104PostingsFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `version` is out of range.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `version` is out of range.
     pub fn with_version(
         min_term_block_size: i32,
         max_term_block_size: i32,
         version: i32,
     ) -> Result<Self> {
-        Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
+        // `Lucene104PostingsFormat.java:398-405`: the version first, then the
+        // block sizes.
         if version < VERSION_START || version > VERSION_CURRENT {
-            return Err(LuceneError::IllegalArgument(format!(
-                "Lucene104PostingsFormat version out of range: {version}"
+            return Err(LuceneError::illegal_argument(format!(
+                "Version out of range: {version}"
             )));
         }
+        Lucene103BlockTreeTermsWriter::validate_settings(min_term_block_size, max_term_block_size)?;
         Ok(Self {
             version,
             min_term_block_size,
@@ -179,6 +184,26 @@ impl Lucene104PostingsFormat {
     /// Returns the format version.
     pub fn version(&self) -> i32 {
         self.version
+    }
+
+    /// Returns the identity of the type that implements `ImpactsEnum` in this
+    /// postings format.
+    ///
+    /// This is internally used to help the search layer keep the call sites of
+    /// [`DocIdSetIterator::next_doc`](crate::search::DocIdSetIterator::next_doc)
+    /// and [`advance`](crate::search::DocIdSetIterator::advance) bimorphic at
+    /// most, so that they remain candidates for inlining.
+    ///
+    /// Divergence: Lucene returns a `Class<? extends ImpactsEnum>` object
+    /// (`Lucene104PostingsFormat.java:361-363`). Rust has no `Class` and no
+    /// reflection; the nearest counterpart of a runtime type identity is
+    /// [`std::any::TypeId`], which is what this port returns. The value it
+    /// identifies is the same type Lucene names, [`BlockPostingsEnum`].
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat#getImpactsEnumImpl`.
+    pub fn get_impacts_enum_impl() -> TypeId {
+        TypeId::of::<BlockPostingsEnum>()
     }
 }
 
@@ -201,10 +226,7 @@ impl PostingsFormat for Lucene104PostingsFormat {
         Ok(Box::new(terms_writer))
     }
 
-    fn fields_producer<'a>(
-        &self,
-        state: &SegmentReadState<'a>,
-    ) -> Result<Box<dyn FieldsProducer + 'a>> {
+    fn fields_producer<'a>(&self, state: &SegmentReadState<'a>) -> Result<Box<dyn FieldsProducer>> {
         let postings_reader = Box::new(Lucene104PostingsReader::new(state)?);
         let reader = Lucene103BlockTreeTermsReader::new(postings_reader, state)?;
         Ok(Box::new(reader))
@@ -226,33 +248,17 @@ impl PostingsFormat for Lucene104PostingsFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codecs::postings::{NormsProducer, NumericDocValues};
-    use crate::codecs::stub::{FieldInfo, FieldInfos};
+    use crate::codecs::stub::FieldInfos;
+    use crate::error::LuceneErrorKind;
     use crate::index::SegmentInfo;
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::ByteBuffersDirectory;
     use crate::util::{StringHelper, Version};
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    /// No-op norms producer for testing.
-    #[derive(Debug, Default, Clone)]
-    struct TestNormsProducer;
-
-    impl NumericDocValues for TestNormsProducer {
-        fn get(&self, _doc_id: i32) -> Result<i64> {
-            Ok(0)
-        }
-    }
-
-    impl NormsProducer for TestNormsProducer {
-        fn get_norms(&self, _field_info: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-            Ok(Box::new(TestNormsProducer))
-        }
-    }
-
     fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
         SegmentInfo::new(
-            Arc::new(RamDirectory::default()),
+            Arc::new(ByteBuffersDirectory::default()),
             Version::LUCENE_10_5_0,
             Some(Version::LUCENE_10_5_0),
             name.to_string(),
@@ -263,22 +269,22 @@ mod tests {
             HashMap::new(),
             StringHelper::random_id(),
             HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn crate::store::Directory,
+        dir: &'a Arc<dyn crate::store::Directory>,
         info: &'a SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir,
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(dir),
             info,
             infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         )
     }
@@ -349,16 +355,21 @@ mod tests {
     #[test]
     fn with_version_rejects_out_of_range() {
         let err = Lucene104PostingsFormat::with_version(25, 48, -1).expect_err("bad version");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
     fn fields_consumer_returns_writer() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::default());
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
@@ -366,7 +377,7 @@ mod tests {
             .expect("consumer should build");
 
         consumer
-            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .write(&crate::index::terms::EmptyFields::new(), None)
             .expect("write should succeed on skeleton");
         consumer.close().expect("close should succeed");
 
@@ -379,23 +390,23 @@ mod tests {
 
     #[test]
     fn fields_producer_returns_reader_after_writing_empty_fields() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = FieldInfos::default();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
             .fields_consumer(&write_state)
             .expect("consumer should build");
         consumer
-            .write(&crate::index::EmptyFields::new(), &TestNormsProducer)
+            .write(&crate::index::terms::EmptyFields::new(), None)
             .expect("write should succeed on empty fields");
         consumer.close().expect("close should succeed");
 
         let read_state = test_read_state(dir_ref, &segment_info, &field_infos);
-        let mut producer = format
+        let producer = format
             .fields_producer(&read_state)
             .expect("producer should build");
 

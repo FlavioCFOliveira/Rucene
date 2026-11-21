@@ -1,0 +1,1393 @@
+//! `SegmentMerger` ported from `org.apache.lucene.index`.
+//!
+//! Merges several segments into one by driving each codec's consumer over a
+//! [`MergeState`].
+
+use std::sync::Arc;
+
+use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
+use crate::codecs::stub::BufferedUpdates;
+use crate::codecs::Codec;
+use crate::error::{LuceneError, Result};
+use crate::index::codec_reader::CodecReader;
+use crate::index::field_infos::{FieldInfosBuilder, FieldNumbers};
+use crate::index::merge::MergeState;
+use crate::index::merge_policy::OneMerge;
+use crate::index::segment_info::SegmentInfo;
+use crate::search::Executor;
+use crate::store::{Context, Directory, IOContext};
+use crate::util::{InfoStream, Version};
+
+/// Component name used in this merger's info-stream messages, as Java does.
+const SM: &str = "SM";
+
+/// Merges several segments into one.
+///
+/// Equivalent to `org.apache.lucene.index.SegmentMerger`.
+///
+/// Java shares one `SegmentInfo` object between the merger, its `MergeState`
+/// and the `SegmentWriteState` every codec writer receives, and the merge
+/// mutates it: `minVersion` here (`SegmentMerger.java:89`), the stored-fields
+/// mode attribute in `Lucene90StoredFieldsFormat.fieldsWriter`
+/// (`Lucene90StoredFieldsFormat.java:142`). Here the merge state owns that one
+/// `SegmentInfo` and every write state borrows it, so every phase writes into,
+/// and reads from, the same object; [`into_segment_info`](Self::into_segment_info)
+/// hands it back to the caller.
+///
+/// Like Java's constructor (`SegmentMerger.java:55-75`), this one takes the
+/// intra-merge `Executor` and the `OneMerge` and stores them on the
+/// [`MergeState`], so a codec can parallelise a merge and check for an abort.
+///
+/// **Divergence from Lucene 10.5.0.** The vectors writer receives an
+/// [`OwnedSegmentWriteState`], whose `SegmentInfo` is a copy taken when the
+/// vectors phase starts, because
+/// [`KnnVectorsFormat::fields_writer`](crate::codecs::KnnVectorsFormat::fields_writer)
+/// takes an owned state: its writer outlives the call that creates it. No
+/// vectors writer mutates the `SegmentInfo` — Lucene's only read `maxDoc` —
+/// so nothing that writer could do is lost with the copy.
+pub struct SegmentMerger {
+    codec: Arc<dyn Codec>,
+    /// The info stream every phase reports to.
+    info_stream: Arc<dyn InfoStream>,
+    /// The directory the merged segment is written into.
+    ///
+    /// Java's `directory`, which is not the `SegmentInfo`'s own directory.
+    directory: Arc<dyn Directory>,
+    /// The context every merged file is written with.
+    context: Arc<dyn IOContext>,
+    /// What Java's `SegmentWriteState` receives as `segUpdates`: nothing.
+    seg_updates: BufferedUpdates,
+    /// The state every consumer merges from; it owns the merged segment's
+    /// `SegmentInfo` and merged `FieldInfos`, which every write state borrows.
+    ///
+    /// Its `merge_field_infos` are empty until [`merge`](Self::merge) builds
+    /// them, as Java's `mergeState.mergeFieldInfos` is `null` until
+    /// `mergeFieldInfos()` sets it.
+    pub merge_state: MergeState,
+    /// Builds the merged field infos over the index's global field numbers.
+    ///
+    /// Equivalent to `SegmentMerger.fieldInfosBuilder`
+    /// (`SegmentMerger.java:51, 73`). A field reaches the global numbers only
+    /// when [`merge_field_infos`](Self::merge_field_infos) adds it, which
+    /// [`merge`](Self::merge) does once the merge is known to write a segment.
+    field_infos_builder: FieldInfosBuilder,
+    /// The thread that built [`Self::merge_state`], which is the only thread
+    /// allowed to reach it through [`Self::merge_state`](Self::merge_state).
+    ///
+    /// Equivalent to `SegmentMerger.mergeStateCreationThread`.
+    merge_state_creation_thread: std::thread::ThreadId,
+}
+
+impl SegmentMerger {
+    /// Builds a merger over `readers`, whose merged field infos will be
+    /// numbered by `field_numbers`.
+    ///
+    /// Equivalent to the `SegmentMerger` constructor
+    /// (`SegmentMerger.java:55-96`), which registers no field: `field_numbers`
+    /// is Java's `fieldNumbers`, the index's global field numbers, only handed
+    /// to the builder here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a merge
+    /// context, as Java does, and whatever building the merge state raises.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        readers: &[Arc<dyn CodecReader>],
+        segment_info: SegmentInfo,
+        field_numbers: Arc<FieldNumbers>,
+        codec: Arc<dyn Codec>,
+        directory: Arc<dyn Directory>,
+        context: Arc<dyn IOContext>,
+        info_stream: Arc<dyn InfoStream>,
+        intra_merge_task_executor: Option<Arc<dyn Executor>>,
+        one_merge: Option<OneMerge>,
+    ) -> Result<Self> {
+        // `SegmentMerger.java:65-68`.
+        if context.context() != Context::Merge {
+            let got = match context.context() {
+                Context::Merge => "MERGE",
+                Context::Flush => "FLUSH",
+                Context::Default => "DEFAULT",
+            };
+            return Err(LuceneError::illegal_argument(format!(
+                "IOContext.context should be MERGE; got: {got}"
+            )));
+        }
+        // `this.fieldInfosBuilder = new FieldInfos.Builder(fieldNumbers)`
+        // (`SegmentMerger.java:73`).
+        let field_infos_builder = FieldInfosBuilder::new(field_numbers);
+        // `new MergeState(readers, segmentInfo, infoStream,
+        // intraMergeTaskExecutor, oneMerge)` (`SegmentMerger.java:74-75`): its
+        // merged field infos stay empty, Java's `null`, until
+        // `mergeFieldInfos()` (`SegmentMerger.java:230-237`).
+        let mut merge_state = MergeState::from_readers(
+            readers,
+            segment_info,
+            Arc::clone(&info_stream),
+            intra_merge_task_executor,
+            one_merge,
+        )?;
+
+        // `SegmentMerger.java:76-89`: the merged segment's minimum version is
+        // the oldest of its sources', or unknown as soon as one source does
+        // not know its own.
+        let mut min_version = Some(Version::LATEST);
+        for reader in readers {
+            let Some(leaf_min_version) = reader.get_meta_data().min_version() else {
+                min_version = None;
+                break;
+            };
+            if let Some(current) = min_version {
+                if current.on_or_after(&leaf_min_version) {
+                    min_version = Some(leaf_min_version);
+                }
+            }
+        }
+        let segment_info = merge_state
+            .segment_info
+            .as_mut()
+            .and_then(Arc::get_mut)
+            .expect("the merge state was just built with the merged segment's info, unshared");
+        debug_assert!(
+            segment_info.min_version().is_none(),
+            "The min version should be set by SegmentMerger for merged segments"
+        );
+        segment_info.set_min_version(min_version);
+        // `SegmentMerger.java:90-95`: `getIndexSort() != null`.
+        if let Some(index_sort) = segment_info.index_sort() {
+            if merge_state.info_stream.is_enabled("SM") {
+                merge_state
+                    .info_stream
+                    .message("SM", &format!("index sort during merge: {index_sort}"));
+            }
+        }
+
+        Ok(Self {
+            codec,
+            info_stream,
+            directory,
+            context,
+            seg_updates: BufferedUpdates::default(),
+            merge_state,
+            field_infos_builder,
+            merge_state_creation_thread: std::thread::current().id(),
+        })
+    }
+
+    /// Returns the merged segment's `SegmentInfo`: the one object the merge
+    /// state holds and every write state borrows.
+    ///
+    /// Equivalent to reading `mergeState.segmentInfo`.
+    fn segment_info(&self) -> &SegmentInfo {
+        self.merge_state
+            .segment_info
+            .as_deref()
+            .expect("the merge state was built with the merged segment's info")
+    }
+
+    /// Returns the write state every codec writer of this merge receives.
+    ///
+    /// Equivalent to the `SegmentWriteState` `SegmentMerger.merge()` builds
+    /// over `mergeState.segmentInfo` and `mergeState.mergeFieldInfos`: it
+    /// borrows both from the merge state, so a codec writer mutating the
+    /// `SegmentInfo` mutates the merged segment's own.
+    fn segment_write_state(&self) -> SegmentWriteState<'_> {
+        SegmentWriteState::new(
+            &*self.info_stream,
+            Arc::clone(&self.directory),
+            self.segment_info(),
+            &self.merge_state.merge_field_infos,
+            &self.seg_updates,
+            &*self.context,
+        )
+    }
+
+    /// Returns the state every consumer merges from, checking that the caller
+    /// is the thread that created it.
+    ///
+    /// Equivalent to the private `SegmentMerger.mergeState()`, which guards the
+    /// field with `assert Thread.currentThread() == mergeStateCreationThread`:
+    /// the merge state is not safe to reach from an intra-merge worker, which
+    /// must be handed the pieces it needs instead. The check is a
+    /// `debug_assert!` here, as Java's is an `assert`.
+    fn merge_state(&self) -> &MergeState {
+        debug_assert_eq!(
+            std::thread::current().id(),
+            self.merge_state_creation_thread,
+            "the merge state may only be read from the thread that created it"
+        );
+        &self.merge_state
+    }
+
+    /// Returns whether the merge is worth running: Java skips a merge whose
+    /// output would hold no documents.
+    ///
+    /// Equivalent to `SegmentMerger.shouldMerge()`.
+    pub fn should_merge(&self) -> Result<bool> {
+        Ok(self.segment_info().max_doc()? > 0)
+    }
+
+    /// Runs the merge, writing every kind of data the merged field infos say is
+    /// present.
+    ///
+    /// Equivalent to `SegmentMerger.merge()`. The merged field infos are built
+    /// first, which registers every merged field in the global field numbers
+    /// (`SegmentMerger.java:115-119`); the phase order is then Lucene's:
+    /// stored fields, norms, postings, doc values, points, vectors, term
+    /// vectors, then the field infos.
+    pub fn merge(&mut self) -> Result<()> {
+        if !self.should_merge()? {
+            return Err(LuceneError::illegal_state(
+                "Merge would result in 0 document segment".to_string(),
+            ));
+        }
+        self.merge_field_infos()?;
+
+        let num_merged = self.merge_with_logging_count(Self::merge_fields, "stored fields")?;
+        debug_assert_eq!(
+            num_merged,
+            self.segment_info().max_doc()?,
+            "numMerged does not match the merged segment's maxDoc"
+        );
+
+        let field_infos = &self.merge_state.merge_field_infos;
+        let has_norms = field_infos.has_norms();
+        let has_doc_values = field_infos.has_doc_values();
+        let has_points = field_infos.has_point_values();
+        let has_vectors = field_infos.has_vector_values();
+        let has_term_vectors = field_infos.has_term_vectors();
+
+        if has_norms {
+            self.merge_with_logging(Self::merge_norms, "norms", num_merged)?;
+        }
+
+        // `mergeTerms` always runs; it creates the postings consumer only when
+        // the merged field infos have postings (`SegmentMerger.java:210-228`).
+        let has_norms_for_terms = has_norms;
+        self.merge_with_logging(
+            move |merger| merger.merge_terms(has_norms_for_terms),
+            "postings",
+            num_merged,
+        )?;
+
+        if has_doc_values {
+            self.merge_with_logging(Self::merge_doc_values, "doc values", num_merged)?;
+        }
+
+        if has_points {
+            self.merge_with_logging(Self::merge_points, "points", num_merged)?;
+        }
+
+        if has_vectors {
+            self.merge_with_logging(Self::merge_vector_values, "numeric vectors", num_merged)?;
+        }
+
+        if has_term_vectors {
+            self.merge_with_logging_count(Self::merge_term_vectors, "term vectors")?;
+        }
+
+        // Write the merged infos.
+        self.merge_with_logging(
+            |merger| merger.write_merged_field_infos(),
+            "field infos",
+            num_merged,
+        )
+    }
+
+    /// Copies the stored fields of every document into the merged segment.
+    ///
+    /// Equivalent to `SegmentMerger.mergeFields()`. Returns how many documents
+    /// were written.
+    fn merge_fields(&mut self) -> Result<i32> {
+        let mut writer = self.codec.stored_fields_format().fields_writer(
+            &self.directory,
+            self.segment_info(),
+            &*self.context,
+        )?;
+        // try-with-resources (`SegmentMerger.java:246-251`): the writer is
+        // closed on every exit; a failed merge keeps its own error, with the
+        // close's failure suppressed into it.
+        let merged = writer.merge(self.merge_state());
+        let closed = writer.close();
+        try_with_resources(merged, closed)
+    }
+
+    /// Copies the term vectors of every document into the merged segment.
+    ///
+    /// Equivalent to `SegmentMerger.mergeTermVectors()`.
+    fn merge_term_vectors(&mut self) -> Result<i32> {
+        let mut writer = self.codec.term_vectors_format().vectors_writer(
+            &self.directory,
+            self.segment_info(),
+            &*self.context,
+        )?;
+        // try-with-resources (`SegmentMerger.java:259-266`): the writer is
+        // closed on every exit; a failed merge keeps its own error, with the
+        // close's failure suppressed into it.
+        let merged = writer.merge(self.merge_state());
+        if let Ok(merged) = &merged {
+            debug_assert_eq!(Some(*merged), self.segment_info().max_doc().ok());
+        }
+        let closed = writer.close();
+        try_with_resources(merged, closed)
+    }
+
+    /// Merges the norms.
+    ///
+    /// Equivalent to `SegmentMerger.mergeNorms(SegmentWriteState, SegmentReadState)`.
+    fn merge_norms(&mut self) -> Result<()> {
+        let state = self.segment_write_state();
+        let mut consumer = self.codec.norms_format().norms_consumer(&state)?;
+        // try-with-resources (`SegmentMerger.java:202-207`).
+        let merged = consumer.merge(self.merge_state());
+        let closed = consumer.close();
+        try_with_resources(merged, closed)
+    }
+
+    /// Merges the doc values.
+    ///
+    /// Equivalent to `SegmentMerger.mergeDocValues(SegmentWriteState, SegmentReadState)`.
+    fn merge_doc_values(&mut self) -> Result<()> {
+        let state = self.segment_write_state();
+        let mut consumer = self.codec.doc_values_format().fields_consumer(&state)?;
+        // try-with-resources (`SegmentMerger.java:186-191`).
+        let merged = consumer.merge(self.merge_state());
+        let closed = consumer.close();
+        try_with_resources(merged, closed)
+    }
+
+    /// Merges the points.
+    ///
+    /// Equivalent to `SegmentMerger.mergePoints(SegmentWriteState, SegmentReadState)`.
+    fn merge_points(&mut self) -> Result<()> {
+        let state = self.segment_write_state();
+        let mut writer = self.codec.points_format().fields_writer(&state)?;
+        // try-with-resources (`SegmentMerger.java:194-199`).
+        let merged = writer.merge(self.merge_state());
+        let closed = writer.close();
+        try_with_resources(merged, closed)
+    }
+
+    /// Merges the KNN vectors.
+    ///
+    /// Equivalent to `SegmentMerger.mergeVectorValues(SegmentWriteState, SegmentReadState)`.
+    ///
+    /// The vectors writer takes an owned state, holding a copy of the merged
+    /// segment's `SegmentInfo` taken here; see the type's documentation.
+    fn merge_vector_values(&mut self) -> Result<()> {
+        let state = OwnedSegmentWriteState::new(
+            Arc::clone(&self.info_stream),
+            Arc::clone(&self.directory),
+            self.segment_info().clone(),
+            self.merge_state.merge_field_infos.clone(),
+            BufferedUpdates::default(),
+            Arc::clone(&self.context),
+        );
+        let mut writer = self.codec.knn_vectors_format().fields_writer(&state)?;
+        // try-with-resources (`SegmentMerger.java:269-274`).
+        let merged = writer.merge(self.merge_state());
+        let closed = writer.close();
+        try_with_resources(merged, closed)
+    }
+
+    /// Runs one merge phase and reports how long it took.
+    ///
+    /// Equivalent to `SegmentMerger.mergeWithLogging(VoidMerger, SegmentWriteState, SegmentReadState, String, int)`.
+    fn merge_with_logging<F>(&mut self, merger: F, format_name: &str, num_merged: i32) -> Result<()>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
+        let start = std::time::Instant::now();
+        merger(self)?;
+        if self.info_stream.is_enabled(SM) {
+            self.info_stream.message(
+                SM,
+                &format!(
+                    "{} ms to merge {format_name} [{num_merged} docs]",
+                    start.elapsed().as_millis()
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    /// Runs one merge phase that reports a document count, and logs it.
+    ///
+    /// Equivalent to `SegmentMerger.mergeWithLogging(Merger, String)`.
+    fn merge_with_logging_count<F>(&mut self, merger: F, format_name: &str) -> Result<i32>
+    where
+        F: FnOnce(&mut Self) -> Result<i32>,
+    {
+        let start = std::time::Instant::now();
+        let num_merged = merger(self)?;
+        if self.info_stream.is_enabled(SM) {
+            self.info_stream.message(
+                SM,
+                &format!(
+                    "{} ms to merge {format_name} [{num_merged} docs]",
+                    start.elapsed().as_millis()
+                ),
+            );
+        }
+        Ok(num_merged)
+    }
+
+    /// Merges the postings, supplying the norms the terms writer needs.
+    ///
+    /// Equivalent to `SegmentMerger.mergeTerms(SegmentWriteState,
+    /// SegmentReadState)` (`SegmentMerger.java:210-228`): the merged
+    /// segment's own norms, just written by the norms phase, are read through
+    /// their merge instance — the postings writer takes a fresh iterator over
+    /// it for each term and reads only that term's documents — and the
+    /// postings consumer exists only when the merged field infos have
+    /// postings. The norms producer is closed afterwards, as Java's
+    /// try-with-resources closes it.
+    fn merge_terms(&mut self, has_norms: bool) -> Result<()> {
+        let state = self.segment_write_state();
+
+        let mut norms = if has_norms {
+            let read_state = SegmentReadState::new(
+                &*self.directory,
+                self.segment_info(),
+                &self.merge_state.merge_field_infos,
+                &*self.context,
+            );
+            Some(self.codec.norms_format().norms_producer(&read_state)?)
+        } else {
+            None
+        };
+
+        let merged = (|| -> Result<()> {
+            // Use the merge instance in order to reuse the same input for all
+            // terms.
+            let norms_merge_instance = norms
+                .as_ref()
+                .map(|norms| norms.get_merge_instance())
+                .transpose()?;
+            if self.merge_state.merge_field_infos.has_postings() {
+                let mut consumer = self.codec.postings_format().fields_consumer(&state)?;
+                let merged = consumer.merge(self.merge_state(), norms_merge_instance.as_deref());
+                let closed = consumer.close();
+                try_with_resources(merged, closed)?;
+            }
+            Ok(())
+        })();
+        let closed = norms.as_mut().map_or(Ok(()), |norms| norms.close());
+        try_with_resources(merged, closed)
+    }
+
+    /// Consumes the merger and returns the merged segment's info, carrying
+    /// every change the merge made to it.
+    ///
+    /// Java's caller keeps the `SegmentInfo` object it handed to the merger and
+    /// sees those changes in place; the merger owns it here, so this is how the
+    /// caller gets it back.
+    pub fn into_segment_info(self) -> SegmentInfo {
+        let shared = self
+            .merge_state
+            .segment_info
+            .expect("the merge state was built with the merged segment's info");
+        // Every state derived from this one during the merge has been dropped
+        // by now; should one survive, the object it shares carries the same
+        // changes, so a copy of it loses nothing.
+        Arc::try_unwrap(shared).unwrap_or_else(|shared| (*shared).clone())
+    }
+
+    /// Merges the field infos of every reader into the merged segment's,
+    /// registering each field in the index's global field numbers.
+    ///
+    /// Equivalent to the public `SegmentMerger.mergeFieldInfos()`
+    /// (`SegmentMerger.java:230-237`): every field of every reader is added to
+    /// the builder, in reader order, and the result becomes
+    /// `mergeState.mergeFieldInfos`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever adding a field to the builder raises, such as a
+    /// field whose schema conflicts with the index's.
+    pub fn merge_field_infos(&mut self) -> Result<()> {
+        for reader_field_infos in &self.merge_state.field_infos {
+            for fi in reader_field_infos.iter() {
+                self.field_infos_builder.add(fi)?;
+            }
+        }
+        self.merge_state.merge_field_infos = self.field_infos_builder.finish()?;
+        Ok(())
+    }
+
+    /// Writes the merged field infos.
+    ///
+    /// Equivalent to the private overload `SegmentMerger.mergeFieldInfos(
+    /// SegmentWriteState, SegmentReadState)` (`SegmentMerger.java:179-184`);
+    /// Rust has no overloading, so it carries its own name.
+    fn write_merged_field_infos(&mut self) -> Result<()> {
+        self.codec.field_infos_format().write(
+            &*self.directory,
+            self.segment_info(),
+            "",
+            &self.merge_state.merge_field_infos,
+            &*self.context,
+        )
+    }
+}
+
+/// The outcome of a Java try-with-resources statement whose body produced
+/// `body` and whose resource's `close()` then produced `closed`.
+///
+/// Equivalent to the bytecode `javac` emits for `try (R r = ...) { body }`
+/// (JLS 14.20.3.1): when the body throws, a failing `close()` is attached to
+/// that exception with `Throwable.addSuppressed` and the body's exception is
+/// thrown; when the body completes, a failing `close()` is thrown alone.
+fn try_with_resources<T>(body: Result<T>, closed: Result<()>) -> Result<T> {
+    match (body, closed) {
+        (Err(mut error), Err(suppressed)) => {
+            error.add_suppressed(suppressed);
+            Err(error)
+        }
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{
+        Document, IntPoint, KnnFloatVectorField, NumericDocValuesField, SortedDocValuesField,
+        Store, StoredField, StringField,
+    };
+    use crate::error::LuceneErrorKind;
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::leaf_reader::LeafReader;
+    use crate::index::segment_infos::SegmentInfos;
+    use crate::index::segment_reader::SegmentReader;
+    use crate::index::{FieldNumbers, SegmentCommitInfo};
+    use crate::search::Sort;
+    use crate::search::NO_MORE_DOCS;
+    use crate::store::{ByteBuffersDirectory, DEFAULT_IO_CONTEXT};
+    use crate::util::BytesRef;
+    use std::sync::Mutex;
+
+    /// Writes `segments` committed segments of one stored-only document each
+    /// and returns the directory with their commit infos.
+    fn stored_only_segments(segments: usize) -> (Arc<dyn Directory>, Vec<SegmentCommitInfo>) {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..segments {
+            let mut doc = Document::new();
+            doc.add(StoredField::new_string("id", format!("doc-{i}")).unwrap());
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        assert_eq!(infos.size(), segments);
+        (dir, infos.iter().cloned().collect())
+    }
+
+    /// Writes `segments` committed segments of one document each, whose `id`
+    /// has sorted doc values, under the index sort [`id_sort`], and returns
+    /// the directory with their commit infos.
+    fn segments_sorted_by_id(segments: usize) -> (Arc<dyn Directory>, Vec<SegmentCommitInfo>) {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = IndexWriterConfig::new();
+        config.set_index_sort(id_sort()).unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for i in 0..segments {
+            let mut doc = Document::new();
+            doc.add(SortedDocValuesField::new(
+                "id",
+                BytesRef::new(format!("doc-{i}").into_bytes()),
+            ));
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        assert_eq!(infos.size(), segments);
+        (dir, infos.iter().cloned().collect())
+    }
+
+    /// Builds the merger of `readers` into a segment `_m` of `target`, with a
+    /// merge context, no index sort and no info stream.
+    fn merger_over(readers: &[Arc<dyn CodecReader>], target: &Arc<dyn Directory>) -> SegmentMerger {
+        let context = Arc::from(crate::store::merge_io_context(
+            crate::store::MergeInfo::new(readers.iter().map(|r| r.num_docs()).sum(), -1, false, -1),
+        ));
+        merger_with(
+            readers,
+            target,
+            context,
+            None,
+            Arc::new(crate::util::NoOutputInfoStream),
+        )
+        .unwrap()
+    }
+
+    /// Builds the merger of `readers` into a segment `_m` of `target` sorted
+    /// by `index_sort`, writing with `context` and reporting to `info_stream`.
+    fn merger_with(
+        readers: &[Arc<dyn CodecReader>],
+        target: &Arc<dyn Directory>,
+        context: Arc<dyn IOContext>,
+        index_sort: Option<Sort>,
+        info_stream: Arc<dyn InfoStream>,
+    ) -> Result<SegmentMerger> {
+        let codec = crate::codecs::for_name("Lucene104").unwrap();
+        merger_with_codec(readers, target, context, index_sort, info_stream, codec)
+    }
+
+    /// [`merger_with`] writing through `codec`.
+    fn merger_with_codec(
+        readers: &[Arc<dyn CodecReader>],
+        target: &Arc<dyn Directory>,
+        context: Arc<dyn IOContext>,
+        index_sort: Option<Sort>,
+        info_stream: Arc<dyn InfoStream>,
+        codec: Arc<dyn Codec>,
+    ) -> Result<SegmentMerger> {
+        // `maxDoc` unset: `MergeState` stamps it (`MergeState.java:173`).
+        let segment_info = SegmentInfo::new(
+            Arc::clone(target),
+            Version::LATEST,
+            None,
+            "_m".to_string(),
+            -1,
+            false,
+            false,
+            Arc::clone(&codec),
+            Default::default(),
+            [3u8; 16],
+            Default::default(),
+            index_sort,
+        )
+        .unwrap();
+        SegmentMerger::new(
+            readers,
+            segment_info,
+            Arc::new(FieldNumbers::new(None, None).unwrap()),
+            codec,
+            Arc::clone(target),
+            context,
+            info_stream,
+            None,
+            None,
+        )
+    }
+
+    /// A norms format whose consumer fails its merge when `merge_fails` and
+    /// its close when `close_fails`, each with its own message.
+    #[derive(Debug)]
+    struct FailingNormsFormat {
+        merge_fails: bool,
+        close_fails: bool,
+    }
+
+    #[derive(Debug)]
+    struct FailingNormsConsumer {
+        merge_fails: bool,
+        close_fails: bool,
+    }
+
+    impl crate::codecs::NormsConsumer for FailingNormsConsumer {
+        fn add_norms_field(
+            &mut self,
+            _field: &crate::index::FieldInfo,
+            _values: &dyn crate::codecs::NormsProducer,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn merge(&mut self, _merge_state: &MergeState) -> Result<()> {
+            if self.merge_fails {
+                Err(LuceneError::illegal_state("merge failed"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn close(&mut self) -> Result<()> {
+            if self.close_fails {
+                Err(LuceneError::illegal_state("close failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl crate::codecs::NormsFormat for FailingNormsFormat {
+        fn name(&self) -> &str {
+            "FailingNorms"
+        }
+
+        fn norms_consumer(
+            &self,
+            _state: &SegmentWriteState,
+        ) -> Result<Box<dyn crate::codecs::NormsConsumer>> {
+            Ok(Box::new(FailingNormsConsumer {
+                merge_fails: self.merge_fails,
+                close_fails: self.close_fails,
+            }))
+        }
+
+        fn norms_producer(
+            &self,
+            _state: &SegmentReadState,
+        ) -> Result<Box<dyn crate::codecs::NormsProducer>> {
+            Err(LuceneError::illegal_state("not read"))
+        }
+    }
+
+    fn illegal_state_message(error: &LuceneError) -> &str {
+        match error.kind() {
+            LuceneErrorKind::IllegalState { message, .. } => message,
+            other => panic!("expected an IllegalStateException, got {other:?}"),
+        }
+    }
+
+    /// Regression (#437): every consumer the merger opens is closed as by
+    /// Java's try-with-resources (`SegmentMerger.java:202-207`, JLS 14.20.3.1).
+    /// A failed merge is thrown with the close's failure suppressed into it,
+    /// instead of the close failure being dropped; a close failure after a
+    /// successful merge is thrown alone.
+    #[test]
+    fn a_close_failure_is_suppressed_into_the_merge_failure() {
+        let (_dir, infos) = stored_only_segments(1);
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let merge_with = |merge_fails: bool, close_fails: bool| {
+            let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+            let codec: Arc<dyn Codec> = Arc::new(
+                crate::codecs::FilterCodec::new(
+                    "Lucene104",
+                    crate::codecs::for_name("Lucene104").unwrap(),
+                )
+                .with_norms_format(FailingNormsFormat {
+                    merge_fails,
+                    close_fails,
+                }),
+            );
+            let context = Arc::from(crate::store::merge_io_context(
+                crate::store::MergeInfo::new(1, -1, false, -1),
+            ));
+            let mut merger = merger_with_codec(
+                &readers,
+                &target,
+                context,
+                None,
+                Arc::new(crate::util::NoOutputInfoStream),
+                codec,
+            )
+            .unwrap();
+            merger.merge_norms()
+        };
+
+        let error = merge_with(true, true).unwrap_err();
+        assert_eq!(illegal_state_message(&error), "merge failed");
+        let suppressed = error.get_suppressed();
+        assert_eq!(suppressed.len(), 1);
+        assert_eq!(illegal_state_message(&suppressed[0]), "close failed");
+
+        let error = merge_with(false, true).unwrap_err();
+        assert_eq!(illegal_state_message(&error), "close failed");
+        assert!(error.get_suppressed().is_empty());
+
+        let error = merge_with(true, false).unwrap_err();
+        assert_eq!(illegal_state_message(&error), "merge failed");
+        assert!(error.get_suppressed().is_empty());
+
+        merge_with(false, false).unwrap();
+    }
+
+    /// Records the messages of the components it is enabled for.
+    #[derive(Debug, Default)]
+    struct RecordingInfoStream {
+        messages: Mutex<Vec<(String, String)>>,
+    }
+
+    impl InfoStream for RecordingInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.RecordingInfoStream"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            self.messages
+                .lock()
+                .unwrap()
+                .push((component.to_string(), message.to_string()));
+        }
+
+        fn is_enabled(&self, component: &str) -> bool {
+            component == "SM"
+        }
+
+        fn close(&self) {}
+    }
+
+    /// Opens a reader over `info` after recording `min_version` on it, as if
+    /// the segment had been written, or last merged, by that version.
+    fn reader_with_min_version(
+        info: &SegmentCommitInfo,
+        min_version: Option<Version>,
+        created_version_major: i32,
+    ) -> Arc<dyn CodecReader> {
+        let mut info = info.clone();
+        Arc::make_mut(&mut info.info).set_min_version(min_version);
+        Arc::new(SegmentReader::new(info, created_version_major, &*DEFAULT_IO_CONTEXT).unwrap())
+    }
+
+    /// A merger refuses any context but a merge one, with Java's message
+    /// (`SegmentMerger.java:65-68`); the merge context is accepted.
+    #[test]
+    fn a_merger_needs_a_merge_context() {
+        let (_dir, infos) = stored_only_segments(2);
+        let readers = vec![
+            reader_with_min_version(&infos[0], Some(Version::LUCENE_10_5_0), 10),
+            reader_with_min_version(&infos[1], Some(Version::LUCENE_10_5_0), 10),
+        ];
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let no_output = || Arc::new(crate::util::NoOutputInfoStream) as Arc<dyn InfoStream>;
+        let refused = |context: Arc<dyn IOContext>| match merger_with(
+            &readers,
+            &target,
+            context,
+            None,
+            no_output(),
+        ) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => message,
+            other => panic!("expected an IllegalArgument, got {:?}", other.map(|_| ())),
+        };
+        assert_eq!(
+            refused(Arc::new(
+                crate::store::DefaultIOContext::new(Vec::new()).unwrap()
+            )),
+            "IOContext.context should be MERGE; got: DEFAULT"
+        );
+        assert_eq!(
+            refused(Arc::from(crate::store::flush_io_context(
+                crate::store::FlushInfo::new(2, 0)
+            ))),
+            "IOContext.context should be MERGE; got: FLUSH"
+        );
+        let merge_context = Arc::from(crate::store::merge_io_context(
+            crate::store::MergeInfo::new(2, -1, false, -1),
+        ));
+        assert!(merger_with(&readers, &target, merge_context, None, no_output()).is_ok());
+    }
+
+    /// `MergeState`'s constructor takes Java's parameters: it stamps the
+    /// merged segment's `maxDoc` as the sum of the readers' live documents
+    /// and builds their doc maps (`MergeState.java:170-176`), refusing a
+    /// segment whose `maxDoc` is already set as `SegmentInfo.setMaxDoc` does
+    /// (`SegmentInfo.java:197-203`); the merged field infos stay empty, Java's
+    /// `null`, until `mergeFieldInfos()` (`SegmentMerger.java:230-237`).
+    #[test]
+    fn the_merge_state_stamps_max_doc_and_builds_the_doc_maps() {
+        let (_dir, infos) = stored_only_segments(3);
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LUCENE_10_5_0), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        let state = &merger.merge_state;
+        assert_eq!(state.segment_info.as_ref().unwrap().max_doc().unwrap(), 3);
+        assert_eq!(
+            state.doc_maps.iter().map(|map| map(0)).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(!state.needs_index_sort);
+        assert_eq!(state.merge_field_infos.size(), 0);
+        merger.merge_field_infos().unwrap();
+        assert_eq!(merger.merge_state.merge_field_infos.size(), 1);
+
+        let stamped = merger.into_segment_info();
+        match MergeState::from_readers(
+            &readers,
+            stamped,
+            Arc::new(crate::util::NoOutputInfoStream),
+            None,
+            None,
+        ) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalState { message, .. },
+                ..
+            }) => {
+                assert_eq!(message, "maxDoc was already set: this.maxDoc=3 vs maxDoc=3")
+            }
+            other => panic!("expected an IllegalState, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// A merge into a sorted segment reports the sort on the `SM` component
+    /// with Java's text (`SegmentMerger.java:90-95`); an unsorted one reports
+    /// nothing there. The sources are written under the same sort, as
+    /// `MergeState`'s constructor requires (`MergeState.java:110, 253-268`),
+    /// and their `id` has the sorted doc values the `STRING` sorter reads
+    /// (`SortField.java:604-606`).
+    #[test]
+    fn a_sorted_merge_reports_its_index_sort() {
+        let (_dir, infos) = segments_sorted_by_id(2);
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let messages = |index_sort: Option<Sort>| {
+            let readers: Vec<Arc<dyn CodecReader>> = infos
+                .iter()
+                .map(|info| reader_with_min_version(info, Some(Version::LUCENE_10_5_0), 10))
+                .collect();
+            let stream = Arc::new(RecordingInfoStream::default());
+            let context = Arc::from(crate::store::merge_io_context(
+                crate::store::MergeInfo::new(2, -1, false, -1),
+            ));
+            merger_with(
+                &readers,
+                &target,
+                context,
+                index_sort,
+                Arc::clone(&stream) as Arc<dyn InfoStream>,
+            )
+            .unwrap();
+            let messages = stream.messages.lock().unwrap().clone();
+            messages
+        };
+        assert_eq!(
+            messages(Some(id_sort())),
+            vec![(
+                "SM".to_string(),
+                "index sort during merge: <string: \"id\">".to_string()
+            )]
+        );
+        assert_eq!(messages(None), Vec::new(), "no index sort, no message");
+    }
+
+    /// `MergeState`'s constructor starts with `verifyIndexSort`
+    /// (`MergeState.java:110, 253-268`): a source whose metadata carries no
+    /// sort, or one the merged segment's sort is not a prefix of, is refused
+    /// with Java's message before anything is merged.
+    #[test]
+    fn a_sorted_merge_refuses_sources_without_the_index_sort() {
+        let (_dir, infos) = stored_only_segments(2);
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LUCENE_10_5_0), 10))
+            .collect();
+        let context = Arc::from(crate::store::merge_io_context(
+            crate::store::MergeInfo::new(2, -1, false, -1),
+        ));
+        match merger_with(
+            &readers,
+            &target,
+            context,
+            Some(id_sort()),
+            Arc::new(crate::util::NoOutputInfoStream),
+        ) {
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { message, .. },
+                ..
+            }) => assert_eq!(
+                message,
+                "index sort mismatch: merged segment has sort=<string: \"id\"> but \
+                 to-be-merged segment has sort=null"
+            ),
+            other => panic!("expected an IllegalArgument, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// The index sort the sorted-merge tests use.
+    fn id_sort() -> Sort {
+        Sort::new_fields(vec![crate::search::SortField::new(
+            Some("id".to_string()),
+            crate::search::SortFieldType::String,
+        )
+        .unwrap()])
+        .unwrap()
+    }
+
+    /// `SortField.getIndexSorter()` reads a `STRING` sort through
+    /// `DocValues.getSorted` (`SortField.java:604-606`), which refuses a field
+    /// the reader knows without sorted doc values with
+    /// `IllegalStateException` and reads an absent one as empty values
+    /// (`DocValues.java:206-222, 273-281`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle7/Probe16.java`, case A): both
+    /// `getDocComparator` and `getComparableProviders` throw `unexpected
+    /// docvalues type NONE for field 'stored' (expected=SORTED). Re-index with
+    /// correct docvalues type.`, the same with `NUMERIC` for a numeric field,
+    /// and nothing for an absent field.
+    #[test]
+    fn a_string_index_sorter_refuses_a_field_without_sorted_doc_values() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(StoredField::new_string("stored", "x".to_string()).unwrap());
+        doc.add(NumericDocValuesField::new("numeric", 1));
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let info = infos.iter().next().unwrap().clone();
+        let leaf: Arc<dyn LeafReader> =
+            Arc::new(SegmentReader::new(info, 10, &*DEFAULT_IO_CONTEXT).unwrap());
+        for (field, actual) in [
+            ("stored", Some("NONE")),
+            ("numeric", Some("NUMERIC")),
+            ("absent", None),
+        ] {
+            let sorter = crate::search::SortField::new(
+                Some(field.to_string()),
+                crate::search::SortFieldType::String,
+            )
+            .unwrap()
+            .get_index_sorter()
+            .unwrap();
+            let expected = actual.map(|actual| {
+                format!(
+                    "unexpected docvalues type {actual} for field '{field}' (expected=SORTED). \
+                     Re-index with correct docvalues type."
+                )
+            });
+            let compared = sorter.get_doc_comparator(leaf.as_ref(), 1).map(|_| ());
+            let provided = sorter
+                .get_comparable_providers(std::slice::from_ref(&leaf))
+                .map(|_| ());
+            for outcome in [compared, provided] {
+                match (outcome, &expected) {
+                    (Ok(()), None) => {}
+                    (
+                        Err(LuceneError {
+                            kind: LuceneErrorKind::IllegalState { message, .. },
+                            ..
+                        }),
+                        Some(expected),
+                    ) => {
+                        assert_eq!(&message, expected)
+                    }
+                    (other, _) => panic!("{field}: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// The merged segment records the oldest `minVersion` of its sources, and
+    /// the merger leaves that value on both the merge state and the segment it
+    /// returns (`SegmentMerger.java:76-89`).
+    #[test]
+    fn the_merged_segment_records_the_oldest_source_min_version() {
+        let (_dir, infos) = stored_only_segments(3);
+        let readers = vec![
+            reader_with_min_version(&infos[0], Some(Version::LUCENE_10_4_0), 10),
+            reader_with_min_version(&infos[1], Some(Version::LUCENE_9_12_1), 10),
+            reader_with_min_version(&infos[2], Some(Version::LUCENE_10_5_0), 10),
+        ];
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        assert_eq!(
+            merger
+                .merge_state
+                .segment_info
+                .as_ref()
+                .unwrap()
+                .min_version(),
+            Some(Version::LUCENE_9_12_1)
+        );
+        merger.merge().unwrap();
+        assert_eq!(
+            merger.into_segment_info().min_version(),
+            Some(Version::LUCENE_9_12_1),
+            "the oldest of 10.4.0, 9.12.1 and 10.5.0"
+        );
+    }
+
+    /// rmp #232 (c): a merge creates the postings consumer only when the
+    /// merged field infos have postings (`SegmentMerger.java:222-226`), so
+    /// merging stored-only segments writes no terms dictionary; segments with
+    /// an indexed field (the positive control) do get one.
+    #[test]
+    fn the_postings_are_merged_only_when_a_field_has_postings() {
+        let terms_files = |target: &Arc<dyn Directory>| -> Vec<String> {
+            target
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.starts_with("_m") && (f.ends_with(".tim") || f.ends_with(".doc")))
+                .collect()
+        };
+
+        let (_dir, infos) = stored_only_segments(2);
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        merger.merge().unwrap();
+        assert!(!merger.merge_state.merge_field_infos.has_postings());
+        assert_eq!(terms_files(&target), Vec::<String>::new());
+
+        // Positive control: an indexed field has postings, which are merged.
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..2 {
+            let mut doc = Document::new();
+            doc.add(StringField::new("id", format!("doc-{i}"), Store::NO).unwrap());
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let readers: Vec<Arc<dyn CodecReader>> = infos
+            .iter()
+            .map(|info| reader_with_min_version(info, Some(Version::LATEST), 10))
+            .collect();
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        merger.merge().unwrap();
+        assert!(merger.merge_state.merge_field_infos.has_postings());
+        assert!(!terms_files(&target).is_empty());
+    }
+
+    /// The merge state and every write state share one `SegmentInfo`: what a
+    /// codec writer records on it during the merge is on the merge state's,
+    /// and on the one the merger hands back.
+    ///
+    /// Java passes `mergeState.segmentInfo` to the stored-fields format, which
+    /// records its mode there (`SegmentMerger.java:247-249`,
+    /// `Lucene90StoredFieldsFormat.java:142`).
+    #[test]
+    fn the_merge_state_and_the_codec_writers_share_one_segment_info() {
+        let (_dir, infos) = stored_only_segments(2);
+        let readers = vec![
+            reader_with_min_version(&infos[0], Some(Version::LATEST), 10),
+            reader_with_min_version(&infos[1], Some(Version::LATEST), 10),
+        ];
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut merger = merger_over(&readers, &target);
+        let mode_key = crate::codecs::lucene90::stored_fields::Lucene90StoredFieldsFormat::MODE_KEY;
+        assert_eq!(
+            merger
+                .merge_state
+                .segment_info
+                .as_ref()
+                .unwrap()
+                .get_attribute(mode_key),
+            None,
+            "nothing is recorded before the merge runs"
+        );
+        merger.merge().unwrap();
+        assert_eq!(
+            merger
+                .merge_state
+                .segment_info
+                .as_ref()
+                .unwrap()
+                .get_attribute(mode_key),
+            Some("BEST_SPEED".to_string()),
+            "the stored-fields writer recorded its mode on the merge state's SegmentInfo"
+        );
+        let merged = merger.into_segment_info();
+        assert_eq!(
+            merged.get_attribute(mode_key),
+            Some("BEST_SPEED".to_string())
+        );
+        assert_eq!(merged.max_doc().unwrap(), 2);
+        assert_eq!(merged.min_version(), Some(Version::LATEST));
+    }
+
+    /// One source that does not know its minimum version makes the merged
+    /// segment's unknown too: Java's loop sets `minVersion = null` and stops.
+    #[test]
+    fn one_source_without_a_min_version_leaves_the_merged_one_unknown() {
+        let (_dir, infos) = stored_only_segments(2);
+        // A segment of an index created by Lucene 6 may lack `minVersion`;
+        // `LeafMetaData` allows that only for that major.
+        let readers = vec![
+            reader_with_min_version(&infos[0], Some(Version::LUCENE_10_0_0), 6),
+            reader_with_min_version(&infos[1], None, 6),
+        ];
+        let target: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let merger = merger_over(&readers, &target);
+        assert_eq!(merger.into_segment_info().min_version(), None);
+    }
+
+    /// A segment without a vector field answers "absent" for it through its
+    /// per-field reader, search and merge instances alike — Java's `null`
+    /// (`PerFieldKnnVectorsFormat.java:285-303`) — and a search over it
+    /// collects nothing (`PerFieldKnnVectorsFormat.java:304-326`). The
+    /// scalar-quantized merge relies on the first answer to skip that segment
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:404-406, 449-452`).
+    #[test]
+    fn a_segment_without_a_vector_field_answers_absent_for_it() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(KnnFloatVectorField::with_euclidean("v1", &[0.0, 1.0]).unwrap());
+        doc.add(KnnFloatVectorField::with_euclidean("v2", &[1.0, 0.0]).unwrap());
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        let mut doc = Document::new();
+        doc.add(KnnFloatVectorField::with_euclidean("v1", &[0.0, 2.0]).unwrap());
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        assert_eq!(infos.size(), 2);
+        // The reader stays open while its vectors reader is used: closing the
+        // segment reader closes the core readers it shares.
+        let reader_of = |i: usize| {
+            SegmentReader::new(
+                infos.info(i).clone(),
+                infos.index_created_version_major(),
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap()
+        };
+        let vectors_of = |reader: &SegmentReader| reader.get_vector_reader().unwrap().unwrap();
+
+        // Positive control: the segment that has the field answers it.
+        let reader_0 = reader_of(0);
+        let with_v2 = vectors_of(&reader_0);
+        assert_eq!(
+            with_v2
+                .get_float_vector_values("v2")
+                .unwrap()
+                .unwrap()
+                .size(),
+            1
+        );
+
+        let reader_1 = reader_of(1);
+        let without_v2 = vectors_of(&reader_1);
+        let merge_instance = without_v2.get_merge_instance().unwrap();
+        for reader in [without_v2.as_ref(), merge_instance.as_ref()] {
+            assert!(reader.get_float_vector_values("v2").unwrap().is_none());
+            assert!(reader.get_byte_vector_values("v2").unwrap().is_none());
+            let mut collector = crate::search::knn::TopKnnCollector::new(1, i64::MAX);
+            let mut accept_docs = crate::search::from_live_docs(None, 1).unwrap();
+            reader
+                .search("v2", &[1.0, 0.0], &mut collector, &mut accept_docs)
+                .unwrap();
+            assert!(collector.top_docs_with_scores().is_empty());
+        }
+    }
+
+    /// The merge instance of every producer a merge state holds reads the
+    /// same data as the search instance it came from.
+    ///
+    /// The per-field postings, doc-values and vectors readers answer
+    /// `getMergeInstance()` with a copy whose formats are their own merge
+    /// instances (`PerFieldPostingsFormat.java:276-294`,
+    /// `PerFieldDocValuesFormat.java:263-279`,
+    /// `PerFieldKnnVectorsFormat.java:243-250`), and the block-tree terms and
+    /// points readers inherit the `return this` of their base classes
+    /// (`FieldsProducer.java:50-53`, `PointsReader.java:56-58`).
+    #[test]
+    fn every_merge_instance_reads_what_its_search_instance_reads() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..5i32 {
+            let mut doc = Document::new();
+            doc.add(StringField::new("id", format!("doc-{i}"), Store::NO).unwrap());
+            doc.add(IntPoint::new("rank", &[i * 3]).unwrap());
+            doc.add(NumericDocValuesField::new("dv", i64::from(i) * 7));
+            doc.add(KnnFloatVectorField::with_euclidean("v", &[i as f32, 1.0]).unwrap());
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            infos.index_created_version_major(),
+            &*DEFAULT_IO_CONTEXT,
+        )
+        .unwrap();
+        let field_infos = LeafReader::get_field_infos(&reader);
+
+        // Postings: the per-field reader over the block-tree terms dictionary.
+        let postings = reader.get_postings_reader().unwrap().unwrap();
+        let merge_postings = postings.get_merge_instance().unwrap();
+        assert_eq!(
+            merge_postings.iterator().collect::<Vec<_>>(),
+            postings.iterator().collect::<Vec<_>>()
+        );
+        let terms = |fields: &dyn crate::codecs::postings::FieldsProducer| {
+            let terms = fields.terms("id").unwrap().expect("field id has terms");
+            (terms.size().unwrap(), terms.doc_count().unwrap())
+        };
+        assert_eq!(terms(merge_postings.as_ref()), terms(postings.as_ref()));
+        assert_eq!(terms(merge_postings.as_ref()), (5, 5));
+
+        // Points.
+        let points = reader.get_points_reader().unwrap().unwrap();
+        let merge_points = points.get_merge_instance().unwrap();
+        assert_eq!(
+            merge_points
+                .get_values("rank")
+                .unwrap()
+                .unwrap()
+                .size()
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            merge_points
+                .get_values("rank")
+                .unwrap()
+                .unwrap()
+                .size()
+                .unwrap(),
+            points.get_values("rank").unwrap().unwrap().size().unwrap()
+        );
+
+        // Doc values.
+        let doc_values = reader.get_doc_values_reader().unwrap().unwrap();
+        let merge_doc_values = doc_values.get_merge_instance().unwrap();
+        let dv_field = field_infos.field_info("dv").unwrap().clone();
+        let numeric = |producer: &dyn crate::codecs::DocValuesProducer| {
+            let mut values = producer.get_numeric(&dv_field).unwrap().unwrap();
+            let mut out = Vec::new();
+            loop {
+                let doc = values.next_doc().unwrap();
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                out.push((doc, values.long_value().unwrap()));
+            }
+            out
+        };
+        let expected: Vec<(i32, i64)> = (0..5).map(|i| (i, i64::from(i) * 7)).collect();
+        assert_eq!(numeric(&*merge_doc_values), expected);
+        assert_eq!(numeric(&*doc_values), expected);
+
+        // Vectors: the per-field reader gives the field its own merge instance.
+        let vectors = reader.get_vector_reader().unwrap().unwrap();
+        let merge_vectors = vectors.get_merge_instance().unwrap();
+        let read_vectors = |reader: &dyn crate::codecs::KnnVectorsReader| {
+            let values = reader.get_float_vector_values("v").unwrap().unwrap();
+            let mut iterator = values.iterator().unwrap();
+            let mut out = Vec::new();
+            loop {
+                let doc = iterator.next_doc().unwrap();
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                out.push((doc, values.vector_value(iterator.index()).unwrap()));
+            }
+            out
+        };
+        let expected: Vec<(i32, Vec<f32>)> = (0..5).map(|i| (i, vec![i as f32, 1.0])).collect();
+        assert_eq!(read_vectors(merge_vectors.as_ref()), expected);
+        assert_eq!(read_vectors(vectors.as_ref()), expected);
+    }
+}

@@ -2,22 +2,24 @@
 //! `org.apache.lucene.analysis.tokenattributes`.
 //!
 //! These attributes carry per-token metadata through the analysis pipeline.
-//! Every implementation satisfies [`AttributeImpl`](crate::util::attribute::AttributeImpl)
+//! Every implementation satisfies [`AttributeImpl`]
 //! so it can be stored in an [`AttributeSource`](crate::util::attribute::AttributeSource).
 
 #![deny(unsafe_code)]
 
 use std::any::{Any, TypeId};
+use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter, Write};
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::util::attribute::{Attribute, AttributeImpl, AttributeReflector};
+use crate::util::byte_block_pool::hash_bytes;
 use crate::util::{ArrayUtil, BytesRef, BytesRefBuilder};
 
-/// Produces a lazily-initialized `&'static [TypeId]` that respects the crate's
-/// 1.80 MSRV by computing `TypeId`s at runtime rather than in a `const`
-/// context.
+/// Produces a lazily-initialized `&'static [TypeId]`, computing the `TypeId`s
+/// at runtime because `TypeId::of` is not a `const fn` at the crate's MSRV
+/// (1.89).
 macro_rules! static_type_ids {
     ($($ty:ty),* $(,)?) => {{
         static IDS: OnceLock<&'static [TypeId]> = OnceLock::new();
@@ -28,6 +30,30 @@ macro_rules! static_type_ids {
     }};
 }
 
+/// Reports whether `a` and `b` are the very same attribute instance.
+///
+/// This is the port of the `this == other` reference comparison every
+/// `AttributeImpl` subclass opens its `equals` with; two `&dyn AttributeImpl`
+/// designate the same object exactly when their data pointers agree.
+fn same_instance(a: &dyn AttributeImpl, b: &dyn AttributeImpl) -> bool {
+    std::ptr::eq(
+        a.as_any() as *const dyn Any as *const (),
+        b.as_any() as *const dyn Any as *const (),
+    )
+}
+
+/// Returns the hash Java's `String.hashCode()` computes for `s`.
+///
+/// The `31 * h + c` fold runs over UTF-16 code units in Java; the port folds
+/// `char`s, which agree for every code point in the Basic Multilingual Plane.
+fn java_string_hash_code(s: &str) -> i32 {
+    let mut code: i32 = 0;
+    for c in s.chars() {
+        code = code.wrapping_mul(31).wrapping_add(c as i32);
+    }
+    code
+}
+
 // -----------------------------------------------------------------------------
 // CharTermAttribute
 // -----------------------------------------------------------------------------
@@ -36,6 +62,24 @@ macro_rules! static_type_ids {
 ///
 /// This trait exposes a growable character buffer and append-style builders
 /// similar to Java's `CharSequence` / `Appendable` combination.
+///
+/// # Divergence from Lucene 10.5.0: the buffer holds `char`s
+///
+/// Java's buffer is a `char[]` of UTF-16 code units, where a supplementary
+/// character takes two slots; this buffer holds Rust `char`s, one slot per
+/// Unicode scalar value. The indices and lengths of this trait
+/// ([`length`](Self::length), [`set_length`](Self::set_length),
+/// [`char_at`](Self::char_at), [`sub_sequence`](Self::sub_sequence),
+/// [`append_string_range`](Self::append_string_range), the buffer methods)
+/// therefore count `char`s, where Java's count UTF-16 units. The quantities
+/// Java exposes beyond the buffer count UTF-16 units in the port as in Java:
+/// the offsets a tokenizer computes from a term's length, `finalOffset`,
+/// and the token length limits (`StandardTokenizer`, `MockTokenizer`,
+/// `CharacterUtils.fill`). The one Java state the port cannot hold is a
+/// term or input holding a lone surrogate: a Rust `&str` cannot carry one,
+/// so a Java `setLength` or `subSequence` that cuts a surrogate pair (which
+/// `UnicodeUtil.UTF16toUTF8` would then index as U+FFFD) has no
+/// counterpart; no `lucene-core` component cuts a pair.
 pub trait CharTermAttribute: Attribute {
     /// Copies `length` characters from `buffer` starting at `offset` into the
     /// internal term buffer and sets the term length to `length`.
@@ -80,28 +124,87 @@ pub trait CharTermAttribute: Attribute {
     fn sub_sequence(&self, start: usize, end: usize) -> String;
 
     /// Appends the entire string.
-    fn append_string(&mut self, s: &str);
+    ///
+    /// Equivalent to `append(String)`, `append(StringBuilder)` and
+    /// `append(CharSequence)`: a Java `null` argument is `None`, which
+    /// appends the four characters `null` ("needed for Appendable
+    /// compliance", `CharTermAttributeImpl.java:119-120, 168-169, 178-179`).
+    fn append_string(&mut self, s: Option<&str>);
 
     /// Appends a substring of `s` between `start` and `end`.
+    ///
+    /// Equivalent to `append(CharSequence csq, int start, int end)`: a Java
+    /// `null` `csq` is `None`, which stands for the string `"null"`
+    /// (`CharTermAttributeImpl.java:126-127`).
     ///
     /// # Panics
     ///
     /// Panics if the range is invalid.
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize);
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize);
 
     /// Appends a single character.
     fn append_char(&mut self, c: char);
 
     /// Appends the contents of another `CharTermAttribute`.
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute);
+    ///
+    /// Equivalent to `append(CharTermAttribute)`: a Java `null` argument is
+    /// `None`, which appends the four characters `null`
+    /// (`CharTermAttributeImpl.java:188-189`).
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>);
+
+    /// Appends the characters `start..end` of the term of `csq`.
+    ///
+    /// Equivalent to `CharTermAttributeImpl.append(CharSequence csq, int
+    /// start, int end)` (`CharTermAttributeImpl.java:125-154`) for a `csq`
+    /// that is a `CharTermAttribute`: `Objects.checkFromToIndex(start, end,
+    /// csq.length())`, then the range is copied out of `csq.buffer()` (Java's
+    /// `System.arraycopy` branch); for a range of at most four characters Java
+    /// copies the same characters one `csq.charAt` at a time. The other
+    /// `CharSequence` kinds Java accepts are Rust strings here, appended by
+    /// [`append_string_range`](Self::append_string_range).
+    ///
+    /// # Panics
+    ///
+    /// Panics when the range is outside the term of `csq`, with the message
+    /// of the JDK's `IndexOutOfBoundsException`, `Range [start, end) out of
+    /// bounds for length n`.
+    fn append_char_term_attribute_range(
+        &mut self,
+        csq: &dyn CharTermAttribute,
+        start: usize,
+        end: usize,
+    ) {
+        let csq_length = csq.length();
+        if !(start <= end && end <= csq_length) {
+            throw_index_out_of_bounds(&format!(
+                "Range [{}, {}) out of bounds for length {}",
+                start as i32, end as i32, csq_length as i32
+            ));
+        }
+        let len = end - start;
+        if len == 0 {
+            return;
+        }
+        let term_length = self.length();
+        self.resize_buffer(term_length + len)[term_length..term_length + len]
+            .copy_from_slice(&csq.buffer()[start..end]);
+        self.set_length(term_length + len);
+    }
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl`.
+///
 /// Default implementation of [`CharTermAttribute`], also implementing
 /// [`TermToBytesRefAttribute`].
 pub struct CharTermAttributeImpl {
     term_buffer: Vec<char>,
     term_length: usize,
-    builder: BytesRefBuilder,
+    /// Java's `private BytesRefBuilder builder`, which `getBytesRef()` refills
+    /// for every term (`CharTermAttributeImpl.java:39,92-95`) so that its
+    /// buffer is reused across terms. `getBytesRef()` takes `&self` here, so
+    /// the builder sits behind a lock (an attribute must be `Sync`); nothing
+    /// else holds it, so the lock is never contended within one token stream.
+    builder: Mutex<BytesRefBuilder>,
 }
 
 const MIN_BUFFER_SIZE: usize = 10;
@@ -113,7 +216,7 @@ impl CharTermAttributeImpl {
         Self {
             term_buffer: vec!['\0'; min_size],
             term_length: 0,
-            builder: BytesRefBuilder::new(),
+            builder: Mutex::new(BytesRefBuilder::new()),
         }
     }
 
@@ -126,6 +229,28 @@ impl CharTermAttributeImpl {
             self.term_buffer =
                 vec!['\0'; ArrayUtil::oversize(new_size, std::mem::size_of::<char>())];
         }
+    }
+
+    /// Appends the four characters of `null`.
+    ///
+    /// Java's `Appendable` contract says a null `CharSequence` appends the
+    /// string `"null"`, and every `append` overload routes a null argument
+    /// here: [`append_string`](CharTermAttribute::append_string) and
+    /// [`append_char_term_attribute`](CharTermAttribute::append_char_term_attribute)
+    /// with `None`.
+    ///
+    /// Equivalent to the private
+    /// `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#appendNull`.
+    pub fn append_null(&mut self) {
+        let start_len = self.term_length;
+        {
+            let buf = self.resize_buffer(start_len + 4);
+            buf[start_len] = 'n';
+            buf[start_len + 1] = 'u';
+            buf[start_len + 2] = 'l';
+            buf[start_len + 3] = 'l';
+        }
+        self.term_length += 4;
     }
 }
 
@@ -167,13 +292,17 @@ impl CharTermAttribute for CharTermAttributeImpl {
         &mut self.term_buffer
     }
 
+    /// `Objects.checkFromIndexSize(0, length, termBuffer.length)`
+    /// (`CharTermAttributeImpl.java:77-81`): the JDK's
+    /// `IndexOutOfBoundsException`, with Java's `int` length.
     fn set_length(&mut self, length: usize) {
-        assert!(
-            length <= self.term_buffer.len(),
-            "length {} out of buffer bounds {}",
-            length,
-            self.term_buffer.len()
-        );
+        if length > self.term_buffer.len() {
+            throw_index_out_of_bounds(&format!(
+                "Range [0, 0 + {}) out of bounds for length {}",
+                length as i32,
+                self.term_buffer.len() as i32
+            ));
+        }
         self.term_length = length;
     }
 
@@ -185,25 +314,38 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_length
     }
 
+    /// `Objects.checkIndex(index, termLength)` (`CharTermAttributeImpl.java:104-107`):
+    /// an index past the term panics with the JDK's `IndexOutOfBoundsException`
+    /// message.
     fn char_at(&self, index: usize) -> char {
-        assert!(
-            index < self.term_length,
-            "index {index} out of bounds (length {})",
-            self.term_length
-        );
+        if index >= self.term_length {
+            throw_index_out_of_bounds(&format!(
+                "Index {} out of bounds for length {}",
+                index as i32, self.term_length as i32
+            ));
+        }
         self.term_buffer[index]
     }
 
+    /// `Objects.checkFromToIndex(start, end, termLength)`
+    /// (`CharTermAttributeImpl.java:110-113`): a range outside the term panics
+    /// with the JDK's `IndexOutOfBoundsException` message.
     fn sub_sequence(&self, start: usize, end: usize) -> String {
-        assert!(
-            start <= end && end <= self.term_length,
-            "invalid sub-sequence: start={start}, end={end}, length={}",
-            self.term_length
-        );
+        if !(start <= end && end <= self.term_length) {
+            throw_index_out_of_bounds(&format!(
+                "Range [{}, {}) out of bounds for length {}",
+                start as i32, end as i32, self.term_length as i32
+            ));
+        }
         self.term_buffer[start..end].iter().collect()
     }
 
-    fn append_string(&mut self, s: &str) {
+    fn append_string(&mut self, s: Option<&str>) {
+        let Some(s) = s else {
+            // needed for Appendable compliance
+            self.append_null();
+            return;
+        };
         let len = s.chars().count();
         let start_len = self.term_length;
         {
@@ -215,7 +357,9 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_length += len;
     }
 
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize) {
+        // needed for Appendable compliance
+        let s = s.unwrap_or("null");
         let char_count = s.chars().count();
         assert!(
             start <= end && end <= char_count,
@@ -244,7 +388,12 @@ impl CharTermAttribute for CharTermAttributeImpl {
         self.term_length += 1;
     }
 
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>) {
+        let Some(term_att) = term_att else {
+            // needed for Appendable compliance
+            self.append_null();
+            return;
+        };
         let len = term_att.length();
         let start_len = self.term_length;
         {
@@ -257,11 +406,41 @@ impl CharTermAttribute for CharTermAttributeImpl {
 }
 
 impl TermToBytesRefAttribute for CharTermAttributeImpl {
+    /// Equivalent to `CharTermAttributeImpl.getBytesRef()`
+    /// (`CharTermAttributeImpl.java:92-95`): `builder.copyChars(termBuffer, 0,
+    /// termLength); return builder.get();`, on the attribute's one builder, so
+    /// its buffer only grows when a term needs more room. The `BytesRef` a
+    /// Rust caller receives is an owned copy of what Java's points to.
     fn get_bytes_ref(&self) -> BytesRef {
-        let text: String = self.term_buffer[..self.term_length].iter().collect();
-        let mut builder = BytesRefBuilder::new();
-        builder.copy_chars(&text);
+        let mut builder = self.builder.lock().unwrap_or_else(PoisonError::into_inner);
+        builder.copy_char_array(&self.term_buffer[..self.term_length]);
         builder.get()
+    }
+
+    /// The UTF-8 encoding of the term, the bytes `get_bytes_ref` answers,
+    /// written straight into `bytes`, whose buffer only grows when a term
+    /// needs more room.
+    ///
+    /// The builder is not refilled: nothing reads it but `get_bytes_ref`,
+    /// which refills it first, so the encoding is done once, into the
+    /// caller's buffer, as Java's `getBytesRef()` does it once, into the
+    /// builder whose bytes the caller then reads.
+    fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
+        // PERF: one UTF-8 encoding, with no lock and no second copy.
+        let text = &self.term_buffer[..self.term_length];
+        let out = &mut bytes.bytes;
+        out.clear();
+        if text.iter().all(char::is_ascii) {
+            out.extend(text.iter().map(|&c| c as u8));
+        } else {
+            out.reserve(text.len());
+            let mut utf8 = [0u8; 4];
+            for &c in text {
+                out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+            }
+        }
+        bytes.offset = 0;
+        bytes.length = out.len();
     }
 }
 
@@ -270,10 +449,9 @@ impl Clone for CharTermAttributeImpl {
         let mut clone = Self::new();
         clone.copy_buffer(&self.term_buffer, 0, self.term_length);
         let bytes = self.get_bytes_ref();
-        clone.builder = BytesRefBuilder::new();
-        clone
-            .builder
-            .copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        let mut builder = BytesRefBuilder::new();
+        builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        clone.builder = Mutex::new(builder);
         clone
     }
 }
@@ -291,12 +469,12 @@ impl Eq for CharTermAttributeImpl {}
 
 impl Hash for CharTermAttributeImpl {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Matches Java's CharTermAttributeImpl.hashCode().
-        let mut code = self.term_length as i32;
-        for &c in &self.term_buffer[..self.term_length] {
-            code = code.wrapping_mul(31).wrapping_add(c as i32);
-        }
-        state.write_i32(code);
+        // Feeds Java's `CharTermAttributeImpl.hashCode()` to the hasher, by
+        // delegating to the `AttributeImpl::hash_code` that ports it. This
+        // used to fold the buffer forwards as `31 * h + c`, which is not what
+        // Java computes: `ArrayUtil.hashCode` walks the buffer *backwards*, so
+        // the two disagreed on every term of two characters or more.
+        state.write_i32(AttributeImpl::hash_code(self));
     }
 }
 
@@ -311,7 +489,7 @@ impl Debug for CharTermAttributeImpl {
 
 impl Write for CharTermAttributeImpl {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.append_string(s);
+        self.append_string(Some(s));
         Ok(())
     }
 
@@ -322,6 +500,22 @@ impl Write for CharTermAttributeImpl {
 }
 
 impl AttributeImpl for CharTermAttributeImpl {
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.term_length = 0;
     }
@@ -330,9 +524,9 @@ impl AttributeImpl for CharTermAttributeImpl {
         if let Some(t) = target.as_any_mut().downcast_mut::<CharTermAttributeImpl>() {
             t.copy_buffer(&self.term_buffer, 0, self.term_length);
             let bytes = self.get_bytes_ref();
-            t.builder = BytesRefBuilder::new();
-            t.builder
-                .copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+            let mut builder = BytesRefBuilder::new();
+            builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+            t.builder = Mutex::new(builder);
         }
     }
 
@@ -370,12 +564,52 @@ impl AttributeImpl for CharTermAttributeImpl {
             dyn TermToBytesRefAttribute
         ]
     }
+
+    /// Reports whether `other` holds the same term text.
+    ///
+    /// The term buffers are compared only up to `term_length`, so the unused
+    /// tail of an oversized buffer never takes part.
+    ///
+    /// Divergence: Java's `other instanceof CharTermAttributeImpl` also accepts
+    /// a `PackedTokenAttributeImpl`, which extends it
+    /// (`PackedTokenAttributeImpl.java` line 37). Rust has no implementation
+    /// inheritance, so the subclass is matched explicitly to keep the same
+    /// answer.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        if let Some(o) = other.as_any().downcast_ref::<CharTermAttributeImpl>() {
+            return self == o;
+        }
+        if let Some(o) = other.as_any().downcast_ref::<PackedTokenAttributeImpl>() {
+            return *self == o.term;
+        }
+        false
+    }
+
+    /// Returns the hash of the term text.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.CharTermAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        let mut code = self.term_length as i32;
+        code = code.wrapping_mul(31).wrapping_add(ArrayUtil::hash_code(
+            &self.term_buffer,
+            0,
+            self.term_length,
+        ));
+        code
+    }
 }
 
 // -----------------------------------------------------------------------------
 // OffsetAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.OffsetAttribute`.
+///
 /// The start and end character offset of a token.
 pub trait OffsetAttribute: Attribute {
     /// Returns the token's starting offset.
@@ -393,6 +627,8 @@ pub trait OffsetAttribute: Attribute {
     fn end_offset(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl`.
+///
 /// Default implementation of [`OffsetAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct OffsetAttributeImpl {
@@ -415,10 +651,16 @@ impl OffsetAttribute for OffsetAttributeImpl {
     }
 
     fn set_offset(&mut self, start_offset: i32, end_offset: i32) {
-        assert!(
-            start_offset >= 0 && end_offset >= start_offset,
-            "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset}, endOffset={end_offset}"
-        );
+        // `throw new IllegalArgumentException(...)` (`OffsetAttributeImpl.java:44-51`,
+        // `PackedTokenAttributeImpl.java:125-132`).
+        if start_offset < 0 || end_offset < start_offset {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset},endOffset={end_offset}"
+                )),
+            );
+        }
         self.start_offset = start_offset;
         self.end_offset = end_offset;
     }
@@ -429,6 +671,14 @@ impl OffsetAttribute for OffsetAttributeImpl {
 }
 
 impl AttributeImpl for OffsetAttributeImpl {
+    fn as_offset_attribute(&self) -> Option<&dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute_mut(&mut self) -> Option<&mut dyn OffsetAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.start_offset = 0;
         self.end_offset = 0;
@@ -470,12 +720,36 @@ impl AttributeImpl for OffsetAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![OffsetAttributeImpl, dyn OffsetAttribute]
     }
+
+    /// Reports whether `other` carries the same start and end offset.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<OffsetAttributeImpl>() {
+            Some(o) => o.start_offset == self.start_offset && o.end_offset == self.end_offset,
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the two offsets.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.OffsetAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        let mut code = self.start_offset;
+        code = code.wrapping_mul(31).wrapping_add(self.end_offset);
+        code
+    }
 }
 
 // -----------------------------------------------------------------------------
 // PositionIncrementAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute`.
+///
 /// Determines the position of this token relative to the previous token.
 pub trait PositionIncrementAttribute: Attribute {
     /// Sets the position increment.
@@ -489,6 +763,8 @@ pub trait PositionIncrementAttribute: Attribute {
     fn get_position_increment(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl`.
+///
 /// Default implementation of [`PositionIncrementAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PositionIncrementAttributeImpl {
@@ -527,6 +803,16 @@ impl PositionIncrementAttribute for PositionIncrementAttributeImpl {
 }
 
 impl AttributeImpl for PositionIncrementAttributeImpl {
+    fn as_position_increment_attribute(&self) -> Option<&dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute_mut(
+        &mut self,
+    ) -> Option<&mut dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.position_increment = 1;
     }
@@ -571,12 +857,37 @@ impl AttributeImpl for PositionIncrementAttributeImpl {
             dyn PositionIncrementAttribute
         ]
     }
+
+    /// Reports whether `other` carries the same position increment.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other
+            .as_any()
+            .downcast_ref::<PositionIncrementAttributeImpl>()
+        {
+            Some(o) => o.position_increment == self.position_increment,
+            None => false,
+        }
+    }
+
+    /// Returns the position increment, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionIncrementAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.position_increment
+    }
 }
 
 // -----------------------------------------------------------------------------
 // PositionLengthAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionLengthAttribute`.
+///
 /// Determines how many positions this token spans.
 pub trait PositionLengthAttribute: Attribute {
     /// Sets the position length.
@@ -590,6 +901,8 @@ pub trait PositionLengthAttribute: Attribute {
     fn get_position_length(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl`.
+///
 /// Default implementation of [`PositionLengthAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PositionLengthAttributeImpl {
@@ -626,6 +939,14 @@ impl PositionLengthAttribute for PositionLengthAttributeImpl {
 }
 
 impl AttributeImpl for PositionLengthAttributeImpl {
+    fn as_position_length_attribute(&self) -> Option<&dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute_mut(&mut self) -> Option<&mut dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.position_length = 1;
     }
@@ -663,6 +984,26 @@ impl AttributeImpl for PositionLengthAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![PositionLengthAttributeImpl, dyn PositionLengthAttribute]
     }
+
+    /// Reports whether `other` carries the same position length.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<PositionLengthAttributeImpl>() {
+            Some(o) => o.position_length == self.position_length,
+            None => false,
+        }
+    }
+
+    /// Returns the position length, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PositionLengthAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.position_length
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -672,6 +1013,8 @@ impl AttributeImpl for PositionLengthAttributeImpl {
 /// The default lexical type value, matching Lucene's `"word"`.
 pub const DEFAULT_TYPE: &str = "word";
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TypeAttribute`.
+///
 /// A token's lexical type.
 pub trait TypeAttribute: Attribute {
     /// Returns the lexical type.
@@ -679,12 +1022,27 @@ pub trait TypeAttribute: Attribute {
 
     /// Sets the lexical type.
     fn set_type(&mut self, type_value: String);
+
+    /// Sets the lexical type to a constant.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, where `setType(String)`
+    /// stores the reference it is given, so a tokenizer setting one of its
+    /// constant type names (`StandardTokenizer.java:168`) copies nothing. The
+    /// implementations of this crate keep such a constant without copying it;
+    /// the default is [`set_type`](Self::set_type) with a copy.
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.set_type(type_value.to_string());
+    }
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl`.
+///
 /// Default implementation of [`TypeAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeAttributeImpl {
-    type_value: String,
+    /// Java's `String type`: a reference, so the default type and the
+    /// constant names a tokenizer sets are borrowed, not copied.
+    type_value: Cow<'static, str>,
 }
 
 impl Default for TypeAttributeImpl {
@@ -697,13 +1055,17 @@ impl TypeAttributeImpl {
     /// Creates an attribute with the default type.
     pub fn new() -> Self {
         Self {
-            type_value: DEFAULT_TYPE.to_string(),
+            type_value: Cow::Borrowed(DEFAULT_TYPE),
         }
     }
 
     /// Creates an attribute with the given type.
+    ///
+    /// Equivalent to the constructor `TypeAttributeImpl(String)`.
     pub fn with_type(type_value: String) -> Self {
-        Self { type_value }
+        Self {
+            type_value: Cow::Owned(type_value),
+        }
     }
 }
 
@@ -715,18 +1077,31 @@ impl TypeAttribute for TypeAttributeImpl {
     }
 
     fn set_type(&mut self, type_value: String) {
-        self.type_value = type_value;
+        self.type_value = Cow::Owned(type_value);
+    }
+
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.type_value = Cow::Borrowed(type_value);
     }
 }
 
 impl AttributeImpl for TypeAttributeImpl {
+    fn as_type_attribute(&self) -> Option<&dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute_mut(&mut self) -> Option<&mut dyn TypeAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
-        self.type_value = DEFAULT_TYPE.to_string();
+        // `type = DEFAULT_TYPE`: the constant, not a copy of it.
+        self.type_value = Cow::Borrowed(DEFAULT_TYPE);
     }
 
     fn copy_to(&self, target: &mut dyn AttributeImpl) {
         if let Some(t) = target.as_any_mut().downcast_mut::<TypeAttributeImpl>() {
-            t.type_value.clone_from(&self.type_value);
+            t.type_value = self.type_value.clone();
         }
     }
 
@@ -754,6 +1129,30 @@ impl AttributeImpl for TypeAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![TypeAttributeImpl, dyn TypeAttribute]
     }
+
+    /// Reports whether `other` carries the same lexical type.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<TypeAttributeImpl>() {
+            Some(o) => o.type_value == self.type_value,
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the lexical type.
+    ///
+    /// Divergence: Java answers `0` for a null `type`
+    /// (`TypeAttributeImpl.java` line 67). The port's `type_value` is a
+    /// `String`, which is never null, so that branch has no counterpart.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TypeAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        java_string_hash_code(&self.type_value)
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -762,8 +1161,8 @@ impl AttributeImpl for TypeAttributeImpl {
 
 /// A single reusable attribute implementation that combines
 /// [`CharTermAttribute`], [`OffsetAttribute`],
-/// [`PositionIncrementAttribute`], [`PositionLengthAttribute`] and
-/// [`TypeAttribute`].
+/// [`PositionIncrementAttribute`], [`PositionLengthAttribute`],
+/// [`TypeAttribute`] and [`TermFrequencyAttribute`].
 ///
 /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -773,7 +1172,9 @@ pub struct PackedTokenAttributeImpl {
     end_offset: i32,
     position_increment: i32,
     position_length: i32,
-    type_value: String,
+    /// Java's `String type`; see [`TypeAttributeImpl`].
+    type_value: Cow<'static, str>,
+    term_frequency: i32,
 }
 
 impl Default for PackedTokenAttributeImpl {
@@ -791,11 +1192,16 @@ impl PackedTokenAttributeImpl {
             end_offset: 0,
             position_increment: 1,
             position_length: 1,
-            type_value: DEFAULT_TYPE.to_string(),
+            type_value: Cow::Borrowed(DEFAULT_TYPE),
+            term_frequency: 1,
         }
     }
 
     /// Returns the current term text as a `String`.
+    ///
+    /// Equivalent to `toString()`, which `PackedTokenAttributeImpl` inherits
+    /// from `CharTermAttributeImpl` (`CharTermAttributeImpl.java:252-254`):
+    /// the first `length()` characters of the term buffer.
     pub fn term(&self) -> String {
         self.buffer()[..self.length()].iter().collect()
     }
@@ -840,11 +1246,11 @@ impl CharTermAttribute for PackedTokenAttributeImpl {
         self.term.sub_sequence(start, end)
     }
 
-    fn append_string(&mut self, s: &str) {
+    fn append_string(&mut self, s: Option<&str>) {
         self.term.append_string(s);
     }
 
-    fn append_string_range(&mut self, s: &str, start: usize, end: usize) {
+    fn append_string_range(&mut self, s: Option<&str>, start: usize, end: usize) {
         self.term.append_string_range(s, start, end);
     }
 
@@ -852,7 +1258,7 @@ impl CharTermAttribute for PackedTokenAttributeImpl {
         self.term.append_char(c);
     }
 
-    fn append_char_term_attribute(&mut self, term_att: &dyn CharTermAttribute) {
+    fn append_char_term_attribute(&mut self, term_att: Option<&dyn CharTermAttribute>) {
         self.term.append_char_term_attribute(term_att);
     }
 }
@@ -860,6 +1266,13 @@ impl CharTermAttribute for PackedTokenAttributeImpl {
 impl TermToBytesRefAttribute for PackedTokenAttributeImpl {
     fn get_bytes_ref(&self) -> BytesRef {
         self.term.get_bytes_ref()
+    }
+
+    /// Delegates to the term, as `get_bytes_ref` does, so the term's own
+    /// buffer-reusing copy applies (`PackedTokenAttributeImpl` extends
+    /// `CharTermAttributeImpl` in Java and inherits its `getBytesRef()`).
+    fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
+        self.term.copy_bytes_ref_to(bytes);
     }
 }
 
@@ -869,10 +1282,16 @@ impl OffsetAttribute for PackedTokenAttributeImpl {
     }
 
     fn set_offset(&mut self, start_offset: i32, end_offset: i32) {
-        assert!(
-            start_offset >= 0 && end_offset >= start_offset,
-            "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset}, endOffset={end_offset}"
-        );
+        // `throw new IllegalArgumentException(...)` (`OffsetAttributeImpl.java:44-51`,
+        // `PackedTokenAttributeImpl.java:125-132`).
+        if start_offset < 0 || end_offset < start_offset {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalArgumentException",
+                Some(&format!(
+                    "startOffset must be non-negative, and endOffset must be >= startOffset; got startOffset={start_offset},endOffset={end_offset}"
+                )),
+            );
+        }
         self.start_offset = start_offset;
         self.end_offset = end_offset;
     }
@@ -886,7 +1305,7 @@ impl PositionIncrementAttribute for PackedTokenAttributeImpl {
     fn set_position_increment(&mut self, position_increment: i32) {
         assert!(
             position_increment >= 0,
-            "Position increment must be zero or greater; got {position_increment}"
+            "Increment must be zero or greater: {position_increment}"
         );
         self.position_increment = position_increment;
     }
@@ -916,7 +1335,41 @@ impl TypeAttribute for PackedTokenAttributeImpl {
     }
 
     fn set_type(&mut self, type_value: String) {
-        self.type_value = type_value;
+        self.type_value = Cow::Owned(type_value);
+    }
+
+    fn set_type_static(&mut self, type_value: &'static str) {
+        self.type_value = Cow::Borrowed(type_value);
+    }
+}
+
+/// `if (termFrequency < 1) throw new IllegalArgumentException("Term
+/// frequency must be 1 or greater; got " + termFrequency)`, the check
+/// `PackedTokenAttributeImpl.setTermFrequency` and
+/// `TermFrequencyAttributeImpl.setTermFrequency` make: the setter returns
+/// nothing, so the unchecked exception is thrown as a panic the test
+/// framework and the analysis consumers read back as that class.
+fn check_term_frequency(term_frequency: i32) {
+    if term_frequency < 1 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.IllegalArgumentException",
+            Some(&format!(
+                "Term frequency must be 1 or greater; got {term_frequency}"
+            )),
+        );
+    }
+}
+
+impl TermFrequencyAttribute for PackedTokenAttributeImpl {
+    /// Throws (panics with) Java's `IllegalArgumentException` for a
+    /// frequency below 1.
+    fn set_term_frequency(&mut self, term_frequency: i32) {
+        check_term_frequency(term_frequency);
+        self.term_frequency = term_frequency;
+    }
+
+    fn get_term_frequency(&self) -> i32 {
+        self.term_frequency
     }
 }
 
@@ -928,20 +1381,88 @@ impl Hash for PackedTokenAttributeImpl {
         self.position_increment.hash(state);
         self.position_length.hash(state);
         self.type_value.hash(state);
+        self.term_frequency.hash(state);
     }
 }
 
 impl AttributeImpl for PackedTokenAttributeImpl {
+    fn as_char_term_attribute(&self) -> Option<&dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_char_term_attribute_mut(&mut self) -> Option<&mut dyn CharTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute(&self) -> Option<&dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_offset_attribute_mut(&mut self) -> Option<&mut dyn OffsetAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute(&self) -> Option<&dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_increment_attribute_mut(
+        &mut self,
+    ) -> Option<&mut dyn PositionIncrementAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute(&self) -> Option<&dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_position_length_attribute_mut(&mut self) -> Option<&mut dyn PositionLengthAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute(&self) -> Option<&dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_type_attribute_mut(&mut self) -> Option<&mut dyn TypeAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute(&self) -> Option<&dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute_mut(&mut self) -> Option<&mut dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.term.clear();
         self.start_offset = 0;
         self.end_offset = 0;
         self.position_increment = 1;
         self.position_length = 1;
-        self.type_value = DEFAULT_TYPE.to_string();
+        self.term_frequency = 1;
+        // `type = DEFAULT_TYPE`: the constant, not a copy of it.
+        self.type_value = Cow::Borrowed(DEFAULT_TYPE);
     }
 
+    /// Resets every field, then sets the position increment to `0`.
+    ///
+    /// Equivalent to `PackedTokenAttributeImpl.end()`
+    /// (`PackedTokenAttributeImpl.java:182-187`): `super.end()` is
+    /// `AttributeImpl.end()`, which calls the overridden `clear()`, and only
+    /// the value that differs from `clear()` is set afterwards.
     fn end(&mut self) {
+        AttributeImpl::clear(self);
         self.position_increment = 0;
     }
 
@@ -954,7 +1475,8 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             t.set_offset(self.start_offset, self.end_offset);
             t.set_position_increment(self.position_increment);
             t.set_position_length(self.position_length);
-            t.type_value.clone_from(&self.type_value);
+            t.type_value = self.type_value.clone();
+            t.term_frequency = self.term_frequency;
         }
     }
 
@@ -990,6 +1512,12 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             "type",
             &self.type_value,
         );
+        reflector.reflect(
+            TypeId::of::<dyn TermFrequencyAttribute>(),
+            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "termFrequency",
+            &self.term_frequency,
+        );
     }
 
     fn clone_box(&self) -> Box<dyn AttributeImpl> {
@@ -1012,8 +1540,53 @@ impl AttributeImpl for PackedTokenAttributeImpl {
             dyn OffsetAttribute,
             dyn PositionIncrementAttribute,
             dyn PositionLengthAttribute,
-            dyn TypeAttribute
+            dyn TypeAttribute,
+            dyn TermFrequencyAttribute
         ]
+    }
+
+    /// Reports whether `other` carries the same term text, offsets, position
+    /// data, lexical type and term frequency.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl#equals`,
+    /// whose last conjunct is `super.equals(obj)` — the term-buffer comparison
+    /// `CharTermAttributeImpl` performs, which here is the `PartialEq` of the
+    /// held [`CharTermAttributeImpl`].
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<PackedTokenAttributeImpl>() {
+            Some(o) => {
+                self.start_offset == o.start_offset
+                    && self.end_offset == o.end_offset
+                    && self.position_increment == o.position_increment
+                    && self.position_length == o.position_length
+                    && self.type_value == o.type_value
+                    && self.term_frequency == o.term_frequency
+                    && self.term == o.term
+            }
+            None => false,
+        }
+    }
+
+    /// Returns the hash of every packed field, seeded with the term text's own
+    /// hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl#hashCode`,
+    /// which starts from `super.hashCode()` — the term-text hash of
+    /// `CharTermAttributeImpl`.
+    fn hash_code(&self) -> i32 {
+        let mut code = AttributeImpl::hash_code(&self.term);
+        code = code.wrapping_mul(31).wrapping_add(self.start_offset);
+        code = code.wrapping_mul(31).wrapping_add(self.end_offset);
+        code = code.wrapping_mul(31).wrapping_add(self.position_increment);
+        code = code.wrapping_mul(31).wrapping_add(self.position_length);
+        code = code
+            .wrapping_mul(31)
+            .wrapping_add(java_string_hash_code(&self.type_value));
+        code = code.wrapping_mul(31).wrapping_add(self.term_frequency);
+        code
     }
 }
 
@@ -1021,6 +1594,8 @@ impl AttributeImpl for PackedTokenAttributeImpl {
 // TermFrequencyAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute`.
+///
 /// Custom term frequency within one document.
 pub trait TermFrequencyAttribute: Attribute {
     /// Sets the custom term frequency.
@@ -1034,6 +1609,8 @@ pub trait TermFrequencyAttribute: Attribute {
     fn get_term_frequency(&self) -> i32;
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl`.
+///
 /// Default implementation of [`TermFrequencyAttribute`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TermFrequencyAttributeImpl {
@@ -1056,11 +1633,10 @@ impl TermFrequencyAttributeImpl {
 impl Attribute for TermFrequencyAttributeImpl {}
 
 impl TermFrequencyAttribute for TermFrequencyAttributeImpl {
+    /// Throws (panics with) Java's `IllegalArgumentException` for a
+    /// frequency below 1.
     fn set_term_frequency(&mut self, term_frequency: i32) {
-        assert!(
-            term_frequency >= 1,
-            "Term frequency must be 1 or greater; got {term_frequency}"
-        );
+        check_term_frequency(term_frequency);
         self.term_frequency = term_frequency;
     }
 
@@ -1070,6 +1646,14 @@ impl TermFrequencyAttribute for TermFrequencyAttributeImpl {
 }
 
 impl AttributeImpl for TermFrequencyAttributeImpl {
+    fn as_term_frequency_attribute(&self) -> Option<&dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
+    fn as_term_frequency_attribute_mut(&mut self) -> Option<&mut dyn TermFrequencyAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.term_frequency = 1;
     }
@@ -1111,12 +1695,34 @@ impl AttributeImpl for TermFrequencyAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![TermFrequencyAttributeImpl, dyn TermFrequencyAttribute]
     }
+
+    /// Reports whether `other` carries the same term frequency.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<TermFrequencyAttributeImpl>() {
+            Some(o) => o.term_frequency == self.term_frequency,
+            None => false,
+        }
+    }
+
+    /// Returns the term frequency, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.TermFrequencyAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.term_frequency
+    }
 }
 
 // -----------------------------------------------------------------------------
 // KeywordAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.KeywordAttribute`.
+///
 /// Marks a token as a keyword.
 pub trait KeywordAttribute: Attribute {
     /// Returns `true` if the current token is a keyword.
@@ -1126,6 +1732,8 @@ pub trait KeywordAttribute: Attribute {
     fn set_keyword(&mut self, is_keyword: bool);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl`.
+///
 /// Default implementation of [`KeywordAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeywordAttributeImpl {
@@ -1159,6 +1767,14 @@ impl Hash for KeywordAttributeImpl {
 }
 
 impl AttributeImpl for KeywordAttributeImpl {
+    fn as_keyword_attribute(&self) -> Option<&dyn KeywordAttribute> {
+        Some(self)
+    }
+
+    fn as_keyword_attribute_mut(&mut self) -> Option<&mut dyn KeywordAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.keyword = false;
     }
@@ -1193,12 +1809,39 @@ impl AttributeImpl for KeywordAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![KeywordAttributeImpl, dyn KeywordAttribute]
     }
+
+    /// Reports whether `other` carries the same keyword flag.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl#equals`,
+    /// which demands the exact same class rather than an `instanceof` test.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<KeywordAttributeImpl>() {
+            Some(o) => o.keyword == self.keyword,
+            None => false,
+        }
+    }
+
+    /// Returns `31` for a keyword and `37` otherwise.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.KeywordAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        if self.keyword {
+            31
+        } else {
+            37
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
 // FlagsAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.FlagsAttribute`.
+///
 /// Passes bit flags down the tokenizer chain.
 pub trait FlagsAttribute: Attribute {
     /// Returns the current flags.
@@ -1208,6 +1851,8 @@ pub trait FlagsAttribute: Attribute {
     fn set_flags(&mut self, flags: i32);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl`.
+///
 /// Default implementation of [`FlagsAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FlagsAttributeImpl {
@@ -1234,6 +1879,14 @@ impl FlagsAttribute for FlagsAttributeImpl {
 }
 
 impl AttributeImpl for FlagsAttributeImpl {
+    fn as_flags_attribute(&self) -> Option<&dyn FlagsAttribute> {
+        Some(self)
+    }
+
+    fn as_flags_attribute_mut(&mut self) -> Option<&mut dyn FlagsAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.flags = 0;
     }
@@ -1268,12 +1921,34 @@ impl AttributeImpl for FlagsAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![FlagsAttributeImpl, dyn FlagsAttribute]
     }
+
+    /// Reports whether `other` carries the same flag bits.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<FlagsAttributeImpl>() {
+            Some(o) => o.flags == self.flags,
+            None => false,
+        }
+    }
+
+    /// Returns the flag bits, which are their own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.FlagsAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.flags
+    }
 }
 
 // -----------------------------------------------------------------------------
 // PayloadAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PayloadAttribute`.
+///
 /// The payload of a token.
 pub trait PayloadAttribute: Attribute {
     /// Returns this token's payload, if any.
@@ -1283,6 +1958,8 @@ pub trait PayloadAttribute: Attribute {
     fn set_payload(&mut self, payload: Option<BytesRef>);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl`.
+///
 /// Default implementation of [`PayloadAttribute`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PayloadAttributeImpl {
@@ -1296,6 +1973,8 @@ impl PayloadAttributeImpl {
     }
 
     /// Creates an attribute with the given payload.
+    ///
+    /// Equivalent to the constructor `PayloadAttributeImpl(BytesRef)`.
     pub fn with_payload(payload: BytesRef) -> Self {
         Self {
             payload: Some(payload),
@@ -1324,6 +2003,14 @@ impl Clone for PayloadAttributeImpl {
 }
 
 impl AttributeImpl for PayloadAttributeImpl {
+    fn as_payload_attribute(&self) -> Option<&dyn PayloadAttribute> {
+        Some(self)
+    }
+
+    fn as_payload_attribute_mut(&mut self) -> Option<&mut dyn PayloadAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.payload = None;
     }
@@ -1358,24 +2045,77 @@ impl AttributeImpl for PayloadAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![PayloadAttributeImpl, dyn PayloadAttribute]
     }
+
+    /// Reports whether `other` carries the same payload, two absent payloads
+    /// counting as equal.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<PayloadAttributeImpl>() {
+            Some(o) => match (&o.payload, &self.payload) {
+                (None, None) => true,
+                (Some(theirs), Some(ours)) => theirs == ours,
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the payload bytes, or `0` when there is no payload.
+    ///
+    /// Divergence: Java delegates to `BytesRef.hashCode()`, which hashes with
+    /// `StringHelper.GOOD_FAST_HASH_SEED` — a seed randomised per JVM, so the
+    /// value is not reproducible across runs. This port uses the crate's
+    /// fixed-seed [`hash_bytes`],
+    /// which is deterministic and never reaches a file.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.PayloadAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        match &self.payload {
+            Some(payload) => hash_bytes(payload.slice()),
+            None => 0,
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
 // TermToBytesRefAttribute & BytesTermAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute`.
+///
 /// Provides the raw bytes used for indexing a term.
 pub trait TermToBytesRefAttribute: Attribute {
     /// Returns a `BytesRef` for the current term.
     fn get_bytes_ref(&self) -> BytesRef;
+
+    /// Writes what [`get_bytes_ref`](Self::get_bytes_ref) returns into
+    /// `bytes`, reusing its buffer.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `getBytesRef()`
+    /// returns the attribute's own `BytesRef` by reference, so reading the
+    /// term of every token copies nothing (`CharTermAttributeImpl.java:92-95`).
+    /// The port's `get_bytes_ref` returns an owned copy; the indexing chain
+    /// reads each term through this method into one buffer it keeps across
+    /// tokens. The default is `get_bytes_ref()`.
+    fn copy_bytes_ref_to(&self, bytes: &mut BytesRef) {
+        *bytes = self.get_bytes_ref();
+    }
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.BytesTermAttribute`.
+///
 /// Attribute for raw binary term bytes.
 pub trait BytesTermAttribute: TermToBytesRefAttribute {
     /// Sets the term bytes.
     fn set_bytes_ref(&mut self, bytes: BytesRef);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl`.
+///
 /// Default implementation of [`BytesTermAttribute`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct BytesTermAttributeImpl {
@@ -1391,6 +2131,18 @@ impl BytesTermAttributeImpl {
     /// Creates an attribute with the given bytes.
     pub fn with_bytes(bytes: BytesRef) -> Self {
         Self { bytes: Some(bytes) }
+    }
+
+    /// Returns the field `bytes` itself, `None` while it is Java's `null`.
+    ///
+    /// Equivalent to `BytesTermAttributeImpl.getBytesRef()`
+    /// (`BytesTermAttributeImpl.java:37-40`), which returns the field, so
+    /// that a test can check it for `null` and for identity
+    /// (`assertNull`, `assertNotSame`). The
+    /// [`TermToBytesRefAttribute::get_bytes_ref`] of this port answers a deep
+    /// copy, and an empty `BytesRef` for `null`.
+    pub fn bytes_ref_field(&self) -> Option<&BytesRef> {
+        self.bytes.as_ref()
     }
 }
 
@@ -1420,6 +2172,22 @@ impl Clone for BytesTermAttributeImpl {
 }
 
 impl AttributeImpl for BytesTermAttributeImpl {
+    fn as_bytes_term_attribute(&self) -> Option<&dyn BytesTermAttribute> {
+        Some(self)
+    }
+
+    fn as_bytes_term_attribute_mut(&mut self) -> Option<&mut dyn BytesTermAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute(&self) -> Option<&dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
+    fn as_term_to_bytes_ref_attribute_mut(&mut self) -> Option<&mut dyn TermToBytesRefAttribute> {
+        Some(self)
+    }
+
     fn clear(&mut self) {
         self.bytes = None;
     }
@@ -1458,12 +2226,51 @@ impl AttributeImpl for BytesTermAttributeImpl {
             dyn TermToBytesRefAttribute
         ]
     }
+
+    /// Reports whether `other` carries the same bytes, two absent values
+    /// counting as equal.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl#equals`,
+    /// which compares through `Objects.equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<BytesTermAttributeImpl>() {
+            Some(o) => match (&self.bytes, &o.bytes) {
+                (None, None) => true,
+                (Some(ours), Some(theirs)) => ours == theirs,
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Returns the hash of the held bytes.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.BytesTermAttributeImpl#hashCode`,
+    /// which is `Objects.hash(bytes)`: `31 * 1` plus the element's own hash, or
+    /// plus zero when the element is null.
+    ///
+    /// Divergence: the element hash is Java's `BytesRef.hashCode()`, seeded
+    /// with the per-JVM `StringHelper.GOOD_FAST_HASH_SEED`. This port uses the
+    /// crate's fixed-seed [`hash_bytes`]
+    /// for the same reason [`PayloadAttributeImpl`] does.
+    fn hash_code(&self) -> i32 {
+        let element = match &self.bytes {
+            Some(bytes) => hash_bytes(bytes.slice()),
+            None => 0,
+        };
+        31i32.wrapping_add(element)
+    }
 }
 
 // -----------------------------------------------------------------------------
 // SentenceAttribute
 // -----------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.SentenceAttribute`.
+///
 /// Tracks which sentence a token belongs to.
 pub trait SentenceAttribute: Attribute {
     /// Returns the sentence index for the current token.
@@ -1473,6 +2280,8 @@ pub trait SentenceAttribute: Attribute {
     fn set_sentence_index(&mut self, sentence_index: i32);
 }
 
+/// Port of `org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl`.
+///
 /// Default implementation of [`SentenceAttribute`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SentenceAttributeImpl {
@@ -1533,16 +2342,83 @@ impl AttributeImpl for SentenceAttributeImpl {
     fn attribute_interfaces(&self) -> &'static [TypeId] {
         static_type_ids![SentenceAttributeImpl, dyn SentenceAttribute]
     }
+
+    /// Reports whether `other` carries the same sentence index.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl#equals`.
+    fn equals(&self, other: &dyn AttributeImpl) -> bool {
+        if same_instance(self, other) {
+            return true;
+        }
+        match other.as_any().downcast_ref::<SentenceAttributeImpl>() {
+            Some(o) => o.index == self.index,
+            None => false,
+        }
+    }
+
+    /// Returns the sentence index, which is its own hash.
+    ///
+    /// Equivalent to `org.apache.lucene.analysis.tokenattributes.SentenceAttributeImpl#hashCode`.
+    fn hash_code(&self) -> i32 {
+        self.index
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
+/// Throws the JDK's `IndexOutOfBoundsException` (from `Objects.checkIndex`
+/// and `Objects.checkFromToIndex`) with `message`.
+fn throw_index_out_of_bounds(message: &str) -> ! {
+    crate::store::java_nio_file::throw_unchecked(
+        "java.lang.IndexOutOfBoundsException",
+        Some(message),
+    )
+}
+
+impl std::fmt::Display for CharTermAttributeImpl {
+    /// Port of `CharTermAttributeImpl.toString()`, which is
+    /// `new String(termBuffer, 0, termLength)` — the term itself, with no
+    /// class name and no delimiters.
+    ///
+    /// Note that this is *not* the reflected `key=value` rendering
+    /// `AttributeImpl.toString()` would give; `CharTermAttributeImpl` overrides
+    /// it precisely to print the bare term.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for c in &self.term_buffer[..self.term_length] {
+            f.write_str(c.encode_utf8(&mut [0u8; 4]))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::attribute::{AttributeSource, DefaultAttributeFactory};
+
+    /// `CharTermAttributeImpl.charAt` checks with `Objects.checkIndex`
+    /// (`CharTermAttributeImpl.java:104-107`). Measured against
+    /// `lucene-core-10.5.0.jar` (`oracle/fix/LastPass.java`, case C7):
+    /// `Index 5 out of bounds for length 3`.
+    #[test]
+    #[should_panic(expected = "Index 5 out of bounds for length 3")]
+    fn char_term_char_at_has_the_jdk_message() {
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string(Some("abc"));
+        let _ = term.char_at(5);
+    }
+
+    /// As above, `subSequence` with `Objects.checkFromToIndex`
+    /// (`:110-113`): `Range [2, 5) out of bounds for length 3`.
+    #[test]
+    #[should_panic(expected = "Range [2, 5) out of bounds for length 3")]
+    fn char_term_sub_sequence_has_the_jdk_message() {
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string(Some("abc"));
+        let _ = term.sub_sequence(2, 5);
+    }
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::sync::Arc;
@@ -1598,7 +2474,7 @@ mod tests {
         let mut buf = "ab".to_string();
         for _ in 0..20 {
             t.set_empty();
-            t.append_string(&buf);
+            t.append_string(Some(&buf));
             assert_eq!(t.length(), buf.chars().count());
             assert_eq!(t.term(), buf);
             buf += &t.term();
@@ -1609,7 +2485,7 @@ mod tests {
         let mut buf = "a".to_string();
         for _ in 0..20000 {
             t.set_empty();
-            t.append_string(&buf);
+            t.append_string(Some(&buf));
             assert_eq!(t.length(), buf.chars().count());
             assert_eq!(t.term(), buf);
             buf.push('a');
@@ -1624,7 +2500,7 @@ mod tests {
         t.copy_buffer(&chars, 0, 5);
         assert_eq!(t.term(), "aloha");
         t.set_empty();
-        t.append_string("hi there");
+        t.append_string(Some("hi there"));
         assert_eq!(t.term(), "hi there");
     }
 
@@ -1674,7 +2550,7 @@ mod tests {
     #[test]
     fn char_term_reflection() {
         let mut t = CharTermAttributeImpl::new();
-        t.append_string("foobar");
+        t.append_string(Some("foobar"));
         let mut entries: Vec<(TypeId, &'static str, String, String)> = Vec::new();
         t.reflect_with(
             &mut |type_id: TypeId, name: &'static str, key: &str, value: &dyn Debug| {
@@ -1691,7 +2567,7 @@ mod tests {
     fn char_term_char_sequence_interface() {
         let s = "0123456789";
         let mut t = CharTermAttributeImpl::new();
-        t.append_string(s);
+        t.append_string(Some(s));
         assert_eq!(t.length(), s.chars().count());
         assert_eq!(t.sub_sequence(1, 3), "12");
         assert_eq!(t.sub_sequence(0, s.chars().count()), s);
@@ -1705,20 +2581,20 @@ mod tests {
         let mut t = CharTermAttributeImpl::new();
         write!(t, "{}{}", 1234, 5678).unwrap();
         t.append_char('9');
-        t.append_string("0");
-        t.append_string_range("0123456789", 1, 3);
+        t.append_string(Some("0"));
+        t.append_string_range(Some("0123456789"), 1, 3);
         assert_eq!(t.term(), "123456789012");
 
         let mut t2 = CharTermAttributeImpl::new();
-        t2.append_string("test");
-        t.append_char_term_attribute(&t2);
+        t2.append_string(Some("test"));
+        t.append_char_term_attribute(Some(&t2));
         assert_eq!(t.term(), "123456789012test");
     }
 
     #[test]
     fn char_term_exceptions() {
         let mut t = CharTermAttributeImpl::new();
-        t.append_string("test");
+        t.append_string(Some("test"));
         assert_eq!(t.term(), "test");
         assert!(std::panic::catch_unwind(|| t.char_at(4)).is_err());
         assert!(std::panic::catch_unwind(|| t.sub_sequence(0, 5)).is_err());
@@ -1728,7 +2604,7 @@ mod tests {
     #[test]
     fn char_term_get_bytes_ref() {
         let mut t = CharTermAttributeImpl::new();
-        t.append_string("lucene");
+        t.append_string(Some("lucene"));
         let bytes = t.get_bytes_ref();
         assert_eq!(bytes.slice(), b"lucene");
     }
@@ -1973,7 +2849,7 @@ mod tests {
         source
             .get_attribute_mut::<CharTermAttributeImpl>()
             .unwrap()
-            .append_string("token");
+            .append_string(Some("token"));
         let att = source.get_attribute::<CharTermAttributeImpl>().unwrap();
         assert_eq!(att.term(), "token");
     }
@@ -1988,7 +2864,7 @@ mod tests {
             let mut att = source
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .unwrap();
-            att.append_string("hello");
+            att.append_string(Some("hello"));
             att.set_offset(0, 5);
             att.set_position_increment(1);
             att.set_position_length(1);
@@ -2006,7 +2882,7 @@ mod tests {
     #[test]
     fn packed_token_attribute_clear_and_end() {
         let mut att = PackedTokenAttributeImpl::new();
-        att.append_string("hello");
+        att.append_string(Some("hello"));
         att.set_offset(0, 5);
         att.set_position_increment(2);
         att.set_position_length(3);
@@ -2028,7 +2904,7 @@ mod tests {
     #[test]
     fn packed_token_attribute_copy_to() {
         let mut src = PackedTokenAttributeImpl::new();
-        src.append_string("hello");
+        src.append_string(Some("hello"));
         src.set_offset(0, 5);
         src.set_position_increment(2);
         src.set_position_length(2);
@@ -2055,7 +2931,7 @@ mod tests {
             let mut att = source
                 .get_attribute_mut::<PackedTokenAttributeImpl>()
                 .unwrap();
-            att.append_string("hello");
+            att.append_string(Some("hello"));
             att.set_offset(0, 5);
             att.set_position_increment(2);
             att.set_position_length(2);

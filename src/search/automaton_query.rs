@@ -1,0 +1,418 @@
+//! Matching terms against a finite-state machine, ported from
+//! `org.apache.lucene.search.AutomatonQuery`.
+
+#![deny(unsafe_code)]
+
+use std::any::Any;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crate::error::{LuceneError, Result};
+use crate::index::{Term, Terms, TermsEnum};
+use crate::search::index_searcher::IndexSearcher;
+use crate::search::multi_term_query::{
+    constant_score_blended_rewrite, multi_term_query_eq, multi_term_query_hash, multi_term_rewrite,
+    MultiTermQuery, RewriteMethod,
+};
+use crate::search::query::Query;
+use crate::search::query_visitor::QueryVisitor;
+use crate::util::attribute::AttributeSource;
+use crate::util::automaton::{Automaton, CompiledAutomaton};
+use crate::util::{Accountable, RamUsageEstimator};
+
+/// A [`Query`] that matches terms against a finite-state machine.
+///
+/// Equivalent to `org.apache.lucene.search.AutomatonQuery`, which implements
+/// [`Accountable`]. It matches documents containing terms accepted by a given
+/// finite-state machine; the automaton can be built with the
+/// [`crate::util::automaton`] API, from a regular expression with
+/// [`RegexpQuery`](crate::search::RegexpQuery), or from the standard Lucene
+/// wildcard syntax with [`WildcardQuery`](crate::search::WildcardQuery).
+///
+/// When the query is executed it enumerates the term dictionary in an
+/// intelligent way, to reduce the number of comparisons: the regular expression
+/// `[dl]og?` makes approximately four comparisons — `do`, `dog`, `lo` and
+/// `log`.
+#[derive(Debug, Clone)]
+pub struct AutomatonQuery {
+    field: String,
+    rewrite_method: Arc<dyn RewriteMethod>,
+    /// The automaton to match index terms against.
+    automaton: Automaton,
+    /// **Divergence from Lucene 10.5.0.** Java stores the `CompiledAutomaton`
+    /// in a plain field. This port's [`CompiledAutomaton`] may hold an
+    /// [`NFARunAutomaton`](crate::util::automaton::NFARunAutomaton), whose
+    /// on-demand determinization cache is a `RefCell`, so the compiled
+    /// automaton is not `Sync` while a [`Query`] must be. The lock restores
+    /// that: it is taken only to read the compiled form and to build a terms
+    /// enum, which copies what it needs, so no work is serialised beyond that
+    /// copy. Java documents the very same object as *not* thread-safe and warns
+    /// against using an executor with a non-determinized `RegexpQuery`; here it
+    /// is simply safe. It is shared behind an [`Arc`] so that a clone of the
+    /// query shares the one compiled automaton, as every reference to a Java
+    /// query object does.
+    compiled: Arc<Mutex<CompiledAutomaton>>,
+    /// The term containing the field, and possibly some pattern structure.
+    term: Term,
+    automaton_is_binary: bool,
+    /// Cached, as in Java.
+    ram_bytes_used: i64,
+}
+
+/// The shallow size of an [`AutomatonQuery`], standing in for Java's
+/// `RamUsageEstimator.shallowSizeOfInstance(AutomatonQuery.class)`.
+const BASE_RAM_BYTES: i64 =
+    6 * RamUsageEstimator::NUM_BYTES_OBJECT_REF + RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 8;
+
+impl AutomatonQuery {
+    /// Creates a query from an [`Automaton`], with
+    /// [`constant_score_blended_rewrite`] and a non-binary automaton.
+    ///
+    /// Equivalent to `AutomatonQuery(Term, Automaton)`. The term carries the
+    /// field and possibly some pattern structure; its text is ignored. Terms
+    /// accepted by the automaton are considered a match.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error raised while compiling the automaton.
+    pub fn new(term: Term, automaton: Automaton) -> Result<Self> {
+        Self::with_binary(term, automaton, false)
+    }
+
+    /// Creates a query from an [`Automaton`], with
+    /// [`constant_score_blended_rewrite`].
+    ///
+    /// Equivalent to `AutomatonQuery(Term, Automaton, boolean)`. When
+    /// `is_binary` is set, the automaton is already binary and does not go
+    /// through the UTF-32 to UTF-8 conversion.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error raised while compiling the automaton.
+    pub fn with_binary(term: Term, automaton: Automaton, is_binary: bool) -> Result<Self> {
+        Self::with_rewrite_method(term, automaton, is_binary, constant_score_blended_rewrite())
+    }
+
+    /// Creates a query from an [`Automaton`].
+    ///
+    /// Equivalent to
+    /// `AutomatonQuery(Term, Automaton, boolean, RewriteMethod)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error raised while compiling the automaton.
+    pub fn with_rewrite_method(
+        term: Term,
+        automaton: Automaton,
+        is_binary: bool,
+        rewrite_method: Arc<dyn RewriteMethod>,
+    ) -> Result<Self> {
+        // `super(term.field(), rewriteMethod)`: `MultiTermQuery` rejects a
+        // `null` field before the automaton is compiled
+        // (`MultiTermQuery.java:284`).
+        let field = term
+            .field_opt()
+            .ok_or_else(|| LuceneError::null_pointer_with_message("field must not be null"))?
+            .to_string();
+        let compiled = Arc::new(Mutex::new(CompiledAutomaton::new(
+            automaton.clone(),
+            false,
+            true,
+            is_binary,
+        )?));
+        // Java sums `term.ramBytesUsed()`, `automaton.ramBytesUsed()` and
+        // `compiled.ramBytesUsed()`. Neither `Term`, `Automaton` nor
+        // `CompiledAutomaton` reports its heap usage in this port, so the two
+        // automata are estimated from their state and transition counts and the
+        // term from its bytes. The figure is only ever an estimate, used for
+        // cache accounting.
+        let automaton_bytes = RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 4 * i64::from(automaton.get_num_states())
+            + 12 * i64::from(automaton.get_num_transitions_total());
+        let term_bytes = RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + field.len() as i64
+            + term.bytes().length as i64;
+        let ram_bytes_used = BASE_RAM_BYTES + term_bytes + 2 * automaton_bytes;
+        Ok(Self {
+            field,
+            rewrite_method,
+            automaton,
+            compiled,
+            term,
+            automaton_is_binary: is_binary,
+            ram_bytes_used,
+        })
+    }
+
+    /// Returns the automaton used to create this query.
+    ///
+    /// Equivalent to `AutomatonQuery.getAutomaton()`.
+    pub fn get_automaton(&self) -> &Automaton {
+        &self.automaton
+    }
+
+    /// Returns the compiled automaton.
+    ///
+    /// Equivalent to `AutomatonQuery.getCompiled()`; the guard is what the
+    /// lock described on the field requires.
+    pub fn get_compiled(&self) -> MutexGuard<'_, CompiledAutomaton> {
+        self.lock_compiled()
+    }
+
+    fn lock_compiled(&self) -> MutexGuard<'_, CompiledAutomaton> {
+        self.compiled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether this is a binary (byte) oriented automaton.
+    ///
+    /// Equivalent to `AutomatonQuery.isAutomatonBinary()`.
+    pub fn is_automaton_binary(&self) -> bool {
+        self.automaton_is_binary
+    }
+
+    /// Returns the term this query was built from.
+    ///
+    /// Equivalent to reading the `protected final Term term` field.
+    pub fn term(&self) -> &Term {
+        &self.term
+    }
+
+    /// Returns the field name for this query.
+    ///
+    /// Equivalent to the `final MultiTermQuery.getField()`.
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Returns the rewrite method.
+    ///
+    /// Equivalent to `MultiTermQuery.getRewriteMethod()`.
+    pub fn rewrite_method(&self) -> &Arc<dyn RewriteMethod> {
+        &self.rewrite_method
+    }
+
+    /// Returns the terms enum the compiled automaton drives.
+    ///
+    /// Equivalent to
+    /// `AutomatonQuery.getTermsEnum(Terms, AttributeSource)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while intersecting the terms
+    /// dictionary.
+    pub fn terms_enum(&self, terms: &dyn Terms) -> Result<Box<dyn TermsEnum>> {
+        self.lock_compiled().get_terms_enum(terms)
+    }
+}
+
+/// Java's `Term.hashCode()`; see [`Term::hash_code`].
+pub fn term_hash(term: &Term) -> i32 {
+    term.hash_code()
+}
+
+/// Java's `CompiledAutomaton.hashCode()`; see [`CompiledAutomaton::hash_code`].
+pub fn compiled_automaton_hash(compiled: &CompiledAutomaton) -> i32 {
+    compiled.hash_code()
+}
+
+/// The hash code shared by every automaton query.
+///
+/// Equivalent to `AutomatonQuery.hashCode()` (`AutomatonQuery.java:156-163`):
+/// `super.hashCode()` (the [`multi_term_query_hash`]), then
+/// `compiled.hashCode()` and `term.hashCode()`. `outer` is the query itself,
+/// so that a subclass contributes its own class hash exactly as Java's
+/// `super.hashCode()` chain does.
+pub fn automaton_query_hash(outer: &dyn MultiTermQuery, inner: &AutomatonQuery) -> i32 {
+    let prime = 31i32;
+    let mut result = multi_term_query_hash(outer);
+    result = prime
+        .wrapping_mul(result)
+        .wrapping_add(compiled_automaton_hash(&inner.lock_compiled()));
+    prime
+        .wrapping_mul(result)
+        .wrapping_add(term_hash(&inner.term))
+}
+
+/// The equality shared by every automaton query.
+///
+/// Equivalent to `AutomatonQuery.equals(Object)` beyond its `super.equals`
+/// call, which is [`multi_term_query_eq`]; the caller has already established
+/// that the classes match.
+pub fn automaton_query_eq(
+    outer_a: &dyn MultiTermQuery,
+    a: &AutomatonQuery,
+    outer_b: &dyn MultiTermQuery,
+    b: &AutomatonQuery,
+) -> bool {
+    if !multi_term_query_eq(outer_a, outer_b) {
+        return false;
+    }
+    // Locking the same mutex twice would deadlock, and two clones of one query
+    // share it; comparing the pointers first both short-circuits that and
+    // answers `true`, which is what comparing the contents would answer.
+    let compiled_eq =
+        Arc::ptr_eq(&a.compiled, &b.compiled) || *a.lock_compiled() == *b.lock_compiled();
+    compiled_eq && a.term == b.term
+}
+
+/// Recurses through an automaton query.
+///
+/// Equivalent to `AutomatonQuery.visit(QueryVisitor)`, which delegates to
+/// `CompiledAutomaton.visit(QueryVisitor, Query, String)`.
+pub fn automaton_query_visit(
+    parent: &dyn Query,
+    inner: &AutomatonQuery,
+    visitor: &mut dyn QueryVisitor,
+) {
+    if !visitor.accept_field(&inner.field) {
+        return;
+    }
+    // `CompiledAutomaton.visit` re-checks `acceptField` itself.
+    inner.lock_compiled().visit(visitor, parent, &inner.field);
+}
+
+impl Accountable for AutomatonQuery {
+    fn ram_bytes_used(&self) -> i64 {
+        self.ram_bytes_used
+    }
+}
+
+impl Query for AutomatonQuery {
+    fn is_multi_term_query(&self) -> bool {
+        true
+    }
+
+    fn to_query_string(&self, field: &str) -> String {
+        let mut buffer = String::new();
+        if self.term.field() != field {
+            buffer.push_str(self.term.field());
+            buffer.push(':');
+        }
+        buffer.push_str("AutomatonQuery");
+        buffer.push_str(" {");
+        buffer.push('\n');
+        // **Divergence from Lucene 10.5.0.** Java appends
+        // `automaton.toString()`, and `Automaton` does not override
+        // `Object.toString()`, so the text is the JVM identity string
+        // (`...Automaton@1b6d3586`) — neither reproducible nor informative.
+        // This port appends the dot rendering instead. Only display text
+        // changes.
+        buffer.push_str(&self.automaton.to_dot());
+        buffer.push('}');
+        buffer
+    }
+
+    fn visit(&self, visitor: &mut dyn QueryVisitor) {
+        automaton_query_visit(self, self, visitor);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    /// The Java class implements `Accountable`.
+    fn as_accountable(&self) -> Option<&dyn crate::util::Accountable> {
+        Some(self)
+    }
+
+    fn rewrite(&self, index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
+        multi_term_rewrite(self, index_searcher)
+    }
+
+    fn query_eq(&self, other: &dyn Query) -> bool {
+        if !self.same_class_as(other) {
+            return false;
+        }
+        let Some(other) = other.as_any().downcast_ref::<AutomatonQuery>() else {
+            return false;
+        };
+        automaton_query_eq(self, self, other, other)
+    }
+
+    /// `getClass().getName()` of `org.apache.lucene.search.AutomatonQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.AutomatonQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        automaton_query_hash(self, self)
+    }
+}
+
+impl MultiTermQuery for AutomatonQuery {
+    fn get_field(&self) -> &str {
+        &self.field
+    }
+
+    fn get_rewrite_method(&self) -> Arc<dyn RewriteMethod> {
+        Arc::clone(&self.rewrite_method)
+    }
+
+    fn get_terms_enum_with_atts(
+        &self,
+        terms: &Arc<dyn Terms>,
+        _atts: &mut AttributeSource,
+    ) -> Result<Box<dyn TermsEnum>> {
+        self.terms_enum(&**terms)
+    }
+
+    fn to_multi_term_query_arc(&self) -> Arc<dyn MultiTermQuery> {
+        Arc::new(self.clone())
+    }
+
+    fn to_query_arc(&self) -> Arc<dyn Query> {
+        Arc::new(self.clone())
+    }
+
+    fn accountable_ram_bytes_used(&self) -> Option<i64> {
+        Some(self.ram_bytes_used)
+    }
+}
+
+#[cfg(test)]
+mod census_gap_hash_tests {
+    use super::*;
+    use crate::util::automaton::reg_exp::RegExp;
+
+    fn query(regexp: &str) -> AutomatonQuery {
+        let automaton = RegExp::new(regexp).unwrap().to_automaton().unwrap();
+        AutomatonQuery::new(Term::from_text("f", ""), automaton).unwrap()
+    }
+
+    /// G-026: `AutomatonQuery.hashCode()` folds `compiled.hashCode()`
+    /// (`AutomatonQuery.java:111-117`), which folds `runAutomaton.hashCode()`
+    /// (`CompiledAutomaton.java:509-517`): `31 * (31 * (31 + alphabetSize) +
+    /// points.length) + size` (`RunAutomaton.java:182-189`). Two automata with
+    /// the same alphabet, interval count and state count hash alike, as in
+    /// Java.
+    #[test]
+    fn gap_g026_automaton_query_hash_follows_the_run_automaton() {
+        let a = query("a[bc]");
+        let b = query("x[yz]");
+        let c = query("a[bc]d");
+        let run_hash = |q: &AutomatonQuery| {
+            let compiled = q.get_compiled();
+            let run = compiled.run_automaton.as_ref().expect("a NORMAL automaton");
+            let expected = 31i32
+                .wrapping_mul(31i32.wrapping_mul(31 + 256) + run.get_char_intervals().len() as i32)
+                .wrapping_add(run.size());
+            assert_eq!(run.hash_code(), expected);
+            run.hash_code()
+        };
+        assert_eq!(run_hash(&a), run_hash(&b));
+        assert_ne!(run_hash(&a), run_hash(&c));
+        assert_eq!(a.query_hash(), b.query_hash());
+        assert_ne!(a.query_hash(), c.query_hash());
+        assert_eq!(
+            a.query_hash(),
+            31i32
+                .wrapping_mul(
+                    31i32
+                        .wrapping_mul(multi_term_query_hash(&a))
+                        .wrapping_add(a.get_compiled().hash_code())
+                )
+                .wrapping_add(term_hash(&a.term))
+        );
+    }
+}

@@ -10,33 +10,41 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::codecs::knn_vectors::{
-    BufferingKnnVectorsWriter, ByteVectorValues, FloatVectorValues, KnnFieldVectorsWriter,
-    KnnVectorsFormat, KnnVectorsReader,
+    ByteVectorValues, FieldVectorWriter, FloatVectorValues, KnnFieldVectorsWriter,
+    KnnVectorsFormat, KnnVectorsReader, KnnVectorsWriter,
 };
 use crate::codecs::postings::MergeState;
-use crate::codecs::state::{SegmentReadState, SegmentWriteState};
+use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState};
 use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, Result};
-use crate::index::VectorSimilarityFunction;
+use crate::index::vector_values::{from_bytes, from_floats, KnnVectorValues};
+use crate::index::{VectorEncoding, VectorSimilarityFunction};
 use crate::util::hnsw::{
     RandomVectorScorer, RandomVectorScorerSupplier, UpdateableRandomVectorScorer,
 };
+use crate::util::quantization::{LegacyQuantizedByteVectorValues, QuantizedVectorsReader};
+use crate::util::Bits;
 use crate::util::{FixedBitSet, RamUsageEstimator};
 
 // -----------------------------------------------------------------------------
 // DocsWithFieldSet
 // -----------------------------------------------------------------------------
 
-/// Accumulator for documents that have a value for a vector field.
+/// Accumulator for documents that have a value for a field.
 ///
-/// Equivalent to `org.apache.lucene.index.DocsWithFieldSet`.
+/// Equivalent to `org.apache.lucene.index.DocsWithFieldSet`
+/// (`index/DocsWithFieldSet.java:24-118`).
 ///
 /// This is optimized for the dense case where every document has a value: in
 /// that case no bit set is allocated and the cardinality alone is tracked.
+/// The first gap migrates the set to a [`FixedBitSet`], which then grows
+/// through [`FixedBitSet::ensure_capacity`] exactly as Java's does, so the
+/// heap estimate follows Java's step for step.
 #[derive(Debug, Clone)]
 pub struct DocsWithFieldSet {
     set: Option<FixedBitSet>,
@@ -55,29 +63,50 @@ impl Default for DocsWithFieldSet {
 }
 
 impl DocsWithFieldSet {
+    /// `RamUsageEstimator.shallowSizeOfInstance(DocsWithFieldSet.class)`: an
+    /// object header, the `set` reference and the `int` fields `cardinality`
+    /// and `lastDocId`, aligned — 24 bytes with compressed references.
+    ///
+    /// Equivalent to the private `DocsWithFieldSet.BASE_RAM_BYTES_USED`
+    /// (`DocsWithFieldSet.java:28-29`).
+    pub const BASE_RAM_BYTES_USED: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 2 * 4,
+    );
+
     /// Creates an empty `DocsWithFieldSet`.
+    ///
+    /// Equivalent to `new DocsWithFieldSet()`.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Adds a single document ID to the set.
     ///
-    /// Document IDs must be added in strictly increasing order.
+    /// Equivalent to `DocsWithFieldSet.add(int)` (`DocsWithFieldSet.java:41-59`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `doc_id` is not strictly
+    /// greater than the last document added, with Lucene's message.
     pub fn add(&mut self, doc_id: i32) -> Result<()> {
         if doc_id <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "out-of-order doc ids: last={}, next={}",
+            return Err(LuceneError::illegal_argument(format!(
+                "Out of order doc ids: last={}, next={}",
                 self.last_doc_id, doc_id
             )));
         }
-        match &mut self.set {
+        match self.set.take() {
             Some(set) => {
-                grow_fixed_bit_set(set, doc_id as usize + 1);
+                let mut set = FixedBitSet::ensure_capacity(set, doc_id as usize);
                 set.set(doc_id as usize);
+                self.set = Some(set);
             }
             None if doc_id != self.cardinality => {
+                // migrate to a sparse encoding using a bit set
                 let mut set = FixedBitSet::new(doc_id as usize + 1);
-                set_range(&mut set, 0, self.cardinality as usize);
+                set.set_range(0, self.cardinality as usize);
                 set.set(doc_id as usize);
                 self.set = Some(set);
             }
@@ -90,42 +119,58 @@ impl DocsWithFieldSet {
 
     /// Adds a contiguous range of document IDs.
     ///
-    /// `from` must be strictly greater than the last document already added.
+    /// Equivalent to `DocsWithFieldSet.addRange(int, int)`
+    /// (`DocsWithFieldSet.java:67-93`): `from` must be strictly greater than the
+    /// last document already added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `from > to_exclusive` or
+    /// when `from` is not after the last document added.
     pub fn add_range(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
-        if from > to_exclusive {
-            return Err(LuceneError::IllegalArgument(format!(
-                "from={from} must be <= toExclusive={to_exclusive}"
-            )));
-        }
-        if from == to_exclusive {
+        if from >= to_exclusive {
+            if from > to_exclusive {
+                return Err(LuceneError::illegal_argument(format!(
+                    "from={from} must be <= toExclusive={to_exclusive}"
+                )));
+            }
             return Ok(());
         }
         if from <= self.last_doc_id {
-            return Err(LuceneError::IllegalArgument(format!(
-                "out-of-order doc ids: last={}, next={}",
+            return Err(LuceneError::illegal_argument(format!(
+                "Out of order doc ids: last={}, next={}",
                 self.last_doc_id, from
             )));
         }
-        let count = (to_exclusive - from) as usize;
-        match &mut self.set {
+        let count = to_exclusive - from;
+        match self.set.take() {
             Some(set) => {
-                grow_fixed_bit_set(set, to_exclusive as usize);
-                set_range(set, from as usize, to_exclusive as usize);
+                let mut set = FixedBitSet::ensure_capacity(set, (to_exclusive - 1) as usize);
+                set.set_range(from as usize, to_exclusive as usize);
+                self.set = Some(set);
             }
             None if from != self.cardinality => {
+                // migrate to a sparse encoding using a bit set
                 let mut set = FixedBitSet::new(to_exclusive as usize);
-                set_range(&mut set, 0, self.cardinality as usize);
-                set_range(&mut set, from as usize, to_exclusive as usize);
+                set.set_range(0, self.cardinality as usize);
+                set.set_range(from as usize, to_exclusive as usize);
                 self.set = Some(set);
             }
             None => {}
         }
         self.last_doc_id = to_exclusive - 1;
-        self.cardinality += count as i32;
+        self.cardinality += count;
         Ok(())
     }
 
     /// Returns an iterator over the document IDs in this set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.iterator()`: a `BitSetIterator` over the
+    /// bit set when there is one, `DocIdSetIterator.all(cardinality)` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error building the dense iterator raises.
     pub fn iterator(&self) -> Result<Box<dyn crate::search::DocIdSetIterator + '_>> {
         match &self.set {
             Some(set) => Ok(Box::new(FixedBitSetIterator::new(
@@ -138,47 +183,95 @@ impl DocsWithFieldSet {
         }
     }
 
+    /// Returns an iterator over the document IDs of a shared set that owns its
+    /// reference to the set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.iterator()` as the flush-time doc-values
+    /// iterators hold it: Java's iterator references the set through the
+    /// garbage collector, while [`Self::iterator`] borrows it, which an
+    /// iterator handed out as an owned `Box<dyn ...>` cannot do. The documents,
+    /// their order and the cost are those of [`Self::iterator`].
+    pub fn shared_iterator(
+        set: &std::sync::Arc<Self>,
+    ) -> Box<dyn crate::search::DocIdSetIterator + Send + Sync> {
+        Box::new(SharedDocsWithFieldIterator {
+            set: std::sync::Arc::clone(set),
+            doc: -1,
+        })
+    }
+
     /// Returns the number of documents in this set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.cardinality()`.
     pub fn cardinality(&self) -> i32 {
         self.cardinality
     }
 
     /// Returns the approximate RAM bytes used by this set.
+    ///
+    /// Equivalent to `DocsWithFieldSet.ramBytesUsed()`
+    /// (`DocsWithFieldSet.java:95-98`):
+    /// `BASE_RAM_BYTES_USED + (set == null ? 0 : set.ramBytesUsed())`.
     pub fn ram_bytes_used(&self) -> i64 {
-        // Approximate shallow object size: object header + three fields.
-        let base = crate::util::RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 16;
-        crate::util::RamUsageEstimator::align_object_size(base)
+        use crate::util::Accountable;
+        Self::BASE_RAM_BYTES_USED
             + self
                 .set
                 .as_ref()
-                .map(fixed_bit_set_ram_bytes_used)
+                .map(Accountable::ram_bytes_used)
                 .unwrap_or(0)
     }
 }
 
-/// Sets all bits in `[from, to)` on `set`.
-fn set_range(set: &mut FixedBitSet, from: usize, to: usize) {
-    for i in from..to {
-        set.set(i);
-    }
+/// The iterator [`DocsWithFieldSet::shared_iterator`] returns.
+///
+/// Equivalent to the `BitSetIterator` or `DocIdSetIterator.all(int)` that
+/// `DocsWithFieldSet.iterator()` builds, over a set held by an `Arc`.
+struct SharedDocsWithFieldIterator {
+    set: std::sync::Arc<DocsWithFieldSet>,
+    doc: i32,
 }
 
-/// Grows `set` so it can hold at least `min_bits` bits, preserving existing
-/// set bits.
-fn grow_fixed_bit_set(set: &mut FixedBitSet, min_bits: usize) {
-    let current = set.length();
-    if min_bits <= current {
-        return;
+impl crate::search::DocIdSetIterator for SharedDocsWithFieldIterator {
+    fn doc_id(&self) -> i32 {
+        self.doc
     }
-    let num_words = FixedBitSet::bits2words(min_bits);
-    let mut words = set.get_bits().to_vec();
-    words.resize(num_words, 0u64);
-    *set = FixedBitSet::from_bits(words, min_bits);
-}
 
-/// Returns the approximate RAM bytes used by a `FixedBitSet`.
-fn fixed_bit_set_ram_bytes_used(set: &FixedBitSet) -> i64 {
-    RamUsageEstimator::size_of_u64(set.get_bits())
+    fn next_doc(&mut self) -> Result<i32> {
+        // Exhausted iterators stay exhausted: Java's `advance(doc + 1)` would
+        // overflow past `NO_MORE_DOCS`, which callers never trigger.
+        if self.doc == crate::search::NO_MORE_DOCS {
+            return Ok(self.doc);
+        }
+        self.advance(self.doc + 1)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let target = target.max(0);
+        self.doc = match &self.set.set {
+            // `BitSetIterator.advance`: `nextSetBit(target)` within the bit set.
+            Some(bits) => {
+                if target as usize >= bits.length() {
+                    crate::search::NO_MORE_DOCS
+                } else {
+                    crate::util::bit_set::BitSet::next_set_bit(bits, target)
+                }
+            }
+            // `DocIdSetIterator.all(maxDoc).advance`.
+            None => {
+                if target >= self.set.cardinality {
+                    crate::search::NO_MORE_DOCS
+                } else {
+                    target
+                }
+            }
+        };
+        Ok(self.doc)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.set.cardinality)
+    }
 }
 
 /// Iterator over the set bits of a `FixedBitSet`.
@@ -236,12 +329,127 @@ impl crate::search::DocIdSetIterator for FixedBitSetIterator<'_> {
 /// Writer for a single vector field.
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatFieldVectorsWriter`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `getVectors()` and
+/// `getDocsWithFieldSet()` return the writer's own objects. A writer that
+/// wraps another flat field writer answers with the wrapped writer's objects
+/// (`Lucene104ScalarQuantizedVectorsWriter.FieldWriter`,
+/// `Lucene104ScalarQuantizedVectorsWriter.java:507-525`), which here sit behind
+/// the lock of a [`SharedFlatFieldVectorsWriter`] and cannot be lent past it.
+/// [`vectors`](Self::vectors) and [`docs_with_field_set`](Self::docs_with_field_set)
+/// therefore answer a [`Cow`]: the writer's own objects when it holds them,
+/// and a copy of the same values when it wraps another writer.
 pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     /// Returns the buffered vectors to be written.
-    fn vectors(&self) -> &[T];
+    ///
+    /// Equivalent to `FlatFieldVectorsWriter.getVectors()`.
+    fn vectors(&self) -> Cow<'_, [T]>
+    where
+        T: Clone;
+
+    /// Returns a [`KnnVectorValues`] view over the vectors to be written.
+    ///
+    /// Wraps [`vectors`](Self::vectors) through
+    /// [`from_floats`] /
+    /// [`from_bytes`], the way Java
+    /// wraps `getVectors()` through `FloatVectorValues.fromFloats` /
+    /// `ByteVectorValues.fromBytes`. An implementation backed by other storage
+    /// may override it to return a richer view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the buffered element type
+    /// does not match `encoding`, which is the state Java's unchecked cast
+    /// would turn into a `ClassCastException`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java casts the whole list —
+    /// `(List<float[]>) getVectors()` — and hands the very same list to the
+    /// view (`FlatFieldVectorsWriter.java:52-56`). Rust cannot cast `&[T]` to
+    /// `&[Vec<f32>]`, so the element type is recovered one vector at a time
+    /// with [`Any`](std::any::Any) — the checked form of Java's unchecked cast
+    /// — and the vectors are cloned into the list the view owns. The values
+    /// are identical; only the sharing is not.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.hnsw.FlatFieldVectorsWriter#asKnnVectorValues`.
+    fn as_knn_vector_values(
+        &self,
+        encoding: VectorEncoding,
+        dim: i32,
+    ) -> Result<Box<dyn KnnVectorValues>>
+    where
+        T: std::any::Any + Clone,
+    {
+        let vectors = self.vectors();
+        let vectors: &[T] = &vectors;
+        match encoding {
+            VectorEncoding::FLOAT32 => {
+                let mut floats = Vec::with_capacity(vectors.len());
+                for vector in vectors {
+                    let vector = (vector as &dyn std::any::Any)
+                        .downcast_ref::<Vec<f32>>()
+                        // Java's unchecked cast fails where a `byte[]` is
+                        // read as a `float[]`.
+                        .ok_or_else(|| {
+                            LuceneError::unchecked(
+                                "java.lang.ClassCastException",
+                                "class [B cannot be cast to class [F ([B and [F are in module \
+                                 java.base of loader 'bootstrap')",
+                            )
+                        })?;
+                    floats.push(vector.clone());
+                }
+                Ok(Box::new(from_floats(floats, dim)))
+            }
+            VectorEncoding::BYTE => {
+                let mut bytes = Vec::with_capacity(vectors.len());
+                for vector in vectors {
+                    let vector = (vector as &dyn std::any::Any)
+                        .downcast_ref::<Vec<u8>>()
+                        // As above, with a `float[]` read as a `byte[]`.
+                        .ok_or_else(|| {
+                            LuceneError::unchecked(
+                                "java.lang.ClassCastException",
+                                "class [F cannot be cast to class [B ([F and [B are in module \
+                                 java.base of loader 'bootstrap')",
+                            )
+                        })?;
+                    bytes.push(vector.clone());
+                }
+                Ok(Box::new(from_bytes(bytes, dim)))
+            }
+        }
+    }
+
+    /// Returns the number of buffered vectors.
+    ///
+    /// Equivalent to `getVectors().size()`, which the HNSW field writer asks
+    /// of the live list (`Lucene99HnswVectorsWriter.java:765-769`). A writer
+    /// whose [`vectors`](Self::vectors) copies should override it.
+    fn vector_count(&self) -> usize
+    where
+        T: Clone,
+    {
+        self.vectors().len()
+    }
+
+    /// Returns a copy of buffered vector `ord`, or `None` past the end.
+    ///
+    /// Equivalent to `getVectors().get(ord)` on the live list, which the view
+    /// the HNSW graph builder scores through reads one vector at a time
+    /// (`FloatVectorValues.fromFloats`). A writer whose
+    /// [`vectors`](Self::vectors) copies should override it.
+    fn vector_at(&self, ord: usize) -> Option<T>
+    where
+        T: Clone,
+    {
+        self.vectors().get(ord).cloned()
+    }
 
     /// Returns the set of documents that have a value for this field.
-    fn docs_with_field_set(&self) -> &DocsWithFieldSet;
+    ///
+    /// Equivalent to `FlatFieldVectorsWriter.getDocsWithFieldSet()`.
+    fn docs_with_field_set(&self) -> Cow<'_, DocsWithFieldSet>;
 
     /// Marks this writer as finished; no new vectors may be added afterwards.
     fn finish(&mut self) -> Result<()>;
@@ -250,54 +458,163 @@ pub trait FlatFieldVectorsWriter<T>: KnnFieldVectorsWriter<T> {
     fn is_finished(&self) -> bool;
 }
 
+/// A [`FlatFieldVectorsWriter`] that the flat writer which created it and the
+/// writer which added the field both hold.
+///
+/// Java's `FlatVectorsWriter.addField` keeps the field writer it creates in its
+/// own field list, which it writes at `flush`, and returns that same object to
+/// the caller, which adds the values and reads them back
+/// (`Lucene99HnswVectorsWriter.java:194-207`,
+/// `Lucene104ScalarQuantizedVectorsWriter.java:118-129`). Both references are
+/// this handle here; the lock is what lets the two share one buffer.
+pub type SharedFlatFieldVectorsWriter<T> = Arc<Mutex<dyn FlatFieldVectorsWriter<T>>>;
+
+/// The field writer [`FlatVectorsWriter::add_field`] returns: Java's
+/// `FlatFieldVectorsWriter<?>`, whose element type follows the field's
+/// [`VectorEncoding`].
+pub enum FlatFieldVectorWriter {
+    /// The writer of a `FLOAT32` field.
+    Float(SharedFlatFieldVectorsWriter<Vec<f32>>),
+    /// The writer of a `BYTE` field.
+    Byte(SharedFlatFieldVectorsWriter<Vec<u8>>),
+}
+
+impl fmt::Debug for FlatFieldVectorWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Float(_) => f.write_str("FlatFieldVectorWriter::Float"),
+            Self::Byte(_) => f.write_str("FlatFieldVectorWriter::Byte"),
+        }
+    }
+}
+
+impl From<FlatFieldVectorWriter> for FieldVectorWriter {
+    /// The same field writer, as [`KnnVectorsWriter::add_field`] hands it out:
+    /// Java's covariant `addField` returns one object to both callers.
+    fn from(writer: FlatFieldVectorWriter) -> Self {
+        match writer {
+            FlatFieldVectorWriter::Float(writer) => FieldVectorWriter::Float(Box::new(writer)),
+            FlatFieldVectorWriter::Byte(writer) => FieldVectorWriter::Byte(Box::new(writer)),
+        }
+    }
+}
+
+/// The shared field writer, reached through its lock.
+impl<T: Send + 'static> KnnFieldVectorsWriter<T> for SharedFlatFieldVectorsWriter<T> {
+    fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .add_value(doc_id, vector_value)
+    }
+
+    fn copy_value(&self, vector_value: T) -> T {
+        self.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .copy_value(vector_value)
+    }
+
+    fn ram_bytes_used(&self) -> i64 {
+        self.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ram_bytes_used()
+    }
+}
+
 // -----------------------------------------------------------------------------
 // DefaultFlatFieldVectorsWriter
 // -----------------------------------------------------------------------------
 
 /// Default on-heap buffer for a single vector field.
 ///
-/// Equivalent to the concrete field writer used by
-/// `Lucene99FlatVectorsWriter`. It buffers every added vector together with the
-/// set of documents that have a value.
+/// Equivalent to `Lucene99FlatVectorsWriter.FieldWriter`, the one concrete
+/// `FlatFieldVectorsWriter` Lucene 10.5.0 ships
+/// (`Lucene99FlatVectorsWriter.java:370-434`). It buffers every added vector
+/// together with the set of documents that have a value, and — like Java's —
+/// it carries the field's [`FieldInfo`], which it needs for the duplicate-value
+/// message and for its RAM footprint.
 #[derive(Debug, Clone)]
 pub struct DefaultFlatFieldVectorsWriter<T> {
+    field_info: FieldInfo,
     vectors: Vec<T>,
     docs_with_field_set: DocsWithFieldSet,
+    /// The last doc id added, `-1` before the first. Java keeps the same field
+    /// and compares against it to reject a second value in one document.
+    last_doc_id: i32,
     finished: bool,
 }
 
 impl<T> DefaultFlatFieldVectorsWriter<T> {
-    /// Creates a new empty field writer.
-    pub fn new() -> Self {
+    /// Creates a new empty field writer for `field_info`.
+    pub fn new(field_info: FieldInfo) -> Self {
         Self {
+            field_info,
             vectors: Vec::new(),
             docs_with_field_set: DocsWithFieldSet::new(),
+            last_doc_id: -1,
             finished: false,
         }
+    }
+
+    /// Returns the RAM this writer currently holds.
+    ///
+    /// Equivalent to `Lucene99FlatVectorsWriter.FieldWriter.ramBytesUsed()`
+    /// (`Lucene99FlatVectorsWriter.java:419-430`): a shallow size, plus the
+    /// document set, plus one array header and reference per buffered vector,
+    /// plus the vector payload itself. The shallow size is an approximation —
+    /// Java measures a JVM object layout that has no Rust counterpart — but the
+    /// terms that scale with the data are computed exactly as Java computes
+    /// them, and those are the ones that decide when a segment flushes.
+    pub fn ram_bytes_used(&self) -> i64 {
+        let shallow = RamUsageEstimator::align_object_size(
+            RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                + 5 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        );
+        if self.vectors.is_empty() {
+            return shallow;
+        }
+        let count = self.vectors.len() as i64;
+        shallow
+            + self.docs_with_field_set.ram_bytes_used()
+            + count
+                * (RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                    + RamUsageEstimator::NUM_BYTES_ARRAY_HEADER)
+            + count
+                * i64::from(self.field_info.vector_dimension)
+                * i64::from(self.field_info.vector_encoding.byte_size())
     }
 }
 
 impl<T: Clone> DefaultFlatFieldVectorsWriter<T> {
     /// Adds a document with its vector value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) once [`FlatFieldVectorsWriter::finish`]
+    /// has run, and [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the same document
+    /// offers a second value for this field, or when doc ids do not increase.
     pub fn add_value(&mut self, doc_id: i32, vector_value: T) -> Result<()> {
         if self.finished {
-            return Err(LuceneError::IllegalState(
-                "FlatFieldVectorsWriter is already finished".to_string(),
+            return Err(LuceneError::illegal_state(
+                "already finished, cannot add more values".to_string(),
             ));
         }
+        // Java's guard, verbatim (`Lucene99FlatVectorsWriter.java:406-412`): a
+        // vector field is single-valued, and a document that offers two is a
+        // caller error rather than a corrupt index. `DocsWithFieldSet::add`
+        // would also reject the repeat, but with the generic out-of-order
+        // message that says nothing about which field the caller duplicated.
+        if doc_id == self.last_doc_id {
+            return Err(LuceneError::illegal_argument(format!(
+                "VectorValuesField \"{}\" appears more than once in this document (only one value is allowed per field)",
+                self.field_info.name
+            )));
+        }
+        // Java asserts `docID > lastDocID` here (`Lucene99FlatVectorsWriter.java:412`).
+        debug_assert!(doc_id > self.last_doc_id);
         self.docs_with_field_set.add(doc_id)?;
         self.vectors.push(vector_value);
+        self.last_doc_id = doc_id;
         Ok(())
-    }
-
-    /// Adds a contiguous doc-id range without a vector.
-    pub fn add_docs_with_no_vector(&mut self, from: i32, to_exclusive: i32) -> Result<()> {
-        if self.finished {
-            return Err(LuceneError::IllegalState(
-                "FlatFieldVectorsWriter is already finished".to_string(),
-            ));
-        }
-        self.docs_with_field_set.add_range(from, to_exclusive)
     }
 }
 
@@ -311,17 +628,36 @@ impl<T: Clone + Send + Sync + 'static> KnnFieldVectorsWriter<T>
     fn copy_value(&self, vector_value: T) -> T {
         vector_value
     }
+
+    fn ram_bytes_used(&self) -> i64 {
+        DefaultFlatFieldVectorsWriter::ram_bytes_used(self)
+    }
+}
+
+impl<T> DefaultFlatFieldVectorsWriter<T> {
+    /// Returns the buffered vectors, borrowed: the writer's own list, which
+    /// [`FlatFieldVectorsWriter::vectors`] lends as a [`Cow::Borrowed`].
+    pub fn vectors(&self) -> &[T] {
+        &self.vectors
+    }
+
+    /// Returns the documents that have a value, borrowed: the writer's own
+    /// set, which [`FlatFieldVectorsWriter::docs_with_field_set`] lends as a
+    /// [`Cow::Borrowed`].
+    pub fn docs_with_field_set(&self) -> &DocsWithFieldSet {
+        &self.docs_with_field_set
+    }
 }
 
 impl<T: Clone + Send + Sync + 'static> FlatFieldVectorsWriter<T>
     for DefaultFlatFieldVectorsWriter<T>
 {
-    fn vectors(&self) -> &[T] {
-        &self.vectors
+    fn vectors(&self) -> Cow<'_, [T]> {
+        Cow::Borrowed(&self.vectors)
     }
 
-    fn docs_with_field_set(&self) -> &DocsWithFieldSet {
-        &self.docs_with_field_set
+    fn docs_with_field_set(&self) -> Cow<'_, DocsWithFieldSet> {
+        Cow::Borrowed(&self.docs_with_field_set)
     }
 
     fn finish(&mut self) -> Result<()> {
@@ -331,12 +667,6 @@ impl<T: Clone + Send + Sync + 'static> FlatFieldVectorsWriter<T>
 
     fn is_finished(&self) -> bool {
         self.finished
-    }
-}
-
-impl<T> Default for DefaultFlatFieldVectorsWriter<T> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -351,7 +681,11 @@ impl<T> Default for DefaultFlatFieldVectorsWriter<T> {
 /// The Rust API uses the typed `FloatVectorValues` / `ByteVectorValues` traits
 /// directly instead of a unified `KnnVectorValues` supertype, which is more
 /// idiomatic and removes the need for runtime encoding dispatch.
-pub trait FlatVectorsScorer: Send + Sync + fmt::Debug {
+/// Every Lucene implementation of this interface overrides `toString()`, and
+/// those strings are concatenated by the vector formats' own `toString()`
+/// (`Lucene99FlatVectorsFormat`, for one), so [`fmt::Display`] is a supertrait
+/// here rather than an implementation detail of each scorer.
+pub trait FlatVectorsScorer: Send + Sync + fmt::Debug + fmt::Display {
     /// Returns a scorer supplier for float vectors.
     fn get_random_vector_scorer_supplier_float(
         &self,
@@ -381,6 +715,169 @@ pub trait FlatVectorsScorer: Send + Sync + fmt::Debug {
         vector_values: Box<dyn ByteVectorValues>,
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>>;
+
+    /// Returns a scorer supplier over vectors the Lucene 9.9 scalar-quantized
+    /// format stored.
+    ///
+    /// Equivalent to `getRandomVectorScorerSupplier(VectorSimilarityFunction,
+    /// KnnVectorValues)` called with a `LegacyQuantizedByteVectorValues`, the
+    /// case `Lucene99ScalarQuantizedVectorScorer` and
+    /// `ScalarQuantizedVectorScorer` test with `instanceof`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:50-59`,
+    /// `ScalarQuantizedVectorScorer.java:61-73`) and answer from the quantized
+    /// bytes.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has one method per query kind,
+    /// taking any `KnnVectorValues`, and the quantized scorers narrow it at run
+    /// time. This port's methods take the typed [`FloatVectorValues`] and
+    /// [`ByteVectorValues`], and [`LegacyQuantizedByteVectorValues`] is
+    /// neither, so the `instanceof` branch is a method of its own: a reader of
+    /// the 9.9 format calls it where Java passes its quantized values.
+    /// A scorer with no quantized branch would, in Java, hand the values to its
+    /// unquantized path, which reads them as plain byte vectors; that path is
+    /// never taken by Lucene itself, so the default here reports
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) instead of adapting the values to
+    /// [`ByteVectorValues`].
+    ///
+    /// # Errors
+    ///
+    /// The default always fails as above; an implementation propagates
+    /// whatever opening its supplier raises.
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        let _ = (similarity_function, vector_values);
+        Err(LuceneError::unsupported_operation(format!(
+            "{self} has no scorer supplier for Lucene 9.9 quantized vectors"
+        )))
+    }
+
+    /// Returns a one-off random scorer for a float `target` over vectors the
+    /// Lucene 9.9 scalar-quantized format stored.
+    ///
+    /// Equivalent to `getRandomVectorScorer(VectorSimilarityFunction,
+    /// KnnVectorValues, float[])` called with a
+    /// `LegacyQuantizedByteVectorValues`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:61-80`,
+    /// `ScalarQuantizedVectorScorer.java:75-102`): the target is quantized the
+    /// way the stored vectors were, and scored against them.
+    ///
+    /// **Divergence from Lucene 10.5.0.** As for
+    /// [`get_random_vector_scorer_supplier_legacy_quantized`](Self::get_random_vector_scorer_supplier_legacy_quantized).
+    /// In Java a scorer with no quantized branch hands byte values with a
+    /// float target to `DefaultFlatVectorScorer`, which rejects them
+    /// (`assert vectorValues instanceof FloatVectorValues` and the cast that
+    /// follows, `DefaultFlatVectorScorer.java:57-67`); the default reports
+    /// that rejection.
+    ///
+    /// # Errors
+    ///
+    /// The default always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation). An
+    /// implementation propagates whatever quantizing the target or building
+    /// its scorer raises; whether it checks the query's dimension is its own
+    /// contract — `Lucene99ScalarQuantizedVectorScorer` does, through
+    /// `fromVectorSimilarity`'s `checkDimensions`
+    /// (`Lucene99ScalarQuantizedVectorScorer.java:99`), and
+    /// `ScalarQuantizedVectorScorer` does not
+    /// (`ScalarQuantizedVectorScorer.java:80-99`).
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        let _ = (similarity_function, vector_values, target);
+        Err(LuceneError::unsupported_operation(format!(
+            "{self} cannot score a float query against Lucene 9.9 quantized vectors"
+        )))
+    }
+}
+
+/// A shared scorer is the scorer it shares: Java passes one
+/// `FlatVectorsScorer` reference to the format, its writers and its readers
+/// (`Lucene99FlatVectorsFormat.java:86-102`).
+impl<T: FlatVectorsScorer + ?Sized> FlatVectorsScorer for Arc<T> {
+    fn get_random_vector_scorer_supplier_float(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn FloatVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        (**self).get_random_vector_scorer_supplier_float(similarity_function, vector_values)
+    }
+
+    fn get_random_vector_scorer_supplier_byte(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn ByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        (**self).get_random_vector_scorer_supplier_byte(similarity_function, vector_values)
+    }
+
+    fn get_random_vector_scorer_float(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn FloatVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        (**self).get_random_vector_scorer_float(similarity_function, vector_values, target)
+    }
+
+    fn get_random_vector_scorer_byte(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn ByteVectorValues>,
+        target: &[u8],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        (**self).get_random_vector_scorer_byte(similarity_function, vector_values, target)
+    }
+
+    fn get_random_vector_scorer_supplier_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+    ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
+        (**self)
+            .get_random_vector_scorer_supplier_legacy_quantized(similarity_function, vector_values)
+    }
+
+    fn get_random_vector_scorer_legacy_quantized(
+        &self,
+        similarity_function: VectorSimilarityFunction,
+        vector_values: Box<dyn LegacyQuantizedByteVectorValues>,
+        target: &[f32],
+    ) -> Result<Box<dyn RandomVectorScorer>> {
+        (**self).get_random_vector_scorer_legacy_quantized(
+            similarity_function,
+            vector_values,
+            target,
+        )
+    }
+}
+
+/// Checks that a query vector and a field's vectors have the same dimension.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the two lengths differ, with
+/// the message Java's `IllegalArgumentException` carries.
+///
+/// **Divergence from Lucene 10.5.0.** Java declares this as a `static` method
+/// on the `FlatVectorsScorer` interface (`FlatVectorsScorer.java:69-74`). A
+/// Rust trait method that takes no receiver would make [`FlatVectorsScorer`]
+/// unusable as a trait object, which this port needs it to be, so the helper
+/// sits beside the trait as a free function instead. Its body is Java's.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.hnsw.FlatVectorsScorer#checkDimensions`.
+pub fn check_dimensions(query_len: i32, field_len: i32) -> Result<()> {
+    if query_len != field_len {
+        return Err(LuceneError::illegal_argument(format!(
+            "vector query dimension: {query_len} differs from field dimension: {field_len}"
+        )));
+    }
+    Ok(())
 }
 
 // -----------------------------------------------------------------------------
@@ -428,7 +925,7 @@ impl FlatVectorsScorer for DefaultFlatVectorScorer {
         target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
         if target.len() as i32 != vector_values.dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
                 target.len(),
                 vector_values.dimension()
@@ -448,7 +945,7 @@ impl FlatVectorsScorer for DefaultFlatVectorScorer {
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>> {
         if target.len() as i32 != vector_values.dimension() {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "vector query dimension: {} differs from field dimension: {}",
                 target.len(),
                 vector_values.dimension()
@@ -482,10 +979,18 @@ impl FloatVectorScorer {
     }
 }
 
+impl crate::util::hnsw::HasKnnVectorValues for FloatVectorScorer {
+    /// Equivalent to `AbstractRandomVectorScorer.values()` (`RandomVectorScorer.java:109-112`), inherited by
+    /// `DefaultFlatVectorScorer.FloatVectorScorer`, `super(values)`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
+}
+
 impl RandomVectorScorer for FloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
-        Ok(self.similarity_function.compare_f32(&self.query, &v))
+        self.similarity_function.compare_f32(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -494,6 +999,13 @@ impl RandomVectorScorer for FloatVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 
@@ -517,10 +1029,18 @@ impl ByteVectorScorer {
     }
 }
 
+impl crate::util::hnsw::HasKnnVectorValues for ByteVectorScorer {
+    /// Equivalent to `AbstractRandomVectorScorer.values()` (`RandomVectorScorer.java:109-112`), inherited by
+    /// `DefaultFlatVectorScorer.ByteVectorScorer`, `super(values)`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
+}
+
 impl RandomVectorScorer for ByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
         let v = self.values.vector_value(node)?;
-        Ok(self.similarity_function.compare_u8(&self.query, &v))
+        self.similarity_function.compare_bytes(&self.query, &v)
     }
 
     fn max_ord(&self) -> i32 {
@@ -529,6 +1049,13 @@ impl RandomVectorScorer for ByteVectorScorer {
 
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
+    }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
     }
 }
 
@@ -560,6 +1087,7 @@ impl RandomVectorScorerSupplier for FloatScoringSupplier {
             values: Arc::clone(&self.vectors),
             target_vectors: Arc::clone(&self.target_vectors),
             query,
+            target: vec![0.0f32; dimension as usize],
             similarity_function: self.similarity_function,
         }))
     }
@@ -570,19 +1098,46 @@ impl RandomVectorScorerSupplier for FloatScoringSupplier {
             self.similarity_function,
         )))
     }
+
+    /// Equivalent to `FloatScoringSupplier.toString()`
+    /// (`DefaultFlatVectorScorer.java:166-168`):
+    /// `"FloatScoringSupplier(similarityFunction=" + similarityFunction + ")"`,
+    /// the enum constant's name.
+    fn to_string(&self) -> String {
+        format!(
+            "FloatScoringSupplier(similarityFunction={:?})",
+            self.similarity_function
+        )
+    }
 }
 
 struct UpdateableFloatVectorScorer {
     values: Arc<dyn FloatVectorValues>,
     target_vectors: Arc<dyn FloatVectorValues>,
     query: Vec<f32>,
+    /// The vector `score` compares with: Java reads it into the values'
+    /// reused `value` array (`targetVectors.vectorValue(node)`,
+    /// `OffHeapFloatVectorValues.java:78-86`); the port reads it here, once
+    /// allocated per scorer.
+    target: Vec<f32>,
     similarity_function: VectorSimilarityFunction,
+}
+
+impl crate::util::hnsw::HasKnnVectorValues for UpdateableFloatVectorScorer {
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.values()` (`UpdateableRandomVectorScorer.java:68-71`), inherited by
+    /// the anonymous scorer of `DefaultFlatVectorScorer.FloatScoringSupplier.scorer()`, built over `vectors`, not `targetVectors`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
 }
 
 impl RandomVectorScorer for UpdateableFloatVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
-        let v = self.target_vectors.vector_value(node)?;
-        Ok(self.similarity_function.compare_f32(&self.query, &v))
+        // PERF: read into the scorer's buffer, not a new vector per node.
+        self.target_vectors
+            .vector_value_into(node, &mut self.target)?;
+        self.similarity_function
+            .compare_f32(&self.query, &self.target)
     }
 
     fn max_ord(&self) -> i32 {
@@ -592,13 +1147,21 @@ impl RandomVectorScorer for UpdateableFloatVectorScorer {
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
     }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 impl UpdateableRandomVectorScorer for UpdateableFloatVectorScorer {
+    /// `System.arraycopy(targetVectors.vectorValue(node), 0, vector, 0,
+    /// vector.length)` (`DefaultFlatVectorScorer.java:154-156`): the vector
+    /// is read straight into the query buffer.
     fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
-        let v = self.target_vectors.vector_value(node)?;
-        self.query.copy_from_slice(&v);
-        Ok(())
+        self.target_vectors.vector_value_into(node, &mut self.query)
     }
 }
 
@@ -630,6 +1193,7 @@ impl RandomVectorScorerSupplier for ByteScoringSupplier {
             values: Arc::clone(&self.vectors),
             target_vectors: Arc::clone(&self.target_vectors),
             query,
+            target: vec![0u8; dimension as usize],
             similarity_function: self.similarity_function,
         }))
     }
@@ -640,19 +1204,43 @@ impl RandomVectorScorerSupplier for ByteScoringSupplier {
             self.similarity_function,
         )))
     }
+
+    /// Equivalent to `ByteScoringSupplier.toString()`
+    /// (`DefaultFlatVectorScorer.java:126-128`):
+    /// `"ByteScoringSupplier(similarityFunction=" + similarityFunction + ")"`,
+    /// the enum constant's name.
+    fn to_string(&self) -> String {
+        format!(
+            "ByteScoringSupplier(similarityFunction={:?})",
+            self.similarity_function
+        )
+    }
 }
 
 struct UpdateableByteVectorScorer {
     values: Arc<dyn ByteVectorValues>,
     target_vectors: Arc<dyn ByteVectorValues>,
     query: Vec<u8>,
+    /// The vector `score` compares with, as for the float scorer.
+    target: Vec<u8>,
     similarity_function: VectorSimilarityFunction,
+}
+
+impl crate::util::hnsw::HasKnnVectorValues for UpdateableByteVectorScorer {
+    /// Equivalent to `AbstractUpdateableRandomVectorScorer.values()` (`UpdateableRandomVectorScorer.java:68-71`), inherited by
+    /// the anonymous scorer of `DefaultFlatVectorScorer.ByteScoringSupplier.scorer()`, built over `vectors`, not `targetVectors`: the values the scorer reads.
+    fn values(&self) -> Option<&dyn crate::index::vector_values::KnnVectorValues> {
+        Some(&*self.values)
+    }
 }
 
 impl RandomVectorScorer for UpdateableByteVectorScorer {
     fn score(&mut self, node: i32) -> Result<f32> {
-        let v = self.target_vectors.vector_value(node)?;
-        Ok(self.similarity_function.compare_u8(&self.query, &v))
+        // PERF: read into the scorer's buffer, not a new vector per node.
+        self.target_vectors
+            .vector_value_into(node, &mut self.target)?;
+        self.similarity_function
+            .compare_bytes(&self.query, &self.target)
     }
 
     fn max_ord(&self) -> i32 {
@@ -662,13 +1250,20 @@ impl RandomVectorScorer for UpdateableByteVectorScorer {
     fn ord_to_doc(&self, ord: i32) -> i32 {
         self.values.ord_to_doc(ord)
     }
+
+    /// Equivalent to the `getAcceptOrds` this scorer inherits from Java's
+    /// `AbstractRandomVectorScorer` / `AbstractUpdateableRandomVectorScorer`,
+    /// `values.getAcceptOrds(acceptDocs)`.
+    fn get_accept_ords<'a>(&self, accept_docs: Option<&'a dyn Bits>) -> Option<Box<dyn Bits + 'a>> {
+        self.values.get_accept_ords(accept_docs)
+    }
 }
 
 impl UpdateableRandomVectorScorer for UpdateableByteVectorScorer {
+    /// `System.arraycopy(targetVectors.vectorValue(node), 0, vector, 0,
+    /// vector.length)` (`DefaultFlatVectorScorer.java:109-111`).
     fn set_scoring_ordinal(&mut self, node: i32) -> Result<()> {
-        let v = self.target_vectors.vector_value(node)?;
-        self.query.copy_from_slice(&v);
-        Ok(())
+        self.target_vectors.vector_value_into(node, &mut self.query)
     }
 }
 
@@ -681,9 +1276,17 @@ impl UpdateableRandomVectorScorer for UpdateableByteVectorScorer {
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsFormat`.
 pub trait FlatVectorsFormat: KnnVectorsFormat {
     /// Returns a writer to write the vectors to the index.
+    ///
+    /// Takes the owning [`OwnedSegmentWriteState`], as
+    /// [`KnnVectorsFormat::fields_writer`] does: Java's writers keep the
+    /// `SegmentWriteState` they receive, its `infoStream` included
+    /// (`Lucene104ScalarQuantizedVectorsWriter.java:99, 150-153`), which a
+    /// borrowed [`SegmentWriteState`](crate::codecs::SegmentWriteState) cannot outlive.
+    ///
+    /// Equivalent to `FlatVectorsFormat.fieldsWriter(SegmentWriteState)`.
     fn fields_writer_flat(
         &self,
-        state: &SegmentWriteState<'_>,
+        state: &OwnedSegmentWriteState,
     ) -> Result<Box<dyn FlatVectorsWriter>>;
 
     /// Returns a reader to read the vectors from the index.
@@ -700,26 +1303,65 @@ pub trait FlatVectorsFormat: KnnVectorsFormat {
 /// Reads flat vectors from an index.
 ///
 /// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsReader`.
-pub trait FlatVectorsReader: KnnVectorsReader {
+pub trait FlatVectorsReader: KnnVectorsReader + crate::util::Accountable {
     /// Returns the flat vector scorer for the given field.
     fn get_flat_vector_scorer(&self, field: &str) -> Result<Box<dyn FlatVectorsScorer>>;
 
-    /// Returns a random vector scorer for the given float target vector.
+    /// Returns a random vector scorer for the given float target vector, or
+    /// `None` where Java returns `null` (a field the reader holds no entry
+    /// for, `Lucene104ScalarQuantizedVectorsReader.java:195-199`).
+    ///
+    /// Equivalent to `FlatVectorsReader.getRandomVectorScorer(String, float[])`.
     fn get_random_vector_scorer_float(
         &self,
         field: &str,
         target: &[f32],
-    ) -> Result<Box<dyn RandomVectorScorer>>;
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>>;
 
-    /// Returns a random vector scorer for the given byte target vector.
+    /// Returns a random vector scorer for the given byte target vector, or
+    /// `None` where Java returns `null`.
+    ///
+    /// Equivalent to `FlatVectorsReader.getRandomVectorScorer(String, byte[])`.
     fn get_random_vector_scorer_byte(
         &self,
         field: &str,
         target: &[u8],
-    ) -> Result<Box<dyn RandomVectorScorer>>;
+    ) -> Result<Option<Box<dyn RandomVectorScorer>>>;
 
     /// Returns an instance optimized for merging.
     fn get_merge_instance_flat(&self) -> Result<Box<dyn FlatVectorsReader>>;
+
+    /// Returns an independent reader over the same files, leaving the read
+    /// advice of every input as it is.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such method: a reader
+    /// that does not override `getMergeInstance()` answers `this`
+    /// (`FlatVectorsReader.java:90-93`) and keeps sharing the flat reader it
+    /// wraps, untouched. A Rust `&self` cannot hand out a second owning handle
+    /// to itself, so such a reader clones itself, and clones the reader it
+    /// wraps with this method rather than with
+    /// [`get_merge_instance_flat`](Self::get_merge_instance_flat), which in
+    /// `Lucene99FlatVectorsReader` also re-advises the data file for a merge.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever cloning the inputs raises.
+    fn clone_flat_reader(&self) -> Result<Box<dyn FlatVectorsReader>>;
+
+    /// Returns this reader as a [`QuantizedVectorsReader`] when it stores
+    /// quantized vectors, and `None` when it does not.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java has no such method: the readers
+    /// that wrap a flat reader ask `flatVectorsReader instanceof
+    /// QuantizedVectorsReader` (`Lucene99HnswVectorsReader.java:427-448`,
+    /// `Lucene99HnswVectorsWriter.java:435`). Rust cannot narrow a
+    /// `dyn FlatVectorsReader` to a `dyn QuantizedVectorsReader`, so the
+    /// question is asked of the reader itself. The default answers `None`,
+    /// which is what Java's `instanceof` answers for every flat reader that
+    /// does not implement the interface.
+    fn as_quantized_vectors_reader(&self) -> Option<&dyn QuantizedVectorsReader> {
+        None
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -728,10 +1370,32 @@ pub trait FlatVectorsReader: KnnVectorsReader {
 
 /// Writes flat vectors to an index.
 ///
-/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsWriter`.
-pub trait FlatVectorsWriter: BufferingKnnVectorsWriter {
-    /// Returns the scorer used to score vectors while writing.
-    fn vectors_scorer(&self) -> &dyn FlatVectorsScorer;
+/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorsWriter`, which
+/// extends `KnnVectorsWriter` (`FlatVectorsWriter.java:31`).
+pub trait FlatVectorsWriter: KnnVectorsWriter {
+    /// Adds a new field for indexing and returns its writer, which this writer
+    /// also keeps and writes at [`flush`](KnnVectorsWriter::flush).
+    ///
+    /// Equivalent to `FlatVectorsWriter.addField(FieldInfo)`
+    /// (`FlatVectorsWriter.java:47-55`), which narrows the return type of
+    /// `KnnVectorsWriter.addField` to `FlatFieldVectorsWriter<?>`. A Rust trait
+    /// cannot narrow the return type of a supertrait method, so this is a
+    /// second method under the same name, called as
+    /// `FlatVectorsWriter::add_field(writer, field_info)`; every flat writer
+    /// answers [`KnnVectorsWriter::add_field`] with this method's writer,
+    /// converted ([`From<FlatFieldVectorWriter>`](FieldVectorWriter)), so both
+    /// callers get the same object, as in Java.
+    ///
+    /// # Errors
+    ///
+    /// Whatever creating the field writer raises.
+    fn add_field(&mut self, field_info: &FieldInfo) -> Result<FlatFieldVectorWriter>;
+
+    /// Returns the scorer this writer scores vectors with.
+    ///
+    /// Equivalent to `FlatVectorsWriter.getFlatVectorScorer()`, which reads the
+    /// `protected final vectorsScorer` field the sole constructor sets.
+    fn get_flat_vector_scorer(&self) -> &dyn FlatVectorsScorer;
 
     /// Merges vectors for a single field.
     fn merge_one_flat_vector_field(
@@ -747,16 +1411,40 @@ pub trait FlatVectorsWriter: BufferingKnnVectorsWriter {
 
 /// Utilities for obtaining a flat-vector scorer.
 ///
-/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorScorerUtil`.
-///
-/// Rucene does not implement Lucene's vectorization provider, so this always
-/// returns the portable [`DefaultFlatVectorScorer`].
+/// Equivalent to `org.apache.lucene.codecs.hnsw.FlatVectorScorerUtil`: both
+/// methods ask `IMPL`, the vectorization provider selected for the process
+/// (`FlatVectorScorerUtil.java:29`), so the memory-segment scorers are
+/// returned when the Panama provider is selected and the portable ones
+/// otherwise.
 pub struct FlatVectorScorerUtil;
+
+/// `FlatVectorScorerUtil.IMPL`, looked up once.
+static FLAT_VECTOR_SCORER_UTIL_IMPL: std::sync::LazyLock<
+    Arc<dyn crate::internal::vectorization::VectorizationProvider>,
+> = std::sync::LazyLock::new(|| crate::internal::vectorization::get_instance());
 
 impl FlatVectorScorerUtil {
     /// Returns a scorer suitable for the Lucene99 flat-vectors format.
-    pub fn get_lucene99_flat_vectors_scorer() -> DefaultFlatVectorScorer {
-        DefaultFlatVectorScorer::INSTANCE
+    ///
+    /// Equivalent to `FlatVectorScorerUtil.getLucene99FlatVectorsScorer()`.
+    pub fn get_lucene99_flat_vectors_scorer() -> Arc<dyn FlatVectorsScorer> {
+        FLAT_VECTOR_SCORER_UTIL_IMPL.get_lucene99_flat_vectors_scorer()
+    }
+
+    /// Returns a scorer suitable for the Lucene99 scalar-quantized vectors
+    /// format.
+    ///
+    /// Equivalent to
+    /// `FlatVectorScorerUtil.getLucene99ScalarQuantizedVectorsScorer()`.
+    pub fn get_lucene99_scalar_quantized_vectors_scorer() -> Arc<dyn FlatVectorsScorer> {
+        FLAT_VECTOR_SCORER_UTIL_IMPL.get_lucene99_scalar_quantized_vectors_scorer()
+    }
+}
+
+impl fmt::Display for DefaultFlatVectorScorer {
+    /// Port of `DefaultFlatVectorScorer.toString()`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DefaultFlatVectorScorer()")
     }
 }
 
@@ -767,58 +1455,8 @@ impl FlatVectorScorerUtil {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Result;
-    use crate::index::vector_values::{DenseDocIndexIterator, KnnVectorValues};
+    use crate::index::vector_values::from_floats;
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-
-    /// Simple float vector values for testing.
-    struct VecFloatVectorValues {
-        vectors: Vec<Vec<f32>>,
-        dimension: i32,
-    }
-
-    impl VecFloatVectorValues {
-        fn new(vectors: Vec<Vec<f32>>, dimension: i32) -> Self {
-            Self { vectors, dimension }
-        }
-    }
-
-    impl KnnVectorValues for VecFloatVectorValues {
-        fn dimension(&self) -> i32 {
-            self.dimension
-        }
-
-        fn size(&self) -> i32 {
-            self.vectors.len() as i32
-        }
-
-        fn copy(&self) -> Result<Box<dyn KnnVectorValues>> {
-            Ok(Box::new(Self {
-                vectors: self.vectors.clone(),
-                dimension: self.dimension,
-            }))
-        }
-
-        fn encoding(&self) -> crate::index::VectorEncoding {
-            crate::index::VectorEncoding::FLOAT32
-        }
-
-        fn iterator(&self) -> Result<Box<dyn crate::index::vector_values::DocIndexIterator>> {
-            Ok(Box::new(DenseDocIndexIterator::new(self.size())))
-        }
-    }
-
-    impl FloatVectorValues for VecFloatVectorValues {
-        fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
-            if ord < 0 || ord as usize >= self.vectors.len() {
-                return Err(crate::error::LuceneError::IllegalArgument(format!(
-                    "ordinal {ord} out of range [0, {})",
-                    self.vectors.len()
-                )));
-            }
-            Ok(self.vectors[ord as usize].clone())
-        }
-    }
 
     #[test]
     fn docs_with_field_set_dense() {
@@ -870,10 +1508,36 @@ mod tests {
         assert!(set.add(3).is_err());
     }
 
+    /// A minimal float-vector `FieldInfo`, which the default field writer now
+    /// needs for its duplicate-value message and its RAM footprint.
+    fn test_float_field_info(name: &str, dim: i32) -> FieldInfo {
+        FieldInfo::new_full(
+            name,
+            0,
+            false,
+            false,
+            false,
+            crate::index::IndexOptions::NONE,
+            crate::index::DocValuesType::NONE,
+            crate::index::DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            dim,
+            crate::index::VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("field info")
+    }
+
     #[test]
     fn default_flat_field_writer_buffers_vectors() {
         let mut writer: DefaultFlatFieldVectorsWriter<Vec<f32>> =
-            DefaultFlatFieldVectorsWriter::new();
+            DefaultFlatFieldVectorsWriter::new(test_float_field_info("v", 2));
         writer.add_value(0, vec![1.0, 2.0]).unwrap();
         writer.add_value(2, vec![3.0, 4.0]).unwrap();
         assert_eq!(writer.vectors().len(), 2);
@@ -890,7 +1554,7 @@ mod tests {
 
     #[test]
     fn default_flat_vector_scorer_scores_float_vectors() {
-        let vectors = VecFloatVectorValues::new(
+        let vectors = from_floats(
             vec![
                 vec![1.0, 0.0, 0.0],
                 vec![0.0, 1.0, 0.0],
@@ -912,7 +1576,7 @@ mod tests {
 
     #[test]
     fn default_flat_vector_scorer_supplier_updates_query() {
-        let vectors = VecFloatVectorValues::new(
+        let vectors = from_floats(
             vec![
                 vec![1.0, 0.0, 0.0],
                 vec![0.0, 1.0, 0.0],
@@ -931,5 +1595,49 @@ mod tests {
         let score_same = scorer.score(0).unwrap();
         let score_other = scorer.score(1).unwrap();
         assert!(score_same > score_other);
+    }
+
+    /// `AbstractRandomVectorScorer.values()` and
+    /// `AbstractUpdateableRandomVectorScorer.values()`: each default scorer
+    /// returns the very values it scores against, and an updateable scorer
+    /// returns `vectors`, never its `targetVectors` copy.
+    #[test]
+    fn default_scorers_values_is_the_scored_values() {
+        use crate::index::vector_values::from_bytes;
+        use crate::util::hnsw::HasKnnVectorValues;
+        fn addr<T: ?Sized>(t: &T) -> *const () {
+            std::ptr::from_ref(t).cast::<()>()
+        }
+        let floats: Arc<dyn FloatVectorValues> =
+            Arc::new(from_floats(vec![vec![1.0, 0.0], vec![0.0, 1.0]], 2));
+        let float_copy: Arc<dyn FloatVectorValues> = Arc::from(floats.copy_float().unwrap());
+        let bytes: Arc<dyn ByteVectorValues> =
+            Arc::new(from_bytes(vec![vec![1, 2], vec![3, 4]], 2));
+        let byte_copy: Arc<dyn ByteVectorValues> = Arc::from(bytes.copy_byte().unwrap());
+        let sim = VectorSimilarityFunction::DOT_PRODUCT;
+
+        let s = FloatVectorScorer::new(Arc::clone(&floats), vec![1.0, 0.0], sim);
+        assert_eq!(addr(s.values().unwrap()), addr(&*floats));
+        let s = ByteVectorScorer::new(Arc::clone(&bytes), vec![1, 0], sim);
+        assert_eq!(addr(s.values().unwrap()), addr(&*bytes));
+        let s = UpdateableFloatVectorScorer {
+            values: Arc::clone(&floats),
+            target_vectors: Arc::clone(&float_copy),
+            query: vec![0.0; 2],
+            target: vec![0.0; 2],
+            similarity_function: sim,
+        };
+        assert_eq!(addr(s.values().unwrap()), addr(&*floats));
+        assert_ne!(addr(s.values().unwrap()), addr(&*float_copy));
+        let s = UpdateableByteVectorScorer {
+            values: Arc::clone(&bytes),
+            target_vectors: Arc::clone(&byte_copy),
+            query: vec![0; 2],
+            target: vec![0; 2],
+            similarity_function: sim,
+        };
+        assert_eq!(addr(s.values().unwrap()), addr(&*bytes));
+        assert_ne!(addr(s.values().unwrap()), addr(&*byte_copy));
+        assert_eq!(s.values().unwrap().size(), 2);
     }
 }

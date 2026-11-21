@@ -1,0 +1,1161 @@
+//! Numeric sorting with skipping, ported from
+//! `org.apache.lucene.search.comparators.NumericComparator` and its two
+//! competitive-iterator builders.
+
+#![deny(unsafe_code)]
+
+use std::sync::Arc;
+
+use crate::error::{LuceneError, Result};
+use crate::index::point_values::is_estimated_point_count_greater_than_or_equal_to;
+use crate::index::{
+    IntersectVisitor, LeafReader, LeafReaderContext, NumericDocValues, PointTree, PointValues,
+    Relation,
+};
+use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
+use crate::search::doc_id_set_iterator::{all, DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::field_comparator::java_long_compare;
+use crate::search::pruning::Pruning;
+use crate::search::scorable::Scorable;
+use crate::search::skip_block_range_iterator::SkipBlockRangeIterator;
+use crate::util::{DocIdSetBuilder, IntsRef};
+
+/// The lower bound of the sampling interval; both bounds are powers of two.
+///
+/// Equivalent to `NumericComparator.MIN_SKIP_INTERVAL`.
+const MIN_SKIP_INTERVAL: i32 = 32;
+
+/// The upper bound of the sampling interval.
+///
+/// Equivalent to `NumericComparator.MAX_SKIP_INTERVAL`.
+const MAX_SKIP_INTERVAL: i32 = 8192;
+
+/// How a numeric comparator obtains the doc values of a segment.
+///
+/// Equivalent to the `protected NumericDocValues
+/// NumericComparator.NumericLeafComparator.getNumericDocValues(LeafReaderContext, String)`
+/// hook, which defaults to `DocValues.getNumeric(context.reader(), field)` and
+/// which `SortedNumericSortField` overrides to install a
+/// [`SortedNumericSelector`](crate::search::SortedNumericSelector) view. As
+/// Lucene warns, an override should normally also disable skipping, because the
+/// competitive iterator builds its ranges from the points index and assumes
+/// that the values in doc values and points agree.
+///
+/// **Divergence from Lucene 10.5.0.** Java's hook receives the whole
+/// [`LeafReaderContext`]; this port passes the leaf reader it would have read
+/// from it, because a context cannot be stored beyond the call that produced
+/// it, and the competitive iterator re-derives the doc values after the call
+/// has returned.
+///
+/// It is shared and thread-safe because the comparator that holds it is handed
+/// to an executor's worker with its collector.
+pub type NumericDocValuesSource =
+    Arc<dyn Fn(&dyn LeafReader, &str) -> Result<Box<dyn NumericDocValues>> + Send + Sync>;
+
+/// The per-segment state of a numeric comparator.
+///
+/// Equivalent to the fields of the abstract inner class
+/// `NumericComparator.NumericLeafComparator`; the concrete comparators' inner
+/// leaf classes (`IntLeafComparator`, ...) add none of their own.
+pub struct NumericLeafState {
+    reader: Arc<dyn LeafReader>,
+    max_doc: i32,
+    /// The doc values of the sort field in this segment.
+    ///
+    /// Equivalent to the `protected final NumericDocValues docValues` field.
+    doc_values: Box<dyn NumericDocValues>,
+    competitive: Option<CompetitiveDisiBuilder>,
+}
+
+impl NumericLeafState {
+    /// Returns the doc values of the segment.
+    ///
+    /// Equivalent to reading `NumericLeafComparator.docValues`.
+    pub fn doc_values(&mut self) -> &mut dyn NumericDocValues {
+        self.doc_values.as_mut()
+    }
+
+    fn competitive_common_mut(&mut self) -> Option<&mut CompetitiveCommon> {
+        self.competitive.as_mut().map(|builder| &mut builder.common)
+    }
+}
+
+impl std::fmt::Debug for NumericLeafState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NumericLeafState")
+            .field("max_doc", &self.max_doc)
+            .field("has_competitive_builder", &self.competitive.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The state shared by every competitive-iterator builder.
+///
+/// Equivalent to the fields of the abstract inner class
+/// `NumericComparator.CompetitiveDISIBuilder`.
+struct CompetitiveCommon {
+    max_doc: i32,
+    /// Whether the top value was set before this leaf was entered.
+    ///
+    /// Equivalent to the `final boolean leafTopSet = topValueSet` field, which
+    /// Java captures once because `setTopValue` is called before any leaf.
+    leaf_top_set: bool,
+    competitive_iterator: UpdateableDocIdSetIterator,
+    min_value_as_long: i64,
+    max_value_as_long: i64,
+    max_doc_visited: i32,
+    update_counter: i32,
+    current_skip_interval: i32,
+}
+
+/// The points-backed and doc-values-skipper-backed competitive iterators.
+///
+/// Equivalent to the private inner classes
+/// `NumericComparator.PointsCompetitiveDISIBuilder` and
+/// `NumericComparator.DVSkipperCompetitiveDISIBuilder`, whose only shared
+/// mutable state lives in [`CompetitiveCommon`].
+enum CompetitiveKind {
+    Points {
+        point_values: Box<dyn PointValues>,
+        /// Lazily constructed to avoid the overhead when it is not used.
+        point_tree: Option<Box<dyn PointTree>>,
+        iterator_cost: i64,
+        /// Helps to be conservative about increasing the sampling interval.
+        try_update_fail_count: i32,
+    },
+    Skipper {
+        doc_count: i32,
+    },
+}
+
+struct CompetitiveDisiBuilder {
+    common: CompetitiveCommon,
+    kind: CompetitiveKind,
+}
+
+impl CompetitiveDisiBuilder {
+    /// Are there documents in this segment with no value for the comparator
+    /// to use.
+    ///
+    /// Equivalent to the abstract `CompetitiveDISIBuilder.hasMissingDocs()`:
+    /// `pointValues.getDocCount() != maxDoc` for the points-backed builder,
+    /// `skipper.docCount() != maxDoc` for the skipper-backed one
+    /// (`NumericComparator.java:386-388`, `:516-518`).
+    fn has_missing_docs(&self) -> Result<bool> {
+        Ok(match &self.kind {
+            CompetitiveKind::Points { point_values, .. } => {
+                point_values.doc_count()? != self.common.max_doc
+            }
+            CompetitiveKind::Skipper { doc_count, .. } => *doc_count != self.common.max_doc,
+        })
+    }
+
+    /// Equivalent to the private `CompetitiveDISIBuilder.setMaxDocVisited(int)`.
+    fn set_max_doc_visited(&mut self, max_doc_visited: i32) {
+        self.common.max_doc_visited = max_doc_visited;
+    }
+}
+
+/// Abstract numeric comparator for comparing numeric values.
+///
+/// Equivalent to the state and the `final` logic of the abstract class
+/// `org.apache.lucene.search.comparators.NumericComparator<T extends Number>`,
+/// which provides a skipping functionality: an iterator that can skip over
+/// non-competitive documents.
+///
+/// The `field` given to the constructor names the field whose doc values and
+/// points the default implementations read.
+///
+/// **Divergence from Lucene 10.5.0.** Java expresses the split between the
+/// shared skipping machinery and the per-type value handling as an abstract
+/// class with four subclasses, whose inner leaf comparators call back into the
+/// outer instance. Rust has no implementation inheritance, so this type holds
+/// the shared state and the four concrete comparators —
+/// [`LongComparator`](crate::search::comparators::LongComparator),
+/// [`IntComparator`](crate::search::comparators::IntComparator),
+/// [`DoubleComparator`](crate::search::comparators::DoubleComparator) and
+/// [`FloatComparator`](crate::search::comparators::FloatComparator) — embed
+/// one, passing their `bottom` and `topValue` as comparable `long`s to the
+/// methods that Java would have obtained through
+/// `bottomAsComparableLong()`/`topAsComparableLong()`. Those two methods are
+/// pure reads of the subclass's fields, so the values are the same at the same
+/// points.
+pub struct NumericComparator {
+    /// The missing value encoded as a comparable `long`.
+    ///
+    /// Equivalent to the `private final long missingValueAsLong` field, which
+    /// Java's constructor fills from the abstract
+    /// `missingValueAsComparableLong()`. Each concrete comparator's constructor
+    /// stores its override's result here once the comparator exists, since
+    /// Rust cannot call the override from the shared constructor.
+    pub(super) missing_value_as_long: i64,
+    /// The name of the sort field.
+    ///
+    /// Equivalent to the `protected final String field` field.
+    field: String,
+    /// Whether the sort on this field is reversed.
+    ///
+    /// Equivalent to the `protected final boolean reverse` field.
+    reverse: bool,
+    /// The number of bytes used to encode one point value.
+    ///
+    /// Equivalent to the `private final int bytesCount` field.
+    bytes_count: i32,
+    /// The concrete comparator's `sortableBytesToLong` override.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java declares
+    /// `protected abstract long sortableBytesToLong(byte[])`
+    /// (`NumericComparator.java:95`), which each subclass overrides with a
+    /// one-line call into `NumericUtils` and which the inner
+    /// `NumericLeafComparator` calls back on the enclosing object. Rust cannot
+    /// express that call: this struct is *owned* by the concrete comparator
+    /// rather than inherited by it, so calling back into the owner from inside
+    /// the state it owns would be a self-referential borrow. Every override in
+    /// Lucene is stateless, so the concrete comparator hands its override in
+    /// as a function pointer — for instance
+    /// [`IntComparator::sortable_bytes_to_long`](crate::search::comparators::IntComparator::sortable_bytes_to_long)
+    /// — and the call lands on exactly that code.
+    sortable_bytes_to_long: fn(&[u8]) -> i64,
+    /// The binary name of the concrete comparator class, for the
+    /// `Object.toString()` of `NumericComparator.this` in messages.
+    java_class_name: &'static str,
+    top_value_set: bool,
+    single_sort: bool,
+    /// `protected boolean hitsThresholdReached`, visible to the package's
+    /// tests in Java.
+    pub hits_threshold_reached: bool,
+    /// `protected boolean queueFull`, visible to the package's tests in Java.
+    pub queue_full: bool,
+    pruning: Pruning,
+    doc_values_source: Option<NumericDocValuesSource>,
+}
+
+impl std::fmt::Debug for NumericComparator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NumericComparator")
+            .field("field", &self.field)
+            .field("reverse", &self.reverse)
+            .field("bytes_count", &self.bytes_count)
+            .field("pruning", &self.pruning)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NumericComparator {
+    /// Creates the shared half of a numeric comparator.
+    ///
+    /// Equivalent to
+    /// `NumericComparator(String, T, boolean, Pruning, int)`, followed by the
+    /// subclass's `sortableBytesToLong` override, which the concrete
+    /// comparator passes here because the port cannot dispatch to it through
+    /// inheritance (see the `sortable_bytes_to_long` field). The constructor's
+    /// `missingValueAsComparableLong()` call is made by the concrete
+    /// comparator's constructor, which stores the result in
+    /// `missing_value_as_long` (zero until then).
+    pub fn new(
+        field: impl Into<String>,
+        reverse: bool,
+        pruning: Pruning,
+        bytes_count: i32,
+        sortable_bytes_to_long: fn(&[u8]) -> i64,
+        java_class_name: &'static str,
+    ) -> Self {
+        Self {
+            missing_value_as_long: 0,
+            field: field.into(),
+            reverse,
+            bytes_count,
+            sortable_bytes_to_long,
+            java_class_name,
+            top_value_set: false,
+            single_sort: false,
+            hits_threshold_reached: false,
+            queue_full: false,
+            pruning,
+            doc_values_source: None,
+        }
+    }
+
+    /// Decodes sortable bytes into a `long`, consistently with the codec the
+    /// field's [`PointValues`] use.
+    ///
+    /// Equivalent to the abstract `NumericComparator.sortableBytesToLong(byte[])`
+    /// (`NumericComparator.java:95`), dispatched to the override the concrete
+    /// comparator passed to [`new`](Self::new).
+    pub fn sortable_bytes_to_long(&self, bytes: &[u8]) -> i64 {
+        (self.sortable_bytes_to_long)(bytes)
+    }
+
+    /// Installs a replacement for the default doc-values lookup.
+    ///
+    /// Equivalent to overriding
+    /// `NumericLeafComparator.getNumericDocValues(LeafReaderContext, String)`;
+    /// see [`NumericDocValuesSource`].
+    pub fn set_numeric_doc_values_source(&mut self, source: NumericDocValuesSource) {
+        self.doc_values_source = Some(source);
+    }
+
+    /// Opens the doc values of `reader` through the installed source, or
+    /// through `DocValues.getNumeric` when none is installed.
+    fn open_doc_values(&self, reader: &dyn LeafReader) -> Result<Box<dyn NumericDocValues>> {
+        match self.doc_values_source.as_ref() {
+            Some(source) => source(reader, &self.field),
+            None => crate::index::DocValues::get_numeric(reader, &self.field),
+        }
+    }
+
+    /// The name of the sort field.
+    ///
+    /// Equivalent to reading the `protected final String field` field.
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Whether the sort on this field is reversed.
+    ///
+    /// Equivalent to reading the `protected final boolean reverse` field.
+    pub fn reverse(&self) -> bool {
+        self.reverse
+    }
+
+    /// Whether a top value was set on this comparator.
+    ///
+    /// Equivalent to reading the `protected boolean topValueSet` field.
+    pub fn top_value_set(&self) -> bool {
+        self.top_value_set
+    }
+
+    /// Records that a top value was set.
+    ///
+    /// Equivalent to the body of `NumericComparator.setTopValue(T)`, which the
+    /// concrete comparators call before storing the value itself.
+    pub fn set_top_value(&mut self) {
+        self.top_value_set = true;
+    }
+
+    /// Informs this comparator that the sort is done on a single field.
+    ///
+    /// Equivalent to `NumericComparator.setSingleSort()`.
+    pub fn set_single_sort(&mut self) {
+        self.single_sort = true;
+    }
+
+    /// Disables skipping.
+    ///
+    /// Equivalent to `NumericComparator.disableSkipping()`, which sets the
+    /// pruning mode to [`Pruning::NONE`].
+    pub fn disable_skipping(&mut self) {
+        self.pruning = Pruning::NONE;
+    }
+
+    /// Builds the leaf state for `context`, opening the segment's doc values
+    /// and, when pruning is enabled, the competitive-iterator builder.
+    ///
+    /// Equivalent to `new NumericLeafComparator(LeafReaderContext)`, whose
+    /// constructor ends with `buildCompetitiveDISIBuilder()`.
+    ///
+    /// `top_as_comparable_long` is the value Java's
+    /// `NumericLeafComparator.topAsComparableLong()` would return; it is only
+    /// read when a top value was set.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while opening the segment's values, and
+    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) or
+    /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for the field-info inconsistencies
+    /// Java rejects when building the points-backed iterator.
+    pub fn new_leaf(
+        &self,
+        context: &LeafReaderContext,
+        top_as_comparable_long: i64,
+    ) -> Result<NumericLeafState> {
+        let doc_values = self.open_doc_values(context.leaf_reader().as_ref())?;
+        self.new_leaf_with_doc_values(context, top_as_comparable_long, doc_values)
+    }
+
+    /// Builds the per-segment state over `doc_values`, the doc values a
+    /// subclass's `getNumericDocValues(LeafReaderContext, String)` override
+    /// returns for `context` — for example `asNumericDocValues(holder)` in
+    /// `LongValuesSource.LongValuesComparatorSource`
+    /// (`LongValuesSource.java:357-362`).
+    ///
+    /// Equivalent to the `NumericLeafComparator(LeafReaderContext)`
+    /// constructor (`NumericComparator.java:117-153`) with that override in
+    /// place.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_leaf`](Self::new_leaf), for building the competitive iterator.
+    pub fn new_leaf_with_doc_values(
+        &self,
+        context: &LeafReaderContext,
+        top_as_comparable_long: i64,
+        doc_values: Box<dyn NumericDocValues>,
+    ) -> Result<NumericLeafState> {
+        let reader = context.leaf_reader();
+        let max_doc = reader.max_doc();
+        let competitive =
+            self.build_competitive_disi_builder(&reader, max_doc, top_as_comparable_long)?;
+        Ok(NumericLeafState {
+            reader,
+            max_doc,
+            doc_values,
+            competitive,
+        })
+    }
+
+    /// Equivalent to `NumericLeafComparator.buildCompetitiveDISIBuilder()`.
+    fn build_competitive_disi_builder(
+        &self,
+        reader: &Arc<dyn LeafReader>,
+        max_doc: i32,
+        top_as_comparable_long: i64,
+    ) -> Result<Option<CompetitiveDisiBuilder>> {
+        if self.pruning == Pruning::NONE {
+            return Ok(None);
+        }
+
+        if let Some(point_values) = reader.get_point_values(&self.field)? {
+            let field_infos = reader.get_field_infos();
+            let info = field_infos.field_info(&self.field);
+            match info {
+                None => {
+                    return Err(LuceneError::illegal_state(format!(
+                        "Field {} doesn't index points according to FieldInfos yet returns non-null PointValues",
+                        self.field
+                    )));
+                }
+                Some(info) if info.get_point_dimension_count() == 0 => {
+                    return Err(LuceneError::illegal_state(format!(
+                        "Field {} doesn't index points according to FieldInfos yet returns non-null PointValues",
+                        self.field
+                    )));
+                }
+                Some(info) if info.get_point_dimension_count() > 1 => {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Field {} is indexed with multiple dimensions, sorting is not supported",
+                        self.field
+                    )));
+                }
+                Some(info) if info.get_point_num_bytes() != self.bytes_count => {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Field {} is indexed with {} bytes per dimension, but {} expected {}",
+                        self.field,
+                        info.get_point_num_bytes(),
+                        // `NumericComparator.this`: `Object.toString()`.
+                        crate::index::index_reader::java_object_to_string(
+                            self.java_class_name,
+                            self
+                        ),
+                        self.bytes_count
+                    )));
+                }
+                Some(_) => {}
+            }
+            let mut builder = CompetitiveDisiBuilder {
+                common: self.new_competitive_common(max_doc)?,
+                kind: CompetitiveKind::Points {
+                    point_values,
+                    point_tree: None,
+                    iterator_cost: -1,
+                    try_update_fail_count: 0,
+                },
+            };
+            if builder.common.leaf_top_set {
+                self.encode_top_into(&mut builder.common, top_as_comparable_long);
+            }
+            return Ok(Some(builder));
+        }
+
+        if let Some(skipper) = reader.get_doc_values_skipper(&self.field)? {
+            let doc_count = skipper.global_doc_count();
+            // The skipper is re-opened whenever a new range is materialised, so
+            // only its document count is kept here.
+            drop(skipper);
+            let mut builder = CompetitiveDisiBuilder {
+                common: self.new_competitive_common(max_doc)?,
+                kind: CompetitiveKind::Skipper { doc_count },
+            };
+            if builder.common.leaf_top_set {
+                self.encode_top_into(&mut builder.common, top_as_comparable_long);
+            }
+            return Ok(Some(builder));
+        }
+
+        Ok(None)
+    }
+
+    /// Equivalent to the `CompetitiveDISIBuilder(NumericLeafComparator)`
+    /// constructor, minus the `encodeTop()` call the caller makes.
+    fn new_competitive_common(&self, max_doc: i32) -> Result<CompetitiveCommon> {
+        let competitive_iterator = UpdateableDocIdSetIterator::new();
+        competitive_iterator.update(Box::new(all(max_doc)?));
+        Ok(CompetitiveCommon {
+            max_doc,
+            leaf_top_set: self.top_value_set,
+            competitive_iterator,
+            min_value_as_long: i64::MIN,
+            max_value_as_long: i64::MAX,
+            max_doc_visited: -1,
+            update_counter: 0,
+            current_skip_interval: MIN_SKIP_INTERVAL,
+        })
+    }
+
+    /// Equivalent to `CompetitiveDISIBuilder.encodeTop()`.
+    fn encode_top_into(&self, common: &mut CompetitiveCommon, top_as_comparable_long: i64) {
+        encode_top(
+            common,
+            self.reverse,
+            self.pruning,
+            self.single_sort,
+            self.queue_full,
+            top_as_comparable_long,
+        );
+    }
+}
+
+/// Equivalent to `CompetitiveDISIBuilder.encodeTop()`.
+///
+/// If [`Pruning::GREATER_THAN_OR_EQUAL_TO`] is in force the bound can be
+/// tightened by one: for an ascending sort with a top value of 3, the range
+/// becomes `[4, MAX_VALUE]`.
+fn encode_top(
+    common: &mut CompetitiveCommon,
+    reverse: bool,
+    pruning: Pruning,
+    single_sort: bool,
+    queue_full: bool,
+    top_as_comparable_long: i64,
+) {
+    {
+        if !reverse {
+            common.min_value_as_long = top_as_comparable_long;
+            if single_sort
+                && pruning == Pruning::GREATER_THAN_OR_EQUAL_TO
+                && queue_full
+                && common.min_value_as_long != i64::MAX
+            {
+                common.min_value_as_long += 1;
+            }
+        } else {
+            common.max_value_as_long = top_as_comparable_long;
+            if single_sort
+                && pruning == Pruning::GREATER_THAN_OR_EQUAL_TO
+                && queue_full
+                && common.max_value_as_long != i64::MIN
+            {
+                common.max_value_as_long -= 1;
+            }
+        }
+    }
+}
+
+/// Equivalent to `CompetitiveDISIBuilder.encodeBottom()`.
+///
+/// If [`Pruning::GREATER_THAN_OR_EQUAL_TO`] is in force the bound can be
+/// tightened by one: for an ascending sort with a bottom value of 5, the range
+/// becomes `[MIN_VALUE, 4]`.
+fn encode_bottom(
+    common: &mut CompetitiveCommon,
+    reverse: bool,
+    pruning: Pruning,
+    bottom_as_comparable_long: i64,
+) {
+    if !reverse {
+        common.max_value_as_long = bottom_as_comparable_long;
+        if pruning == Pruning::GREATER_THAN_OR_EQUAL_TO && common.max_value_as_long != i64::MIN {
+            common.max_value_as_long -= 1;
+        }
+    } else {
+        common.min_value_as_long = bottom_as_comparable_long;
+        if pruning == Pruning::GREATER_THAN_OR_EQUAL_TO && common.min_value_as_long != i64::MAX {
+            common.min_value_as_long += 1;
+        }
+    }
+}
+
+impl NumericComparator {
+    /// Equivalent to `CompetitiveDISIBuilder.isMissingValueCompetitive()`.
+    fn is_missing_value_competitive(
+        &self,
+        common: &CompetitiveCommon,
+        bottom_as_comparable_long: i64,
+        top_as_comparable_long: i64,
+    ) -> bool {
+        // If the queue is full, compare with bottom first; if competitive, then
+        // check whether we can compare with the top value.
+        if self.queue_full {
+            let result = java_long_compare(self.missing_value_as_long, bottom_as_comparable_long);
+            // In a reverse (descending) sort the missing value is competitive
+            // when it is greater than or equal to bottom; in an ascending sort
+            // it is competitive when it is smaller than or equal to bottom.
+            let competitive = if self.reverse {
+                if self.pruning == Pruning::GREATER_THAN_OR_EQUAL_TO {
+                    result > 0
+                } else {
+                    result >= 0
+                }
+            } else if self.pruning == Pruning::GREATER_THAN_OR_EQUAL_TO {
+                result < 0
+            } else {
+                result <= 0
+            };
+            if !competitive {
+                return false;
+            }
+        }
+
+        if common.leaf_top_set {
+            let result = java_long_compare(self.missing_value_as_long, top_as_comparable_long);
+            // In a reverse (descending) sort the missing value is competitive
+            // when it is smaller than or equal to the top value; in an
+            // ascending sort when it is greater than or equal to it.
+            return if self.reverse {
+                result <= 0
+            } else {
+                result >= 0
+            };
+        }
+
+        // Competitive by default.
+        true
+    }
+
+    /// Records that the queue is full and refreshes the competitive iterator.
+    ///
+    /// Equivalent to `NumericLeafComparator.setBottom(int)`, whose per-type
+    /// half — copying the slot's value into `bottom` — the concrete comparators
+    /// perform before calling this.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rebuilding the iterator.
+    pub fn set_bottom(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        bottom_as_comparable_long: i64,
+        top_as_comparable_long: i64,
+    ) -> Result<()> {
+        // Setting bottom means that we have collected enough hits.
+        self.queue_full = true;
+        self.update_competitive_iterator(leaf, bottom_as_comparable_long, top_as_comparable_long)
+    }
+
+    /// Records the highest document visited so far.
+    ///
+    /// Equivalent to `NumericLeafComparator.copy(int, int)`, whose per-type
+    /// half — copying the document's value into the slot — the concrete
+    /// comparators perform before calling this.
+    pub fn copy(&mut self, leaf: &mut NumericLeafState, doc: i32) {
+        if let Some(builder) = leaf.competitive.as_mut() {
+            builder.set_max_doc_visited(doc);
+        }
+    }
+
+    /// Reacts to the collector installing a scorer.
+    ///
+    /// Equivalent to `NumericLeafComparator.setScorer(Scorable)`, which
+    /// forwards to the competitive-iterator builder. The points-backed builder
+    /// seeds `iteratorCost` with `((Scorer) scorer).iterator().cost()` when the
+    /// scorable is a [`Scorer`](crate::search::Scorer) — tested, as Java's
+    /// `instanceof Scorer`, with [`Scorable::as_scorer`] — and with `maxDoc`
+    /// otherwise (`NumericComparator.java:373-383`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rebuilding the iterator.
+    pub fn set_scorer(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        scorer: &mut dyn Scorable,
+        bottom_as_comparable_long: i64,
+        top_as_comparable_long: i64,
+    ) -> Result<()> {
+        let should_update = match leaf.competitive.as_mut() {
+            None => false,
+            Some(builder) => match &mut builder.kind {
+                CompetitiveKind::Points { iterator_cost, .. } => {
+                    if *iterator_cost == -1 {
+                        *iterator_cost = match scorer.as_scorer() {
+                            // starting iterator cost is the scorer's cost
+                            Some(scorer) => scorer.iterator().cost(),
+                            None => i64::from(builder.common.max_doc),
+                        };
+                        true
+                    } else {
+                        false
+                    }
+                }
+                CompetitiveKind::Skipper { .. } => true,
+            },
+        };
+        if should_update {
+            // Update the iterator when we have a new segment.
+            self.update_competitive_iterator(
+                leaf,
+                bottom_as_comparable_long,
+                top_as_comparable_long,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Records that the hits threshold was reached and refreshes the
+    /// competitive iterator.
+    ///
+    /// Equivalent to `NumericLeafComparator.setHitsThresholdReached()`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rebuilding the iterator.
+    pub fn set_hits_threshold_reached(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        bottom_as_comparable_long: i64,
+        top_as_comparable_long: i64,
+    ) -> Result<()> {
+        self.hits_threshold_reached = true;
+        self.update_competitive_iterator(leaf, bottom_as_comparable_long, top_as_comparable_long)
+    }
+
+    /// Returns the competitive iterator of the segment being collected.
+    ///
+    /// Equivalent to `NumericLeafComparator.competitiveIterator()`.
+    pub fn competitive_iterator(
+        &self,
+        leaf: &NumericLeafState,
+    ) -> Option<crate::search::CompetitiveIterator> {
+        // PERF: another handle onto the shared iterator, unboxed.
+        leaf.competitive.as_ref().map(|builder| {
+            crate::search::CompetitiveIterator::Updateable(
+                builder.common.competitive_iterator.clone(),
+            )
+        })
+    }
+
+    /// Equivalent to the `final CompetitiveDISIBuilder.updateCompetitiveIterator()`.
+    fn update_competitive_iterator(
+        &mut self,
+        leaf: &mut NumericLeafState,
+        bottom_as_comparable_long: i64,
+        top_as_comparable_long: i64,
+    ) -> Result<()> {
+        if leaf.competitive.is_none() {
+            return Ok(());
+        }
+        if !self.hits_threshold_reached {
+            return Ok(());
+        }
+        let builder = leaf
+            .competitive
+            .as_ref()
+            .expect("INVARIANT: the builder was just observed to be present");
+        if !builder.common.leaf_top_set && !self.queue_full {
+            return Ok(());
+        }
+
+        // If some documents have missing points, check that missing values
+        // prohibit the optimization.
+        if builder.has_missing_docs()? {
+            let competitive = {
+                let common = &builder.common;
+                self.is_missing_value_competitive(
+                    common,
+                    bottom_as_comparable_long,
+                    top_as_comparable_long,
+                )
+            };
+            if competitive {
+                return Ok(());
+            }
+        }
+
+        {
+            let common = leaf
+                .competitive_common_mut()
+                .expect("INVARIANT: the builder was just observed to be present");
+            common.update_counter += 1;
+            // Start sampling if we get called too much.
+            if common.update_counter > 256
+                && (common.update_counter & (common.current_skip_interval - 1))
+                    != common.current_skip_interval - 1
+            {
+                return Ok(());
+            }
+        }
+
+        if self.queue_full {
+            let reverse = self.reverse;
+            let pruning = self.pruning;
+            let common = leaf
+                .competitive_common_mut()
+                .expect("INVARIANT: the builder was just observed to be present");
+            encode_bottom(common, reverse, pruning, bottom_as_comparable_long);
+        }
+
+        self.do_update_competitive_iterator(leaf)
+    }
+
+    /// Equivalent to the two `doUpdateCompetitiveIterator()` implementations.
+    fn do_update_competitive_iterator(&mut self, leaf: &mut NumericLeafState) -> Result<()> {
+        let field = self.field.clone();
+        let sortable_bytes_to_long = self.sortable_bytes_to_long;
+        let doc_values_source = self.doc_values_source.clone();
+        let reader = Arc::clone(&leaf.reader);
+        let Some(builder) = leaf.competitive.as_mut() else {
+            return Ok(());
+        };
+
+        match &mut builder.kind {
+            CompetitiveKind::Skipper { .. } => {
+                let Some(skipper) = reader.get_doc_values_skipper(&field)? else {
+                    return Ok(());
+                };
+                let iterator = SkipBlockRangeIterator::new(
+                    skipper,
+                    builder.common.min_value_as_long,
+                    builder.common.max_value_as_long,
+                );
+                builder
+                    .common
+                    .competitive_iterator
+                    .update(Box::new(iterator));
+                Ok(())
+            }
+            CompetitiveKind::Points {
+                point_values,
+                point_tree,
+                iterator_cost,
+                try_update_fail_count,
+            } => {
+                let max_doc = builder.common.max_doc;
+                let mut result = DocIdSetBuilder::new(max_doc);
+                let threshold = ((*iterator_cost as u64) >> 3) as i64;
+
+                let reached = {
+                    let mut visitor = CompetitiveVisitor {
+                        result: &mut result,
+                        max_doc_visited: builder.common.max_doc_visited,
+                        min_value_as_long: builder.common.min_value_as_long,
+                        max_value_as_long: builder.common.max_value_as_long,
+                        sortable_bytes_to_long,
+                    };
+                    if point_tree.is_none() {
+                        *point_tree = Some(point_values.point_tree()?);
+                    }
+                    let tree = point_tree
+                        .as_mut()
+                        .expect("INVARIANT: the point tree was just built");
+                    is_estimated_point_count_greater_than_or_equal_to(
+                        &mut visitor,
+                        tree.as_mut(),
+                        threshold,
+                    )?
+                };
+
+                if reached {
+                    // The new range is not selective enough to be worth
+                    // materializing: it does not reduce the number of docs at
+                    // least 8x.
+                    let doc_count = point_values.doc_count()?;
+                    let success = false;
+                    update_skip_interval(&mut builder.common, try_update_fail_count, success);
+                    if i64::from(doc_count) < *iterator_cost {
+                        // Use the set of docs with values to help drive
+                        // iteration.
+                        let doc_values = match doc_values_source.as_ref() {
+                            Some(source) => source(reader.as_ref(), &field)?,
+                            None => crate::index::DocValues::get_numeric(reader.as_ref(), &field)?,
+                        };
+                        builder
+                            .common
+                            .competitive_iterator
+                            .update(doc_values as Box<dyn DocIdSetIterator>);
+                        *iterator_cost = i64::from(doc_count);
+                    }
+                    return Ok(());
+                }
+
+                {
+                    let mut visitor = CompetitiveVisitor {
+                        result: &mut result,
+                        max_doc_visited: builder.common.max_doc_visited,
+                        min_value_as_long: builder.common.min_value_as_long,
+                        max_value_as_long: builder.common.max_value_as_long,
+                        sortable_bytes_to_long,
+                    };
+                    point_values.intersect(&mut visitor)?;
+                }
+                let new_iterator = result.build()?.iterator()?;
+                *iterator_cost = new_iterator.cost();
+                builder.common.competitive_iterator.update(new_iterator);
+                update_skip_interval(&mut builder.common, try_update_fail_count, true);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Equivalent to `PointsCompetitiveDISIBuilder.updateSkipInterval(boolean)`.
+fn update_skip_interval(
+    common: &mut CompetitiveCommon,
+    try_update_fail_count: &mut i32,
+    success: bool,
+) {
+    if common.update_counter > 256 {
+        if success {
+            common.current_skip_interval =
+                (common.current_skip_interval / 2).max(MIN_SKIP_INTERVAL);
+            *try_update_fail_count = 0;
+        } else if *try_update_fail_count >= 3 {
+            common.current_skip_interval =
+                (common.current_skip_interval * 2).min(MAX_SKIP_INTERVAL);
+            *try_update_fail_count = 0;
+        } else {
+            *try_update_fail_count += 1;
+        }
+    }
+}
+
+/// The visitor that collects the documents whose point value lies inside the
+/// competitive range.
+///
+/// Equivalent to the anonymous `PointValues.IntersectVisitor` that
+/// `PointsCompetitiveDISIBuilder.doUpdateCompetitiveIterator()` builds.
+///
+/// **Divergence from Lucene 10.5.0.** Java keeps the `BulkAdder` returned by
+/// `grow(int)` in a field and reuses it across `visit` calls. This crate's
+/// [`DocIdSetBuilder::grow`] returns an adder that borrows the builder, so it
+/// cannot be stored beside it; each `visit` therefore re-derives the adder with
+/// `grow(0)`, which reserves nothing — the capacity was already reserved by the
+/// preceding `grow(count)` — and appends exactly as Java's adder does.
+struct CompetitiveVisitor<'a> {
+    result: &'a mut DocIdSetBuilder,
+    max_doc_visited: i32,
+    min_value_as_long: i64,
+    max_value_as_long: i64,
+    /// The enclosing comparator's `sortableBytesToLong`.
+    sortable_bytes_to_long: fn(&[u8]) -> i64,
+}
+
+impl CompetitiveVisitor<'_> {
+    /// The body of Java's `adder.add(int)`.
+    fn add(&mut self, doc_id: i32) {
+        self.result.grow(0).add(doc_id);
+    }
+}
+
+impl IntersectVisitor for CompetitiveVisitor<'_> {
+    /// `NumericComparator$PointsCompetitiveDISIBuilder$1` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.comparators.NumericComparator$PointsCompetitiveDISIBuilder$1",
+        )
+    }
+    fn grow(&mut self, count: i32) -> Result<()> {
+        self.result.grow(count);
+        Ok(())
+    }
+
+    fn visit(&mut self, doc_id: i32) -> Result<()> {
+        if doc_id <= self.max_doc_visited {
+            // Already visited or skipped.
+            return Ok(());
+        }
+        self.add(doc_id);
+        Ok(())
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        if doc_id <= self.max_doc_visited {
+            // Already visited or skipped.
+            return Ok(());
+        }
+        let value = (self.sortable_bytes_to_long)(packed_value);
+        if value >= self.min_value_as_long && value <= self.max_value_as_long {
+            // The doc is competitive.
+            self.add(doc_id);
+        }
+        Ok(())
+    }
+
+    fn visit_iterator(&mut self, iterator: &mut dyn DocIdSetIterator) -> Result<()> {
+        if iterator.advance(self.max_doc_visited + 1)? != NO_MORE_DOCS {
+            let doc = iterator.doc_id();
+            self.add(doc);
+            self.result.grow(0).add_iterator(iterator)?;
+        }
+        Ok(())
+    }
+
+    fn visit_ints_ref(&mut self, ints_ref: &IntsRef) -> Result<()> {
+        let lower_bound = self.max_doc_visited + 1;
+        self.result.grow(0).add_ints_from(ints_ref, lower_bound);
+        Ok(())
+    }
+
+    fn compare(&self, min_packed_value: &[u8], max_packed_value: &[u8]) -> Result<Relation> {
+        let min = (self.sortable_bytes_to_long)(min_packed_value);
+        let max = (self.sortable_bytes_to_long)(max_packed_value);
+
+        if min > self.max_value_as_long || max < self.min_value_as_long {
+            // 1. When the comparison is 0 and pruning is
+            //    GREATER_THAN_OR_EQUAL_TO: if the sort is ascending then
+            //    maxValueAsLong is the value just below bottom, so it is
+            //    competitive.
+            // 2. When the comparison is 0 and pruning is GREATER_THAN:
+            //    maxValueAsLong equals bottom, but there are several
+            //    comparators, so it could be competitive.
+            return Ok(Relation::CellOutsideQuery);
+        }
+
+        if min < self.min_value_as_long || max > self.max_value_as_long {
+            return Ok(Relation::CellCrossesQuery);
+        }
+        Ok(Relation::CellInsideQuery)
+    }
+}
+
+#[cfg(test)]
+mod missing_value_tests {
+    use crate::search::comparators::{
+        DoubleComparator, FloatComparator, IntComparator, LongComparator,
+    };
+    use crate::search::pruning::Pruning;
+    use crate::util::NumericUtils;
+
+    /// `NumericComparator`'s constructor stores
+    /// `missingValueAsComparableLong()` — the concrete comparator's override —
+    /// in `missingValueAsLong` (`NumericComparator.java:68`), which the
+    /// competitive iterator compares against the bottom and top values.
+    #[test]
+    fn the_constructor_caches_the_overrides_comparable_missing_value() {
+        let double = DoubleComparator::new(1, "d", Some(-1.5), false, Pruning::NONE);
+        let float = FloatComparator::new(1, "f", Some(2.25), false, Pruning::NONE);
+        let int = IntComparator::new(1, "i", Some(-7), false, Pruning::NONE);
+        let long = LongComparator::new(1, "l", Some(i64::MAX - 3), true, Pruning::NONE);
+        // Java's `null` missing value is replaced with zero before the call.
+        let none = LongComparator::new(1, "l", None, false, Pruning::NONE);
+        let cases = [
+            (
+                "double",
+                double.base().missing_value_as_long,
+                NumericUtils::double_to_sortable_long(-1.5),
+            ),
+            (
+                "float",
+                float.base().missing_value_as_long,
+                i64::from(NumericUtils::float_to_sortable_int(2.25)),
+            ),
+            ("int", int.base().missing_value_as_long, -7),
+            ("long", long.base().missing_value_as_long, i64::MAX - 3),
+            ("long, null", none.base().missing_value_as_long, 0),
+        ];
+        let wrong: Vec<_> = cases
+            .iter()
+            .filter(|(_, cached, expected)| cached != expected)
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "(comparator, cached, expected): {wrong:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod scorer_cost_tests {
+    use std::sync::Arc;
+
+    use super::{CompetitiveKind, NumericComparator, NumericLeafState};
+    use crate::document::{Document, LongPoint, NumericDocValuesField, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::{IndexReader, Term};
+    use crate::search::comparators::LongComparator;
+    use crate::search::pruning::Pruning;
+    use crate::search::{
+        IndexSearcher, Query, ScoreMode, Scorer, ScorerAsScorable, SimpleScorable, TermQuery,
+    };
+    use crate::util::BytesRef;
+
+    fn iterator_cost(leaf: &NumericLeafState) -> i64 {
+        match &leaf
+            .competitive
+            .as_ref()
+            .expect("points-backed builder")
+            .kind
+        {
+            CompetitiveKind::Points { iterator_cost, .. } => *iterator_cost,
+            CompetitiveKind::Skipper { .. } => panic!("expected the points-backed builder"),
+        }
+    }
+
+    /// `NumericLeafComparator.setScorer` seeds the points-backed builder's
+    /// `iteratorCost` with `((Scorer) scorer).iterator().cost()` when the
+    /// scorable is a `Scorer`, and with `maxDoc` otherwise
+    /// (`NumericComparator.java:373-383`): a term matching 16 of 64 documents
+    /// yields 16 through a `Scorer`, and 64 through a plain `Scorable`.
+    #[test]
+    fn set_scorer_seeds_the_iterator_cost_with_a_scorers_cost() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for d in 0..64i64 {
+            let mut doc = Document::new();
+            if d % 4 == 0 {
+                doc.add(StringField::new("b", "x".to_string(), Store::NO).unwrap());
+            }
+            doc.add(LongPoint::new("l", &[d * 3 - 50]).unwrap());
+            doc.add(NumericDocValuesField::new("l", d * 3 - 50));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(Arc::clone(&dir)).unwrap();
+        let searcher = IndexSearcher::new(reader as Arc<dyn IndexReader>).unwrap();
+        let ctx = Arc::clone(&searcher.get_leaf_contexts()[0]);
+        assert_eq!(ctx.leaf_reader().max_doc(), 64);
+
+        let query: Arc<dyn Query> =
+            Arc::new(TermQuery::new(Term::new("b", BytesRef::new(b"x".to_vec()))));
+        let weight = searcher
+            .create_weight(searcher.rewrite(query).unwrap(), ScoreMode::COMPLETE, 1.0)
+            .unwrap();
+        let mut scorer: Box<dyn Scorer> = weight
+            .scorer_supplier(&ctx)
+            .unwrap()
+            .expect("the term matches")
+            .get(i64::MAX)
+            .unwrap();
+        assert_eq!(scorer.iterator().cost(), 16);
+
+        let comparator = || {
+            NumericComparator::new(
+                "l",
+                false,
+                Pruning::GREATER_THAN_OR_EQUAL_TO,
+                8,
+                LongComparator::sortable_bytes_to_long,
+                "org.apache.lucene.search.comparators.LongComparator",
+            )
+        };
+
+        let mut through_scorer = comparator();
+        let mut leaf = through_scorer.new_leaf(&ctx, 0).unwrap();
+        assert_eq!(iterator_cost(&leaf), -1);
+        through_scorer
+            .set_scorer(&mut leaf, &mut ScorerAsScorable::new(&mut *scorer), 0, 0)
+            .unwrap();
+        assert_eq!(iterator_cost(&leaf), 16, "a Scorer's iterator cost");
+
+        let mut through_scorable = comparator();
+        let mut leaf = through_scorable.new_leaf(&ctx, 0).unwrap();
+        through_scorable
+            .set_scorer(&mut leaf, &mut SimpleScorable::new(), 0, 0)
+            .unwrap();
+        assert_eq!(iterator_cost(&leaf), 64, "maxDoc for a plain Scorable");
+    }
+}

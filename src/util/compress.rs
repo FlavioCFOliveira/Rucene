@@ -6,7 +6,7 @@
 
 #![deny(unsafe_code)]
 
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::store::{DataInput, DataOutput};
 
 // -----------------------------------------------------------------------------
@@ -19,8 +19,16 @@ use crate::store::{DataInput, DataOutput};
 pub const LZ4_MAX_DISTANCE: usize = 1 << 16;
 
 const LZ4_MEMORY_USAGE: usize = 14;
-const LZ4_MIN_MATCH: usize = 4;
-const LZ4_LAST_LITERALS: usize = 5;
+/// Minimum length of a match.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4.MIN_MATCH`
+/// (package-private in Java; public here for the port of `LZ4TestCase`).
+pub const LZ4_MIN_MATCH: usize = 4;
+/// The last 5 bytes must be encoded as literals.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4.LAST_LITERALS`
+/// (package-private in Java; public here for the port of `LZ4TestCase`).
+pub const LZ4_LAST_LITERALS: usize = 5;
 const LZ4_HASH_LOG_HC: u32 = 15;
 const LZ4_HASH_TABLE_SIZE_HC: usize = 1 << LZ4_HASH_LOG_HC;
 const LZ4_MAX_ATTEMPTS: usize = 256;
@@ -42,6 +50,8 @@ fn lz4_hash_hc(i: u32) -> usize {
 /// The Java original uses `BitUtil.VH_NATIVE_INT`, which is little-endian on the
 /// hardware that produces the reference index files. Using little-endian here
 /// ensures byte-for-byte compatibility with those files.
+///
+/// Equivalent to `org.apache.lucene.util.compress.LZ4#readInt`.
 fn read_native_int(buf: &[u8], i: usize) -> u32 {
     u32::from_le_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]])
 }
@@ -143,6 +153,12 @@ pub trait Lz4HashTable: Send + Sync {
     /// offsets. A return value of `None` indicates that no other index could
     /// be found.
     fn previous(&mut self, bytes: &[u8], off: usize) -> Option<usize>;
+    /// Whether this table is fully reset: an assertion helper, which panics
+    /// (Java's `assert`) on a slot still holding a previous content.
+    ///
+    /// Equivalent to `LZ4.HashTable.assertReset()` (`LZ4.java:216`),
+    /// package-private in Java; public here for the port of `LZ4TestCase`.
+    fn assert_reset(&self) -> bool;
 }
 
 enum OffsetTable {
@@ -167,7 +183,11 @@ impl OffsetTable {
 
     fn set(&mut self, index: usize, value: usize) {
         match self {
-            OffsetTable::U16(v) => v[index] = value as u16,
+            OffsetTable::U16(v) => {
+                // `Table16.set` (`LZ4.java:243-246`).
+                debug_assert!(value < 1 << 16);
+                v[index] = value as u16;
+            }
             OffsetTable::U32(v) => v[index] = value as u32,
         }
     }
@@ -222,13 +242,13 @@ impl FastCompressionHashTable {
 
 impl Lz4HashTable for FastCompressionHashTable {
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
-        if off
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?
-            > bytes.len()
-        {
-            return Err(LuceneError::IllegalArgument(
-                "offset or length out of bounds".to_string(),
+        // `Objects.checkFromIndexSize(off, len, bytes.length)`
+        // (`LZ4.java:316`, `:412`).
+        if off > bytes.len() || len > bytes.len() - off {
+            return Err(crate::store::check_from_index_size_ioobe(
+                off as i32,
+                len as i32,
+                bytes.len(),
             ));
         }
         let end = off + len;
@@ -244,8 +264,10 @@ impl Lz4HashTable for FastCompressionHashTable {
         let table_size = 1usize << self.hash_log;
         if self.table.size() < table_size || self.table.bits_per_value() < bits_per_offset {
             self.table = if bits_per_offset > 16 {
+                debug_assert!(bits_per_offset == 32);
                 OffsetTable::U32(vec![0; table_size])
             } else {
+                debug_assert!(bits_per_offset == 16);
                 OffsetTable::U16(vec![0; table_size])
             };
         }
@@ -281,6 +303,12 @@ impl Lz4HashTable for FastCompressionHashTable {
 
     fn previous(&mut self, _bytes: &[u8], _off: usize) -> Option<usize> {
         None
+    }
+
+    /// Equivalent to `FastCompressionHashTable.assertReset()`
+    /// (`LZ4.java:380-382`).
+    fn assert_reset(&self) -> bool {
+        true
     }
 }
 
@@ -319,16 +347,20 @@ impl HighCompressionHashTable {
     fn add_hash(&mut self, bytes: &[u8], off: usize) {
         let v = read_native_int(bytes, off);
         let h = lz4_hash_hc(v);
-        let prev = self.hash_table[h];
-        let delta = if prev < 0 {
+        // Java is `int delta = off - hashTable[h]; if (delta <= 0 || delta >=
+        // MAX_DISTANCE) { delta = MAX_DISTANCE - 1; }` (`LZ4.java:475-484`),
+        // and the subtraction is **signed** for two reasons. The unset slot
+        // holds `-1`, and — the one that bites — `reset` deliberately keeps the
+        // table when the previous span was shorter than the window
+        // (`LZ4.java:411-431`), so a stale entry can hold an offset *larger*
+        // than `off`. Computing this in `usize`, as this port used to, made
+        // that case underflow: a debug build aborted and a release build
+        // wrapped. The single guard below covers both, exactly as Java's does.
+        let delta = off as i64 - i64::from(self.hash_table[h]);
+        let delta = if delta <= 0 || delta >= LZ4_MAX_DISTANCE as i64 {
             LZ4_MAX_DISTANCE - 1
         } else {
-            let d = off - prev as usize;
-            if d == 0 || d >= LZ4_MAX_DISTANCE {
-                LZ4_MAX_DISTANCE - 1
-            } else {
-                d
-            }
+            delta as usize
         };
         self.chain_table[off & (LZ4_MAX_DISTANCE - 1)] = delta as u16;
         self.hash_table[h] = off as i32;
@@ -336,14 +368,23 @@ impl HighCompressionHashTable {
 }
 
 impl Lz4HashTable for HighCompressionHashTable {
+    /// Equivalent to `HighCompressionHashTable.assertReset()`
+    /// (`LZ4.java:500-505`): every chain slot is `(short) 0xFFFF`.
+    fn assert_reset(&self) -> bool {
+        for (i, &slot) in self.chain_table.iter().enumerate() {
+            assert!(slot == 0xFFFF, "{i}");
+        }
+        true
+    }
+
     fn reset(&mut self, bytes: &[u8], off: usize, len: usize) -> Result<()> {
-        if off
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?
-            > bytes.len()
-        {
-            return Err(LuceneError::IllegalArgument(
-                "offset or length out of bounds".to_string(),
+        // `Objects.checkFromIndexSize(off, len, bytes.length)`
+        // (`LZ4.java:316`, `:412`).
+        if off > bytes.len() || len > bytes.len() - off {
+            return Err(crate::store::check_from_index_size_ioobe(
+                off as i32,
+                len as i32,
+                bytes.len(),
             ));
         }
         let end = off + len;
@@ -477,28 +518,26 @@ impl Lz4 {
         out: &mut dyn DataOutput,
         ht: &mut dyn Lz4HashTable,
     ) -> Result<()> {
-        if dict_off.checked_add(dict_len).ok_or_else(|| {
-            LuceneError::IllegalArgument("dictOff + dictLen overflowed".to_string())
-        })? > bytes.len()
-        {
-            return Err(LuceneError::IllegalArgument(
-                "dictOff or dictLen out of bounds".to_string(),
+        // `Objects.checkFromIndexSize(dictOff, dictLen, bytes.length)` and
+        // `Objects.checkFromIndexSize(dictOff + dictLen, len, bytes.length)`
+        // (`LZ4.java:527-528`).
+        if dict_off > bytes.len() || dict_len > bytes.len() - dict_off {
+            return Err(crate::store::check_from_index_size_ioobe(
+                dict_off as i32,
+                dict_len as i32,
+                bytes.len(),
             ));
         }
-        if dict_off
-            .checked_add(dict_len)
-            .and_then(|x| x.checked_add(len))
-            .ok_or_else(|| {
-                LuceneError::IllegalArgument("dictOff + dictLen + len overflowed".to_string())
-            })?
-            > bytes.len()
-        {
-            return Err(LuceneError::IllegalArgument(
-                "dictOff + dictLen + len out of bounds".to_string(),
+        let start = dict_off + dict_len;
+        if len > bytes.len() - start {
+            return Err(crate::store::check_from_index_size_ioobe(
+                start as i32,
+                len as i32,
+                bytes.len(),
             ));
         }
         if dict_len > LZ4_MAX_DISTANCE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "dictLen must not be greater than 64kB, but got {dict_len}"
             )));
         }
@@ -580,18 +619,19 @@ impl Lz4 {
     /// Returns the final destination offset.
     ///
     /// Equivalent to `org.apache.lucene.util.compress.LZ4.decompress`.
-    pub fn decompress(
-        input: &mut dyn DataInput,
+    ///
+    /// Generic over the input so that a caller holding a concrete input type
+    /// gets its `read_byte`/`read_short`/`read_bytes` calls statically
+    /// dispatched and inlined, as the JIT devirtualises Java's monomorphic
+    /// call site; a caller holding `dyn DataInput` instantiates it with the
+    /// trait object and keeps dynamic dispatch.
+    pub fn decompress<I: DataInput + ?Sized>(
+        input: &mut I,
         decompressed_len: usize,
         dest: &mut [u8],
         d_off: usize,
     ) -> Result<usize> {
         let dest_end = d_off + decompressed_len;
-        if dest_end > dest.len() {
-            return Err(LuceneError::IllegalArgument(
-                "destination buffer too small".to_string(),
-            ));
-        }
         let mut d_off = d_off;
 
         loop {
@@ -608,7 +648,9 @@ impl Lz4 {
                 }
             }
             if literal_len != 0 {
-                input.read_bytes(dest, d_off, literal_len)?;
+                // `compressed.readBytes(dest, dOff, literalLen)`: a run the
+                // buffer cannot hold fails with the input's own range check.
+                input.read_bytes(Some(dest), d_off, literal_len)?;
                 d_off += literal_len;
             }
 
@@ -619,10 +661,10 @@ impl Lz4 {
             // Match.
             let match_dec = input.read_short()? as u16 as usize;
             if match_dec == 0 {
-                return Err(LuceneError::Io(std::io::Error::new(
+                return Err(LuceneError::from(LuceneErrorKind::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "offset 0 is invalid",
-                )));
+                ))));
             }
 
             let mut match_len = token & 0x0F;
@@ -639,17 +681,56 @@ impl Lz4 {
 
             let fast_len = (match_len + 7) & !7;
             if match_dec < match_len || d_off + fast_len > dest_end {
-                // Overlap -> naive incremental copy.
-                let mut ref_pos = d_off - match_dec;
+                // Overlap -> naive incremental copy: `dest[dOff] = dest[ref]`,
+                // whose right-hand side is read before the store is checked
+                // (JLS 15.26.1), each an `ArrayIndexOutOfBoundsException`.
+                let mut ref_pos = d_off as i64 - match_dec as i64;
                 let match_end = d_off + match_len;
                 while d_off < match_end {
-                    dest[d_off] = dest[ref_pos];
+                    if ref_pos < 0 || ref_pos as usize >= dest.len() {
+                        return Err(crate::store::array_index_out_of_bounds(ref_pos, dest.len()));
+                    }
+                    if d_off >= dest.len() {
+                        return Err(crate::store::array_index_out_of_bounds(
+                            d_off as i64,
+                            dest.len(),
+                        ));
+                    }
+                    dest[d_off] = dest[ref_pos as usize];
                     ref_pos += 1;
                     d_off += 1;
                 }
             } else {
-                // No overlap -> bulk copy.
-                let src_start = d_off - match_dec;
+                // No overlap -> `System.arraycopy(dest, dOff - matchDec, dest,
+                // dOff, fastLen)`, with its checks and messages.
+                let src_pos = d_off as i64 - match_dec as i64;
+                let aioobe = |message: String| {
+                    Err(LuceneError::unchecked(
+                        "java.lang.ArrayIndexOutOfBoundsException",
+                        message,
+                    ))
+                };
+                if src_pos < 0 {
+                    return aioobe(format!(
+                        "arraycopy: source index {src_pos} out of bounds for byte[{}]",
+                        dest.len()
+                    ));
+                }
+                if src_pos as usize + fast_len > dest.len() {
+                    return aioobe(format!(
+                        "arraycopy: last source index {} out of bounds for byte[{}]",
+                        src_pos as usize + fast_len,
+                        dest.len()
+                    ));
+                }
+                if d_off + fast_len > dest.len() {
+                    return aioobe(format!(
+                        "arraycopy: last destination index {} out of bounds for byte[{}]",
+                        d_off + fast_len,
+                        dest.len()
+                    ));
+                }
+                let src_start = src_pos as usize;
                 dest.copy_within(src_start..src_start + fast_len, d_off);
                 d_off += match_len;
             }
@@ -695,17 +776,20 @@ impl LowercaseAsciiCompression {
         if len < 8 {
             return Ok(false);
         }
-        if len > tmp.len() {
-            return Err(LuceneError::IllegalArgument(
-                "tmp buffer is smaller than len".to_string(),
-            ));
-        }
+        // `in[i]` and `tmp[i]` for `i < len`: the JVM's
+        // `ArrayIndexOutOfBoundsException` where an array is shorter than
+        // `len`.
+        let aioobe =
+            |array: &[u8]| crate::store::array_index_out_of_bounds(array.len() as i64, array.len());
 
         // Count exceptions and fail compression if there are too many of them.
         let max_exceptions = len >> 5;
         let mut previous_exception_index = 0usize;
         let mut num_exceptions = 0usize;
-        for (i, &b) in input.iter().enumerate().take(len) {
+        for i in 0..len {
+            let Some(&b) = input.get(i) else {
+                return Err(aioobe(input));
+            };
             if !Self::is_compressible(b) {
                 while i - previous_exception_index > 0xFF {
                     num_exceptions += 1;
@@ -723,7 +807,15 @@ impl LowercaseAsciiCompression {
         // Move all bytes to the [0, 0x40) range (6 bits).
         let compressed_len = len - (len >> 2);
         debug_assert!(compressed_len < len);
-        for (i, &b) in input.iter().enumerate().take(len) {
+        for i in 0..len {
+            // `tmp[i] = (byte) ((b & 0x1F) | ((b & 0x40) >>> 1))` with
+            // `b = (in[i] & 0xFF) + 1`: `in[i]` is read before the store.
+            let Some(&b) = input.get(i) else {
+                return Err(aioobe(input));
+            };
+            if i >= tmp.len() {
+                return Err(aioobe(tmp));
+            }
             let b = b as usize + 1;
             tmp[i] = ((b & 0x1F) | ((b & 0x40) >> 1)) as u8;
         }
@@ -770,8 +862,9 @@ impl LowercaseAsciiCompression {
                 }
             }
             if num_exceptions != num_exceptions2 {
-                return Err(LuceneError::IllegalState(format!(
-                    "{num_exceptions} <> {num_exceptions2}"
+                return Err(LuceneError::illegal_state(format!(
+                    "{num_exceptions} <> {num_exceptions2} {}",
+                    crate::util::BytesRef::new(input[..len].to_vec()).to_hex_string()
                 )));
             }
         }
@@ -784,20 +877,24 @@ impl LowercaseAsciiCompression {
     ///
     /// Equivalent to `org.apache.lucene.util.compress.LowercaseAsciiCompression.decompress`.
     pub fn decompress(input: &mut dyn DataInput, out: &mut [u8], len: usize) -> Result<()> {
-        if len > out.len() {
-            return Err(LuceneError::IllegalArgument(
-                "output buffer too small".to_string(),
-            ));
-        }
         let saved = len >> 2;
         let compressed_len = len - saved;
 
         // Copy the packed bytes.
-        input.read_bytes(out, 0, compressed_len)?;
+        input.read_bytes(Some(out), 0, compressed_len)?;
 
         // Restore the leading 2 bits of each packed byte into whole bytes.
         #[allow(clippy::needless_range_loop)]
         for i in 0..saved {
+            // The right-hand side reads only bytes below `compressedLen`, which
+            // `readBytes` filled; the store past `out` is the JVM's
+            // `ArrayIndexOutOfBoundsException`.
+            if compressed_len + i >= out.len() {
+                return Err(crate::store::array_index_out_of_bounds(
+                    (compressed_len + i) as i64,
+                    out.len(),
+                ));
+            }
             out[compressed_len + i] = ((out[i] & 0xC0) >> 2)
                 | ((out[saved + i] & 0xC0) >> 4)
                 | ((out[(saved << 1) + i] & 0xC0) >> 6);
@@ -810,11 +907,18 @@ impl LowercaseAsciiCompression {
         }
 
         // Restore exceptions.
-        let num_exceptions = input.read_v_int()? as usize;
+        // `for (int i = 0; i < numExceptions; ++i)`: none for a negative count.
+        let num_exceptions = input.read_v_int()?.max(0) as usize;
         let mut i = 0usize;
         for _ in 0..num_exceptions {
             i += input.read_byte()? as usize;
-            out[i] = input.read_byte()?;
+            // `out[i] = in.readByte()`: the byte is read before the store is
+            // checked.
+            let b = input.read_byte()?;
+            if i >= out.len() {
+                return Err(crate::store::array_index_out_of_bounds(i as i64, out.len()));
+            }
+            out[i] = b;
         }
         Ok(())
     }
@@ -827,15 +931,15 @@ impl LowercaseAsciiCompression {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput};
+    use crate::store::{ByteArrayDataInput, VecDataOutput};
 
     fn lz4_round_trip(input: &[u8], ht: &mut dyn Lz4HashTable) {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         Lz4::compress(input, 0, input.len(), &mut out, ht).unwrap();
         let compressed = out.into_inner();
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         Lz4::decompress(&mut input_stream, input.len(), &mut decompressed, 0).unwrap();
         assert_eq!(
             decompressed,
@@ -847,7 +951,7 @@ mod tests {
 
     fn lower_round_trip(input: &[u8]) {
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let ok =
             LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap();
         if !ok {
@@ -860,7 +964,7 @@ mod tests {
         );
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         LowercaseAsciiCompression::decompress(&mut input_stream, &mut decompressed, input.len())
             .unwrap();
         assert_eq!(decompressed, input);
@@ -927,14 +1031,14 @@ mod tests {
         let expected = &[
             0xA0u8, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61, 0x61,
         ];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         Lz4::compress(&input, 0, input.len(), &mut out, &mut ht).unwrap();
         let compressed = out.into_inner();
         assert_eq!(&compressed, expected);
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         Lz4::decompress(&mut input_stream, input.len(), &mut decompressed, 0).unwrap();
         assert_eq!(decompressed, input);
     }
@@ -948,14 +1052,14 @@ mod tests {
         let expected = &[
             0xC0u8, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63, 0x61, 0x62, 0x63,
         ];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         Lz4::compress(input, 0, input.len(), &mut out, &mut ht).unwrap();
         let compressed = out.into_inner();
         assert_eq!(&compressed, expected);
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         Lz4::decompress(&mut input_stream, input.len(), &mut decompressed, 0).unwrap();
         assert_eq!(&decompressed, input);
     }
@@ -965,7 +1069,7 @@ mod tests {
         // Token 0x00 (0 literals, 0 match length with no extra), short 0x0000.
         let data = &[0x00u8, 0x00, 0x00];
         let mut dest = vec![0u8; 4];
-        let mut input = ByteArrayDataInput::from_slice(data);
+        let mut input = ByteArrayDataInput::new(data);
         let result = Lz4::decompress(&mut input, 4, &mut dest, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("offset 0"));
@@ -979,7 +1083,7 @@ mod tests {
         // fast compressor produces for 10 'a's (which is all literals).
         let data = &[0x11u8, 0x61, 0x01, 0x00, 0x40, 0x61, 0x61, 0x61, 0x61];
         let mut dest = vec![0u8; 10];
-        let mut input = ByteArrayDataInput::from_slice(data);
+        let mut input = ByteArrayDataInput::new(data);
         Lz4::decompress(&mut input, 10, &mut dest, 0).unwrap();
         assert_eq!(dest, vec![b'a'; 10]);
     }
@@ -987,7 +1091,7 @@ mod tests {
     #[test]
     fn lz4_compress_bounds_checks() {
         let input = b"hello";
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         let mut ht = FastCompressionHashTable::new();
         assert!(Lz4::compress(input, 0, 10, &mut out, &mut ht).is_err());
         assert!(Lz4::compress(input, 10, 1, &mut out, &mut ht).is_err());
@@ -1000,7 +1104,7 @@ mod tests {
     #[test]
     fn lower_empty_and_short() {
         let mut tmp = vec![0u8; 8];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(!LowercaseAsciiCompression::compress(b"", 0, &mut tmp, &mut out).unwrap());
         assert!(!LowercaseAsciiCompression::compress(b"hello", 5, &mut tmp, &mut out).unwrap());
     }
@@ -1019,7 +1123,7 @@ mod tests {
     fn lower_rejects_too_many_exceptions() {
         let input = b"hello World"; // uppercase 'W' is the only exception, len=11 -> max=0
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(
             !LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap()
         );
@@ -1034,7 +1138,7 @@ mod tests {
             0x69u8, 0xA6, 0x6D, 0x2D, 0x30, 0x0F, 0xB8, 0x30, 0xF3, 0x2D, 0x25, 0x0E, 0x00,
         ];
         let mut tmp = vec![0u8; input.len()];
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         assert!(
             LowercaseAsciiCompression::compress(input, input.len(), &mut tmp, &mut out).unwrap()
         );
@@ -1042,7 +1146,7 @@ mod tests {
         assert_eq!(&compressed, expected);
 
         let mut decompressed = vec![0u8; input.len()];
-        let mut input_stream = ByteArrayDataInput::from_slice(&compressed);
+        let mut input_stream = ByteArrayDataInput::new(&compressed);
         LowercaseAsciiCompression::decompress(&mut input_stream, &mut decompressed, input.len())
             .unwrap();
         assert_eq!(&decompressed, input);
@@ -1061,8 +1165,255 @@ mod tests {
     fn lower_decompress_bounds_checks() {
         let data = &[0x00u8, 0x00, 0x00]; // 3 bytes of packed data + 0 exceptions
         let mut out = vec![0u8; 4];
-        let mut input = ByteArrayDataInput::from_slice(data);
+        let mut input = ByteArrayDataInput::new(data);
         // len=4 needs compressed_len=3 and saved=1, but input is only 3 bytes.
         assert!(LowercaseAsciiCompression::decompress(&mut input, &mut out, 4).is_err());
+    }
+    /// A decoder must never panic on bytes it did not write.
+    ///
+    /// Java's `LZ4.decompress` raises `ArrayIndexOutOfBoundsException` for a
+    /// truncated or hostile stream; this port returns
+    /// `LuceneErrorKind::CorruptIndex`. Before the bounds checks these inputs
+    /// aborted the process in a debug build ("attempt to subtract with
+    /// overflow") and produced a wild slice index in a release build.
+    #[test]
+    fn a_corrupt_lz4_stream_is_reported_and_never_panics() {
+        // token 0x00: no literals, then a match at distance 1 with nothing
+        // decoded yet, so the match reaches behind the start of the block.
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("match before the block start", vec![0x00, 0x01, 0x00]),
+            ("huge match distance", vec![0x00, 0xFF, 0xFF]),
+            (
+                "literal run longer than the buffer",
+                vec![
+                    0xF0, 0xFF, 0x01, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                ],
+            ),
+            (
+                "match longer than the buffer",
+                vec![0x1F, b'a', 0x01, 0x00, 0xFF, 0xFF, 0xFF],
+            ),
+        ];
+        for (name, bytes) in cases {
+            let mut input = ByteArrayDataInput::new(&bytes);
+            let mut dest = vec![0u8; 8];
+            let outcome = Lz4::decompress(&mut input, 8, &mut dest, 0);
+            assert!(
+                outcome.is_err(),
+                "{name}: a corrupt stream must be reported, got {outcome:?}"
+            );
+        }
+    }
+
+    /// The bounds checks must not reject anything a real encoder produces.
+    #[test]
+    fn the_corruption_checks_do_not_reject_valid_streams() {
+        for length in [0usize, 1, 7, 64, 1000, 40_000] {
+            let data: Vec<u8> = (0..length).map(|i| ((i * 13) % 61) as u8).collect();
+            let mut out = VecDataOutput::new();
+            let mut table = FastCompressionHashTable::new();
+            Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
+            let mut dest = vec![0u8; data.len() + 7];
+            let produced = Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
+            assert_eq!(produced, data.len());
+            assert_eq!(&dest[..data.len()], &data[..]);
+        }
+    }
+    /// Regression test: a reused high-compression table can hold a stale offset
+    /// larger than the current one.
+    ///
+    /// `HighCompressionHashTable::reset` keeps the hash table whenever the
+    /// previous span was shorter than the 64 KiB window (`LZ4.java:411-431`),
+    /// so `hashTable[h]` can point *ahead* of the offset being added when the
+    /// next span starts over at a lower offset. Java computes
+    /// `off - hashTable[h]` in a signed `int` and guards `delta <= 0`; doing it
+    /// in `usize` underflowed — a debug build aborted with "attempt to subtract
+    /// with overflow", a release build wrapped.
+    ///
+    /// The construction is deliberate: the first span is long enough for the
+    /// match loop to hash a high offset, carries a marker well inside the
+    /// region it hashes, and is still short enough for `reset` to keep the
+    /// table; the second span opens with the same marker at offset 0. That is
+    /// the only shape in which the stale entry lies ahead of the new offset.
+    #[test]
+    fn a_reused_high_compression_table_survives_a_stale_forward_offset() {
+        const MARKER: &[u8; 4] = b"ZZZZ";
+
+        let mut first: Vec<u8> = (0..1000u32).map(|i| ((i * 37 + 11) % 251) as u8).collect();
+        first[500..504].copy_from_slice(MARKER);
+        let mut second: Vec<u8> = MARKER.to_vec();
+        second.extend((0..200u32).map(|i| ((i * 53 + 7) % 251) as u8));
+
+        let mut table = HighCompressionHashTable::new();
+        let mut out = VecDataOutput::new();
+        Lz4::compress(&first, 0, first.len(), &mut out, &mut table).unwrap();
+        // The marker's hash slot now holds offset 500; this span hashes it
+        // again at offset 0.
+        Lz4::compress(&second, 0, second.len(), &mut out, &mut table).unwrap();
+
+        // And everything written must still decode to what went in.
+        let input_src = out.into_inner();
+        let mut input = ByteArrayDataInput::new(&input_src);
+        for expected in [&first[..], &second[..]] {
+            let mut dest = vec![0u8; expected.len() + 7];
+            let produced = Lz4::decompress(&mut input, expected.len(), &mut dest, 0).unwrap();
+            assert_eq!(produced, expected.len());
+            assert_eq!(&dest[..expected.len()], expected);
+        }
+    }
+
+    /// The high-compression table must agree with Java's formula for an unset
+    /// slot too, which Java leaves to the same guard rather than special-casing.
+    #[test]
+    fn the_high_compression_table_round_trips_from_a_fresh_state() {
+        for length in [4usize, 64, 4096, 70_000] {
+            let data: Vec<u8> = (0..length).map(|i| ((i / 7) % 251) as u8).collect();
+            let mut table = HighCompressionHashTable::new();
+            let mut out = VecDataOutput::new();
+            Lz4::compress(&data, 0, data.len(), &mut out, &mut table).unwrap();
+            let input_src = out.into_inner();
+            let mut input = ByteArrayDataInput::new(&input_src);
+            let mut dest = vec![0u8; data.len() + 7];
+            Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap();
+            assert_eq!(&dest[..data.len()], &data[..], "length {length}");
+        }
+    }
+
+    /// An input that implements only the required `DataInput` methods, so
+    /// `read_short` takes the trait's byte-by-byte default.
+    struct ReadsOnly<'a> {
+        bytes: &'a [u8],
+        pos: usize,
+    }
+
+    impl DataInput for ReadsOnly<'_> {
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("ReadsOnly")
+        }
+
+        fn read_byte(&mut self) -> Result<u8> {
+            let b = *self.bytes.get(self.pos).ok_or_else(|| {
+                crate::store::array_index_out_of_bounds(self.pos as i64, self.bytes.len())
+            })?;
+            self.pos += 1;
+            Ok(b)
+        }
+
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+            let b = crate::store::require_array(b)?;
+            for i in 0..len {
+                let v = self.read_byte()?;
+                if offset + i >= b.len() {
+                    return Err(crate::store::array_index_out_of_bounds(
+                        (offset + i) as i64,
+                        b.len(),
+                    ));
+                }
+                b[offset + i] = v;
+            }
+            Ok(())
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.pos += num_bytes as usize;
+            Ok(())
+        }
+    }
+
+    fn outcome(result: Result<usize>, dest: Vec<u8>, consumed: usize) -> (String, Vec<u8>, usize) {
+        let result = match result {
+            Ok(d) => format!("ok {d}"),
+            Err(e) => format!("err {:?}", e.to_string().split(':').next()),
+        };
+        (result, dest, consumed)
+    }
+
+    /// The monomorphised instantiation (concrete `ByteArrayDataInput`) and the
+    /// trait-object one decode, write, consume and fail identically, on valid,
+    /// corrupted and truncated blocks; so does an input with the default
+    /// byte-by-byte `read_short`, up to the bytes consumed.
+    #[test]
+    fn concrete_and_dyn_inputs_decode_identically() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut compared = 0;
+        let mut errors = 0;
+        for length in [0usize, 1, 5, 13, 16, 17, 100, 255, 300, 4096, 70_000] {
+            let data: Vec<u8> = (0..length)
+                .map(|i| match (i / 97) % 4 {
+                    0 => (i % 3) as u8,
+                    1 => (next() % 256) as u8,
+                    2 => b"abcdefgh"[i % 8],
+                    _ => 0,
+                })
+                .collect();
+            let mut out = VecDataOutput::new();
+            let mut ht = FastCompressionHashTable::new();
+            Lz4::compress(&data, 0, data.len(), &mut out, &mut ht).unwrap();
+            let compressed = out.into_inner();
+            let mut variants = vec![compressed.clone()];
+            for _ in 0..40 {
+                let mut corrupt = compressed.clone();
+                if !corrupt.is_empty() {
+                    let at = (next() as usize) % corrupt.len();
+                    corrupt[at] = (next() % 256) as u8;
+                }
+                variants.push(corrupt);
+            }
+            for cut in [1usize, 2, 3, 9] {
+                if compressed.len() > cut {
+                    variants.push(compressed[..compressed.len() - cut].to_vec());
+                }
+            }
+            for variant in &variants {
+                for (dest_len, d_off) in
+                    [(data.len() + 7, 0), (data.len() + 20, 5), (data.len(), 0)]
+                {
+                    let mut concrete = ByteArrayDataInput::new(variant);
+                    let mut dest = vec![0xA5u8; dest_len];
+                    let r = Lz4::decompress(&mut concrete, data.len(), &mut dest, d_off);
+                    let a = outcome(r, dest, concrete.position());
+
+                    let mut boxed = ByteArrayDataInput::new(variant);
+                    let dyn_input: &mut dyn DataInput = &mut boxed;
+                    let mut dest = vec![0xA5u8; dest_len];
+                    let r = Lz4::decompress(dyn_input, data.len(), &mut dest, d_off);
+                    let b = outcome(r, dest, boxed.position());
+                    assert_eq!(a, b, "block of {length} bytes");
+
+                    let mut plain = ReadsOnly {
+                        bytes: variant,
+                        pos: 0,
+                    };
+                    let mut dest = vec![0xA5u8; dest_len];
+                    let r = Lz4::decompress(&mut plain, data.len(), &mut dest, d_off);
+                    let c = outcome(r, dest, plain.pos);
+                    assert_eq!(a.0.starts_with("ok"), c.0.starts_with("ok"));
+                    if a.0.starts_with("ok") {
+                        assert_eq!(a, c, "block of {length} bytes");
+                    }
+                    if a.0.starts_with("err") {
+                        errors += 1;
+                    }
+                    compared += 1;
+                }
+            }
+            let mut input = ByteArrayDataInput::new(&compressed);
+            let mut dest = vec![0u8; data.len() + 7];
+            assert_eq!(
+                Lz4::decompress(&mut input, data.len(), &mut dest, 0).unwrap(),
+                data.len()
+            );
+            assert_eq!(&dest[..data.len()], &data[..]);
+        }
+        // Non-vacuity: the corrupted blocks reach the error paths.
+        assert!(compared > 1000 && errors > 100, "{compared} {errors}");
     }
 }

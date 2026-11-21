@@ -1,24 +1,428 @@
 //! Terms dictionary abstractions ported from `org.apache.lucene.index`.
 //!
-//! This module provides [`Fields`], [`Terms`], [`TermsEnum`] and [`TermState`],
-//! the core types used by postings producers and consumers to enumerate terms
-//! and retrieve their associated postings.
+//! This module provides [`Term`], [`Fields`], [`Terms`], [`TermsEnum`] and
+//! [`TermState`], the core types used by postings producers and consumers to
+//! enumerate terms and retrieve their associated postings.
 
 #![deny(unsafe_code)]
 
 use std::any::Any;
+use std::cmp::Ordering;
+use std::fmt;
 
+use std::sync::Arc;
+
+use crate::document::{FieldName, NameRepr};
 use crate::error::{LuceneError, Result};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
+use crate::index::reader_context::{IndexReaderContext, LeafReaderContext};
+use crate::search::index_searcher::IndexSearcher;
+use crate::store::{
+    ByteBuffer, ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput,
+};
 use crate::util::attribute::AttributeSource;
 use crate::util::automaton::CompiledAutomaton;
-use crate::util::BytesRef;
+use crate::util::string_helper::StringHelper;
+use crate::util::{BytesRef, IOBooleanSupplier, RamUsageEstimator};
+
+// -----------------------------------------------------------------------------
+// Term
+// -----------------------------------------------------------------------------
+
+/// A search unit: a field name paired with term bytes.
+///
+/// Equivalent to `org.apache.lucene.index.Term`. As in Java, the field may
+/// be `null` (`new Term(null, text)`, which the query parsers build when no
+/// default field is configured): [`field_opt`](Self::field_opt) is Java's
+/// `field()`, and `toString`, `equals`, `hashCode`, `compareTo` and
+/// `ramBytesUsed` treat a `null` field as Java's do.
+///
+/// The constructors take the field as a [`FieldName`], Java's `String`
+/// reference: a `&'static str` or an `Arc<str>` is kept without a copy and a
+/// `String` is moved in, as `Term(String fld, BytesRef bytes)` keeps
+/// `field = fld` (`Term.java:52-55`); a `&String` is copied, as the term
+/// cannot keep the borrow.
+#[derive(Debug, Clone)]
+pub struct Term {
+    /// Field this term belongs to; `None` for Java's `null`.
+    // PERF: the caller's name, kept (static or shared) or moved, not copied
+    // per term.
+    field: Option<TermField>,
+    /// Term bytes (should not be modified in place).
+    bytes: BytesRef,
+}
+
+/// The name a [`Term`] holds: Java's `Term.field`, the `String` reference its
+/// constructor was given.
+///
+/// **This has no counterpart in Lucene 10.5.0**, where the term keeps the
+/// caller's `String` reference (`Term.java:52-55`). It is [`FieldName`]
+/// without the variant that shares a `FieldInfo`, which only the stored-fields
+/// visitor builds, for the fields it reads back; a `FieldInfo`'s interior
+/// mutability would make `Term`, a map key, a mutable one for clippy. A
+/// [`FieldName`] of that variant is copied into [`Owned`](Self::Owned).
+// PERF: three variants in `String`'s capacity niche keep `Term` at 64 bytes,
+// and `as_str` decodes them without a branch.
+#[derive(Clone)]
+enum TermField {
+    Static(&'static str),
+    Owned(String),
+    Shared(Arc<str>),
+}
+
+impl TermField {
+    /// The name as a string slice.
+    #[inline]
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Static(name) => name,
+            Self::Owned(name) => name,
+            Self::Shared(name) => name,
+        }
+    }
+}
+
+impl From<FieldName> for TermField {
+    fn from(name: FieldName) -> Self {
+        match name.into_repr() {
+            NameRepr::Static(name) => Self::Static(name),
+            NameRepr::Owned(name) => Self::Owned(name),
+            NameRepr::Shared(name) => Self::Shared(name),
+            NameRepr::Info(field_info) => Self::Owned(field_info.name.clone()),
+        }
+    }
+}
+
+impl std::ops::Deref for TermField {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for TermField {
+    /// The name itself, as the former `String` field formatted.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+/// The helpful message of the `NullPointerException` the JVM throws at
+/// `term.field().equals(...)` when the term's field is `null`, the
+/// dereference `TermQuery.toString(String)` and `PhraseQuery` make.
+pub const TERM_FIELD_EQUALS_NPE: &str = "Cannot invoke \"String.equals(Object)\" because the return value of \"org.apache.lucene.index.Term.field()\" is null";
+
+/// The `NullPointerException` a dereference of a `null` term field throws.
+///
+/// Java's helpful message names the dereferencing call, which differs per
+/// call site; [`Term::field`] carries no message, and the sites whose
+/// message a test pins pass their own to [`Term::field_or_npe`].
+#[cold]
+fn null_field_dereference(message: Option<&str>) -> ! {
+    match message {
+        Some(message) => {
+            std::panic::panic_any(format!("java.lang.NullPointerException: {message}"))
+        }
+        None => std::panic::panic_any("java.lang.NullPointerException".to_string()),
+    }
+}
+
+impl Term {
+    /// Creates a term from a field and a byte sequence.
+    ///
+    /// Equivalent to `Term(String fld, BytesRef bytes)` (`Term.java:52-55`),
+    /// which keeps the caller's `fld` reference: a `&'static str` or an
+    /// `Arc<str>` is kept and a `String` moved in (see [`FieldName`]).
+    pub fn new(field: impl Into<FieldName>, bytes: BytesRef) -> Self {
+        Self {
+            field: Some(TermField::from(field.into())),
+            bytes,
+        }
+    }
+
+    /// Creates a term from a field that may be `null` and a byte sequence.
+    ///
+    /// Equivalent to `new Term(String fld, BytesRef bytes)` with a `fld` that
+    /// may be `null` (`Term.java:52-55`), which the constructor accepts and
+    /// documents as undefined behaviour for most Lucene APIs.
+    pub fn with_nullable_field(field: Option<String>, bytes: BytesRef) -> Self {
+        Self {
+            field: field.map(TermField::Owned),
+            bytes,
+        }
+    }
+
+    /// Creates a term from a field that may be `null` and text.
+    ///
+    /// Equivalent to `new Term(String fld, String text)` with a `fld` that may
+    /// be `null` (`Term.java:74-76`); see [`from_text`](Self::from_text).
+    pub fn from_text_nullable_field(field: Option<&str>, text: &str) -> Self {
+        Self::with_nullable_field(
+            field.map(str::to_string),
+            BytesRef::deep_copy_of(&BytesRef::from_char_sequence(text)),
+        )
+    }
+
+    /// Creates a term from a field and text.
+    ///
+    /// Equivalent to `Term(String, String)` (`Term.java:74-76`), which is
+    /// `this(fld, new BytesRef(text))`: the text goes through
+    /// [`BytesRef::from_char_sequence`], and `Term(String, BytesRef)` keeps a
+    /// `BytesRef.deepCopyOf` of it, so the term's buffer holds exactly the
+    /// UTF-8 bytes.
+    pub fn from_text(field: impl Into<FieldName>, text: &str) -> Self {
+        Self::new(
+            field,
+            BytesRef::deep_copy_of(&BytesRef::from_char_sequence(text)),
+        )
+    }
+
+    /// Creates a term with the given field and empty bytes.
+    ///
+    /// Equivalent to `Term(String fld)` (`Term.java:84-86`).
+    pub fn empty(field: impl Into<FieldName>) -> Self {
+        Self::new(field, BytesRef::new(Vec::new()))
+    }
+
+    /// Returns the field name, `None` for Java's `null`.
+    ///
+    /// Equivalent to `Term.field()` (`Term.java:88-90`).
+    pub fn field_opt(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+
+    /// Returns the field name, dereferenced.
+    ///
+    /// Equivalent to `Term.field()` followed by a dereference of the returned
+    /// `String` (`field().equals(...)`, `field().length()`, a map lookup that
+    /// rejects `null`), which is what nearly every caller does; a caller that
+    /// passes the field on without dereferencing it uses
+    /// [`field_opt`](Self::field_opt).
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException` when the field is `null`, as the JVM
+    /// throws at the dereference.
+    pub fn field(&self) -> &str {
+        match self.field.as_deref() {
+            Some(field) => field,
+            None => null_field_dereference(None),
+        }
+    }
+
+    /// Returns the field name, dereferenced at a site whose Java
+    /// `NullPointerException` carries the helpful message `message`.
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException: <message>` when the field is `null`.
+    pub fn field_or_npe(&self, message: &str) -> &str {
+        match self.field.as_deref() {
+            Some(field) => field,
+            None => null_field_dereference(Some(message)),
+        }
+    }
+
+    /// Returns the term bytes.
+    pub fn bytes(&self) -> &BytesRef {
+        &self.bytes
+    }
+
+    /// Returns the human-readable form of `term_text`: its UTF-8 decoding,
+    /// or, when the bytes are not well-formed UTF-8, the raw bytes as
+    /// [`BytesRef`]'s `Display` prints them.
+    ///
+    /// Equivalent to the static `Term.toString(BytesRef)`
+    /// (`Term.java:108-124`), whose decoder reports malformed input
+    /// (`CodingErrorAction.REPORT`) and then falls back to
+    /// `termText.toString()`.
+    pub fn to_string_bytes_ref(term_text: &BytesRef) -> String {
+        match std::str::from_utf8(term_text.slice()) {
+            Ok(text) => text.to_string(),
+            Err(_) => term_text.to_string(),
+        }
+    }
+
+    /// Returns the term text.
+    ///
+    /// Equivalent to `Term.text()`, which is `toString(bytes)`
+    /// (`Term.java:100-102, 108-124`): the UTF-8 text, or the raw bytes in
+    /// `BytesRef.toString()` form when they are not valid UTF-8.
+    pub fn text(&self) -> String {
+        Self::to_string_bytes_ref(&self.bytes)
+    }
+
+    /// Replaces the field and bytes in place (bytes are not copied).
+    ///
+    /// Equivalent to the Java `Term.set`.
+    pub fn set(&mut self, field: impl Into<FieldName>, bytes: BytesRef) {
+        self.field = Some(TermField::from(field.into()));
+        self.bytes = bytes;
+    }
+
+    /// The term bytes, for refilling in place.
+    ///
+    /// Stands for the package-private `Term.bytes` field that
+    /// `BufferedUpdates.DeletedTerms.forEachOrdered` refills on its scratch
+    /// term (`terms.bytesRefHash.get(index, scratch.bytes)`,
+    /// `BufferedUpdates.java:261-268`).
+    pub(crate) fn bytes_mut(&mut self) -> &mut BytesRef {
+        &mut self.bytes
+    }
+}
+
+impl Term {
+    /// Java's `hashCode()`, reproduced exactly.
+    ///
+    /// Equivalent to `Term.hashCode()` (`Term.java:160-166`):
+    /// `31 * (31 * 1 + (field == null ? 0 : field.hashCode())) + bytes.hashCode()`.
+    /// `BytesRef.hashCode` mixes in `StringHelper.GOOD_FAST_HASH_SEED`, so the
+    /// value is only reproducible across runs under a fixed `tests.seed`,
+    /// exactly as in Java.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result: i32 = 1;
+        let field_hash = self
+            .field
+            .as_deref()
+            .map_or(0, crate::util::java_collections::java_string_hash_code);
+        result = PRIME.wrapping_mul(result).wrapping_add(field_hash);
+        PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.bytes.hash_code())
+    }
+}
+
+impl crate::util::java_collections::JavaHashCode for Term {
+    /// `Term.hashCode()`; see [`Term::hash_code`].
+    fn java_hash_code(&self) -> i32 {
+        self.hash_code()
+    }
+}
+
+impl PartialEq for Term {
+    /// Equivalent to `Term.equals(Object)` (`Term.java:141-157`): two `null`
+    /// fields are equal, a `null` field differs from any other.
+    fn eq(&self, other: &Self) -> bool {
+        self.field.as_deref() == other.field.as_deref() && self.bytes == other.bytes
+    }
+}
+
+impl Eq for Term {}
+
+impl std::hash::Hash for Term {
+    /// Hashes the field and the term bytes, the two members
+    /// [`PartialEq`] compares.
+    ///
+    /// Equivalent to `org.apache.lucene.index.Term#hashCode`, which folds
+    /// `field.hashCode()` and `bytes.hashCode()` together with the usual
+    /// `31 * result + …` accumulator. Rust hands the members to a [`Hasher`]
+    /// instead of computing an `int` itself, so the combining function belongs
+    /// to the hasher rather than to this type; the members combined are the
+    /// same ones, and hashing stays consistent with equality.
+    ///
+    /// [`Hasher`]: std::hash::Hasher
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // `Option<&str>` feeds the hasher what `Option<String>` did.
+        self.field.as_deref().hash(state);
+        self.bytes.slice().hash(state);
+    }
+}
+
+/// The shallow size of a [`Term`] plus that of the [`BytesRef`] it owns.
+///
+/// Equivalent to `Term.BASE_RAM_BYTES`, which is
+/// `RamUsageEstimator.shallowSizeOfInstance(Term.class)` — an object header and
+/// the `field` and `bytes` references — plus
+/// `RamUsageEstimator.shallowSizeOfInstance(BytesRef.class)` — an object
+/// header, the `bytes` reference and the `offset` and `length` ints.
+fn term_base_ram_bytes() -> i64 {
+    RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 2 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+    ) + RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + RamUsageEstimator::NUM_BYTES_OBJECT_REF + 8,
+    )
+}
+
+impl crate::util::Accountable for Term {
+    /// Returns the heap this term holds: its own shallow size, the field name
+    /// and the term's byte array.
+    ///
+    /// Equivalent to `org.apache.lucene.index.Term#ramBytesUsed`
+    /// (`Term.java:188-196`): `RamUsageEstimator.sizeOfObject(field)` is `0`
+    /// for a `null` field. Java also guards `bytes` against `null`; the port's
+    /// bytes are never absent, so that guard has no counterpart.
+    fn ram_bytes_used(&self) -> i64 {
+        let field_size = match self.field.as_deref() {
+            Some(field) => {
+                RamUsageEstimator::size_of_object(Some(crate::util::SizedObject::String(field)))
+            }
+            None => RamUsageEstimator::size_of_object(None),
+        };
+        term_base_ram_bytes()
+            // `RamUsageEstimator.sizeOfObject(field)` (`Term.java:191`).
+            + field_size
+            + RamUsageEstimator::align_object_size(
+                // `bytes.bytes.length` in Java: the whole backing array, not
+                // just the active slice.
+                self.bytes.bytes.len() as i64 + RamUsageEstimator::NUM_BYTES_ARRAY_HEADER,
+            )
+    }
+}
+
+impl PartialOrd for Term {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Term {
+    /// Equivalent to `Term.compareTo(Term)` (`Term.java:176-182`): the fields
+    /// by `String.compareTo`, which compares UTF-16 code units
+    /// ([`compare_utf16`](crate::util::compare_utf16): a supplementary
+    /// character sorts before U+E000..U+FFFF, unlike UTF-8 order), then the
+    /// bytes in unsigned-byte order (`BytesRef.compareTo`).
+    ///
+    /// # Panics
+    ///
+    /// `java.lang.NullPointerException` when either field is `null`: Java's
+    /// `field.equals(other.field)` dereferences this field, and for a
+    /// non-`null` one that differs, `field.compareTo(other.field)` dereferences
+    /// the other.
+    fn cmp(&self, other: &Self) -> Ordering {
+        let field = self.field();
+        if Some(field) == other.field.as_deref() {
+            self.bytes.cmp(&other.bytes)
+        } else {
+            crate::util::compare_utf16(field, other.field())
+        }
+    }
+}
+
+impl fmt::Display for Term {
+    /// Equivalent to `Term.toString()`, `field + ":" + text()`, where a `null`
+    /// field concatenates as `"null"` and `text()` is `Term.toString(BytesRef)`:
+    /// the strictly decoded UTF-8 text, or the raw bytes when they are not
+    /// valid UTF-8 (`Term.java:108-124`).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}",
+            self.field.as_deref().unwrap_or("null"),
+            self.text()
+        )
+    }
+}
 
 /// Internal state that allows re-positioning a [`TermsEnum`] without re-seeking
 /// the term dictionary.
 ///
 /// Equivalent to `org.apache.lucene.index.TermState`.
-pub trait TermState: Send + Sync + std::fmt::Debug {
+/// [`std::fmt::Display`] is a supertrait because Java's `TermState.toString()`
+/// is a concrete method on the abstract class — every term state renders — and
+/// `OrdTermState` and `BlockTermState` override it.
+pub trait TermState: Send + Sync + std::fmt::Debug + std::fmt::Display {
     /// Copies the content of `other` into `self`.
     fn copy_from(&mut self, other: &dyn TermState);
 
@@ -27,6 +431,53 @@ pub trait TermState: Send + Sync + std::fmt::Debug {
 
     /// Returns this state as `Any` for downcasting.
     fn as_any(&self) -> &dyn Any;
+}
+
+/// Ordinal-based term state.
+///
+/// Equivalent to `org.apache.lucene.index.OrdTermState`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OrdTermState {
+    /// Term ordinal in the full sorted term list.
+    pub ord: i64,
+}
+
+impl OrdTermState {
+    /// Creates a new `OrdTermState`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl TermState for OrdTermState {
+    fn copy_from(&mut self, other: &dyn TermState) {
+        debug_assert!(
+            other.as_any().is::<OrdTermState>(),
+            "can not copy from {}",
+            std::any::type_name_of_val(other)
+        );
+        // `((OrdTermState) other).ord` (`OrdTermState.java:34`): another
+        // class is the cast's `ClassCastException`, whose JVM message names
+        // the runtime class a `dyn TermState` cannot report.
+        let other = other
+            .as_any()
+            .downcast_ref::<OrdTermState>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "java.lang.ClassCastException: cannot be cast to class \
+                     org.apache.lucene.index.OrdTermState"
+                )
+            });
+        self.ord = other.ord;
+    }
+
+    fn clone_box(&self) -> Box<dyn TermState> {
+        Box::new(*self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Result of a [`TermsEnum::seek_ceil`] call.
@@ -45,13 +496,76 @@ pub enum SeekStatus {
 
 /// Iterator over the terms of a single field.
 ///
-/// Equivalent to `org.apache.lucene.index.TermsEnum`.
-pub trait TermsEnum {
+/// Equivalent to `org.apache.lucene.index.TermsEnum`. The default
+/// implementations of [`seek_exact`](Self::seek_exact),
+/// [`prepare_seek_exact`](Self::prepare_seek_exact),
+/// [`seek_term_state`](Self::seek_term_state) and
+/// [`term_state`](Self::term_state) mirror `BaseTermsEnum`.
+/// [`Display`](std::fmt::Display) is a supertrait because `MultiTermsEnum` and
+/// `TermsEnumIndex` render the enumerations they wrap: every Java `TermsEnum`
+/// has a `toString()`, inherited from `Object` unless overridden.
+///
+/// # The current term is lent, not copied
+///
+/// [`term`](Self::term), [`term_buffer`](Self::term_buffer) and
+/// [`next`](Self::next) return a borrow of the enum's own term buffer, as
+/// Lucene's `term()` and `BytesRefIterator.next()` return the enum's own
+/// `BytesRef`, which "may be re-used across calls to next"
+/// (`TermsEnum.java:118-119`, `BytesRefIterator.java:24-34`). The term is
+/// valid until the next call that moves the enum; the borrow checker enforces
+/// that, so a caller that keeps the term past such a call copies it first
+/// (for example with [`BytesRef::clone`] or into a reused buffer), as a Java
+/// caller does with `BytesRef.deepCopyOf` or `BytesRefBuilder.copyBytes`.
+pub trait TermsEnum: std::fmt::Display {
     /// Returns the attribute source attached to this enum.
     fn attributes(&mut self) -> &mut AttributeSource;
 
+    /// This enum as [`Any`], for the `instanceof` and `assertSame` tests Java
+    /// code makes on a `TermsEnum` (`TestAutomatonQuery` checks
+    /// `instanceof SingleTermsEnum` and `TermsEnum.EMPTY`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
     /// Attempts to seek to the exact term, returning `true` if found.
-    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool>;
+    ///
+    /// Default implementation uses `seek_ceil`.
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        Ok(self.seek_ceil(text)? == SeekStatus::FOUND)
+    }
+
+    /// Two-phase [`seek_exact`](Self::seek_exact): the first phase typically
+    /// prefetches the right range of bytes, while the second — calling
+    /// [`IOBooleanSupplier::get`] on the returned supplier — actually seeks the
+    /// term within them. Several terms enums can therefore be prepared before
+    /// any of them is consumed, parallelising the I/O.
+    ///
+    /// **NOTE**: it is illegal to call other methods on this enum after this
+    /// one until the supplier has been consumed; the borrow the supplier holds
+    /// enforces that. `None` means the enum could tell, without any I/O, that
+    /// the term may not exist.
+    ///
+    /// The default implementation returns a supplier that simply calls
+    /// [`seek_exact`](Self::seek_exact), which is the body of
+    /// `org.apache.lucene.index.BaseTermsEnum#prepareSeekExact`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised while preparing the seek.
+    ///
+    /// Equivalent to `org.apache.lucene.index.TermsEnum#prepareSeekExact`.
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        let text = text.clone();
+        Ok(Some(Box::new(move || self.seek_exact(&text))))
+    }
 
     /// Seeks to the ceiling term and reports the result.
     fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus>;
@@ -60,32 +574,68 @@ pub trait TermsEnum {
     fn seek_ord(&mut self, ord: i64) -> Result<()>;
 
     /// Seeks to a previously captured [`TermState`].
-    fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()>;
+    ///
+    /// Default implementation seeks the exact term and then applies the state.
+    fn seek_term_state(&mut self, text: &BytesRef, _state: &dyn TermState) -> Result<()> {
+        if !self.seek_exact(text)? {
+            return Err(LuceneError::illegal_argument(format!(
+                "term={text} does not exist"
+            )));
+        }
+        Ok(())
+    }
 
-    /// Returns the current term.
-    fn term(&self) -> Result<BytesRef>;
+    /// Returns the current term, or `None` where Java's `term()` returns
+    /// `null` (for example `MultiTermsEnum` before it is positioned or after
+    /// it is exhausted).
+    ///
+    /// The term is the enum's own buffer, valid until the enum next moves
+    /// (see [the trait docs](TermsEnum#the-current-term-is-lent-not-copied)).
+    fn term(&self) -> Result<Option<&BytesRef>>;
+
+    /// Returns this enum's current-term buffer as it is now, without the
+    /// preconditions [`term`](Self::term) asserts.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java's `term()` hands
+    /// out the enum's own `BytesRef`, and a caller that keeps it — as
+    /// `MultiTermsEnum.current` does (`MultiTermsEnum.java:208, 249`) — later
+    /// reads whatever the enum has since written there, without calling
+    /// `term()` again. A Rust caller cannot keep that borrow while the enum
+    /// moves, so such a caller keeps the enum instead and reads the buffer
+    /// through this method; an enum whose `term()` asserts a state
+    /// (`SegmentTermsEnum.term()` asserts `!eof`,
+    /// `SegmentTermsEnum.java:968-971`) overrides it to skip the assertion,
+    /// exactly as the Java alias does. The default answers `term()`.
+    fn term_buffer(&self) -> Result<Option<&BytesRef>> {
+        self.term()
+    }
 
     /// Returns the ordinal position of the current term, if supported.
     fn ord(&self) -> Result<i64>;
 
     /// Returns the number of documents containing the current term.
-    fn doc_freq(&self) -> Result<i32>;
+    fn doc_freq(&mut self) -> Result<i32>;
 
     /// Returns the total number of occurrences of the current term.
-    fn total_term_freq(&self) -> Result<i64>;
+    fn total_term_freq(&mut self) -> Result<i64>;
 
-    /// Returns a postings enum for the current term with the given flags.
+    /// Returns a postings enum for the current term with the given flags, or
+    /// `None` where Java's `postings(PostingsEnum, int)` returns `null`.
     fn postings(
         &mut self,
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>>;
+    ) -> Result<Option<Box<dyn PostingsEnum>>>;
 
     /// Returns an impacts enum for the current term with the given flags.
     fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>>;
 
     /// Captures the current enum state.
-    fn term_state(&mut self) -> Result<Box<dyn TermState>>;
+    ///
+    /// Default implementation returns an empty term state.
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        Ok(Box::new(EmptyTermState))
+    }
 
     /// Returns `true` if this enum prefers exact seeks.
     fn prefer_seek_exact(&self) -> bool {
@@ -93,39 +643,428 @@ pub trait TermsEnum {
     }
 
     /// Returns the next term, or `None` at the end of iteration.
-    fn next(&mut self) -> Result<Option<BytesRef>>;
+    ///
+    /// Equivalent to `BytesRefIterator.next()`: the term is the enum's own
+    /// buffer, valid until the enum next moves (see
+    /// [the trait docs](TermsEnum#the-current-term-is-lent-not-copied)).
+    fn next(&mut self) -> Result<Option<&BytesRef>>;
+}
+
+/// Acceptance result used by [`FilteredTermsEnum`].
+///
+/// Equivalent to `org.apache.lucene.index.FilteredTermsEnum.AcceptStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptStatus {
+    /// Accept the term and continue iterating normally.
+    Yes,
+    /// Accept the term and seek to the next candidate.
+    YesAndSeek,
+    /// Reject the term and continue iterating normally.
+    No,
+    /// Reject the term and seek to the next candidate.
+    NoAndSeek,
+    /// Stop enumerating.
+    End,
+}
+
+/// A filter implementation supplied to [`FilteredTermsEnum`].
+///
+/// Equivalent to a subclass of `org.apache.lucene.index.FilteredTermsEnum`.
+pub trait FilteredTermsEnumFilter: Send {
+    /// Decides whether a term is accepted, rejected, or ends the iteration.
+    fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus>;
+
+    /// This filter as [`Any`]: in Java the filter and the enum are one
+    /// object (a `FilteredTermsEnum` subclass), so `instanceof
+    /// SingleTermsEnum` tests the filter. See [`TermsEnum::as_any`].
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    /// Returns the next candidate term to seek to, or `None` if iteration
+    /// should end. The default implementation returns the initial seek term
+    /// once and then `None`.
+    fn next_seek_term(&mut self, _current_term: Option<&BytesRef>) -> Result<Option<BytesRef>> {
+        Ok(None)
+    }
+
+    /// Optionally sets the initial seek term. Filters that override
+    /// [`next_seek_term`](Self::next_seek_term) do not need this.
+    fn set_initial_seek_term(&mut self, _term: BytesRef) {}
+
+    /// The binary name of the Java `FilteredTermsEnum` subclass this filter
+    /// ports, `getClass().getName()`, which the enum's seek methods name in
+    /// their `UnsupportedOperationException` (`FilteredTermsEnum.java:156`).
+    /// A filter with no Lucene counterpart answers the abstract class's name.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.FilteredTermsEnum"
+    }
+}
+
+/// Terms iterator that wraps another [`TermsEnum`] and filters terms.
+///
+/// Equivalent to `org.apache.lucene.index.FilteredTermsEnum`.
+pub struct FilteredTermsEnum {
+    tenum: Box<dyn TermsEnum>,
+    filter: Box<dyn FilteredTermsEnumFilter>,
+    initial_seek_term: Option<BytesRef>,
+    do_seek: bool,
+    /// Whether Java's `actualTerm` is not `null`. Java's `actualTerm` is the
+    /// `BytesRef` the delegate's `next()` or `term()` returned
+    /// (`FilteredTermsEnum.java:241, 244`): the delegate's own term buffer.
+    /// Where Java reads `actualTerm`, the term is read from that buffer
+    /// ([`actual_term`]), through the borrow [`TermsEnum::term_buffer`] lends.
+    has_actual_term: bool,
+}
+
+/// Java's `actualTerm`: the delegate's current term buffer when
+/// `has_actual_term`, else `null`. Takes the delegate rather than the enum so
+/// that the filter can be borrowed beside the term.
+fn actual_term(tenum: &dyn TermsEnum, has_actual_term: bool) -> Result<Option<&BytesRef>> {
+    if has_actual_term {
+        tenum.term_buffer()
+    } else {
+        Ok(None)
+    }
+}
+
+impl FilteredTermsEnum {
+    /// Creates a filtered enum that starts by seeking the initial term.
+    /// Creates a filtered enum that iterates linearly over the delegate.
+    pub fn new(tenum: Box<dyn TermsEnum>, filter: Box<dyn FilteredTermsEnumFilter>) -> Self {
+        Self {
+            tenum,
+            filter,
+            initial_seek_term: None,
+            do_seek: false,
+            has_actual_term: false,
+        }
+    }
+
+    /// Creates a filtered enum whose first step seeks, to the term the filter's
+    /// [`next_seek_term`](FilteredTermsEnumFilter::next_seek_term) answers for
+    /// no current term, when `start_with_seek` is set.
+    ///
+    /// Equivalent to `FilteredTermsEnum(TermsEnum, boolean startWithSeek)`
+    /// (`index/FilteredTermsEnum.java:87-91`).
+    pub fn with_start_with_seek(
+        tenum: Box<dyn TermsEnum>,
+        filter: Box<dyn FilteredTermsEnumFilter>,
+        start_with_seek: bool,
+    ) -> Self {
+        Self {
+            tenum,
+            filter,
+            initial_seek_term: None,
+            do_seek: start_with_seek,
+            has_actual_term: false,
+        }
+    }
+
+    /// Creates a filtered enum that first seeks to `initial_seek_term`.
+    pub fn new_with_seek(
+        tenum: Box<dyn TermsEnum>,
+        filter: Box<dyn FilteredTermsEnumFilter>,
+        initial_seek_term: BytesRef,
+    ) -> Self {
+        Self {
+            tenum,
+            filter,
+            initial_seek_term: Some(initial_seek_term),
+            do_seek: true,
+            has_actual_term: false,
+        }
+    }
+}
+
+impl std::fmt::Display for FilteredTermsEnum {
+    /// `org.apache.lucene.index.FilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FilteredTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl FilteredTermsEnum {
+    /// The filter, which in Java is this object itself.
+    pub fn filter(&self) -> &dyn FilteredTermsEnumFilter {
+        &*self.filter
+    }
+}
+
+impl TermsEnum for FilteredTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn attributes(&mut self) -> &mut AttributeSource {
+        self.tenum.attributes()
+    }
+
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        self.tenum.term()
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        self.tenum.doc_freq()
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.tenum.total_term_freq()
+    }
+
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        self.tenum.postings(reuse, flags)
+    }
+
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.tenum.impacts(flags)
+    }
+
+    fn ord(&self) -> Result<i64> {
+        self.tenum.ord()
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.tenum.term_state()
+    }
+
+    fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
+    }
+
+    /// This enum does not support seeking.
+    ///
+    /// Equivalent to `org.apache.lucene.index.FilteredTermsEnum#prepareSeekExact`,
+    /// which throws `UnsupportedOperationException` rather than preparing
+    /// anything, because in general its subclasses cannot seek.
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        _text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
+    }
+
+    fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
+    }
+
+    fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
+    }
+
+    fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
+        Err(LuceneError::unsupported_operation(format!(
+            "{} does not support seeking",
+            self.filter.java_class_name()
+        )))
+    }
+
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        loop {
+            if self.do_seek {
+                self.do_seek = false;
+                let seek_term = if self.initial_seek_term.is_some() {
+                    self.initial_seek_term.take()
+                } else {
+                    let actual = actual_term(&*self.tenum, self.has_actual_term)?;
+                    self.filter.next_seek_term(actual)?
+                };
+                if cfg!(debug_assertions) {
+                    if let (Some(t), Ok(Some(actual))) =
+                        (&seek_term, actual_term(&*self.tenum, self.has_actual_term))
+                    {
+                        // `assert actualTerm == null || t == null ||
+                        // t.compareTo(actualTerm) > 0`.
+                        debug_assert!(t.slice() > actual.slice(), "curTerm={actual} seekTerm={t}");
+                    }
+                }
+                if seek_term.is_none()
+                    || self.tenum.seek_ceil(seek_term.as_ref().unwrap())? == SeekStatus::END
+                {
+                    return Ok(None);
+                }
+                // `actualTerm = tenum.term()`.
+                self.has_actual_term = self.tenum.term()?.is_some();
+            } else {
+                // `actualTerm = tenum.next()`.
+                self.has_actual_term = self.tenum.next()?.is_some();
+                if !self.has_actual_term {
+                    return Ok(None);
+                }
+            }
+
+            // `accept(actualTerm)`: a `null` from `tenum.term()` reaches the
+            // filter, whose dereference raises `NullPointerException`.
+            let status = {
+                let actual = actual_term(&*self.tenum, self.has_actual_term)?
+                    .ok_or_else(LuceneError::null_pointer)?;
+                self.filter.accept(actual)?
+            };
+            // `return actualTerm`: the delegate's buffer, borrowed anew.
+            match status {
+                AcceptStatus::YesAndSeek => {
+                    self.do_seek = true;
+                    return actual_term(&*self.tenum, self.has_actual_term);
+                }
+                AcceptStatus::Yes => return actual_term(&*self.tenum, self.has_actual_term),
+                AcceptStatus::NoAndSeek => {
+                    self.do_seek = true;
+                }
+                AcceptStatus::End => return Ok(None),
+                AcceptStatus::No => {}
+            }
+        }
+    }
+}
+
+/// Filtered terms enum that exposes exactly one term.
+///
+/// Equivalent to `org.apache.lucene.index.SingleTermsEnum`.
+pub struct SingleTermsEnum {
+    single_ref: BytesRef,
+}
+
+impl SingleTermsEnum {
+    /// Creates a single-term enum over the supplied delegate.
+    ///
+    /// After construction the enum is already positioned at the term if it
+    /// exists; the first call to [`TermsEnum::next`] will advance past it.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(tenum: Box<dyn TermsEnum>, term_text: BytesRef) -> Box<dyn TermsEnum> {
+        let filter = Box::new(SingleTermsEnum {
+            single_ref: term_text.clone(),
+        });
+        Box::new(FilteredTermsEnum::new_with_seek(tenum, filter, term_text))
+    }
+}
+
+impl FilteredTermsEnumFilter for SingleTermsEnum {
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.index.SingleTermsEnum"
+    }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
+        if term == &self.single_ref {
+            Ok(AcceptStatus::Yes)
+        } else {
+            Ok(AcceptStatus::End)
+        }
+    }
+}
+
+/// Empty term state returned by the default `TermsEnum::term_state`.
+#[derive(Debug)]
+struct EmptyTermState;
+
+impl TermState for EmptyTermState {
+    fn copy_from(&mut self, _other: &dyn TermState) {
+        // `throw new UnsupportedOperationException()`
+        // (`BaseTermsEnum.java:49-54`).
+        panic!("java.lang.UnsupportedOperationException");
+    }
+
+    fn clone_box(&self) -> Box<dyn TermState> {
+        Box::new(EmptyTermState)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Returns the [`Terms`] index of `field` in `reader`, or an empty `Terms`
+/// when the field has none.
+///
+/// Equivalent to `org.apache.lucene.index.Terms.getTerms(LeafReader, String)`
+/// (`Terms.java:35-45`), which returns the private `Terms.EMPTY`
+/// (`Terms.java:229-275`) for an absent field.
+///
+/// # Errors
+///
+/// Propagates whatever [`LeafReader::terms`](crate::index::LeafReader::terms)
+/// raises.
+pub fn get_terms(reader: &dyn crate::index::LeafReader, field: &str) -> Result<Arc<dyn Terms>> {
+    /// `Terms.EMPTY`, the one instance every absent field shares.
+    static EMPTY: std::sync::LazyLock<Arc<dyn Terms>> =
+        std::sync::LazyLock::new(|| Arc::new(EmptyTerms));
+    Ok(match reader.terms(field)? {
+        Some(terms) => terms,
+        None => Arc::clone(&EMPTY),
+    })
 }
 
 /// Access to the terms of a specific field.
 ///
 /// Equivalent to `org.apache.lucene.index.Terms`.
-pub trait Terms {
+pub trait Terms: Send + Sync {
     /// Returns an iterator over all terms in this field.
     fn iterator(&self) -> Result<Box<dyn TermsEnum>>;
 
     /// Returns a terms enum restricted to terms accepted by the automaton,
     /// starting after `start_term`.
+    ///
+    /// Equivalent to the default `Terms.intersect(CompiledAutomaton, BytesRef)`
+    /// (`Terms.java:64-96`); see `default_intersect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `compiled` is not a
+    /// normal automaton, and propagates whatever [`Terms::iterator`] raises.
     fn intersect(
         &self,
-        _compiled: &CompiledAutomaton,
-        _start_term: Option<&BytesRef>,
+        compiled: &CompiledAutomaton,
+        start_term: Option<&BytesRef>,
     ) -> Result<Box<dyn TermsEnum>> {
-        Err(LuceneError::UnsupportedOperation(
-            "intersect not implemented".to_string(),
-        ))
+        default_intersect(self, compiled, start_term)
     }
 
     /// Returns the number of terms in this field, or `-1` if unknown.
-    fn size(&self) -> i64;
+    ///
+    /// Equivalent to `Terms.size()`, which throws `IOException`
+    /// (`Terms.java:103`).
+    fn size(&self) -> Result<i64>;
 
     /// Returns the sum of `totalTermFreq` for all terms in this field.
-    fn sum_total_term_freq(&self) -> i64;
+    ///
+    /// Equivalent to `Terms.getSumTotalTermFreq()` (`Terms.java:109`).
+    fn sum_total_term_freq(&self) -> Result<i64>;
 
     /// Returns the sum of `docFreq` for all terms in this field.
-    fn sum_doc_freq(&self) -> i64;
+    ///
+    /// Equivalent to `Terms.getSumDocFreq()` (`Terms.java:115`).
+    fn sum_doc_freq(&self) -> Result<i64>;
 
     /// Returns the number of documents with at least one term for this field.
-    fn doc_count(&self) -> i32;
+    ///
+    /// Equivalent to `Terms.getDocCount()` (`Terms.java:121`).
+    fn doc_count(&self) -> Result<i32>;
 
     /// Returns `true` if this field stores term frequencies.
     fn has_freqs(&self) -> bool;
@@ -142,19 +1081,19 @@ pub trait Terms {
     /// Returns the smallest term in this field, or `None` if empty.
     fn min(&self) -> Result<Option<BytesRef>> {
         let mut it = self.iterator()?;
-        it.next()
+        Ok(it.next()?.cloned())
     }
 
     /// Returns the largest term in this field, or `None` if empty.
     fn max(&self) -> Result<Option<BytesRef>> {
-        let size = self.size();
+        let size = self.size()?;
         if size == 0 {
             return Ok(None);
         }
         if size > 0 {
             let mut it = self.iterator()?;
             if it.seek_ord(size - 1).is_ok() {
-                return Ok(Some(it.term()?));
+                return Ok(it.term()?.cloned());
             }
         }
         // Fallback: binary-search for the last term one byte at a time.
@@ -164,11 +1103,16 @@ pub trait Terms {
         }
         let mut scratch = vec![0u8];
         loop {
-            let mut low = 0u8;
-            let mut high = 0u8.wrapping_sub(1);
+            // `int low = 0; int high = 256;`: the digit is searched over the
+            // half-open range `[0, 256)`, so `mid` reaches `0xFF`. An upper
+            // bound of 255 never probes `0xFF`, and a maximum term with a
+            // `0xFF` digit then never yields `END`, appending digits forever.
+            let mut low: u16 = 0;
+            let mut high: u16 = 256;
             while low != high {
-                let mid = ((low as u16 + high as u16) / 2) as u8;
-                *scratch.last_mut().unwrap() = mid;
+                let mid = (low + high) >> 1;
+                // `scratch.setByteAt(scratch.length() - 1, (byte) mid)`.
+                *scratch.last_mut().unwrap() = mid as u8;
                 match it.seek_ceil(&BytesRef::new(scratch.clone()))? {
                     SeekStatus::END => {
                         if mid == 0 {
@@ -191,29 +1135,834 @@ pub trait Terms {
     }
 
     /// Returns additional debug statistics about this terms instance.
-    fn stats(&self) -> String {
-        format!(
+    ///
+    /// Equivalent to `Terms.getStats()`, which throws `IOException` and returns
+    /// an `Object` (`Terms.java:217-226`): the default a `String`, the
+    /// blocktree terms dictionary its `Stats`. The object is returned as such —
+    /// a [`StatsObject`], whose `Display` is the Java object's `toString()` and
+    /// which [`StatsObject::as_any`] downcasts to its concrete type.
+    fn stats(&self) -> Result<Box<dyn StatsObject>> {
+        Ok(Box::new(format!(
             "impl=Terms,size={},docCount={},sumTotalTermFreq={},sumDocFreq={}",
-            self.size(),
-            self.doc_count(),
-            self.sum_total_term_freq(),
-            self.sum_doc_freq()
-        )
+            self.size()?,
+            self.doc_count()?,
+            self.sum_total_term_freq()?,
+            self.sum_doc_freq()?
+        )))
     }
+
+    /// This terms instance as [`Any`], for the `instanceof` tests Java code
+    /// makes on a `Terms` (`STUniformSplitTermsWriter.merge` falls back to the
+    /// default merge unless `terms instanceof STUniformSplitTerms`).
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the run-time
+    /// class of any object; a Rust trait object exposes its concrete type only
+    /// through [`Any`], which an implementation opts into by returning
+    /// `Some(self)`. The default, `None`, answers `false` to every such test.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+}
+
+/// The body of the default `Terms.intersect(CompiledAutomaton, BytesRef)`
+/// (`Terms.java:64-96`): an [`AutomatonTermsEnum`](crate::index::automaton_terms_enum::AutomatonTermsEnum)
+/// over `terms.iterator()`, whose first seek starts from `start_term` when one
+/// is given.
+///
+/// [`Terms::intersect`]'s default body.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `compiled` is not a normal
+/// automaton, and propagates whatever `terms.iterator()` raises.
+pub(crate) fn default_intersect<T: Terms + ?Sized>(
+    terms: &T,
+    compiled: &CompiledAutomaton,
+    start_term: Option<&BytesRef>,
+) -> Result<Box<dyn TermsEnum>> {
+    let terms_enum = terms.iterator()?;
+    if compiled.automaton_type != crate::util::automaton::AutomatonType::Normal {
+        return Err(LuceneError::illegal_argument(
+            "please use CompiledAutomaton.getTermsEnum instead".to_string(),
+        ));
+    }
+    crate::index::automaton_terms_enum::AutomatonTermsEnum::with_start_term(
+        terms_enum,
+        compiled.clone(),
+        start_term.cloned(),
+    )
 }
 
 /// Collection of per-field [`Terms`] instances.
 ///
 /// Equivalent to `org.apache.lucene.index.Fields`.
-pub trait Fields {
+pub trait Fields: Send + Sync {
     /// Returns an iterator over all field names.
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_>;
 
     /// Returns the [`Terms`] for the given field, or `None` if absent.
-    fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms>>>;
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>>;
 
     /// Returns the number of fields, or `-1` if unknown.
     fn size(&self) -> i32;
+}
+
+/// A borrowed [`Fields`] is itself a [`Fields`].
+///
+/// Java holds every `Fields` by reference, so a filter such as
+/// `FilterLeafReader.FilterFields` can wrap one it was only lent for the length
+/// of a call — `PerFieldPostingsFormat.FieldsWriter.write` wraps the `Fields`
+/// it receives. This impl lets a borrowed instance be boxed into
+/// [`FilterFields`](crate::index::filter_reader::FilterFields) the same way.
+impl<T: Fields + ?Sized> Fields for &T {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        (**self).iterator()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+        (**self).terms(field)
+    }
+
+    fn size(&self) -> i32 {
+        (**self).size()
+    }
+}
+
+/// The `Object` [`Terms::stats`] returns: Java's `Terms.getStats()` result.
+///
+/// Its `Display` is the object's `toString()`; [`as_any`](Self::as_any)
+/// recovers its concrete type — a `String` for the default `getStats()`, the
+/// blocktree [`Stats`](crate::codecs::lucene103::blocktree::Stats) for a
+/// `FieldReader` — as Java's caller casts the `Object`.
+pub trait StatsObject: std::fmt::Display + Send + Sync + 'static {
+    /// This object as [`Any`], for downcasting.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+// The two classes Lucene's `getStats()` implementations return are
+// implemented one by one rather than through a blanket impl over every
+// `Display + Send + Sync` type: such a blanket also covers `Box<dyn TermState>`
+// (whose `TermState` is `Display`), and wherever `StatsObject` is in scope
+// `boxed_state.as_any()` then resolves to the box itself, so downcasting the
+// state to its class fails.
+
+/// `Terms.getStats()`'s default result, a `String` (`Terms.java:217-226`).
+impl StatsObject for String {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl std::fmt::Debug for dyn StatsObject {
+    /// The object's `toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// PrefixCodedTerms
+// -----------------------------------------------------------------------------
+
+/// A compact, prefix-shared encoding of a sorted term list.
+///
+/// Equivalent to `org.apache.lucene.index.PrefixCodedTerms`.
+#[derive(Debug, Clone)]
+pub struct PrefixCodedTerms {
+    /// The encoded payload, as the block list a `ByteBuffersDataOutput`
+    /// produced.
+    ///
+    /// Equivalent to `private final List<ByteBuffer> content`
+    /// (`PrefixCodedTerms.java:37`), which `Builder.finish()` fills with
+    /// `output.toBufferList()` (`:103`). The block structure is not an
+    /// implementation detail that could be flattened into one buffer: Lucene's
+    /// `ramBytesUsed()` sums the *capacity* of each block (`:49-51`) and its
+    /// `hashCode()` folds one `ByteBuffer.hashCode()` per block (`:190-197`),
+    /// so both answers change if the same bytes are held in a different number
+    /// of blocks.
+    ///
+    /// Shared, because every [`iterator`](Self::iterator) reads these blocks in
+    /// place, as Java's iterators all wrap the same buffers.
+    content: Arc<[ByteBuffer]>,
+    size: i64,
+    del_gen: i64,
+}
+
+impl PrefixCodedTerms {
+    /// Returns the number of encoded terms.
+    pub fn size(&self) -> i64 {
+        self.size
+    }
+
+    /// Returns an iterator over the encoded terms.
+    ///
+    /// Equivalent to `PrefixCodedTerms.iterator()`, which is
+    /// `new TermIterator(delGen, new ByteBuffersDataInput(content))`
+    /// (`PrefixCodedTerms.java:170-172`): a fresh reader with its own position
+    /// over the same blocks.
+    pub fn iterator(&self) -> PrefixCodedTermsIterator {
+        // PERF: the reader shares the blocks instead of copying them.
+        let input = ByteBuffersDataInput::over_blocks(Arc::clone(&self.content), 0)
+            .expect("the content is the block list of a ByteBuffersDataOutput");
+        PrefixCodedTermsIterator::new(self.del_gen, input)
+    }
+
+    /// The encoded payload, block by block.
+    ///
+    /// Equivalent to reading the private `content` field, which Lucene's own
+    /// `hashCode`/`equals` do (`PrefixCodedTerms.java:180-197`).
+    pub fn content(&self) -> &[ByteBuffer] {
+        &self.content
+    }
+
+    /// Records the deletion generation for this packet.
+    pub fn set_del_gen(&mut self, del_gen: i64) {
+        self.del_gen = del_gen;
+    }
+
+    /// Java's `PrefixCodedTerms.hashCode()` (`PrefixCodedTerms.java:189-199`):
+    /// `h = 1`, `h += 31 * bb.hashCode()` per content block, then
+    /// `31 * h + (int) (delGen ^ (delGen >>> 32))`.
+    ///
+    /// `ByteBuffer.hashCode()` folds `31 * h + b` over the remaining bytes from
+    /// the last to the first, each byte sign-extended; every block is a buffer
+    /// of `ByteBuffersDataOutput.toBufferList()`, positioned at 0 and limited
+    /// at its length.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java caches the value in `lazyHash`
+    /// on first use, so a `setDelGen` after the first `hashCode()` leaves the
+    /// cached value unchanged; the port recomputes it on every call. No Lucene
+    /// caller changes the generation of a packet it has already hashed.
+    pub fn hash_code(&self) -> i32 {
+        let mut h: i32 = 1;
+        for block in self.content.iter() {
+            let mut bb: i32 = 1;
+            // `ByteBuffer.hashCode()`: from `limit() - 1` down to `position()`.
+            for &byte in block.as_slice()[block.position()..].iter().rev() {
+                bb = bb.wrapping_mul(31).wrapping_add(i32::from(byte as i8));
+            }
+            h = h.wrapping_add(31i32.wrapping_mul(bb));
+        }
+        31i32
+            .wrapping_mul(h)
+            .wrapping_add(crate::util::java_collections::java_long_hash_code(
+                self.del_gen,
+            ))
+    }
+}
+
+impl crate::util::Accountable for PrefixCodedTerms {
+    /// Equivalent to `PrefixCodedTerms.ramBytesUsed()`
+    /// (`PrefixCodedTerms.java:49-51`), which sums the *capacities* of the
+    /// buffers holding the payload and adds `2 * Long.BYTES` for the `size` and
+    /// `delGen` fields.
+    ///
+    /// Both terms are Java's, capacity included: the payload lives in the block
+    /// list of a `ByteBuffersDataOutput`, whose blocks are 1 KiB by default, so
+    /// a builder given three short terms answers 1040 and an empty one answers
+    /// 16 — measured against `lucene-core-10.5.0.jar` by
+    /// `tests/portability/prefix_coded_terms.rs`.
+    fn ram_bytes_used(&self) -> i64 {
+        self.content.iter().map(ByteBuffer::capacity).sum::<usize>() as i64 + 2 * 8
+    }
+}
+
+/// Builder for [`PrefixCodedTerms`].
+///
+/// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.Builder`.
+#[derive(Debug)]
+pub struct PrefixCodedTermsBuilder {
+    output: ByteBuffersDataOutput,
+    /// The field of `lastTerm`, replaced only when the field changes.
+    last_field: String,
+    /// `lastTermBytes`, refilled with each term (`lastTermBytes.copyBytes`).
+    last_term_bytes: Vec<u8>,
+    size: i64,
+}
+
+impl Default for PrefixCodedTermsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrefixCodedTermsBuilder {
+    /// Creates a new builder.
+    pub fn new() -> Self {
+        Self {
+            output: ByteBuffersDataOutput::new(),
+            // `lastTerm = new Term("")`.
+            last_field: String::new(),
+            last_term_bytes: Vec::new(),
+            size: 0,
+        }
+    }
+
+    /// Adds a term. Terms must be added in strictly ascending order.
+    pub fn add(&mut self, term: &Term) -> Result<()> {
+        self.add_bytes(term.field(), term.bytes())
+    }
+
+    /// Adds a term from its field and bytes.
+    ///
+    /// Equivalent to `PrefixCodedTerms.Builder.add(String, BytesRef)`
+    /// (`PrefixCodedTerms.java:73-99`), which keeps the last term in a reused
+    /// `BytesRefBuilder` and the field by reference: nothing is allocated per
+    /// term here either once the buffers have grown.
+    pub fn add_bytes(&mut self, field: &str, bytes: &BytesRef) -> Result<()> {
+        // `PrefixCodedTerms.java:74`.
+        debug_assert!({
+            let last_term = Term::new(
+                self.last_field.clone(),
+                BytesRef::new(self.last_term_bytes.clone()),
+            );
+            last_term == Term::empty("") || Term::new(field.to_string(), bytes.clone()) > last_term
+        });
+
+        let bytes_slice = bytes.slice();
+        let same_field = self.size > 0 && field == self.last_field;
+        let prefix = if same_field {
+            // PERF: `StringHelper.bytesDifference(lastTerm.bytes, bytes)` over
+            // the two buffers in place. Equal terms are its
+            // `IllegalArgumentException`, raised by the helper itself so that
+            // the message is the same.
+            let last = self.last_term_bytes.as_slice();
+            match last.iter().zip(bytes_slice).position(|(x, y)| x != y) {
+                Some(mismatch) => mismatch,
+                None if last.len() != bytes_slice.len() => last.len().min(bytes_slice.len()),
+                None => StringHelper::bytes_difference(
+                    &BytesRef::new(last.to_vec()),
+                    &BytesRef::new(bytes_slice.to_vec()),
+                )? as usize,
+            }
+        } else {
+            0
+        };
+
+        let code = (prefix << 1) | if same_field { 0 } else { 1 };
+        self.output.write_v_int(code as i32)?;
+        if !same_field {
+            self.output.write_string(field)?;
+        }
+        let suffix = bytes_slice.len() - prefix;
+        self.output.write_v_int(suffix as i32)?;
+        self.output.write_bytes(bytes_slice, prefix, suffix)?;
+
+        // `lastTermBytes.copyBytes(bytes); lastTerm.bytes = lastTermBytes.get();
+        // lastTerm.field = field;`
+        self.last_term_bytes.clear();
+        self.last_term_bytes.extend_from_slice(bytes_slice);
+        if !same_field {
+            self.last_field.clear();
+            self.last_field.push_str(field);
+        }
+        self.size += 1;
+        Ok(())
+    }
+
+    /// Finalizes the builder into a `PrefixCodedTerms`.
+    pub fn finish(self) -> PrefixCodedTerms {
+        PrefixCodedTerms {
+            // `new PrefixCodedTerms(output.toBufferList(), size)`
+            // (`PrefixCodedTerms.java:103`).
+            content: self
+                .output
+                .into_buffer_list()
+                .into_iter()
+                .map(ByteBuffer::wrap)
+                .collect(),
+            size: self.size,
+            del_gen: -1,
+        }
+    }
+}
+
+/// Iterator over a [`PrefixCodedTerms`] payload.
+///
+/// Equivalent to `org.apache.lucene.index.PrefixCodedTerms.TermIterator`.
+#[derive(Debug)]
+pub struct PrefixCodedTermsIterator {
+    /// The reader over the payload's blocks.
+    ///
+    /// Equivalent to `final ByteBuffersDataInput input`
+    /// (`PrefixCodedTerms.java:107`), which `iterator()` opens over the very
+    /// blocks the `PrefixCodedTerms` holds (`:170-172`); it keeps its own
+    /// position, so `next()` simply reads on. The blocks are shared, not
+    /// copied, as Java's views over them are.
+    input: ByteBuffersDataInput<Arc<[ByteBuffer]>>,
+    end: i64,
+    del_gen: i64,
+    /// `TermIterator.field`: `""` before the first term, the current term's
+    /// field while iterating, and `null` — `None` — once exhausted. An empty
+    /// field name is a legal field (`TestIndexWriter.java:640-680`), so
+    /// exhaustion is not encoded in the name.
+    field: Option<String>,
+    /// `TermIterator.bytes`, the one term buffer every `next()` refills
+    /// (`PrefixCodedTerms.java:109-110`).
+    bytes: BytesRef,
+}
+
+impl PrefixCodedTermsIterator {
+    fn new(del_gen: i64, input: ByteBuffersDataInput<Arc<[ByteBuffer]>>) -> Self {
+        let end = input.length() as i64;
+        Self {
+            input,
+            end,
+            del_gen,
+            field: Some(String::new()),
+            bytes: BytesRef::default(),
+        }
+    }
+
+    /// Returns the deletion generation for this iterator.
+    pub fn del_gen(&self) -> i64 {
+        self.del_gen
+    }
+
+    /// Returns the current field, or `None` once the iteration is done.
+    ///
+    /// Equivalent to `PrefixCodedTerms.TermIterator.field()`
+    /// (`PrefixCodedTerms.java:150-158`), which is `null` only after `next()`
+    /// returned `null`. Use `==` to detect field changes.
+    pub fn field(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+
+    /// Returns the current term bytes, or `None` when exhausted.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<BytesRef>> {
+        Ok(self
+            .next_bytes()?
+            .map(|bytes| BytesRef::new(bytes.to_vec())))
+    }
+
+    /// Advances to the next term and lends its bytes, the iterator's reused
+    /// buffer, or returns `None` when exhausted.
+    ///
+    /// Equivalent to `PrefixCodedTerms.TermIterator.next()`
+    /// (`PrefixCodedTerms.java:123-142`), which returns its one reused
+    /// `bytes`; [`next`](Self::next) is the owned form.
+    pub(crate) fn next_bytes(&mut self) -> Result<Option<&[u8]>> {
+        Ok(if self.advance()? {
+            Some(self.bytes.slice())
+        } else {
+            None
+        })
+    }
+
+    /// Advances to the next term and lends it with its field, or returns
+    /// `None` when exhausted.
+    ///
+    /// Equivalent to `TermIterator.next()` followed by `field()`, the pair
+    /// `FrozenBufferedUpdates.applyTermDeletes` reads per term
+    /// (`FrozenBufferedUpdates.java:464-467`): the term is the iterator's one
+    /// reused `bytes`, not a copy. The two come back together because the
+    /// lent term holds the iterator borrowed.
+    pub(crate) fn next_field_term(&mut self) -> Result<Option<(&str, &BytesRef)>> {
+        if !self.advance()? {
+            return Ok(None);
+        }
+        let field = self
+            .field
+            .as_deref()
+            .expect("INVARIANT: a term was just read, so the iterator is on a field");
+        Ok(Some((field, &self.bytes)))
+    }
+
+    /// The body of `TermIterator.next()` (`PrefixCodedTerms.java:123-148`):
+    /// reads the next term into `bytes`, or clears `field` and returns
+    /// `false` at the end.
+    fn advance(&mut self) -> Result<bool> {
+        if (self.input.position() as i64) >= self.end {
+            self.field = None;
+            return Ok(false);
+        }
+
+        let code = self.input.read_v_int()? as usize;
+        let new_field = (code & 1) != 0;
+        let prefix = code >> 1;
+
+        if new_field {
+            self.field = Some(self.input.read_string()?);
+        }
+
+        let suffix = self.input.read_v_int()? as usize;
+        // `readTermBytes(prefix, suffix)`: `builder.grow(prefix + suffix)`,
+        // the suffix read after the shared prefix, `setLength`.
+        let bytes = &mut self.bytes.bytes;
+        bytes.resize(prefix + suffix, 0);
+        self.input
+            .read_bytes(Some(&mut bytes[..]), prefix, suffix)?;
+        self.bytes.offset = 0;
+        self.bytes.length = prefix + suffix;
+
+        Ok(true)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// TermStates
+// -----------------------------------------------------------------------------
+
+/// **Placement note.** Lucene declares this type in
+/// `org.apache.lucene.index`, and its `build(IndexSearcher, Term, boolean)`
+/// factory calls into `org.apache.lucene.search`. This port keeps both: the
+/// type lives here, in its Lucene package, and reaches into
+/// [`crate::search`](crate::search) for the searcher, which is the same
+/// dependency Java's `index` package has on `search`.
+/// The per-leaf states of a [`TermStates`]: `None` when nothing is known yet,
+/// `Some(None)` for Java's `EMPTY_TERMSTATE`, `Some(Some(state))` for a state.
+type LeafTermStates = Vec<Option<Option<Box<dyn TermState>>>>;
+
+/// Maintains a [`TermState`] view over the leaves of an index reader, for a
+/// single term.
+///
+/// Equivalent to the `final org.apache.lucene.index.TermStates`. It does not
+/// track whether the given [`TermState`] objects are valid, nor whether they
+/// refer to the same term in the associated readers.
+#[derive(Debug)]
+pub struct TermStates {
+    /// Important: do **not** keep hard references to index readers. Java stores
+    /// `context.identity`, an `Object` used only for reference comparison; this
+    /// port stores [`IndexReaderContext::id`], which is the same identity value
+    /// and likewise does not reference the reader.
+    top_reader_context_identity: usize,
+    /// Per leaf: `None` when nothing is known yet (Java's `null`), `Some(None)`
+    /// for Java's `EMPTY_TERMSTATE` — the term was looked up lazily and is
+    /// absent — and `Some(Some(state))` for a registered state. Behind a
+    /// [`Mutex`](std::sync::Mutex) because [`get`](Self::get) fills it lazily
+    /// through `&self`, as Java's `get` assigns `states[ctx.ord]`.
+    states: std::sync::Mutex<LeafTermStates>,
+    /// `None` if the statistics are to be used.
+    term: Option<Term>,
+    doc_freq: i32,
+    total_term_freq: i64,
+}
+
+impl TermStates {
+    /// The per-leaf states, locked; a poisoned lock is recovered, as a Java
+    /// array has no lock to poison.
+    fn states_guard(&self) -> std::sync::MutexGuard<'_, LeafTermStates> {
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The per-leaf states, through `&mut self`.
+    fn states_mut(&mut self) -> &mut LeafTermStates {
+        self.states
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn with_term(term: Option<Term>, context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
+        debug_assert!(context.is_top_level());
+        if !context.is_top_level() {
+            return Err(LuceneError::illegal_argument(
+                "TermStates must be built from a top-level IndexReaderContext".to_string(),
+            ));
+        }
+        let num_leaves = Arc::clone(context).leaves().len();
+        Ok(Self {
+            top_reader_context_identity: context.id(),
+            states: std::sync::Mutex::new((0..num_leaves).map(|_| None).collect()),
+            term,
+            doc_freq: 0,
+            total_term_freq: 0,
+        })
+    }
+
+    /// Creates an empty `TermStates` from an [`IndexReaderContext`].
+    ///
+    /// Equivalent to `TermStates(IndexReaderContext)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a
+    /// top-level context, which is the condition Java asserts.
+    pub fn new(context: &Arc<dyn IndexReaderContext>) -> Result<Self> {
+        Self::with_term(None, context)
+    }
+
+    /// Creates a `TermStates` holding an initial [`TermState`].
+    ///
+    /// Equivalent to
+    /// `TermStates(IndexReaderContext, TermState, int, int, long)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `context` is not a
+    /// top-level context.
+    pub fn with_state(
+        context: &Arc<dyn IndexReaderContext>,
+        state: Box<dyn TermState>,
+        ord: usize,
+        doc_freq: i32,
+        total_term_freq: i64,
+    ) -> Result<Self> {
+        let mut states = Self::with_term(None, context)?;
+        states.register(state, ord, doc_freq, total_term_freq);
+        Ok(states)
+    }
+
+    /// Returns whether this `TermStates` was built for the given
+    /// [`IndexReaderContext`].
+    ///
+    /// Equivalent to `TermStates.wasBuiltFor(IndexReaderContext)`, which
+    /// compares the stored identity by reference.
+    pub fn was_built_for(&self, context: &Arc<dyn IndexReaderContext>) -> bool {
+        self.top_reader_context_identity == context.id()
+    }
+
+    /// Returns whether this `TermStates` was built for the top-level context
+    /// of `context`.
+    ///
+    /// Equivalent to `termStates.wasBuiltFor(ReaderUtil.getTopLevelContext(context))`,
+    /// the form every `TermQuery` assert uses (`TermQuery.java:121, 207`). It
+    /// takes the context by reference because a weight receives its leaf as
+    /// `&LeafReaderContext`; a context without a live parent is its own top
+    /// level, as in `ReaderUtil.getTopLevelContext`.
+    pub fn was_built_for_top_level_of(&self, context: &dyn IndexReaderContext) -> bool {
+        let top_level_identity = match context.parent().and_then(|parent| parent.upgrade()) {
+            Some(parent) => crate::index::multi_reader::get_top_level_context(parent).id(),
+            None => context.id(),
+        };
+        self.top_reader_context_identity == top_level_identity
+    }
+
+    /// Builds a `TermStates` for `term` over every leaf of the searcher's
+    /// top-level context, registering the leaves that contain it.
+    ///
+    /// Equivalent to `TermStates.build(IndexSearcher, Term, boolean)`.
+    ///
+    /// `needs_stats` selects whether the term statistics are collected; when it
+    /// is `false`, [`doc_freq`](Self::doc_freq) and
+    /// [`total_term_freq`](Self::total_term_freq) refuse to answer, exactly as
+    /// in Java.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java visits every leaf up front only
+    /// when `needsStats` is `true`; otherwise it defers the term-dictionary
+    /// seek to the first [`get`](Self::get) for that leaf, and it schedules the
+    /// seeks in the background through
+    /// [`TermsEnum::prepare_seek_exact`]. This port visits every leaf up front
+    /// in both cases, because the deferred path mutates the state array from
+    /// `&self` — which Rust would need interior mutability for, since a
+    /// [`Weight`](crate::search::Weight) is `Sync`. The states registered, the
+    /// statistics accumulated and every value [`get`](Self::get) answers are
+    /// identical; only the moment the term-dictionary seek happens differs, and
+    /// leaves that end up not being scored are now seeked eagerly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while seeking the term dictionaries.
+    pub fn build(searcher: &IndexSearcher, term: &Term, needs_stats: bool) -> Result<Self> {
+        let context = searcher.get_top_reader_context();
+        let mut per_reader_term_state = Self::with_term(
+            if needs_stats {
+                None
+            } else {
+                Some(term.clone())
+            },
+            context,
+        )?;
+        // `if (needsStats)` (`TermStates.java:101-121`): without statistics
+        // nothing is looked up now; `get` looks each leaf up when asked.
+        if !needs_stats {
+            return Ok(per_reader_term_state);
+        }
+        for ctx in searcher.get_leaf_contexts() {
+            // `Terms.getTerms(ctx.reader(), term.field())`.
+            let terms = get_terms(ctx.leaf_reader().as_ref(), term.field())?;
+            let mut terms_enum = terms.iterator()?;
+            if terms_enum.seek_exact(term.bytes())? {
+                let ord = ctx.ord() as usize;
+                let state = terms_enum.term_state()?;
+                if needs_stats {
+                    per_reader_term_state.register(
+                        state,
+                        ord,
+                        terms_enum.doc_freq()?,
+                        terms_enum.total_term_freq()?,
+                    );
+                } else {
+                    per_reader_term_state.register_state(state, ord);
+                }
+            }
+        }
+        Ok(per_reader_term_state)
+    }
+
+    /// Clears the internal state and removes all registered [`TermState`]s.
+    ///
+    /// Equivalent to `TermStates.clear()`.
+    pub fn clear(&mut self) {
+        self.doc_freq = 0;
+        self.total_term_freq = 0;
+        for state in self.states_mut().iter_mut() {
+            *state = None;
+        }
+    }
+
+    /// Registers a [`TermState`] for a leaf ordinal and accumulates its
+    /// statistics.
+    ///
+    /// Equivalent to `TermStates.register(TermState, int, int, long)`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when `ord` is out of range or already carries a
+    /// state; Java asserts the same two conditions.
+    pub fn register(
+        &mut self,
+        state: Box<dyn TermState>,
+        ord: usize,
+        doc_freq: i32,
+        total_term_freq: i64,
+    ) {
+        self.register_state(state, ord);
+        self.accumulate_statistics(doc_freq, total_term_freq);
+    }
+
+    /// Registers a [`TermState`] for a leaf ordinal without updating the term
+    /// statistics.
+    ///
+    /// Equivalent to the expert `TermStates.register(TermState, int)`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when `ord` is out of range or already carries a
+    /// state; Java asserts the same two conditions.
+    pub fn register_state(&mut self, state: Box<dyn TermState>, ord: usize) {
+        let states = self.states_mut();
+        debug_assert!(ord < states.len(), "ord {ord} is out of range");
+        debug_assert!(
+            states[ord].is_none(),
+            "state for ord: {ord} already registered"
+        );
+        states[ord] = Some(Some(state));
+    }
+
+    /// Accumulates term statistics.
+    ///
+    /// Equivalent to the expert
+    /// `TermStates.accumulateStatistics(int, long)`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics when either statistic is negative or when
+    /// `doc_freq` exceeds `total_term_freq`; Java asserts the same.
+    pub fn accumulate_statistics(&mut self, doc_freq: i32, total_term_freq: i64) {
+        debug_assert!(doc_freq >= 0);
+        debug_assert!(total_term_freq >= 0);
+        debug_assert!(i64::from(doc_freq) <= total_term_freq);
+        self.doc_freq += doc_freq;
+        self.total_term_freq += total_term_freq;
+    }
+
+    /// Returns the [`TermState`] registered for the given leaf, or `None` when
+    /// the term does not exist in it.
+    ///
+    /// Equivalent to `TermStates.get(LeafReaderContext)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns an
+    /// `IOSupplier<TermState>` so that the term-dictionary I/O of several terms
+    /// can be scheduled together and resolved later. Every state is resolved by
+    /// the time [`build`](Self::build) returns here, so there is nothing left to
+    /// defer and the state is returned directly. It is cloned because Java
+    /// hands out the stored reference while Rust cannot let one escape the
+    /// borrow; [`TermState::clone_box`] is the deep copy `TermState.copyFrom`
+    /// performs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the leaf ordinal is out of
+    /// range, which is the condition Java asserts.
+    pub fn get(&self, ctx: &LeafReaderContext) -> Result<Option<Box<dyn TermState>>> {
+        let ord = ctx.ord();
+        let len = self.states_guard().len();
+        debug_assert!(ord >= 0 && (ord as usize) < len);
+        if ord < 0 || ord as usize >= len {
+            return Err(LuceneError::illegal_argument(format!(
+                "leaf ordinal {ord} is out of range for a TermStates over {len} leaves"
+            )));
+        }
+        let ord = ord as usize;
+        // `TermStates.java:184-211`: with `needsStats = false` the state is
+        // looked up the first time a leaf asks for it.
+        if let Some(term) = self.term.as_ref() {
+            if self.states_guard()[ord].is_none() {
+                let looked_up = match ctx.leaf_reader().terms(term.field())? {
+                    None => None,
+                    Some(terms) => {
+                        let mut terms_enum = terms.iterator()?;
+                        if terms_enum.seek_exact(term.bytes())? {
+                            Some(terms_enum.term_state()?)
+                        } else {
+                            None
+                        }
+                    }
+                };
+                self.states_guard()[ord] = Some(looked_up);
+            }
+        }
+        Ok(self.states_guard()[ord]
+            .as_ref()
+            .and_then(|state| state.as_ref().map(|state| state.clone_box())))
+    }
+
+    /// Returns the accumulated document frequency of every registered
+    /// [`TermState`].
+    ///
+    /// Equivalent to `TermStates.docFreq()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this instance was built with
+    /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
+    pub fn doc_freq(&self) -> Result<i32> {
+        if self.term.is_some() {
+            return Err(LuceneError::illegal_state(
+                "Cannot call docFreq() when needsStats=false".to_string(),
+            ));
+        }
+        Ok(self.doc_freq)
+    }
+
+    /// Returns the accumulated total term frequency of every registered
+    /// [`TermState`].
+    ///
+    /// Equivalent to `TermStates.totalTermFreq()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when this instance was built with
+    /// `needs_stats = false`, which is the `IllegalStateException` Java throws.
+    pub fn total_term_freq(&self) -> Result<i64> {
+        if self.term.is_some() {
+            return Err(LuceneError::illegal_state(
+                "Cannot call totalTermFreq() when needsStats=false".to_string(),
+            ));
+        }
+        Ok(self.total_term_freq)
+    }
+}
+
+impl std::fmt::Display for TermStates {
+    /// Equivalent to `TermStates.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "TermStates")?;
+        for state in self.states_guard().iter() {
+            // `sb.append(termState)`: the state's `toString()`, or `null`
+            // (`TermStates.java:252-256`); `EMPTY_TERMSTATE` renders as the
+            // empty state it is.
+            match state {
+                Some(Some(state)) => writeln!(f, "  state={state}")?,
+                Some(None) => writeln!(f, "  state={}", EmptyTermState)?,
+                None => writeln!(f, "  state=null")?,
+            }
+        }
+        Ok(())
+    }
 }
 
 /// An empty [`TermsEnum`].
@@ -237,7 +1986,25 @@ impl EmptyTermsEnum {
     }
 }
 
+impl std::fmt::Display for EmptyTermsEnum {
+    /// `1` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.TermsEnum$1",
+            self,
+        ))
+    }
+}
+
 impl TermsEnum for EmptyTermsEnum {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }
@@ -255,32 +2022,32 @@ impl TermsEnum for EmptyTermsEnum {
     }
 
     fn seek_term_state(&mut self, _text: &BytesRef, _state: &dyn TermState) -> Result<()> {
-        Err(LuceneError::IllegalState(
-            "seek_term_state should never be called on EmptyTermsEnum".to_string(),
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
-    fn term(&self) -> Result<BytesRef> {
-        Err(LuceneError::IllegalState(
-            "term should never be called on EmptyTermsEnum".to_string(),
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
     fn ord(&self) -> Result<i64> {
-        Err(LuceneError::IllegalState(
-            "ord should never be called on EmptyTermsEnum".to_string(),
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
-    fn doc_freq(&self) -> Result<i32> {
-        Err(LuceneError::IllegalState(
-            "doc_freq should never be called on EmptyTermsEnum".to_string(),
+    fn doc_freq(&mut self) -> Result<i32> {
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
-    fn total_term_freq(&self) -> Result<i64> {
-        Err(LuceneError::IllegalState(
-            "total_term_freq should never be called on EmptyTermsEnum".to_string(),
+    fn total_term_freq(&mut self) -> Result<i64> {
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
@@ -288,30 +2055,33 @@ impl TermsEnum for EmptyTermsEnum {
         &mut self,
         _reuse: Option<Box<dyn PostingsEnum>>,
         _flags: i32,
-    ) -> Result<Box<dyn PostingsEnum>> {
-        Err(LuceneError::IllegalState(
-            "postings should never be called on EmptyTermsEnum".to_string(),
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
     fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
-        Err(LuceneError::IllegalState(
-            "impacts should never be called on EmptyTermsEnum".to_string(),
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        Err(LuceneError::IllegalState(
-            "term_state should never be called on EmptyTermsEnum".to_string(),
+        Err(LuceneError::illegal_state(
+            "this method should never be called",
         ))
     }
 
-    fn next(&mut self) -> Result<Option<BytesRef>> {
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
         Ok(None)
     }
 }
 
 /// An empty [`Terms`] instance.
+///
+/// Equivalent to the private `org.apache.lucene.index.Terms.EMPTY`
+/// (`Terms.java:228-274`), which [`get_terms`] returns for an absent field.
 #[derive(Debug, Clone, Default)]
 pub struct EmptyTerms;
 
@@ -327,20 +2097,20 @@ impl Terms for EmptyTerms {
         Ok(Box::new(EmptyTermsEnum::new()))
     }
 
-    fn size(&self) -> i64 {
-        0
+    fn size(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn sum_total_term_freq(&self) -> i64 {
-        0
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn sum_doc_freq(&self) -> i64 {
-        0
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(0)
     }
 
-    fn doc_count(&self) -> i32 {
-        0
+    fn doc_count(&self) -> Result<i32> {
+        Ok(0)
     }
 
     fn has_freqs(&self) -> bool {
@@ -360,23 +2130,26 @@ impl Terms for EmptyTerms {
     }
 }
 
-/// An empty [`Fields`] instance.
+/// An empty [`Fields`] instance, for tests only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
-pub struct EmptyFields;
+pub(crate) struct EmptyFields;
 
+#[cfg(test)]
 impl EmptyFields {
     /// Creates an empty fields collection.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
 
+#[cfg(test)]
 impl Fields for EmptyFields {
     fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
         Box::new(std::iter::empty())
     }
 
-    fn terms(&self, _field: &str) -> Result<Option<Box<dyn Terms>>> {
+    fn terms(&self, _field: &str) -> Result<Option<Arc<dyn Terms>>> {
         Ok(None)
     }
 
@@ -390,9 +2163,117 @@ impl Fields for EmptyFields {
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
+mod prefix_coded_terms_accounting_tests {
+    use super::*;
+    use crate::util::Accountable;
+
+    /// `PrefixCodedTerms.ramBytesUsed()` is the payload's allocated size plus
+    /// `2 * Long.BYTES` for `size` and `delGen`. Running
+    /// `new PrefixCodedTerms.Builder().finish().ramBytesUsed()` against
+    /// `lucene-core-10.5.0.jar` prints 16, because an empty payload allocates no
+    /// buffer; this port allocates none either, so it prints 16 too.
+    #[test]
+    fn an_empty_packet_costs_only_its_two_long_fields() {
+        let empty = PrefixCodedTermsBuilder::new().finish();
+        assert_eq!(empty.size(), 0);
+        assert_eq!(empty.ram_bytes_used(), 16);
+    }
+
+    /// A packet holding anything at all has allocated one 1 KiB block, so it
+    /// costs 1040 whatever the terms are — the block *capacity*, not the bytes
+    /// written into it, is what `ramBytesUsed` sums. Checked against
+    /// `lucene-core-10.5.0.jar` by
+    /// `prefix_coded_terms::ram_bytes_used_matches_lucene`.
+    #[test]
+    fn a_populated_packet_costs_one_whole_block_plus_its_two_long_fields() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for term in [("f", &b"aaa"[..]), ("f", &b"aab"[..]), ("g", &b"z"[..])] {
+            builder
+                .add_bytes(term.0, &BytesRef::new(term.1.to_vec()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert_eq!(packet.size(), 3);
+        assert_eq!(packet.content().len(), 1, "one block");
+        let written: usize = packet.content().iter().map(ByteBuffer::limit).sum();
+        assert!(
+            written < 1024,
+            "{written} bytes should fit inside the single block"
+        );
+        assert_eq!(packet.ram_bytes_used(), 1024 + 16);
+    }
+
+    /// The payload spills into a second block once it passes 1 KiB, and both
+    /// blocks are charged.
+    #[test]
+    fn a_packet_larger_than_one_block_costs_every_block_it_allocated() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for i in 0..400u32 {
+            builder
+                .add_bytes("f", &BytesRef::new(format!("term{i:08}").into_bytes()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert!(
+            packet.content().len() > 1,
+            "400 terms should not fit in one block"
+        );
+        let capacity: i64 = packet
+            .content()
+            .iter()
+            .map(ByteBuffer::capacity)
+            .sum::<usize>() as i64;
+        assert_eq!(packet.ram_bytes_used(), capacity + 16);
+    }
+}
+
+#[cfg(test)]
+mod prefix_coded_terms_builder_tests {
+    use super::*;
+
+    /// `PrefixCodedTerms.Builder.add` (`PrefixCodedTerms.java:73-99`): a
+    /// field change writes `1` and the field, a same-field term writes
+    /// `prefix << 1` with the prefix shared with the previous term (the shorter
+    /// length when one term starts the other), then the suffix.
+    #[test]
+    fn the_builder_writes_lucene_prefix_codes() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        for (field, text) in [
+            ("f", "aaa"),
+            ("f", "aab"),
+            ("f", "b"),
+            ("g", "b"),
+            ("g", "ba"),
+        ] {
+            builder
+                .add_bytes(field, &BytesRef::new(text.as_bytes().to_vec()))
+                .unwrap();
+        }
+        let packet = builder.finish();
+        assert_eq!(packet.size(), 5);
+        let bytes: Vec<u8> = packet
+            .content()
+            .iter()
+            .map(ByteBuffer::as_slice)
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(
+            bytes,
+            vec![
+                0x01, 0x01, b'f', 0x03, b'a', b'a', b'a', // f:aaa, new field
+                0x04, 0x01, b'b', // f:aab, prefix 2
+                0x00, 0x01, b'b', // f:b, prefix 0
+                0x01, 0x01, b'g', 0x01, b'b', // g:b, new field
+                0x02, 0x01, b'a', // g:ba, prefix 1 (`b` starts `ba`)
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::postings_enum::POSTINGS_ENUM_FREQS;
+    use crate::index::postings_enum::{EmptyPostingsEnum, POSTINGS_ENUM_FREQS};
 
     #[test]
     fn empty_terms_enum_returns_no_terms() {
@@ -408,10 +2289,10 @@ mod tests {
     #[test]
     fn empty_terms_reports_zero_counts() {
         let terms = EmptyTerms::new();
-        assert_eq!(terms.size(), 0);
-        assert_eq!(terms.sum_total_term_freq(), 0);
-        assert_eq!(terms.sum_doc_freq(), 0);
-        assert_eq!(terms.doc_count(), 0);
+        assert_eq!(terms.size().unwrap(), 0);
+        assert_eq!(terms.sum_total_term_freq().unwrap(), 0);
+        assert_eq!(terms.sum_doc_freq().unwrap(), 0);
+        assert_eq!(terms.doc_count().unwrap(), 0);
         assert!(!terms.has_freqs());
         assert!(!terms.has_positions());
         assert!(!terms.has_offsets());
@@ -433,5 +2314,651 @@ mod tests {
             it.postings(None, POSTINGS_ENUM_FREQS).is_err(),
             "postings should fail on empty enum"
         );
+    }
+
+    #[test]
+    fn term_field_and_bytes_round_trip() {
+        let t = Term::from_text("body", "hello");
+        assert_eq!(t.field(), "body");
+        assert_eq!(t.text(), "hello");
+        assert_eq!(t.bytes().slice(), b"hello");
+        assert_eq!(t.to_string(), "body:hello");
+    }
+
+    #[test]
+    fn term_ordering_matches_lucene() {
+        let a = Term::from_text("a", "cat");
+        let b = Term::from_text("a", "dog");
+        let c = Term::from_text("b", "cat");
+        assert!(a < b);
+        assert!(a < c);
+        assert!(b < c);
+    }
+
+    /// `Term(String fld, BytesRef bytes)` keeps the caller's `fld` reference
+    /// (`Term.java:52-55`): a static name, a moved `String` and a shared
+    /// `Arc<str>` are the caller's own bytes; a `&String` is copied (positive
+    /// control: a different buffer with the same text).
+    #[test]
+    fn term_keeps_the_callers_field_name() {
+        static NAME: &str = "_key";
+        let term = Term::new(NAME, BytesRef::new(b"k".to_vec()));
+        assert_eq!(term.field().as_ptr(), NAME.as_ptr());
+
+        let owned = String::from("body");
+        let owned_ptr = owned.as_ptr();
+        assert_eq!(Term::from_text(owned, "x").field().as_ptr(), owned_ptr);
+
+        let shared: Arc<str> = Arc::from("title");
+        let term = Term::empty(Arc::clone(&shared));
+        assert_eq!(term.field().as_ptr(), shared.as_ptr());
+
+        let mut set = Term::empty("");
+        set.set(NAME, BytesRef::default());
+        assert_eq!(set.field().as_ptr(), NAME.as_ptr());
+
+        let borrowed = String::from("body");
+        let copied = Term::from_text(&borrowed, "x");
+        assert_ne!(copied.field().as_ptr(), borrowed.as_ptr());
+        assert_eq!(copied.field(), "body");
+    }
+
+    /// How the name is held changes nothing that `Term` exposes: equality,
+    /// `compareTo`, `hashCode`, `toString`, and the Rust `Hash`, which feeds
+    /// the hasher the same input as the former `Option<String>` field.
+    #[test]
+    fn term_behaviour_does_not_depend_on_how_the_name_is_held() {
+        use std::hash::{BuildHasher, BuildHasherDefault, Hash};
+        type Fixed = BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+        let rust_hash = |term: &Term| Fixed::default().hash_one(term);
+
+        let bytes = || BytesRef::new(b"cat".to_vec());
+        let forms = [
+            Term::new("body", bytes()),
+            Term::new(String::from("body"), bytes()),
+            Term::new(Arc::<str>::from("body"), bytes()),
+            Term::with_nullable_field(Some(String::from("body")), bytes()),
+        ];
+        let mut former = Fixed::default().build_hasher();
+        Some(String::from("body")).hash(&mut former);
+        b"cat".as_slice().hash(&mut former);
+        let former = std::hash::Hasher::finish(&former);
+        for term in &forms {
+            assert_eq!(term, &forms[0]);
+            assert_eq!(term.cmp(&forms[0]), Ordering::Equal);
+            assert_eq!(term.hash_code(), forms[0].hash_code());
+            assert_eq!(term.to_string(), "body:cat");
+            assert_eq!(rust_hash(term), former);
+        }
+
+        let null = Term::with_nullable_field(None, bytes());
+        let mut former = Fixed::default().build_hasher();
+        None::<String>.hash(&mut former);
+        b"cat".as_slice().hash(&mut former);
+        assert_eq!(rust_hash(&null), std::hash::Hasher::finish(&former));
+        assert_ne!(null, forms[0]);
+        assert_eq!(null.to_string(), "null:cat");
+    }
+
+    #[test]
+    fn term_set_replaces_content() {
+        let mut t = Term::from_text("body", "hello");
+        t.set("title", BytesRef::new(b"world".to_vec()));
+        assert_eq!(t.field(), "title");
+        assert_eq!(t.text(), "world");
+    }
+
+    #[test]
+    fn ord_term_state_copy_from() {
+        let mut a = OrdTermState { ord: 5 };
+        let b = OrdTermState { ord: 42 };
+        a.copy_from(&b);
+        assert_eq!(a.ord, 42);
+        let cloned_box = b.clone_box();
+        let cloned = cloned_box.as_any().downcast_ref::<OrdTermState>().unwrap();
+        assert_eq!(cloned.ord, 42);
+    }
+
+    #[test]
+    fn prefix_coded_terms_round_trip() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        builder.add(&Term::from_text("body", "apple")).unwrap();
+        builder.add(&Term::from_text("body", "apricot")).unwrap();
+        builder.add(&Term::from_text("title", "banana")).unwrap();
+        let terms = builder.finish();
+        assert_eq!(terms.size(), 3);
+
+        let mut it = terms.iterator();
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"apple");
+        assert_eq!(it.field(), Some("body"));
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"apricot");
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"banana");
+        assert_eq!(it.field(), Some("title"));
+        assert!(it.next().unwrap().is_none());
+        assert_eq!(it.field(), None, "`field` is null once exhausted");
+    }
+
+    /// An empty field name is a field like any other: only exhaustion makes
+    /// `field()` null (`PrefixCodedTerms.java:126-140`).
+    #[test]
+    fn prefix_coded_terms_keep_an_empty_field_name() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        builder.add(&Term::from_text("", "a")).unwrap();
+        let terms = builder.finish();
+        let mut it = terms.iterator();
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"a");
+        assert_eq!(it.field(), Some(""));
+        assert!(it.next().unwrap().is_none());
+        assert_eq!(it.field(), None);
+    }
+
+    #[test]
+    fn prefix_coded_terms_preserves_del_gen() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        builder.add(&Term::from_text("f", "x")).unwrap();
+        let mut terms = builder.finish();
+        terms.set_del_gen(7);
+        assert_eq!(terms.iterator().del_gen(), 7);
+    }
+
+    /// `iterator()` opens a reader over the packet's own blocks
+    /// (`PrefixCodedTerms.java:170-172`): every live iterator holds the one
+    /// shared block list, none a copy of it, and each keeps its own position.
+    /// A payload of several blocks is read across the block boundaries.
+    #[test]
+    fn iterators_read_the_shared_blocks_in_place() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        let expected: Vec<String> = (0..400u32).map(|i| format!("term{i:08}")).collect();
+        for term in &expected {
+            builder.add(&Term::from_text("f", term)).unwrap();
+        }
+        let terms = builder.finish();
+        assert!(terms.content().len() > 1, "a payload of several blocks");
+        assert_eq!(Arc::strong_count(&terms.content), 1);
+
+        let mut first = terms.iterator();
+        let mut second = terms.iterator();
+        assert_eq!(
+            Arc::strong_count(&terms.content),
+            3,
+            "both share the blocks"
+        );
+        assert_eq!(first.next().unwrap().unwrap().slice(), b"term00000000");
+        let mut read = Vec::new();
+        while let Some(term) = second.next_bytes().unwrap() {
+            read.push(String::from_utf8(term.to_vec()).unwrap());
+        }
+        assert_eq!(read, expected);
+        assert_eq!(first.next().unwrap().unwrap().slice(), b"term00000001");
+        drop((first, second));
+        assert_eq!(Arc::strong_count(&terms.content), 1);
+    }
+
+    /// `next_field_term` is `TermIterator.next()` then `field()`, as
+    /// `FrozenBufferedUpdates.applyTermDeletes` reads them
+    /// (`FrozenBufferedUpdates.java:464-467`): each term comes back with its
+    /// field, in the iterator's one reused buffer, and the same sequence as
+    /// the owned [`next`](PrefixCodedTermsIterator::next).
+    #[test]
+    fn next_field_term_lends_each_term_with_its_field() {
+        let mut builder = PrefixCodedTermsBuilder::new();
+        let expected = [
+            ("", "a"),
+            ("body", "apple"),
+            ("body", "apricot"),
+            ("body", "b"),
+            ("title", "banana"),
+            ("title", "bandana"),
+        ];
+        for (field, text) in expected {
+            builder.add(&Term::from_text(field, text)).unwrap();
+        }
+        let terms = builder.finish();
+
+        let mut owned = Vec::new();
+        let mut it = terms.iterator();
+        while let Some(term) = it.next().unwrap() {
+            owned.push((it.field().unwrap().to_string(), term.slice().to_vec()));
+        }
+
+        let mut lent = Vec::new();
+        let mut it = terms.iterator();
+        let buffer: *const BytesRef = &it.bytes;
+        while let Some((field, term)) = it.next_field_term().unwrap() {
+            assert!(std::ptr::eq(term, buffer), "the iterator's own buffer");
+            lent.push((field.to_string(), term.slice().to_vec()));
+        }
+        assert_eq!(it.field(), None, "`field` is null once exhausted");
+        assert!(it.next_field_term().unwrap().is_none());
+
+        let expected: Vec<(String, Vec<u8>)> = expected
+            .iter()
+            .map(|(field, text)| (field.to_string(), text.as_bytes().to_vec()))
+            .collect();
+        assert_eq!(lent, expected);
+        assert_eq!(owned, expected);
+    }
+
+    /// Simple list-backed [`TermsEnum`] for tests.
+    struct VecTermsEnum {
+        terms: Vec<BytesRef>,
+        pos: usize,
+        atts: AttributeSource,
+    }
+
+    impl VecTermsEnum {
+        fn new(terms: Vec<BytesRef>) -> Self {
+            Self {
+                terms,
+                pos: 0,
+                atts: AttributeSource::new(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
+        }
+    }
+
+    impl TermsEnum for VecTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+
+        fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+            match self.terms.binary_search(text) {
+                Ok(i) => {
+                    self.pos = i;
+                    Ok(true)
+                }
+                Err(_) => Ok(false),
+            }
+        }
+
+        fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+            match self.terms.binary_search(text) {
+                Ok(i) => {
+                    self.pos = i;
+                    Ok(SeekStatus::FOUND)
+                }
+                Err(i) => {
+                    self.pos = i;
+                    if i >= self.terms.len() {
+                        Ok(SeekStatus::END)
+                    } else {
+                        Ok(SeekStatus::NOT_FOUND)
+                    }
+                }
+            }
+        }
+
+        fn seek_ord(&mut self, ord: i64) -> Result<()> {
+            self.pos = ord as usize;
+            Ok(())
+        }
+
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos]))
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(self.pos as i64)
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(EmptyPostingsEnum::new())))
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::illegal_state(
+                "impacts not supported in VecTermsEnum".to_string(),
+            ))
+        }
+
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            if self.pos + 1 >= self.terms.len() {
+                self.pos = self.terms.len();
+                return Ok(None);
+            }
+            self.pos += 1;
+            Ok(Some(&self.terms[self.pos]))
+        }
+    }
+
+    #[test]
+    fn filtered_terms_enum_accepts_subset() {
+        struct PrefixFilter {
+            prefix: Vec<u8>,
+        }
+        impl FilteredTermsEnumFilter for PrefixFilter {
+            fn accept(&mut self, term: &BytesRef) -> Result<AcceptStatus> {
+                if term.slice().starts_with(&self.prefix) {
+                    Ok(AcceptStatus::Yes)
+                } else {
+                    Ok(AcceptStatus::No)
+                }
+            }
+            fn next_seek_term(&mut self, _current: Option<&BytesRef>) -> Result<Option<BytesRef>> {
+                Ok(None)
+            }
+        }
+
+        let inner = Box::new(VecTermsEnum::new(vec![
+            BytesRef::new(b"a".to_vec()),
+            BytesRef::new(b"ab".to_vec()),
+            BytesRef::new(b"abc".to_vec()),
+            BytesRef::new(b"b".to_vec()),
+        ]));
+        let filter = Box::new(PrefixFilter {
+            prefix: b"ab".to_vec(),
+        });
+        let mut it = FilteredTermsEnum::new(inner, filter);
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"ab");
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"abc");
+        assert!(it.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn single_terms_enum_exposes_one_term() {
+        let inner = Box::new(VecTermsEnum::new(vec![
+            BytesRef::new(b"a".to_vec()),
+            BytesRef::new(b"b".to_vec()),
+            BytesRef::new(b"c".to_vec()),
+        ]));
+        let mut it = SingleTermsEnum::new(inner, BytesRef::new(b"b".to_vec()));
+        assert_eq!(it.next().unwrap().unwrap().slice(), b"b");
+        assert!(it.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn filtered_terms_enum_rejects_seek() {
+        let inner = Box::new(VecTermsEnum::new(vec![]));
+        let filter = Box::new(SingleTermsEnum {
+            single_ref: BytesRef::new(vec![0]),
+        });
+        let mut it = FilteredTermsEnum::new(inner, filter);
+        assert!(it.seek_exact(&BytesRef::new(vec![0])).is_err());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts of this module's term states and of PrefixCodedTerms
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for OrdTermState {
+    /// Port of `OrdTermState.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OrdTermState ord={}", self.ord)
+    }
+}
+
+impl std::fmt::Display for EmptyTermState {
+    /// `EmptyTermState` has no Lucene counterpart; it stands for a term state
+    /// that carries nothing, so it renders with the base
+    /// `TermState.toString()`, which is the bare string `TermState`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TermState")
+    }
+}
+
+impl PartialEq for PrefixCodedTerms {
+    /// Port of `PrefixCodedTerms.equals(Object)`: same `delGen`, same term
+    /// count, same content.
+    ///
+    /// Java's `content` is a `List<ByteBuffer>` and `List.equals` compares it
+    /// buffer by buffer (`ByteBuffer.equals`: the remaining bytes), so two
+    /// lists holding the same bytes in different chunkings are unequal; the
+    /// port's content is the same list of [`ByteBuffer`] views, compared the
+    /// same way.
+    fn eq(&self, other: &Self) -> bool {
+        self.del_gen == other.del_gen && self.size == other.size && self.content == other.content
+    }
+}
+
+impl Eq for PrefixCodedTerms {}
+
+impl std::hash::Hash for PrefixCodedTerms {
+    /// Hashes exactly what [`PartialEq`] compares, so the two agree.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `hashCode()`
+    /// (`PrefixCodedTerms.java:52`) folds `bb.hashCode()` of every `ByteBuffer`
+    /// in the content list into a 31-chain, then mixes `delGen`. Its value
+    /// depends on where the `ByteBuffersDataOutput` happened to split the
+    /// content into blocks, which this port does not model — it keeps one flat
+    /// buffer — so that particular `int` is not reproducible. What the number
+    /// is *for* is reproduced: equal values hash equally.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.del_gen.hash(state);
+        self.size.hash(state);
+        self.content.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod pass_d_term_ram_tests {
+    use super::*;
+    use crate::util::Accountable;
+
+    /// rmp #309 / #322: `Term(String, String)` builds `new BytesRef(text)` and
+    /// keeps a `deepCopyOf` of it (`Term.java:74-76, 66-70`), and
+    /// `ramBytesUsed` adds `sizeOfObject(field)` (`Term.java:189-196`).
+    /// Measured against `lucene-core-10.5.0.jar` (`oracle/passD/Oracle.java`,
+    /// `TERM`): `abc`, `héllo` and `😀x` cost 128 and `""` 120 under field
+    /// `field`, with buffers of 3, 6, 5 and 0 bytes; a three-byte `BytesRef`
+    /// term costs 128.
+    #[test]
+    fn term_ram_and_buffer_are_javas() {
+        for (text, ram, buffer) in [
+            ("abc", 128, 3),
+            ("", 120, 0),
+            ("h\u{e9}llo", 128, 6),
+            ("\u{1F600}x", 128, 5),
+        ] {
+            let term = Term::from_text("field", text);
+            assert_eq!(
+                (term.ram_bytes_used(), term.bytes().bytes.len()),
+                (ram, buffer),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            Term::new("field", BytesRef::new(vec![1, 2, 3])).ram_bytes_used(),
+            128
+        );
+    }
+}
+
+#[cfg(test)]
+mod max_tests {
+    use super::*;
+
+    /// A sorted in-memory term list whose enum cannot seek by ordinal, so
+    /// [`Terms::max`] takes the binary-search fallback of `Terms.getMax()`
+    /// (`Terms.java:172-212`), as Java does for an `UnsupportedOperationException`.
+    struct SortedTerms(Vec<Vec<u8>>);
+
+    struct SortedTermsEnum {
+        terms: Vec<BytesRef>,
+        pos: usize,
+        atts: AttributeSource,
+    }
+
+    impl fmt::Display for SortedTermsEnum {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("SortedTermsEnum")
+        }
+    }
+
+    impl TermsEnum for SortedTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+        fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+            match self.terms.iter().position(|t| t.slice() >= text.slice()) {
+                Some(i) => {
+                    self.pos = i;
+                    Ok(if self.terms[i].slice() == text.slice() {
+                        SeekStatus::FOUND
+                    } else {
+                        SeekStatus::NOT_FOUND
+                    })
+                }
+                None => {
+                    self.pos = self.terms.len();
+                    Ok(SeekStatus::END)
+                }
+            }
+        }
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(self.terms.get(self.pos))
+        }
+        fn ord(&self) -> Result<i64> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(1)
+        }
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(1)
+        }
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::unsupported_operation(String::new()))
+        }
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            self.pos = if self.pos == usize::MAX {
+                0
+            } else {
+                (self.pos + 1).min(self.terms.len())
+            };
+            self.term()
+        }
+    }
+
+    impl Terms for SortedTerms {
+        fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+            Ok(Box::new(SortedTermsEnum {
+                terms: self.0.iter().map(|t| BytesRef::new(t.clone())).collect(),
+                pos: usize::MAX,
+                atts: AttributeSource::new(),
+            }))
+        }
+        fn size(&self) -> Result<i64> {
+            Ok(self.0.len() as i64)
+        }
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.0.len() as i64)
+        }
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.0.len() as i64)
+        }
+        fn doc_count(&self) -> Result<i32> {
+            Ok(1)
+        }
+        fn has_freqs(&self) -> bool {
+            false
+        }
+        fn has_offsets(&self) -> bool {
+            false
+        }
+        fn has_positions(&self) -> bool {
+            false
+        }
+        fn has_payloads(&self) -> bool {
+            false
+        }
+    }
+
+    fn max_of(terms: &[&[u8]]) -> Option<Vec<u8>> {
+        let terms = SortedTerms(terms.iter().map(|t| t.to_vec()).collect());
+        terms.max().unwrap().map(|t| t.slice().to_vec())
+    }
+
+    /// Regression: `Terms.getMax()` searches each digit over `[0, 256)`. With
+    /// an upper bound of 255 the digit `0xFF` was never probed, so a maximum
+    /// term containing it never reached `END` and the search appended digits
+    /// forever (the `TestPrefixQuery.testRandomBinaryPrefix` hang in
+    /// `CheckIndex`).
+    #[test]
+    fn the_fallback_finds_a_maximum_term_with_0xff_digits() {
+        assert_eq!(max_of(&[b"a", &[0xFF]]), Some(vec![0xFF]));
+        assert_eq!(
+            max_of(&[&[0x00], &[0x7F, 0xFF], &[0xFF, 0x00, 0xFF]]),
+            Some(vec![0xFF, 0x00, 0xFF])
+        );
+        assert_eq!(max_of(&[&[0xFF, 0xFF, 0xFF]]), Some(vec![0xFF, 0xFF, 0xFF]));
+    }
+
+    #[test]
+    fn the_fallback_finds_an_ordinary_maximum_term() {
+        assert_eq!(
+            max_of(&[b"apple", b"banana", b"cherry"]),
+            Some(b"cherry".to_vec())
+        );
+        assert_eq!(max_of(&[&[0x00]]), Some(vec![0x00]));
+    }
+}
+
+#[cfg(test)]
+mod census_gap_get_terms_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, Store, StringField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use std::sync::Arc;
+
+    /// G-034: `Terms.getTerms(LeafReader, String)` returns the field's terms,
+    /// or `Terms.EMPTY` for an absent field (`Terms.java:35-45, 228-274`).
+    #[test]
+    fn gap_g034_get_terms_returns_empty_for_an_absent_field() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(StringField::new("id", "a".to_string(), Store::NO).unwrap());
+        writer.add_document(&doc).unwrap();
+        let reader = crate::index::directory_reader::open_with_writer(&*writer).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let present = get_terms(leaf.as_ref(), "id").unwrap();
+        assert_eq!(present.size().unwrap(), 1);
+        let absent = get_terms(leaf.as_ref(), "missing").unwrap();
+        assert_eq!(absent.size().unwrap(), 0);
+        assert_eq!(absent.doc_count().unwrap(), 0);
+        assert_eq!(absent.sum_doc_freq().unwrap(), 0);
+        assert_eq!(absent.sum_total_term_freq().unwrap(), 0);
+        assert!(!absent.has_freqs() && !absent.has_positions());
+        assert!(absent.iterator().unwrap().next().unwrap().is_none());
+        drop(leaves);
+        reader.close().unwrap();
+        writer.close().unwrap();
     }
 }

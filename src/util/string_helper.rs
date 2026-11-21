@@ -1,15 +1,10 @@
 //! String and byte-reference helpers ported from `org.apache.lucene.util.StringHelper`.
-//!
-//! This module also provides standalone [`write_string`] and [`read_string`] helpers
-//! that produce/consume the same byte serialization used by Lucene's
-//! `DataOutput.writeString` / `DataInput.readString`: a VInt length followed by
-//! UTF-8 bytes. These functions are kept inside `util` so they do not introduce a
-//! dependency from `util` on the `store` module.
 
 #![deny(unsafe_code)]
 
 use std::{
-    io,
+    cmp::Ordering,
+    fmt,
     sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -22,8 +17,10 @@ use super::BytesRef;
 // IntsRef
 // ---------------------------------------------------------------------------
 
+/// Port of `org.apache.lucene.util.IntsRef`.
+///
 /// A reference to a slice of `i32` values, equivalent to Lucene's `IntsRef`.
-#[derive(Clone, Default, Debug)]
+#[derive(Default, Debug)]
 pub struct IntsRef {
     /// The underlying integer buffer.
     pub ints: Vec<i32>,
@@ -44,9 +41,160 @@ impl IntsRef {
         }
     }
 
+    /// References `ints` directly, without copying it, with the given offset
+    /// and length.
+    ///
+    /// Equivalent to `IntsRef(int[], int, int)` (`IntsRef.java:54-59`), which
+    /// ends with `assert isValid()`. Java's `isValid()` throws an
+    /// `IllegalStateException` describing the broken invariant, and the `assert`
+    /// only runs it under `-ea`; this port checks it with `debug_assert!`, so
+    /// the check exists in debug builds only, and panics with that message.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, when `offset` or `offset + length` falls outside
+    /// `ints`, with the message of the `IllegalStateException` from
+    /// [`is_valid`](Self::is_valid).
+    pub fn with_offset_length(ints: Vec<i32>, offset: usize, length: usize) -> Self {
+        let ints_ref = Self {
+            ints,
+            offset,
+            length,
+        };
+        debug_assert!(
+            ints_ref.is_valid().is_ok(),
+            "{}",
+            ints_ref
+                .is_valid()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        );
+        ints_ref
+    }
+
     /// Returns the active slice.
     pub fn slice(&self) -> &[i32] {
         &self.ints[self.offset..self.offset + self.length]
+    }
+
+    /// Returns whether `other` holds the same integers as this reference.
+    ///
+    /// Equivalent to `IntsRef.intsEquals(IntsRef)`.
+    pub fn ints_equals(&self, other: &Self) -> bool {
+        self.slice() == other.slice()
+    }
+
+    /// Returns an `IntsRef` whose content is a copy of `other`'s active slice,
+    /// with offset zero and length `other.length`.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#deepCopyOf`.
+    pub fn deep_copy_of(other: &IntsRef) -> Self {
+        // `ArrayUtil.copyOfSubArray(other.ints, other.offset, other.offset +
+        // other.length)` (`IntsRef.java:136-140`).
+        let ints =
+            crate::util::java_copy_of_sub_array(&other.ints, other.offset, other.length, "int");
+        Self::with_offset_length(ints, 0, other.length)
+    }
+
+    /// Java's `hashCode()`, reproduced exactly so that values hash the same way
+    /// on both sides of the port.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#hashCode`.
+    pub fn hash_code(&self) -> i32 {
+        const PRIME: i32 = 31;
+        let mut result: i32 = 0;
+        for &v in self.slice() {
+            result = PRIME.wrapping_mul(result).wrapping_add(v);
+        }
+        result
+    }
+
+    /// Performs internal consistency checks.
+    ///
+    /// Java's `ints` can be `null` and its `offset`/`length` can be negative;
+    /// neither is representable here, so the corresponding checks are dropped
+    /// and the remaining messages are reproduced verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when an invariant is violated,
+    /// mirroring Java's `IllegalStateException` messages.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#isValid`.
+    pub fn is_valid(&self) -> Result<(), LuceneError> {
+        if self.length > self.ints.len() {
+            return Err(LuceneError::illegal_state(format!(
+                "length is out of bounds: {},ints.length={}",
+                self.length,
+                self.ints.len()
+            )));
+        }
+        if self.offset > self.ints.len() {
+            return Err(LuceneError::illegal_state(format!(
+                "offset out of bounds: {},ints.length={}",
+                self.offset,
+                self.ints.len()
+            )));
+        }
+        if self.offset + self.length > self.ints.len() {
+            return Err(LuceneError::illegal_state(format!(
+                "offset+length out of bounds: offset={},length={},ints.length={}",
+                self.offset,
+                self.length,
+                self.ints.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for IntsRef {
+    /// Port of `IntsRef.toString()`: the active slice rendered as unsigned
+    /// hexadecimal, one value per `Integer.toHexString` call, separated by a
+    /// single space and wrapped in square brackets.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[")?;
+        for (i, value) in self.slice().iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            f.write_str(&crate::util::java_fmt::to_hex_string(*value))?;
+        }
+        f.write_str("]")
+    }
+}
+
+impl Clone for IntsRef {
+    /// Equivalent to `IntsRef.clone()` (`IntsRef.java:68-70`), which returns
+    /// `new IntsRef(ints, offset, length)` and so runs that constructor's
+    /// `assert isValid()`. Java's clone shares `ints`; this owning port copies
+    /// them, keeping the same offset and length.
+    fn clone(&self) -> Self {
+        Self::with_offset_length(self.ints.clone(), self.offset, self.length)
+    }
+}
+
+impl PartialEq for IntsRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.ints_equals(other)
+    }
+}
+
+impl Eq for IntsRef {}
+
+impl PartialOrd for IntsRef {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IntsRef {
+    /// Signed `i32` order comparison.
+    ///
+    /// Equivalent to `org.apache.lucene.util.IntsRef#compareTo`.
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.slice().cmp(other.slice())
     }
 }
 
@@ -62,33 +210,35 @@ impl StringHelper {
     /// Compares two [`BytesRef`] values element by element and returns the number
     /// of common elements from the start of each.
     ///
+    /// Equivalent to `StringHelper.bytesDifference(BytesRef, BytesRef)`
+    /// (`StringHelper.java:42-56`), which is `Arrays.mismatch` over the two
+    /// slices: the first differing index, or the shorter length when one is a
+    /// prefix of the other, and `-1` only when the slices are equal.
+    ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `current_term` is not strictly
-    /// after `prior_term` (i.e., they are equal or out of order).
+    /// Returns `LuceneErrorKind::IllegalArgument` (`terms out of order: …`)
+    /// when the two slices are equal, the only case `Arrays.mismatch` answers
+    /// `-1`.
     pub fn bytes_difference(
         prior_term: &BytesRef,
         current_term: &BytesRef,
     ) -> Result<i32, LuceneError> {
         let a = prior_term.slice();
         let b = current_term.slice();
-        let min_len = a.len().min(b.len());
-        let mut mismatch = min_len;
-        for i in 0..min_len {
-            if a[i] != b[i] {
-                mismatch = i;
-                break;
-            }
-        }
-        if mismatch == min_len && a.len() > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "terms out of order: priorTerm={:?}, currentTerm={:?}",
-                prior_term, current_term
+        if a == b {
+            return Err(LuceneError::illegal_argument(format!(
+                "terms out of order: priorTerm={prior_term},currentTerm={current_term}"
             )));
         }
-        mismatch
+        let mismatch = a
+            .iter()
+            .zip(b)
+            .position(|(x, y)| x != y)
+            .unwrap_or(a.len().min(b.len()));
+        Ok(mismatch
             .try_into()
-            .map_err(|_| LuceneError::IllegalState("mismatch index overflow".to_string()))
+            .expect("INVARIANT: a Java array index fits an int"))
     }
 
     /// Returns the length of `current_term` needed as a sort key so that byte
@@ -518,11 +668,14 @@ impl StringHelper {
 
     /// Generates a non-cryptographic globally unique 16-byte ID.
     ///
-    /// The implementation is functionally equivalent to Lucene's `randomId()`:
-    /// a 128-bit counter seeded from the system clock, incremented under a
-    /// mutex to guarantee uniqueness within a process.
+    /// Equivalent to `StringHelper.randomId()` (`StringHelper.java:450-479`):
+    /// the big-endian bytes of the unsigned 128-bit `nextId`, which is then
+    /// incremented modulo 2^128 under the lock. `nextId` is seeded once, as
+    /// the static initialiser seeds it (see [`initial_next_id`]).
     pub fn random_id() -> [u8; 16] {
-        let mut counter = get_id_counter().lock().expect("ID counter mutex poisoned");
+        let mut counter = get_id_counter()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let id = *counter;
         *counter = counter.wrapping_add(1);
         id.to_be_bytes()
@@ -550,13 +703,13 @@ impl StringHelper {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if any int is out of the byte range.
+    /// Returns `LuceneErrorKind::IllegalArgument` if any int is out of the byte range.
     pub fn ints_ref_to_bytes_ref(ints: &IntsRef) -> Result<BytesRef, LuceneError> {
         let slice = ints.slice();
         let mut bytes = Vec::with_capacity(slice.len());
         for (i, &x) in slice.iter().enumerate() {
             if !(0..=255).contains(&x) {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "int at pos={} with value={} is out-of-bounds for byte",
                     i, x
                 )));
@@ -570,85 +723,204 @@ impl StringHelper {
 /// Length in bytes of an ID generated by [`StringHelper::random_id`].
 pub const ID_LENGTH: usize = 16;
 
+/// `StringHelper.nextId`: the unsigned 128-bit value of the next ID.
 static ID_COUNTER: OnceLock<Mutex<u128>> = OnceLock::new();
 
 fn get_id_counter() -> &'static Mutex<u128> {
     ID_COUNTER.get_or_init(|| {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        Mutex::new(seed)
+        // Java reads the `tests.seed` system property; the crate reads system
+        // properties from the environment variable of the same name (see
+        // `StringHelper::good_fast_hash_seed`).
+        let prop = std::env::var("tests.seed").ok();
+        Mutex::new(initial_next_id(prop.as_deref()))
     })
 }
 
-// Initialize the static reference eagerly so `random_id()` can use it directly.
+/// The static initialiser of `StringHelper.nextId` (`StringHelper.java:370-444`)
+/// for the `tests.seed` property `prop`.
+///
+/// With the property set, "so if there is a test failure that somehow relied
+/// on this id, we remain reproducible based on the test seed": both halves of
+/// the xorshift128 state are `Long.parseLong` of its last eight characters in
+/// radix 16. Without it, the state is the first two big-endian longs of
+/// `/dev/urandom`; where that cannot be read, Java falls back to
+/// `System.nanoTime()` and to `StringHelper.class.hashCode() << 32` or'ed
+/// with the hash code of the concatenated system properties.
+///
+/// Ten rounds of xorshift128 then scatter the state, and `nextId` is `x0`
+/// (high 64 bits) concatenated with `x1` (low 64 bits).
+///
+/// **Divergence (fallback only).** A Rust process has neither a class
+/// identity hash code nor Java's system properties: the fallback `x1` is the
+/// process id shifted left by 32, or'ed with the `String.hashCode()` of the
+/// concatenated environment variables. It is used only where `/dev/urandom`
+/// is unavailable, where Java's value is not reproducible either.
+///
+/// # Panics
+///
+/// `java.lang.NumberFormatException` when the last eight characters of
+/// `prop` are not a radix-16 long, where Java's class initialisation fails
+/// with that exception.
+pub fn initial_next_id(prop: Option<&str>) -> u128 {
+    // State for xorshift128:
+    let (mut x0, mut x1): (i64, i64) = match prop {
+        Some(prop) => {
+            let units: Vec<u16> = prop.encode_utf16().collect();
+            let tail = if units.len() > 8 {
+                String::from_utf16_lossy(&units[units.len() - 8..])
+            } else {
+                prop.to_string()
+            };
+            let x = java_parse_long_radix16(&tail);
+            (x, x)
+        }
+        None => match read_dev_urandom() {
+            Some(pair) => pair,
+            None => {
+                let x0 = std::time::Instant::now()
+                    .duration_since(*NANO_ORIGIN.get_or_init(std::time::Instant::now))
+                    .as_nanos() as i64;
+                let mut concatenated = String::new();
+                for (k, v) in std::env::vars() {
+                    concatenated.push_str(&k);
+                    concatenated.push_str(&v);
+                }
+                let x1 = (i64::from(std::process::id() as i32) << 32)
+                    | i64::from(java_string_hash_code(&concatenated));
+                (x0, x1)
+            }
+        },
+    };
+    // Use a few iterations of xorshift128 to scatter the seed in case
+    // multiple Lucene instances starting up "near" the same nanoTime, since
+    // we use ++ (mod 2^128) for full period cycle:
+    for _ in 0..10 {
+        let mut s1 = x0;
+        let s0 = x1;
+        x0 = s0;
+        s1 ^= s1 << 23; // a
+        x1 = s1 ^ s0 ^ ((s1 as u64 >> 17) as i64) ^ ((s0 as u64 >> 26) as i64); // b, c
+    }
+    // Concatenate the bits of x0 and x1, as an unsigned 128-bit integer.
+    (u128::from(x0 as u64) << 64) | u128::from(x1 as u64)
+}
+
+/// The origin of the fallback's `System.nanoTime()`.
+static NANO_ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
+
+/// `new DataInputStream(Files.newInputStream(Paths.get("/dev/urandom")))`
+/// read with two `readLong()`s; `None` where Java catches the exception.
+fn read_dev_urandom() -> Option<(i64, i64)> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .ok()?;
+    let mut hi = [0u8; 8];
+    let mut lo = [0u8; 8];
+    hi.copy_from_slice(&bytes[..8]);
+    lo.copy_from_slice(&bytes[8..]);
+    Some((i64::from_be_bytes(hi), i64::from_be_bytes(lo)))
+}
+
+/// `Long.parseLong(s, 16)`: an optional `+` or `-` and at least one radix-16
+/// digit, the value within the range of a long.
+///
+/// # Panics
+///
+/// `java.lang.NumberFormatException` with Java's message
+/// (`For input string: "s" under radix 16`) otherwise.
+fn java_parse_long_radix16(s: &str) -> i64 {
+    let fail = || -> ! {
+        std::panic::panic_any(format!(
+            "java.lang.NumberFormatException: For input string: \"{s}\" under radix 16"
+        ))
+    };
+    let (negative, digits) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if digits.is_empty() {
+        fail();
+    }
+    // Accumulate negatively, as `Long.parseLong` does, so that
+    // `-8000000000000000` is accepted.
+    let mut result: i64 = 0;
+    for c in digits.chars() {
+        let Some(d) = c.to_digit(16) else { fail() };
+        result = match result
+            .checked_mul(16)
+            .and_then(|r| r.checked_sub(i64::from(d)))
+        {
+            Some(r) => r,
+            None => fail(),
+        };
+    }
+    if negative {
+        result
+    } else {
+        result.checked_neg().unwrap_or_else(|| fail())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Standalone string serialization helpers
 // ---------------------------------------------------------------------------
 
-/// Encodes a string as a VInt length followed by UTF-8 bytes.
+// ---------------------------------------------------------------------------
+// String ordering
+// ---------------------------------------------------------------------------
+
+/// Compares two strings the way `java.lang.String.compareTo` does.
 ///
-/// This matches the byte output of `DataOutput.writeString` in Lucene.
-pub fn write_string(s: &str) -> Vec<u8> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len() + 5);
-    write_v_int(bytes.len() as i32, &mut out);
-    out.extend_from_slice(bytes);
-    out
-}
-
-/// Decodes a string previously encoded with [`write_string`].
+/// Java compares strings by **UTF-16 code unit**, Rust's [`str`] ordering
+/// compares them by **UTF-8 byte**. The two agree for every string made of
+/// characters below `U+E000`, and disagree above it: a supplementary character
+/// (`U+10000` and above) is a surrogate pair in UTF-16, and surrogates occupy
+/// `U+D800..=U+DFFF`, which sorts *below* `U+E000..=U+FFFF`; in UTF-8 the same
+/// character starts with `0xF0` and sorts *above* it. `"\u{10000}"` therefore
+/// sorts before `"\u{FFFF}"` in Java and after it in Rust.
 ///
-/// # Errors
+/// Lucene orders field names with `String.compareTo` — see
+/// `TermsHashPerField.compareTo(TermsHashPerField)` in
+/// `lucene/core/src/java/org/apache/lucene/index/TermsHashPerField.java` — and
+/// that order is written into the segment, so a port that used Rust's ordering
+/// would produce different bytes for such names. Use this comparator wherever
+/// an order reaches the index files.
 ///
-/// Returns `LuceneError::Io` if the VInt is truncated and
-/// `LuceneError::IllegalArgument` if the UTF-8 bytes are invalid.
-pub fn read_string(bytes: &[u8], pos: &mut usize) -> Result<String, LuceneError> {
-    let length = read_v_int(bytes, pos)? as usize;
-    if *pos + length > bytes.len() {
-        return Err(LuceneError::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "truncated string bytes",
-        )));
+/// # Examples
+///
+/// ```
+/// use std::cmp::Ordering;
+/// use rucene::util::compare_utf16;
+///
+/// assert_eq!(compare_utf16("a", "b"), Ordering::Less);
+/// // The supplementary character sorts first, exactly as in Java.
+/// assert_eq!(compare_utf16("\u{10000}", "\u{FFFF}"), Ordering::Less);
+/// // Rust's own ordering disagrees.
+/// assert_eq!("\u{10000}".cmp("\u{FFFF}"), Ordering::Greater);
+/// ```
+pub fn compare_utf16(left: &str, right: &str) -> std::cmp::Ordering {
+    // The fast path: while both strings stay inside the Basic Multilingual
+    // Plane below `U+E000`, UTF-8 byte order already is UTF-16 order, and
+    // `str::cmp` is a `memcmp`. Only strings that actually carry a character at
+    // `U+E000` or above pay for the code-unit walk.
+    if is_utf16_order_safe(left) && is_utf16_order_safe(right) {
+        return left.cmp(right);
     }
-    let s = String::from_utf8(bytes[*pos..*pos + length].to_vec())
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid UTF-8 reading string: {e}")))?;
-    *pos += length;
-    Ok(s)
+    left.encode_utf16().cmp(right.encode_utf16())
 }
 
-fn read_byte(src: &[u8], pos: &mut usize) -> Result<u8, LuceneError> {
-    if *pos >= src.len() {
-        return Err(LuceneError::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "unexpected EOF reading byte",
-        )));
-    }
-    let b = src[*pos];
-    *pos += 1;
-    Ok(b)
-}
-
-fn read_v_int(src: &[u8], pos: &mut usize) -> Result<i32, LuceneError> {
-    let mut b = read_byte(src, pos)? as i32;
-    let mut i = b & 0x7F;
-    let mut shift = 7;
-    while (b & 0x80) != 0 {
-        b = read_byte(src, pos)? as i32;
-        i |= (b & 0x7F) << shift;
-        shift += 7;
-    }
-    Ok(i)
-}
-
-fn write_v_int(mut value: i32, dst: &mut Vec<u8>) {
-    while (value & !0x7F) != 0 {
-        dst.push((0x80 | (value & 0x7F)) as u8);
-        value = ((value as u32) >> 7) as i32;
-    }
-    dst.push(value as u8);
+/// Returns `true` when the UTF-8 order of `text` equals its UTF-16 order
+/// against any other such string, i.e. when it holds no character at `U+E000`
+/// or above.
+///
+/// `U+E000` is `0xEE 0x80 0x80` in UTF-8, so every character from `U+E000` up
+/// — including every supplementary character, which starts at `0xF0` — has a
+/// lead byte of `0xEE` or more.
+fn is_utf16_order_safe(text: &str) -> bool {
+    !text.as_bytes().iter().any(|byte| *byte >= 0xEE)
 }
 
 // ---------------------------------------------------------------------------
@@ -672,11 +944,22 @@ mod tests {
         assert_eq!(StringHelper::sort_key_length(&prior, &current).unwrap(), 3);
     }
 
+    /// `Arrays.mismatch` answers `-1` only for equal slices, so only a
+    /// duplicate term is refused (`StringHelper.java:51-54`); a prior term that
+    /// extends the current one answers the shorter length.
     #[test]
-    fn bytes_difference_rejects_out_of_order() {
+    fn bytes_difference_rejects_only_equal_terms() {
+        let prior = BytesRef::new(vec![b'a', b'b']);
+        let current = BytesRef::new(vec![b'a', b'b']);
+        let error = StringHelper::bytes_difference(&prior, &current).unwrap_err();
+        assert!(
+            matches!(&error.kind, crate::error::LuceneErrorKind::IllegalArgument { message, .. }
+                if message == "terms out of order: priorTerm=[61 62],currentTerm=[61 62]"),
+            "{error:?}"
+        );
         let prior = BytesRef::new(vec![b'a', b'b', b'c']);
         let current = BytesRef::new(vec![b'a', b'b']);
-        assert!(StringHelper::bytes_difference(&prior, &current).is_err());
+        assert_eq!(StringHelper::bytes_difference(&prior, &current).unwrap(), 2);
     }
 
     #[test]
@@ -744,31 +1027,138 @@ mod tests {
         assert!(StringHelper::ints_ref_to_bytes_ref(&bad).is_err());
     }
 
+    // -- compare_utf16 -------------------------------------------------------
+
     #[test]
-    fn write_and_read_string_matches_java_format() {
-        let cases = [
-            ("", vec![0x00]),
-            ("hello", vec![0x05, b'h', b'e', b'l', b'l', b'o']),
-            ("héllo", vec![0x06, b'h', 0xc3, 0xa9, b'l', b'l', b'o']),
-            (
-                "日本語",
-                vec![0x09, 0xe6, 0x97, 0xa5, 0xe6, 0x9c, 0xac, 0xe8, 0xaa, 0x9e],
-            ),
-        ];
-        for (s, expected) in cases {
-            let encoded = write_string(s);
-            assert_eq!(encoded, expected, "Java byte mismatch for {:?}", s);
-            let mut pos = 0;
-            let decoded = read_string(&encoded, &mut pos).unwrap();
-            assert_eq!(decoded, s);
-            assert_eq!(pos, encoded.len());
+    fn compare_utf16_matches_rust_ordering_below_u_e000() {
+        for (left, right) in [
+            ("", "a"),
+            ("a", "a"),
+            ("a", "b"),
+            ("abc", "abd"),
+            ("abc", "ab"),
+            ("\u{7F}", "\u{80}"),
+            ("\u{07FF}", "\u{0800}"),
+            ("caf\u{e9}", "cafe"),
+            ("\u{D7FF}", "\u{E000}"),
+        ] {
+            assert_eq!(
+                compare_utf16(left, right),
+                left.cmp(right),
+                "{left:?} vs {right:?}"
+            );
         }
     }
 
     #[test]
-    fn read_string_detects_invalid_utf8() {
-        let encoded = vec![0x02, 0xc3, 0x28]; // invalid UTF-8
-        let mut pos = 0;
-        assert!(read_string(&encoded, &mut pos).is_err());
+    fn compare_utf16_orders_supplementary_characters_the_way_java_does() {
+        use std::cmp::Ordering;
+        // A supplementary character is a surrogate pair in UTF-16, and
+        // surrogates sit below `U+E000`; in UTF-8 it starts with `0xF0` and
+        // sits above it. Java's `String.compareTo` therefore disagrees with
+        // Rust's `str` ordering here.
+        assert_eq!(compare_utf16("\u{10000}", "\u{FFFF}"), Ordering::Less);
+        assert_eq!("\u{10000}".cmp("\u{FFFF}"), Ordering::Greater);
+        assert_eq!(compare_utf16("\u{10FFFF}", "\u{E000}"), Ordering::Less);
+        assert_eq!(compare_utf16("\u{FFFF}", "\u{10000}"), Ordering::Greater);
+        // Two supplementary characters still compare by code point.
+        assert_eq!(compare_utf16("\u{10000}", "\u{10001}"), Ordering::Less);
+        // A shared prefix does not disturb the rule.
+        assert_eq!(compare_utf16("x\u{10000}", "x\u{FFFF}"), Ordering::Less);
+    }
+
+    #[test]
+    fn compare_utf16_agrees_with_java_string_compare_to_on_utf16_units() {
+        // The reference definition: compare the UTF-16 code units directly.
+        let samples = [
+            "",
+            "a",
+            "ab",
+            "\u{80}",
+            "\u{7FF}",
+            "\u{800}",
+            "\u{D7FF}",
+            "\u{E000}",
+            "\u{FFFD}",
+            "\u{FFFF}",
+            "\u{10000}",
+            "\u{1F600}",
+            "\u{10FFFF}",
+            "a\u{10000}",
+            "a\u{FFFF}",
+        ];
+        for left in samples {
+            for right in samples {
+                let expected = left.encode_utf16().cmp(right.encode_utf16());
+                assert_eq!(
+                    compare_utf16(left, right),
+                    expected,
+                    "{left:?} vs {right:?}"
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StringHelper.GOOD_FAST_HASH_SEED
+// ---------------------------------------------------------------------------
+
+static GOOD_FAST_HASH_SEED: OnceLock<i32> = OnceLock::new();
+
+impl StringHelper {
+    /// The seed [`BytesRef::hash_code`] and the other `murmurhash3_x86_32`
+    /// callers mix in.
+    ///
+    /// Equivalent to `StringHelper.GOOD_FAST_HASH_SEED`, whose static
+    /// initialiser reads the `tests.seed` system property and uses its
+    /// `String.hashCode()` when it is set — so that a failure that depended on
+    /// hash order stays reproducible — and otherwise takes
+    /// `(int) System.currentTimeMillis()`. Rust has no system properties, so
+    /// the property is read from the environment variable of the same name,
+    /// which is how the rest of this crate reads `tests.seed` (see
+    /// `BitUtil::get_native_byte_order`).
+    ///
+    /// The value is therefore **not** stable across runs unless `tests.seed` is
+    /// set, exactly as in Java.
+    pub fn good_fast_hash_seed() -> i32 {
+        *GOOD_FAST_HASH_SEED.get_or_init(|| match std::env::var("tests.seed") {
+            Ok(prop) => java_string_hash_code(&prop),
+            Err(_) => SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64 as i32)
+                .unwrap_or(0),
+        })
+    }
+}
+
+/// `java.lang.String.hashCode()`, which the seeded value above depends on.
+fn java_string_hash_code(s: &str) -> i32 {
+    let mut h: i32 = 0;
+    for c in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(i32::from(c));
+    }
+    h
+}
+
+#[cfg(test)]
+mod ints_ref_constructor_tests {
+    use super::*;
+
+    /// rmp #312: `IntsRef(int[], int, int)` ends with `assert isValid()`
+    /// (`IntsRef.java:54-59`), whose `IllegalStateException` names the broken
+    /// invariant; the port checks it under `debug_assert!`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "offset+length out of bounds: offset=1,length=2,ints.length=2")]
+    fn the_constructor_asserts_is_valid_in_debug_builds() {
+        let _ = IntsRef::with_offset_length(vec![1, 2], 1, 2);
+    }
+
+    /// A valid reference keeps the given offset and length.
+    #[test]
+    fn the_constructor_keeps_a_valid_offset_and_length() {
+        let r = IntsRef::with_offset_length(vec![1, 2, 3], 1, 2);
+        assert_eq!((r.offset, r.length, r.slice()), (1, 2, &[2, 3][..]));
     }
 }

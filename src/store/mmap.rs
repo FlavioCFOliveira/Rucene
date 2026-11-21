@@ -2,8 +2,7 @@
 
 //! Memory-mapped directory implementation for trusted indexes.
 //!
-//! This module provides [`MMapDirectory`] and [`MMapIndexInput`], gated by the
-//! crate feature `mmap`. It uses the `memmap2` crate to memory-map index files
+//! This module provides [`MMapDirectory`], gated by the crate feature `mmap`. It uses the `memmap2` crate to memory-map index files
 //! into the process address space, which is the read path used by
 //! `org.apache.lucene.store.MMapDirectory` in Lucene 10.5.0 on 64-bit
 //! platforms.
@@ -22,32 +21,152 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 
-use memmap2::Mmap;
+use memmap2::{Mmap, MmapMut};
 
+use super::memory_segment_index_input_provider::{MemorySegmentIndexInputProvider, SharedArenas};
 use super::{
-    Directory, FSDirectory, IOContext, IndexInput, IndexOutput, Lock, LockFactory, SlicedIndexInput,
+    hints_of, DataAccessHint, Directory, FSDirectory, IOContext, IndexInput, IndexOutput, Lock,
+    LockFactory, NativeFSLockFactory, PreloadHint, ReadAdvice, ReadOnceHint,
 };
 use crate::error::{LuceneError, Result};
-use crate::store::DataInput;
 use std::collections::HashSet;
 
-/// Maximum chunk size for memory mapping.
+/// Decides which files to bring into physical memory when they are opened.
 ///
-/// Lucene 10.5.0 uses 16 GiB on 64-bit JVMs and 256 MiB on 32-bit JVMs. For
-/// the initial Rust port we use a fixed 1 GiB upper bound which avoids
-/// fragmented address-space issues on most 64-bit hosts while keeping the
-/// implementation simple.
-pub const DEFAULT_MAX_CHUNK_SIZE: usize = 1024 * 1024 * 1024;
+/// Equivalent to the `BiPredicate<String, IOContext>` Java passes to
+/// `MMapDirectory.setPreload`.
+pub type PreloadPredicate = Box<dyn Fn(&str, &dyn IOContext) -> bool + Send + Sync>;
+
+/// Decides the [`ReadAdvice`] a file is opened with, or `None` to take the
+/// default.
+///
+/// Equivalent to the `BiFunction<String, IOContext, Optional<ReadAdvice>>` Java
+/// passes to `MMapDirectory.setReadAdvice`.
+pub type ReadAdvicePolicy = Box<dyn Fn(&str, &dyn IOContext) -> Option<ReadAdvice> + Send + Sync>;
+
+/// Returns the logical group a file belongs to, so that the files of one index
+/// segment share their mapping's lifetime.
+///
+/// Equivalent to the `Function<String, Optional<String>>` Java passes to
+/// `MMapDirectory.setGroupingFunction`.
+pub type GroupingFunction = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// Maps `len` bytes of `file`, starting at byte `offset`, read-only.
+///
+/// This is the crate's single memory-mapping primitive: every other module that
+/// needs a mapping — including
+/// [`memory_segment`](super::memory_segment), the port of Lucene's Java 21
+/// `java.lang.foreign` implementation — goes through it, so that the one
+/// `unsafe` call the operation requires lives in exactly one place.
+///
+/// # Safety of the call site
+///
+/// `memmap2::MmapOptions::map` is `unsafe` because a memory mapping aliases a
+/// file that another process may truncate or overwrite while it is mapped, and
+/// Rust cannot express that hazard in the type system. This is Lucene's own
+/// trust model: `MMapDirectory` assumes the index files it maps are not
+/// modified behind its back, and the same assumption applies here. Callers must
+/// only map files inside a `Directory` they control.
+///
+/// `offset` need not be page-aligned: `memmap2` maps from the enclosing page
+/// boundary and adjusts the returned pointer.
+///
+/// # Errors
+///
+/// Returns the underlying `mmap` failure, including the refusal of `memmap2` to
+/// create a zero-length mapping; callers that need an empty region must not
+/// call this function.
+pub(crate) fn map_read_only(file: &fs::File, offset: u64, len: usize) -> io::Result<Mmap> {
+    // SAFETY: see the "Safety of the call site" section above. The caller
+    // guarantees the mapped file is not concurrently modified; nothing else can
+    // be guaranteed statically for any memory mapping.
+    unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map(file)
+    }
+}
+
+/// Maps `len` bytes of `file` from `offset` for reading and writing, the
+/// changes reaching the file: the mapping of `FileChannel.map` in mode
+/// `READ_WRITE` (`MAP_SHARED` with `PROT_READ | PROT_WRITE`).
+///
+/// The same trust model as [`map_read_only`] applies; see its "Safety of the
+/// call site" section. `file` must be open for reading and writing.
+///
+/// # Errors
+///
+/// Returns the underlying `mmap` failure, including the refusal of `memmap2` to
+/// create a zero-length mapping.
+pub(crate) fn map_read_write(file: &fs::File, offset: u64, len: usize) -> io::Result<MmapMut> {
+    // SAFETY: as in `map_read_only`: the caller guarantees the mapped file is
+    // not concurrently modified behind the mapping's back.
+    unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map_mut(file)
+    }
+}
+
+/// Maps `len` bytes of `file` from `offset` copy-on-write: writes reach only
+/// the mapping, never the file. The mapping of `FileChannel.map` in mode
+/// `PRIVATE` (`MAP_PRIVATE` with `PROT_READ | PROT_WRITE`).
+///
+/// The same trust model as [`map_read_only`] applies; see its "Safety of the
+/// call site" section.
+///
+/// # Errors
+///
+/// Returns the underlying `mmap` failure, including the refusal of `memmap2` to
+/// create a zero-length mapping.
+pub(crate) fn map_private(file: &fs::File, offset: u64, len: usize) -> io::Result<MmapMut> {
+    // SAFETY: as in `map_read_only`: the caller guarantees the mapped file is
+    // not concurrently modified behind the mapping's back.
+    unsafe {
+        memmap2::MmapOptions::new()
+            .offset(offset)
+            .len(len)
+            .map_copy(file)
+    }
+}
+
+/// Default maximum chunk size for memory mapping: 16 GiB on 64-bit targets
+/// and 256 MiB on 32-bit ones.
+///
+/// Equivalent to `MMapDirectory.DEFAULT_MAX_CHUNK_SIZE`, which Java assigns
+/// from `PROVIDER.getDefaultMaxChunkSize()` in a static initializer
+/// (`MMapDirectory.java:427-430`).
+pub static DEFAULT_MAX_CHUNK_SIZE: LazyLock<usize> =
+    LazyLock::new(|| MMapDirectory::lookup_provider().get_default_max_chunk_size() as usize);
 
 /// Filesystem-backed [`Directory`] that memory-maps files for reading.
 ///
 /// Equivalent to `org.apache.lucene.store.MMapDirectory`. Writing reuses
-/// [`FSIndexOutput`]; only the read path is specialized.
+/// [`FSIndexOutput`](super::FSIndexOutput); reading goes through
+/// [`MemorySegmentIndexInputProvider`], as Java's `openInput` goes through
+/// `PROVIDER`.
 pub struct MMapDirectory {
     inner: FSDirectory,
-    max_chunk_size: usize,
+    /// Equivalent to `MMapDirectory.chunkSizePower`.
+    chunk_size_power: i32,
+    /// Equivalent to `MMapDirectory.attachment`, the provider's per-directory
+    /// arena map.
+    attachment: SharedArenas,
+    /// The current read-advice policy. Each input's `toReadAdvice` reads it
+    /// when it is called, as Java's lambda reads the `readAdvice` field
+    /// (`MMapDirectory.java:317-318`), so a later
+    /// [`set_read_advice`](Self::set_read_advice) reaches inputs already open.
+    read_advice: Arc<std::sync::RwLock<ReadAdvicePolicy>>,
+    /// The preload policy. Java's `setPreload` assigns a field of a directory
+    /// that may already be shared, so the policy sits behind a lock and the
+    /// setter takes `&self`, as [`set_read_advice`](Self::set_read_advice)
+    /// does.
+    preload: std::sync::RwLock<PreloadPredicate>,
+    grouping_function: GroupingFunction,
 }
 
 impl MMapDirectory {
@@ -55,48 +174,257 @@ impl MMapDirectory {
     /// chunk size.
     ///
     /// Equivalent to `MMapDirectory(Path)` in Lucene 10.5.0.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::with_options(path, None, DEFAULT_MAX_CHUNK_SIZE)
+    pub fn open(path: impl crate::store::java_nio_file::IntoNioPath) -> Result<Self> {
+        // `this(path, FSLockFactory.getDefault())`
+        Self::with_lock_factory(path, Box::new(NativeFSLockFactory))
     }
 
     /// Opens a new `MMapDirectory` at `path` with the supplied lock factory.
+    ///
+    /// Equivalent to `MMapDirectory(Path, LockFactory)`
+    /// (`MMapDirectory.java:201-203`).
+    ///
+    /// # Errors
+    ///
+    /// As [`with_options`](Self::with_options).
     pub fn with_lock_factory(
-        path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        path: impl crate::store::java_nio_file::IntoNioPath,
+        lock_factory: Box<dyn LockFactory>,
     ) -> Result<Self> {
-        Self::with_options(path, lock_factory, DEFAULT_MAX_CHUNK_SIZE)
+        Self::with_options(path, lock_factory, *DEFAULT_MAX_CHUNK_SIZE)
     }
 
-    /// Opens a new `MMapDirectory` with a custom maximum chunk size.
+    /// Opens a new `MMapDirectory` with a custom maximum chunk size, which is
+    /// rounded down to a power of two.
+    ///
+    /// Equivalent to `MMapDirectory(Path, LockFactory, long)`
+    /// (`MMapDirectory.java:250-257`), which calls `super(path, lockFactory)`
+    /// before it checks the chunk size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for a chunk size of zero or
+    /// beyond a Java `long`, and propagates any I/O error creating or
+    /// canonicalizing the directory.
     pub fn with_options(
-        path: impl AsRef<Path>,
-        lock_factory: Option<Box<dyn LockFactory>>,
+        path: impl crate::store::java_nio_file::IntoNioPath,
+        lock_factory: Box<dyn LockFactory>,
         max_chunk_size: usize,
     ) -> Result<Self> {
+        let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
         if max_chunk_size == 0 {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "Maximum chunk size for mmap must be >0".to_string(),
             ));
         }
-        let inner = FSDirectory::with_lock_factory(path, lock_factory)?;
+        // **Divergence from Lucene 10.5.0.** Java's `long maxChunkSize` cannot
+        // exceed `Long.MAX_VALUE`; a `usize` can, and its power would not be
+        // one Java can hold, so such a value is refused here.
+        if i64::try_from(max_chunk_size).is_err() {
+            return Err(LuceneError::illegal_argument(format!(
+                "Maximum chunk size for mmap must be <= {} (a Java long)",
+                i64::MAX
+            )));
+        }
+        // `Long.SIZE - 1 - Long.numberOfLeadingZeros(maxChunkSize)`
+        let chunk_size_power = (u64::BITS - 1 - (max_chunk_size as u64).leading_zeros()) as i32;
         Ok(Self {
             inner,
-            max_chunk_size,
+            chunk_size_power,
+            attachment: Self::lookup_provider().attachment(),
+            read_advice: Arc::new(std::sync::RwLock::new(Box::new(|_filename, _context| None))),
+            preload: std::sync::RwLock::new(Self::no_files()),
+            grouping_function: Self::group_by_segment(),
         })
     }
 
-    /// Returns the canonical filesystem path backing this directory.
-    pub fn directory_path(&self) -> &Path {
-        self.inner.directory_path()
+    /// The `FSDirectory.getDirectory()` it inherits (`FSDirectory.java:288-291`):
+    /// see [`FSDirectory::get_directory`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) once the directory is closed.
+    pub fn get_directory(&self) -> Result<&crate::store::java_nio_file::Path> {
+        self.inner.get_directory()
     }
 
-    /// Returns the configured maximum chunk size.
+    /// Returns how many shared arenas the directory currently keeps, one per
+    /// file group with an input still open.
+    ///
+    /// Equivalent to `((ConcurrentHashMap<?, ?>) attachment).size()`, which
+    /// `TestMMapDirectory.testArenas` reads through the package-private
+    /// `MMapDirectory.attachment` field (`MMapDirectory.java:107`).
+    pub fn shared_arena_count(&self) -> usize {
+        self.attachment
+            .lock()
+            .map(|arenas| arenas.len())
+            .unwrap_or(0)
+    }
+
+    /// Returns the current mmap chunk size, the configured maximum rounded
+    /// down to a power of two.
+    ///
+    /// Equivalent to `MMapDirectory.getMaxChunkSize()`
+    /// (`MMapDirectory.java:307-309`).
     pub fn max_chunk_size(&self) -> usize {
-        self.max_chunk_size
+        1usize << self.chunk_size_power
+    }
+
+    /// Returns the predicate that preloads every file.
+    ///
+    /// Equivalent to `MMapDirectory.ALL_FILES`.
+    pub fn all_files() -> PreloadPredicate {
+        Box::new(|_filename, _context| true)
+    }
+
+    /// Returns the predicate that preloads nothing, which is the default.
+    ///
+    /// Equivalent to `MMapDirectory.NO_FILES`.
+    pub fn no_files() -> PreloadPredicate {
+        Box::new(|_filename, _context| false)
+    }
+
+    /// Returns the predicate that preloads a file when its context asks for it.
+    ///
+    /// Equivalent to `MMapDirectory.PRELOAD_HINT`.
+    pub fn preload_hint() -> PreloadPredicate {
+        Box::new(|_filename, context| {
+            context
+                .hints()
+                .iter()
+                .any(|hint| hint.as_any().downcast_ref::<PreloadHint>().is_some())
+        })
+    }
+
+    /// Returns the grouping function that groups nothing.
+    ///
+    /// Equivalent to `MMapDirectory.NO_GROUPING`.
+    pub fn no_grouping() -> GroupingFunction {
+        Box::new(|_filename| None)
+    }
+
+    /// Returns the grouping function that groups a file by the index segment it
+    /// belongs to, which is the default.
+    ///
+    /// Equivalent to `MMapDirectory.GROUP_BY_SEGMENT`.
+    pub fn group_by_segment() -> GroupingFunction {
+        Box::new(|filename| {
+            if !crate::index::is_codec_file(filename) {
+                return None;
+            }
+            let mut group_key = crate::index::parse_segment_name(filename)
+                .get(1..)
+                .unwrap_or_default()
+                .to_string();
+            // keep the original generation (=0) in base group, later
+            // generations in extra group; a name that does not conform to the
+            // generation syntax, or trash, keeps the base group
+            if let Ok(generation) = crate::index::parse_generation(filename) {
+                if generation > 0 {
+                    group_key.push_str("-g");
+                }
+            }
+            Some(group_key)
+        })
+    }
+
+    /// Returns the policy that derives the read advice from the context: the
+    /// merge and flush contexts read sequentially, an explicit
+    /// [`DataAccessHint`] wins otherwise, and everything else takes the default.
+    ///
+    /// Equivalent to `MMapDirectory.ADVISE_BY_CONTEXT`.
+    pub fn advise_by_context() -> ReadAdvicePolicy {
+        Box::new(|_filename, context| {
+            if context.context() == super::Context::Merge
+                || context.context() == super::Context::Flush
+            {
+                return Some(ReadAdvice::Sequential);
+            }
+            for hint in context.hints() {
+                if let Some(access) = hint.as_any().downcast_ref::<DataAccessHint>() {
+                    return match access {
+                        DataAccessHint::Random => Some(ReadAdvice::Random),
+                        DataAccessHint::Sequential => Some(ReadAdvice::Sequential),
+                    };
+                }
+            }
+            Some(crate::util::Constants::default_read_advice())
+        })
+    }
+
+    /// Configures which files to bring into physical memory when they are
+    /// opened. The default preloads nothing. The behaviour is best effort and
+    /// operating-system dependent.
+    ///
+    /// Equivalent to `org.apache.lucene.store.MMapDirectory#setPreload`.
+    pub fn set_preload(&self, preload: PreloadPredicate) {
+        *self
+            .preload
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = preload;
+    }
+
+    /// Configures the [`ReadAdvice`] certain files are opened with. The default
+    /// policy returns `None` for every file, so every file takes
+    /// `Constants::default_read_advice()`.
+    ///
+    /// Equivalent to `org.apache.lucene.store.MMapDirectory#setReadAdvice`.
+    pub fn set_read_advice(&mut self, to_read_advice: ReadAdvicePolicy) {
+        *self
+            .read_advice
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = to_read_advice;
+    }
+
+    /// Configures the grouping of files that belong to the same logical group,
+    /// which is a hint that lets their resources be handled together. The
+    /// default is [`group_by_segment`](Self::group_by_segment); pass
+    /// [`no_grouping`](Self::no_grouping) to disable it.
+    ///
+    /// The group key is handed to the provider, which picks the shared arena
+    /// that unmaps the files of one group together.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.MMapDirectory#setGroupingFunction`.
+    pub fn set_grouping_function(&mut self, grouping_function: GroupingFunction) {
+        self.grouping_function = grouping_function;
+    }
+
+    /// Returns the provider that opens memory-mapped inputs.
+    ///
+    /// # Divergence from Lucene 10.5.0
+    ///
+    /// Java resolves `MemorySegmentIndexInputProvider` reflectively, with
+    /// `MethodHandles.lookup().findClass(...)` and `findConstructor(...)`, so
+    /// that a Java 21 class can be loaded from a multi-release JAR without the
+    /// rest of the code depending on it at compile time, and raises
+    /// `LinkageError` when it is absent. Rust has no multi-release artefacts
+    /// and no reflection: the provider is an ordinary item of this crate, so
+    /// the lookup is a direct reference to it and cannot fail. It is built once
+    /// and shared, which is what Java's `static final PROVIDER` gives.
+    ///
+    /// Equivalent to `org.apache.lucene.store.MMapDirectory#lookupProvider`.
+    pub fn lookup_provider() -> &'static MemorySegmentIndexInputProvider {
+        static PROVIDER: LazyLock<MemorySegmentIndexInputProvider> =
+            LazyLock::new(MemorySegmentIndexInputProvider::new);
+        &PROVIDER
+    }
+
+    /// Returns whether this platform's `madvise` syscall can be used to advise
+    /// the kernel how a mapping will be read.
+    ///
+    /// Equivalent to `org.apache.lucene.store.MMapDirectory#supportsMadvise`.
+    pub fn supports_madvise() -> bool {
+        Self::lookup_provider().supports_madvise()
     }
 }
 
 impl Directory for MMapDirectory {
+    /// `instanceof` (see [`Directory::as_any`]).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }
@@ -122,7 +450,7 @@ impl Directory for MMapDirectory {
         self.inner.create_temp_output(prefix, suffix, context)
     }
 
-    fn sync(&self, names: &[String]) -> Result<()> {
+    fn sync(&self, names: &[&str]) -> Result<()> {
         self.inner.sync(names)
     }
 
@@ -134,23 +462,51 @@ impl Directory for MMapDirectory {
         self.inner.rename(source, dest)
     }
 
-    fn open_input(&self, name: &str, _context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
+    /// Creates an input for the file with the given name, mapped by the
+    /// provider.
+    ///
+    /// Equivalent to `MMapDirectory.openInput(String, IOContext)`
+    /// (`MMapDirectory.java:311-328`).
+    fn open_input(&self, name: &str, context: &dyn IOContext) -> Result<Box<dyn IndexInput>> {
         self.inner.ensure_open()?;
         self.inner.ensure_can_read(name)?;
-        let path = self.inner.directory_path().join(name);
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let metadata = file.metadata()?;
-        let len = metadata.len() as i64;
-        let mmap = unsafe { Mmap::map(&file) }?;
-        let input = MMapIndexInput::new(mmap, path, len)?;
+        let path = self.inner.get_directory()?.resolve_str(name);
+        let read_advice = Arc::clone(&self.read_advice);
+        let file_name = name.to_string();
+        // `c -> readAdvice.apply(name, c).orElse(Constants.DEFAULT_READADVICE)`
+        let to_read_advice: super::memory_segment_index_input::ToReadAdvice =
+            Arc::new(move |context: &dyn IOContext| {
+                let policy = read_advice
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (*policy)(&file_name, context)
+                    .unwrap_or_else(crate::util::Constants::default_read_advice)
+            });
+        let input = Self::lookup_provider().open_input(
+            &path,
+            self.chunk_size_power,
+            context,
+            to_read_advice,
+            // `context.hints().contains(ReadOnceHint.INSTANCE)`
+            !hints_of::<ReadOnceHint>(context).is_empty(),
+            (self
+                .preload
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner))(name, context),
+            (self.grouping_function)(name).as_deref(),
+            &self.attachment,
+        )?;
         Ok(Box::new(input))
     }
 
+    /// The final `BaseDirectory.obtainLock(String)` it inherits
+    /// (`BaseDirectory.java:42-45`), with this directory as the lock
+    /// factory's `dir`.
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
-        self.inner.obtain_lock(name)
+        self.inner.base().obtain_lock(self, name)
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         self.inner.close()
     }
 
@@ -158,8 +514,9 @@ impl Directory for MMapDirectory {
         self.inner.get_pending_deletions()
     }
 
-    fn fs_directory_path(&self) -> Option<&Path> {
-        self.inner.fs_directory_path()
+    /// An `FSDirectory` subclass: the `FSDirectory` it composes.
+    fn as_fs_directory(&self) -> Option<&FSDirectory> {
+        Some(&self.inner)
     }
 
     fn directory_type_name(&self) -> &'static str {
@@ -169,16 +526,19 @@ impl Directory for MMapDirectory {
     fn ensure_open(&self) -> Result<()> {
         self.inner.ensure_open()
     }
+
+    /// The `FSDirectory.toString()` it inherits (`FSDirectory.java:293-295`):
+    /// `MMapDirectory@` + path + ` lockFactory=` + the lock factory.
+    fn directory_to_string(&self) -> String {
+        self.inner.directory_to_string_of(self)
+    }
 }
 
 impl std::fmt::Display for MMapDirectory {
+    /// Port of the `toString()` it inherits from `FSDirectory`, which
+    /// [`Directory::directory_to_string`] renders.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "MMapDirectory@{} maxChunkSize={}",
-            self.inner.directory_path().display(),
-            self.max_chunk_size
-        )
+        f.write_str(&self.directory_to_string())
     }
 }
 
@@ -186,164 +546,7 @@ impl std::fmt::Debug for MMapDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MMapDirectory")
             .field("directory", &self.inner.directory_path())
-            .field("max_chunk_size", &self.max_chunk_size)
-            .finish()
-    }
-}
-
-/// Memory-mapped [`IndexInput`] returned by [`MMapDirectory::open_input`].
-///
-/// The whole file is mapped as a single contiguous region. Files larger than
-/// [`MMapDirectory::max_chunk_size`] are not yet split into chunks in this
-/// initial port.
-pub struct MMapIndexInput {
-    mmap: Mmap,
-    pos: usize,
-    len: usize,
-    resource_description: String,
-    path: PathBuf,
-}
-
-impl MMapIndexInput {
-    fn new(mmap: Mmap, path: PathBuf, len: i64) -> Result<Self> {
-        let len = len as usize;
-        let resource_description = format!("MMapIndexInput(path=\"{}\")", path.display());
-        Ok(Self {
-            mmap,
-            pos: 0,
-            len,
-            resource_description,
-            path,
-        })
-    }
-
-    fn bytes(&self) -> &[u8] {
-        // `Mmap::as_ref()` returns a slice tied to the owned mapping, which is
-        // valid for the lifetime of `self`.
-        self.mmap.as_ref()
-    }
-}
-
-impl DataInput for MMapIndexInput {
-    fn read_byte(&mut self) -> Result<u8> {
-        if self.pos >= self.len {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "read past EOF",
-            )));
-        }
-        let b = self.bytes()[self.pos];
-        self.pos += 1;
-        Ok(b)
-    }
-
-    fn read_bytes(&mut self, b: &mut [u8], offset: usize, len: usize) -> Result<()> {
-        let end = offset
-            .checked_add(len)
-            .ok_or_else(|| LuceneError::IllegalArgument("offset + len overflowed".to_string()))?;
-        if end > b.len() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "destination buffer too small: offset={offset}, len={len}, buf.len={}",
-                b.len()
-            )));
-        }
-        if self.pos + len > self.len {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "read past EOF",
-            )));
-        }
-        b[offset..end].copy_from_slice(&self.bytes()[self.pos..self.pos + len]);
-        self.pos += len;
-        Ok(())
-    }
-
-    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
-        if num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "numBytes must be non-negative (got: {num_bytes})"
-            )));
-        }
-        let target = self.pos as i64 + num_bytes;
-        if target > self.len as i64 {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "skip past EOF",
-            )));
-        }
-        self.pos = target as usize;
-        Ok(())
-    }
-}
-
-impl IndexInput for MMapIndexInput {
-    fn close(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    fn file_pointer(&self) -> i64 {
-        self.pos as i64
-    }
-
-    fn length(&self) -> i64 {
-        self.len as i64
-    }
-
-    fn seek(&mut self, pos: i64) -> Result<()> {
-        if pos < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "position must be non-negative (got: {pos})"
-            )));
-        }
-        if pos > self.len as i64 {
-            return Err(LuceneError::Io(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "seek past EOF",
-            )));
-        }
-        self.pos = pos as usize;
-        Ok(())
-    }
-
-    fn slice(
-        &self,
-        slice_description: &str,
-        offset: i64,
-        length: i64,
-    ) -> Result<Box<dyn IndexInput>> {
-        if offset < 0 || length < 0 || length > self.len as i64 - offset {
-            return Err(LuceneError::IllegalArgument(format!(
-                "slice({slice_description}) out of bounds"
-            )));
-        }
-        let clone = self.clone_input()?;
-        Ok(Box::new(SlicedIndexInput::new(
-            slice_description,
-            clone,
-            offset,
-            length,
-        )?))
-    }
-
-    fn clone_input(&self) -> Result<Box<dyn IndexInput>> {
-        let file = fs::OpenOptions::new().read(true).open(&self.path)?;
-        let mmap = unsafe { Mmap::map(&file) }?;
-        let mut clone = MMapIndexInput::new(mmap, self.path.clone(), self.len as i64)?;
-        clone.pos = self.pos;
-        Ok(Box::new(clone))
-    }
-
-    fn resource_description(&self) -> &str {
-        &self.resource_description
-    }
-}
-
-impl std::fmt::Debug for MMapIndexInput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MMapIndexInput")
-            .field("path", &self.path)
-            .field("pos", &self.pos)
-            .field("len", &self.len)
+            .field("max_chunk_size", &self.max_chunk_size())
             .finish()
     }
 }
@@ -351,6 +554,7 @@ impl std::fmt::Debug for MMapIndexInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LuceneErrorKind;
     use crate::store::DEFAULT_IO_CONTEXT;
     use tempfile::TempDir;
 
@@ -377,6 +581,78 @@ mod tests {
         assert_eq!(dir.directory_type_name(), "MMapDirectory");
     }
 
+    /// The texts the open path builds are Java's: an input's resource
+    /// description (`MemorySegmentIndexInputProvider.java:57`), a slice's
+    /// (`IndexInput.java:150`) and a checksum input's
+    /// (`BufferedChecksumIndexInput.java:31`).
+    #[test]
+    fn inputs_describe_themselves_as_java_does() {
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(1).unwrap();
+            out.write_long(2).unwrap();
+            out.close().unwrap();
+        }
+        let path = format!(
+            "{}/data.bin",
+            dir.as_fs_directory().unwrap().get_directory().unwrap()
+        );
+        let expected = format!("MemorySegmentIndexInput(path=\"{path}\")");
+        let input = dir.open_input("data.bin", context).unwrap();
+        assert_eq!(input.resource_description(), expected);
+        let slice = input.slice("part", 8, 8).unwrap();
+        assert_eq!(
+            slice.resource_description(),
+            format!("{expected} [slice=part]")
+        );
+        let checksum = dir.open_checksum_input("data.bin").unwrap();
+        assert_eq!(
+            checksum.resource_description(),
+            format!("BufferedChecksumIndexInput({expected})")
+        );
+    }
+
+    /// Java builds a clone from the same `String` (`MemorySegmentIndexInput.java:570-584`)
+    /// and a slice without a description from `toString()` itself
+    /// (`IndexInput.java:144-151`), and `toString()` returns that field
+    /// (`IndexInput.java:98-100`): the port shares the one description and
+    /// lends it. A described slice gets a description of its own.
+    #[test]
+    fn clones_share_the_description_and_lend_it() {
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(1).unwrap();
+            out.write_long(2).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir.open_input("data.bin", context).unwrap();
+        let description = input.resource_description();
+        let clone = input.clone_input().unwrap();
+        assert_eq!(clone.resource_description().as_ptr(), description.as_ptr());
+        let clone_of_clone = clone.clone_input().unwrap();
+        assert_eq!(
+            clone_of_clone.resource_description().as_ptr(),
+            description.as_ptr()
+        );
+        let whole = input.slice("", 0, input.length()).unwrap();
+        assert_eq!(whole.resource_description().as_ptr(), description.as_ptr());
+        let part = input.slice("part", 8, 8).unwrap();
+        assert_ne!(part.resource_description().as_ptr(), description.as_ptr());
+        assert_eq!(
+            part.resource_description(),
+            format!("{description} [slice=part]")
+        );
+        let java = input.to_java_string();
+        assert!(matches!(java, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(java.as_ptr(), description.as_ptr());
+    }
+
     #[test]
     fn mmap_index_input_slices_and_clones() {
         let temp = TempDir::new().unwrap();
@@ -398,5 +674,202 @@ mod tests {
         let mut clone = input.clone_input().unwrap();
         assert_eq!(clone.length(), 16);
         assert_eq!(clone.read_long().unwrap(), 0x1111_2222_3333_4444_i64);
+    }
+
+    /// `MMapDirectory.openInput` hands the file to `PROVIDER.openInput` with
+    /// the directory's `chunkSizePower` (`MMapDirectory.java:311-328`), so an
+    /// input is a memory-segment input mapped in chunks of
+    /// `getMaxChunkSize()` bytes, the configured maximum rounded down to a
+    /// power of two (`MMapDirectory.java:250-258`).
+    #[test]
+    fn open_input_maps_through_the_provider_in_chunks() {
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 1000).unwrap();
+        assert_eq!(dir.max_chunk_size(), 512);
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            for i in 0..600i64 {
+                out.write_long(i).unwrap();
+            }
+            out.close().unwrap();
+        }
+
+        let mut input = dir.open_input("data.bin", context).unwrap();
+        assert!(
+            input.as_memory_segment_access_input().is_some(),
+            "the provider maps the file as a memory-segment input"
+        );
+        assert_eq!(input.length(), 4800);
+        for i in 0..600i64 {
+            assert_eq!(input.read_long().unwrap(), i);
+        }
+    }
+
+    /// Writes `count` bytes `0, 1, 2, ...` (mod 256) into `name`.
+    fn write_counting_bytes(dir: &MMapDirectory, name: &str, count: usize) {
+        let mut out = dir.create_output(name, &*DEFAULT_IO_CONTEXT).unwrap();
+        for i in 0..count {
+            out.write_byte(i as u8).unwrap();
+        }
+        out.close().unwrap();
+    }
+
+    fn expected_long(at: usize) -> i64 {
+        let bytes: Vec<u8> = (at..at + 8).map(|i| i as u8).collect();
+        i64::from_le_bytes(bytes.try_into().unwrap())
+    }
+
+    /// With 16-byte chunks, multi-byte reads at positions that are not a
+    /// multiple of eight straddle a chunk boundary, `readBytes` spans several
+    /// chunks, seeks land in any chunk, and a slice spanning chunks reads the
+    /// same bytes (`MemorySegmentIndexInput.java` `MultiSegmentImpl`).
+    #[test]
+    fn reads_seeks_and_slices_cross_chunk_boundaries() {
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 16).unwrap();
+        assert_eq!(dir.max_chunk_size(), 16);
+        write_counting_bytes(&dir, "data.bin", 200);
+        let mut input = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
+
+        // A long starting at 13 spans chunks 0 and 1.
+        input.seek(13).unwrap();
+        assert_eq!(input.read_long().unwrap(), expected_long(13));
+        assert_eq!(input.file_pointer().unwrap(), 21);
+        // An int at 30 spans chunks 1 and 2.
+        input.seek(30).unwrap();
+        assert_eq!(
+            input.read_int().unwrap(),
+            i32::from_le_bytes([30, 31, 32, 33])
+        );
+
+        // A bulk read across five chunks.
+        input.seek(7).unwrap();
+        let mut bulk = vec![0u8; 75];
+        input.read_bytes(Some(&mut bulk), 0, 75).unwrap();
+        assert_eq!(bulk, (7..82).map(|i| i as u8).collect::<Vec<_>>());
+
+        // Seeks back and forth across chunks.
+        for &pos in &[199i64, 0, 64, 15, 16, 177] {
+            input.seek(pos).unwrap();
+            assert_eq!(input.read_byte().unwrap(), pos as u8);
+        }
+
+        // A slice from 10 to 100 spans six chunks; its own position 3 is the
+        // file's 13.
+        let mut slice = input.slice("span", 10, 90).unwrap();
+        assert_eq!(slice.length(), 90);
+        slice.seek(3).unwrap();
+        assert_eq!(slice.read_long().unwrap(), expected_long(13));
+        let mut rest = vec![0u8; 79];
+        slice.read_bytes(Some(&mut rest), 0, 79).unwrap();
+        assert_eq!(rest, (21..100).map(|i| i as u8).collect::<Vec<_>>());
+        assert!(slice.read_byte().is_err(), "the slice ends at its length");
+
+        // Random access across a boundary.
+        let mut random = input.random_access_slice(0, 200).unwrap();
+        assert_eq!(random.read_long_at(45).unwrap(), expected_long(45));
+    }
+
+    /// `IndexInput.updateIOContext` reaches `MemorySegmentIndexInput`'s
+    /// override, which re-derives the read advice from the new context through
+    /// the directory's `toReadAdvice` (`MemorySegmentIndexInput.java:384-386`,
+    /// `MMapDirectory.java:317-318`); the default would not consult it.
+    #[test]
+    fn update_io_context_reaches_the_mapped_input() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let temp = TempDir::new().unwrap();
+        let mut dir = MMapDirectory::open(&temp).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        dir.set_read_advice(Box::new(move |_name, _context| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            None
+        }));
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(7).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir.open_input("data.bin", context).unwrap();
+        let before = calls.load(Ordering::SeqCst);
+        input.update_io_context(context).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+    }
+
+    /// A maximum chunk size is a Java `long`: one above `Long.MAX_VALUE` is
+    /// rejected, as is zero.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_chunk_size_beyond_a_java_long_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        assert!(matches!(
+            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), usize::MAX),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 0),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
+        assert_eq!(
+            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), i64::MAX as usize)
+                .unwrap()
+                .max_chunk_size(),
+            1usize << 62
+        );
+    }
+
+    /// `toReadAdvice` reads the directory's policy when it is called, as
+    /// Java's lambda reads the `readAdvice` field (`MMapDirectory.java:317-318`):
+    /// a policy set after an input was opened is the one its
+    /// `updateIOContext` consults.
+    #[test]
+    fn update_io_context_reads_the_policy_set_after_opening() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let temp = TempDir::new().unwrap();
+        let mut dir = MMapDirectory::open(&temp).unwrap();
+        let context = &*DEFAULT_IO_CONTEXT;
+        {
+            let mut out = dir.create_output("data.bin", context).unwrap();
+            out.write_long(7).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir.open_input("data.bin", context).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        dir.set_read_advice(Box::new(move |_name, _context| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            None
+        }));
+        input.update_io_context(context).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The default maximum chunk size is the provider's
+    /// (`MMapDirectory.java:427-430`).
+    #[test]
+    fn default_max_chunk_size_is_the_providers() {
+        assert_eq!(
+            *DEFAULT_MAX_CHUNK_SIZE as i64,
+            MMapDirectory::lookup_provider().get_default_max_chunk_size()
+        );
+        // `Constants.JRE_IS_64BIT ? (1L << 34) : (1L << 28)`
+        // (`MemorySegmentIndexInputProvider.java:93`).
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(*DEFAULT_MAX_CHUNK_SIZE, 1usize << 34);
+        #[cfg(not(target_pointer_width = "64"))]
+        assert_eq!(*DEFAULT_MAX_CHUNK_SIZE, 1usize << 28);
+        let temp = TempDir::new().unwrap();
+        let dir = MMapDirectory::open(&temp).unwrap();
+        assert_eq!(dir.max_chunk_size(), *DEFAULT_MAX_CHUNK_SIZE);
     }
 }

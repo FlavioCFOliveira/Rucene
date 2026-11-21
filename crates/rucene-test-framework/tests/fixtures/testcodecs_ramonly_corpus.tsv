@@ -1,0 +1,7 @@
+# case	class	message (root cause of writing the corpus with a new RAMOnly)
+nocfs	java.lang.UnsupportedOperationException	this codec cannot index offsets
+cfs	java.lang.UnsupportedOperationException	this codec cannot index offsets
+edge	java.lang.NegativeArraySizeException	-1
+freqs	java.lang.AssertionError	null
+merge	org.apache.lucene.index.CorruptIndexException	position=-1 is negative, field="rp doc=25 (resource=org.apache.lucene.tests.codecs.ramonly.RAMOnlyPostingsFormat$RAMDocsEnum@3b74ac8)
+advance	java.lang.NullPointerException	Cannot read field "docID" because "this.current" is null

@@ -1,0 +1,28 @@
+# seed	method	kind	value (BaseSuitesDrawsOracle, Lucene 10.5.0, JDK 25): TestSparseFixedBitDocIdSetDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	-906961793810267453
+DEADBEEF	#counts	run=7 fail=0 assume=0	-
+DEADBEEF	test1Bit	next	-3286791340830008713
+DEADBEEF	test2Bits	next	-8853649632004765884
+DEADBEEF	testAgainstBitSet	next	1747194976720984165
+DEADBEEF	testIntoBitSet	next	641901114596190489
+DEADBEEF	testIntoBitSetBoundChecks	next	6048819714913416840
+DEADBEEF	testNoBit	next	5307122437675127272
+DEADBEEF	testRamBytesUsed	next	8576414601515546345
+1	#class	next	-2688122415676448112
+1	#counts	run=7 fail=0 assume=0	-
+1	test1Bit	next	7027746616194802648
+1	test2Bits	next	-148872585750700015
+1	testAgainstBitSet	next	2223912031369874504
+1	testIntoBitSet	next	4029586868743088851
+1	testIntoBitSetBoundChecks	next	6496360069985852878
+1	testNoBit	next	8289183391905958646
+1	testRamBytesUsed	next	8588650828647546222
+C0FFEE	#class	next	3589176430061574669
+C0FFEE	#counts	run=7 fail=0 assume=0	-
+C0FFEE	test1Bit	next	1520120883560348034
+C0FFEE	test2Bits	next	2368051966242119454
+C0FFEE	testAgainstBitSet	next	2639662825837143141
+C0FFEE	testIntoBitSet	next	-3947380802977228993
+C0FFEE	testIntoBitSetBoundChecks	next	-7417176802778066941
+C0FFEE	testNoBit	next	4867611601915984028
+C0FFEE	testRamBytesUsed	next	-7658625047542375789

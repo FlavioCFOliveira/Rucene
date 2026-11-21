@@ -1,0 +1,759 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! Port of `org.apache.lucene.tests.util.fst.FSTTester`: helper class to test
+//! FSTs.
+
+use std::collections::HashMap;
+
+use randomizedtesting::jdk::random::Random;
+use rucene::error::Result;
+use rucene::store::{ByteBuffersDataOutput, Directory, DEFAULT_IO_CONTEXT};
+use rucene::util::fst::{
+    Arc, Builder, FstOutputSink, InputType, IntsRefFSTEnum, Outputs, END_LABEL, FST,
+};
+use rucene::util::refs::IntsRefBuilder;
+use rucene::util::string_helper::IntsRef;
+use rucene::util::unicode_util::UnicodeUtil;
+use rucene::util::BytesRef;
+
+use crate::util::java_exceptions::try_with;
+use crate::util::{LuceneTestCase, TestUtil};
+use randomizedtesting::junit::Assert;
+
+/// JUnit's `failNotNull(message, actual)` of a failed `assertNull`:
+/// `message `, then `expected null, but was:<actual>`.
+fn assert_null_failed(message: Option<&str>, actual: &str) -> ! {
+    let formatted = message.map_or_else(String::new, |m| format!("{m} "));
+    Assert::fail(&format!("{formatted}expected null, but was:<{actual}>"))
+}
+
+/// `Object.toString()` of an `IntsRefFSTEnum.InputOutput`, which does not
+/// override it (class name and identity hash).
+fn input_output_to_string<T: ?Sized>(io: &T) -> String {
+    rucene::index::index_reader::java_object_to_string(
+        "org.apache.lucene.util.fst.IntsRefFSTEnum$InputOutput",
+        io,
+    )
+}
+
+/// Holds one input/output pair.
+///
+/// Port of the record `FSTTester.InputOutput<T>(IntsRef input, T output)
+/// implements Comparable<InputOutput<T>>` (`FSTTester.java:166-173`).
+///
+/// **Divergence from Lucene 10.5.0, in shape only.** Java's `compareTo`
+/// orders by `input` alone while the record's `equals` compares both
+/// components; Rust's `Ord` must agree with `Eq`, so the type cannot carry
+/// both as trait impls. `Comparable.compareTo` is therefore the inherent
+/// [`compare_to`](Self::compare_to), used exactly where Java compares pairs
+/// (`Collections.binarySearch`, `FSTTester.java:434` and `:554`). Its
+/// argument may carry any output type, so that Java's search key
+/// `new InputOutput<>(term, null)` is a pair whose output is `None`: the
+/// comparison never reads it.
+#[derive(Debug, Clone)]
+pub struct InputOutput<T> {
+    /// `input`.
+    pub input: IntsRef,
+    /// `output`.
+    pub output: T,
+}
+
+impl<T> InputOutput<T> {
+    /// Port of `compareTo(InputOutput<T> other)` (`FSTTester.java:169-172`):
+    /// `input.compareTo(other.input)`.
+    pub fn compare_to<U>(&self, other: &InputOutput<U>) -> std::cmp::Ordering {
+        self.input.cmp(&other.input)
+    }
+}
+
+/// Port of `org.apache.lucene.tests.util.fst.FSTTester`.
+///
+/// Java's `outputsEqual(a, b)` is a protected method (`a.equals(b)`) that
+/// subclasses override; the port calls [`Outputs::equals`], or the function
+/// given to [`with_outputs_equal`](Self::with_outputs_equal).
+///
+/// **Divergence.** Java adds each value of a `List` output separately
+/// (`ListOfOutputs`, of `lucene/misc`); the port, whose outputs are typed,
+/// adds every output as one value.
+pub struct FSTTester<'a, O: Outputs> {
+    /// `random`.
+    pub random: &'a dyn Random,
+    /// `pairs`, sorted by input.
+    pub pairs: Vec<InputOutput<O::Output>>,
+    /// `inputMode`: 0 for UTF-8 bytes (`BYTE1`), else UTF-32 (`BYTE4`).
+    pub input_mode: i32,
+    /// `outputs`.
+    pub outputs: O,
+    /// `dir`.
+    pub dir: &'a dyn Directory,
+    /// `nodeCount`.
+    pub node_count: i64,
+    /// `arcCount`.
+    pub arc_count: i64,
+    #[allow(clippy::type_complexity)]
+    outputs_equal: Option<Box<dyn Fn(&O::Output, &O::Output) -> bool + 'a>>,
+}
+
+impl<'a, O: Outputs> FSTTester<'a, O> {
+    /// `new FSTTester(random, dir, inputMode, pairs, outputs)`.
+    pub fn new(
+        random: &'a dyn Random,
+        dir: &'a dyn Directory,
+        input_mode: i32,
+        pairs: Vec<InputOutput<O::Output>>,
+        outputs: O,
+    ) -> Self {
+        FSTTester {
+            random,
+            pairs,
+            input_mode,
+            outputs,
+            dir,
+            node_count: 0,
+            arc_count: 0,
+            outputs_equal: None,
+        }
+    }
+
+    /// The override of `outputsEqual(a, b)` of a subclass.
+    pub fn with_outputs_equal(mut self, f: impl Fn(&O::Output, &O::Output) -> bool + 'a) -> Self {
+        self.outputs_equal = Some(Box::new(f));
+        self
+    }
+
+    /// `outputsEqual(a, b)`.
+    fn outputs_equal(&self, a: &O::Output, b: &O::Output) -> bool {
+        match &self.outputs_equal {
+            Some(f) => f(a, b),
+            None => self.outputs.equals(a, b),
+        }
+    }
+
+    /// `inputToString(inputMode, term)`.
+    pub fn input_to_string(input_mode: i32, term: &IntsRef) -> String {
+        Self::input_to_string_valid(input_mode, term, true)
+    }
+
+    /// `inputToString(inputMode, term, isValidUnicode)`.
+    ///
+    /// **Divergence.** A term that does not decode (Java's lenient decoders
+    /// would still build a string) is shown by its code units alone.
+    pub fn input_to_string_valid(
+        input_mode: i32,
+        term: &IntsRef,
+        is_valid_unicode: bool,
+    ) -> String {
+        if !is_valid_unicode {
+            return term.to_string();
+        }
+        let text = if input_mode == 0 {
+            // utf8
+            Self::to_bytes_ref(term).utf8_to_string().ok()
+        } else {
+            // utf32
+            UnicodeUtil::new_string(term.slice(), 0, term.slice().len()).ok()
+        };
+        match text {
+            Some(text) => format!("{text} {term}"),
+            None => term.to_string(),
+        }
+    }
+
+    /// `toBytesRef(ir)`.
+    fn to_bytes_ref(ir: &IntsRef) -> BytesRef {
+        BytesRef::new(
+            ir.slice()
+                .iter()
+                .map(|&x| {
+                    java_assert_unchecked!((0..=255).contains(&x));
+                    x as u8
+                })
+                .collect(),
+        )
+    }
+
+    /// `getRandomString(random)`: a realistic unicode string or a string of
+    /// the limited alphabet `a..f`, at random.
+    pub fn get_random_string<R: Random + ?Sized>(random: &R) -> String {
+        if random.next_boolean() {
+            TestUtil::random_realistic_unicode_string(random)
+        } else {
+            // we want to mix in limited-alphabet symbols so
+            // we get more sharing of the nodes given how few
+            // terms we are testing...
+            Self::simple_random_string(random)
+        }
+    }
+
+    /// `simpleRandomString(r)`: up to 9 characters of `a..f`.
+    pub fn simple_random_string<R: Random + ?Sized>(r: &R) -> String {
+        let end = r.next_int_bound(10);
+        if end == 0 {
+            // allow 0 length
+            return String::new();
+        }
+        (0..end)
+            .map(|_| char::from(TestUtil::next_int(r, 97, 102) as u8))
+            .collect()
+    }
+
+    /// `toIntsRef(s, inputMode)`: the UTF-8 bytes (`inputMode == 0`) or the
+    /// code points of `s`.
+    pub fn to_ints_ref(s: &str, input_mode: i32) -> IntsRef {
+        let mut ir = IntsRefBuilder::new();
+        if input_mode == 0 {
+            // utf8
+            for &b in s.as_bytes() {
+                ir.append(i32::from(b));
+            }
+        } else {
+            // utf32
+            for c in s.chars() {
+                ir.append(c as i32);
+            }
+        }
+        ir.get()
+    }
+
+    /// `run(fst, term, prefixLength)`: the output of `term`, or `None` if the
+    /// term isn't accepted; with `prefix_length`, the length of the term
+    /// prefix that matches is set and the output of that prefix returned.
+    fn run(
+        fst: &FST<O>,
+        term: &IntsRef,
+        prefix_length: Option<&mut usize>,
+    ) -> Result<Option<O::Output>> {
+        let mut arc = Arc::default();
+        fst.get_first_arc(&mut arc);
+        let mut output = fst.outputs().no_output();
+        let mut fst_reader = fst.get_bytes_reader()?;
+        let ints = term.slice();
+        for i in 0..=ints.len() {
+            let label = if i == ints.len() { END_LABEL } else { ints[i] };
+            if !fst.find_target_arc_in_place(label, &mut arc, &mut *fst_reader)? {
+                return Ok(match prefix_length {
+                    Some(p) => {
+                        *p = i;
+                        Some(output)
+                    }
+                    None => None,
+                });
+            }
+            output = fst.outputs().add(&output, arc.output());
+        }
+
+        if let Some(p) = prefix_length {
+            *p = ints.len();
+        }
+
+        Ok(Some(output))
+    }
+
+    /// `randomAcceptedWord(fst, in)`.
+    fn random_accepted_word(&self, fst: &FST<O>, input: &mut IntsRefBuilder) -> Result<O::Output> {
+        let mut arc = Arc::default();
+        fst.get_first_arc(&mut arc);
+
+        let mut arcs = Vec::new();
+        input.clear();
+        let mut output = fst.outputs().no_output();
+        let mut fst_reader = fst.get_bytes_reader()?;
+
+        loop {
+            // read all arcs:
+            fst.read_first_target_arc_in_place(&mut arc, &mut *fst_reader)?;
+            arcs.push(arc.clone());
+            while !arc.is_last() {
+                fst.read_next_arc(&mut arc, &mut *fst_reader)?;
+                arcs.push(arc.clone());
+            }
+
+            // pick one
+            arc = arcs[self.random.next_int_bound(arcs.len() as i32) as usize].clone();
+            arcs.clear();
+
+            // accumulate output
+            output = fst.outputs().add(&output, arc.output());
+
+            // append label
+            if arc.label() == END_LABEL {
+                break;
+            }
+
+            input.append(arc.label());
+        }
+
+        Ok(output)
+    }
+
+    /// `doTest()`: builds the FST of the pairs (written off-heap to the
+    /// directory, or on-heap and maybe saved and read back), then verifies
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// The FST's and the directory's errors.
+    ///
+    /// # Panics
+    ///
+    /// The `AssertionError` of a failed verification.
+    pub fn do_test(&mut self) -> Result<Option<FST<O>>> {
+        let input_type = if self.input_mode == 0 {
+            InputType::Byte1
+        } else {
+            InputType::Byte4
+        };
+        let use_off_heap = self.random.next_boolean();
+
+        let fst = if use_off_heap {
+            let mut index_output = self
+                .dir
+                .create_output("fstOffHeap.bin", &*DEFAULT_IO_CONTEXT)?;
+            let (metadata, node_count, arc_count) = {
+                let mut fst_compiler = Builder::new(input_type, self.outputs.clone())
+                    .data_output(FstOutputSink::Streaming(&mut *index_output))
+                    .build()?;
+                for pair in &self.pairs {
+                    fst_compiler.add(&pair.input, pair.output.clone())?;
+                }
+                let metadata = fst_compiler.compile()?;
+                (
+                    metadata,
+                    fst_compiler.node_count(),
+                    fst_compiler.arc_count(),
+                )
+            };
+            self.node_count = node_count;
+            self.arc_count = arc_count;
+            index_output.close()?;
+            drop(index_output);
+            match metadata {
+                None => {
+                    self.dir.delete_file("fstOffHeap.bin")?;
+                    None
+                }
+                Some(metadata) => {
+                    // `try (IndexInput in = dir.openInput(...)) {...} finally {
+                    // dir.deleteFile(...); }` (`FSTTester.java:287-291`): the
+                    // input closes however the read ends, and the `finally`
+                    // runs on every exit, a failed open included; a `finally`
+                    // that throws replaces the pending exception.
+                    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let input = self
+                            .dir
+                            .open_input("fstOffHeap.bin", &*DEFAULT_IO_CONTEXT)?;
+                        try_with(
+                            input,
+                            |input| input.close(),
+                            |input| FST::new(metadata, &mut **input),
+                        )
+                    }));
+                    self.dir.delete_file("fstOffHeap.bin")?;
+                    Some(read.unwrap_or_else(|payload| std::panic::resume_unwind(payload))?)
+                }
+            }
+        } else {
+            let mut fst_compiler = Builder::new(input_type, self.outputs.clone()).build()?;
+            for pair in &self.pairs {
+                fst_compiler.add(&pair.input, pair.output.clone())?;
+            }
+            let metadata = fst_compiler.compile()?;
+            self.node_count = fst_compiler.node_count();
+            self.arc_count = fst_compiler.arc_count();
+            match metadata {
+                None => None,
+                Some(metadata) => {
+                    let fst = FST::from_fst_reader(Some(metadata), fst_compiler.into_fst_reader()?)
+                        .expect("INVARIANT: metadata is present");
+                    if self.random.next_boolean() {
+                        let context = LuceneTestCase::new_io_context(self.random);
+                        // `try (IndexOutput out = dir.createOutput(...))`
+                        // (`FSTTester.java:297-299`).
+                        try_with(
+                            self.dir.create_output("fst.bin", &*context)?,
+                            |out| out.close(),
+                            |out| {
+                                // fst.save(out, out): the metadata, then the bytes,
+                                // into one output.
+                                let mut meta = ByteBuffersDataOutput::new();
+                                let mut body = ByteBuffersDataOutput::new();
+                                fst.save(&mut meta, &mut body)?;
+                                meta.copy_to(&mut **out)?;
+                                body.copy_to(&mut **out)
+                            },
+                        )?;
+                        // `try (IndexInput in = dir.openInput(...)) {...} finally
+                        // { dir.deleteFile("fst.bin"); }` (`FSTTester.java:300-304`).
+                        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let input = self.dir.open_input("fst.bin", &*context)?;
+                            try_with(
+                                input,
+                                |input| input.close(),
+                                |input| {
+                                    FST::read_metadata(&mut **input, self.outputs.clone())
+                                        .and_then(|metadata| FST::new(metadata, &mut **input))
+                                },
+                            )
+                        }));
+                        self.dir.delete_file("fst.bin")?;
+                        Some(read.unwrap_or_else(|payload| std::panic::resume_unwind(payload))?)
+                    } else {
+                        Some(fst)
+                    }
+                }
+            }
+        };
+
+        if *crate::util::lucene_test_case::VERBOSE {
+            match &fst {
+                None => {
+                    randomizedtesting::jdk::system::out_println("  fst has 0 nodes (fully pruned)")
+                }
+                Some(_) => randomizedtesting::jdk::system::out_println(&format!(
+                    "  fst has {} nodes and {} arcs",
+                    self.node_count, self.arc_count
+                )),
+            }
+        }
+
+        self.verify_un_pruned(self.input_mode, fst.as_ref())?;
+
+        Ok(fst)
+    }
+
+    /// `verifyUnPruned(inputMode, fst)`: the FST is complete.
+    fn verify_un_pruned(&self, input_mode: i32, fst: Option<&FST<O>>) -> Result<()> {
+        if self.pairs.is_empty() {
+            // assertNull(fst)
+            if let Some(fst) = fst {
+                assert_null_failed(None, &fst.to_string());
+            }
+            return Ok(());
+        }
+
+        let fst = fst.unwrap_or_else(|| Assert::fail_without_message());
+        let pairs = &self.pairs;
+
+        // visit valid pairs in order -- make sure all words
+        // are accepted, and FSTEnum's next() steps through
+        // them correctly
+        {
+            let mut fst_enum = IntsRefFSTEnum::new(fst)?;
+            for pair in pairs {
+                let term = &pair.input;
+                let output = Self::run(fst, term, None)?.unwrap_or_else(|| {
+                    panic!(
+                        "term {} is not accepted",
+                        Self::input_to_string(input_mode, term)
+                    )
+                });
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, &output),
+                );
+
+                // verify enum's next
+                let t = fst_enum
+                    .next()?
+                    .unwrap_or_else(|| Assert::fail_without_message());
+                Assert::assert_equals_msg(
+                    Some(&format!(
+                        "expected input={} but fstEnum returned {}",
+                        Self::input_to_string(input_mode, term),
+                        Self::input_to_string(input_mode, t.input)
+                    )),
+                    term,
+                    t.input,
+                );
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, t.output),
+                );
+            }
+            // assertNull(fstEnum.next())
+            if let Some(t) = fst_enum.next()? {
+                assert_null_failed(None, &input_output_to_string(&t));
+            }
+        }
+
+        let terms_map: HashMap<Vec<i32>, &O::Output> = pairs
+            .iter()
+            .map(|pair| (pair.input.slice().to_vec(), &pair.output))
+            .collect();
+
+        // find random matching word and make sure it's valid
+        let mut scratch = IntsRefBuilder::new();
+        let num = LuceneTestCase::at_least_with(self.random, 500);
+        for _ in 0..num {
+            let output = self.random_accepted_word(fst, &mut scratch)?;
+            let word = scratch.get();
+            let expected = terms_map.get(word.slice()).unwrap_or_else(|| {
+                panic!(
+                    "accepted word {} is not valid",
+                    Self::input_to_string(input_mode, &word)
+                )
+            });
+            randomizedtesting::junit::Assert::assert_true(self.outputs_equal(expected, &output));
+        }
+
+        // test IntsRefFSTEnum.seek:
+        let mut fst_enum = IntsRefFSTEnum::new(fst)?;
+        let num = LuceneTestCase::at_least_with(self.random, 100);
+        // `Collections.binarySearch(pairs, new InputOutput<>(term, null))`,
+        // which compares each probed pair with the key: `midVal.compareTo(key)`.
+        let search = |term: &IntsRef| {
+            let key: InputOutput<Option<O::Output>> = InputOutput {
+                input: term.clone(),
+                output: None,
+            };
+            pairs.binary_search_by(|p| p.compare_to(&key))
+        };
+        for _ in 0..num {
+            if self.random.next_boolean() {
+                // seek to term that doesn't exist:
+                loop {
+                    let term = Self::to_ints_ref(&Self::get_random_string(self.random), input_mode);
+                    if let Err(insertion) = search(&term) {
+                        let mut pos = insertion as i64;
+                        // ok doesn't exist
+                        let seek_result = if self.random.next_int_bound(3) == 0 {
+                            pos = -1;
+                            fst_enum.seek_exact(&term)?
+                        } else if self.random.next_boolean() {
+                            pos -= 1;
+                            fst_enum.seek_floor(&term)?
+                        } else {
+                            fst_enum.seek_ceil(&term)?
+                        };
+                        if pos != -1 && (pos as usize) < pairs.len() {
+                            let expected = &pairs[pos as usize];
+                            let seek_result = seek_result.unwrap_or_else(|| {
+                                panic!(
+                                    "got null but expected term={}",
+                                    Self::input_to_string(input_mode, &expected.input)
+                                )
+                            });
+                            Assert::assert_equals_msg(
+                                Some(&format!(
+                                    "expected {} but got {}",
+                                    Self::input_to_string(input_mode, &expected.input),
+                                    Self::input_to_string(input_mode, seek_result.input)
+                                )),
+                                &expected.input,
+                                seek_result.input,
+                            );
+                            randomizedtesting::junit::Assert::assert_true(
+                                self.outputs_equal(&expected.output, seek_result.output),
+                            );
+                        } else {
+                            // seeked before start or beyond end
+                            // assertNull("expected null but got " + ..., seekResult)
+                            if let Some(r) = seek_result {
+                                assert_null_failed(
+                                    Some(&format!(
+                                        "expected null but got {}",
+                                        Self::input_to_string(input_mode, r.input)
+                                    )),
+                                    &input_output_to_string(&r),
+                                );
+                            }
+                        }
+                        break;
+                    }
+                }
+            } else {
+                // seek to term that does exist:
+                let pair = &pairs[self.random.next_int_bound(pairs.len() as i32) as usize];
+                let seek_result = if self.random.next_int_bound(3) == 2 {
+                    fst_enum.seek_exact(&pair.input)?
+                } else if self.random.next_boolean() {
+                    fst_enum.seek_floor(&pair.input)?
+                } else {
+                    fst_enum.seek_ceil(&pair.input)?
+                };
+                let seek_result = seek_result.unwrap_or_else(|| Assert::fail_without_message());
+                Assert::assert_equals_msg(
+                    Some(&format!(
+                        "got {} but expected {}",
+                        Self::input_to_string(input_mode, seek_result.input),
+                        Self::input_to_string(input_mode, &pair.input)
+                    )),
+                    &pair.input,
+                    seek_result.input,
+                );
+                randomizedtesting::junit::Assert::assert_true(
+                    self.outputs_equal(&pair.output, seek_result.output),
+                );
+            }
+        }
+
+        // test mixed next/seek
+        let num = LuceneTestCase::at_least_with(self.random, 100);
+        for _ in 0..num {
+            // reset:
+            let mut fst_enum = IntsRefFSTEnum::new(fst)?;
+            let mut upto: i64 = -1;
+            loop {
+                let is_done;
+                let n = pairs.len() as i64;
+                if upto == n - 1 || self.random.next_boolean() {
+                    // next
+                    upto += 1;
+                    is_done = fst_enum.next()?.is_none();
+                } else if upto != -1
+                    && (upto as f64) < 0.75 * n as f64
+                    && self.random.next_boolean()
+                {
+                    let mut attempt = 0;
+                    let mut done = None;
+                    while attempt < 10 {
+                        let term =
+                            Self::to_ints_ref(&Self::get_random_string(self.random), input_mode);
+                        if !terms_map.contains_key(term.slice())
+                            && term.cmp(&pairs[upto as usize].input).is_gt()
+                        {
+                            let pos = search(&term);
+                            java_assert_unchecked!(pos.is_err());
+                            upto = pos.err().unwrap_or(0) as i64;
+
+                            if self.random.next_boolean() {
+                                upto -= 1;
+                                randomizedtesting::junit::Assert::assert_true(upto != -1);
+                                done = Some(fst_enum.seek_floor(&term)?.is_none());
+                            } else {
+                                done = Some(fst_enum.seek_ceil(&term)?.is_none());
+                            }
+                            break;
+                        }
+                        attempt += 1;
+                    }
+                    match done {
+                        Some(d) => is_done = d,
+                        None => continue,
+                    }
+                } else {
+                    let inc = self.random.next_int_bound((n - upto - 1) as i32);
+                    upto += i64::from(inc);
+                    if upto == -1 {
+                        upto = 0;
+                    }
+
+                    let target = &pairs[upto as usize].input;
+                    is_done = if self.random.next_boolean() {
+                        fst_enum.seek_ceil(target)?.is_none()
+                    } else {
+                        fst_enum.seek_floor(target)?.is_none()
+                    };
+                }
+                if upto == n {
+                    randomizedtesting::junit::Assert::assert_true(is_done);
+                    break;
+                } else {
+                    randomizedtesting::junit::Assert::assert_true(!is_done);
+                    let current = fst_enum.current().expect("current");
+                    Assert::assert_equals(&pairs[upto as usize].input, current.input);
+                    randomizedtesting::junit::Assert::assert_true(
+                        self.outputs_equal(&pairs[upto as usize].output, current.output),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+
+    use rucene::util::string_helper::IntsRef;
+
+    use super::InputOutput;
+
+    fn pair(input: &[i32], output: i64) -> InputOutput<i64> {
+        InputOutput {
+            input: IntsRef::new(input.to_vec()),
+            output,
+        }
+    }
+
+    /// Java's `compareTo` is `input.compareTo(other.input)`: signed,
+    /// lexicographic, a prefix first, and blind to the outputs.
+    #[test]
+    fn compare_to_orders_by_input_only() {
+        assert_eq!(
+            pair(&[1, 2], 9).compare_to(&pair(&[1, 3], 0)),
+            Ordering::Less
+        );
+        assert_eq!(
+            pair(&[1, 3], 0).compare_to(&pair(&[1, 2], 9)),
+            Ordering::Greater
+        );
+        assert_eq!(pair(&[1], 0).compare_to(&pair(&[1, 0], 0)), Ordering::Less);
+        assert_eq!(pair(&[-1], 0).compare_to(&pair(&[0], 0)), Ordering::Less);
+        assert_eq!(
+            pair(&[5, 6], 1).compare_to(&pair(&[5, 6], 2)),
+            Ordering::Equal
+        );
+        // `new InputOutput<>(term, null)`: the key's output is never read.
+        let key: InputOutput<Option<i64>> = InputOutput {
+            input: IntsRef::new(vec![5, 6]),
+            output: None,
+        };
+        assert_eq!(pair(&[5, 6], 1).compare_to(&key), Ordering::Equal);
+        // `Collections.binarySearch` over pairs sorted by input.
+        let pairs = [pair(&[1], 0), pair(&[3], 0), pair(&[7], 0)];
+        let find = |t: i32| {
+            let key: InputOutput<Option<i64>> = InputOutput {
+                input: IntsRef::new(vec![t]),
+                output: None,
+            };
+            pairs.binary_search_by(|p| p.compare_to(&key))
+        };
+        assert_eq!(find(3), Ok(1));
+        assert_eq!(find(4), Err(2));
+    }
+}
+
+#[cfg(test)]
+mod junit_message_tests {
+    use super::*;
+    use randomizedtesting::jdk::exception::Throwable;
+
+    fn failure(f: impl FnOnce() + std::panic::UnwindSafe) -> Throwable {
+        Throwable::from_panic(std::panic::catch_unwind(f).unwrap_err())
+    }
+
+    /// `assertNull(message, x)` fails with `message expected null, but
+    /// was:<x>`, `assertNull(x)` without the prefix (JUnit 4
+    /// `failNotNull`), and `assertNotNull(x)` with a `null` message.
+    #[test]
+    fn null_assertions_use_junit_messages() {
+        let t = failure(|| assert_null_failed(Some("expected null but got [1]"), "IO@1"));
+        assert_eq!(t.class_name(), "java.lang.AssertionError");
+        assert_eq!(
+            t.message(),
+            Some("expected null but got [1] expected null, but was:<IO@1>")
+        );
+        let t = failure(|| assert_null_failed(None, "FST(input=BYTE1,output=x"));
+        assert_eq!(
+            t.message(),
+            Some("expected null, but was:<FST(input=BYTE1,output=x>")
+        );
+        let t = failure(|| Assert::fail_without_message());
+        assert_eq!(t.message(), None);
+    }
+}

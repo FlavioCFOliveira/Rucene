@@ -1,0 +1,21 @@
+# kind	value
+outside	java.lang.IllegalStateException	No context information for thread: Thread[id=3, name=main, state=RUNNABLE, group=main]. Is this thread running under a class com.carrotsearch.randomizedtesting.RandomizedRunner runner context? Add @RunWith(class com.carrotsearch.randomizedtesting.RandomizedRunner.class) to your test class. Make sure your code accesses random contexts within @BeforeClass and @AfterClass boundary (for example, static test class initializers are not permitted to access random contexts).
+resource-event	beforeClass
+resource-event	before
+resource-event	testOne
+resource-event	returned-same:true
+resource-event	after
+resource-event	close:test-from-beforeClass
+resource-event	close:test-a
+resource-event	close:test-c
+resource-event	afterClass
+resource-event	saved random: java.lang.IllegalStateException	This Random instance has been invalidated and is probably used out of its allowed context (test or suite).
+resource-event	close:suite-1
+resource-event	close:suite-b
+disposed	java.lang.IllegalStateException	Context disposed: com.carrotsearch.randomizedtesting.RandomizedContext@1593948d for thread: Thread[#3,main,5,main]
+disposed-getRandomness	java.lang.IllegalStateException	Context disposed: com.carrotsearch.randomizedtesting.RandomizedContext@1593948d for thread: Thread[#3,main,5,main]
+failing-failure	com.carrotsearch.randomizedtesting.ResourceDisposalError	Resource in scope TEST failed to close. Resource was registered from thread Thread[id=68, name=TEST-RandomizedTestingOracle$FailingResourceSuite.testFailing-seed#[DEADBEEF], state=RUNNABLE, group=TGRP-RandomizedTestingOracle$FailingResourceSuite], registration stack trace below.
+failing-cause	java.io.IOException	boom fails
+failing-event	close:fails
+failing-event	close:after-fails
+private	[Randomness, seed=[6D5501C1533E5C4D]]	[Randomness, seed=[CAFE]]	[DEADBEEF:6D5501C1533E5C4D:CAFE]	99bf87c7e49251f9	-7327052808973003838	[Randomness, seed=[6D5501C1533E5C4D]]

@@ -1,0 +1,1255 @@
+//! Sorting by distance from an origin, ported from
+//! `org.apache.lucene.document`.
+//!
+//! [`LatLonPointSortField`] and [`XYPointSortField`] are the two sort fields
+//! `LatLonDocValuesField.newDistanceSort` and `XYDocValuesField.newDistanceSort`
+//! build; each hands out the matching comparator, which reads the packed
+//! locations out of the field's sorted-numeric doc values.
+//!
+//! # Divergence from Lucene 10.5.0: the sort fields
+//!
+//! Java's comparators extend `FieldComparator<Double>` and implement
+//! `LeafFieldComparator`, returning `this` from `getLeafComparator`; here each
+//! is a [`SlotComparator`] whose leaf holds the
+//! `currentDocs` field, wrapped in a
+//! [`SharedFieldComparator`](crate::search::SharedFieldComparator) for the
+//! collector. Each also keeps the inherent, Java-named methods it has always
+//! had — `compare`, `set_bottom`, `sort_key` and the rest — which take the
+//! natural Rust types (`usize` slots, `f64` values) and the segment's doc
+//! values; the trait impls are thin adaptations of those to the trait's `i32`
+//! slots and [`SortValue`].
+//!
+//! What still diverges is the sort fields: Java's `LatLonPointSortField` and
+//! `XYPointSortField` extend `SortField` and override
+//! `getComparator(int, Pruning)`, whereas this crate has no `SortField`
+//! subclassing, so [`LatLonPointSortField`] and [`XYPointSortField`] *hold* a
+//! [`SortField`] and hand out their comparator
+//! through their own [`LatLonPointSortField::get_comparator`] and
+//! [`XYPointSortField::get_comparator`].
+
+use crate::document::geo_fields::{LatLonDocValuesField, XYDocValuesField};
+use crate::error::Result;
+use crate::geo::encoding::{GeoEncodingUtils, GeoUtils, XYEncodingUtils};
+use crate::geo::geometry::{Rectangle, XYRectangle};
+use crate::index::{DocValues, LeafReader, LeafReaderContext, SortedNumericDocValues};
+use crate::search::field_comparator::{SlotComparator, SortValue};
+use crate::search::scorable::Scorable;
+use crate::search::{MissingValue, SortField, SortFieldType};
+use crate::util::sloppy_math::SloppyMath;
+
+/// The second half of the haversine calculation, converting a sort key back
+/// into metres for display.
+///
+/// Equivalent to the static `LatLonPointDistanceComparator.haversin2(double)`.
+pub fn haversin2(partial: f64) -> f64 {
+    if partial.is_infinite() {
+        return partial;
+    }
+    SloppyMath::haversin_meters_from_sort_key(partial)
+}
+
+/// Compares documents by distance from an origin point.
+///
+/// Equivalent to `org.apache.lucene.document.LatLonPointDistanceComparator`.
+///
+/// When the least competitive item on the priority queue changes
+/// ([`set_bottom`](Self::set_bottom)), a bounding box representing the
+/// competitive distance to the top *N* is recomputed; then
+/// [`compare_bottom`](Self::compare_bottom) can reject a hit on the bounding
+/// box alone, without computing a distance for every value.
+pub struct LatLonPointDistanceComparator {
+    field: String,
+    latitude: f64,
+    longitude: f64,
+
+    values: Vec<f64>,
+    bottom: f64,
+    top_value: f64,
+
+    // The current bounding box(es) for the bottom distance on the priority
+    // queue, pre-encoded with LatLonPoint's encoding so an uncompetitive hit is
+    // excluded without decoding.
+    min_lon: i32,
+    max_lon: i32,
+    min_lat: i32,
+    max_lat: i32,
+    /// A second longitude range, for the cross-dateline case.
+    min_lon2: i32,
+
+    /// How many times [`set_bottom`](Self::set_bottom) has been called, for
+    /// adversary protection.
+    set_bottom_counter: i32,
+
+    current_values: Vec<i64>,
+    values_doc_id: i32,
+}
+
+impl std::fmt::Debug for LatLonPointDistanceComparator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LatLonPointDistanceComparator")
+            .field("field", &self.field)
+            .field("latitude", &self.latitude)
+            .field("longitude", &self.longitude)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LatLonPointDistanceComparator {
+    /// Creates the comparator for a top-`num_hits` search.
+    ///
+    /// Equivalent to
+    /// `LatLonPointDistanceComparator(String, double, double, int)`. Java
+    /// leaves `currentDocs` null until `getLeafComparator` is called; this port
+    /// starts on the empty doc values instead, which behaves the same way —
+    /// every document is missing — and removes a null field.
+    pub fn new(field: impl Into<String>, latitude: f64, longitude: f64, num_hits: usize) -> Self {
+        Self {
+            field: field.into(),
+            latitude,
+            longitude,
+            values: vec![0.0; num_hits],
+            bottom: 0.0,
+            top_value: 0.0,
+            min_lon: i32::MIN,
+            max_lon: i32::MAX,
+            min_lat: i32::MIN,
+            max_lat: i32::MAX,
+            min_lon2: i32::MAX,
+            set_bottom_counter: 0,
+            current_values: vec![0; 4],
+            values_doc_id: -1,
+        }
+    }
+
+    /// Compares the values held in two priority-queue slots.
+    ///
+    /// Equivalent to `FieldComparator.compare(int, int)`.
+    pub fn compare(&self, slot1: usize, slot2: usize) -> std::cmp::Ordering {
+        compare_doubles(self.values[slot1], self.values[slot2])
+    }
+
+    /// Records the least competitive slot and rebuilds the competitive bounding
+    /// box.
+    ///
+    /// Equivalent to `LeafFieldComparator.setBottom(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the bounding box raises.
+    pub fn set_bottom(&mut self, slot: usize) -> Result<()> {
+        self.bottom = self.values[slot];
+        // Build the bounding box(es) that exclude non-competitive hits, but
+        // start sampling once called far too often, so a worst-case order — a
+        // backwards distance order, say — does not build gobs of boxes.
+        if self.set_bottom_counter < 1024 || (self.set_bottom_counter & 0x3F) == 0x3F {
+            let box_ = Rectangle::from_point_distance(
+                self.latitude,
+                self.longitude,
+                haversin2(self.bottom),
+            )?;
+            // Pre-encode the box into the integer encoding, so an uncompetitive
+            // hit costs no decoding. This has some cost of its own.
+            self.min_lat = GeoEncodingUtils::encode_latitude(box_.min_lat())?;
+            self.max_lat = GeoEncodingUtils::encode_latitude(box_.max_lat())?;
+            if box_.crosses_dateline() {
+                // Box one.
+                self.min_lon = i32::MIN;
+                self.max_lon = GeoEncodingUtils::encode_longitude(box_.max_lon())?;
+                // Box two.
+                self.min_lon2 = GeoEncodingUtils::encode_longitude(box_.min_lon())?;
+            } else {
+                self.min_lon = GeoEncodingUtils::encode_longitude(box_.min_lon())?;
+                self.max_lon = GeoEncodingUtils::encode_longitude(box_.max_lon())?;
+                // Disable box two.
+                self.min_lon2 = i32::MAX;
+            }
+        }
+        self.set_bottom_counter += 1;
+        Ok(())
+    }
+
+    /// Records the value the `searchAfter` document holds.
+    ///
+    /// Equivalent to `FieldComparator.setTopValue(Double)`.
+    pub fn set_top_value(&mut self, value: f64) {
+        self.top_value = value;
+    }
+
+    /// Equivalent to the private `LatLonPointDistanceComparator.setValues()`.
+    fn set_values(&mut self, current_docs: &mut dyn SortedNumericDocValues) -> Result<()> {
+        if self.values_doc_id != current_docs.doc_id() {
+            debug_assert!(self.values_doc_id < current_docs.doc_id());
+            self.values_doc_id = current_docs.doc_id();
+            let count = current_docs.doc_value_count()? as usize;
+            if count > self.current_values.len() {
+                self.current_values
+                    .resize(crate::util::ArrayUtil::oversize(count, 8), 0);
+            }
+            for i in 0..count {
+                self.current_values[i] = current_docs.next_value()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Compares the document against the least competitive hit.
+    ///
+    /// Equivalent to `LeafFieldComparator.compareBottom(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn compare_bottom(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<i32> {
+        if doc > current_docs.doc_id() {
+            current_docs.advance(doc)?;
+        }
+        if doc < current_docs.doc_id() {
+            return Ok(ordering_to_int(compare_doubles(self.bottom, f64::INFINITY)));
+        }
+
+        self.set_values(current_docs)?;
+        let num_values = current_docs.doc_value_count()? as usize;
+
+        let mut cmp = -1;
+        for i in 0..num_values {
+            let encoded = self.current_values[i];
+
+            // Test the bounding box.
+            let latitude_bits = (encoded >> 32) as i32;
+            if latitude_bits < self.min_lat || latitude_bits > self.max_lat {
+                continue;
+            }
+            let longitude_bits = (encoded & 0xFFFF_FFFF) as i32;
+            if (longitude_bits < self.min_lon || longitude_bits > self.max_lon)
+                && longitude_bits < self.min_lon2
+            {
+                continue;
+            }
+
+            // Compute the real distance only inside the competitive bounding box.
+            let doc_latitude = GeoEncodingUtils::decode_latitude(latitude_bits);
+            let doc_longitude = GeoEncodingUtils::decode_longitude(longitude_bits);
+            cmp = cmp.max(ordering_to_int(compare_doubles(
+                self.bottom,
+                SloppyMath::haversin_sort_key(
+                    self.latitude,
+                    self.longitude,
+                    doc_latitude,
+                    doc_longitude,
+                ),
+            )));
+            // Once the document competes in the queue there is no need to go on.
+            if cmp > 0 {
+                return Ok(cmp);
+            }
+        }
+        Ok(cmp)
+    }
+
+    /// Copies the document's sort key into a priority-queue slot.
+    ///
+    /// Equivalent to `LeafFieldComparator.copy(int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn copy(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        slot: usize,
+        doc: i32,
+    ) -> Result<()> {
+        self.values[slot] = self.sort_key(current_docs, doc)?;
+        Ok(())
+    }
+
+    /// Binds the comparator to one leaf.
+    ///
+    /// Equivalent to `FieldComparator.getLeafComparator(LeafReaderContext)`,
+    /// which returns `this` because the class is its own leaf comparator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
+    /// an incompatible doc-values type, and propagates reader errors.
+    pub fn get_leaf_comparator(
+        &mut self,
+        reader: &dyn LeafReader,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
+        let field_infos = reader.get_field_infos();
+        if let Some(info) = field_infos.field_info(&self.field) {
+            LatLonDocValuesField::check_compatible(info)?;
+        }
+        let current_docs = match reader.get_sorted_numeric_doc_values(&self.field)? {
+            Some(values) => values,
+            // Equivalent to `DocValues.getSortedNumeric`, which substitutes an
+            // empty iterator for a field without doc values.
+            None => Box::new(DocValues::empty_sorted_numeric()),
+        };
+        self.values_doc_id = -1;
+        Ok(current_docs)
+    }
+
+    /// Returns the distance in metres held in a priority-queue slot.
+    ///
+    /// Equivalent to `FieldComparator.value(int)`.
+    pub fn value(&self, slot: usize) -> f64 {
+        haversin2(self.values[slot])
+    }
+
+    /// Compares the document against the `searchAfter` value.
+    ///
+    /// Equivalent to `LeafFieldComparator.compareTop(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn compare_top(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<i32> {
+        let key = self.sort_key(current_docs, doc)?;
+        Ok(ordering_to_int(compare_doubles(
+            self.top_value,
+            haversin2(key),
+        )))
+    }
+
+    /// Returns the smallest haversine sort key over the document's locations.
+    ///
+    /// Equivalent to `LatLonPointDistanceComparator.sortKey(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn sort_key(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<f64> {
+        if doc > current_docs.doc_id() {
+            current_docs.advance(doc)?;
+        }
+        let mut min_value = f64::INFINITY;
+        if doc == current_docs.doc_id() {
+            self.set_values(current_docs)?;
+            let num_values = current_docs.doc_value_count()? as usize;
+            for i in 0..num_values {
+                let encoded = self.current_values[i];
+                let doc_latitude = GeoEncodingUtils::decode_latitude((encoded >> 32) as i32);
+                let doc_longitude =
+                    GeoEncodingUtils::decode_longitude((encoded & 0xFFFF_FFFF) as i32);
+                min_value = min_value.min(SloppyMath::haversin_sort_key(
+                    self.latitude,
+                    self.longitude,
+                    doc_latitude,
+                    doc_longitude,
+                ));
+            }
+        }
+        Ok(min_value)
+    }
+}
+
+/// Compares documents by distance from an origin point, in cartesian space.
+///
+/// Equivalent to `org.apache.lucene.document.XYPointDistanceComparator`. See
+/// [`LatLonPointDistanceComparator`] for the bounding-box strategy, which is
+/// the same.
+pub struct XYPointDistanceComparator {
+    field: String,
+    x: f64,
+    y: f64,
+
+    /// Distances are kept as their square root, so that two square distances
+    /// that differ but whose real distances are equal still compare equal.
+    values: Vec<f64>,
+    bottom: f64,
+    top_value: f64,
+
+    min_x: i32,
+    max_x: i32,
+    min_y: i32,
+    max_y: i32,
+
+    set_bottom_counter: i32,
+
+    current_values: Vec<i64>,
+    values_doc_id: i32,
+}
+
+impl SlotComparator for LatLonPointDistanceComparator {
+    /// The `currentDocs` field `getLeafComparator` sets before returning
+    /// `this`.
+    type Leaf = Box<dyn SortedNumericDocValues>;
+
+    /// Equivalent to `LatLonPointDistanceComparator.compare(int, int)`.
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        ordering_to_int(LatLonPointDistanceComparator::compare(
+            self,
+            slot1 as usize,
+            slot2 as usize,
+        ))
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.setTopValue(Double)`. A value of another type is
+    /// ignored, as Java's signature makes it unrepresentable.
+    fn set_top_value(&mut self, value: SortValue) {
+        if let SortValue::Double(value) = value {
+            LatLonPointDistanceComparator::set_top_value(self, value);
+        }
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.value(int)`, which boxes the distance in metres.
+    fn value(&self, slot: i32) -> SortValue {
+        SortValue::Double(LatLonPointDistanceComparator::value(self, slot as usize))
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.getLeafComparator(LeafReaderContext)`, which
+    /// returns `this` because the class is its own leaf comparator.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf> {
+        LatLonPointDistanceComparator::get_leaf_comparator(self, context.leaf_reader().as_ref())
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.setBottom(int)`.
+    fn set_bottom(&mut self, _leaf: &mut Box<dyn SortedNumericDocValues>, slot: i32) -> Result<()> {
+        LatLonPointDistanceComparator::set_bottom(self, slot as usize)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.compareBottom(int)`, which reads no score.
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Box<dyn SortedNumericDocValues>,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        LatLonPointDistanceComparator::compare_bottom(self, leaf.as_mut(), doc)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.compareTop(int)`, which reads no score.
+    fn compare_top(
+        &mut self,
+        leaf: &mut Box<dyn SortedNumericDocValues>,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        LatLonPointDistanceComparator::compare_top(self, leaf.as_mut(), doc)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.copy(int, int)`, which reads no score.
+    fn copy(
+        &mut self,
+        leaf: &mut Box<dyn SortedNumericDocValues>,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        LatLonPointDistanceComparator::copy(self, leaf.as_mut(), slot as usize, doc)
+    }
+
+    /// Equivalent to `LatLonPointDistanceComparator.setScorer(Scorable)`, whose body is empty: the
+    /// distance is decided by the document's location alone, never by its
+    /// score.
+    fn set_scorer(
+        &mut self,
+        _leaf: &mut Box<dyn SortedNumericDocValues>,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for XYPointDistanceComparator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XYPointDistanceComparator")
+            .field("field", &self.field)
+            .field("x", &self.x)
+            .field("y", &self.y)
+            .finish_non_exhaustive()
+    }
+}
+
+impl XYPointDistanceComparator {
+    /// Creates the comparator for a top-`num_hits` search.
+    ///
+    /// Equivalent to `XYPointDistanceComparator(String, float, float, int)`.
+    pub fn new(field: impl Into<String>, x: f32, y: f32, num_hits: usize) -> Self {
+        Self {
+            field: field.into(),
+            x: f64::from(x),
+            y: f64::from(y),
+            values: vec![0.0; num_hits],
+            bottom: 0.0,
+            top_value: 0.0,
+            min_x: i32::MIN,
+            max_x: i32::MAX,
+            min_y: i32::MIN,
+            max_y: i32::MAX,
+            set_bottom_counter: 0,
+            current_values: vec![0; 4],
+            values_doc_id: -1,
+        }
+    }
+
+    /// Compares the values held in two priority-queue slots.
+    ///
+    /// Equivalent to `FieldComparator.compare(int, int)`.
+    pub fn compare(&self, slot1: usize, slot2: usize) -> std::cmp::Ordering {
+        compare_doubles(self.values[slot1], self.values[slot2])
+    }
+
+    /// Records the least competitive slot and rebuilds the competitive bounding
+    /// box.
+    ///
+    /// Equivalent to `LeafFieldComparator.setBottom(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the bounding box raises.
+    pub fn set_bottom(&mut self, slot: usize) -> Result<()> {
+        self.bottom = self.values[slot];
+        if self.bottom < f64::from(f32::MAX)
+            && (self.set_bottom_counter < 1024 || (self.set_bottom_counter & 0x3F) == 0x3F)
+        {
+            let rectangle =
+                XYRectangle::from_point_distance(self.x as f32, self.y as f32, self.bottom as f32)?;
+            // Pre-encode the box into the integer encoding, so an uncompetitive
+            // hit costs no decoding. This has some cost of its own.
+            self.min_x = XYEncodingUtils::encode(rectangle.min_x())?;
+            self.max_x = XYEncodingUtils::encode(rectangle.max_x())?;
+            self.min_y = XYEncodingUtils::encode(rectangle.min_y())?;
+            self.max_y = XYEncodingUtils::encode(rectangle.max_y())?;
+        }
+        self.set_bottom_counter += 1;
+        Ok(())
+    }
+
+    /// Records the value the `searchAfter` document holds.
+    ///
+    /// Equivalent to `FieldComparator.setTopValue(Double)`.
+    pub fn set_top_value(&mut self, value: f64) {
+        self.top_value = value;
+    }
+
+    /// Equivalent to the private `XYPointDistanceComparator.setValues()`.
+    fn set_values(&mut self, current_docs: &mut dyn SortedNumericDocValues) -> Result<()> {
+        if self.values_doc_id != current_docs.doc_id() {
+            debug_assert!(self.values_doc_id < current_docs.doc_id());
+            self.values_doc_id = current_docs.doc_id();
+            let count = current_docs.doc_value_count()? as usize;
+            if count > self.current_values.len() {
+                self.current_values
+                    .resize(crate::util::ArrayUtil::oversize(count, 8), 0);
+            }
+            for i in 0..count {
+                self.current_values[i] = current_docs.next_value()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Compares the document against the least competitive hit.
+    ///
+    /// Equivalent to `LeafFieldComparator.compareBottom(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn compare_bottom(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<i32> {
+        if doc > current_docs.doc_id() {
+            current_docs.advance(doc)?;
+        }
+        if doc < current_docs.doc_id() {
+            return Ok(ordering_to_int(compare_doubles(self.bottom, f64::INFINITY)));
+        }
+
+        self.set_values(current_docs)?;
+        let num_values = current_docs.doc_value_count()? as usize;
+
+        let mut cmp = -1;
+        for i in 0..num_values {
+            let encoded = self.current_values[i];
+
+            // Test the bounding box.
+            let x_bits = (encoded >> 32) as i32;
+            if x_bits < self.min_x || x_bits > self.max_x {
+                continue;
+            }
+            let y_bits = (encoded & 0xFFFF_FFFF) as i32;
+            if y_bits < self.min_y || y_bits > self.max_y {
+                continue;
+            }
+
+            // Compute the real distance only inside the competitive bounding box.
+            let doc_x = f64::from(XYEncodingUtils::decode(x_bits));
+            let doc_y = f64::from(XYEncodingUtils::decode(y_bits));
+            let diff_x = self.x - doc_x;
+            let diff_y = self.y - doc_y;
+            let distance = (diff_x * diff_x + diff_y * diff_y).sqrt();
+            cmp = cmp.max(ordering_to_int(compare_doubles(self.bottom, distance)));
+            // Once the document competes in the queue there is no need to go on.
+            if cmp > 0 {
+                return Ok(cmp);
+            }
+        }
+        Ok(cmp)
+    }
+
+    /// Copies the document's sort key into a priority-queue slot.
+    ///
+    /// Equivalent to `LeafFieldComparator.copy(int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn copy(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        slot: usize,
+        doc: i32,
+    ) -> Result<()> {
+        self.values[slot] = self.sort_key(current_docs, doc)?;
+        Ok(())
+    }
+
+    /// Binds the comparator to one leaf.
+    ///
+    /// Equivalent to `FieldComparator.getLeafComparator(LeafReaderContext)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
+    /// an incompatible doc-values type, and propagates reader errors.
+    pub fn get_leaf_comparator(
+        &mut self,
+        reader: &dyn LeafReader,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
+        let field_infos = reader.get_field_infos();
+        if let Some(info) = field_infos.field_info(&self.field) {
+            XYDocValuesField::check_compatible(info)?;
+        }
+        let current_docs = match reader.get_sorted_numeric_doc_values(&self.field)? {
+            Some(values) => values,
+            None => Box::new(DocValues::empty_sorted_numeric()),
+        };
+        self.values_doc_id = -1;
+        Ok(current_docs)
+    }
+
+    /// Returns the distance held in a priority-queue slot.
+    ///
+    /// Equivalent to `FieldComparator.value(int)`.
+    pub fn value(&self, slot: usize) -> f64 {
+        self.values[slot]
+    }
+
+    /// Compares the document against the `searchAfter` value.
+    ///
+    /// Equivalent to `LeafFieldComparator.compareTop(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn compare_top(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<i32> {
+        let key = self.sort_key(current_docs, doc)?;
+        Ok(ordering_to_int(compare_doubles(self.top_value, key)))
+    }
+
+    /// Returns the smallest distance over the document's locations.
+    ///
+    /// Equivalent to `XYPointDistanceComparator.sortKey(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    pub fn sort_key(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<f64> {
+        if doc > current_docs.doc_id() {
+            current_docs.advance(doc)?;
+        }
+        let mut min_value = f64::INFINITY;
+        if doc == current_docs.doc_id() {
+            self.set_values(current_docs)?;
+            let num_values = current_docs.doc_value_count()? as usize;
+            for i in 0..num_values {
+                let encoded = self.current_values[i];
+                let doc_x = f64::from(XYEncodingUtils::decode((encoded >> 32) as i32));
+                let doc_y = f64::from(XYEncodingUtils::decode((encoded & 0xFFFF_FFFF) as i32));
+                let diff_x = self.x - doc_x;
+                let diff_y = self.y - doc_y;
+                min_value = min_value.min((diff_x * diff_x + diff_y * diff_y).sqrt());
+            }
+        }
+        Ok(min_value)
+    }
+}
+
+/// Sorts by distance from an origin location.
+///
+/// Equivalent to `org.apache.lucene.document.LatLonPointSortField`, which
+/// `LatLonDocValuesField.newDistanceSort` builds.
+#[derive(Clone, Debug)]
+pub struct LatLonPointSortField {
+    sort_field: SortField,
+    latitude: f64,
+    longitude: f64,
+}
+
+impl SlotComparator for XYPointDistanceComparator {
+    /// The `currentDocs` field `getLeafComparator` sets before returning
+    /// `this`.
+    type Leaf = Box<dyn SortedNumericDocValues>;
+
+    /// Equivalent to `XYPointDistanceComparator.compare(int, int)`.
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        ordering_to_int(XYPointDistanceComparator::compare(
+            self,
+            slot1 as usize,
+            slot2 as usize,
+        ))
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.setTopValue(Double)`. A value of another type is
+    /// ignored, as Java's signature makes it unrepresentable.
+    fn set_top_value(&mut self, value: SortValue) {
+        if let SortValue::Double(value) = value {
+            XYPointDistanceComparator::set_top_value(self, value);
+        }
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.value(int)`, which boxes the distance in metres.
+    fn value(&self, slot: i32) -> SortValue {
+        SortValue::Double(XYPointDistanceComparator::value(self, slot as usize))
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.getLeafComparator(LeafReaderContext)`, which
+    /// returns `this` because the class is its own leaf comparator.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<Self::Leaf> {
+        XYPointDistanceComparator::get_leaf_comparator(self, context.leaf_reader().as_ref())
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.setBottom(int)`.
+    fn set_bottom(&mut self, _leaf: &mut Box<dyn SortedNumericDocValues>, slot: i32) -> Result<()> {
+        XYPointDistanceComparator::set_bottom(self, slot as usize)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.compareBottom(int)`, which reads no score.
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Box<dyn SortedNumericDocValues>,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        XYPointDistanceComparator::compare_bottom(self, leaf.as_mut(), doc)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.compareTop(int)`, which reads no score.
+    fn compare_top(
+        &mut self,
+        leaf: &mut Box<dyn SortedNumericDocValues>,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        XYPointDistanceComparator::compare_top(self, leaf.as_mut(), doc)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.copy(int, int)`, which reads no score.
+    fn copy(
+        &mut self,
+        leaf: &mut Box<dyn SortedNumericDocValues>,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        XYPointDistanceComparator::copy(self, leaf.as_mut(), slot as usize, doc)
+    }
+
+    /// Equivalent to `XYPointDistanceComparator.setScorer(Scorable)`, whose body is empty: the
+    /// distance is decided by the document's location alone, never by its
+    /// score.
+    fn set_scorer(
+        &mut self,
+        _leaf: &mut Box<dyn SortedNumericDocValues>,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl LatLonPointSortField {
+    /// Creates the sort field.
+    ///
+    /// Equivalent to `LatLonPointSortField(String, double, double)`, which
+    /// declares `SortField.Type.CUSTOM`, ascending order and a missing value of
+    /// positive infinity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for an invalid latitude or
+    /// longitude.
+    pub fn new(field: &str, latitude: f64, longitude: f64) -> Result<Self> {
+        GeoUtils::check_latitude(latitude)?;
+        GeoUtils::check_longitude(longitude)?;
+        Ok(Self {
+            // The subclass identity travels with the sort field, so a `Sort`
+            // holding it builds the distance comparator
+            // (`LatLonPointSortField.java:40-43`).
+            sort_field: SortField::with_kind(
+                Some(field.to_string()),
+                SortFieldType::Custom,
+                false,
+                Some(MissingValue::Double(f64::INFINITY)),
+                crate::search::SortFieldKind::LatLonDistance {
+                    latitude_bits: latitude.to_bits(),
+                    longitude_bits: longitude.to_bits(),
+                },
+            )?,
+            latitude,
+            longitude,
+        })
+    }
+
+    /// Returns this sort field as a [`SortField`].
+    pub fn sort_field(&self) -> &SortField {
+        &self.sort_field
+    }
+
+    /// Returns the field being sorted on.
+    pub fn get_field(&self) -> Option<&str> {
+        self.sort_field.field()
+    }
+
+    /// Returns the origin latitude.
+    pub fn latitude(&self) -> f64 {
+        self.latitude
+    }
+
+    /// Returns the origin longitude.
+    pub fn longitude(&self) -> f64 {
+        self.longitude
+    }
+
+    /// Returns the comparator that ranks the top `num_hits`.
+    ///
+    /// Equivalent to `LatLonPointSortField.getComparator(int, Pruning)`, whose
+    /// `Pruning` argument this port omits because that type is not part of the
+    /// search surface yet; the Java method ignores it.
+    ///
+    /// # Errors
+    ///
+    /// What building the comparator raises; a sort field always names a
+    /// field, which its constructor guarantees.
+    pub fn get_comparator(&self, num_hits: usize) -> Result<LatLonPointDistanceComparator> {
+        let field = self
+            .get_field()
+            .expect("INVARIANT: a distance sort field always names a field");
+        Ok(LatLonPointDistanceComparator::new(
+            field,
+            self.latitude,
+            self.longitude,
+            num_hits,
+        ))
+    }
+
+    /// Returns the value used for documents that have no value.
+    ///
+    /// Equivalent to `LatLonPointSortField.getMissingValue()`.
+    pub fn get_missing_value(&self) -> f64 {
+        match self.sort_field.missing_value() {
+            Some(MissingValue::Double(value)) => value,
+            _ => f64::INFINITY,
+        }
+    }
+
+    /// Replaces the value used for documents that have no value.
+    ///
+    /// Equivalent to `LatLonPointSortField.setMissingValue(Object)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for anything but positive
+    /// infinity, which is what Java rejects.
+    pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
+        self.sort_field
+            .set_missing_value(Some(MissingValue::Double(missing_value)))
+    }
+}
+
+/// `java.lang.Double.doubleToLongBits`: the bits of `value`, every NaN
+/// collapsed to the canonical `0x7ff8000000000000`.
+fn double_to_long_bits(value: f64) -> i64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000
+    } else {
+        value.to_bits() as i64
+    }
+}
+
+/// Equivalent to `org.apache.lucene.document.LatLonPointSortField.equals(Object)`
+/// (`LatLonPointSortField.java:73-82`), which compares the coordinates through
+/// `Double.doubleToLongBits`.
+impl PartialEq for LatLonPointSortField {
+    fn eq(&self, other: &Self) -> bool {
+        // `super.equals(obj)`, then `getClass() != obj.getClass()` (both are
+        // `LatLonPointSortField` by type here), then the coordinate bits.
+        self.sort_field == other.sort_field
+            && double_to_long_bits(self.latitude) == double_to_long_bits(other.latitude)
+            && double_to_long_bits(self.longitude) == double_to_long_bits(other.longitude)
+    }
+}
+
+impl LatLonPointSortField {
+    /// Returns the Java hash code of this sort field.
+    ///
+    /// Equivalent to `org.apache.lucene.document.LatLonPointSortField.hashCode()`
+    /// (`LatLonPointSortField.java:61-71`): `super.hashCode()` combined with the
+    /// `Double.doubleToLongBits` of latitude and longitude.
+    pub fn hash_code(&self) -> i32 {
+        use crate::util::java_collections::{
+            java_identity_hash_code_stand_in, java_string_hash_code,
+        };
+        // `Long.hashCode`-style fold of `Double.doubleToLongBits`.
+        let long_bits_hash = |value: f64| -> i32 {
+            let temp = double_to_long_bits(value);
+            (temp ^ ((temp as u64) >> 32) as i64) as i32
+        };
+        // `SortField.hashCode()` (`SortField.java:501-503`):
+        // `Objects.hash(field, type, reverse, comparatorSource, missingValue)`,
+        // which folds `31 * h + hash(e)` from 1. `type` is the enum constant
+        // `CUSTOM`, whose identity hash is unreproducible in Java itself and is
+        // replaced by the declared stable stand-in. `comparatorSource` is always
+        // `null` for this class (`LatLonPointSortField.java:30`).
+        let mut super_hash: i32 = 1;
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(self.sort_field.field().map_or(0, java_string_hash_code));
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.SortField$Type.CUSTOM",
+            ));
+        super_hash = super_hash
+            .wrapping_mul(31)
+            .wrapping_add(if self.sort_field.reverse() {
+                1231
+            } else {
+                1237
+            });
+        super_hash = super_hash.wrapping_mul(31);
+        let missing_hash = match self.sort_field.missing_value() {
+            None => 0,
+            Some(MissingValue::Double(v)) => long_bits_hash(v),
+            Some(MissingValue::Float(v)) => {
+                if v.is_nan() {
+                    0x7fc0_0000
+                } else {
+                    v.to_bits() as i32
+                }
+            }
+            Some(MissingValue::Int(v)) => v,
+            Some(MissingValue::Long(v)) => (v ^ ((v as u64) >> 32) as i64) as i32,
+            Some(MissingValue::StringFirst) => {
+                java_identity_hash_code_stand_in("org.apache.lucene.search.SortField.STRING_FIRST")
+            }
+            Some(MissingValue::StringLast) => {
+                java_identity_hash_code_stand_in("org.apache.lucene.search.SortField.STRING_LAST")
+            }
+        };
+        super_hash = super_hash.wrapping_mul(31).wrapping_add(missing_hash);
+        // `LatLonPointSortField.java:62-70`.
+        let mut result = super_hash;
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(long_bits_hash(self.latitude));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(long_bits_hash(self.longitude));
+        result
+    }
+}
+
+impl std::fmt::Display for LatLonPointSortField {
+    /// Equivalent to `LatLonPointSortField.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `StringBuilder.append(double)`: Java's `Double.toString`
+        // (`LatLonPointSortField.java:85-99`).
+        write!(
+            f,
+            "<distance:\"{}\" latitude={} longitude={}",
+            self.get_field().unwrap_or_default(),
+            crate::util::java_fmt::double_to_string(self.latitude),
+            crate::util::java_fmt::double_to_string(self.longitude)
+        )?;
+        if self.get_missing_value() != f64::INFINITY {
+            write!(
+                f,
+                " missingValue={}",
+                crate::util::java_fmt::double_to_string(self.get_missing_value())
+            )?;
+        }
+        f.write_str(">")
+    }
+}
+
+/// Sorts by distance from an origin location, in cartesian space.
+///
+/// Equivalent to `org.apache.lucene.document.XYPointSortField`, which
+/// `XYDocValuesField.newDistanceSort` builds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct XYPointSortField {
+    sort_field: SortField,
+    x: f32,
+    y: f32,
+}
+
+impl XYPointSortField {
+    /// Creates the sort field.
+    ///
+    /// Equivalent to `XYPointSortField(String, float, float)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`SortField`] construction raises.
+    pub fn new(field: &str, x: f32, y: f32) -> Result<Self> {
+        Ok(Self {
+            // See `LatLonPointSortField::new` (`XYPointSortField.java:39-42`).
+            sort_field: SortField::with_kind(
+                Some(field.to_string()),
+                SortFieldType::Custom,
+                false,
+                Some(MissingValue::Double(f64::INFINITY)),
+                crate::search::SortFieldKind::XYDistance {
+                    x_bits: x.to_bits(),
+                    y_bits: y.to_bits(),
+                },
+            )?,
+            x,
+            y,
+        })
+    }
+
+    /// Returns this sort field as a [`SortField`].
+    pub fn sort_field(&self) -> &SortField {
+        &self.sort_field
+    }
+
+    /// Returns the field being sorted on.
+    pub fn get_field(&self) -> Option<&str> {
+        self.sort_field.field()
+    }
+
+    /// Returns the origin x.
+    pub fn x(&self) -> f32 {
+        self.x
+    }
+
+    /// Returns the origin y.
+    pub fn y(&self) -> f32 {
+        self.y
+    }
+
+    /// Returns the comparator that ranks the top `num_hits`.
+    ///
+    /// Equivalent to `XYPointSortField.getComparator(int, Pruning)`; see the
+    /// note on [`LatLonPointSortField::get_comparator`].
+    ///
+    /// # Errors
+    ///
+    /// What building the comparator raises; a sort field always names a
+    /// field, which its constructor guarantees.
+    pub fn get_comparator(&self, num_hits: usize) -> Result<XYPointDistanceComparator> {
+        let field = self
+            .get_field()
+            .expect("INVARIANT: a distance sort field always names a field");
+        Ok(XYPointDistanceComparator::new(
+            field, self.x, self.y, num_hits,
+        ))
+    }
+
+    /// Returns the value used for documents that have no value.
+    ///
+    /// Equivalent to `XYPointSortField.getMissingValue()`.
+    pub fn get_missing_value(&self) -> f64 {
+        match self.sort_field.missing_value() {
+            Some(MissingValue::Double(value)) => value,
+            _ => f64::INFINITY,
+        }
+    }
+
+    /// Replaces the value used for documents that have no value.
+    ///
+    /// Equivalent to `XYPointSortField.setMissingValue(Object)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) for anything but positive
+    /// infinity.
+    pub fn set_missing_value(&mut self, missing_value: f64) -> Result<()> {
+        self.sort_field
+            .set_missing_value(Some(MissingValue::Double(missing_value)))
+    }
+}
+
+impl std::fmt::Display for XYPointSortField {
+    /// Equivalent to `XYPointSortField.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `StringBuilder.append(float)` and `append(double)`: Java's
+        // `Float.toString` and `Double.toString` (`XYPointSortField.java:82-96`).
+        write!(
+            f,
+            "<distance:\"{}\" x={} y={}",
+            self.get_field().unwrap_or_default(),
+            crate::util::java_fmt::float_to_string(self.x),
+            crate::util::java_fmt::float_to_string(self.y)
+        )?;
+        if self.get_missing_value() != f64::INFINITY {
+            write!(
+                f,
+                " missingValue={}",
+                crate::util::java_fmt::double_to_string(self.get_missing_value())
+            )?;
+        }
+        f.write_str(">")
+    }
+}
+
+/// Orders two doubles the way `Double.compare(double, double)` does: `NaN` is
+/// greater than everything, and `-0.0` sorts before `0.0`.
+fn compare_doubles(a: f64, b: f64) -> std::cmp::Ordering {
+    a.total_cmp(&b)
+}
+
+/// Turns an ordering into the `-1`/`0`/`1` a Java comparator returns.
+fn ordering_to_int(ordering: std::cmp::Ordering) -> i32 {
+    match ordering {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
+#[cfg(test)]
+mod comparator_trait_tests {
+    use super::*;
+    use crate::search::field_comparator::SharedFieldComparator;
+    use crate::search::scorable::Scorable;
+
+    /// A scorer the distance comparators must never consult.
+    #[derive(Debug, Default)]
+    struct UnusedScorer;
+
+    impl Scorable for UnusedScorer {
+        fn score(&mut self) -> Result<f32> {
+            panic!("a distance comparator must not read the score");
+        }
+    }
+
+    #[test]
+    fn lat_lon_comparator_is_a_field_comparator() {
+        let mut comparator = LatLonPointDistanceComparator::new("point", 0.0, 0.0, 3);
+        // Java allocates the slots with `this.values = new double[numHits]`
+        // (`LatLonPointDistanceComparator.java:76`), and a Java `double[]` is
+        // zero-initialised (JLS 4.12.5). So an untouched slot holds `0.0`, not
+        // a sentinel, and every slot compares equal until `copy` writes one.
+        assert_eq!(SlotComparator::compare(&comparator, 0, 1), 0);
+        SlotComparator::set_top_value(&mut comparator, SortValue::Double(1234.0));
+        // `value(int)` reports metres: it maps the slot through `haversin2`,
+        // and `SloppyMath.haversinMeters(0.0)` is `0.0` — measured with
+        // lucene-core-10.5.0.jar.
+        assert_eq!(
+            SlotComparator::value(&comparator, 0),
+            SortValue::Double(0.0)
+        );
+        // A value of the wrong type is ignored, as Java's signature makes it
+        // unrepresentable.
+        SlotComparator::set_top_value(&mut comparator, SortValue::Int(7));
+    }
+
+    #[test]
+    fn xy_comparator_is_a_field_comparator() {
+        let mut comparator = XYPointDistanceComparator::new("point", 0.0, 0.0, 3);
+        assert_eq!(SlotComparator::compare(&comparator, 0, 1), 0);
+        SlotComparator::set_top_value(&mut comparator, SortValue::Double(5.0));
+        // The cartesian comparator sorts on the distance itself, so `value(int)`
+        // returns the slot unchanged (`XYPointDistanceComparator.java:181-183`);
+        // an untouched slot is therefore `0.0`.
+        assert_eq!(
+            SlotComparator::value(&comparator, 2),
+            SortValue::Double(0.0)
+        );
+    }
+
+    #[test]
+    fn set_scorer_is_a_no_op_that_never_reads_the_score() {
+        // Equivalent to `LatLonPointDistanceComparator.setScorer(Scorable)` and
+        // its cartesian twin, whose bodies are empty: the distance depends on
+        // the document's location alone. `UnusedScorer` panics if it is ever
+        // consulted, so a body that did read the score would fail here.
+        let mut scorer = UnusedScorer;
+        let mut leaf: Box<dyn SortedNumericDocValues> = Box::new(DocValues::empty_sorted_numeric());
+        let mut lat_lon = LatLonPointDistanceComparator::new("point", 0.0, 0.0, 1);
+        SlotComparator::set_scorer(&mut lat_lon, &mut leaf, &mut scorer).unwrap();
+        let mut xy = XYPointDistanceComparator::new("point", 0.0, 0.0, 1);
+        SlotComparator::set_scorer(&mut xy, &mut leaf, &mut scorer).unwrap();
+    }
+
+    #[test]
+    fn the_comparators_can_be_handed_to_another_thread() {
+        // The hit queue's comparators travel with their collector to an
+        // executor's worker, as Java's do; only the leaf comparators, which
+        // hold the segment's doc values, stay on the worker.
+        fn assert_send<T: Send>(_: &T) {}
+        assert_send(&SharedFieldComparator::new(
+            LatLonPointDistanceComparator::new("point", 0.0, 0.0, 1),
+        ));
+        assert_send(&SharedFieldComparator::new(XYPointDistanceComparator::new(
+            "point", 0.0, 0.0, 1,
+        )));
+    }
+}
+
+#[cfg(test)]
+mod census_gap_equality_tests {
+    use super::*;
+
+    /// G-008: `LatLonPointSortField.equals` and `hashCode` compare the
+    /// coordinates through `Double.doubleToLongBits`
+    /// (`LatLonPointSortField.java:61-82`), so `0.0` and `-0.0` differ while
+    /// equal coordinates agree.
+    #[test]
+    fn gap_g008_lat_lon_sort_field_equality_uses_double_bits() {
+        let a = LatLonPointSortField::new("p", 0.0, 10.0).unwrap();
+        let b = LatLonPointSortField::new("p", 0.0, 10.0).unwrap();
+        let negative_zero = LatLonPointSortField::new("p", -0.0, 10.0).unwrap();
+        assert!(a == b);
+        assert_eq!(a.hash_code(), b.hash_code());
+        assert!(a != negative_zero);
+        assert_ne!(a.hash_code(), negative_zero.hash_code());
+        let other_lon = LatLonPointSortField::new("p", 0.0, -0.0).unwrap();
+        let other_lon2 = LatLonPointSortField::new("p", 0.0, 0.0).unwrap();
+        assert!(other_lon != other_lon2);
+        // `Long.hashCode(doubleToLongBits(-0.0))` is `Integer.MIN_VALUE`, so
+        // the two hashes differ by exactly `31 * MIN_VALUE` in the latitude
+        // term (`LatLonPointSortField.java:66-69`).
+        assert_eq!(
+            negative_zero.hash_code().wrapping_sub(a.hash_code()),
+            i32::MIN.wrapping_mul(31)
+        );
+    }
+}

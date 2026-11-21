@@ -1,0 +1,5 @@
+# lookup	result
+getName	FST50
+toString	FST50
+forName.getClass	org.apache.lucene.codecs.memory.FSTPostingsFormat
+forName.toString	FST50

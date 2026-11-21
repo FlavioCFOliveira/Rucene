@@ -1,0 +1,7 @@
+# case (extension-corruption)	class	message ($D = the index directory, $ID = the segment id, $BADID = the flipped id)
+tmd-truncate	org.apache.lucene.index.CorruptIndexException	misplaced codec footer (file truncated?): remaining=15, expected=16, fp=193 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_Direct_0.tmd")))
+tmd-id	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_Direct_0.tmd")))
+tmd-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_Direct_0.tmd")))
+tim-truncate	org.apache.lucene.index.CorruptIndexException	truncated file: length=1129 but expectedLength==1130 (resource=NIOFSIndexInput(path="$D/_5_Direct_0.tim"))
+tim-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=NIOFSIndexInput(path="$D/_5_Direct_0.tim"))
+tim-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_Direct_0.tim")))

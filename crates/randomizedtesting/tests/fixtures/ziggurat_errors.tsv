@@ -1,0 +1,22 @@
+# gen	call	class	message
+jdk	nextGaussian(0,-1)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+jdk	nextGaussian(0,-inf)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+jdk	nextGaussian(0,-min)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+jdk	nextGaussian(NaN,-1)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+jdk	nextGaussian(0,-0)	OK	-
+jdk	nextGaussian(0,NaN)	OK	-
+jdk	noDrawOnError	true	-
+xoro	nextGaussian(0,-1)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+xoro	nextGaussian(0,-inf)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+xoro	nextGaussian(0,-min)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+xoro	nextGaussian(NaN,-1)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+xoro	nextGaussian(0,-0)	OK	-
+xoro	nextGaussian(0,NaN)	OK	-
+xoro	noDrawOnError	true	-
+asserting	nextGaussian(0,-1)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+asserting	nextGaussian(0,-inf)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+asserting	nextGaussian(0,-min)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+asserting	nextGaussian(NaN,-1)	java.lang.IllegalArgumentException	standard deviation must be non-negative
+asserting	nextGaussian(0,-0)	OK	-
+asserting	nextGaussian(0,NaN)	OK	-
+asserting	noDrawOnError	true	-

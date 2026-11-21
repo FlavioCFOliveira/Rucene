@@ -4,15 +4,18 @@
 
 #![deny(unsafe_code)]
 
+use std::sync::Arc;
+
 use crate::codecs::codec_util;
 use crate::codecs::field_infos::FieldInfosFormat;
 use crate::codecs::stub::{FieldInfo, FieldInfos, SegmentInfo};
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::index_file_names::{segment_file_name, FIELD_INFO_EXTENSION};
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
 };
-use crate::store::{DataInput, Directory, IOContext};
+use crate::store::{DataInput, Directory, IOContext, IndexInput, IndexOutput};
+use crate::util::java_collections::JavaStringMap;
 
 const CODEC_NAME: &str = "Lucene94FieldInfos";
 const FORMAT_START: i32 = 0;
@@ -55,23 +58,66 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, FIELD_INFO_EXTENSION);
         let mut input = directory.open_checksum_input(&file_name)?;
 
-        let format = codec_util::check_index_header(
-            input.as_mut(),
-            CODEC_NAME,
-            FORMAT_START,
-            FORMAT_CURRENT,
-            &segment_info.id(),
-            segment_suffix,
-        )?;
+        // The `try` block, whose failure `CodecUtil.checkFooter(input,
+        // priorE)` weighs in the `finally`, all inside the try-with-resources
+        // (`Lucene94FieldInfosFormat.java:134-246`).
+        let read = (|| -> Result<Vec<FieldInfo>> {
+            let format = codec_util::check_index_header(
+                input.as_mut(),
+                CODEC_NAME,
+                FORMAT_START,
+                FORMAT_CURRENT,
+                &segment_info.id(),
+                segment_suffix,
+            )?;
 
-        let size = input.read_v_int()?;
-        let mut infos = Vec::with_capacity(size as usize);
-        for _ in 0..size {
-            infos.push(read_field_info(input.as_mut(), format)?);
-        }
-
-        codec_util::check_footer(input.as_mut())?;
-        FieldInfos::new(infos)
+            let size = input.read_v_int()?;
+            // `infos = new FieldInfo[size]` (`Lucene94FieldInfosFormat.java:148`):
+            // the JVM's `NegativeArraySizeException` (message: the size) for a
+            // negative count.
+            if size < 0 {
+                return Err(LuceneError::unchecked(
+                    "java.lang.NegativeArraySizeException",
+                    size.to_string(),
+                ));
+            }
+            // `new FieldInfo[size]` on JDK 25 (observed, #601): HotSpot's
+            // object-array maximum is `Integer.MAX_VALUE - 2`, above which the
+            // JVM raises `OutOfMemoryError: Requested array size exceeds VM
+            // limit` whatever the heap; below it, `OutOfMemoryError: Java heap
+            // space` when the heap cannot hold the array of references, and
+            // otherwise the read proceeds (and a corrupt count runs out of
+            // file). The array Java allocates is one reference per field, so
+            // the probe reserves one reference-sized slot per field; a Rust
+            // allocation failure would abort the process, so the probe uses
+            // `try_reserve_exact`. Each `FieldInfo` is then allocated as it is
+            // read, as Java allocates each `new FieldInfo(...)`.
+            if size > i32::MAX - 2 {
+                return Err(LuceneError::jvm_out_of_memory(
+                    "Requested array size exceeds VM limit",
+                ));
+            }
+            Vec::<Box<FieldInfo>>::new()
+                .try_reserve_exact(size as usize)
+                .map_err(|_| LuceneError::jvm_out_of_memory("Java heap space"))?;
+            let mut infos = Vec::new();
+            // previous field's attribute map, we share when possible:
+            // `lastAttributes = Collections.emptyMap()`
+            // (`Lucene94FieldInfosFormat.java:150-151`).
+            let mut last_attributes = crate::index::field_infos::empty_attributes();
+            for _ in 0..size {
+                infos.push(read_field_info(
+                    input.as_mut(),
+                    format,
+                    &mut last_attributes,
+                )?);
+            }
+            Ok(infos)
+        })();
+        let read = codec_util::check_footer_after(input.as_mut(), read);
+        // `return new FieldInfos(infos)`, still inside the try-with-resources.
+        let result = read.and_then(FieldInfos::new);
+        crate::store::close_after(input.as_mut(), result)
     }
 
     fn write(
@@ -83,9 +129,27 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
         context: &dyn IOContext,
     ) -> Result<()> {
         let file_name = segment_file_name(&segment_info.name, segment_suffix, FIELD_INFO_EXTENSION);
+        // `try (IndexOutput output = directory.createOutput(fileName, context))`
+        // (`Lucene94FieldInfosFormat.java:420`): the output is closed on every
+        // exit; an exception of the body wins over one of the close, which
+        // Java suppresses.
         let mut output = directory.create_output(&file_name, context)?;
+        let body = Self::write_body(output.as_mut(), segment_info, segment_suffix, infos);
+        let closed = output.close();
+        body.and(closed)
+    }
+}
+
+impl Lucene94FieldInfosFormat {
+    /// The body of `write`'s try-with-resources block.
+    fn write_body(
+        output: &mut dyn IndexOutput,
+        segment_info: &SegmentInfo,
+        segment_suffix: &str,
+        infos: &FieldInfos,
+    ) -> Result<()> {
         codec_util::write_index_header(
-            output.as_mut(),
+            output,
             CODEC_NAME,
             FORMAT_CURRENT,
             &segment_info.id(),
@@ -94,22 +158,68 @@ impl FieldInfosFormat for Lucene94FieldInfosFormat {
 
         output.write_v_int(infos.iter().count() as i32)?;
         for fi in infos.iter() {
-            fi.write(output.as_mut())?;
+            fi.check_consistency()?;
+
+            output.write_string(&fi.name)?;
+            output.write_v_int(fi.number)?;
+
+            let mut bits = 0u8;
+            if fi.has_term_vectors() {
+                bits |= STORE_TERMVECTOR;
+            }
+            if fi.omits_norms() {
+                bits |= OMIT_NORMS;
+            }
+            if fi.has_payloads() {
+                bits |= STORE_PAYLOADS;
+            }
+            if fi.soft_deletes_field {
+                bits |= SOFT_DELETES_FIELD;
+            }
+            if fi.is_parent_field {
+                bits |= PARENT_FIELD_FIELD;
+            }
+            output.write_byte(bits)?;
+
+            output.write_byte(index_options_byte(fi.index_options))?;
+
+            // pack the DV type and hasNorms in one byte
+            output.write_byte(doc_values_byte(fi.doc_values_type))?;
+            output.write_byte(doc_values_skip_index_byte(fi.doc_values_skip_index_type))?;
+            output.write_long(fi.doc_values_gen)?;
+            output.write_map_of_strings(&fi.attributes())?;
+            output.write_v_int(fi.point_dimension_count)?;
+            if fi.point_dimension_count != 0 {
+                output.write_v_int(fi.point_index_dimension_count)?;
+                output.write_v_int(fi.point_num_bytes)?;
+            }
+            output.write_v_int(fi.vector_dimension)?;
+            output.write_byte(fi.vector_encoding as u8)?;
+            output.write_byte(dist_func_to_ord(fi.vector_similarity_function)?)?;
         }
 
-        codec_util::write_footer(output.as_mut())?;
-        output.close()?;
-        Ok(())
+        codec_util::write_footer(output)
     }
 }
 
-fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> {
+/// Reads one field's entry, the body of the loop of
+/// `Lucene94FieldInfosFormat.read` (`Lucene94FieldInfosFormat.java:153-241`).
+///
+/// `last_attributes` is the loop's `lastAttributes`: the previous field's
+/// attribute map, which this field shares when its own map is equal to it.
+fn read_field_info(
+    input: &mut dyn IndexInput,
+    format: i32,
+    last_attributes: &mut Arc<JavaStringMap>,
+) -> Result<FieldInfo> {
     let name = input.read_string()?;
     let field_number = input.read_v_int()?;
     if field_number < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "invalid field number for field: {name}, fieldNumber={field_number}"
-        )));
+        // `Lucene94FieldInfosFormat.java:156-159`.
+        return Err(LuceneError::corrupt_index(
+            format!("invalid field number for field: {name}, fieldNumber={field_number}"),
+            input.to_java_string(),
+        ));
     }
 
     let bits = input.read_byte()?;
@@ -123,31 +233,78 @@ fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> 
         false
     };
 
+    // `Lucene94FieldInfosFormat.java:167-182`: `Integer.toBinaryString(bits)`
+    // of the signed `byte`, unpadded, 32 digits when negative, built inside
+    // each `throw`.
+    // PERF: built only on the failing branch, as Java builds it; building it
+    // up front cost a formatted string per field.
+    let binary = || format!("{:b}", bits as i8 as i32);
     if (bits & 0xC0) != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "unused bits are set \"{bits:08b}\""
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!("unused bits are set \"{}\"", binary()),
+            input.to_java_string(),
+        ));
     }
     if format < FORMAT_PARENT_FIELD && (bits & 0xF0) != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "parent field bit is set but shouldn't \"{bits:08b}\""
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!("parent field bit is set but shouldn't \"{}\"", binary()),
+            input.to_java_string(),
+        ));
     }
     if format < FORMAT_DOCVALUE_SKIPPER && (bits & DOCVALUES_SKIPPER) != 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "doc values skipper bit is set but shouldn't \"{bits:08b}\""
-        )));
+        return Err(LuceneError::corrupt_index(
+            format!(
+                "doc values skipper bit is set but shouldn't \"{}\"",
+                binary()
+            ),
+            input.to_java_string(),
+        ));
     }
 
-    let index_options = index_options_from_byte(input.read_byte()?)?;
-    let doc_values_type = doc_values_type_from_byte(input.read_byte()?)?;
+    // `getIndexOptions`, `getDocValuesType`, `getDocValuesSkipIndexType` and
+    // `getVectorEncoding` (`Lucene94FieldInfosFormat.java:290-323, 388-408`)
+    // print the signed `byte` and name `input`.
+    let b = input.read_byte()?;
+    let index_options = index_options_from_byte(b).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("invalid IndexOptions byte: {}", b as i8),
+            input.to_java_string(),
+        )
+    })?;
+    let b = input.read_byte()?;
+    let doc_values_type = doc_values_type_from_byte(b).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("invalid docvalues byte: {}", b as i8),
+            input.to_java_string(),
+        )
+    })?;
     let doc_values_skip_index = if format >= FORMAT_DOCVALUE_SKIPPER {
-        doc_values_skip_index_type_from_byte(input.read_byte()?)?
+        let b = input.read_byte()?;
+        doc_values_skip_index_type_from_byte(b).ok_or_else(|| {
+            LuceneError::corrupt_index(
+                format!("invalid docvaluesskipindex byte: {}", b as i8),
+                input.to_java_string(),
+            )
+        })?
     } else {
         DocValuesSkipIndexType::NONE
     };
     let dv_gen = input.read_long()?;
     let attributes = input.read_map_of_strings()?;
+    // just use the last field's map if its the same
+    // (`Lucene94FieldInfosFormat.java:197-201`).
+    // PERF: the equal map read for this field is dropped, so consecutive
+    // fields hold one map, as in Java.
+    let attributes = if attributes == **last_attributes {
+        Arc::clone(last_attributes)
+    } else if attributes.is_empty() {
+        // `readMapOfStrings` returns the `Collections.emptyMap()` singleton
+        // for a count of zero (`DataInput.java:263-264`).
+        crate::index::field_infos::empty_attributes()
+    } else {
+        Arc::new(attributes)
+    };
+    *last_attributes = Arc::clone(&attributes);
 
     let point_data_dimension_count = input.read_v_int()?;
     let (point_index_dimension_count, point_num_bytes) = if point_data_dimension_count != 0 {
@@ -157,10 +314,24 @@ fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> 
     };
 
     let vector_dimension = input.read_v_int()?;
-    let vector_encoding = vector_encoding_from_byte(input.read_byte()?)?;
-    let vector_similarity_function = vector_similarity_function_from_byte(input.read_byte()?)?;
+    let b = input.read_byte()?;
+    let vector_encoding = vector_encoding_from_byte(b).ok_or_else(|| {
+        LuceneError::corrupt_index(
+            format!("invalid vector encoding: {}", b as i8),
+            input.to_java_string(),
+        )
+    })?;
+    let dist_func_byte = input.read_byte()?;
+    let vector_similarity_function = get_dist_func(input, dist_func_byte)?;
 
-    FieldInfo::new_full(
+    // `new FieldInfo(...)` and `checkConsistency()` sit in a `try` whose
+    // `IllegalStateException` is rethrown as `CorruptIndexException("invalid
+    // fieldinfo for field: " + name + ", fieldNumber=" + fieldNumber, input,
+    // e)` (`Lucene94FieldInfosFormat.java:215-240`). The field is built and
+    // then checked, so that the message is built from its name only when the
+    // check throws.
+    // PERF: building the message up front cost a formatted string per field.
+    let info = FieldInfo::new_unchecked(
         name,
         field_number,
         store_term_vector,
@@ -179,79 +350,265 @@ fn read_field_info(input: &mut dyn DataInput, format: i32) -> Result<FieldInfo> 
         vector_similarity_function,
         soft_deletes_field,
         is_parent_field,
-    )
-}
-
-fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
-    match b {
-        0 => Ok(IndexOptions::NONE),
-        1 => Ok(IndexOptions::DOCS),
-        2 => Ok(IndexOptions::DOCS_AND_FREQS),
-        3 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
-        4 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
-        5 => Ok(IndexOptions::DOCS_AND_CUSTOM_FREQS),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid IndexOptions byte: {b}"
-        ))),
+    );
+    match info.check_consistency() {
+        Ok(()) => Ok(info),
+        Err(error) if matches!(error.kind, LuceneErrorKind::IllegalState { .. }) => {
+            Err(LuceneError::corrupt_index_with_cause(
+                format!(
+                    "invalid fieldinfo for field: {}, fieldNumber={field_number}",
+                    info.name
+                ),
+                input.to_java_string(),
+                error,
+            ))
+        }
+        Err(error) => Err(error),
     }
 }
 
-fn doc_values_type_from_byte(b: u8) -> Result<DocValuesType> {
-    match b {
-        0 => Ok(DocValuesType::NONE),
-        1 => Ok(DocValuesType::NUMERIC),
-        2 => Ok(DocValuesType::BINARY),
-        3 => Ok(DocValuesType::SORTED),
-        4 => Ok(DocValuesType::SORTED_SET),
-        5 => Ok(DocValuesType::SORTED_NUMERIC),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid docvalues byte: {b}"
-        ))),
+/// The vector similarity functions this format can encode, in the order it
+/// encodes them.
+///
+/// The list is declared here, rather than derived from the declaration order of
+/// [`VectorSimilarityFunction`], so that reordering that enum cannot silently
+/// change the on-disk format. The values and their order match
+/// `VectorSimilarityFunction` as of Lucene 9.10.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat.SIMILARITY_FUNCTIONS`,
+/// package-private in Java; `pub` here, as tests outside the crate read it
+/// the way Java's same-package tests do.
+pub const SIMILARITY_FUNCTIONS: [VectorSimilarityFunction; 4] = [
+    VectorSimilarityFunction::EUCLIDEAN,
+    VectorSimilarityFunction::DOT_PRODUCT,
+    VectorSimilarityFunction::COSINE,
+    VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+];
+
+/// Returns the byte that encodes `index_options`.
+///
+/// Divergence: Lucene's `switch` ends in a `default` branch that throws an
+/// `AssertionError` for an unhandled `IndexOptions`, and a static initialiser
+/// asserts the enum still has six values
+/// (`Lucene94FieldInfosFormat.java:363-388`). Rust checks the match for
+/// exhaustiveness at compile time, so adding a variant to [`IndexOptions`]
+/// breaks the build here instead of at run time and the unreachable branch is
+/// dropped; this function therefore cannot fail.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#indexOptionsByte`.
+fn index_options_byte(index_options: IndexOptions) -> u8 {
+    match index_options {
+        IndexOptions::NONE => 0,
+        IndexOptions::DOCS => 1,
+        IndexOptions::DOCS_AND_FREQS => 2,
+        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS => 3,
+        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS => 4,
+        IndexOptions::DOCS_AND_CUSTOM_FREQS => 5,
     }
 }
 
-fn doc_values_skip_index_type_from_byte(b: u8) -> Result<DocValuesSkipIndexType> {
-    match b {
-        0 => Ok(DocValuesSkipIndexType::NONE),
-        1 => Ok(DocValuesSkipIndexType::RANGE),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid docvaluesskipindex byte: {b}"
-        ))),
+/// Returns the byte that encodes `doc_values_type`.
+///
+/// Divergence: as in [`index_options_byte`], Lucene's unhandled-value
+/// `AssertionError` (`Lucene94FieldInfosFormat.java:258-276`) becomes a
+/// compile-time exhaustiveness check, so this function cannot fail.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#docValuesByte`.
+fn doc_values_byte(doc_values_type: DocValuesType) -> u8 {
+    match doc_values_type {
+        DocValuesType::NONE => 0,
+        DocValuesType::NUMERIC => 1,
+        DocValuesType::BINARY => 2,
+        DocValuesType::SORTED => 3,
+        DocValuesType::SORTED_SET => 4,
+        DocValuesType::SORTED_NUMERIC => 5,
     }
 }
 
-fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
-    match b {
-        0 => Ok(VectorEncoding::BYTE),
-        1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector encoding: {b}"
-        ))),
+/// Returns the byte that encodes `doc_values_skip_index_type`.
+///
+/// Divergence: as in [`index_options_byte`], Lucene's unhandled-value
+/// `AssertionError` (`Lucene94FieldInfosFormat.java:278-288`) becomes a
+/// compile-time exhaustiveness check, so this function cannot fail.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#docValuesSkipIndexByte`.
+fn doc_values_skip_index_byte(doc_values_skip_index_type: DocValuesSkipIndexType) -> u8 {
+    match doc_values_skip_index_type {
+        DocValuesSkipIndexType::NONE => 0,
+        DocValuesSkipIndexType::RANGE => 1,
     }
 }
 
-fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunction> {
+/// Returns the similarity function that ordinal `i` stands for.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`] when `i` names no function, which
+/// [`get_dist_func`] turns into a corruption report once it knows the ordinal
+/// came off disk.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#distOrdToFunc`.
+fn dist_ord_to_func(i: u8) -> Result<VectorSimilarityFunction> {
+    SIMILARITY_FUNCTIONS
+        .get(i as usize)
+        .copied()
+        // `Lucene94FieldInfosFormat.java:347-352`: the signed `byte`.
+        .ok_or_else(|| {
+            LuceneError::illegal_argument(format!("invalid distance function: {}", i as i8))
+        })
+}
+
+/// Returns the ordinal that encodes `func`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`] for a similarity function this
+/// format cannot encode.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#distFuncToOrd`.
+fn dist_func_to_ord(func: VectorSimilarityFunction) -> Result<u8> {
+    for (i, candidate) in SIMILARITY_FUNCTIONS.iter().enumerate() {
+        if *candidate == func {
+            return Ok(i as u8);
+        }
+    }
+    Err(LuceneError::illegal_argument(format!(
+        "invalid distance function: {func:?}"
+    )))
+}
+
+/// Reads back the similarity function that byte `b` encodes, reporting an
+/// unknown ordinal as index corruption, naming `input` as its resource
+/// (`Lucene94FieldInfosFormat.java:328-334`). The byte is printed signed, as
+/// Java's `byte` concatenation prints it.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CorruptIndex`] when `b` names no similarity function.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene94.Lucene94FieldInfosFormat#getDistFunc`.
+fn get_dist_func(input: &dyn IndexInput, b: u8) -> Result<VectorSimilarityFunction> {
+    dist_ord_to_func(b).map_err(|e| {
+        LuceneError::corrupt_index_with_cause(
+            format!("invalid distance function: {}", b as i8),
+            input.to_java_string(),
+            e,
+        )
+    })
+}
+
+fn index_options_from_byte(b: u8) -> Option<IndexOptions> {
     match b {
-        0 => Ok(VectorSimilarityFunction::EUCLIDEAN),
-        1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
-        2 => Ok(VectorSimilarityFunction::COSINE),
-        3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector similarity function: {b}"
-        ))),
+        0 => Some(IndexOptions::NONE),
+        1 => Some(IndexOptions::DOCS),
+        2 => Some(IndexOptions::DOCS_AND_FREQS),
+        3 => Some(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
+        4 => Some(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
+        5 => Some(IndexOptions::DOCS_AND_CUSTOM_FREQS),
+        _ => None,
+    }
+}
+
+fn doc_values_type_from_byte(b: u8) -> Option<DocValuesType> {
+    match b {
+        0 => Some(DocValuesType::NONE),
+        1 => Some(DocValuesType::NUMERIC),
+        2 => Some(DocValuesType::BINARY),
+        3 => Some(DocValuesType::SORTED),
+        4 => Some(DocValuesType::SORTED_SET),
+        5 => Some(DocValuesType::SORTED_NUMERIC),
+        _ => None,
+    }
+}
+
+fn doc_values_skip_index_type_from_byte(b: u8) -> Option<DocValuesSkipIndexType> {
+    match b {
+        0 => Some(DocValuesSkipIndexType::NONE),
+        1 => Some(DocValuesSkipIndexType::RANGE),
+        _ => None,
+    }
+}
+
+fn vector_encoding_from_byte(b: u8) -> Option<VectorEncoding> {
+    match b {
+        0 => Some(VectorEncoding::BYTE),
+        1 => Some(VectorEncoding::FLOAT32),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// The four serialization sites for `VectorEncoding` and
+    /// `VectorSimilarityFunction` each carry their own ordinal table. Java has
+    /// one, `Enum.ordinal()`, so the tables must agree with the declaration
+    /// order of the Rust enums and therefore with each other; a divergence here
+    /// silently writes an unreadable index.
+    #[test]
+    fn vector_ordinals_match_the_enum_declaration_order() {
+        use crate::index::{VectorEncoding, VectorSimilarityFunction};
+
+        for encoding in [VectorEncoding::BYTE, VectorEncoding::FLOAT32] {
+            let ordinal = encoding as i32;
+            assert_eq!(
+                super::vector_encoding_from_byte(ordinal as u8).unwrap(),
+                encoding
+            );
+        }
+
+        for similarity in [
+            VectorSimilarityFunction::EUCLIDEAN,
+            VectorSimilarityFunction::DOT_PRODUCT,
+            VectorSimilarityFunction::COSINE,
+            VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT,
+        ] {
+            let ordinal = similarity as i32;
+            assert_eq!(super::dist_ord_to_func(ordinal as u8).unwrap(), similarity);
+        }
+    }
+
     use super::*;
     use crate::codecs::tests::test_segment_info;
-    use crate::store::RamDirectory;
-    use std::collections::HashMap;
+    use crate::store::ByteBuffersDirectory;
+
+    /// `getDistFunc` names the input in its `CorruptIndexException`
+    /// (`Lucene94FieldInfosFormat.java:328-334`), and prints the byte signed.
+    #[test]
+    fn get_dist_func_names_the_resource() {
+        let dir = ByteBuffersDirectory::default();
+        {
+            let mut out = dir
+                .create_output("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_byte(0).unwrap();
+            out.close().unwrap();
+        }
+        let input = dir
+            .open_input("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let resource = input.resource_description().to_string();
+        let error = super::get_dist_func(input.as_ref(), 0xF0).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            LuceneError::corrupt_index("invalid distance function: -16", &resource).to_string()
+        );
+        assert!(error.to_string().contains("(resource="), "{error}");
+        assert_eq!(
+            super::get_dist_func(input.as_ref(), 2).unwrap(),
+            VectorSimilarityFunction::COSINE
+        );
+    }
 
     #[test]
     fn round_trip_field_infos() {
-        let dir = RamDirectory::default();
+        let dir = ByteBuffersDirectory::default();
         let format = Lucene94FieldInfosFormat::new();
         let info = test_segment_info("_0", 10);
 
@@ -289,7 +646,7 @@ mod tests {
             DocValuesType::NUMERIC,
             DocValuesSkipIndexType::NONE,
             -1,
-            HashMap::new(),
+            crate::util::java_collections::JavaStringMap::default(),
             0,
             0,
             0,
@@ -313,9 +670,258 @@ mod tests {
         assert_eq!(read.field_info("id").unwrap().number, 0);
         assert_eq!(read.field_info("title").unwrap().number, 1);
         assert_eq!(
-            read.field_info("title").unwrap().get_attribute("foo"),
-            Some("bar".to_string())
+            read.field_info("title")
+                .unwrap()
+                .get_attribute("foo")
+                .as_deref(),
+            Some("bar")
         );
         assert_eq!(read.field_info("vector").unwrap().vector_dimension, 128);
+    }
+
+    /// G-029: `new FieldInfo(...)` and `checkConsistency()` run inside the
+    /// `try` that rethrows an `IllegalStateException` as
+    /// `CorruptIndexException("invalid fieldinfo for field: ...")`
+    /// (`Lucene94FieldInfosFormat.java:215-240`). `checkConsistency` throws
+    /// only `IllegalArgumentException` (`FieldInfo.java:133-235`), so an
+    /// inconsistent entry (checksum kept valid) reaches the caller as that
+    /// unwrapped `IllegalArgumentException`, after `checkFooter` verified the
+    /// checksum, exactly as in Java.
+    #[test]
+    fn gap_g029_inconsistent_field_info_read_fails_as_java() {
+        let dir = ByteBuffersDirectory::default();
+        let format = Lucene94FieldInfosFormat::new();
+        let info = test_segment_info("_0", 10);
+        let field = FieldInfo::new_full(
+            "zz",
+            0,
+            false,
+            false,
+            false,
+            IndexOptions::DOCS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .unwrap();
+        let infos = FieldInfos::new(vec![field]).unwrap();
+        format
+            .write(&dir, &info, "", &infos, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let file = "_0.fnm";
+        let mut bytes = {
+            let input = dir
+                .open_input(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            let len = input.length() as usize;
+            let mut buf = vec![0u8; len];
+            let mut input = input;
+            input.read_bytes(Some(&mut buf), 0, len).unwrap();
+            buf
+        };
+        // name "zz" (vInt length 2), field number 0, then the bits byte.
+        let at = bytes
+            .windows(4)
+            .position(|w| w == [2, b'z', b'z', 0])
+            .expect("the field entry")
+            + 4;
+        bytes[at] |= STORE_PAYLOADS;
+        let body = bytes.len() - 8;
+        let crc = i64::from(crc32fast::hash(&bytes[..body]));
+        bytes[body..].copy_from_slice(&crc.to_be_bytes());
+        dir.delete_file(file).unwrap();
+        {
+            let mut out = dir
+                .create_output(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+            out.close().unwrap();
+        }
+        let error = format
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. }
+                if message == "indexed field 'zz' cannot have payloads without positions"),
+            "{error:?}"
+        );
+    }
+
+    /// A field with `attrs`, indexed with docs only.
+    fn field_with_attributes(name: &str, number: i32, attrs: &[(&str, &str)]) -> FieldInfo {
+        FieldInfo::new_full(
+            name,
+            number,
+            false,
+            false,
+            false,
+            IndexOptions::DOCS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            JavaStringMap::from_read(
+                attrs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .unwrap()
+    }
+
+    /// `if (attributes.equals(lastAttributes)) attributes = lastAttributes;`
+    /// (`Lucene94FieldInfosFormat.java:197-201`): a field whose attributes equal
+    /// the previous field's holds the previous field's map, starting from
+    /// `Collections.emptyMap()`; an unequal one keeps its own.
+    #[test]
+    fn read_shares_equal_attribute_maps_of_consecutive_fields() {
+        let dir = ByteBuffersDirectory::default();
+        let format = Lucene94FieldInfosFormat::new();
+        let info = test_segment_info("_0", 10);
+        let attrs = [
+            ("PerFieldPostingsFormat.format", "Lucene103"),
+            ("PerFieldPostingsFormat.suffix", "0"),
+        ];
+        let infos = FieldInfos::new(vec![
+            field_with_attributes("a", 0, &[]),
+            field_with_attributes("b", 1, &attrs),
+            field_with_attributes("c", 2, &attrs),
+            field_with_attributes("d", 3, &[("other", "1")]),
+            field_with_attributes("e", 4, &attrs),
+            field_with_attributes("f", 5, &[]),
+        ])
+        .unwrap();
+        format
+            .write(&dir, &info, "", &infos, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let read = format
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let field = |name: &str| read.field_info(name).unwrap();
+
+        assert!(field("a").shares_attributes_with(&FieldInfo::default()));
+        assert!(field("b").shares_attributes_with(field("c")));
+        assert!(!field("c").shares_attributes_with(field("d")));
+        assert!(!field("d").shares_attributes_with(field("e")));
+        assert!(!field("b").shares_attributes_with(field("e")));
+        assert!(field("f").shares_attributes_with(&FieldInfo::default()));
+        assert_eq!(
+            field("c")
+                .get_attribute("PerFieldPostingsFormat.format")
+                .as_deref(),
+            Some("Lucene103")
+        );
+        assert_eq!(field("e").attributes(), field("b").attributes());
+    }
+
+    /// `throw new CorruptIndexException("unused bits are set \"" +
+    /// Integer.toBinaryString(bits) + "\"", input)`
+    /// (`Lucene94FieldInfosFormat.java:168-171`): the signed byte, printed in
+    /// 32 binary digits when negative, built only when the check fails.
+    #[test]
+    fn unused_bits_message_prints_the_signed_byte_in_binary() {
+        let dir = ByteBuffersDirectory::default();
+        let format = Lucene94FieldInfosFormat::new();
+        let info = test_segment_info("_0", 10);
+        let infos = FieldInfos::new(vec![field_with_attributes("zz", 0, &[])]).unwrap();
+        format
+            .write(&dir, &info, "", &infos, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let file = "_0.fnm";
+        let mut bytes = {
+            let mut input = dir
+                .open_input(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            let len = input.length() as usize;
+            let mut buf = vec![0u8; len];
+            input.read_bytes(Some(&mut buf), 0, len).unwrap();
+            buf
+        };
+        // name "zz" (vInt length 2), field number 0, then the bits byte.
+        let at = bytes
+            .windows(4)
+            .position(|w| w == [2, b'z', b'z', 0])
+            .expect("the field entry")
+            + 4;
+        bytes[at] |= 0x80;
+        let body = bytes.len() - 8;
+        let crc = i64::from(crc32fast::hash(&bytes[..body]));
+        bytes[body..].copy_from_slice(&crc.to_be_bytes());
+        dir.delete_file(file).unwrap();
+        {
+            let mut out = dir
+                .create_output(file, &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            out.write_bytes(&bytes, 0, bytes.len()).unwrap();
+            out.close().unwrap();
+        }
+        let error = format
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unused bits are set \"11111111111111111111111110000000\""),
+            "{error}"
+        );
+    }
+
+    /// rmp #570: `infos = new FieldInfo[size]`
+    /// (`Lucene94FieldInfosFormat.java:147-148`) throws the JVM's
+    /// `NegativeArraySizeException` for a negative count, which
+    /// `checkFooter(input, priorE)` rethrows once the checksum passes. Task
+    /// #570 oracle (`E2Oracle.java`, Lucene 10.5.0): header, `writeVInt(-1)`,
+    /// valid footer → `java.lang.NegativeArraySizeException: -1`.
+    #[test]
+    fn negative_field_count_raises_negative_array_size_exception() {
+        let dir = ByteBuffersDirectory::default();
+        let info = test_segment_info("_0", 10);
+        {
+            let mut out = dir
+                .create_output("_0.fnm", &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            codec_util::write_index_header(
+                out.as_mut(),
+                CODEC_NAME,
+                FORMAT_CURRENT,
+                &info.id(),
+                "",
+            )
+            .unwrap();
+            out.write_v_int(-1).unwrap();
+            codec_util::write_footer(out.as_mut()).unwrap();
+            out.close().unwrap();
+        }
+        let error = Lucene94FieldInfosFormat::new()
+            .read(&dir, &info, "", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NegativeArraySizeException",
+                    message: Some(m),
+                    ..
+                } if m == "-1"
+            ),
+            "{error:?}"
+        );
     }
 }

@@ -1,0 +1,1189 @@
+//! `IntersectTermsEnum` and `IntersectTermsEnumFrame` ported from
+//! `org.apache.lucene.codecs.lucene103.blocktree`.
+//!
+//! Walks only the terms an automaton accepts, pruning whole blocks whose
+//! prefix no transition can reach — which is what makes a wildcard, regexp or
+//! fuzzy query cost far less than a full scan.
+
+use crate::codecs::lucene103::blocktree::CompressionAlgorithm;
+use crate::codecs::lucene103::field_reader::FieldReader;
+use crate::codecs::lucene103::segment_terms_enum::{
+    corrupt_from_by_code, java_grow_buffer, java_read_len,
+};
+use crate::codecs::lucene103::trie_reader::{Node, TrieReader};
+use crate::codecs::term_state::BlockTermState;
+use crate::error::{LuceneError, Result};
+use crate::index::terms::{SeekStatus, TermState, TermsEnum};
+use crate::index::{ImpactsEnum, IndexOptions, PostingsEnum};
+use crate::store::{ByteArrayDataInput, DataInput, IndexInput};
+use crate::util::automaton::{ByteRunnable, Transition, TransitionAccessor};
+use crate::util::{AttributeSource, BytesRef, StringHelper};
+
+/// One block of the terms dictionary, seen through the automaton.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnumFrame`.
+pub struct IntersectTermsEnumFrame {
+    /// This frame's index in the stack.
+    pub ord: usize,
+    /// Where this block was loaded from.
+    pub fp: i64,
+    /// Where the block originally started.
+    pub fp_orig: i64,
+    /// Where this block ends.
+    pub fp_end: i64,
+    /// Pointer to the last sub-block seen.
+    pub last_sub_fp: i64,
+
+    /// Automaton state this block's prefix reaches.
+    pub state: i32,
+    /// The state just before the last label.
+    pub last_state: i32,
+    /// The transition currently being followed out of `state`.
+    pub transition: Transition,
+    /// Which transition out of `state` is current.
+    pub transition_index: i32,
+    /// How many transitions leave `state`.
+    pub transition_count: i32,
+
+    /// How many terms of this block have had their metadata decoded.
+    pub meta_data_upto: i32,
+    /// The term state the postings reader fills in.
+    pub state_data: BlockTermState,
+
+    // Java's frame keeps a `ByteArrayDataInput` next to each of these buffers
+    // (`IntersectTermsEnumFrame.java:48`, `:51`, `:55`, `:90`) and resets it
+    // over the buffer it sits beside (`:190`, `:203`, `:211`, `:224`). A struct
+    // holding both a buffer and a view of that same buffer is a self-reference
+    // Rust forbids, so the frame keeps the view's two fields — position and
+    // limit — beside the buffer instead, and [`ByteArrayDataInput`] is rebuilt
+    // around them for each read. The state is exactly Java's, only spelled
+    // inline.
+    suffix_bytes: Vec<u8>,
+    /// Read position inside `suffix_bytes`.
+    suffixes_pos: usize,
+    /// Where this block's suffix bytes end inside `suffix_bytes`.
+    suffixes_limit: usize,
+    suffix_length_bytes: Vec<u8>,
+    /// Read position inside `suffix_length_bytes`.
+    suffix_lengths_pos: usize,
+    /// Where this block's suffix lengths end inside `suffix_length_bytes`.
+    suffix_lengths_limit: usize,
+    stat_bytes: Vec<u8>,
+    /// Read position inside `stat_bytes`.
+    stats_pos: usize,
+    /// Where this block's statistics end inside `stat_bytes`.
+    stats_limit: usize,
+    stats_singleton_run_length: i32,
+    bytes: Vec<u8>,
+    /// Read position inside `bytes`.
+    bytes_pos: usize,
+    /// Where this block's term metadata ends inside `bytes`.
+    bytes_limit: usize,
+
+    /// `IntersectTermsEnumFrame.floorDataPos`: where the unread floor data
+    /// continues inside the trie's floor-data input
+    /// ([`TrieReader::floor_input`]), which stands for Java's
+    /// `floorDataReader` field.
+    floor_data_pos: i64,
+
+    /// Length of the prefix every term in this block shares.
+    pub prefix: usize,
+    /// How many entries the block holds.
+    pub ent_count: i32,
+    /// Which entry comes next.
+    pub next_ent: i32,
+    /// Whether this is the last block of its floor run.
+    pub is_last_in_floor: bool,
+    /// Whether every entry is a term.
+    pub is_leaf_block: bool,
+    /// How many floor blocks still follow.
+    pub num_follow_floor_blocks: i32,
+    /// Label at which the next floor block starts.
+    pub next_floor_label: i32,
+
+    /// Length of the current entry's suffix.
+    pub suffix: usize,
+    /// Where the current entry's suffix starts inside `suffix_bytes`.
+    pub start_byte_pos: usize,
+    /// The trie node that pointed at this block.
+    pub node: Option<Node>,
+}
+
+impl std::fmt::Debug for IntersectTermsEnumFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntersectTermsEnumFrame")
+            .field("ord", &self.ord)
+            .field("fp", &self.fp)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IntersectTermsEnumFrame {
+    /// Creates an empty frame at stack position `ord`.
+    pub fn new(ord: usize) -> Self {
+        Self {
+            ord,
+            fp: 0,
+            fp_orig: 0,
+            fp_end: 0,
+            last_sub_fp: -1,
+            state: 0,
+            last_state: 0,
+            transition: Transition::default(),
+            transition_index: 0,
+            transition_count: 0,
+            meta_data_upto: 0,
+            state_data: BlockTermState::default(),
+            // `new byte[128]`, `new byte[32]`, `new byte[64]` and `new byte[32]`
+            // (`IntersectTermsEnumFrame.java:47`, `:99`, `:54`, `:88`).
+            suffix_bytes: vec![0u8; 128],
+            suffixes_pos: 0,
+            suffixes_limit: 0,
+            suffix_length_bytes: vec![0u8; 32],
+            suffix_lengths_pos: 0,
+            suffix_lengths_limit: 0,
+            stat_bytes: vec![0u8; 64],
+            stats_pos: 0,
+            stats_limit: 0,
+            stats_singleton_run_length: 0,
+            bytes: vec![0u8; 32],
+            bytes_pos: 0,
+            bytes_limit: 0,
+            floor_data_pos: 0,
+            prefix: 0,
+            ent_count: 0,
+            next_ent: -1,
+            is_last_in_floor: false,
+            is_leaf_block: false,
+            num_follow_floor_blocks: 0,
+            next_floor_label: 0,
+            suffix: 0,
+            start_byte_pos: 0,
+            node: None,
+        }
+    }
+
+    /// Points this frame at automaton state `state`, priming its first
+    /// transition.
+    ///
+    /// Equivalent to `IntersectTermsEnumFrame.setState`.
+    pub fn set_state(&mut self, state: i32, automaton: &dyn TransitionAccessor) {
+        self.state = state;
+        self.transition_index = 0;
+        self.transition_count = automaton.get_num_transitions(state);
+        if self.transition_count != 0 {
+            automaton.init_transition(state, &mut self.transition);
+            automaton.get_next_transition(&mut self.transition);
+        } else {
+            // `min = -1` keeps the "label < min" test from firing, and
+            // `max = -1` makes the very next label step past this frame.
+            self.transition.min = -1;
+            self.transition.max = -1;
+        }
+    }
+
+    /// Runs `f` over this block's suffix bytes and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `suffixesReader` field, which cannot be a field
+    /// here; see the note beside `suffix_bytes`.
+    fn with_suffixes<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader = ByteArrayDataInput::with_range(&self.suffix_bytes, 0, self.suffixes_limit);
+        reader.set_position(self.suffixes_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.suffixes_pos = position;
+        out
+    }
+
+    /// Runs `f` over this block's suffix lengths and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `suffixLengthsReader` field.
+    fn with_suffix_lengths<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader =
+            ByteArrayDataInput::with_range(&self.suffix_length_bytes, 0, self.suffix_lengths_limit);
+        reader.set_position(self.suffix_lengths_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.suffix_lengths_pos = position;
+        out
+    }
+
+    /// Runs `f` over this block's term statistics and saves the read position
+    /// back.
+    ///
+    /// Stands in for Java's `statsReader` field.
+    fn with_stats<T>(
+        &mut self,
+        f: impl FnOnce(&mut ByteArrayDataInput<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut reader = ByteArrayDataInput::with_range(&self.stat_bytes, 0, self.stats_limit);
+        reader.set_position(self.stats_pos);
+        let out = f(&mut reader);
+        let position = reader.position();
+        self.stats_pos = position;
+        out
+    }
+
+    /// Reads this frame's block at `fp`: the body of
+    /// `IntersectTermsEnumFrame.load(TrieReader.Node)` after the floor-data
+    /// handling (`IntersectTermsEnumFrame.java:172-235`). The block has the
+    /// same layout as the one `SegmentTermsEnumFrame` reads.
+    fn load_block(&mut self, terms_in: &mut dyn IndexInput) -> Result<()> {
+        terms_in.seek(self.fp)?;
+
+        let code = terms_in.read_v_int()?;
+        self.ent_count = ((code as u32) >> 1) as i32;
+        debug_assert!(self.ent_count > 0);
+        self.is_last_in_floor = code & 1 != 0;
+
+        // term suffixes:
+        let code_l = terms_in.read_v_long()?;
+        self.is_leaf_block = code_l & 0x04 != 0;
+        // `(int) (codeL >>> 3)`: a corrupt length wraps negative exactly as in
+        // Java. The frame's buffers are never `null` (they are allocated with
+        // the frame), so only `buf.length < n` decides a reallocation.
+        let num_suffix_bytes = ((code_l as u64) >> 3) as i32;
+        java_grow_buffer(&mut self.suffix_bytes, &mut false, num_suffix_bytes)?;
+        let compression_alg = match CompressionAlgorithm::by_code((code_l as i32) & 0x03) {
+            Ok(alg) => alg,
+            // `catch (IllegalArgumentException e) { throw new
+            // CorruptIndexException(e.getMessage(), ite.in, e); }`
+            // (`IntersectTermsEnumFrame.java:183-187`).
+            Err(e) => return Err(corrupt_from_by_code(e, &*terms_in)),
+        };
+        let n = java_read_len(num_suffix_bytes, self.suffix_bytes.len())?;
+        compression_alg.read(terms_in, &mut self.suffix_bytes, n)?;
+        self.suffixes_pos = 0;
+        self.suffixes_limit = n;
+
+        let mut num_suffix_length_bytes = terms_in.read_v_int()?;
+        let all_equal = num_suffix_length_bytes & 0x01 != 0;
+        num_suffix_length_bytes = ((num_suffix_length_bytes as u32) >> 1) as i32;
+        java_grow_buffer(
+            &mut self.suffix_length_bytes,
+            &mut false,
+            num_suffix_length_bytes,
+        )?;
+        let n = num_suffix_length_bytes as usize;
+        if all_equal {
+            let b = terms_in.read_byte()?;
+            self.suffix_length_bytes[..n].fill(b);
+        } else {
+            terms_in.read_bytes(Some(&mut self.suffix_length_bytes), 0, n)?;
+        }
+        self.suffix_lengths_pos = 0;
+        self.suffix_lengths_limit = n;
+
+        // stats
+        let num_stat_bytes = terms_in.read_v_int()?;
+        java_grow_buffer(&mut self.stat_bytes, &mut false, num_stat_bytes)?;
+        let n = java_read_len(num_stat_bytes, self.stat_bytes.len())?;
+        terms_in.read_bytes(Some(&mut self.stat_bytes), 0, n)?;
+        self.stats_pos = 0;
+        self.stats_limit = n;
+        self.stats_singleton_run_length = 0;
+        self.meta_data_upto = 0;
+
+        self.state_data.term_block_ord = 0;
+        self.next_ent = 0;
+
+        // metadata
+        let num_meta_bytes = terms_in.read_v_int()?;
+        java_grow_buffer(&mut self.bytes, &mut false, num_meta_bytes)?;
+        let n = java_read_len(num_meta_bytes, self.bytes.len())?;
+        terms_in.read_bytes(Some(&mut self.bytes), 0, n)?;
+        self.bytes_pos = 0;
+        self.bytes_limit = n;
+
+        if !self.is_last_in_floor {
+            // Sub-blocks of a single floor block are always written one after
+            // another -- tail recurse:
+            self.fp_end = terms_in.file_pointer()?;
+        }
+        Ok(())
+    }
+
+    /// Moves to the next floor block of this run, skipping the floor blocks
+    /// whose labels all sort below the current transition.
+    ///
+    /// Equivalent to `IntersectTermsEnumFrame.loadNextFloorBlock()`
+    /// (`IntersectTermsEnumFrame.java:106-121`); `floor_in` is the trie's
+    /// floor-data input, Java's `floorDataReader`.
+    pub fn load_next_floor_block(
+        &mut self,
+        terms_in: &mut dyn IndexInput,
+        floor_in: &mut dyn IndexInput,
+    ) -> Result<()> {
+        debug_assert!(
+            self.num_follow_floor_blocks > 0,
+            "nextFloorLabel={}",
+            self.next_floor_label
+        );
+
+        floor_in.seek(self.floor_data_pos)?;
+        loop {
+            self.fp = self.fp_orig + ((floor_in.read_v_long()? as u64) >> 1) as i64;
+            self.num_follow_floor_blocks -= 1;
+            if self.num_follow_floor_blocks != 0 {
+                self.next_floor_label = i32::from(floor_in.read_byte()?);
+            } else {
+                self.next_floor_label = 256;
+            }
+            if !(self.num_follow_floor_blocks != 0 && self.next_floor_label <= self.transition.min)
+            {
+                break;
+            }
+        }
+        // `load(null)`: no floor data to read.
+        self.load_block(terms_in)?;
+        self.floor_data_pos = floor_in.file_pointer()?;
+        Ok(())
+    }
+
+    /// Reads the next entry, returning whether it is a sub-block.
+    ///
+    /// Equivalent to `IntersectTermsEnumFrame.next`.
+    // Lucene: the method is `IntersectTermsEnumFrame.next`; it is not an iterator.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<bool> {
+        if self.is_leaf_block {
+            self.next_leaf()?;
+            Ok(false)
+        } else {
+            self.next_non_leaf()
+        }
+    }
+
+    fn next_leaf(&mut self) -> Result<()> {
+        debug_assert!(
+            self.next_ent != -1 && self.next_ent < self.ent_count,
+            "nextEnt={} entCount={} fp={}",
+            self.next_ent,
+            self.ent_count,
+            self.fp
+        );
+        self.next_ent += 1;
+        // `IntersectTermsEnumFrame.java:249-251`: the length is not clamped;
+        // a corrupt negative one goes to `suffixesReader.skipBytes`, whose
+        // failure (`ByteArrayDataInput::skip_bytes` rejects a negative count)
+        // is raised from here. Past the skip the length is known to be
+        // non-negative.
+        let suffix = self.with_suffix_lengths(|r| r.read_v_int())?;
+        self.start_byte_pos = self.suffixes_pos;
+        self.with_suffixes(|r| r.skip_bytes(i64::from(suffix)))?;
+        self.suffix = suffix as usize;
+        Ok(())
+    }
+
+    fn next_non_leaf(&mut self) -> Result<bool> {
+        debug_assert!(
+            self.next_ent != -1 && self.next_ent < self.ent_count,
+            "nextEnt={} entCount={} fp={}",
+            self.next_ent,
+            self.ent_count,
+            self.fp
+        );
+        self.next_ent += 1;
+        let code = self.with_suffix_lengths(|r| r.read_v_int())?;
+        self.suffix = ((code as u32) >> 1) as usize;
+        self.start_byte_pos = self.suffixes_pos;
+        let suffix = self.suffix as i64;
+        self.with_suffixes(|r| r.skip_bytes(suffix))?;
+        if code & 1 == 0 {
+            self.state_data.term_block_ord += 1;
+            Ok(false)
+        } else {
+            self.last_sub_fp = self.fp - self.with_suffix_lengths(|r| r.read_v_long())?;
+            Ok(true)
+        }
+    }
+
+    /// Returns the byte at `index` of the suffix buffer.
+    pub fn suffix_byte(&self, index: usize) -> u8 {
+        self.suffix_bytes[index]
+    }
+
+    /// Returns how many terms of this block have been passed.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnumFrame#getTermBlockOrd`.
+    pub fn get_term_block_ord(&self) -> i32 {
+        if self.is_leaf_block {
+            self.next_ent
+        } else {
+            self.state_data.term_block_ord
+        }
+    }
+
+    /// Decodes the statistics and postings metadata of every term passed so far.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnumFrame#decodeMetaData`
+    /// (`IntersectTermsEnumFrame.java:277-323`).
+    pub fn decode_meta_data(
+        &mut self,
+        field_info: &crate::index::FieldInfo,
+        postings_reader: &dyn crate::codecs::postings::PostingsReaderBase,
+    ) -> Result<()> {
+        let limit = self.get_term_block_ord();
+        let mut absolute = self.meta_data_upto == 0;
+        debug_assert!(limit > 0);
+        while self.meta_data_upto < limit {
+            if self.stats_singleton_run_length > 0 {
+                self.state_data.doc_freq = 1;
+                self.state_data.total_term_freq = 1;
+                self.stats_singleton_run_length -= 1;
+            } else {
+                let token = self.with_stats(|r| r.read_v_int())?;
+                if token & 1 == 1 {
+                    self.state_data.doc_freq = 1;
+                    self.state_data.total_term_freq = 1;
+                    self.stats_singleton_run_length = ((token as u32) >> 1) as i32;
+                } else {
+                    self.state_data.doc_freq = ((token as u32) >> 1) as i32;
+                    self.state_data.total_term_freq =
+                        if field_info.index_options == IndexOptions::DOCS {
+                            i64::from(self.state_data.doc_freq)
+                        } else {
+                            i64::from(self.state_data.doc_freq)
+                                + self.with_stats(|r| r.read_v_long())?
+                        };
+                }
+            }
+            // `bytes` and `state_data` are borrowed at once, which Java gets
+            // for free by aliasing; the position is written back whether or not
+            // the decode succeeded, exactly as Java's shared reader leaves it.
+            let Self {
+                bytes,
+                bytes_pos,
+                bytes_limit,
+                state_data,
+                ..
+            } = self;
+            let mut reader = ByteArrayDataInput::with_range(bytes, 0, *bytes_limit);
+            reader.set_position(*bytes_pos);
+            let decoded =
+                postings_reader.decode_term(&mut reader, field_info, state_data, absolute);
+            *bytes_pos = reader.position();
+            decoded?;
+            self.meta_data_upto += 1;
+            absolute = false;
+        }
+        // `termState.termBlockOrd = metaDataUpto`
+        // (`IntersectTermsEnumFrame.java:322`): a state taken from this frame
+        // records how many terms of the block it decoded, which
+        // `SegmentTermsEnum.seekExact(BytesRef, TermState)` reads back.
+        self.state_data.term_block_ord = self.meta_data_upto;
+        Ok(())
+    }
+
+    /// Loads this frame's block; for the first block of a floor run, `node`
+    /// carries the trie node whose floor data lets the frame skip the floor
+    /// blocks the automaton cannot accept.
+    ///
+    /// Equivalent to `IntersectTermsEnumFrame.load(TrieReader.Node)`
+    /// (`IntersectTermsEnumFrame.java:141-170`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the input's I/O errors; an unknown compression code is a
+    /// `CorruptIndex` with the cause.
+    ///
+    /// `accept` is `ite.runAutomaton.isAccept(state)` for this frame's state.
+    pub fn load(
+        &mut self,
+        terms_in: &mut dyn IndexInput,
+        trie_reader: &mut TrieReader,
+        node: Option<&Node>,
+        accept: bool,
+    ) -> Result<()> {
+        if let Some(node) = node {
+            // This block is the first one in a possible sequence of floor
+            // blocks corresponding to a single seek point from the trie terms
+            // index.
+            if node.is_floor() {
+                let floor_in = trie_reader.floor_data(node)?;
+                // Floor frame
+                self.num_follow_floor_blocks = floor_in.read_v_int()?;
+                self.next_floor_label = i32::from(floor_in.read_byte()?);
+
+                // If current state is not accept, and has transitions, we must
+                // process first block in case it has empty suffix:
+                if !accept && self.transition_count != 0 {
+                    // Maybe skip floor blocks:
+                    debug_assert!(
+                        self.transition_index == 0,
+                        "transitionIndex={}",
+                        self.transition_index
+                    );
+                    while self.num_follow_floor_blocks != 0
+                        && self.next_floor_label <= self.transition.min
+                    {
+                        self.fp = self.fp_orig + ((floor_in.read_v_long()? as u64) >> 1) as i64;
+                        self.num_follow_floor_blocks -= 1;
+                        if self.num_follow_floor_blocks != 0 {
+                            self.next_floor_label = i32::from(floor_in.read_byte()?);
+                        } else {
+                            self.next_floor_label = 256;
+                        }
+                    }
+                }
+                self.floor_data_pos = floor_in.file_pointer()?;
+            }
+        }
+        self.load_block(terms_in)
+    }
+}
+
+/// Walks only the terms an automaton accepts.
+///
+/// Equivalent to
+/// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum`.
+///
+/// **Divergence from Lucene 10.5.0.** Java signals the end of the walk by
+/// throwing a stack-trace-free `NoMoreTermsException` out of `popPushNext`, so
+/// the deeply nested loop can unwind in one step. Rust returns `Ok(None)`
+/// through the same path instead, which the labelled loops below make explicit.
+/// The traversal order and the terms produced are unchanged.
+pub struct IntersectTermsEnum {
+    /// The field this cursor walks, shared as Java's `fr` reference is.
+    field: std::sync::Arc<FieldReader>,
+    terms_in: Box<dyn IndexInput>,
+    trie: TrieReader,
+    run_automaton: Box<dyn ByteRunnable>,
+    automaton: Box<dyn TransitionAccessor>,
+    common_suffix: Option<BytesRef>,
+    stack: Vec<IntersectTermsEnumFrame>,
+    /// The trie node reached at each depth of the current term.
+    nodes: Vec<Node>,
+    /// Index of the frame the cursor is in, or `None` once exhausted.
+    current: Option<usize>,
+    /// The current term: Java's `BytesRef term` (`IntersectTermsEnum.java:58`).
+    /// `bytes` holds exactly the term (`offset` 0, `length == bytes.len()`,
+    /// kept so by [`copy_term`](Self::copy_term)), so that
+    /// [`TermsEnum::term`] and [`TermsEnum::next`] lend it as Java returns
+    /// `term` (`IntersectTermsEnum.java:200-202`).
+    term: BytesRef,
+    saved_start_term: Option<Vec<u8>>,
+    attributes: AttributeSource,
+}
+
+impl std::fmt::Debug for IntersectTermsEnum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IntersectTermsEnum")
+            .field("field", &self.field.field_info().name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IntersectTermsEnum {
+    /// Opens a cursor that yields only the terms `run_automaton` accepts.
+    pub fn new(
+        field: std::sync::Arc<FieldReader>,
+        automaton: Box<dyn TransitionAccessor>,
+        run_automaton: Box<dyn ByteRunnable>,
+        common_suffix: Option<BytesRef>,
+        start_term: Option<BytesRef>,
+    ) -> Result<Self> {
+        let terms_in = field.shared().terms_in.clone_input()?;
+        let trie = field.new_reader()?;
+
+        let mut this = Self {
+            field,
+            terms_in,
+            trie,
+            run_automaton,
+            automaton,
+            common_suffix,
+            stack: (0..5).map(IntersectTermsEnumFrame::new).collect(),
+            nodes: vec![Node::default(); 5],
+            current: None,
+            term: BytesRef::default(),
+            saved_start_term: None,
+            attributes: AttributeSource::new(),
+        };
+        this.start()?;
+        // for assert: `assert setSavedStartTerm(startTerm)` (`IntersectTermsEnum.java:116`)
+        if cfg!(debug_assertions) {
+            this.set_saved_start_term(start_term.as_ref());
+        }
+        if let Some(start_term) = start_term.as_ref() {
+            this.seek_to_start_term(start_term)?;
+        }
+        Ok(this)
+    }
+
+    /// Remembers the term the walk was started from.
+    ///
+    /// Java keeps this only to assert, later, that the walk never steps back
+    /// before the term it was seeded with; this port keeps the same copy for
+    /// the same purpose.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#setSavedStartTerm`.
+    fn set_saved_start_term(&mut self, start_term: Option<&BytesRef>) {
+        self.saved_start_term = start_term.map(|t| t.slice().to_vec());
+    }
+
+    /// Returns the trie node slot at depth `ord`, growing the array first.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#getNode`.
+    fn get_node(&mut self, ord: usize) -> &mut Node {
+        if ord >= self.nodes.len() {
+            self.nodes.resize(ord + 1, Node::default());
+        }
+        &mut self.nodes[ord]
+    }
+
+    /// Runs the current entry's suffix through the automaton, from the state
+    /// the current block's prefix reaches.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#getState`.
+    fn get_state(&self) -> i32 {
+        let cur = self.current.expect("get_state with no current frame");
+        let frame = &self.stack[cur];
+        let mut state = frame.state;
+        for idx in 0..frame.suffix {
+            state = self.run_automaton.step(
+                state,
+                i32::from(frame.suffix_byte(frame.start_byte_pos + idx)),
+            );
+            debug_assert!(state != -1);
+        }
+        state
+    }
+
+    /// Positions the cursor just before `target`, so that the first
+    /// [`TermsEnum::next`] returns the term after it.
+    ///
+    /// This is a seek *floor*: it is only ever used for the initial seek, and
+    /// it walks the blocks rather than the index, exactly as Java does.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum#seekToStartTerm`.
+    fn seek_to_start_term(&mut self, target: &BytesRef) -> Result<()> {
+        debug_assert_eq!(self.current, Some(0));
+        debug_assert!(self.stack[0].node == Some(self.nodes[0]));
+        let target_bytes = target.slice();
+
+        for _idx in 0..=target_bytes.len() {
+            loop {
+                let cur = self.current.expect("seek_to_start_term lost its frame");
+
+                // Remember enough of the frame to be able to step back onto the
+                // entry before the one that overshot the target.
+                let sav_next_ent = self.stack[cur].next_ent;
+                let save_pos = self.stack[cur].suffixes_pos;
+                let save_length_pos = self.stack[cur].suffix_lengths_pos;
+                let save_start_byte_pos = self.stack[cur].start_byte_pos;
+                let save_suffix = self.stack[cur].suffix;
+                let save_last_sub_fp = self.stack[cur].last_sub_fp;
+                let save_term_block_ord = self.stack[cur].state_data.term_block_ord;
+
+                let is_sub_block = self.stack[cur].next()?;
+                self.copy_term();
+
+                if is_sub_block && StringHelper::starts_with_bytes(target_bytes, &self.term) {
+                    // Recurse.
+                    let state = self.get_state();
+                    self.push_frame(state)?;
+                    break;
+                }
+
+                match self.term.bytes.as_slice().cmp(target_bytes) {
+                    std::cmp::Ordering::Less => {
+                        if self.stack[cur].next_ent == self.stack[cur].ent_count {
+                            if !self.stack[cur].is_last_in_floor {
+                                // Advance to the next floor block.
+                                let terms_in = &mut *self.terms_in;
+                                let floor_in = self.trie.floor_input();
+                                self.stack[cur].load_next_floor_block(terms_in, floor_in)?;
+                                continue;
+                            }
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    std::cmp::Ordering::Equal => return Ok(()),
+                    std::cmp::Ordering::Greater => {
+                        // Fall back to the prior entry: the contract is that the
+                        // first next() returns the term after the requested one.
+                        let frame = &mut self.stack[cur];
+                        frame.next_ent = sav_next_ent;
+                        frame.last_sub_fp = save_last_sub_fp;
+                        frame.start_byte_pos = save_start_byte_pos;
+                        frame.suffix = save_suffix;
+                        frame.suffixes_pos = save_pos;
+                        frame.suffix_lengths_pos = save_length_pos;
+                        frame.state_data.term_block_ord = save_term_block_ord;
+                        // The last entry may have been a sub-block; there is no
+                        // need to recurse into it, because the first next() will
+                        // skip that frame anyway.
+                        self.copy_term();
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        debug_assert!(false);
+        Ok(())
+    }
+
+    /// Pushes the root frame over the trie root.
+    fn start(&mut self) -> Result<()> {
+        let root = self.trie.root;
+        *self.get_node(0) = root;
+        // Empty string prefix must have an output in the index!
+        debug_assert!(root.has_output());
+        let frame = &mut self.stack[0];
+        frame.ord = 0;
+        frame.prefix = 0;
+        frame.fp = root.output_fp;
+        frame.fp_orig = root.output_fp;
+        let automaton = &*self.automaton;
+        frame.set_state(0, automaton);
+        frame.node = Some(root);
+        let accept = self.run_automaton.is_accept(0);
+        let terms_in = &mut *self.terms_in;
+        self.stack[0].load(terms_in, &mut self.trie, Some(&root), accept)?;
+        self.current = Some(0);
+        Ok(())
+    }
+
+    /// Descends into the sub-block the current frame points at, following the
+    /// trie arcs for the bytes the term gained.
+    ///
+    /// Equivalent to `IntersectTermsEnum.pushFrame`.
+    fn push_frame(&mut self, state: i32) -> Result<()> {
+        let cur = self.current.expect("push_frame with no current frame");
+        let ord = cur + 1;
+        while self.stack.len() <= ord {
+            self.stack
+                .push(IntersectTermsEnumFrame::new(self.stack.len()));
+        }
+        debug_assert!(self.stack[ord].ord == ord);
+
+        let (fp, prefix, parent_node, parent_prefix) = {
+            let parent = &self.stack[cur];
+            (
+                parent.last_sub_fp,
+                parent.prefix + parent.suffix,
+                parent.node,
+                parent.prefix,
+            )
+        };
+
+        // Walk the trie down the bytes this sub-block added to the prefix.
+        // A `null` `parent.node` dereferenced: the JVM's `NullPointerException`.
+        let mut node = parent_node.ok_or_else(LuceneError::null_pointer)?;
+        let mut idx = parent_prefix;
+        debug_assert!(self.stack[cur].suffix > 0);
+        while idx < prefix {
+            let target = i32::from(self.term.bytes[idx]);
+            let child = self.trie.lookup_child(target, &node)?;
+            debug_assert!(child.is_some());
+            // Java dereferences the null child (an NPE) when assertions are off.
+            node = child.expect("term index has no arc for the label");
+            *self.get_node(1 + idx) = node;
+            idx += 1;
+        }
+
+        let automaton = &*self.automaton;
+        let frame = &mut self.stack[ord];
+        frame.ord = ord;
+        frame.fp = fp;
+        frame.fp_orig = fp;
+        frame.prefix = prefix;
+        frame.set_state(state, automaton);
+        frame.node = Some(node);
+        debug_assert!(node.has_output());
+        let accept = self.run_automaton.is_accept(state);
+        let terms_in = &mut *self.terms_in;
+        self.stack[ord].load(terms_in, &mut self.trie, Some(&node), accept)?;
+        self.current = Some(ord);
+        Ok(())
+    }
+
+    /// Copies the current entry's suffix onto the term.
+    ///
+    /// Equivalent to `IntersectTermsEnum.copyTerm`.
+    fn copy_term(&mut self) {
+        let cur = self.current.expect("copy_term with no current frame");
+        let (prefix, start, len) = {
+            let frame = &self.stack[cur];
+            (frame.prefix, frame.start_byte_pos, frame.suffix)
+        };
+        self.term.bytes.truncate(prefix);
+        self.term.bytes.resize(prefix + len, 0);
+        self.term.length = self.term.bytes.len();
+        let suffix: Vec<u8> = self.stack[cur].suffix_bytes[start..start + len].to_vec();
+        self.term.bytes[prefix..prefix + len].copy_from_slice(&suffix);
+    }
+
+    /// Advances to the next entry, popping exhausted frames first.
+    ///
+    /// Returns `None` once the walk is over, which is how this port replaces
+    /// Java's `NoMoreTermsException`.
+    ///
+    /// Equivalent to `IntersectTermsEnum.popPushNext`.
+    ///
+    /// # Errors
+    ///
+    /// Once the walk is over the current frame is gone (Java nulls
+    /// `currentFrame` "to provoke NPE if we are (illegally!) called again",
+    /// `IntersectTermsEnum.java:365-373`), so a further call raises the
+    /// `NullPointerException` Java's `currentFrame.nextEnt` does.
+    fn pop_push_next(&mut self) -> Result<Option<bool>> {
+        loop {
+            let cur = match self.current {
+                Some(cur) => cur,
+                None => return Err(LuceneError::null_pointer()),
+            };
+            if self.stack[cur].next_ent != self.stack[cur].ent_count {
+                break;
+            }
+            if !self.stack[cur].is_last_in_floor {
+                let terms_in = &mut *self.terms_in;
+                let floor_in = self.trie.floor_input();
+                self.stack[cur].load_next_floor_block(terms_in, floor_in)?;
+                break;
+            }
+            if self.stack[cur].ord == 0 {
+                self.current = None;
+                return Ok(None);
+            }
+            let last_fp = self.stack[cur].fp_orig;
+            self.current = Some(cur - 1);
+            debug_assert!(self.stack[cur - 1].last_sub_fp == last_fp);
+        }
+        let cur = self.current.expect("current frame vanished");
+        Ok(Some(self.stack[cur].next()?))
+    }
+
+    /// Returns whether the current entry's suffix ends with the common suffix
+    /// every accepted term must have.
+    fn matches_common_suffix(&self) -> bool {
+        let Some(common_suffix) = &self.common_suffix else {
+            return true;
+        };
+        let cur = self.current.expect("no current frame");
+        let frame = &self.stack[cur];
+        debug_assert!(common_suffix.offset == 0);
+        let common = common_suffix.slice();
+        let term_len = frame.prefix + frame.suffix;
+        if term_len < common.len() {
+            return false;
+        }
+
+        // The common suffix may straddle the block prefix and the entry suffix.
+        let len_in_prefix = common.len() as i64 - frame.suffix as i64;
+        let mut common_pos = 0usize;
+        if len_in_prefix > 0 {
+            let len_in_prefix = len_in_prefix as usize;
+            debug_assert!(frame.prefix >= len_in_prefix);
+            let mut term_pos = frame.prefix - len_in_prefix;
+            while term_pos < frame.prefix {
+                if self.term.bytes[term_pos] != common[common_pos] {
+                    return false;
+                }
+                term_pos += 1;
+                common_pos += 1;
+            }
+            let mut suffix_pos = frame.start_byte_pos;
+            while common_pos < common.len() {
+                if frame.suffix_byte(suffix_pos) != common[common_pos] {
+                    return false;
+                }
+                suffix_pos += 1;
+                common_pos += 1;
+            }
+        } else {
+            let mut suffix_pos = frame.start_byte_pos + frame.suffix - common.len();
+            while common_pos < common.len() {
+                if frame.suffix_byte(suffix_pos) != common[common_pos] {
+                    return false;
+                }
+                suffix_pos += 1;
+                common_pos += 1;
+            }
+        }
+        true
+    }
+}
+
+impl IntersectTermsEnum {
+    /// Catches the current frame up on the metadata decode it defers.
+    ///
+    /// Equivalent to the `currentFrame.decodeMetaData()` call every statistics
+    /// and postings accessor of `IntersectTermsEnum` makes before reading
+    /// `state`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` once the walk is over and Java's `currentFrame`
+    /// is `null`.
+    fn decode_current_meta_data(&mut self) -> Result<()> {
+        let Some(cur) = self.current else {
+            return Err(LuceneError::null_pointer());
+        };
+        // `currentFrame.decodeMetaData()` reads `fr.fieldInfo` and
+        // `fr.parent.postingsReader` in place
+        // (`IntersectTermsEnumFrame.java:317`): borrowed beside the frame
+        // (disjoint fields), not copied.
+        let field = &self.field;
+        self.stack[cur]
+            .decode_meta_data(field.field_info(), field.shared().postings_reader.as_ref())
+    }
+}
+
+impl std::fmt::Display for IntersectTermsEnum {
+    /// `org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.codecs.lucene103.blocktree.IntersectTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl TermsEnum for IntersectTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        &mut self.attributes
+    }
+
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        let Some(mut is_sub_block) = self.pop_push_next()? else {
+            return Ok(None);
+        };
+
+        'next_term: loop {
+            let Some(cur) = self.current else {
+                return Ok(None);
+            };
+
+            let (state, last_state) = if self.stack[cur].suffix != 0 {
+                let label = i32::from(self.stack[cur].suffix_byte(self.stack[cur].start_byte_pos));
+
+                // Below the current transition's range: skip entries until one
+                // reaches it, then re-examine.
+                if label < self.stack[cur].transition.min {
+                    let min_trans = self.stack[cur].transition.min;
+                    while self.stack[cur].next_ent < self.stack[cur].ent_count {
+                        is_sub_block = self.stack[cur].next()?;
+                        let pos = self.stack[cur].start_byte_pos;
+                        if i32::from(self.stack[cur].suffix_byte(pos)) >= min_trans {
+                            continue 'next_term;
+                        }
+                    }
+                    match self.pop_push_next()? {
+                        Some(v) => is_sub_block = v,
+                        None => return Ok(None),
+                    }
+                    continue 'next_term;
+                }
+
+                // Above the current transition's range: step to the next
+                // transition, or pop when there is none left.
+                while label > self.stack[cur].transition.max {
+                    if self.stack[cur].transition_index >= self.stack[cur].transition_count - 1 {
+                        if self.stack[cur].ord == 0 {
+                            self.current = None;
+                            return Ok(None);
+                        }
+                        self.current = Some(cur - 1);
+                        match self.pop_push_next()? {
+                            Some(v) => is_sub_block = v,
+                            None => return Ok(None),
+                        }
+                        continue 'next_term;
+                    }
+                    self.stack[cur].transition_index += 1;
+                    self.automaton
+                        .get_next_transition(&mut self.stack[cur].transition);
+                    if label < self.stack[cur].transition.min {
+                        let min_trans = self.stack[cur].transition.min;
+                        while self.stack[cur].next_ent < self.stack[cur].ent_count {
+                            is_sub_block = self.stack[cur].next()?;
+                            let pos = self.stack[cur].start_byte_pos;
+                            if i32::from(self.stack[cur].suffix_byte(pos)) >= min_trans {
+                                continue 'next_term;
+                            }
+                        }
+                        match self.pop_push_next()? {
+                            Some(v) => is_sub_block = v,
+                            None => return Ok(None),
+                        }
+                        continue 'next_term;
+                    }
+                }
+
+                if self.common_suffix.is_some() && !is_sub_block && !self.matches_common_suffix() {
+                    match self.pop_push_next()? {
+                        Some(v) => is_sub_block = v,
+                        None => return Ok(None),
+                    }
+                    continue 'next_term;
+                }
+
+                // Run the rest of the suffix through the automaton.
+                let mut running_last = self.stack[cur].state;
+                let mut running = self.stack[cur].transition.dest;
+                let end = self.stack[cur].start_byte_pos + self.stack[cur].suffix;
+                let mut idx = self.stack[cur].start_byte_pos + 1;
+                let mut dead = false;
+                while idx < end {
+                    running_last = running;
+                    running = self
+                        .run_automaton
+                        .step(running, i32::from(self.stack[cur].suffix_byte(idx)));
+                    if running == -1 {
+                        dead = true;
+                        break;
+                    }
+                    idx += 1;
+                }
+                if dead {
+                    match self.pop_push_next()? {
+                        Some(v) => is_sub_block = v,
+                        None => return Ok(None),
+                    }
+                    continue 'next_term;
+                }
+                (running, running_last)
+            } else {
+                (self.stack[cur].state, self.stack[cur].last_state)
+            };
+
+            if is_sub_block {
+                self.copy_term();
+                self.push_frame(state)?;
+                if let Some(new_cur) = self.current {
+                    self.stack[new_cur].last_state = last_state;
+                }
+            } else if self.run_automaton.is_accept(state) {
+                self.copy_term();
+                debug_assert!(
+                    self.saved_start_term
+                        .as_deref()
+                        .is_none_or(|saved| self.term.bytes.as_slice() > saved),
+                    "saveStartTerm={} term={}",
+                    String::from_utf8_lossy(self.saved_start_term.as_deref().unwrap_or_default()),
+                    String::from_utf8_lossy(&self.term.bytes)
+                );
+                return Ok(Some(&self.term));
+            }
+
+            match self.pop_push_next()? {
+                Some(v) => is_sub_block = v,
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// Equivalent to `IntersectTermsEnum.seekExact(BytesRef)`
+    /// (`IntersectTermsEnum.java:553-556`): `new UnsupportedOperationException()`,
+    /// whose message is `null`.
+    fn seek_exact(&mut self, _text: &BytesRef) -> Result<bool> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Equivalent to `IntersectTermsEnum.seekCeil(BytesRef)`
+    /// (`IntersectTermsEnum.java:568-571`): a message-less
+    /// `UnsupportedOperationException`.
+    fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Equivalent to `IntersectTermsEnum.seekExact(long)`
+    /// (`IntersectTermsEnum.java:558-561`): a message-less
+    /// `UnsupportedOperationException`.
+    fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Equivalent to `IntersectTermsEnum.term()` (`IntersectTermsEnum.java:200-202`),
+    /// which returns the enum's own `term`.
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.term))
+    }
+
+    /// Equivalent to `IntersectTermsEnum.ord()` (`IntersectTermsEnum.java:563-566`):
+    /// a message-less `UnsupportedOperationException`.
+    fn ord(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        // As in `SegmentTermsEnum`, Java decodes the frame's metadata before
+        // reading `state`; without it the frame still holds the zero it was
+        // built with.
+        self.decode_current_meta_data()?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
+        Ok(self.stack[cur].state_data.doc_freq)
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.decode_current_meta_data()?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
+        Ok(self.stack[cur].state_data.total_term_freq)
+    }
+
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.decode_current_meta_data()?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
+        // `fr.parent.postingsReader.impacts(fr.fieldInfo, currentFrame.termState,
+        // flags)` (`IntersectTermsEnum.java:226`): the field info is borrowed, as Java
+        // passes its reference.
+        let state = self.stack[cur].state_data;
+        self.field
+            .shared()
+            .postings_reader
+            .impacts(self.field.field_info(), &state, flags)
+    }
+
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        self.decode_current_meta_data()?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
+        // `fr.parent.postingsReader.postings(fr.fieldInfo,
+        // currentFrame.termState, reuse, flags)` (`IntersectTermsEnum.java:220`): the
+        // field info is borrowed, as Java passes its reference.
+        let state = self.stack[cur].state_data;
+        Ok(Some(self.field.shared().postings_reader.postings(
+            self.field.field_info(),
+            &state,
+            reuse,
+            flags,
+        )?))
+    }
+
+    /// Equivalent to `IntersectTermsEnum.termState()`
+    /// (`IntersectTermsEnum.java:133-136`): the frame's metadata is decoded
+    /// first, so the state carries the term's statistics, file pointers and
+    /// `termBlockOrd`, which a seek by this state reads back.
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.decode_current_meta_data()?;
+        let cur = self.current.ok_or_else(LuceneError::null_pointer)?;
+        Ok(Box::new(self.stack[cur].state_data))
+    }
+}

@@ -11,16 +11,50 @@ from collections import defaultdict
 
 import argparse
 
+sys.path.insert(0, str(Path(__file__).parent))
+from kgio import kg_target
+
 parser = argparse.ArgumentParser()
-parser.add_argument('--source-root', default='/tmp/lucene-10.5.0/lucene/core/src/java/org/apache/lucene')
-parser.add_argument('--output-dir', default='/tmp/lucene_kg')
+parser.add_argument('--source-root',
+                    default='/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
+parser.add_argument('--lucene-root', default='/tmp/lucene1050',
+                    help='clone root the file paths are made relative to')
+parser.add_argument('--output-dir', default=str(kg_target() / 'lucene_kg'))
 parser.add_argument('--commit', default='UNKNOWN')
 parser.add_argument('--date', default='UNKNOWN')
 
-ROOT = Path('/tmp/lucene-10.5.0/lucene/core/src/java/org/apache/lucene')
+# Defaults are the path CLAUDE.md 16.1 names; both are overridable so the
+# survey can be replayed against any checkout of the reference clone.
+ROOT = Path('/tmp/lucene1050/lucene/core/src/java/org/apache/lucene')
+LUCENE_ROOT = Path('/tmp/lucene1050')
 CORE_PREFIX = 'org.apache.lucene'
 
+# The head of a type declaration: annotations and modifiers in any order
+# (JLS 8.1.1, 8.1.1.1). JavaCC writes `@SuppressWarnings({"unused","null"})
+# public class QueryParser` on one line (lucene/queryparser's three generated
+# parsers), and a modifiers-only head missed those types and, with no enclosing
+# type on the stack, their nested types and members. An annotation is spelled as
+# `enrich_lucene_kg.ANNOTATION`. Shared by `discover`, the nested-type and member
+# extractors of `enrich_lucene_kg.py` and `port_coverage_kg.scan_lucene`.
+ANNOTATION = r'@[A-Za-z_$][A-Za-z0-9_$.]*(?:\s*\([^()]*\))?'
+DECL_HEAD = (r'(?:' + ANNOTATION + r'\s*'
+             r'|(?:public|protected|private|abstract|final|static|strictfp|sealed|non-sealed)\s+)*')
+
 args = None
+
+
+def is_exception_decl(name, extends_clause):
+    """Whether a class declaration is an exception: by the name convention
+    (`...Exception`, `...Error`) or by a superclass naming `Throwable`,
+    `Exception` or `Error` -- the rule `discover` applies to a top-level type,
+    shared with the nested-type extractor of `enrich_lucene_kg.py`."""
+    if name.endswith('Exception') or name.endswith('Error'):
+        return True
+    if not extends_clause:
+        return False
+    ext = extends_clause.strip().split()[0].split('<')[0].strip()
+    return 'Throwable' in ext or 'Exception' in ext or 'Error' in ext
+
 
 def clean_for_brace_count(text):
     """Return a copy of text with strings and comments replaced by spaces,
@@ -117,7 +151,7 @@ def discover():
     type_implements = []
 
     for dirpath, dirnames, filenames in os.walk(ROOT):
-        rel_dir = Path(dirpath).relative_to('/tmp/lucene-10.5.0')
+        rel_dir = Path(dirpath).relative_to(LUCENE_ROOT)
         rel_dir_str = str(rel_dir).replace('/', '.')
         # packages are directories under lucene/core/src/java/org/apache/lucene
         if rel_dir_str.startswith('lucene.core.src.java.org.apache.lucene'):
@@ -132,7 +166,9 @@ def discover():
             text = full_path.read_text(encoding='utf-8', errors='ignore')
 
             # package declaration
-            m = re.search(r'\n\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
+            # `\A` too: a file with no licence header (randomizedtesting's) opens
+            # with its package declaration.
+            m = re.search(r'(?:\A|\n)\s*package\s+([a-zA-Z0-9_.]+)\s*;', text)
             if not m:
                 continue
             pkg = m.group(1)
@@ -168,7 +204,7 @@ def discover():
             # regex: optional modifiers, then (class|interface|enum|record|@interface), name,
             # optional generics, extends, implements, permits
             decl_re = re.compile(
-                r'^\s*(?P<mods>(?:public\s+|protected\s+|private\s+|abstract\s+|final\s+|static\s+|strictfp\s+|sealed\s+|non-sealed\s+)*)'
+                r'^\s*(?P<mods>' + DECL_HEAD + r')'
                 r'(?P<kind>class|interface|enum|record|@interface)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)'
                 r'(?P<params>\([^)]*\))?\s*'
                 r'(?P<generics>[<][^;{}]*[>])?\s*'
@@ -345,7 +381,7 @@ if __name__ == '__main__':
         commit = args.commit
         gdate = args.date
         out_dir = pathlib.Path(args.output_dir)
-        out_dir.mkdir(exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
         sections, updates = emit_cypher(data, commit, gdate)
         for name, lines in sections.items():
             (out_dir / f'{name}.cypher').write_text('\n'.join(lines), encoding='utf-8')

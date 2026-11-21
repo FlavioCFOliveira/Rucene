@@ -1,0 +1,39 @@
+{
+  "_doc": "Hand verdicts for in-scope Lucene classes that have no faithful Rust form and owe no port (portState 'notApplicable'). Applied by port_coverage_kg.py --phase scope, which writes portState, portStateNote (the reason), portStateEvidence 'curated-not-applicable' and portStateSources (every citation). Each verdict must carry a reason, the Lucene 10.5.0 sources and the JDK 25 sources that establish it; audit_kg.py fails on a notApplicable class without one.",
+  "notApplicable": {
+    "org.apache.lucene.tests.util.TestSecurityManager": {
+      "reason": "A java.lang.SecurityManager subclass that refuses System.exit/halt from anything but the test runner. Lucene 10.5.0 installs it only when the runtime is Java 23 or older, so on JDK 25 it is never used, and JDK 25 cannot enable a Security Manager at all. Rust has no security manager and std::process::exit cannot be intercepted, so no faithful Rust form exists.",
+      "lucene": [
+        "lucene/test-framework/src/java/org/apache/lucene/tests/util/TestSecurityManager.java:34-90 (extends SecurityManager, overrides checkExit)",
+        "gradle/testing/randomization.gradle:79-81 (tests.useSecurityManager defaults to runtimeJavaVersion <= VERSION_23)",
+        "gradle/testing/randomization.gradle:198-205 (java.security.manager is set only when tests.useSecurityManager is true)"
+      ],
+      "jdk": [
+        "JEP 486 (JDK 24): the Security Manager is permanently disabled",
+        "JDK 25.0.5.0.3 probe: -Djava.security.manager=org.apache.lucene.tests.util.TestSecurityManager aborts VM start with java.lang.Error 'A command line option has attempted to allow or enable the Security Manager. Enabling a Security Manager is not supported.' at java.lang.System.initPhase3(System.java:1970)",
+        "JDK 25.0.5.0.3 probe: System.setSecurityManager throws UnsupportedOperationException 'Setting a Security Manager is not supported'"
+      ],
+      "rucene": [
+        "crates/rucene-test-framework/src/util/lucene_test_case.rs: LuceneTestCase::run_with_restricted_permissions models a JVM with no security manager"
+      ],
+      "decision": "rmp #508, DECISION comment 2906"
+    },
+    "org.apache.lucene.tests.util.TestObjectInputFilterFactory": {
+      "reason": "A BinaryOperator<ObjectInputFilter> that makes java.io.ObjectInputStream reject deserialization without a stream filter. Lucene 10.5.0 installs it for every non-modular test JVM, JDK 25 included, but its only consumer is ObjectInputStream: no class of the port's modules uses Java serialization and Rucene has none, so a Rust form would filter nothing.",
+      "lucene": [
+        "lucene/test-framework/src/java/org/apache/lucene/tests/util/TestObjectInputFilterFactory.java:30-56 (apply(curr, next) returns DENY_ALL_FILTER when no filter is set)",
+        "gradle/testing/randomization.gradle:221-227 (jdk.serialFilterFactory set for every non-modular :lucene project, on any JDK)",
+        "grep of lucene/{core,codecs,test-framework,queries,queryparser,sandbox,analysis/common}/src/java for ObjectInputStream|ObjectOutputStream|ObjectInputFilter: only TestObjectInputFilterFactory.java"
+      ],
+      "jdk": [
+        "java.io.ObjectInputFilter.Config (jdk.serialFilterFactory): the factory is consulted only when an ObjectInputStream sets its filter",
+        "JDK 25.0.5.0.3 probe: with -Djdk.serialFilterFactory=org.apache.lucene.tests.util.TestObjectInputFilterFactory, reading a serialized HashMap without a filter throws java.io.InvalidClassException 'filter status: REJECTED'"
+      ],
+      "rucene": [
+        "no ObjectInputStream counterpart in src/ or crates/",
+        "crates/rucene-test-framework/tests/lucene_util_tests.rs: test_test_object_input_filter_factory declares that Java object serialization has no Rust counterpart"
+      ],
+      "decision": "rmp #508, DECISION comment 2906"
+    }
+  }
+}

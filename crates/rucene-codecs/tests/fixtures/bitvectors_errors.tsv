@@ -1,0 +1,13 @@
+# case (extension-corruption)	class	message ($D = the index directory, $ID = the segment id, $BADID = the flipped id)
+vem-truncate	org.apache.lucene.index.CorruptIndexException	misplaced codec footer (file truncated?): remaining=15, expected=16, fp=102 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vem")))
+vem-id	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vem")))
+vem-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vem")))
+vex-truncate	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=817899667 vs expected footer=-1071082520 (resource=NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vex"))
+vex-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vex"))
+vex-checksum	none	-
+vemf-truncate	org.apache.lucene.index.CorruptIndexException	misplaced codec footer (file truncated?): remaining=15, expected=16, fp=120 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vemf")))
+vemf-id	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vemf")))
+vemf-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vemf")))
+vec-truncate	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=130033811 vs expected footer=-1071082520 (resource=NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vec"))
+vec-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=NIOFSIndexInput(path="$D/_5_HnswBitVectorsFormat_0.vec"))
+vec-checksum	none	-

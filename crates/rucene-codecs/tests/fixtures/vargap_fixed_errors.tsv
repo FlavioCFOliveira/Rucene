@@ -1,0 +1,10 @@
+# case (extension-corruption)	class	message ($D = the index directory, $ID = the segment id, $BADID = the flipped id)
+tib-truncate	org.apache.lucene.index.CorruptIndexException	codec footer mismatch (file truncated?): actual footer=12593299 vs expected footer=-1071082520 (resource=NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tib"))
+tib-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tib"))
+tib-checksum	none	-
+tiv-truncate	org.apache.lucene.index.CorruptIndexException	misplaced codec footer (file truncated?): remaining=15, expected=16, fp=130 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tiv")))
+tiv-id	org.apache.lucene.index.CorruptIndexException	file mismatch, expected id=$ID, got=$BADID (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tiv")))
+tiv-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tiv")))
+tmv-truncate	org.apache.lucene.index.CorruptIndexException	misplaced codec footer (file truncated?): remaining=15, expected=16, fp=149 (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tmv")))
+tmv-id	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tmv")))
+tmv-checksum	org.apache.lucene.index.CorruptIndexException	checksum failed (hardware problem?) : expected=$CRC actual=$CRC (resource=BufferedChecksumIndexInput(NIOFSIndexInput(path="$D/_5_LuceneVarGapFixedInterval_0.tmv")))

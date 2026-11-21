@@ -1,0 +1,417 @@
+//! Multi-valued numeric reduction, ported from
+//! `org.apache.lucene.search.SortedNumericSelector`.
+
+#![deny(unsafe_code)]
+
+use crate::error::{LuceneError, Result};
+use crate::index::{DocValuesIterator, NumericDocValues, SortedNumericDocValues};
+use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::sort::SortFieldType;
+use crate::util::{FixedBitSet, NumericUtils};
+
+/// The type of selection to perform.
+///
+/// Equivalent to the enum `org.apache.lucene.search.SortedNumericSelector.Type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(non_camel_case_types)]
+pub enum SortedNumericSelectorType {
+    /// Selects the minimum value in the set.
+    MIN,
+    /// Selects the maximum value in the set.
+    MAX,
+}
+
+impl SortedNumericSelectorType {
+    /// The declaration order of the variants, which is what
+    /// `SortedNumericSortField` serialises.
+    ///
+    /// Equivalent to `Enum.ordinal()`.
+    pub fn ordinal(self) -> i32 {
+        match self {
+            SortedNumericSelectorType::MIN => 0,
+            SortedNumericSelectorType::MAX => 1,
+        }
+    }
+
+    /// Recovers a selector from its declaration order.
+    ///
+    /// Equivalent to `SortedNumericSelector.Type.values()[ordinal]`.
+    pub fn from_ordinal(ordinal: i32) -> Option<Self> {
+        match ordinal {
+            0 => Some(SortedNumericSelectorType::MIN),
+            1 => Some(SortedNumericSelectorType::MAX),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SortedNumericSelectorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SortedNumericSelectorType::MIN => f.write_str("MIN"),
+            SortedNumericSelectorType::MAX => f.write_str("MAX"),
+        }
+    }
+}
+
+/// Selects a value from a document's list to use as the representative value.
+///
+/// Equivalent to `org.apache.lucene.search.SortedNumericSelector`. It provides
+/// a [`NumericDocValues`] view over a [`SortedNumericDocValues`], for use with
+/// sorting, expressions and function queries.
+#[derive(Debug, Clone, Copy)]
+pub struct SortedNumericSelector;
+
+impl SortedNumericSelector {
+    /// Wraps a multi-valued [`SortedNumericDocValues`] as a single-valued view,
+    /// using the given selector and numeric type.
+    ///
+    /// Equivalent to
+    /// `SortedNumericSelector.wrap(SortedNumericDocValues, Type, SortField.Type)`
+    /// (`SortedNumericSelector.java:47-80`): a field that is single-valued in
+    /// practice, but indexed as multi-valued, is sorted on its underlying
+    /// single-valued doc values directly, whatever the selector
+    /// (`DocValues.unwrapSingleton`); otherwise the selecting view is
+    /// installed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when `numeric_type` is not one
+    /// of [`SortFieldType::Int`], [`SortFieldType::Long`],
+    /// [`SortFieldType::Float`] or [`SortFieldType::Double`], and
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState)
+    /// when a singleton view's iterator was already used, as
+    /// `SingletonSortedNumericDocValues.getNumericDocValues()` throws.
+    pub fn wrap(
+        sorted_numeric: Box<dyn SortedNumericDocValues>,
+        selector: SortedNumericSelectorType,
+        numeric_type: SortFieldType,
+    ) -> Result<Box<dyn NumericDocValues>> {
+        if numeric_type != SortFieldType::Int
+            && numeric_type != SortFieldType::Long
+            && numeric_type != SortFieldType::Float
+            && numeric_type != SortFieldType::Double
+        {
+            return Err(LuceneError::illegal_argument(
+                "numericType must be a numeric type".to_string(),
+            ));
+        }
+        // PERF: `DocValues.unwrapSingleton(sortedNumeric)`: "regardless of
+        // selector type, this optimization is safe", and it spares the
+        // selecting view's delegation on every document.
+        let view: Box<dyn NumericDocValues> = if sorted_numeric.is_singleton() {
+            sorted_numeric
+                .into_singleton()?
+                .expect("INVARIANT: is_singleton() reported a singleton view")
+        } else {
+            match selector {
+                SortedNumericSelectorType::MIN => Box::new(MinValue::new(sorted_numeric)),
+                SortedNumericSelectorType::MAX => Box::new(MaxValue::new(sorted_numeric)),
+            }
+        };
+        // Undo the NumericUtils sortability.
+        Ok(match numeric_type {
+            SortFieldType::Float => Box::new(SortableFloatView { inner: view }),
+            SortFieldType::Double => Box::new(SortableDoubleView { inner: view }),
+            _ => view,
+        })
+    }
+}
+
+/// Wraps a [`SortedNumericDocValues`] and returns the first value (the
+/// minimum).
+///
+/// Equivalent to the package-private `SortedNumericSelector.MinValue`.
+struct MinValue {
+    inner: Box<dyn SortedNumericDocValues>,
+    value: i64,
+}
+
+impl MinValue {
+    fn new(inner: Box<dyn SortedNumericDocValues>) -> Self {
+        Self { inner, value: 0 }
+    }
+}
+
+impl DocIdSetIterator for MinValue {
+    /// `SortedNumericSelector$MinValue` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.SortedNumericSelector$MinValue",
+        )
+    }
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc_id = self.inner.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            self.value = self.inner.next_value()?;
+        }
+        Ok(doc_id)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let doc_id = self.inner.advance(target)?;
+        if doc_id != NO_MORE_DOCS {
+            self.value = self.inner.next_value()?;
+        }
+        Ok(doc_id)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+}
+
+impl DocValuesIterator for MinValue {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        if self.inner.advance_exact(target)? {
+            self.value = self.inner.next_value()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+impl NumericDocValues for MinValue {
+    fn long_value(&self) -> Result<i64> {
+        Ok(self.value)
+    }
+}
+
+/// Wraps a [`SortedNumericDocValues`] and returns the last value (the
+/// maximum).
+///
+/// Equivalent to the package-private `SortedNumericSelector.MaxValue`.
+struct MaxValue {
+    inner: Box<dyn SortedNumericDocValues>,
+    value: i64,
+}
+
+impl MaxValue {
+    fn new(inner: Box<dyn SortedNumericDocValues>) -> Self {
+        Self { inner, value: 0 }
+    }
+
+    /// Equivalent to the private `MaxValue.setValue()`.
+    fn set_value(&mut self) -> Result<()> {
+        let count = self.inner.doc_value_count()?;
+        for _ in 0..count {
+            self.value = self.inner.next_value()?;
+        }
+        Ok(())
+    }
+}
+
+impl DocIdSetIterator for MaxValue {
+    /// `SortedNumericSelector$MaxValue` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.SortedNumericSelector$MaxValue",
+        )
+    }
+    fn doc_id(&self) -> i32 {
+        self.inner.doc_id()
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        let doc_id = self.inner.next_doc()?;
+        if doc_id != NO_MORE_DOCS {
+            self.set_value()?;
+        }
+        Ok(doc_id)
+    }
+
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        let doc_id = self.inner.advance(target)?;
+        if doc_id != NO_MORE_DOCS {
+            self.set_value()?;
+        }
+        Ok(doc_id)
+    }
+
+    fn cost(&self) -> i64 {
+        self.inner.cost()
+    }
+}
+
+impl DocValuesIterator for MaxValue {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        if self.inner.advance_exact(target)? {
+            self.set_value()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+impl NumericDocValues for MaxValue {
+    fn long_value(&self) -> Result<i64> {
+        Ok(self.value)
+    }
+}
+
+/// Undoes the sortable-int encoding of a `float` field.
+///
+/// Equivalent to the anonymous `FilterNumericDocValues` that
+/// `SortedNumericSelector.wrap` returns for
+/// [`SortFieldType::Float`](crate::search::SortFieldType::Float).
+struct SortableFloatView {
+    inner: Box<dyn NumericDocValues>,
+}
+
+/// Undoes the sortable-long encoding of a `double` field.
+///
+/// Equivalent to the anonymous `FilterNumericDocValues` that
+/// `SortedNumericSelector.wrap` returns for
+/// [`SortFieldType::Double`](crate::search::SortFieldType::Double).
+struct SortableDoubleView {
+    inner: Box<dyn NumericDocValues>,
+}
+
+macro_rules! delegate_numeric_view {
+    ($ty:ty, $java_class:literal, $decode:expr) => {
+        impl DocIdSetIterator for $ty {
+            /// The anonymous `FilterNumericDocValues` declares no `toString()`,
+            /// so `java.lang.Object.toString()` applies
+            /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+            fn java_to_string(&self) -> String {
+                crate::index::index_reader::java_object_to_string_stand_in($java_class)
+            }
+
+            fn doc_id(&self) -> i32 {
+                self.inner.doc_id()
+            }
+
+            fn next_doc(&mut self) -> Result<i32> {
+                self.inner.next_doc()
+            }
+
+            fn advance(&mut self, target: i32) -> Result<i32> {
+                self.inner.advance(target)
+            }
+
+            fn cost(&self) -> i64 {
+                self.inner.cost()
+            }
+
+            fn into_bit_set(
+                &mut self,
+                up_to: i32,
+                bit_set: &mut FixedBitSet,
+                offset: i32,
+            ) -> Result<()> {
+                self.inner.into_bit_set(up_to, bit_set, offset)
+            }
+
+            fn doc_id_run_end(&mut self) -> Result<i32> {
+                self.inner.doc_id_run_end()
+            }
+        }
+
+        impl DocValuesIterator for $ty {
+            fn advance_exact(&mut self, target: i32) -> Result<bool> {
+                self.inner.advance_exact(target)
+            }
+        }
+
+        impl NumericDocValues for $ty {
+            fn long_value(&self) -> Result<i64> {
+                let raw = self.inner.long_value()?;
+                Ok($decode(raw))
+            }
+        }
+    };
+}
+
+delegate_numeric_view!(
+    SortableFloatView,
+    "org.apache.lucene.search.SortedNumericSelector$1",
+    |raw: i64| i64::from(NumericUtils::sortable_float_bits(raw as i32))
+);
+delegate_numeric_view!(
+    SortableDoubleView,
+    "org.apache.lucene.search.SortedNumericSelector$2",
+    |raw: i64| { NumericUtils::sortable_double_bits(raw) }
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::DocValues;
+
+    /// Dense single-valued doc values: doc `d` of `[0, values.len())` holds
+    /// `values[d]`.
+    struct DenseNumeric {
+        values: Vec<i64>,
+        doc: i32,
+    }
+
+    impl DocIdSetIterator for DenseNumeric {
+        fn java_to_string(&self) -> String {
+            "DenseNumeric".to_string()
+        }
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            let target = self.doc + 1;
+            self.advance(target)
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.doc = if target as usize >= self.values.len() {
+                NO_MORE_DOCS
+            } else {
+                target
+            };
+            Ok(self.doc)
+        }
+        fn cost(&self) -> i64 {
+            self.values.len() as i64
+        }
+    }
+
+    impl DocValuesIterator for DenseNumeric {
+        fn advance_exact(&mut self, target: i32) -> Result<bool> {
+            self.doc = target;
+            Ok((target as usize) < self.values.len())
+        }
+    }
+
+    impl NumericDocValues for DenseNumeric {
+        fn long_value(&self) -> Result<i64> {
+            Ok(self.values[self.doc as usize])
+        }
+    }
+
+    /// `SortedNumericSelector.wrap` sorts a single-valued field on its
+    /// underlying doc values directly, whatever the selector
+    /// (`SortedNumericSelector.java:56-61`): the view handed back is the
+    /// singleton's own values, which read the same as through a selector.
+    #[test]
+    fn wrap_sorts_a_singleton_on_its_underlying_values() {
+        for selector in [
+            SortedNumericSelectorType::MIN,
+            SortedNumericSelectorType::MAX,
+        ] {
+            let inner = DenseNumeric {
+                values: vec![7, -3, 42],
+                doc: -1,
+            };
+            let singleton = DocValues::singleton_numeric(Box::new(inner)).unwrap();
+            let mut view =
+                SortedNumericSelector::wrap(Box::new(singleton), selector, SortFieldType::Long)
+                    .unwrap();
+            assert_eq!(view.java_to_string(), "DenseNumeric", "{selector}");
+            let mut seen = Vec::new();
+            while view.next_doc().unwrap() != NO_MORE_DOCS {
+                seen.push(view.long_value().unwrap());
+            }
+            assert_eq!(seen, vec![7, -3, 42], "{selector}");
+        }
+    }
+}

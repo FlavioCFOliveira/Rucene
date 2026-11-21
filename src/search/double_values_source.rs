@@ -1,0 +1,1390 @@
+//! Function values over documents, ported from
+//! `org.apache.lucene.search.DoubleValuesSource`.
+
+#![deny(unsafe_code)]
+
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::fmt::Debug;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::error::{LuceneError, Result};
+use crate::index::LeafReaderContext;
+use crate::search::comparators::double_comparator::DoubleComparator;
+use crate::search::comparators::numeric_comparator::NumericLeafState;
+use crate::search::double_values::{DoubleValues, EmptyDoubleValues};
+use crate::search::field_comparator::{
+    java_double_compare, FieldComparator, SharedFieldComparator, SlotComparator, SortValue,
+};
+use crate::search::field_comparator_source::FieldComparatorSource;
+use crate::search::index_searcher::IndexSearcher;
+use crate::search::long_values_source::LongValuesSource;
+use crate::search::pruning::Pruning;
+use crate::search::query::Query;
+use crate::search::scorable::Scorable;
+use crate::search::score_mode::ScoreMode;
+use crate::search::segment_cacheable::SegmentCacheable;
+use crate::search::similarities::Explanation;
+use crate::search::sort::SortField;
+use crate::search::weight::Weight;
+use crate::util::NumericUtils;
+
+/// Decodes the raw `long` of a numeric doc-values field into a `double`.
+///
+/// Equivalent to the `java.util.function.LongToDoubleFunction decoder` that
+/// `DoubleValuesSource.fromField(String, LongToDoubleFunction)` takes.
+///
+/// **Divergence from Lucene 10.5.0.** Java compares two field sources with
+/// `Objects.equals(decoder, that.decoder)`, that is by lambda identity. Rust
+/// closures have no identity that survives being boxed, so the four decoders
+/// Lucene's factories install are an enum, which compares by variant — the same
+/// answer for every source those factories build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DoubleValueDecoder {
+    /// `Double::longBitsToDouble`, installed by `fromDoubleField`.
+    DoubleBits,
+    /// `(double) Float.intBitsToFloat((int) v)`, installed by
+    /// `fromFloatField`.
+    FloatBits,
+    /// `(double) v`, installed by `fromLongField` and `fromIntField`.
+    Long,
+}
+
+impl DoubleValueDecoder {
+    /// Applies the decoder.
+    ///
+    /// Equivalent to `LongToDoubleFunction.applyAsDouble(long)`.
+    pub fn decode(self, value: i64) -> f64 {
+        match self {
+            DoubleValueDecoder::DoubleBits => f64::from_bits(value as u64),
+            DoubleValueDecoder::FloatBits => f64::from(f32::from_bits(value as i32 as u32)),
+            DoubleValueDecoder::Long => value as f64,
+        }
+    }
+}
+
+/// A base class for producing a `double` value per document.
+///
+/// Equivalent to the abstract class
+/// `org.apache.lucene.search.DoubleValuesSource`, which implements
+/// [`SegmentCacheable`].
+///
+/// **Divergence from Lucene 10.5.0.** Java's `getValues` is an instance method
+/// on `this`; the values it returns keep reading through the source. Rust
+/// cannot return a value borrowing `&self` and store it beside the source, so
+/// the receiver is `Arc<Self>` — the source is shared into the values it
+/// produces, which is exactly the object graph Java builds.
+pub trait DoubleValuesSource: SegmentCacheable + Debug + Send + Sync {
+    /// Returns the values for the given leaf.
+    ///
+    /// Equivalent to
+    /// `DoubleValuesSource.getValues(LeafReaderContext, DoubleValues)`.
+    /// `scores` may be `None` when [`needs_scores`](Self::needs_scores) is
+    /// false.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while opening the values, and returns
+    /// [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation) for a source that must be
+    /// rewritten first.
+    fn get_values<'a>(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>>;
+
+    /// Returns whether the values require the query score to be computed.
+    ///
+    /// Equivalent to `DoubleValuesSource.needsScores()`.
+    fn needs_scores(&self) -> bool;
+
+    /// Rewrites the source, binding it to a searcher.
+    ///
+    /// Equivalent to `DoubleValuesSource.rewrite(IndexSearcher)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rewriting.
+    fn rewrite(self: Arc<Self>, searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>>;
+
+    /// Returns this source as [`Any`], so that a caller can recover its
+    /// concrete type.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java compares sources with
+    /// `getClass()` and a cast; Rust needs the escape hatch to be declared.
+    /// Every implementation writes `self`.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Source equivalence.
+    ///
+    /// Equivalent to the abstract `DoubleValuesSource.equals(Object)`.
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool;
+
+    /// Source hash code.
+    ///
+    /// Equivalent to the abstract `DoubleValuesSource.hashCode()`: every
+    /// implementation returns its Java class's value, with the stable stand-in
+    /// of [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// wherever Java's value is an identity hash.
+    fn source_hash(&self) -> i32;
+
+    /// Renders the source.
+    ///
+    /// Equivalent to the abstract `DoubleValuesSource.toString()`.
+    fn to_source_string(&self) -> String;
+
+    /// Explains the value of `doc_id`.
+    ///
+    /// Equivalent to
+    /// `DoubleValuesSource.explain(LeafReaderContext, int, Explanation)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while reading the value.
+    fn explain(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        doc_id: i32,
+        score_explanation: &Explanation,
+    ) -> Result<Explanation> {
+        let description = self.to_source_string();
+        // `DoubleValuesSource.constant(scoreExplanation.getValue().doubleValue())`
+        // (`DoubleValuesSource.java:70-74`).
+        let scores = constant(score_explanation.value().double_value()).get_values(ctx, None)?;
+        let mut values = self.get_values(ctx, Some(scores))?;
+        if values.advance_exact(doc_id)? {
+            let value = values.double_value()?;
+            return Ok(Explanation::matched(value, description, Vec::new()));
+        }
+        Ok(Explanation::no_match(description, Vec::new()))
+    }
+}
+
+/// Creates a sort field over a source, with a missing value of `0`.
+///
+/// Equivalent to `DoubleValuesSource.getSortField(boolean)`.
+///
+/// # Errors
+///
+/// Propagates the [`SortField`] construction error.
+pub fn get_sort_field(source: Arc<dyn DoubleValuesSource>, reverse: bool) -> Result<SortField> {
+    get_sort_field_with_missing(source, reverse, 0.0)
+}
+
+/// Creates a sort field over a source with an explicit missing value.
+///
+/// Equivalent to `DoubleValuesSource.getSortField(boolean, double)`, which
+/// builds the package-private `DoubleValuesSortField`.
+///
+/// **Divergence from Lucene 10.5.0.** `DoubleValuesSortField` is a `SortField`
+/// subclass that only overrides `needsScores`, `toString`, `setMissingValue`
+/// and `rewrite`. This port has no `SortField` subclassing, so the sort field
+/// is a plain [`SortFieldType::Custom`](crate::search::sort::SortFieldType::Custom) sort over the
+/// [`DoubleValuesComparatorSource`] Java installs, which is what decides the
+/// order. `needsScores` and `rewrite` are Java's: [`SortField::needs_scores`]
+/// and [`SortField::rewrite`] recognise the comparator source and answer the
+/// producer's `needsScores()` and rewrite the producer
+/// ([`DoubleValuesComparatorSource::rewrite_sort_field`]).
+///
+/// # Errors
+///
+/// Propagates the [`SortField`] construction error.
+pub fn get_sort_field_with_missing(
+    source: Arc<dyn DoubleValuesSource>,
+    reverse: bool,
+    missing_value: f64,
+) -> Result<SortField> {
+    let field = source.to_source_string();
+    SortField::new_custom(
+        Some(field),
+        Arc::new(DoubleValuesComparatorSource::new(source, missing_value)),
+        reverse,
+    )
+}
+
+/// Views a double source as a long source, truncating each value.
+///
+/// Equivalent to the `final DoubleValuesSource.toLongValuesSource()`.
+pub fn to_long_values_source(source: Arc<dyn DoubleValuesSource>) -> Arc<dyn LongValuesSource> {
+    Arc::new(LongDoubleValuesSource { inner: source })
+}
+
+/// Views a double source as a long source, encoding each value into a sortable
+/// `long`.
+///
+/// Equivalent to the `final DoubleValuesSource.toSortableLongDoubleValuesSource()`.
+pub fn to_sortable_long_double_values_source(
+    source: Arc<dyn DoubleValuesSource>,
+) -> Arc<dyn LongValuesSource> {
+    Arc::new(SortableLongDoubleValuesSource { inner: source })
+}
+
+/// Creates a source reading a numeric doc-values field, decoding each raw value.
+///
+/// Equivalent to
+/// `DoubleValuesSource.fromField(String, LongToDoubleFunction)`.
+pub fn from_field(field: &str, decoder: DoubleValueDecoder) -> Arc<dyn DoubleValuesSource> {
+    Arc::new(FieldValuesSource {
+        field: field.to_string(),
+        decoder,
+    })
+}
+
+/// Creates a source reading a `double` doc-values field.
+///
+/// Equivalent to `DoubleValuesSource.fromDoubleField(String)`.
+pub fn from_double_field(field: &str) -> Arc<dyn DoubleValuesSource> {
+    from_field(field, DoubleValueDecoder::DoubleBits)
+}
+
+/// Creates a source reading a `float` doc-values field.
+///
+/// Equivalent to `DoubleValuesSource.fromFloatField(String)`.
+pub fn from_float_field(field: &str) -> Arc<dyn DoubleValuesSource> {
+    from_field(field, DoubleValueDecoder::FloatBits)
+}
+
+/// Creates a source reading a `long` doc-values field.
+///
+/// Equivalent to `DoubleValuesSource.fromLongField(String)`.
+pub fn from_long_field(field: &str) -> Arc<dyn DoubleValuesSource> {
+    from_field(field, DoubleValueDecoder::Long)
+}
+
+/// Creates a source reading an `int` doc-values field.
+///
+/// Equivalent to `DoubleValuesSource.fromIntField(String)`, which delegates to
+/// `fromLongField`.
+pub fn from_int_field(field: &str) -> Arc<dyn DoubleValuesSource> {
+    from_long_field(field)
+}
+
+/// Creates a source that always returns `value`.
+///
+/// Equivalent to `DoubleValuesSource.constant(double)`.
+pub fn constant(value: f64) -> Arc<dyn DoubleValuesSource> {
+    Arc::new(ConstantValuesSource::new(value))
+}
+
+/// Creates a source returning the score of `query`.
+///
+/// Equivalent to `DoubleValuesSource.fromQuery(Query)`. The returned source
+/// must be [rewritten](DoubleValuesSource::rewrite) before its values can be
+/// read.
+pub fn from_query(query: Arc<dyn Query>) -> Arc<dyn DoubleValuesSource> {
+    Arc::new(QueryDoubleValuesSource { query })
+}
+
+/// A source returning the query score of each document.
+///
+/// Equivalent to the `DoubleValuesSource.SCORES` constant.
+pub fn scores() -> Arc<dyn DoubleValuesSource> {
+    Arc::new(ScoresValuesSource)
+}
+
+/// The `DoubleValuesSource.SCORES` constant.
+#[derive(Debug, Default, Clone, Copy)]
+struct ScoresValuesSource;
+
+impl SegmentCacheable for ScoresValuesSource {
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl DoubleValuesSource for ScoresValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        _ctx: &LeafReaderContext,
+        scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>> {
+        debug_assert!(scores.is_some());
+        // `assert scores != null; return scores;`: the caller dereferences
+        // the `null`.
+        scores.ok_or_else(LuceneError::null_pointer)
+    }
+
+    fn needs_scores(&self) -> bool {
+        true
+    }
+
+    fn rewrite(self: Arc<Self>, _searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
+        // Java's `equals` is `obj == this`; every instance of this port's unit
+        // struct stands for the same singleton constant.
+        other.as_any().is::<ScoresValuesSource>()
+    }
+
+    fn source_hash(&self) -> i32 {
+        // The `SCORES` constant's `hashCode()` is `0` (`DoubleValuesSource.java:342-344`).
+        0
+    }
+
+    fn to_source_string(&self) -> String {
+        "scores".to_string()
+    }
+
+    fn explain(
+        self: Arc<Self>,
+        _ctx: &LeafReaderContext,
+        _doc_id: i32,
+        score_explanation: &Explanation,
+    ) -> Result<Explanation> {
+        Ok(score_explanation.clone())
+    }
+}
+
+/// A source that always returns the same value.
+///
+/// Equivalent to the private `DoubleValuesSource.ConstantValuesSource`.
+#[derive(Debug, Clone, Copy)]
+struct ConstantValuesSource {
+    value: f64,
+}
+
+impl ConstantValuesSource {
+    fn new(value: f64) -> Self {
+        Self { value }
+    }
+}
+
+/// The values a [`ConstantValuesSource`] hands out.
+#[derive(Debug, Clone, Copy)]
+struct ConstantDoubleValues {
+    value: f64,
+}
+
+impl DoubleValues for ConstantDoubleValues {
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(self.value)
+    }
+
+    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+impl SegmentCacheable for ConstantValuesSource {
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        true
+    }
+}
+
+impl DoubleValuesSource for ConstantValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        _ctx: &LeafReaderContext,
+        _scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>> {
+        Ok(Box::new(ConstantDoubleValues { value: self.value }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    fn rewrite(self: Arc<Self>, _searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
+        match other.as_any().downcast_ref::<ConstantValuesSource>() {
+            Some(other) => java_double_compare(self.value, other.value) == 0,
+            None => false,
+        }
+    }
+
+    /// Equivalent to `ConstantValuesSource.hashCode()`.
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(value)` (`DoubleValuesSource.java:414-416`).
+        31i32.wrapping_add(crate::util::java_collections::java_double_hash_code(
+            self.value,
+        ))
+    }
+
+    /// `"constant(" + value + ")"`, the `double` printed by `Double.toString`
+    /// (`DoubleValuesSource.java:428`).
+    fn to_source_string(&self) -> String {
+        format!(
+            "constant({})",
+            crate::util::java_fmt::double_to_string(self.value)
+        )
+    }
+
+    fn explain(
+        self: Arc<Self>,
+        _ctx: &LeafReaderContext,
+        _doc_id: i32,
+        _score_explanation: &Explanation,
+    ) -> Result<Explanation> {
+        // `"constant(" + value + ")"` (`DoubleValuesSource.java:410`).
+        Ok(Explanation::matched(
+            self.value,
+            format!(
+                "constant({})",
+                crate::util::java_fmt::double_to_string(self.value)
+            ),
+            Vec::new(),
+        ))
+    }
+}
+
+/// A source reading a numeric doc-values field.
+///
+/// Equivalent to the private `DoubleValuesSource.FieldValuesSource`.
+#[derive(Debug, Clone)]
+struct FieldValuesSource {
+    field: String,
+    decoder: DoubleValueDecoder,
+}
+
+/// The values a [`FieldValuesSource`] hands out.
+struct FieldDoubleValues {
+    values: Box<dyn crate::index::NumericDocValues>,
+    decoder: DoubleValueDecoder,
+}
+
+impl DoubleValues for FieldDoubleValues {
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(self.decoder.decode(self.values.long_value()?))
+    }
+
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.values.advance_exact(target)
+    }
+}
+
+impl SegmentCacheable for FieldValuesSource {
+    /// Equivalent to `DocValues.isCacheable(ctx, field)`: not cacheable once
+    /// the field's doc values have been updated.
+    fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
+        crate::index::doc_values::DocValues::is_cacheable(ctx, &[&self.field])
+    }
+}
+
+impl DoubleValuesSource for FieldValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        _scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>> {
+        let reader = ctx.leaf_reader();
+        let values = crate::index::DocValues::get_numeric(reader.as_ref(), &self.field)?;
+        Ok(Box::new(FieldDoubleValues {
+            values,
+            decoder: self.decoder,
+        }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    fn rewrite(self: Arc<Self>, _searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
+        match other.as_any().downcast_ref::<FieldValuesSource>() {
+            Some(other) => self.field == other.field && self.decoder == other.decoder,
+            None => false,
+        }
+    }
+
+    /// Equivalent to `FieldValuesSource.hashCode()`.
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(field, decoder)` (`DoubleValuesSource.java:478-480`). The
+        // decoder is a method reference or lambda, whose hash is a JVM identity
+        // hash: the stable stand-in of `java_identity_hash_code_stand_in` names
+        // the factory that installs it.
+        crate::util::java_collections::java_arrays_hash_code_ints(&[
+            crate::util::java_collections::java_string_hash_code(&self.field),
+            crate::util::java_collections::java_identity_hash_code_stand_in(match self.decoder {
+                DoubleValueDecoder::DoubleBits => {
+                    "org.apache.lucene.search.DoubleValuesSource.fromDoubleField"
+                }
+                DoubleValueDecoder::FloatBits => {
+                    "org.apache.lucene.search.DoubleValuesSource.fromFloatField"
+                }
+                _ => "org.apache.lucene.search.DoubleValuesSource.fromLongField",
+            }),
+        ])
+    }
+
+    fn to_source_string(&self) -> String {
+        format!("double({})", self.field)
+    }
+
+    fn explain(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        doc_id: i32,
+        _score_explanation: &Explanation,
+    ) -> Result<Explanation> {
+        let description = self.to_source_string();
+        let mut values = self.get_values(ctx, None)?;
+        if values.advance_exact(doc_id)? {
+            let value = values.double_value()?;
+            Ok(Explanation::matched(value, description, Vec::new()))
+        } else {
+            Ok(Explanation::no_match(description, Vec::new()))
+        }
+    }
+}
+
+/// A source returning the score of a query, before it is rewritten.
+///
+/// Equivalent to the private `DoubleValuesSource.QueryDoubleValuesSource`.
+#[derive(Debug)]
+struct QueryDoubleValuesSource {
+    query: Arc<dyn Query>,
+}
+
+impl SegmentCacheable for QueryDoubleValuesSource {
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl DoubleValuesSource for QueryDoubleValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        _ctx: &LeafReaderContext,
+        _scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>> {
+        Err(LuceneError::unsupported_operation(
+            "This DoubleValuesSource must be rewritten".to_string(),
+        ))
+    }
+
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    fn rewrite(self: Arc<Self>, searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
+        let rewritten = searcher.rewrite(Arc::clone(&self.query))?;
+        let weight = rewritten.create_weight(searcher, ScoreMode::COMPLETE, 1.0)?;
+        Ok(Arc::new(WeightDoubleValuesSource { weight }))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
+        match other.as_any().downcast_ref::<QueryDoubleValuesSource>() {
+            Some(other) => self.query.query_eq(&*other.query),
+            None => false,
+        }
+    }
+
+    /// Equivalent to `QueryDoubleValuesSource.hashCode()`.
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(query)` (`DoubleValuesSource.java:672-674`).
+        31i32.wrapping_add(self.query.query_hash())
+    }
+
+    fn to_source_string(&self) -> String {
+        format!("score({})", self.query.to_query_string(""))
+    }
+}
+
+/// A source returning the score of a weight.
+///
+/// Equivalent to the private `DoubleValuesSource.WeightDoubleValuesSource`.
+#[derive(Debug)]
+struct WeightDoubleValuesSource {
+    weight: Arc<dyn Weight>,
+}
+
+/// The values a [`WeightDoubleValuesSource`] hands out.
+struct WeightDoubleValues {
+    scorer: Box<dyn crate::search::scorer::Scorer>,
+    has_two_phase: bool,
+    /// Caches `tpi.matches()`, as Java's `tpiMatch` field does.
+    tpi_match: Option<bool>,
+}
+
+impl DoubleValues for WeightDoubleValues {
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.scorer.score()?))
+    }
+
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        let current = if self.has_two_phase {
+            self.scorer
+                .two_phase_iterator()
+                .expect("INVARIANT: the two-phase view was observed at construction")
+                .approximation_ref()
+                .doc_id()
+        } else {
+            self.scorer.iterator().doc_id()
+        };
+        if current < doc {
+            if self.has_two_phase {
+                self.scorer
+                    .two_phase_iterator()
+                    .expect("INVARIANT: the two-phase view was observed at construction")
+                    .approximation()
+                    .advance(doc)?;
+            } else {
+                self.scorer.iterator().advance(doc)?;
+            }
+            self.tpi_match = None;
+        }
+        let current = if self.has_two_phase {
+            self.scorer
+                .two_phase_iterator()
+                .expect("INVARIANT: the two-phase view was observed at construction")
+                .approximation_ref()
+                .doc_id()
+        } else {
+            self.scorer.iterator().doc_id()
+        };
+        if current == doc {
+            if !self.has_two_phase {
+                return Ok(true);
+            }
+            if self.tpi_match.is_none() {
+                self.tpi_match = Some(
+                    self.scorer
+                        .two_phase_iterator()
+                        .expect("INVARIANT: the two-phase view was observed at construction")
+                        .matches()?,
+                );
+            }
+            return Ok(self
+                .tpi_match
+                .expect("INVARIANT: the match was just computed"));
+        }
+        Ok(false)
+    }
+}
+
+impl SegmentCacheable for WeightDoubleValuesSource {
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl DoubleValuesSource for WeightDoubleValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        _scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn DoubleValues + 'a>> {
+        let Some(mut scorer) = self.weight.scorer(ctx)? else {
+            return Ok(Box::new(EmptyDoubleValues));
+        };
+        let has_two_phase = scorer.two_phase_iterator().is_some();
+        Ok(Box::new(WeightDoubleValues {
+            scorer,
+            has_two_phase,
+            tpi_match: None,
+        }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        false
+    }
+
+    fn rewrite(self: Arc<Self>, _searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(self)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
+        match other.as_any().downcast_ref::<WeightDoubleValuesSource>() {
+            // Java compares the two weights with `Objects.equals`, which is
+            // identity for `Weight`; this port compares them by pointer, which
+            // is that same identity.
+            Some(other) => Arc::ptr_eq(&self.weight, &other.weight),
+            None => false,
+        }
+    }
+
+    /// Equivalent to `WeightDoubleValuesSource.hashCode()`.
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(weight)` (`DoubleValuesSource.java:771-773`); a `Weight`'s
+        // hash is a JVM identity hash, replaced by the stable stand-in of
+        // `java_identity_hash_code_stand_in`.
+        31i32.wrapping_add(
+            crate::util::java_collections::java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.Weight",
+            ),
+        )
+    }
+
+    fn to_source_string(&self) -> String {
+        format!("score({})", self.weight.get_query().to_query_string(""))
+    }
+
+    fn explain(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        doc_id: i32,
+        _score_explanation: &Explanation,
+    ) -> Result<Explanation> {
+        self.weight.explain(ctx, doc_id)
+    }
+}
+
+/// A long source truncating the values of a double source.
+///
+/// Equivalent to the private `DoubleValuesSource.LongDoubleValuesSource`.
+#[derive(Debug)]
+struct LongDoubleValuesSource {
+    inner: Arc<dyn DoubleValuesSource>,
+}
+
+/// A long source encoding the values of a double source into sortable `long`s.
+///
+/// Equivalent to the private
+/// `DoubleValuesSource.SortableLongDoubleValuesSource`.
+#[derive(Debug)]
+struct SortableLongDoubleValuesSource {
+    inner: Arc<dyn DoubleValuesSource>,
+}
+
+/// The values the two double-to-long adapters hand out.
+struct DoubleToLongValues<'a> {
+    inner: Box<dyn DoubleValues + 'a>,
+    sortable: bool,
+}
+
+impl crate::search::long_values::LongValues for DoubleToLongValues<'_> {
+    fn long_value(&mut self) -> Result<i64> {
+        let value = self.inner.double_value()?;
+        Ok(if self.sortable {
+            NumericUtils::double_to_sortable_long(value)
+        } else {
+            value as i64
+        })
+    }
+
+    fn advance_exact(&mut self, doc: i32) -> Result<bool> {
+        self.inner.advance_exact(doc)
+    }
+}
+
+impl SegmentCacheable for LongDoubleValuesSource {
+    fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
+        self.inner.is_cacheable(ctx)
+    }
+}
+
+impl LongValuesSource for LongDoubleValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn crate::search::long_values::LongValues + 'a>> {
+        let inner = Arc::clone(&self.inner).get_values(ctx, scores)?;
+        Ok(Box::new(DoubleToLongValues {
+            inner,
+            sortable: false,
+        }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.inner.needs_scores()
+    }
+
+    fn rewrite(self: Arc<Self>, searcher: &IndexSearcher) -> Result<Arc<dyn LongValuesSource>> {
+        let rewritten = Arc::clone(&self.inner).rewrite(searcher)?;
+        Ok(to_long_values_source(rewritten))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
+        match other.as_any().downcast_ref::<LongDoubleValuesSource>() {
+            Some(other) => self.inner.source_eq(&*other.inner),
+            None => false,
+        }
+    }
+
+    /// Equivalent to `LongDoubleValuesSource.hashCode()`.
+    fn source_hash(&self) -> i32 {
+        // `Objects.hash(inner)` (`DoubleValuesSource.java:235-237`).
+        31i32.wrapping_add(self.inner.source_hash())
+    }
+
+    fn to_source_string(&self) -> String {
+        format!("long({})", self.inner.to_source_string())
+    }
+}
+
+impl SegmentCacheable for SortableLongDoubleValuesSource {
+    fn is_cacheable(&self, _ctx: &LeafReaderContext) -> bool {
+        false
+    }
+}
+
+impl LongValuesSource for SortableLongDoubleValuesSource {
+    fn get_values<'a>(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        scores: Option<Box<dyn DoubleValues + 'a>>,
+    ) -> Result<Box<dyn crate::search::long_values::LongValues + 'a>> {
+        let inner = Arc::clone(&self.inner).get_values(ctx, scores)?;
+        Ok(Box::new(DoubleToLongValues {
+            inner,
+            sortable: true,
+        }))
+    }
+
+    fn needs_scores(&self) -> bool {
+        self.inner.needs_scores()
+    }
+
+    /// Equivalent to
+    /// `SortableLongDoubleValuesSource.rewrite(IndexSearcher)`, which — as in
+    /// Lucene 10.5.0 — rewrites into a plain `toLongValuesSource()` rather than
+    /// into a sortable one.
+    fn rewrite(self: Arc<Self>, searcher: &IndexSearcher) -> Result<Arc<dyn LongValuesSource>> {
+        let rewritten = Arc::clone(&self.inner).rewrite(searcher)?;
+        Ok(to_long_values_source(rewritten))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn source_eq(&self, other: &dyn LongValuesSource) -> bool {
+        match other
+            .as_any()
+            .downcast_ref::<SortableLongDoubleValuesSource>()
+        {
+            Some(other) => self.inner.source_eq(&*other.inner),
+            None => false,
+        }
+    }
+
+    /// Equivalent to `SortableLongDoubleValuesSource.hashCode()`.
+    fn source_hash(&self) -> i32 {
+        // `inner.hashCode()` (`DoubleValuesSource.java:164-166`).
+        self.inner.source_hash()
+    }
+
+    fn to_source_string(&self) -> String {
+        format!("sortableLong({})", self.inner.to_source_string())
+    }
+}
+
+/// The comparator source a double-source sort field installs.
+///
+/// Equivalent to the private
+/// `DoubleValuesSource.DoubleValuesComparatorSource`.
+#[derive(Debug)]
+pub struct DoubleValuesComparatorSource {
+    producer: Arc<dyn DoubleValuesSource>,
+    /// Java's mutable `double missingValue`, held as its bits, which
+    /// `DoubleValuesSortField.setMissingValue` changes on the source the sort
+    /// field shares (`DoubleValuesSource.java:584-589`).
+    missing_value: std::sync::atomic::AtomicU64,
+}
+
+impl DoubleValuesComparatorSource {
+    /// Creates the comparator source of a sort over `producer`.
+    ///
+    /// Equivalent to
+    /// `new DoubleValuesComparatorSource(DoubleValuesSource, double)`.
+    pub fn new(producer: Arc<dyn DoubleValuesSource>, missing_value: f64) -> Self {
+        Self {
+            producer,
+            missing_value: std::sync::atomic::AtomicU64::new(missing_value.to_bits()),
+        }
+    }
+
+    /// Replaces the missing value of every comparator built from now on.
+    ///
+    /// Equivalent to `DoubleValuesComparatorSource.setMissingValue(double)`,
+    /// which `DoubleValuesSortField.setMissingValue(Object)` calls.
+    pub fn set_missing_value(&self, missing_value: f64) {
+        self.missing_value.store(
+            missing_value.to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Returns the current missing value.
+    pub fn missing_value(&self) -> f64 {
+        f64::from_bits(
+            self.missing_value
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// `DoubleValuesSortField.rewrite(IndexSearcher)` of `field`, the sort
+    /// field holding this source (`DoubleValuesSource.java:557-566`): `field`
+    /// itself when the producer rewrites to the same instance, else a new sort
+    /// field over the rewritten producer with the same reverse flag and
+    /// missing value.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the producer's rewrite error and the [`SortField`]
+    /// construction error.
+    pub fn rewrite_sort_field<'a>(
+        &self,
+        field: &'a SortField,
+        searcher: &IndexSearcher,
+    ) -> Result<std::borrow::Cow<'a, SortField>> {
+        let rewritten_source = Arc::clone(&self.producer).rewrite(searcher)?;
+        if std::ptr::addr_eq(Arc::as_ptr(&rewritten_source), Arc::as_ptr(&self.producer)) {
+            return Ok(std::borrow::Cow::Borrowed(field));
+        }
+        Ok(std::borrow::Cow::Owned(get_sort_field_with_missing(
+            rewritten_source,
+            field.reverse(),
+            self.missing_value(),
+        )?))
+    }
+}
+
+impl DoubleValuesComparatorSource {
+    /// `producer.needsScores()`, which `DoubleValuesSortField.needsScores()`
+    /// answers (`DoubleValuesSource.java:543-546`).
+    pub(crate) fn producer_needs_scores(&self) -> bool {
+        self.producer.needs_scores()
+    }
+}
+
+impl FieldComparatorSource for DoubleValuesComparatorSource {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    /// Equivalent to `DoubleValuesComparatorSource.newComparator`
+    /// (`DoubleValuesSource.java:588-612`): a `DoubleComparator` with
+    /// `Pruning.NONE` whose leaves read the producer's values through a
+    /// [`DoubleValuesHolder`], converted with `Double::doubleToLongBits`.
+    fn new_comparator(
+        &self,
+        fieldname: &str,
+        num_hits: usize,
+        _pruning: Pruning,
+        reversed: bool,
+    ) -> Result<Box<dyn FieldComparator>> {
+        Ok(Box::new(SharedFieldComparator::new(
+            DoubleValuesComparator {
+                inner: DoubleComparator::new(
+                    num_hits,
+                    fieldname,
+                    Some(self.missing_value()),
+                    reversed,
+                    Pruning::NONE,
+                ),
+                producer: Arc::clone(&self.producer),
+            },
+        )))
+    }
+}
+
+/// Values reading the score a comparator publishes before each comparison.
+///
+/// **Divergence from Lucene 10.5.0.** Java captures the `Scorable` in
+/// `DoubleValues.fromScorer(scorer)` at `setScorer` time and keeps reading
+/// through it. Rust's collector contract hands the scorable to each collection
+/// call rather than to the comparator, so the comparator publishes the score
+/// into this shared cell — only when the producer
+/// [needs scores](DoubleValuesSource::needs_scores) — immediately before every
+/// read. The value read is the same one Java's captured scorable would produce.
+struct ScoreCellDoubleValues {
+    score: Rc<Cell<f64>>,
+}
+
+impl DoubleValues for ScoreCellDoubleValues {
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(self.score.get())
+    }
+
+    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// The comparator a [`DoubleValuesComparatorSource`] builds.
+///
+/// Equivalent to the anonymous `DoubleComparator` subclass that
+/// `DoubleValuesComparatorSource.newComparator` returns
+/// (`DoubleValuesSource.java:591-611`): every comparison is the
+/// [`DoubleComparator`]'s, over the doc values its leaf comparator's
+/// `getNumericDocValues` override returns —
+/// `asNumericDocValues(holder, Double::doubleToLongBits)` — and its
+/// `setScorer` override fills the holder with
+/// `producer.getValues(ctx, fromScorer(scorer))` before calling
+/// `super.setScorer(scorer)`.
+#[derive(Debug)]
+struct DoubleValuesComparator {
+    inner: DoubleComparator,
+    producer: Arc<dyn DoubleValuesSource>,
+}
+
+/// The leaf comparator of a [`DoubleValuesComparator`]: the
+/// `DoubleComparator.DoubleLeafComparator` state, the leaf's context (Java's
+/// `ctx` field), the holder, and the score cell its values read.
+struct DoubleValuesLeaf {
+    leaf: NumericLeafState,
+    ctx: LeafReaderContext,
+    holder: DoubleValuesHolder,
+    score: Rc<Cell<f64>>,
+}
+
+impl DoubleValuesComparator {
+    /// Publishes the current score for the producer's values; see
+    /// [`ScoreCellDoubleValues`].
+    fn publish_score(&self, leaf: &DoubleValuesLeaf, scorer: &mut dyn Scorable) -> Result<()> {
+        if self.producer.needs_scores() {
+            leaf.score.set(f64::from(scorer.score()?));
+        }
+        Ok(())
+    }
+}
+
+impl SlotComparator for DoubleValuesComparator {
+    type Leaf = DoubleValuesLeaf;
+
+    fn compare(&self, slot1: i32, slot2: i32) -> i32 {
+        self.inner.compare(slot1, slot2)
+    }
+
+    fn set_top_value(&mut self, value: SortValue) {
+        self.inner.set_top_value(value);
+    }
+
+    fn value(&self, slot: i32) -> SortValue {
+        self.inner.value(slot)
+    }
+
+    fn set_single_sort(&mut self) {
+        self.inner.set_single_sort();
+    }
+
+    fn disable_skipping(&mut self) {
+        self.inner.disable_skipping();
+    }
+
+    /// `getLeafComparator(context)`: a new holder, and a
+    /// `DoubleLeafComparator(context)` whose `getNumericDocValues` returns
+    /// `asNumericDocValues(holder, Double::doubleToLongBits)`.
+    fn new_leaf(&mut self, context: &LeafReaderContext) -> Result<DoubleValuesLeaf> {
+        let holder = DoubleValuesHolder::default();
+        let doc_values = Box::new(as_numeric_doc_values(holder.clone(), double_to_long_bits));
+        let leaf = self.inner.new_leaf_with_doc_values(context, doc_values)?;
+        Ok(DoubleValuesLeaf {
+            leaf,
+            ctx: context.clone(),
+            holder,
+            score: Rc::new(Cell::new(0.0)),
+        })
+    }
+
+    fn set_bottom(&mut self, leaf: &mut DoubleValuesLeaf, slot: i32) -> Result<()> {
+        self.inner.set_bottom(&mut leaf.leaf, slot)
+    }
+
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        self.publish_score(leaf, scorer)?;
+        self.inner.compare_bottom(&mut leaf.leaf, doc, scorer)
+    }
+
+    fn compare_top(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
+        self.publish_score(leaf, scorer)?;
+        self.inner.compare_top(&mut leaf.leaf, doc, scorer)
+    }
+
+    fn copy(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+        slot: i32,
+        doc: i32,
+        scorer: &mut dyn Scorable,
+    ) -> Result<()> {
+        self.publish_score(leaf, scorer)?;
+        self.inner.copy(&mut leaf.leaf, slot, doc, scorer)
+    }
+
+    /// `holder.values = producer.getValues(ctx, fromScorer(scorer));
+    /// super.setScorer(scorer);`
+    fn set_scorer(&mut self, leaf: &mut DoubleValuesLeaf, scorer: &mut dyn Scorable) -> Result<()> {
+        let scores: Box<dyn DoubleValues> = Box::new(ScoreCellDoubleValues {
+            score: Rc::clone(&leaf.score),
+        });
+        leaf.holder
+            .set_values(Arc::clone(&self.producer).get_values(&leaf.ctx, Some(scores))?);
+        self.inner.set_scorer(&mut leaf.leaf, scorer)
+    }
+
+    fn competitive_iterator(
+        &mut self,
+        leaf: &mut DoubleValuesLeaf,
+    ) -> Result<Option<crate::search::CompetitiveIterator>> {
+        self.inner.competitive_iterator(&mut leaf.leaf)
+    }
+
+    fn set_hits_threshold_reached(&mut self, leaf: &mut DoubleValuesLeaf) -> Result<()> {
+        self.inner.set_hits_threshold_reached(&mut leaf.leaf)
+    }
+}
+
+/// Values that report the score of the [`Scorable`] they wrap.
+///
+/// Equivalent to the anonymous `DoubleValues` the static
+/// `DoubleValuesSource.fromScorer(Scorable)` returns, whose `advanceExact`
+/// always accepts and whose `doubleValue` reads `scorer.score()`.
+pub struct ScorerDoubleValues<'a> {
+    scorer: &'a mut dyn Scorable,
+}
+
+impl Debug for ScorerDoubleValues<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScorerDoubleValues")
+    }
+}
+
+impl DoubleValues for ScorerDoubleValues<'_> {
+    fn double_value(&mut self) -> Result<f64> {
+        Ok(f64::from(self.scorer.score()?))
+    }
+
+    fn advance_exact(&mut self, _doc: i32) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+/// Returns [`DoubleValues`] that wrap the scores `scorer` returns.
+///
+/// Equivalent to the static `DoubleValuesSource.fromScorer(Scorable)`.
+///
+/// Note: if you intend to call [`Scorable::score`] on `scorer` separately, you
+/// may want to wrap the collector with
+/// [`ScoreCachingWrappingScorer`](crate::search::ScoreCachingWrappingScorer) so
+/// that the actual score is not computed several times.
+///
+/// **Divergence from Lucene 10.5.0.** Java's anonymous class captures the
+/// `Scorable` reference and the two can be read through independently. Rust's
+/// exclusive borrow means the returned values hold the scorable for their
+/// lifetime; a caller that cannot give it up — the comparator of
+/// [`DoubleValuesComparatorSource`], for one — publishes the score through a
+/// shared cell instead, which reads the very same number.
+pub fn from_scorer(scorer: &mut dyn Scorable) -> ScorerDoubleValues<'_> {
+    ScorerDoubleValues { scorer }
+}
+
+/// The conversion applied to every value by [`as_numeric_doc_values`].
+///
+/// Equivalent to the `DoubleToLongFunction` parameter of the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)`, which the comparator source always calls with
+/// `Double::doubleToLongBits`.
+pub type DoubleToLongFunction = fn(f64) -> i64;
+
+/// `Double.doubleToLongBits(double)`: the raw bits, every NaN collapsed to
+/// the canonical `0x7ff8000000000000L`.
+fn double_to_long_bits(value: f64) -> i64 {
+    if value.is_nan() {
+        0x7ff8_0000_0000_0000_u64 as i64
+    } else {
+        value.to_bits() as i64
+    }
+}
+
+/// The per-leaf holder a [`DoubleValuesComparatorSource`] comparator fills
+/// in `setScorer` and its doc values read through.
+///
+/// Equivalent to the private static `DoubleValuesSource.DoubleValuesHolder`
+/// (`DoubleValuesSource.java:569-571`), whose `values` is `null` until the
+/// first `setScorer`.
+#[derive(Clone, Default)]
+pub struct DoubleValuesHolder {
+    values: Rc<RefCell<Option<Box<dyn DoubleValues>>>>,
+}
+
+impl DoubleValuesHolder {
+    /// Replaces the held values, Java's `holder.values = ...`.
+    pub fn set_values(&self, values: Box<dyn DoubleValues>) {
+        *self.values.borrow_mut() = Some(values);
+    }
+
+    /// Runs `f` over the held values; `null` values are the
+    /// `NullPointerException` Java's dereference throws.
+    fn with_values<T>(&self, f: impl FnOnce(&mut dyn DoubleValues) -> Result<T>) -> Result<T> {
+        match self.values.borrow_mut().as_mut() {
+            Some(values) => f(values.as_mut()),
+            None => Err(LuceneError::null_pointer()),
+        }
+    }
+}
+
+impl Debug for DoubleValuesHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoubleValuesHolder")
+            .field("set", &self.values.borrow().is_some())
+            .finish()
+    }
+}
+
+/// The [`NumericDocValues`](crate::index::NumericDocValues) view of a
+/// [`DoubleValuesHolder`], converting each value with `converter`.
+///
+/// Equivalent to the anonymous `NumericDocValues` of the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)` (`DoubleValuesSource.java:615-649`): `longValue` is
+/// `converter.applyAsLong(in.values.doubleValue())`, `advanceExact` reads the
+/// holder's current values, and the iteration methods throw
+/// `UnsupportedOperationException` with no message.
+pub struct DoubleValuesAsNumericDocValues {
+    holder: DoubleValuesHolder,
+    converter: DoubleToLongFunction,
+}
+
+impl Debug for DoubleValuesAsNumericDocValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoubleValuesAsNumericDocValues")
+            .field("holder", &self.holder)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Presents `holder` as a [`NumericDocValues`](crate::index::NumericDocValues),
+/// converting each value with `converter`.
+///
+/// Equivalent to the private static
+/// `DoubleValuesSource.asNumericDocValues(DoubleValuesHolder,
+/// DoubleToLongFunction)`.
+pub fn as_numeric_doc_values(
+    holder: DoubleValuesHolder,
+    converter: DoubleToLongFunction,
+) -> DoubleValuesAsNumericDocValues {
+    DoubleValuesAsNumericDocValues { holder, converter }
+}
+
+impl crate::search::DocIdSetIterator for DoubleValuesAsNumericDocValues {
+    /// `DoubleValuesSource$3` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.DoubleValuesSource$3",
+        )
+    }
+    fn doc_id(&self) -> i32 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn cost(&self) -> i64 {
+        crate::store::java_nio_file::throw_unchecked(
+            "java.lang.UnsupportedOperationException",
+            None,
+        )
+    }
+}
+
+impl crate::index::DocValuesIterator for DoubleValuesAsNumericDocValues {
+    fn advance_exact(&mut self, target: i32) -> Result<bool> {
+        self.holder
+            .with_values(|values| values.advance_exact(target))
+    }
+}
+
+impl crate::index::NumericDocValues for DoubleValuesAsNumericDocValues {
+    fn long_value(&self) -> Result<i64> {
+        let converter = self.converter;
+        self.holder
+            .with_values(|values| Ok(converter(values.double_value()?)))
+    }
+}
+
+/// Hashes a value with the crate's default hasher.
+pub(crate) fn hash_of<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Returns the per-document similarity of a byte query vector to a field's
+/// vectors.
+///
+/// Equivalent to the static `DoubleValuesSource.similarityToQueryVector(
+/// LeafReaderContext, byte[], String)`.
+///
+/// # Errors
+///
+/// Propagates whatever opening the vector values raises.
+pub fn similarity_to_byte_query_vector<'a>(
+    ctx: &LeafReaderContext,
+    query_vector: Vec<u8>,
+    vector_field: &str,
+) -> Result<Box<dyn DoubleValues + 'a>> {
+    let source = Arc::new(crate::search::ByteVectorSimilarityValuesSource::new(
+        query_vector,
+        vector_field,
+    ));
+    source.get_values(ctx, None)
+}
+
+/// Returns the per-document similarity of a float query vector to a field's
+/// vectors.
+///
+/// Equivalent to the static `DoubleValuesSource.similarityToQueryVector(
+/// LeafReaderContext, float[], String)`.
+///
+/// # Errors
+///
+/// Propagates whatever opening the vector values raises.
+pub fn similarity_to_float_query_vector<'a>(
+    ctx: &LeafReaderContext,
+    query_vector: Vec<f32>,
+    vector_field: &str,
+) -> Result<Box<dyn DoubleValues + 'a>> {
+    let source = Arc::new(crate::search::FloatVectorSimilarityValuesSource::new(
+        query_vector,
+        vector_field,
+    ));
+    source.get_values(ctx, None)
+}

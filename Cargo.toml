@@ -2,13 +2,38 @@
 name = "rucene"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.89"
 authors = ["Flavio CF Oliveira"]
-license = "Apache-2.0"
+license = "MIT"
 description = "A Rust port of Apache Lucene Core 10.5.0 with functional parity and index-file compatibility."
 repository = "https://github.com/FlavioCFOliveira/Rucene"
 keywords = ["lucene", "search", "index", "information-retrieval", "rust"]
 categories = ["database-implementations", "data-structures", "algorithms"]
+
+# The crates of the port, one per Lucene module (user decision 2026-11-03):
+# `rucene` (lucene/core, this package), `rucene-codecs` (lucene/codecs),
+# `rucene-analysis-common` (lucene/analysis/common, sprint 12, user decision
+# 2026-11-13), `rucene-queries` (lucene/queries), `rucene-sandbox`
+# (lucene/sandbox, `FuzzyLikeThisQuery` only) and `rucene-queryparser`
+# (lucene/queryparser) (sprint 13, user decision 2026-11-14),
+# `randomizedtesting` (com.carrotsearch.randomizedtesting 2.8.1, the runner of
+# Lucene's tests) and `rucene-test-framework` (lucene/test-framework).
+# `rucene-cli-example` is not a Lucene module: it is the command-line example
+# that drives the public `rucene` API end to end (sprint 10); `rucene-cli-base`
+# is the second one, one index per Portal BASE entity with pt-PT analysis
+# (sprint 14).
+[workspace]
+members = [
+    "crates/rucene-codecs",
+    "crates/rucene-analysis-common",
+    "crates/rucene-queries",
+    "crates/rucene-sandbox",
+    "crates/rucene-queryparser",
+    "crates/randomizedtesting",
+    "crates/rucene-test-framework",
+    "crates/rucene-cli-example",
+    "crates/rucene-cli-base",
+]
 
 [features]
 default = ["std", "mmap"]
@@ -22,6 +47,23 @@ codecs = ["store", "document", "analysis", "util"]
 index = ["codecs", "document", "analysis", "store", "util"]
 search = ["index", "codecs", "document", "analysis", "store", "util"]
 
+# Byte-exact `BEST_COMPRESSION` stored fields, at the cost of a C toolchain.
+#
+# Lucene's `BEST_COMPRESSION` deflates with `java.util.zip.Deflater`, i.e. with
+# whatever zlib the JVM was linked against. The default backend of this crate is
+# `zlib-rs`, which is pure Rust but is a port of **zlib-ng**, not of stock zlib:
+# it decodes every stream zlib produces and Lucene reads everything it writes,
+# but the exact codewords differ on many inputs, so the `.fdt` bytes are not
+# identical to a JVM's. Measured on 40 deterministic inputs at level 6, raw
+# deflate with and without a 1 KiB preset dictionary, against JDK 21
+# `Deflater(6, true)`: `zlib-rs` matched 18/80, the C zlib matched 80/80.
+#
+# Enable this feature to link `flate2` against the C zlib instead, which makes
+# `BEST_COMPRESSION` byte-identical to Lucene's. It requires a C compiler at
+# build time; `BEST_SPEED`, the default mode, is byte-identical either way
+# because it uses Lucene's own LZ4.
+zlib-c = ["flate2/zlib"]
+
 [dependencies]
 log = "0.4"
 tokio = { version = "1", features = ["full"] }
@@ -29,14 +71,44 @@ thiserror = "1"
 memmap2 = { version = "0.9", optional = true }
 # CRC-32 implementation matching Java's `java.util.zip.CRC32`.
 crc32fast = "1.4"
-# Cross-platform advisory file locks for NativeFSLockFactory.
-fslock = "0.2"
-# Deflate compression for the compressing stored-fields/term-vectors formats.
-flate2 = "1"
-# Unicode word segmentation (UAX #29) for the standard tokenizer.
-unicode-segmentation = "1.12"
+# Deflate for the compressing stored-fields/term-vectors formats.
+#
+# The `zlib-rs` backend (pure Rust, no C toolchain) is required, not the default
+# `miniz_oxide` one: Lucene's `DeflateWithPresetDictCompressionMode` deflates
+# each sub block against a preset dictionary, and only `zlib-rs` exposes
+# `Compress::set_dictionary` / `Decompress::set_dictionary`. Without it
+# `BEST_COMPRESSION` cannot be byte-compatible with Lucene 10.5.0.
+# `default-features = false` keeps `miniz_oxide` out of the dependency tree.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # Date/time handling for DateTools, matching Java's GregorianCalendar in GMT.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Regular expressions for `AbstractAnalysisFactory.getPattern`, which compiles a
+# `java.util.regex.Pattern`. `fancy-regex` rather than `regex` because
+# `java.util.regex` supports backreferences and look-around, which `regex`
+# deliberately does not; the remaining dialect differences are declared on
+# `AbstractAnalysisFactory::get_pattern`.
+fancy-regex = "0.19"
+
+# `fcntl(F_SETLK)` record locks for `NativeFSLockFactory` on Unix.
+#
+# The JDK's `FileChannel.tryLock()`, which Lucene's `NativeFSLockFactory`
+# takes `write.lock` with, is a POSIX `fcntl` record lock over the whole file
+# (`UnixFileDispatcherImpl.c`, `lock0`). The standard library's
+# `File::try_lock` is `flock`, which Linux does not make exclude `fcntl`
+# locks, so a Rucene writer and a Lucene writer could both hold one index.
+# `rustix::fs::fcntl_lock` issues the same `F_SETLK` with `l_len = 0` the JDK
+# issues, without `unsafe` in this crate. The predicate below is the gate of
+# `fcntl_lock` in rustix 1.1.4 (`src/fs/fcntl.rs:93-101`), restricted to Unix;
+# `src/store.rs` (`channel_lock`) compiles the `fcntl` calls under the same
+# predicate and falls back to `File::try_lock` on every other target.
+[target.'cfg(all(unix, not(any(target_os = "emscripten", target_os = "espidf", target_os = "fuchsia", target_os = "horizon", target_os = "redox", target_os = "vita", target_os = "wasi"))))'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "fs"] }
+
+# `mincore(2)` for `MemorySegment::is_loaded` (`src/store/memory_segment.rs`),
+# the query `MemorySegment.isLoaded()` makes on a mapped segment. Neither
+# rustix nor memmap2 wraps it; libc is already in the dependency tree.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -44,15 +116,249 @@ proptest = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"
 base64 = "0.22"
+# lucene/test-framework, which Lucene's own core tests are written against.
+rucene-test-framework = { path = "crates/rucene-test-framework" }
+
+[[test]]
+name = "delete_by_query"
+path = "tests/delete_by_query.rs"
+
+[[test]]
+name = "index_writer_members"
+path = "tests/index_writer_members.rs"
+
+[[test]]
+name = "portability_object_contract_core"
+path = "tests/portability/object_contract_core.rs"
+
+[[test]]
+name = "portability_delete_by_query"
+path = "tests/portability/delete_by_query.rs"
 
 [[test]]
 name = "portability_codecs"
 path = "tests/portability/codecs.rs"
 
 [[test]]
+name = "portability_seal_bytes"
+path = "tests/portability/seal_bytes.rs"
+
+[[test]]
+name = "portability_flush_files"
+path = "tests/portability/flush_files.rs"
+
+[[test]]
+name = "portability_indexing_chain"
+path = "tests/portability/indexing_chain.rs"
+
+[[test]]
+name = "portability_vector_point"
+path = "tests/portability/vector_point.rs"
+
+[[test]]
+name = "portability_bkd_doc_ids"
+path = "tests/portability/bkd_doc_ids.rs"
+
+[[test]]
+name = "portability_bkd_writer_layout"
+path = "tests/portability/bkd_writer_layout.rs"
+
+[[test]]
+name = "portability_deletion_policy"
+path = "tests/portability/deletion_policy.rs"
+
+[[test]]
+name = "portability_stored_fields"
+path = "tests/portability/stored_fields.rs"
+
+[[test]]
+name = "portability_term_vectors"
+path = "tests/portability/term_vectors.rs"
+
+[[test]]
+name = "portability_norms"
+path = "tests/portability/norms.rs"
+
+[[test]]
+name = "portability_search_domain"
+path = "tests/portability/search_domain.rs"
+
+[[test]]
+name = "portability_member_contracts"
+path = "tests/portability/member_contracts.rs"
+
+[[test]]
+name = "portability_doc_values"
+path = "tests/portability/doc_values.rs"
+
+[[test]]
+name = "portability_doc_values_skipper"
+path = "tests/portability/doc_values_skipper.rs"
+
+[[test]]
+name = "portability_token_stream_to_automaton"
+path = "tests/portability/token_stream_to_automaton.rs"
+
+[[test]]
+name = "portability_index_file_deleter"
+path = "tests/portability/index_file_deleter.rs"
+
+[[test]]
+name = "portability_points"
+path = "tests/portability/points.rs"
+
+[[test]]
+name = "portability_vectors"
+path = "tests/portability/vectors.rs"
+
+[[test]]
+name = "portability_scalar_quantized_vectors"
+path = "tests/portability/scalar_quantized_vectors.rs"
+
+[[test]]
+name = "portability_compressing_accounting"
+path = "tests/portability/compressing_accounting.rs"
+
+[[test]]
+name = "portability_store_analysis_contracts"
+path = "tests/portability/store_analysis_contracts.rs"
+
+[[test]]
+name = "portability_hnsw_graph"
+path = "tests/portability/hnsw_graph.rs"
+
+[[test]]
 name = "fuzz_codec_headers"
 path = "tests/fuzz/codec_headers.rs"
+
+[[test]]
+name = "fuzz_stored_fields"
+path = "tests/fuzz/stored_fields.rs"
+
+[[test]]
+name = "fuzz_term_vectors"
+path = "tests/fuzz/term_vectors.rs"
+
+[[test]]
+name = "fuzz_norms"
+path = "tests/fuzz/norms.rs"
+
+[[test]]
+name = "fuzz_doc_values"
+path = "tests/fuzz/doc_values.rs"
+
+[[test]]
+name = "fuzz_index_file_deleter"
+path = "tests/fuzz/index_file_deleter.rs"
+
+[[test]]
+name = "fuzz_points"
+path = "tests/fuzz/points.rs"
+
+[[test]]
+name = "fuzz_vectors"
+path = "tests/fuzz/vectors.rs"
 
 [profile.release]
 lto = true
 codegen-units = 1
+
+# Test builds (`cargo test`, `cargo nextest`) at opt-level 1 (user decision
+# 2026-11-20, rmp #606 W1); `cargo build` keeps the `dev` profile at opt-level 0.
+# The `test` profile governs every unit a test build compiles: the test targets,
+# the workspace libraries linked into them and their dependencies. Assertions
+# and overflow checks stay on, the counterpart of Lucene's tests running with
+# `-ea`. Measured (#604, #606, seed DEADBEEF): 6.2-8.1x less CPU on four
+# tests of three crates; the cold test build costs 2.4x the wall time.
+#
+# `debug = 1` ("limited"; rmp #608 R2): the frames of every crate keep their
+# full path, which `callStackContains(Class, ...)` needs (see
+# `crates/rucene-test-framework/src/jdk/stack_walker.rs`); `line-tables-only`
+# is rejected (#606) because it loses that path. Against the default
+# (`debug = 2`): the same 47 stack-walker answers (seed DEADBEEF), and peak RSS
+# 711 -> 429 MB (`test_index_file_deleter`) and 718 -> 439 MB
+# (`test_index_writer_exceptions`), the memory std's backtrace symboliser takes.
+[profile.test]
+opt-level = 1
+debug = 1
+debug-assertions = true
+overflow-checks = true
+[[test]]
+name = "search_on_disk"
+path = "tests/search_on_disk.rs"
+
+[[test]]
+name = "portability_object_contract_search"
+path = "tests/portability/object_contract_search.rs"
+
+[[test]]
+name = "portability_io_context_contracts"
+path = "tests/portability/io_context_contracts.rs"
+
+[[test]]
+name = "portability_fst_arcs_buffer"
+path = "tests/portability/fst_arcs_buffer.rs"
+
+[[test]]
+name = "portability_fst_enum_reader"
+path = "tests/portability/fst_enum_reader.rs"
+
+[[test]]
+name = "portability_byte_block_pool_accounting"
+path = "tests/portability/byte_block_pool_accounting.rs"
+
+[[test]]
+name = "portability_java_collections"
+path = "tests/portability/java_collections.rs"
+
+[[test]]
+name = "portability_prefix_coded_terms"
+path = "tests/portability/prefix_coded_terms.rs"
+
+[[test]]
+name = "portability_index_interop"
+path = "tests/portability/index_interop.rs"
+
+[[test]]
+name = "portability_similarity_scores"
+path = "tests/portability/similarity_scores.rs"
+
+[[test]]
+name = "portability_multi_term_queries"
+path = "tests/portability/multi_term_queries.rs"
+
+[[test]]
+name = "portability_scoring_queries"
+path = "tests/portability/scoring_queries.rs"
+
+[[test]]
+name = "portability_geo_shapes"
+path = "tests/portability/geo_shapes.rs"
+
+[[test]]
+name = "portability_dv_range_feature_queries"
+path = "tests/portability/dv_range_feature_queries.rs"
+
+[[test]]
+name = "portability_inet_address_point"
+path = "tests/portability/inet_address_point.rs"
+
+[[test]]
+name = "portability_panama_vectorization"
+path = "tests/portability/panama_vectorization.rs"
+
+[[test]]
+name = "portability_terms_dictionary"
+path = "tests/portability/terms_dictionary.rs"
+
+[[test]]
+name = "portability_utf16_offsets"
+path = "tests/portability/utf16_offsets.rs"
+
+[[test]]
+name = "portability_analysis_tokens"
+path = "tests/portability/analysis_tokens.rs"
+
+[[test]]
+name = "portability_knn_variants"
+path = "tests/portability/knn_variants.rs"

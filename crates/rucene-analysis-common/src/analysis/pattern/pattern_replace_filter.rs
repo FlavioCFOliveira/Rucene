@@ -1,0 +1,131 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! A filter that replaces regular expression matches in each token, ported
+//! from `org.apache.lucene.analysis.pattern.PatternReplaceFilter`.
+
+use rucene::analysis::character_utils::set_term_utf16;
+use rucene::analysis::java_regex::{JavaMatcher, JavaPattern};
+use rucene::analysis::{
+    AttributeHandle, CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream,
+};
+use rucene::error::Result;
+use rucene::util::attribute::AttributeSource;
+
+/// The body of [`PatternReplaceFilter`]: what Lucene's
+/// `PatternReplaceFilter` adds to `TokenFilter`.
+///
+/// Java's matcher reads the `CharTermAttribute` itself, a live
+/// `CharSequence`; here `m.reset()` hands it the term's current characters.
+#[derive(Debug)]
+pub struct PatternReplaceFilterLogic {
+    replacement: String,
+    all: bool,
+    m: JavaMatcher,
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+}
+
+impl TokenFilterLogic for PatternReplaceFilterLogic {
+    /// Equivalent to `PatternReplaceFilter.incrementToken()`.
+    ///
+    /// # Errors
+    ///
+    /// What the input returns, and what `Matcher.replaceAll` and
+    /// `replaceFirst` throw for a malformed replacement.
+    fn increment_token(
+        &mut self,
+        _source: &mut AttributeSource,
+        input: &mut dyn TokenStream,
+    ) -> Result<bool> {
+        if !input.increment_token()? {
+            return Ok(false);
+        }
+
+        // `m.reset()` of the matcher over the live `termAtt`
+        // (`PatternReplaceFilter.java:63`): the term's current characters.
+        {
+            let term = self.term_att.borrow();
+            let chars = &term.buffer()[..term.length()];
+            // PERF: when the pattern cannot match the term, Java's `reset()`
+            // and failing `find()` build nothing and leave the token as it
+            // is; here the matcher's input (UTF-16 text and engine haystack)
+            // is not built either, and the token is left as it is (task
+            // #546, round 4). The matcher is the filter's own and the next
+            // token resets it, so the skipped state is never read.
+            if !self.m.may_find_in_chars(chars) {
+                return Ok(true);
+            }
+            self.m.reset_input_chars(chars);
+        }
+        if self.m.find() {
+            // replaceAll/replaceFirst will reset() this previous find.
+            let transformed = if self.all {
+                self.m.replace_all(&self.replacement)?
+            } else {
+                self.m.replace_first(&self.replacement)?
+            };
+            // `termAtt.setEmpty().append(transformed)` (`PatternReplaceFilter.java:67`).
+            set_term_utf16(&mut *self.term_att.borrow_mut(), &transformed);
+        }
+
+        Ok(true)
+    }
+}
+
+/// A TokenFilter which applies a Pattern to each token in the stream,
+/// replacing match occurrences with the specified replacement string.
+///
+/// **Note:** Depending on the input and the pattern used and the input
+/// TokenStream, this TokenFilter may produce Tokens whose text is the empty
+/// string.
+///
+/// Equivalent to `org.apache.lucene.analysis.pattern.PatternReplaceFilter`.
+pub type PatternReplaceFilter = TokenFilter<PatternReplaceFilterLogic>;
+
+/// Constructs an instance to replace either the first, or all occurrences
+///
+/// * `input` the TokenStream to process
+/// * `p` the patterm to apply to each Token
+/// * `replacement` the "replacement string" to substitute, if `None` a blank
+///   string will be used. Note that this is not the literal string that will
+///   be used, '$' and '\' have special meaning.
+/// * `all` if true, all matches will be replaced otherwise just the first
+///   match.
+///
+/// Equivalent to `PatternReplaceFilter(TokenStream, Pattern, String,
+/// boolean)`, which adds the `CharTermAttribute`.
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_pattern_replace_filter(
+    input: Box<dyn TokenStream>,
+    p: &JavaPattern,
+    replacement: Option<&str>,
+    all: bool,
+) -> Result<PatternReplaceFilter> {
+    TokenFilter::with_logic(input, |source| {
+        Ok(PatternReplaceFilterLogic {
+            replacement: replacement.unwrap_or("").to_string(),
+            all,
+            m: p.matcher(&[]),
+            term_att: AttributeHandle::add(source)?,
+        })
+    })
+}

@@ -99,6 +99,7 @@ impl CompetitiveImpactAccumulator {
     pub fn clear(&mut self) {
         self.max_freqs.fill(0);
         self.other_pairs.clear();
+        debug_assert!(self.assert_consistent());
     }
 
     /// Adds a single `(freq, norm)` pair.
@@ -109,6 +110,7 @@ impl CompetitiveImpactAccumulator {
         } else {
             Self::add_impact(Impact::new(freq, norm), &mut self.other_pairs);
         }
+        debug_assert!(self.assert_consistent());
     }
 
     /// Merges another accumulator into this one.
@@ -119,6 +121,7 @@ impl CompetitiveImpactAccumulator {
         for impact in &other.other_pairs {
             Self::add_impact(*impact, &mut self.other_pairs);
         }
+        debug_assert!(self.assert_consistent());
     }
 
     /// Replaces the content of this accumulator with `other`.
@@ -126,6 +129,7 @@ impl CompetitiveImpactAccumulator {
         self.max_freqs.copy_from_slice(&other.max_freqs);
         self.other_pairs.clear();
         self.other_pairs.extend(&other.other_pairs);
+        debug_assert!(self.assert_consistent());
     }
 
     /// Returns the competitive `(freq, norm)` pairs, ordered by increasing
@@ -185,6 +189,28 @@ impl CompetitiveImpactAccumulator {
         for entry in to_remove {
             set.remove(&entry);
         }
+    }
+
+    /// Checks the invariants of the outlier set: every pair it holds has a norm
+    /// outside the signed-byte range, and the pairs are strictly increasing in
+    /// both frequency and unsigned norm.
+    ///
+    /// Always returns `true`; it is only ever called from a `debug_assert!`, in
+    /// the same places where Lucene calls it from an `assert` statement.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.codecs.CompetitiveImpactAccumulator#assertConsistent`.
+    fn assert_consistent(&self) -> bool {
+        let mut previous_freq = 0i32;
+        let mut previous_norm = 0i64;
+        for impact in &self.other_pairs {
+            assert!(impact.norm < i8::MIN as i64 || impact.norm > i8::MAX as i64);
+            assert!(previous_freq < impact.freq);
+            assert!((previous_norm as u64) < (impact.norm as u64));
+            previous_freq = impact.freq;
+            previous_norm = impact.norm;
+        }
+        true
     }
 }
 
@@ -264,6 +290,13 @@ impl BlockTermState {
 
 impl TermState for BlockTermState {
     fn copy_from(&mut self, other: &dyn crate::index::TermState) {
+        // `BlockTermState.java:47`: Java names the class of `_other`; a
+        // `dyn TermState` exposes no class name.
+        debug_assert!(
+            other.as_any().is::<Self>(),
+            "can not copy from {}",
+            std::any::type_name_of_val(other)
+        );
         if let Some(other) = other.as_any().downcast_ref::<Self>() {
             BlockTermState::copy_from(self, other);
         }
@@ -275,6 +308,49 @@ impl TermState for BlockTermState {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Object contracts: the `toString()` bodies of this module's three types
+// -----------------------------------------------------------------------------
+
+impl std::fmt::Display for Impact {
+    /// Port of `Impact.toString()`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{freq={},norm={}}}", self.freq, self.norm)
+    }
+}
+
+impl std::fmt::Display for BlockTermState {
+    /// Port of `BlockTermState.toString()`.
+    ///
+    /// It does *not* call `super.toString()`, so the `ord` that
+    /// `OrdTermState.toString()` would print never appears here.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "docFreq={} totalTermFreq={} termBlockOrd={} blockFP={}",
+            self.doc_freq, self.total_term_freq, self.term_block_ord, self.block_file_pointer
+        )
+    }
+}
+
+impl std::fmt::Display for CompetitiveImpactAccumulator {
+    /// Port of `CompetitiveImpactAccumulator.toString()`, which is
+    /// `new ArrayList<>(getCompetitiveFreqNormPairs()).toString()` — that is,
+    /// `java.util.AbstractCollection.toString()` over the competitive pairs:
+    /// the elements' own `toString()`, separated by `", "`, inside square
+    /// brackets, in the iteration order of the returned collection.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[")?;
+        for (i, impact) in self.get_competitive_freq_norm_pairs().iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{impact}")?;
+        }
+        f.write_str("]")
     }
 }
 

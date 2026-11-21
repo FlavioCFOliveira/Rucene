@@ -5,22 +5,24 @@
 
 #![deny(unsafe_code)]
 
-use std::f32;
-
-use crate::search::knn::{KnnCollector, TopKnnCollector};
+use crate::search::knn::{KnnCollector, KnnSearchStrategy, TopKnnCollector};
 use crate::search::NO_MORE_DOCS;
-use crate::util::{Bits, FixedBitSet};
+use crate::util::bit_set::BitSet;
+use crate::util::{Bits, FixedBitSet, SparseFixedBitSet};
 
+use super::abstract_searcher::{score_entry_points, AbstractHnswGraphSearcher};
+use super::filtered_searcher::FilteredHnswGraphSearcher;
 use super::neighbor::{NeighborArray, NeighborQueue};
 use super::on_heap::OnHeapHnswGraph;
 use super::scorer::RandomVectorScorer;
-use super::{HnswGraph, Result};
+use super::seeded_searcher::SeededHnswGraphSearcher;
+use super::{HnswGraph, Result, UNKNOWN_MAX_CONN};
 
-const UNK_EP: i32 = -1;
+pub(crate) use super::abstract_searcher::UNK_EP;
 
 /// Returns the next representable float after `x`, matching Java's
 /// `Math.nextUp(float)` and safe for negative infinity / zero / NaN.
-fn next_up_f32(x: f32) -> f32 {
+pub(crate) fn next_up_f32(x: f32) -> f32 {
     if x.is_nan() || x == f32::INFINITY {
         return x;
     }
@@ -41,7 +43,7 @@ fn next_up_f32(x: f32) -> f32 {
 #[derive(Debug)]
 pub struct HnswGraphSearcher {
     candidates: NeighborQueue,
-    visited: FixedBitSet,
+    visited: Box<dyn BitSet>,
     bulk_nodes: Vec<i32>,
     bulk_scores: Vec<f32>,
 }
@@ -49,7 +51,7 @@ pub struct HnswGraphSearcher {
 impl HnswGraphSearcher {
     /// Creates a new searcher. `candidates` is a max-heap used to track nodes
     /// to explore; `visited` tracks already-visited nodes.
-    pub fn new(candidates: NeighborQueue, visited: FixedBitSet) -> Self {
+    pub fn new(candidates: NeighborQueue, visited: Box<dyn BitSet>) -> Self {
         Self {
             candidates,
             visited,
@@ -58,8 +60,128 @@ impl HnswGraphSearcher {
         }
     }
 
-    /// Convenience search over an on-heap graph, returning a collector with
-    /// the top `top_k` results.
+    /// Searches an HNSW graph for the nearest neighbours of a query vector,
+    /// deriving the filtered document count from `accept_ords`.
+    ///
+    /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
+    /// KnnCollector, HnswGraph, Bits)` (`HnswGraphSearcher.java:95-105`): when
+    /// `acceptOrds instanceof BitSet` ([`Bits::as_bit_set`]), the count is
+    /// `min(bitSet.approximateCardinality(), graph.size())`, else `0`.
+    ///
+    /// # Errors
+    ///
+    /// As [`search`](Self::search).
+    pub fn search_accept_ords(
+        scorer: &mut dyn RandomVectorScorer,
+        knn_collector: &mut dyn KnnCollector,
+        graph: &mut dyn HnswGraph,
+        accept_ords: Option<&dyn Bits>,
+    ) -> Result<()> {
+        let mut filtered_doc_count = 0;
+        if let Some(bit_set) = accept_ords.and_then(|bits| bits.as_bit_set()) {
+            // Use approximate cardinality as this is good enough, but ensure we
+            // don't exceed the graph size as that is illogical
+            filtered_doc_count = (bit_set.approximate_cardinality() as i32).min(graph.size());
+        }
+        Self::search(
+            scorer,
+            knn_collector,
+            graph,
+            accept_ords,
+            filtered_doc_count,
+        )
+    }
+
+    /// Searches an HNSW graph for the nearest neighbours of a query vector,
+    /// picking the searcher that suits the filter and the collector's search
+    /// strategy.
+    ///
+    /// If entry points are provided through the collector's strategy the search
+    /// starts at those points; otherwise it discovers the best entry point the
+    /// usual way. `filtered_doc_count` is the number of documents that pass
+    /// `accept_ords`.
+    ///
+    /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
+    /// KnnCollector, HnswGraph, Bits, int)`.
+    ///
+    /// Java's four-argument overload is [`search_accept_ords`](Self::search_accept_ords).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when accessing the vectors or the graph fails, or when
+    /// a seeded strategy cannot supply the entry points it promised.
+    pub fn search(
+        scorer: &mut dyn RandomVectorScorer,
+        knn_collector: &mut dyn KnnCollector,
+        graph: &mut dyn HnswGraph,
+        accept_ords: Option<&dyn Bits>,
+        filtered_doc_count: i32,
+    ) -> Result<()> {
+        debug_assert!(filtered_doc_count >= 0 && filtered_doc_count <= graph.size());
+        // Java reads the strategy off the collector and holds it while it
+        // searches; the collector is borrowed mutably for the search here, so
+        // the strategy is cloned out first.
+        let strategy = knn_collector.get_search_strategy().cloned();
+        // Java's `hnswStrategy`: the collector's strategy when that is an
+        // `Hnsw` — which a `Patience` is — the strategy a `Seeded` wraps when
+        // that is an `Hnsw`, and `Hnsw.DEFAULT` otherwise.
+        let default_strategy = KnnSearchStrategy::hnsw_default();
+        let hnsw_strategy = match strategy.as_ref() {
+            Some(s @ (KnnSearchStrategy::Hnsw(_) | KnnSearchStrategy::Patience(_))) => s,
+            Some(KnnSearchStrategy::Seeded(seeded)) => match seeded.original_strategy() {
+                s @ (KnnSearchStrategy::Hnsw(_) | KnnSearchStrategy::Patience(_)) => s,
+                _ => &default_strategy,
+            },
+            _ => &default_strategy,
+        };
+        // First, check if we should use a filtered searcher.
+        let inner: Box<dyn AbstractHnswGraphSearcher> = if accept_ords.is_some()
+            // We can only use filtered search if we know the maxConn.
+            && graph.max_conn() != UNKNOWN_MAX_CONN
+            && filtered_doc_count > 0
+            && hnsw_strategy
+                .use_filtered_search(filtered_doc_count as f32 / graph.size() as f32)
+        {
+            Box::new(FilteredHnswGraphSearcher::create(
+                knn_collector.k(),
+                &*graph,
+                filtered_doc_count,
+            )?)
+        } else {
+            Box::new(HnswGraphSearcher::new(
+                NeighborQueue::new(knn_collector.k(), true)?,
+                create_bit_set(knn_collector.k(), get_graph_size(graph))?,
+            ))
+        };
+        // Then, check if the search strategy is seeded.
+        let mut graph_searcher: Box<dyn AbstractHnswGraphSearcher> = match strategy.as_ref() {
+            Some(KnnSearchStrategy::Seeded(seeded)) if seeded.number_of_entry_points() > 0 => {
+                let mut entry_points = seeded.entry_points();
+                Box::new(SeededHnswGraphSearcher::from_entry_points(
+                    inner,
+                    seeded.number_of_entry_points(),
+                    &mut **entry_points,
+                    graph.size(),
+                )?)
+            }
+            _ => inner,
+        };
+        graph_searcher.search(knn_collector, scorer, graph, accept_ords)
+    }
+
+    /// Searches an on-heap graph, returning a collector with the top `top_k`
+    /// results.
+    ///
+    /// Equivalent to the static `HnswGraphSearcher.search(RandomVectorScorer,
+    /// int, OnHeapHnswGraph, Bits, int)` (`HnswGraphSearcher.java:177-186`),
+    /// which tracks the visited nodes in a `SparseFixedBitSet` of
+    /// `getGraphSize(graph)` bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `IllegalArgumentException("length needs to be >= 1")`
+    /// for a graph without nodes, which the `SparseFixedBitSet` constructor
+    /// throws (`SparseFixedBitSet.java:63-66`), and whatever the search raises.
     pub fn search_on_heap(
         scorer: &mut dyn RandomVectorScorer,
         top_k: i32,
@@ -68,30 +190,19 @@ impl HnswGraphSearcher {
         visited_limit: i64,
     ) -> Result<TopKnnCollector> {
         let mut collector = TopKnnCollector::new(top_k, visited_limit);
+        let graph_size = get_graph_size(graph);
         let mut searcher = OnHeapSearcher::new(
-            NeighborQueue::new(top_k, true),
-            FixedBitSet::new(graph.max_node_id().max(0) as usize + 1),
+            NeighborQueue::new(top_k, true)?,
+            Box::new(SparseFixedBitSet::new(graph_size.max(0) as usize)?),
         );
         searcher.search(&mut collector, scorer, graph, accept_ords)?;
         Ok(collector)
     }
 
-    /// Searches a generic `HnswGraph`.
-    pub fn search_graph(
-        &mut self,
-        results: &mut dyn KnnCollector,
-        scorer: &mut dyn RandomVectorScorer,
-        graph: &mut dyn HnswGraph,
-        accept_ords: Option<&dyn Bits>,
-    ) -> Result<()> {
-        let eps = self.find_best_entry_point(scorer, graph, results)?;
-        if eps.is_empty() || eps[0] == UNK_EP {
-            return Ok(());
-        }
-        self.search_level(results, scorer, 0, &eps, graph, accept_ords)
-    }
-
-    fn find_best_entry_point(
+    /// Finds the best entry points from which to search the zeroth graph layer.
+    ///
+    /// Equivalent to `HnswGraphSearcher.findBestEntryPoint`.
+    pub fn find_best_entry_point(
         &mut self,
         scorer: &mut dyn RandomVectorScorer,
         graph: &mut dyn HnswGraph,
@@ -117,6 +228,7 @@ impl HnswGraphSearcher {
                     friend_ord = graph.next_neighbor()?;
                     friend_ord != NO_MORE_DOCS
                 } {
+                    debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                     if self.visited.get_and_set(friend_ord as usize) {
                         continue;
                     }
@@ -172,7 +284,7 @@ impl HnswGraphSearcher {
         score_entry_points(
             results,
             scorer,
-            &mut self.visited,
+            self.visited.as_mut(),
             eps,
             accept_ords,
             &mut self.candidates,
@@ -204,6 +316,7 @@ impl HnswGraphSearcher {
                 friend_ord = graph.next_neighbor()?;
                 friend_ord != NO_MORE_DOCS
             } {
+                debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }
@@ -226,7 +339,7 @@ impl HnswGraphSearcher {
                     let score = self.bulk_scores[i];
                     if score >= min_accepted_similarity {
                         self.candidates.add(node, score);
-                        if accept_ords.map_or(true, |b| b.get(node as usize))
+                        if accept_ords.map_or(Ok(true), |b| b.try_get(node as usize))?
                             && results.collect(node, score)
                         {
                             let old_min = min_accepted_similarity;
@@ -239,6 +352,11 @@ impl HnswGraphSearcher {
                     }
                 }
             }
+            // `results.getSearchStrategy().nextVectorsBlock()`
+            // (`HnswGraphSearcher.java:363-365`).
+            if let Some(strategy) = results.get_search_strategy() {
+                strategy.next_vectors_block();
+            }
         }
         Ok(())
     }
@@ -247,7 +365,20 @@ impl HnswGraphSearcher {
         self.candidates.clear();
         let cap = capacity.max(0) as usize;
         if self.visited.length() < cap {
-            self.visited = FixedBitSet::new(cap);
+            // `visited = FixedBitSet.ensureCapacityAndClear((FixedBitSet)
+            // visited, capacity)` (`HnswGraphSearcher.java:372`). Java's cast
+            // throws `ClassCastException` when `visited` is not a
+            // `FixedBitSet`; so does this, as a panic.
+            let fixed = self
+                .visited
+                .bit_set_as_any_mut()
+                .and_then(|any| any.downcast_mut::<FixedBitSet>())
+                .expect(
+                    "ClassCastException: HnswGraphSearcher.visited cannot be cast to \
+                     org.apache.lucene.util.FixedBitSet",
+                );
+            let taken = std::mem::replace(fixed, FixedBitSet::new(0));
+            *fixed = FixedBitSet::ensure_capacity_and_clear(taken, cap);
         } else {
             self.visited.clear_all();
         }
@@ -257,35 +388,35 @@ impl HnswGraphSearcher {
             self.bulk_scores.resize(bulk, 0.0);
         }
     }
-}
 
-fn score_entry_points(
-    results: &mut dyn KnnCollector,
-    scorer: &mut dyn RandomVectorScorer,
-    visited: &mut FixedBitSet,
-    eps: &[i32],
-    accept_ords: Option<&dyn Bits>,
-    candidates: &mut NeighborQueue,
-    scores: &mut [f32],
-) -> Result<()> {
-    scorer.bulk_score(eps, &mut scores[..eps.len()], eps.len() as i32)?;
-    results.inc_visited_count(eps.len() as i32);
-    for i in 0..eps.len() {
-        let score = scores[i];
-        let ep = eps[i];
-        visited.set(ep as usize);
-        candidates.add(ep, score);
-        if accept_ords.map_or(true, |b| b.get(ep as usize)) {
-            results.collect(ep, score);
-        }
+    /// Searches one level of `graph` from `eps`, collecting the `top_k` nearest
+    /// nodes, with no accept filter.
+    ///
+    /// Equivalent to the public `HnswGraphSearcher.searchLevel(RandomVectorScorer,
+    /// int, int, int[], HnswGraph)` (`HnswGraphSearcher.java:201-210`), which
+    /// returns a new `GraphBuilderKnnCollector(topK)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the scorer's and the graph's errors.
+    pub fn search_level_top_k(
+        &mut self,
+        scorer: &mut dyn RandomVectorScorer,
+        top_k: i32,
+        level: i32,
+        eps: &[i32],
+        graph: &mut dyn HnswGraph,
+    ) -> Result<crate::util::hnsw::builder::GraphBuilderKnnCollector> {
+        let mut results = crate::util::hnsw::builder::GraphBuilderKnnCollector::new(top_k)?;
+        self.search_level(&mut results, scorer, level, eps, graph, None)?;
+        Ok(results)
     }
-    Ok(())
 }
 
 /// Thread-safe searcher for `OnHeapHnswGraph` that avoids mutating the graph.
 struct OnHeapSearcher {
     candidates: NeighborQueue,
-    visited: FixedBitSet,
+    visited: Box<dyn BitSet>,
     bulk_nodes: Vec<i32>,
     bulk_scores: Vec<f32>,
     cur_level: i32,
@@ -295,7 +426,7 @@ struct OnHeapSearcher {
 }
 
 impl OnHeapSearcher {
-    fn new(candidates: NeighborQueue, visited: FixedBitSet) -> Self {
+    fn new(candidates: NeighborQueue, visited: Box<dyn BitSet>) -> Self {
         Self {
             candidates,
             visited,
@@ -331,10 +462,13 @@ impl OnHeapSearcher {
     }
 
     fn graph_next_neighbor(&mut self) -> i32 {
-        let cur = self.cur_neighbors.as_ref().expect("graph_seek not called");
+        // `cur.size()` on a `null` `cur`: the JVM's `NullPointerException`.
+        let Some(cur) = self.cur_neighbors.as_ref() else {
+            crate::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None)
+        };
         self.cur_upto += 1;
         if self.cur_upto < cur.size() {
-            cur.nodes()[self.cur_upto as usize]
+            cur.node(self.cur_upto)
         } else {
             NO_MORE_DOCS
         }
@@ -344,7 +478,20 @@ impl OnHeapSearcher {
         self.candidates.clear();
         let cap = capacity.max(0) as usize;
         if self.visited.length() < cap {
-            self.visited = FixedBitSet::new(cap);
+            // `visited = FixedBitSet.ensureCapacityAndClear((FixedBitSet)
+            // visited, capacity)` (`HnswGraphSearcher.java:372`). Java's cast
+            // throws `ClassCastException` when `visited` is not a
+            // `FixedBitSet`; so does this, as a panic.
+            let fixed = self
+                .visited
+                .bit_set_as_any_mut()
+                .and_then(|any| any.downcast_mut::<FixedBitSet>())
+                .expect(
+                    "ClassCastException: HnswGraphSearcher.visited cannot be cast to \
+                     org.apache.lucene.util.FixedBitSet",
+                );
+            let taken = std::mem::replace(fixed, FixedBitSet::new(0));
+            *fixed = FixedBitSet::ensure_capacity_and_clear(taken, cap);
         } else {
             self.visited.clear_all();
         }
@@ -381,6 +528,7 @@ impl OnHeapSearcher {
                     friend_ord = self.graph_next_neighbor();
                     friend_ord != NO_MORE_DOCS
                 } {
+                    debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                     if self.visited.get_and_set(friend_ord as usize) {
                         continue;
                     }
@@ -435,7 +583,7 @@ impl OnHeapSearcher {
         score_entry_points(
             results,
             scorer,
-            &mut self.visited,
+            self.visited.as_mut(),
             eps,
             accept_ords,
             &mut self.candidates,
@@ -467,6 +615,7 @@ impl OnHeapSearcher {
                 friend_ord = self.graph_next_neighbor();
                 friend_ord != NO_MORE_DOCS
             } {
+                debug_assert!(friend_ord < size, "friendOrd={friend_ord}; size={size}");
                 if self.visited.get_and_set(friend_ord as usize) {
                     continue;
                 }
@@ -489,7 +638,7 @@ impl OnHeapSearcher {
                     let score = self.bulk_scores[i];
                     if score >= min_accepted_similarity {
                         self.candidates.add(node, score);
-                        if accept_ords.map_or(true, |b| b.get(node as usize))
+                        if accept_ords.map_or(Ok(true), |b| b.try_get(node as usize))?
                             && results.collect(node, score)
                         {
                             let old_min = min_accepted_similarity;
@@ -502,7 +651,115 @@ impl OnHeapSearcher {
                     }
                 }
             }
+            // `results.getSearchStrategy().nextVectorsBlock()`
+            // (`HnswGraphSearcher.java:363-365`).
+            if let Some(strategy) = results.get_search_strategy() {
+                strategy.next_vectors_block();
+            }
         }
         Ok(())
+    }
+}
+
+impl AbstractHnswGraphSearcher for HnswGraphSearcher {
+    fn search_level(
+        &mut self,
+        results: &mut dyn KnnCollector,
+        scorer: &mut dyn RandomVectorScorer,
+        level: i32,
+        eps: &[i32],
+        graph: &mut dyn HnswGraph,
+        accept_ords: Option<&dyn Bits>,
+    ) -> Result<()> {
+        HnswGraphSearcher::search_level(self, results, scorer, level, eps, graph, accept_ords)
+    }
+
+    fn find_best_entry_point(
+        &mut self,
+        scorer: &mut dyn RandomVectorScorer,
+        graph: &mut dyn HnswGraph,
+        collector: &mut dyn KnnCollector,
+    ) -> Result<Vec<i32>> {
+        HnswGraphSearcher::find_best_entry_point(self, scorer, graph, collector)
+    }
+}
+
+/// Returns the number of nodes a graph can address.
+///
+/// Equivalent to the package-private `HnswGraphSearcher.getGraphSize(HnswGraph)`.
+pub fn get_graph_size(graph: &dyn HnswGraph) -> i32 {
+    graph.max_node_id() + 1
+}
+
+/// Returns how many nodes a search for `k` neighbours is expected to visit.
+///
+/// Equivalent to `HnswGraphSearcher.expectedVisitedNodes(int, int)`.
+pub fn expected_visited_nodes(k: i32, graph_size: i32) -> i32 {
+    (f64::from(graph_size).ln() * f64::from(k)) as i32
+}
+
+/// Returns the bit set best suited to tracking the nodes a search will visit.
+///
+/// Equivalent to the package-private `HnswGraphSearcher.createBitSet(int,
+/// int)`, which follows the same reasoning as `FixedBitSet.of`: a search
+/// expected to touch under a 128th of the graph is better served by a sparse
+/// set than by one word per 64 nodes.
+///
+/// For an empty graph (`graph_size == 0`) and `k >= 1`,
+/// `expectedVisitedNodes` is `(int) (log(0) * k)`, `Integer.MIN_VALUE`, so
+/// Java builds `new SparseFixedBitSet(0)`, which throws
+/// `IllegalArgumentException` (`HnswGraphSearcher.java:68-72`,
+/// `SparseFixedBitSet.java:63-66`); this port does the same.
+///
+/// # Errors
+///
+/// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+/// (`length needs to be >= 1`) when the sparse set is chosen for an empty
+/// graph.
+pub fn create_bit_set(k: i32, graph_size: i32) -> Result<Box<dyn BitSet>> {
+    // INVARIANT: every caller passes `getGraphSize(graph)`, `maxNodeId() + 1`,
+    // which is never negative.
+    debug_assert!(graph_size >= 0);
+    let size = graph_size as usize;
+    Ok(
+        if expected_visited_nodes(k, graph_size) < (graph_size >> 7) {
+            Box::new(SparseFixedBitSet::new(size)?)
+        } else {
+            Box::new(FixedBitSet::new(size))
+        },
+    )
+}
+
+#[cfg(test)]
+mod prepare_scratch_state_tests {
+    use super::*;
+    use crate::util::ArrayUtil;
+
+    /// rmp #297: `prepareScratchState` grows `visited` with
+    /// `FixedBitSet.ensureCapacityAndClear((FixedBitSet) visited, capacity)`
+    /// (`HnswGraphSearcher.java:369-375`), whose new set spans
+    /// `oversize(bits2words(capacity) + 1, 8)` words, not `capacity` bits.
+    #[test]
+    fn visited_grows_through_ensure_capacity_and_clear() {
+        let mut visited = FixedBitSet::new(10);
+        visited.set(3);
+        let mut searcher =
+            HnswGraphSearcher::new(NeighborQueue::new(4, true).unwrap(), Box::new(visited));
+        searcher.prepare_scratch_state(100, 0);
+        let words = ArrayUtil::oversize(FixedBitSet::bits2words(100) + 1, 8);
+        assert_eq!(searcher.visited.length(), words << 6);
+        assert_eq!(searcher.visited.cardinality(), 0);
+    }
+
+    /// Java's cast throws `ClassCastException` when `visited` is a
+    /// `SparseFixedBitSet` that has to grow.
+    #[test]
+    #[should_panic(expected = "ClassCastException")]
+    fn a_sparse_visited_set_cannot_grow() {
+        let mut searcher = HnswGraphSearcher::new(
+            NeighborQueue::new(4, true).unwrap(),
+            Box::new(SparseFixedBitSet::new(10).unwrap()),
+        );
+        searcher.prepare_scratch_state(100, 0);
     }
 }

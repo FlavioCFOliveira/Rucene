@@ -1,0 +1,13 @@
+# seed	method	kind	value (BaseSuitesDrawsOracle, Lucene 10.5.0, JDK 25): TestSimilaritySuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	4510871780870376983
+DEADBEEF	#counts	run=2 fail=0 assume=0	-
+DEADBEEF	testBulkScore	next	-5597626995802076192
+DEADBEEF	testRandomScoring	next	-1619774411748371812
+1	#class	next	-3965982089060132570
+1	#counts	run=2 fail=0 assume=0	-
+1	testBulkScore	next	-2714758706333391711
+1	testRandomScoring	next	-1538274257188687125
+C0FFEE	#class	next	-7142593570934677756
+C0FFEE	#counts	run=2 fail=0 assume=0	-
+C0FFEE	testBulkScore	next	-7211144204229989885
+C0FFEE	testRandomScoring	next	-5117629687333678460

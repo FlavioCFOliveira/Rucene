@@ -2,9 +2,8 @@
 
 #![deny(unsafe_code)]
 
-use std::collections::HashSet;
-
-use crate::error::{LuceneError, Result};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
+use std::sync::Arc;
 
 /// Name of the index segment file.
 ///
@@ -106,47 +105,6 @@ pub const COMPOUND_FILE_ENTRIES_EXTENSION: &str = "cfe";
 /// Old, pre-Lucene-8.6 live-docs extension.
 pub const OLD_LIVE_DOCS_EXTENSION: &str = "del";
 
-/// All well-known codec file extensions.
-///
-/// This is the Rust equivalent of the set of extensions used by the bundled
-/// Lucene codecs; it is not exhaustive because custom codecs may add more.
-pub fn standard_extensions() -> HashSet<&'static str> {
-    [
-        SEGMENT_INFO_EXTENSION,
-        FIELD_INFO_EXTENSION,
-        STORED_FIELDS_EXTENSION,
-        STORED_FIELDS_INDEX_EXTENSION,
-        STORED_FIELDS_META_EXTENSION,
-        VECTORS_FIELDS_EXTENSION,
-        VECTORS_INDEX_EXTENSION,
-        VECTORS_META_EXTENSION,
-        POSTINGS_EXTENSION,
-        POSITIONS_EXTENSION,
-        PAYLOADS_EXTENSION,
-        TERMS_POSTINGS_EXTENSION,
-        TERMS_EXTENSION,
-        TERMS_INDEX_EXTENSION,
-        TERMS_META_EXTENSION,
-        DOC_VALUES_EXTENSION,
-        DOC_VALUES_META_EXTENSION,
-        NORMS_EXTENSION,
-        NORMS_META_EXTENSION,
-        POINTS_EXTENSION,
-        POINTS_INDEX_EXTENSION,
-        POINTS_META_EXTENSION,
-        KNN_VECTORS_EXTENSION,
-        KNN_VECTORS_INDEX_EXTENSION,
-        KNN_VECTORS_META_EXTENSION,
-        KNN_VECTORS_FORMAT_META_EXTENSION,
-        LIVE_DOCS_EXTENSION,
-        COMPOUND_FILE_EXTENSION,
-        COMPOUND_FILE_ENTRIES_EXTENSION,
-        OLD_LIVE_DOCS_EXTENSION,
-    ]
-    .into_iter()
-    .collect()
-}
-
 /// Computes the full file name from base, extension and generation.
 ///
 /// Returns `None` if `gen` is `-1`. Returns `<base>.<ext>` for `gen == 0`, and
@@ -207,8 +165,25 @@ pub fn matches_extension(filename: &str, ext: &str) -> bool {
 /// Locates the boundary of the segment name in `filename`, or `None`.
 fn index_of_segment_name(filename: &str) -> Option<usize> {
     // If it is a .del file, there's an '_' after the first character.
-    if let Some(idx) = filename[1..].find('_') {
-        return Some(idx + 1);
+    //
+    // Java writes `filename.indexOf('_', 1)` (`IndexFileNames.java:121`),
+    // which starts the search one *UTF-16 code unit* in, and so never matches a
+    // leading underscore. Slicing `filename[1..]` would instead skip one *byte*
+    // and panic whenever the name begins with a multi-byte UTF-8 character —
+    // and these names are not always well-formed, because `IndexFileDeleter`
+    // feeds this function the directory's pending-deletion set, which is
+    // unfiltered (`IndexFileDeleter.java:211-217`). Starting one *character* in
+    // reaches the same underscore as Java for every input, because the units a
+    // multi-byte character occupies can never themselves be `'_'`, and it never
+    // panics.
+    let after_first = {
+        let mut chars = filename.chars();
+        chars.next();
+        chars.as_str()
+    };
+    let offset = filename.len() - after_first.len();
+    if let Some(idx) = after_first.find('_') {
+        return Some(idx + offset);
     }
     filename.find('.')
 }
@@ -255,26 +230,52 @@ pub fn get_extension(filename: &str) -> Option<&str> {
 
 /// Returns the generation encoded in `filename`, or `0` if absent.
 ///
-/// Equivalent to `IndexFileNames.parseGeneration`.
+/// Equivalent to `IndexFileNames.parseGeneration` (`IndexFileNames.java:146-160`),
+/// which only asserts that `filename` starts with `'_'`.
 ///
 /// # Errors
 ///
-/// Returns `LuceneError::IllegalArgument` if the filename does not start with
-/// `'_'`.
+/// Returns Java's `StringIndexOutOfBoundsException` when the name without its
+/// extension is empty (`substring(1)`), and `LuceneErrorKind::IllegalArgument`
+/// (Java's `NumberFormatException`) when the generation is not base 36.
 pub fn parse_generation(filename: &str) -> Result<i64> {
-    if !filename.starts_with('_') {
-        return Err(LuceneError::IllegalArgument(format!(
-            "filename must start with '_': {filename}"
+    debug_assert!(filename.starts_with('_'));
+    let stripped = strip_extension(filename);
+    // `stripExtension(filename).substring(1)`.
+    let mut chars = stripped.chars();
+    if chars.next().is_none() {
+        return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+            "Range [1, 0) out of bounds for length 0".to_string(),
         )));
     }
-    let stripped = strip_extension(filename);
-    let parts: Vec<&str> = stripped[1..].split('_').collect();
+    let rest = chars.as_str();
+    // `String.split("_")`: without a match, the whole string; otherwise the
+    // pieces without the trailing empty ones.
+    let mut parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() > 1 {
+        while parts.last() == Some(&"") {
+            parts.pop();
+        }
+    }
+    // 4 cases:
+    // segment.ext
+    // segment_gen.ext
+    // segment_codec_suffix.ext
+    // segment_gen_codec_suffix.ext
     if parts.len() == 2 || parts.len() == 4 {
         parse_radix36(parts[1])
     } else {
         Ok(0)
     }
 }
+
+/// The regular expression every codec file name must match.
+///
+/// Equivalent to the pattern string of `IndexFileNames.CODEC_FILE_PATTERN`,
+/// `_[a-z0-9]+(_.*)?\..*`. The port matches it by hand in [`is_codec_file`]
+/// rather than by compiling a regex; the literal is kept so that the messages
+/// Lucene builds from `CODEC_FILE_PATTERN.pattern()` read identically.
+pub const CODEC_FILE_PATTERN: &str = r"_[a-z0-9]+(_.*)?\..*";
 
 /// Returns whether `filename` matches the codec file-name pattern.
 ///
@@ -326,10 +327,147 @@ fn radix36(value: u64) -> String {
     }
 }
 
-/// Parses a base-36 string into an `i64`.
+/// `Long.parseLong(s, Character.MAX_RADIX)`, failing with its
+/// `NumberFormatException` (`IndexFileNames.java:155`).
 fn parse_radix36(s: &str) -> Result<i64> {
-    i64::from_str_radix(s, 36)
-        .map_err(|e| LuceneError::IllegalArgument(format!("invalid base-36 generation '{s}': {e}")))
+    crate::util::extra::java_parse_long_radix(s, 36)
+        .ok_or_else(|| LuceneError::number_format_for_input_string(s, 36))
+}
+
+// -----------------------------------------------------------------------------
+// IndexFileName
+// -----------------------------------------------------------------------------
+
+/// The name of an index file, held as Java holds a `String`: one object that
+/// every file set naming the file shares by reference.
+///
+/// Lucene's file sets copy references, never characters:
+/// `SegmentCommitInfo.files()` starts from `new HashSet<>(info.files())`
+/// (`SegmentCommitInfo.java:241`) and `SegmentInfos.files` adds each
+/// segment's set with `addAll` (`SegmentInfos.java:943`). A Rust `String`
+/// cannot be shared, so this type holds the name either
+///
+/// * shared, as an `Arc<str>` that a clone shares (one reference-count
+///   increment): how [`SegmentInfo`](crate::index::SegmentInfo) holds its
+///   files, so that every set built from them shares them; or
+/// * owned, as a `String` moved in without a copy: a name made for one set,
+///   such as the live-docs name `LiveDocsFormat.files` builds per call.
+///
+/// Equality, hashing, ordering and formatting are those of the characters,
+/// however the name is held. It has no counterpart in Lucene 10.5.0, whose
+/// `String` objects are already shared.
+#[derive(Clone)]
+pub struct IndexFileName(NameRepr);
+
+/// How an [`IndexFileName`] holds its characters.
+#[derive(Clone)]
+enum NameRepr {
+    Owned(String),
+    Shared(Arc<str>),
+}
+
+impl IndexFileName {
+    /// A name that clones share instead of copying: one allocation, of the
+    /// name's characters.
+    pub fn shared(name: &str) -> Self {
+        Self(NameRepr::Shared(Arc::from(name)))
+    }
+
+    /// The name as a string slice.
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            NameRepr::Owned(name) => name,
+            NameRepr::Shared(name) => name,
+        }
+    }
+}
+
+/// Holds `name` itself, without a copy.
+impl From<String> for IndexFileName {
+    fn from(name: String) -> Self {
+        Self(NameRepr::Owned(name))
+    }
+}
+
+/// Moves an owned name out, and copies a shared one.
+impl From<IndexFileName> for String {
+    fn from(name: IndexFileName) -> Self {
+        match name.0 {
+            NameRepr::Owned(name) => name,
+            NameRepr::Shared(name) => String::from(&*name),
+        }
+    }
+}
+
+impl std::ops::Deref for IndexFileName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for IndexFileName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for IndexFileName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for IndexFileName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for IndexFileName {}
+
+impl PartialEq<str> for IndexFileName {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for IndexFileName {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::hash::Hash for IndexFileName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialOrd for IndexFileName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IndexFileName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+/// Formats as the characters' `Debug`, like a `String`.
+impl std::fmt::Debug for IndexFileName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for IndexFileName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -404,8 +542,22 @@ mod tests {
         assert!(!is_codec_file("_0"));
     }
 
+    /// Java only asserts the leading `'_'` (`IndexFileNames.java:147`): with
+    /// assertions enabled (debug builds) the assert fails; without, the first
+    /// character is dropped whatever it is.
     #[test]
-    fn parse_generation_rejects_missing_underscore() {
-        assert!(parse_generation("0.si").is_err());
+    #[cfg_attr(debug_assertions, should_panic(expected = "filename.starts_with('_')"))]
+    fn parse_generation_asserts_the_leading_underscore() {
+        assert_eq!(parse_generation("0_1.si").unwrap(), 1);
+    }
+
+    /// `String.split` drops trailing empty strings, and `substring(1)` of an
+    /// empty name throws.
+    #[test]
+    fn parse_generation_splits_as_java() {
+        assert_eq!(parse_generation("_0_.si").unwrap(), 0);
+        assert_eq!(parse_generation("_0__.si").unwrap(), 0);
+        assert_eq!(parse_generation("_0_1_.si").unwrap(), 1);
+        assert!(matches!(parse_generation("_.si"), Ok(0)));
     }
 }

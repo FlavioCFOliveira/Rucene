@@ -1,0 +1,775 @@
+//! The mapped-memory layer underneath Lucene's Java 21 `MMapDirectory`
+//! implementation, plus the reference-counted shared arena built on it.
+//!
+//! Lucene's `lucene/core/src/java21/org/apache/lucene/store` sources are written
+//! against `java.lang.foreign`: a `MemorySegment` is a view over a region of
+//! memory, and an `Arena` owns the lifetime of every segment allocated from it.
+//! Rust has no equivalent standard library abstraction, so this module provides
+//! the two concepts directly over `memmap2` mappings. Only what Lucene actually
+//! uses is modelled: mapping a file region, slicing a segment, asking for its
+//! size and address, and closing a group of segments together.
+//!
+//! [`RefCountedSharedArena`] is a port of the Lucene class of the same name.
+//!
+//! # Divergences from Lucene 10.5.0
+//!
+//! * **Closing does not invalidate memory in use.** Java's `Arena.ofShared()`
+//!   unmaps its segments the moment `close()` is called; other threads still
+//!   reading through a clone then get an `IllegalStateException`, which
+//!   `MemorySegmentIndexInput` converts into an `AlreadyClosedException`. Rust
+//!   cannot free memory that safe references still borrow, so a closed
+//!   [`Arena`] instead marks its [`Scope`] dead — every input then reports
+//!   `AlreadyClosed`, exactly as in Java — while the mapping itself is released
+//!   when the last clone holding it is dropped. The observable contract of
+//!   `close()` is preserved; only the instant of unmapping differs, and it
+//!   differs in the safe direction.
+//! * **`Arena.allocate` is not on the [`Arena`] trait.** Lucene never allocates
+//!   from these arenas — `RefCountedSharedArena.allocate` throws
+//!   `UnsupportedOperationException` — so the trait models lifetime only, and
+//!   the refusal lives on [`RefCountedSharedArena::allocate`] alone.
+//! * **`RefCountedSharedArena`'s `onClose` callback holds a
+//!   [`std::sync::Weak`]**, not a strong reference, to the map it removes
+//!   itself from. Java relies on the garbage collector to break that cycle;
+//!   reference counting cannot.
+
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::Arc;
+use std::thread::ThreadId;
+
+use memmap2::Mmap;
+
+use super::ReadAdvice;
+use crate::error::{LuceneError, Result};
+
+/// The lifetime marker shared by every [`MemorySegment`] of one [`Arena`].
+///
+/// Equivalent to `java.lang.foreign.MemorySegment.Scope`. A scope starts alive
+/// and becomes dead when its arena is closed; it never becomes alive again.
+#[derive(Debug)]
+pub struct Scope {
+    alive: AtomicBool,
+    /// The thread allowed to access segments of a confined arena, or `None`
+    /// for a shared arena.
+    owner: Option<ThreadId>,
+}
+
+impl Scope {
+    /// Creates a live scope confined to `owner`, or unconfined when `owner` is
+    /// `None`.
+    fn new(owner: Option<ThreadId>) -> Arc<Self> {
+        Arc::new(Self {
+            alive: AtomicBool::new(true),
+            owner,
+        })
+    }
+
+    /// Returns `true` while the owning arena is open.
+    ///
+    /// Equivalent to `MemorySegment.Scope.isAlive()`.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    /// Returns `true` if `thread` may access segments governed by this scope.
+    ///
+    /// Equivalent to `MemorySegment.isAccessibleBy(Thread)`.
+    pub fn is_accessible_by(&self, thread: ThreadId) -> bool {
+        match self.owner {
+            Some(owner) => owner == thread,
+            None => true,
+        }
+    }
+
+    /// Marks the scope dead. Idempotent.
+    fn close(&self) {
+        self.alive.store(false, Ordering::Release);
+    }
+}
+
+/// Owns the lifetime of a group of [`MemorySegment`]s.
+///
+/// Equivalent to `java.lang.foreign.Arena` as Lucene uses it: the segments of
+/// one file — or of one whole index segment, when they are grouped — share an
+/// arena, and closing it invalidates them all at once.
+pub trait Arena: std::fmt::Debug + Send + Sync {
+    /// Returns the scope governing every segment of this arena.
+    ///
+    /// Equivalent to `Arena.scope()`.
+    fn scope(&self) -> &Arc<Scope>;
+
+    /// Closes the arena, marking its scope dead.
+    ///
+    /// Equivalent to `Arena.close()`. Closing twice is harmless.
+    fn close(&self);
+}
+
+/// An arena whose segments may only be accessed by the thread that created it.
+///
+/// Equivalent to `Arena.ofConfined()`.
+#[derive(Debug)]
+pub struct ConfinedArena {
+    scope: Arc<Scope>,
+}
+
+impl ConfinedArena {
+    /// Creates a confined arena owned by the calling thread.
+    ///
+    /// Equivalent to `Arena.ofConfined()`.
+    pub fn new() -> Self {
+        Self {
+            scope: Scope::new(Some(std::thread::current().id())),
+        }
+    }
+}
+
+impl Default for ConfinedArena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Arena for ConfinedArena {
+    fn scope(&self) -> &Arc<Scope> {
+        &self.scope
+    }
+
+    fn close(&self) {
+        self.scope.close();
+    }
+}
+
+/// An arena whose segments may be accessed by any thread.
+///
+/// Equivalent to `Arena.ofShared()`.
+#[derive(Debug)]
+pub struct SharedArena {
+    scope: Arc<Scope>,
+}
+
+impl SharedArena {
+    /// Creates a shared arena.
+    ///
+    /// Equivalent to `Arena.ofShared()`.
+    pub fn new() -> Self {
+        Self {
+            scope: Scope::new(None),
+        }
+    }
+}
+
+impl Default for SharedArena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Arena for SharedArena {
+    fn scope(&self) -> &Arc<Scope> {
+        &self.scope
+    }
+
+    fn close(&self) {
+        self.scope.close();
+    }
+}
+
+/// Default maximum number of acquires one [`RefCountedSharedArena`] will ever
+/// hand out.
+///
+/// Equivalent to `RefCountedSharedArena.DEFAULT_MAX_PERMITS`.
+pub const DEFAULT_MAX_PERMITS: i32 = 64;
+
+/// State value meaning the arena is closed.
+const CLOSED: i32 = 0;
+/// Minimum value beyond which permits are exhausted.
+const REMAINING_UNIT: i32 = 1 << 16;
+/// Acquire decrement: effectively decrements permits and increments ref count.
+const ACQUIRE_DECREMENT: i32 = REMAINING_UNIT - 1;
+
+/// A reference counted shared [`Arena`].
+///
+/// Equivalent to `org.apache.lucene.store.RefCountedSharedArena`.
+///
+/// The purpose of this type is to let a number of mapped memory segments share
+/// a single underlying arena, so the arena is not closed until all of the
+/// segments are. Typically those segments belong to the same logical group —
+/// the individual files of one index segment — and grouping them avoids the
+/// expensive cost of closing a shared arena once per file.
+///
+/// The reference count is increased by [`acquire`](Self::acquire) and decreased
+/// by [`release`](Self::release). When it reaches zero the underlying arena is
+/// closed and the `on_close` callback runs; no more references can be acquired.
+///
+/// Independently of the reference count, the total number of acquires over the
+/// lifetime of one instance is capped at `max_permits`. Once they are exhausted
+/// [`acquire`](Self::acquire) returns `false` forever, which is what makes a
+/// long-lived group eventually roll over to a fresh arena.
+pub struct RefCountedSharedArena {
+    segment_name: String,
+    /// `on_close` may run more than once if closing the inner arena fails, as
+    /// in Java.
+    on_close: Box<dyn Fn() + Send + Sync>,
+    arena: SharedArena,
+    /// High 16 bits hold the total remaining acquires and decrease
+    /// monotonically; the low 16 bits hold the current reference count.
+    state: AtomicI32,
+}
+
+impl RefCountedSharedArena {
+    /// Creates an arena for `segment_name` with [`DEFAULT_MAX_PERMITS`].
+    ///
+    /// Equivalent to `RefCountedSharedArena(String, Runnable)`.
+    pub fn new(segment_name: impl Into<String>, on_close: Box<dyn Fn() + Send + Sync>) -> Self {
+        Self::with_max_permits(segment_name, on_close, DEFAULT_MAX_PERMITS)
+            .expect("INVARIANT: DEFAULT_MAX_PERMITS passes validMaxPermits")
+    }
+
+    /// Creates an arena for `segment_name` with an explicit permit budget.
+    ///
+    /// Equivalent to `RefCountedSharedArena(String, Runnable, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `max_permits` is not
+    /// accepted by [`valid_max_permits`](Self::valid_max_permits).
+    pub fn with_max_permits(
+        segment_name: impl Into<String>,
+        on_close: Box<dyn Fn() + Send + Sync>,
+        max_permits: i32,
+    ) -> Result<Self> {
+        if !Self::valid_max_permits(max_permits) {
+            return Err(LuceneError::illegal_argument(format!(
+                "invalid max permits: {max_permits}"
+            )));
+        }
+        Ok(Self {
+            segment_name: segment_name.into(),
+            on_close,
+            arena: SharedArena::new(),
+            state: AtomicI32::new(max_permits << 16),
+        })
+    }
+
+    /// Returns `true` if `value` is a usable permit budget.
+    ///
+    /// Equivalent to `RefCountedSharedArena.validMaxPermits(int)`.
+    pub fn valid_max_permits(value: i32) -> bool {
+        value > 0 && value <= 0x7FFF
+    }
+
+    /// Returns the group name this arena was created for. For debugging.
+    ///
+    /// Equivalent to `RefCountedSharedArena.getSegmentName()`.
+    pub fn get_segment_name(&self) -> &str {
+        &self.segment_name
+    }
+
+    /// Increments the reference count.
+    ///
+    /// Returns `true` if it was increased, or `false` when there are no
+    /// remaining acquires.
+    ///
+    /// Equivalent to `RefCountedSharedArena.acquire()`.
+    pub fn acquire(&self) -> bool {
+        loop {
+            let value = self.state.load(Ordering::SeqCst);
+            if value < REMAINING_UNIT {
+                return false;
+            }
+            if self
+                .state
+                .compare_exchange(
+                    value,
+                    value - ACQUIRE_DECREMENT,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
+
+    /// Decrements the reference count, closing the underlying arena when it
+    /// reaches zero.
+    ///
+    /// Equivalent to `RefCountedSharedArena.release()`.
+    pub fn release(&self) {
+        loop {
+            let value = self.state.load(Ordering::SeqCst);
+            let count = value & 0xFFFF;
+            let new_value = if count <= 1 { CLOSED } else { value - 1 };
+            if self
+                .state
+                .compare_exchange(value, new_value, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                if new_value == CLOSED {
+                    (self.on_close)();
+                    self.arena.close();
+                }
+                return;
+            }
+        }
+    }
+}
+
+impl RefCountedSharedArena {
+    /// Refuses to allocate: this arena hands out mappings of index files, never
+    /// fresh memory.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`LuceneErrorKind::UnsupportedOperation`](crate::error::LuceneErrorKind::UnsupportedOperation), which is Java's
+    /// `UnsupportedOperationException` (no message).
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.store.RefCountedSharedArena#allocate`.
+    pub fn allocate(&self, _byte_size: i64, _byte_alignment: i64) -> Result<MemorySegment> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+}
+
+impl Arena for RefCountedSharedArena {
+    fn scope(&self) -> &Arc<Scope> {
+        self.arena.scope()
+    }
+
+    fn close(&self) {
+        self.release();
+    }
+}
+
+impl std::fmt::Debug for RefCountedSharedArena {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::fmt::Display for RefCountedSharedArena {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RefCountedArena[segmentName={}, value={}, arena={:?}]",
+            self.segment_name,
+            self.state.load(Ordering::SeqCst),
+            self.arena
+        )
+    }
+}
+
+/// A view over a region of mapped memory.
+///
+/// Equivalent to `java.lang.foreign.MemorySegment` as Lucene uses it: a
+/// read-only window on part of a memory-mapped file, governed by the [`Scope`]
+/// of the [`Arena`] it was mapped into.
+///
+/// Cloning is cheap — it shares the underlying mapping — and a segment stays
+/// readable while any clone of it lives, even after its scope is closed. Code
+/// that must honour the closed state checks [`is_alive`](Self::is_alive); see
+/// the module documentation for why the two are separate here and not in Java.
+#[derive(Clone)]
+pub struct MemorySegment {
+    /// `None` for a zero-length segment: `mmap` refuses an empty mapping, while
+    /// Lucene deliberately creates one trailing zero-byte segment per file.
+    mapping: Option<Arc<Mmap>>,
+    offset: usize,
+    len: usize,
+    scope: Arc<Scope>,
+}
+
+impl MemorySegment {
+    /// Maps `len` bytes of `file` starting at `file_offset` into `scope`.
+    ///
+    /// Equivalent to `FileChannel.map(MapMode.READ_ONLY, offset, size, arena)`, on
+    /// the channel the provider opened.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) if the mapping cannot be created.
+    pub fn map(
+        channel: &dyn super::java_nio_file::FileChannel,
+        file_offset: u64,
+        len: usize,
+        scope: Arc<Scope>,
+    ) -> Result<Self> {
+        if len == 0 {
+            return Ok(Self::empty(scope));
+        }
+        let mapping = channel.map_read_only(file_offset as i64, len as i64)?;
+        Ok(Self {
+            mapping: Some(Arc::new(mapping)),
+            offset: 0,
+            len,
+            scope,
+        })
+    }
+
+    /// Creates a zero-length segment in `scope`.
+    ///
+    /// Equivalent to mapping a zero-byte region, which Lucene does for the
+    /// trailing segment of every file.
+    pub fn empty(scope: Arc<Scope>) -> Self {
+        Self {
+            mapping: None,
+            offset: 0,
+            len: 0,
+            scope,
+        }
+    }
+
+    /// Returns the number of bytes in this segment.
+    ///
+    /// Equivalent to `MemorySegment.byteSize()`.
+    pub fn byte_size(&self) -> i64 {
+        self.len as i64
+    }
+
+    /// Returns the address of the first byte of this segment, or `0` for an
+    /// empty segment.
+    ///
+    /// Equivalent to `MemorySegment.address()`. Forming the address does not
+    /// dereference anything and needs no `unsafe`; it is used only to compute
+    /// the offset of the segment within an operating-system page.
+    pub fn address(&self) -> usize {
+        match &self.mapping {
+            Some(mapping) => (mapping.as_ptr() as usize).wrapping_add(self.offset),
+            None => 0,
+        }
+    }
+
+    /// Returns the scope governing this segment.
+    ///
+    /// Equivalent to `MemorySegment.scope()`.
+    pub fn scope(&self) -> &Arc<Scope> {
+        &self.scope
+    }
+
+    /// Returns `true` while the arena that mapped this segment is open.
+    pub fn is_alive(&self) -> bool {
+        self.scope.is_alive()
+    }
+
+    /// Returns the bytes of this segment.
+    ///
+    /// The slice stays valid for as long as this segment lives, whether or not
+    /// its scope is still alive; callers that must observe the closed state
+    /// check [`is_alive`](Self::is_alive) first.
+    pub fn bytes(&self) -> &[u8] {
+        match &self.mapping {
+            Some(mapping) => &mapping[self.offset..self.offset + self.len],
+            None => &[],
+        }
+    }
+
+    /// Returns the sub-segment of `len` bytes starting at `offset`, or `None`
+    /// if that range is not contained in this segment.
+    ///
+    /// Equivalent to `MemorySegment.asSlice(long, long)`, which throws
+    /// `IndexOutOfBoundsException` where this returns `None`; callers turn that
+    /// into whichever error Lucene raises at their call site.
+    pub fn as_slice(&self, offset: i64, len: i64) -> Option<Self> {
+        if offset < 0 || len < 0 {
+            return None;
+        }
+        let end = offset.checked_add(len)?;
+        if end > self.byte_size() {
+            return None;
+        }
+        Some(Self {
+            mapping: self.mapping.clone(),
+            offset: self.offset + offset as usize,
+            len: len as usize,
+            scope: Arc::clone(&self.scope),
+        })
+    }
+
+    /// Returns whether this segment's contents are resident in physical memory.
+    ///
+    /// Equivalent to `MemorySegment.isLoaded()` on a mapped segment, which the
+    /// JDK answers with `mincore` over the page-aligned range the segment
+    /// covers: a segment with no address or no bytes is loaded, otherwise it is
+    /// loaded when every page is resident. `None` only on targets without
+    /// `mincore` (non-Unix), where this port cannot answer.
+    ///
+    /// **Divergence from Lucene 10.5.0.** If `mincore` fails, the JDK throws
+    /// (`MappedMemoryUtils.isLoaded`); this port answers `Some(false)`,
+    /// because the `IndexInput::is_loaded` contract returns `Option<bool>`
+    /// and cannot carry an error. A live mapping excludes every documented
+    /// `mincore` failure, so the path is not expected to be reached.
+    pub fn is_loaded(&self) -> Option<bool> {
+        // An empty segment has no address at all: loaded, as the JDK answers
+        // for `address == 0 || size == 0`.
+        let Some(mapping) = &self.mapping else {
+            return Some(true);
+        };
+        if self.len == 0 {
+            return Some(true);
+        }
+        #[cfg(unix)]
+        {
+            Some(mincore_all_resident(
+                &mapping[self.offset..self.offset + self.len],
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = mapping;
+            None
+        }
+    }
+
+    /// Asks the operating system to bring this segment into physical memory.
+    ///
+    /// Equivalent to `MemorySegment.load()`. Implemented with
+    /// `madvise(MADV_WILLNEED)`, which is what the JDK issues for `load()`; it
+    /// is a hint, so it is a no-op on platforms without `madvise`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::Io`](crate::error::LuceneErrorKind::Io) if the advice call fails.
+    pub fn load(&self) -> Result<()> {
+        self.advise_os(OsReadAdvice::WillNeed)
+    }
+
+    /// Issues `madvise` for the whole of this segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::Io`] if the advice call fails.
+    pub(crate) fn advise_os(&self, advice: OsReadAdvice) -> Result<()> {
+        // Empty segments are excluded, because they may have no address at all.
+        let Some(mapping) = &self.mapping else {
+            return Ok(());
+        };
+        if self.len == 0 {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        {
+            mapping.advise_range(advice.to_memmap2(), self.offset, self.len)?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (mapping, advice);
+        }
+        Ok(())
+    }
+
+    /// Reads the byte at `pos`, or `None` if `pos` is out of bounds.
+    #[inline]
+    pub fn get_u8(&self, pos: i64) -> Option<u8> {
+        // PERF: one range check against `len`; the slice `bytes()` builds is
+        // not materialised per byte.
+        let pos = usize::try_from(pos).ok()?;
+        if pos >= self.len {
+            return None;
+        }
+        self.mapping.as_ref()?.get(self.offset + pos).copied()
+    }
+
+    /// Reads a little-endian `i16` at `pos`, or `None` if the two bytes are not
+    /// fully contained in this segment.
+    pub fn get_i16_le(&self, pos: i64) -> Option<i16> {
+        self.window::<2>(pos).map(i16::from_le_bytes)
+    }
+
+    /// Reads a little-endian `i32` at `pos`, or `None` if the four bytes are
+    /// not fully contained in this segment.
+    pub fn get_i32_le(&self, pos: i64) -> Option<i32> {
+        self.window::<4>(pos).map(i32::from_le_bytes)
+    }
+
+    /// Reads a little-endian `i64` at `pos`, or `None` if the eight bytes are
+    /// not fully contained in this segment.
+    pub fn get_i64_le(&self, pos: i64) -> Option<i64> {
+        self.window::<8>(pos).map(i64::from_le_bytes)
+    }
+
+    /// Reads a little-endian `f32` at `pos`, or `None` if the four bytes are
+    /// not fully contained in this segment.
+    pub fn get_f32_le(&self, pos: i64) -> Option<f32> {
+        self.window::<4>(pos).map(f32::from_le_bytes)
+    }
+
+    /// Copies `dst.len()` bytes starting at `pos` into `dst`.
+    ///
+    /// Returns `false` — leaving `dst` untouched — if the range is not fully
+    /// contained in this segment. Equivalent to `MemorySegment.copy` with a
+    /// byte layout.
+    pub fn copy_to(&self, pos: i64, dst: &mut [u8]) -> bool {
+        let bytes = self.bytes();
+        let Ok(pos) = usize::try_from(pos) else {
+            return false;
+        };
+        let Some(end) = pos.checked_add(dst.len()) else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        dst.copy_from_slice(&bytes[pos..end]);
+        true
+    }
+
+    /// Returns the `N` bytes starting at `pos`, if they fit in this segment.
+    #[inline]
+    fn window<const N: usize>(&self, pos: i64) -> Option<[u8; N]> {
+        // PERF: as in `get_u8`.
+        let pos = usize::try_from(pos).ok()?;
+        let end = pos.checked_add(N)?;
+        if end > self.len {
+            return None;
+        }
+        let start = self.offset + pos;
+        self.mapping
+            .as_ref()?
+            .get(start..start + N)?
+            .try_into()
+            .ok()
+    }
+}
+
+impl std::fmt::Debug for MemorySegment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemorySegment")
+            .field("address", &self.address())
+            .field("byte_size", &self.len)
+            .field("alive", &self.is_alive())
+            .finish()
+    }
+}
+
+/// Whether every page that `bytes` touches is resident in physical memory.
+///
+/// The `mincore(2)` query `MappedMemoryUtils.isLoaded` performs: the start is
+/// rounded down to its page, the length grows by the same amount, and the
+/// range is loaded when no page's residency byte is zero.
+#[cfg(unix)]
+fn mincore_all_resident(bytes: &[u8]) -> bool {
+    let page_size = page_size();
+    let address = bytes.as_ptr() as usize;
+    let offset = address % page_size;
+    let length = bytes.len() + offset;
+    let pages = length.div_ceil(page_size);
+    let mut residency = vec![0u8; pages];
+    let rc = mincore(address - offset, length, &mut residency);
+    // A live mapping covers the whole range, so `mincore` cannot fail with
+    // ENOMEM; EFAULT and EINVAL are excluded by the vector size and the page
+    // alignment above. Should it fail anyway, nothing is known to be resident.
+    rc == 0 && residency.iter().all(|&page| page != 0)
+}
+
+/// The system page size, `sysconf(_SC_PAGESIZE)`.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn page_size() -> usize {
+    // SAFETY: `sysconf` reads a system constant; it has no memory
+    // preconditions.
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    usize::try_from(size).unwrap_or(4096)
+}
+
+/// `mincore(start, length, residency)`, returning its status.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn mincore(start: usize, length: usize, residency: &mut [u8]) -> i32 {
+    debug_assert!(residency.len() >= length.div_ceil(page_size()));
+    // SAFETY: `start` is page-aligned and `[start, start + length)` lies within
+    // a single live `Mmap` (the caller derives both from a slice borrowed from
+    // that mapping, which therefore stays mapped for this call); `mincore`
+    // only reads the kernel's page tables for that range and writes one byte
+    // per page into `residency`, which holds at least
+    // `ceil(length / page_size)` bytes.
+    unsafe {
+        libc::mincore(
+            start as *mut libc::c_void,
+            length,
+            residency.as_mut_ptr().cast(),
+        )
+    }
+}
+
+/// The subset of `madvise` advice values Lucene issues.
+///
+/// Equivalent to the `POSIX_MADV_*` constants
+/// [`PosixNativeAccess`](super::PosixNativeAccess) binds. The values are
+/// identical between `posix_madvise` and `madvise` for all four.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum OsReadAdvice {
+    /// No further special treatment. `POSIX_MADV_NORMAL`.
+    Normal,
+    /// Expect random page references. `POSIX_MADV_RANDOM`.
+    Random,
+    /// Expect sequential page references. `POSIX_MADV_SEQUENTIAL`.
+    Sequential,
+    /// Will need these pages. `POSIX_MADV_WILLNEED`.
+    WillNeed,
+}
+
+impl OsReadAdvice {
+    /// Maps a Lucene [`ReadAdvice`] onto the operating system's advice value.
+    ///
+    /// Equivalent to `PosixNativeAccess.mapReadAdvice(ReadAdvice)`.
+    pub(crate) fn from_read_advice(read_advice: ReadAdvice) -> Self {
+        match read_advice {
+            ReadAdvice::Normal => Self::Normal,
+            ReadAdvice::Random => Self::Random,
+            ReadAdvice::Sequential => Self::Sequential,
+        }
+    }
+
+    #[cfg(unix)]
+    fn to_memmap2(self) -> memmap2::Advice {
+        match self {
+            Self::Normal => memmap2::Advice::Normal,
+            Self::Random => memmap2::Advice::Random,
+            Self::Sequential => memmap2::Advice::Sequential,
+            Self::WillNeed => memmap2::Advice::WillNeed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod is_loaded_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// `MemorySegment.isLoaded()` (`MemorySegmentIndexInput.java:447-461`,
+    /// `testIsLoaded` in `BaseDirectoryTestCase.java:1626-1682`): an empty
+    /// segment is loaded, and a mapping whose pages are all in the page cache
+    /// — a file just written and read through — is loaded, also when a slice
+    /// starts in the middle of a page. The port answered `None`.
+    #[cfg(unix)]
+    #[test]
+    fn a_resident_mapping_is_loaded() {
+        let scope = Scope::new(None);
+        assert_eq!(
+            MemorySegment::empty(Arc::clone(&scope)).is_loaded(),
+            Some(true)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("temp.bin");
+        let len = 3 * page_size() + 123;
+        let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mapping = crate::store::mmap::map_read_only(&file, 0, len).unwrap();
+        let segment = MemorySegment {
+            mapping: Some(Arc::new(mapping)),
+            offset: 0,
+            len,
+            scope,
+        };
+        // Touch every page, so that each is resident.
+        assert_eq!(segment.bytes(), &bytes[..]);
+        assert_eq!(segment.is_loaded(), Some(true));
+        let slice = segment.as_slice(1001, (len - 2000) as i64).unwrap();
+        assert_eq!(slice.is_loaded(), Some(true));
+    }
+}

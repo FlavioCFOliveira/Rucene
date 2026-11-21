@@ -1,54 +1,58 @@
 //! Lowercase token filter ported from `org.apache.lucene.analysis.LowerCaseFilter`.
 //!
-//! The filter lowercases the term text of each token. Rust's
-//! `String::to_lowercase` is used, which applies the Unicode full case-folding
-//! rules (language-independent). This matches Java's
-//! `CharacterUtils.toLowerCase` for ASCII and for many common Unicode code
-//! points, but differs for cases such as U+0130 LATIN CAPITAL LETTER I WITH
-//! DOT ABOVE, where Java's simple `Character.toLowerCase` returns `i` while
-//! Rust produces `i` followed by U+0307 COMBINING DOT ABOVE.
+//! The filter lowercases the term text of each token in place with
+//! [`to_lower_case`], Java's
+//! `CharacterUtils.toLowerCase`: the simple, one-for-one mapping of
+//! `Character.toLowerCase(int)`.
 
 #![deny(unsafe_code)]
 
 use std::fmt::Debug;
 
+use crate::analysis::character_utils::to_lower_case;
 use crate::analysis::tokenattributes::CharTermAttribute;
-use crate::analysis::{PackedTokenAttributeImpl, TokenFilter, TokenFilterLogic, TokenStream};
+use crate::analysis::{AttributeHandle, TokenFilter, TokenFilterLogic, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
 
 /// Lowercases each token's term text.
 ///
 /// Equivalent to `org.apache.lucene.analysis.LowerCaseFilter`.
-#[derive(Debug, Default)]
-pub struct LowerCaseFilterLogic;
+#[derive(Debug)]
+pub struct LowerCaseFilterLogic {
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+}
 
 impl LowerCaseFilterLogic {
-    /// Creates a new lowercase filter logic instance.
-    pub fn new() -> Self {
-        Self
+    /// Creates the logic of a filter whose source is `source`, adding the
+    /// `CharTermAttribute` its field holds (`LowerCaseFilter.java:24`).
+    ///
+    /// # Errors
+    ///
+    /// What the source's attribute factory raises for an interface it cannot
+    /// implement, as Java's `addAttribute` throws.
+    pub fn new(source: &mut AttributeSource) -> Result<Self> {
+        Ok(Self {
+            term_att: AttributeHandle::add(source)?,
+        })
     }
 }
 
 impl TokenFilterLogic for LowerCaseFilterLogic {
     fn increment_token(
         &mut self,
-        source: &mut AttributeSource,
+        _source: &mut AttributeSource,
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
+        // `CharacterUtils.toLowerCase(termAtt.buffer(), 0, termAtt.length())`
+        // (`LowerCaseFilter.java:35-43`).
         if !input.increment_token()? {
             return Ok(false);
         }
-        let term = source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap()
-            .term()
-            .to_lowercase();
-        let mut att = source
-            .get_attribute_mut::<PackedTokenAttributeImpl>()
-            .unwrap();
-        att.set_empty();
-        att.append_string(&term);
+        let mut att = self.term_att.borrow_mut();
+        let length = att.length();
+        to_lower_case(att.buffer_mut(), 0, length);
         Ok(true)
     }
 }
@@ -57,6 +61,43 @@ impl TokenFilterLogic for LowerCaseFilterLogic {
 pub type LowerCaseFilter = TokenFilter<LowerCaseFilterLogic>;
 
 /// Creates a [`LowerCaseFilter`] over `input`.
-pub fn new_lower_case_filter(input: Box<dyn TokenStream>) -> LowerCaseFilter {
-    TokenFilter::new(input, LowerCaseFilterLogic::new())
+///
+/// Equivalent to `LowerCaseFilter(TokenStream)`, which adds the
+/// `CharTermAttribute` (`LowerCaseFilter.java:24`).
+///
+/// # Errors
+///
+/// What the stream's attribute factory raises for an interface it cannot
+/// implement, as Java's `addAttribute` throws.
+pub fn new_lower_case_filter(input: Box<dyn TokenStream>) -> Result<LowerCaseFilter> {
+    TokenFilter::with_logic(input, LowerCaseFilterLogic::new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::StringTokenStream;
+
+    /// `MiscOracle` O3 (`oracle/h2/MiscOracle.java`): the filter lower-cases
+    /// with `CharacterUtils.toLowerCase`, so `\u{130}` becomes `i`, a final
+    /// sigma stays `\u{3C3}` and U+1E9E becomes U+00DF, as Java printed.
+    #[test]
+    fn the_filter_lower_cases_with_the_simple_mapping() {
+        let input = StringTokenStream::new(
+            "\u{130}STANBUL \u{3A3}\u{391}\u{3A3} \u{1E9E} \u{10400} \u{1C5}".to_string(),
+        )
+        .unwrap();
+        let mut filter = new_lower_case_filter(Box::new(input)).unwrap();
+        filter.reset().unwrap();
+        assert!(filter.increment_token().unwrap());
+        let term_att = filter
+            .attribute_source()
+            .get_attribute_interface::<dyn CharTermAttribute>()
+            .unwrap();
+        let term: String = term_att.buffer()[..term_att.length()].iter().collect();
+        assert_eq!(
+            term,
+            "istanbul \u{3C3}\u{3B1}\u{3C3} \u{DF} \u{10428} \u{1C6}"
+        );
+    }
 }

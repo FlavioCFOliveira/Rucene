@@ -1,0 +1,5 @@
+# lookup	result
+getName	SharedTermsUniformSplit
+toString	PostingsFormat(name=SharedTermsUniformSplit)
+forName.getClass	org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat
+forName.toString	PostingsFormat(name=SharedTermsUniformSplit)

@@ -1,0 +1,5568 @@
+//! In-memory inverted index ported from `org.apache.lucene.index`.
+//!
+//! This module buffers postings for one segment in RAM and, at flush time,
+//! streams them through the codec's postings format.
+//!
+//! | Rucene | Apache Lucene Core 10.5.0 |
+//! | --- | --- |
+//! | [`ByteSlicePool`] | `ByteSlicePool` |
+//! | [`ByteSliceReader`] | `ByteSliceReader` |
+//! | [`TermsHash`] | `TermsHash` |
+//! | [`TermsHashPerField`] | `TermsHashPerField` |
+//! | [`FreqProxPosting`] | `ParallelPostingsArray` + `FreqProxPostingsArray` |
+//! | [`FreqProxTermsWriterPerField`] | `FreqProxTermsWriterPerField` |
+//! | [`FreqProxFields`] | `FreqProxFields` |
+//! | [`FreqProxTermsWriter`] | `FreqProxTermsWriter` |
+//! | [`SortingTerms`] | `FreqProxTermsWriter.SortingTerms` |
+//! | [`SortingTermsEnum`] | `FreqProxTermsWriter.SortingTermsEnum` |
+//! | [`SortingDocsEnum`] | `FreqProxTermsWriter.SortingDocsEnum` |
+//! | [`SortingPostingsEnum`] | `FreqProxTermsWriter.SortingPostingsEnum` |
+//!
+//! # How the postings are buffered
+//!
+//! Every term of every field owns one or two *streams* of bytes:
+//!
+//! * stream `0` carries the doc/freq list: a vInt `docDelta << 1 | 1` when the
+//!   term occurs once in the document, otherwise `docDelta << 1` followed by a
+//!   vInt frequency. Fields indexed with `IndexOptions::DOCS` write the raw
+//!   `docDelta` instead, with no frequency at all.
+//! * stream `1` carries proximity data — a vInt `positionDelta << 1`, with the
+//!   low bit set when a payload follows, then the payload length and bytes, then
+//!   the two offset vInts when offsets are indexed.
+//!
+//! Streams are interleaved inside a single [`ByteBlockPool`] using
+//! [`ByteSlicePool`] slices of growing size, so a term with three postings costs
+//! five bytes rather than a heap allocation. The final byte of every slice holds
+//! `16 | level`, which is never zero: writers detect the end of a slice by
+//! hitting a non-zero byte, and [`ByteSliceReader`] follows the four-byte
+//! forwarding address that replaces it when the slice is chained.
+//!
+//! # Java to Rust adaptations
+//!
+//! * **`ParallelPostingsArray` becomes an array of structs.** Lucene keeps six
+//!   parallel `int[]` arrays indexed by term id, and grows them together
+//!   through the `BytesStartArray` callback. That layout exists because the JVM
+//!   has no value types: an array of small objects would cost a header and a
+//!   pointer chase per term, and would flood the GC. Rust has value types, and
+//!   every one of `newTerm`/`addTerm`'s accesses touches several fields of the
+//!   *same* term id, so a `Vec<FreqProxPosting>` puts all of them on one cache
+//!   line instead of spreading them across six arrays. It also removes the
+//!   lockstep-growth machinery entirely: term ids are dense and increasing, so
+//!   a new term is one `Vec::push`.
+//! * **The stream addresses live in an [`IntBlockPool`], as in Lucene.** Each
+//!   [`TermsHash`] owns one, whose 8192-`int` blocks are charged to the
+//!   chain's RAM counter (`IndexingChain.IntBlockAllocator`,
+//!   `IndexingChain.java:2114-2134`); a term's
+//!   [`address_offset`](FreqProxPosting::address_offset) points at its
+//!   `streamCount` consecutive addresses there
+//!   (`TermsHashPerField.initStreamSlices`, `TermsHashPerField.java:126-153`).
+//! * **The template method becomes a returned enum.** `TermsHashPerField.add`
+//!   calls back into the abstract `newTerm`/`addTerm` of its subclass. This port
+//!   has [`TermsHashPerField::intern`] return a [`TermSlot`] and lets the caller
+//!   dispatch, which is the same control flow without the inheritance.
+//! * **Flush hands out `Arc` snapshots.** `Fields::terms` returns
+//!   `Arc<dyn Terms>`, which is `'static`, so the read-back view cannot borrow
+//!   the writer. At flush the buffers are moved — not copied — behind an
+//!   [`Arc`], which every terms view, terms enum and postings enum then
+//!   shares.
+//!
+//! # Scope
+//!
+//! Lucene chains a second `TermsHash` — the
+//! [`TermVectorsConsumer`](crate::index::term_vectors_consumer::TermVectorsConsumer)
+//! — behind the postings one, and shares the *term* byte pool between them:
+//! the token text is interned once, here, and the second hash keys on the pool
+//! offset it was interned at. This port keeps the same arrangement without the
+//! inheritance. [`TermsHash`] still owns exactly one pool, the term pool; the
+//! term-vectors consumer owns a second [`TermsHash`] for its own position and
+//! offset streams, and reaches into this one through
+//! [`FreqProxTermsWriter::pool`]. [`FreqProxTermsWriterPerField::add`] returns
+//! the pool offset of the token it just interned, which is exactly the
+//! `textStart` Lucene forwards to `nextPerField.add(int, int)`, and
+//! [`TermsHashPerField::new_chained`] plus
+//! [`TermsHashPerField::intern_by_text_start`] are that secondary entry point.
+//!
+//! When the segment has an index sort, [`FreqProxTermsWriter::flush`] hands the
+//! codec the buffered postings through [`SortingTerms`], exactly as Lucene
+//! does, so the postings are written in the sorted document order.
+
+#![deny(unsafe_code)]
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+
+use crate::codecs::norms::NormsProducer;
+use crate::codecs::state::SegmentWriteState;
+use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::index::documents_writer::DeletedTerms;
+use crate::index::filter_reader::{FilterFields, FilterTerms, FilterTermsEnum};
+use crate::index::index_sorter::SorterDocMap;
+use crate::index::indexing_chain::FieldInvertState;
+use crate::index::{
+    FieldInfo, Fields, ImpactsEnum, IndexOptions, PostingsEnum, SeekStatus, TermState, Terms,
+    TermsEnum, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_POSITIONS,
+};
+use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
+use crate::util::automaton::CompiledAutomaton;
+use crate::util::byte_block_pool::{ByteBlockPool, BYTE_BLOCK_MASK, BYTE_BLOCK_SHIFT};
+use crate::util::bytes_ref_hash::BytesRefHash;
+use crate::util::int_block_pool::{
+    IntBlockAllocator, IntBlockPool, INT_BLOCK_MASK, INT_BLOCK_SHIFT, INT_BLOCK_SIZE,
+};
+use crate::util::IOBooleanSupplier;
+use crate::util::{compare_utf16, ArrayUtil, AttributeSource, BytesRef, FixedBitSet};
+
+// ---------------------------------------------------------------------------
+// ByteSlicePool
+// ---------------------------------------------------------------------------
+
+/// Size in bytes of each slice level.
+///
+/// Equivalent to `ByteSlicePool.LEVEL_SIZE_ARRAY`.
+pub const LEVEL_SIZE_ARRAY: [usize; 10] = [5, 14, 20, 30, 40, 40, 80, 80, 120, 200];
+
+/// Level that follows each level; the last level repeats itself.
+///
+/// Equivalent to `ByteSlicePool.NEXT_LEVEL_ARRAY`. Every value must be below
+/// 16 because the level is encoded in the low four bits of a slice's last byte.
+pub const NEXT_LEVEL_ARRAY: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
+
+/// Size of a brand-new slice.
+///
+/// Equivalent to `ByteSlicePool.FIRST_LEVEL_SIZE`.
+pub const FIRST_LEVEL_SIZE: usize = LEVEL_SIZE_ARRAY[0];
+
+/// Allocator of chained, growing byte slices inside a [`ByteBlockPool`].
+///
+/// Equivalent to `org.apache.lucene.index.ByteSlicePool`. Lucene's class wraps
+/// the pool; here the operations are associated functions that take the pool,
+/// because the pool is shared with the term hash of every field and Rust cannot
+/// express that with two owning handles.
+pub struct ByteSlicePool;
+
+impl ByteSlicePool {
+    /// Allocates a level-0 slice of `size` bytes and returns its position
+    /// inside the pool's head block.
+    ///
+    /// Equivalent to `ByteSlicePool.newSlice(int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`], and
+    /// returns [`LuceneErrorKind::IllegalArgument`] when `size` exceeds the pool's block
+    /// size (`ByteSlicePool.java:71-77`).
+    pub fn new_slice(pool: &mut ByteBlockPool, size: usize) -> Result<usize> {
+        if size > crate::util::BYTE_BLOCK_SIZE {
+            return Err(crate::error::LuceneError::illegal_argument(format!(
+                "Slice size {size} should be less than the block size {}",
+                crate::util::BYTE_BLOCK_SIZE
+            )));
+        }
+        pool.ensure_capacity(size)?;
+        let upto = pool.byte_upto();
+        pool.advance(size);
+        let block = pool.buffer_upto() as usize;
+        let last = pool.byte_upto() - 1;
+        // 16 codifies level 0: the marker is never zero, which is how writers
+        // recognise the end of a slice.
+        pool.buffer_mut(block)[last] = 16;
+        Ok(upto)
+    }
+
+    /// Chains a new slice after the one whose last byte is at `upto` of block
+    /// `block`, and returns the position of its first writable byte.
+    ///
+    /// Equivalent to `ByteSlicePool.allocSlice(byte[], int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`].
+    pub fn alloc_slice(pool: &mut ByteBlockPool, block: usize, upto: usize) -> Result<usize> {
+        Ok(Self::alloc_known_size_slice(pool, block, upto)?.0)
+    }
+
+    /// Chains a new slice and returns its first writable position together with
+    /// the number of bytes writable there.
+    ///
+    /// Equivalent to `ByteSlicePool.allocKnownSizeSlice(byte[], int)`, which
+    /// packs the same pair into one `int`. Returning a tuple removes the
+    /// packing and the 24-bit ceiling it implies.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the pool-overflow error of [`ByteBlockPool::next_buffer`].
+    pub fn alloc_known_size_slice(
+        pool: &mut ByteBlockPool,
+        block: usize,
+        upto: usize,
+    ) -> Result<(usize, usize)> {
+        let level = (pool.buffer(block)[upto] & 15) as usize;
+        let new_level = NEXT_LEVEL_ARRAY[level];
+        let new_size = LEVEL_SIZE_ARRAY[new_level];
+
+        pool.ensure_capacity(new_size)?;
+
+        let new_upto = pool.byte_upto();
+        let forwarding_address = new_upto as i32 + pool.byte_offset();
+        pool.advance(new_size);
+        let new_block = pool.buffer_upto() as usize;
+        debug_assert!(pool.buffer(new_block)[new_upto + 3] == 0);
+
+        // The three bytes before the level marker already carry stream data;
+        // the forwarding address is four bytes wide and will overwrite them, so
+        // move them to the front of the new slice first.
+        let carried = {
+            let buffer = pool.buffer(block);
+            [buffer[upto - 3], buffer[upto - 2], buffer[upto - 1]]
+        };
+        pool.buffer_mut(new_block)[new_upto..new_upto + 3].copy_from_slice(&carried);
+
+        // Write the forwarding address over the carried bytes and the marker.
+        // The new slice starts after `upto`, so this never overlaps the copy
+        // above even when both slices live in the same block.
+        pool.buffer_mut(block)[upto - 3..upto + 1]
+            .copy_from_slice(&forwarding_address.to_le_bytes());
+
+        let last = new_upto + new_size - 1;
+        pool.buffer_mut(new_block)[last] = (16 | new_level) as u8;
+
+        Ok((new_upto + 3, new_size - 3))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ByteSliceReader
+// ---------------------------------------------------------------------------
+
+/// Sequential reader over the chained slices written by [`TermsHashPerField`].
+///
+/// Equivalent to `org.apache.lucene.index.ByteSliceReader`. Lucene's class
+/// extends `DataInput`; this port keeps the pool out of the struct — every
+/// method takes it — so that the reader stays a plain cursor that several
+/// callers can create over one shared [`Arc<ByteBlockPool>`].
+#[derive(Debug, Default, Clone)]
+pub struct ByteSliceReader {
+    block: usize,
+    upto: usize,
+    limit: usize,
+    level: usize,
+    block_offset: i32,
+    end_index: i32,
+}
+
+impl ByteSliceReader {
+    /// Creates a reader positioned before the first byte of the stream.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Positions the reader over the slice chain spanning
+    /// `[start_index, end_index)`.
+    ///
+    /// Equivalent to `ByteSliceReader.init(ByteBlockPool, int, int)`.
+    pub fn init(&mut self, start_index: i32, end_index: i32) {
+        debug_assert!(start_index >= 0);
+        debug_assert!(end_index >= start_index);
+        debug_assert!(end_index >= 0);
+        self.end_index = end_index;
+        self.level = 0;
+        self.block = (start_index as usize) >> BYTE_BLOCK_SHIFT;
+        self.block_offset = (self.block as i32) << BYTE_BLOCK_SHIFT;
+        self.upto = (start_index as usize) & BYTE_BLOCK_MASK;
+        self.limit = if start_index + FIRST_LEVEL_SIZE as i32 >= end_index {
+            // The whole stream fits in the first slice.
+            (end_index as usize) & BYTE_BLOCK_MASK
+        } else {
+            self.upto + FIRST_LEVEL_SIZE - 4
+        };
+    }
+
+    /// Returns `true` when every byte of the stream was consumed.
+    pub fn eof(&self) -> bool {
+        debug_assert!(self.upto as i32 + self.block_offset <= self.end_index);
+        self.remaining() == 0
+    }
+
+    /// Returns how many bytes of the stream are still unread.
+    ///
+    /// Java has no equivalent: `ByteSliceReader` extends `DataInput` and simply
+    /// trusts the caller not to over-read. This port exposes the count so that
+    /// [`PooledSliceReader`] can turn an over-read into an error rather than an
+    /// out-of-bounds panic.
+    pub fn remaining(&self) -> i32 {
+        self.end_index - (self.upto as i32 + self.block_offset)
+    }
+
+    /// Reads one byte.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called at end of stream.
+    pub fn read_byte(&mut self, pool: &ByteBlockPool) -> u8 {
+        debug_assert!(!self.eof());
+        debug_assert!(self.upto <= self.limit);
+        if self.upto == self.limit {
+            self.next_slice(pool);
+        }
+        let value = pool.buffer(self.block)[self.upto];
+        self.upto += 1;
+        value
+    }
+
+    /// Reads `out.len()` bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the stream holds fewer bytes than requested.
+    pub fn read_bytes(&mut self, pool: &ByteBlockPool, out: &mut [u8]) {
+        let mut written = 0usize;
+        while written < out.len() {
+            let remaining = out.len() - written;
+            let available = self.limit - self.upto;
+            if available < remaining {
+                out[written..written + available]
+                    .copy_from_slice(&pool.buffer(self.block)[self.upto..self.limit]);
+                written += available;
+                self.next_slice(pool);
+            } else {
+                out[written..]
+                    .copy_from_slice(&pool.buffer(self.block)[self.upto..self.upto + remaining]);
+                self.upto += remaining;
+                break;
+            }
+        }
+    }
+
+    /// Reads a variable-length signed 32-bit integer.
+    ///
+    /// Equivalent to `DataInput.readVInt()` on `ByteSliceReader`, which has no
+    /// length check: `(b & 0x7F) << shift` keeps Java's `int` shift, whose
+    /// distance is taken modulo 32.
+    ///
+    /// # Errors
+    ///
+    /// None; the `Result` is kept for the callers.
+    pub fn read_v_int(&mut self, pool: &ByteBlockPool) -> Result<i32> {
+        let mut byte = self.read_byte(pool);
+        let mut value = (byte & 0x7F) as i32;
+        let mut shift = 7u32;
+        while byte & 0x80 != 0 {
+            byte = self.read_byte(pool);
+            value |= ((byte & 0x7F) as i32).wrapping_shl(shift);
+            shift += 7;
+        }
+        Ok(value)
+    }
+
+    /// Copies every remaining byte of the stream to `out` and returns how many
+    /// bytes were written.
+    ///
+    /// Equivalent to `org.apache.lucene.index.ByteSliceReader#writeTo`.
+    ///
+    /// The pool is a parameter here because, unlike Lucene's reader, this one
+    /// does not hold a reference to it — see [`PooledSliceReader`] for the
+    /// reason.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error raised by `out`.
+    pub fn write_to(&mut self, pool: &ByteBlockPool, out: &mut dyn DataOutput) -> Result<i64> {
+        let mut size = 0i64;
+        loop {
+            if self.limit as i32 + self.block_offset == self.end_index {
+                debug_assert!(self.end_index - self.block_offset >= self.upto as i32);
+                let len = self.limit - self.upto;
+                out.write_bytes(pool.buffer(self.block), self.upto, len)?;
+                size += len as i64;
+                break;
+            }
+            let len = self.limit - self.upto;
+            out.write_bytes(pool.buffer(self.block), self.upto, len)?;
+            size += len as i64;
+            self.next_slice(pool);
+        }
+        Ok(size)
+    }
+
+    /// Advances to the next slice of the chain.
+    fn next_slice(&mut self, pool: &ByteBlockPool) {
+        let buffer = pool.buffer(self.block);
+        let next_index = i32::from_le_bytes([
+            buffer[self.limit],
+            buffer[self.limit + 1],
+            buffer[self.limit + 2],
+            buffer[self.limit + 3],
+        ]);
+
+        self.level = NEXT_LEVEL_ARRAY[self.level];
+        let new_size = LEVEL_SIZE_ARRAY[self.level];
+
+        debug_assert!(self.end_index - next_index > 0);
+        self.block = (next_index as usize) >> BYTE_BLOCK_SHIFT;
+        self.block_offset = (self.block as i32) << BYTE_BLOCK_SHIFT;
+        self.upto = (next_index as usize) & BYTE_BLOCK_MASK;
+
+        self.limit = if next_index + new_size as i32 >= self.end_index {
+            (self.end_index - self.block_offset) as usize
+        } else {
+            self.upto + new_size - 4
+        };
+    }
+}
+
+/// A [`ByteSliceReader`] bound to the pool it reads from, so that it can be
+/// consumed as a [`DataInput`].
+///
+/// Lucene's `ByteSliceReader` *is* a `DataInput`, because it owns a reference
+/// to its `ByteBlockPool`. This port keeps the pool out of the reader — several
+/// readers share one pool — so the two are paired here instead, for the one
+/// caller that needs the `DataInput` shape:
+/// [`TermVectorsWriter::add_prox`](crate::codecs::term_vectors::TermVectorsWriter::add_prox).
+///
+/// An over-read behaves as the bare reader's, as Java's `ByteSliceReader`
+/// does: it has no bounds check of its own beyond its `assert !eof()`.
+#[derive(Debug)]
+pub struct PooledSliceReader<'a> {
+    reader: ByteSliceReader,
+    pool: &'a ByteBlockPool,
+}
+
+impl<'a> PooledSliceReader<'a> {
+    /// Pairs `reader` with the `pool` its slices live in.
+    pub fn new(reader: ByteSliceReader, pool: &'a ByteBlockPool) -> Self {
+        Self { reader, pool }
+    }
+
+    /// Returns `true` when every byte of the stream was consumed.
+    pub fn eof(&self) -> bool {
+        self.reader.eof()
+    }
+}
+
+impl DataInput for PooledSliceReader<'_> {
+    /// `Object.toString()` of `org.apache.lucene.index.ByteSliceReader`, which declares no `toString()`.
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Owned(crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.ByteSliceReader",
+            self,
+        ))
+    }
+
+    fn read_byte(&mut self) -> Result<u8> {
+        Ok(self.reader.read_byte(self.pool))
+    }
+
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        let b = crate::store::require_array(b)?;
+        self.reader
+            .read_bytes(self.pool, &mut b[offset..offset + len]);
+        Ok(())
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if num_bytes < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "numBytes must be >= 0, got {num_bytes}"
+            )));
+        }
+        // `numBytes >= 0` was checked above.
+        let len = usize::try_from(num_bytes).expect("INVARIANT: a non-negative skip fits usize");
+        let mut scratch = [0u8; 64];
+        let mut left = len;
+        while left > 0 {
+            let chunk = std::cmp::min(left, scratch.len());
+            self.reader.read_bytes(self.pool, &mut scratch[..chunk]);
+            left -= chunk;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Postings slots
+// ---------------------------------------------------------------------------
+
+/// Per-term state kept while a segment is being buffered.
+///
+/// Equivalent to the columns of `ParallelPostingsArray` and
+/// `FreqProxTermsWriterPerField.FreqProxPostingsArray` for one term id; see the
+/// module-level notes for why this port uses an array of structs.
+///
+/// One [`TermsHashPerField`] backs both consumers of the terms hash, so this
+/// struct is the union of the two Java posting arrays. The term-vectors
+/// consumer uses exactly the columns of `TermVectorsPostingsArray` —
+/// [`address_offset`](Self::address_offset), [`byte_start`](Self::byte_start),
+/// [`term_freq`](Self::term_freq) (`freqs`),
+/// [`last_position`](Self::last_position) (`lastPositions`) and
+/// [`last_offset`](Self::last_offset) (`lastOffsets`) — and leaves
+/// [`last_doc_id`](Self::last_doc_id) and
+/// [`last_doc_code`](Self::last_doc_code) untouched, because a term vector is
+/// built one document at a time and has no doc list. Note that the two
+/// consumers give `last_offset` different meanings: the postings writer stores
+/// the previous *start* offset there, the term-vectors writer the previous
+/// *end* offset (`FreqProxTermsWriterPerField.java:109` versus
+/// `TermVectorsConsumerPerField.java:242`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FreqProxPosting {
+    /// Global offset, in the [`IntBlockPool`] of the term's [`TermsHash`], of
+    /// the term's first stream address; the next free byte offset of stream
+    /// `i` is the `int` at `address_offset + i`.
+    ///
+    /// Equivalent to `ParallelPostingsArray.addressOffset`.
+    pub address_offset: i32,
+    /// Global pool offset of the term's first stream slice.
+    ///
+    /// Equivalent to `ParallelPostingsArray.byteStarts`.
+    pub byte_start: i32,
+    /// Last document in which the term was seen.
+    pub last_doc_id: i32,
+    /// Pending doc code of the previous document.
+    pub last_doc_code: i32,
+    /// Occurrences of the term in the current document.
+    pub term_freq: i32,
+    /// Last position at which the term was seen.
+    pub last_position: i32,
+    /// Last start offset at which the term was seen.
+    pub last_offset: i32,
+}
+
+/// `ParallelPostingsArray.BYTES_PER_POSTING`: the `textStarts`,
+/// `addressOffset` and `byteStarts` columns (`ParallelPostingsArray.java:22`).
+const PARALLEL_BYTES_PER_POSTING: i64 = 3 * 4;
+
+/// The RAM one postings slot of a field indexed with `index_options` is
+/// charged.
+///
+/// Equivalent to `FreqProxPostingsArray.bytesPerPosting()`
+/// (`FreqProxTermsWriterPerField.java:292-305`): the three base columns,
+/// `lastDocIDs` and `lastDocCodes`, and one more `int` for each of
+/// `lastPositions`, `lastOffsets` and `termFreqs` the index options allocate.
+/// It overrides the base `ParallelPostingsArray.bytesPerPosting()`, which
+/// returns [`PARALLEL_BYTES_PER_POSTING`] and which only the two subclasses'
+/// overrides (this one and [`TERM_VECTORS_BYTES_PER_POSTING`]) reach.
+///
+/// **Divergence from Lucene 10.5.0.** The columns are fields of one
+/// [`FreqProxPosting`] struct per term (see the module notes), which holds
+/// every column whatever the index options are; the counter is charged the
+/// bytes Java's arrays occupy, so the RAM-driven flushes happen where Lucene's
+/// do.
+fn freq_prox_bytes_per_posting(index_options: IndexOptions) -> i64 {
+    let mut bytes = PARALLEL_BYTES_PER_POSTING + 2 * 4;
+    if index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS) {
+        bytes += 4;
+    }
+    if index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS) {
+        bytes += 4;
+    }
+    if index_options.subsumes(IndexOptions::DOCS_AND_FREQS) {
+        bytes += 4;
+    }
+    bytes
+}
+
+/// The RAM one postings slot of a term-vectors field is charged.
+///
+/// Equivalent to `TermVectorsPostingsArray.bytesPerPosting()`
+/// (`TermVectorsConsumerPerField.java:349-351`): the three base columns plus
+/// `freqs`, `lastOffsets` and `lastPositions`.
+const TERM_VECTORS_BYTES_PER_POSTING: i64 = PARALLEL_BYTES_PER_POSTING + 3 * 4;
+
+/// Number of term slots the first allocation reserves.
+///
+/// Equivalent to the `perField.createPostingsArray(2)` that
+/// `TermsHashPerField.PostingsBytesStartArray.init()` performs the first time a
+/// field sees a term.
+const INITIAL_POSTINGS_SLOTS: usize = 2;
+
+/// Outcome of interning a term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TermSlot {
+    /// Dense id of the term inside its field.
+    pub term_id: i32,
+    /// `true` when the term had not been seen since the last flush.
+    pub is_new: bool,
+}
+
+// ---------------------------------------------------------------------------
+// TermsHash / TermsHashPerField
+// ---------------------------------------------------------------------------
+
+/// Buffers shared by every per-field writer of one segment.
+///
+/// Equivalent to `org.apache.lucene.index.TermsHash`. Each instance owns one
+/// [`ByteBlockPool`]: for the postings hash that pool is the *term* pool, where
+/// every token's text is interned and where the doc/freq/prox streams live; for
+/// the second hash of the chain — the
+/// [`TermVectorsConsumer`](crate::index::TermVectorsConsumer), which owns a
+/// `TermsHash` of its own — it holds only that consumer's per-document position
+/// and offset streams, because its term table keys on offsets into the postings
+/// pool instead of interning the bytes a second time
+/// (`TermsHash.java:52-56`).
+#[derive(Debug)]
+pub struct TermsHash {
+    pool: ByteBlockPool,
+    int_pool: IntBlockPool,
+    bytes_used: Arc<AtomicI64>,
+}
+
+/// Allocator of the `int` blocks of a [`TermsHash`]'s [`IntBlockPool`],
+/// charging every block to the indexing chain's RAM counter.
+///
+/// Equivalent to the private `IndexingChain.IntBlockAllocator`
+/// (`IndexingChain.java:2114-2134`): `getIntBlock()` adds
+/// `INT_BLOCK_SIZE * Integer.BYTES`, and `recycleIntBlocks(blocks, offset,
+/// length)` subtracts `length * INT_BLOCK_SIZE * Integer.BYTES` and drops the
+/// blocks. `IntBlockPool.reset` passes `1 + bufferUpto` as that third argument
+/// (`IntBlockPool.java:124`), the *end* of the recycled range, so with
+/// `reuseFirst` the first, kept block is subtracted too; this port subtracts
+/// exactly what Java does.
+#[derive(Debug)]
+pub struct TrackingIntBlockAllocator {
+    bytes_used: Arc<AtomicI64>,
+}
+
+impl TrackingIntBlockAllocator {
+    /// Creates an allocator charging `bytes_used`.
+    pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
+        Self { bytes_used }
+    }
+}
+
+impl IntBlockAllocator for TrackingIntBlockAllocator {
+    fn block_size(&self) -> usize {
+        INT_BLOCK_SIZE
+    }
+
+    /// `recycleIntBlocks(int[][] blocks, int offset, int length)`
+    /// (`IndexingChain.java:2130-2133`), whose `length` is the `end` the pool
+    /// passes.
+    fn recycle_int_blocks(&mut self, _blocks: &mut [Option<Vec<i32>>], _start: usize, end: usize) {
+        self.bytes_used.fetch_sub(
+            (end * INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
+    }
+
+    fn get_int_block(&mut self) -> Vec<i32> {
+        self.bytes_used.fetch_add(
+            (INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64,
+            Ordering::AcqRel,
+        );
+        vec![0; INT_BLOCK_SIZE]
+    }
+}
+
+impl TermsHash {
+    /// Creates the shared buffers, charging their blocks to `bytes_used`.
+    ///
+    /// Equivalent to `TermsHash(IntBlockPool.Allocator,
+    /// ByteBlockPool.Allocator, Counter, TermsHash)` given the chain's
+    /// `IntBlockAllocator` and `DirectTrackingAllocator`, which both charge the
+    /// chain's counter (`IndexingChain.java:127-128`).
+    pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
+        Self {
+            pool: ByteBlockPool::new(Arc::clone(&bytes_used)),
+            int_pool: Self::new_int_pool(&bytes_used),
+            bytes_used,
+        }
+    }
+
+    fn new_int_pool(bytes_used: &Arc<AtomicI64>) -> IntBlockPool {
+        IntBlockPool::with_allocator(Box::new(TrackingIntBlockAllocator::new(Arc::clone(
+            bytes_used,
+        ))))
+    }
+
+    /// Returns the shared byte pool.
+    pub fn pool(&self) -> &ByteBlockPool {
+        &self.pool
+    }
+
+    /// Returns the shared byte pool for mutation.
+    pub fn pool_mut(&mut self) -> &mut ByteBlockPool {
+        &mut self.pool
+    }
+
+    /// Returns the pool of stream addresses.
+    ///
+    /// Equivalent to `TermsHash.intPool`.
+    pub fn int_pool(&self) -> &IntBlockPool {
+        &self.int_pool
+    }
+
+    /// Returns the byte pool and the pool of stream addresses at the same time.
+    pub fn pools_mut(&mut self) -> (&mut ByteBlockPool, &mut IntBlockPool) {
+        (&mut self.pool, &mut self.int_pool)
+    }
+
+    /// Returns the shared RAM counter.
+    pub fn bytes_used(&self) -> &Arc<AtomicI64> {
+        &self.bytes_used
+    }
+
+    /// Discards every buffered byte and stream address.
+    ///
+    /// Equivalent to `TermsHash.reset()` (`TermsHash.java:70-73`):
+    /// `intPool.reset(false, false)` and `bytePool.reset(false, false)`, which
+    /// hand every block back to the allocators.
+    pub fn reset(&mut self) {
+        self.int_pool.reset(false, false);
+        // `bytePool.reset(false, false)`.
+        self.pool.reset(false, false);
+    }
+
+    /// Discards every buffered byte after an indexing failure.
+    ///
+    /// Equivalent to `TermsHash.abort()`, which resets its own buffers and then
+    /// aborts the next hash in the chain.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java chains two `TermsHash`
+    /// instances, the postings hash holding a reference to the term-vectors one,
+    /// so aborting the first aborts the second. In this port each consumer owns
+    /// its own [`TermsHash`] and there is no `nextTermsHash` link, so this
+    /// aborts one hash and the caller — `IndexingChain::abort` — aborts the
+    /// other. The bytes released are the same either way.
+    pub fn abort(&mut self) {
+        self.reset();
+    }
+
+    /// Moves the pool out, leaving an empty one behind.
+    ///
+    /// Used at flush time to hand the buffers to the read-back view without
+    /// copying them.
+    fn take_pool(&mut self) -> ByteBlockPool {
+        std::mem::replace(
+            &mut self.pool,
+            ByteBlockPool::new(Arc::clone(&self.bytes_used)),
+        )
+    }
+
+    /// Moves the pool of stream addresses out, leaving an empty one behind,
+    /// for the same reason as [`take_pool`](Self::take_pool).
+    fn take_int_pool(&mut self) -> IntBlockPool {
+        let empty = Self::new_int_pool(&self.bytes_used);
+        std::mem::replace(&mut self.int_pool, empty)
+    }
+}
+
+/// Per-field term table and stream writer.
+///
+/// Equivalent to `org.apache.lucene.index.TermsHashPerField`.
+#[derive(Debug)]
+pub struct TermsHashPerField {
+    stream_count: usize,
+    field_name: String,
+    index_options: IndexOptions,
+    bytes_hash: BytesRefHash,
+    /// The postings slots; empty when Java's `postingsArray` is `null`.
+    postings: Vec<FreqProxPosting>,
+    /// What one slot of [`Self::postings`] is charged, Java's
+    /// `postingsArray.bytesPerPosting()`.
+    bytes_per_posting: i64,
+    bytes_used: Arc<AtomicI64>,
+    /// Highest document id passed to [`Self::intern`], checked in debug builds
+    /// the way Lucene's `assertDocId` does.
+    last_doc_id: i32,
+    /// The term ids in sorted order, once [`Self::sort_terms`] has produced
+    /// them.
+    ///
+    /// Equivalent to `TermsHashPerField.sortedTermIDs`, which Lucene fills once
+    /// and reads back; recomputing the sort on every read would sort the whole
+    /// table again per field per flush.
+    sorted_term_ids: Option<Vec<i32>>,
+}
+
+impl TermsHashPerField {
+    /// Creates a postings table for `field_name` writing `stream_count`
+    /// streams per term, whose slots are `FreqProxPostingsArray`'s.
+    ///
+    /// Equivalent to the `TermsHashPerField` constructor
+    /// (`TermsHashPerField.java:65-84`) as `FreqProxTermsWriterPerField` calls
+    /// it: the `BytesRefHash` it builds charges its `HASH_INIT_SIZE` slots and
+    /// calls `PostingsBytesStartArray.init()`, which allocates two postings
+    /// slots and charges them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index_options` is [`IndexOptions::NONE`] or if `stream_count`
+    /// is not 1 or 2.
+    pub fn new(
+        stream_count: usize,
+        field_name: String,
+        index_options: IndexOptions,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
+        let bytes_hash = BytesRefHash::for_postings(Arc::clone(&bytes_used));
+        Self::with_hash(
+            stream_count,
+            field_name,
+            index_options,
+            freq_prox_bytes_per_posting(index_options),
+            bytes_hash,
+            bytes_used,
+        )
+    }
+
+    fn with_hash(
+        stream_count: usize,
+        field_name: String,
+        index_options: IndexOptions,
+        bytes_per_posting: i64,
+        bytes_hash: BytesRefHash,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
+        debug_assert_ne!(index_options, IndexOptions::NONE);
+        let mut field = Self {
+            stream_count,
+            field_name,
+            index_options,
+            bytes_hash,
+            postings: Vec::new(),
+            bytes_per_posting,
+            bytes_used,
+            last_doc_id: 0,
+            sorted_term_ids: None,
+        };
+        field.init_postings();
+        field
+    }
+
+    /// Creates a table for the *second* term hash of the chain.
+    ///
+    /// Equivalent to constructing a `TermsHashPerField` whose `termBytePool`
+    /// is the primary hash's byte pool: the term text is already interned
+    /// there, so this table keys on the pool offset instead of on the bytes and
+    /// only [`Self::intern_by_text_start`] may feed it. Its own streams still
+    /// live in whichever pool the caller passes to the write methods, which for
+    /// term vectors is the second hash's pool, not the term pool.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index_options` is [`IndexOptions::NONE`] or if `stream_count`
+    /// is not 1 or 2.
+    ///
+    /// Its slots are `TermVectorsPostingsArray`'s, the one consumer of the
+    /// second hash.
+    pub fn new_chained(
+        stream_count: usize,
+        field_name: String,
+        index_options: IndexOptions,
+        bytes_used: Arc<AtomicI64>,
+    ) -> Self {
+        let bytes_hash = BytesRefHash::for_postings_by_pool_offset(Arc::clone(&bytes_used));
+        Self::with_hash(
+            stream_count,
+            field_name,
+            index_options,
+            TERM_VECTORS_BYTES_PER_POSTING,
+            bytes_hash,
+            bytes_used,
+        )
+    }
+
+    /// Allocates the first two postings slots when there are none.
+    ///
+    /// Equivalent to `TermsHashPerField.PostingsBytesStartArray.init()`
+    /// (`TermsHashPerField.java:290-299`): `createPostingsArray(2)`, charged
+    /// `size * bytesPerPosting()`.
+    fn init_postings(&mut self) {
+        if self.postings.is_empty() {
+            self.postings
+                .resize(INITIAL_POSTINGS_SLOTS, FreqProxPosting::default());
+            self.bytes_used.fetch_add(
+                INITIAL_POSTINGS_SLOTS as i64 * self.bytes_per_posting,
+                Ordering::AcqRel,
+            );
+        }
+    }
+
+    /// Drops the postings slots and their charge.
+    ///
+    /// Equivalent to `TermsHashPerField.PostingsBytesStartArray.clear()`
+    /// (`TermsHashPerField.java:311-318`).
+    fn clear_postings(&mut self) {
+        if !self.postings.is_empty() {
+            self.bytes_used.fetch_sub(
+                self.postings.len() as i64 * self.bytes_per_posting,
+                Ordering::AcqRel,
+            );
+            self.postings = Vec::new();
+        }
+    }
+
+    /// Checks that document ids arrive in order, and records the latest.
+    ///
+    /// Equivalent to `TermsHashPerField.assertDocId(int)`, which Java calls
+    /// only from an assertion — the recording is a side effect of the check,
+    /// so it happens only where the check does.
+    fn assert_doc_id(&mut self, doc_id: i32) -> bool {
+        debug_assert!(
+            doc_id >= self.last_doc_id,
+            "docID must be >= {} but was {doc_id}",
+            self.last_doc_id
+        );
+        self.last_doc_id = doc_id;
+        true
+    }
+
+    /// Collapses the hash table and sorts it in place, recording the result.
+    ///
+    /// Equivalent to `TermsHashPerField.sortTerms()`. It must not be called
+    /// twice without a [`reset`](Self::reset) or
+    /// [`reinit_hash`](Self::reinit_hash) in between.
+    pub fn sort_terms(&mut self, term_pool: &ByteBlockPool) {
+        debug_assert!(self.sorted_term_ids.is_none());
+        // `sortedTermIDs = bytesHash.sort()`: Java keeps the hash's own slot
+        // array, sorted in place; this port keeps a copy of it, which leaves
+        // the hash just as consumed.
+        self.sorted_term_ids = Some(self.bytes_hash.sort(term_pool).to_vec());
+    }
+
+    /// Returns the sorted term ids.
+    ///
+    /// Equivalent to `TermsHashPerField.getSortedTermIDs()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when [`sort_terms`](Self::sort_terms) has not run, as Java's
+    /// assertion does.
+    pub fn get_sorted_term_ids(&self) -> &[i32] {
+        self.sorted_term_ids
+            .as_deref()
+            .expect("sort_terms must be called before get_sorted_term_ids")
+    }
+
+    /// Drops the sort and reinitialises the hash table.
+    ///
+    /// Equivalent to `TermsHashPerField.reinitHash()`
+    /// (`TermsHashPerField.java:123-126`): `BytesRefHash.reinit()` re-creates
+    /// the postings slots through `PostingsBytesStartArray.init()` when a
+    /// [`reset`](Self::reset) dropped them.
+    pub fn reinit_hash(&mut self) {
+        self.sorted_term_ids = None;
+        self.init_postings();
+        self.bytes_hash.reinit();
+    }
+
+    /// Returns the field this table belongs to.
+    pub fn field_name(&self) -> &str {
+        &self.field_name
+    }
+
+    /// Returns the index options the field was inverted with.
+    pub fn index_options(&self) -> IndexOptions {
+        self.index_options
+    }
+
+    /// Returns the number of distinct terms buffered for this field.
+    ///
+    /// Equivalent to `TermsHashPerField.getNumTerms()`.
+    pub fn num_terms(&self) -> i32 {
+        self.bytes_hash.size()
+    }
+
+    /// Returns the per-term state of `term_id`.
+    pub fn posting(&self, term_id: i32) -> &FreqProxPosting {
+        &self.postings[term_id as usize]
+    }
+
+    /// Returns the per-term state of `term_id` for mutation.
+    ///
+    /// The consumer driving this table owns the columns it uses; see
+    /// [`FreqProxPosting`] for which consumer owns which.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `term_id` was never returned by [`Self::intern`] or
+    /// [`Self::intern_by_text_start`].
+    pub fn posting_mut(&mut self, term_id: i32) -> &mut FreqProxPosting {
+        &mut self.postings[term_id as usize]
+    }
+
+    /// Returns the offset, in the term pool, of the bytes of `term_id`.
+    ///
+    /// Equivalent to reading `ParallelPostingsArray.textStarts[termID]`, which
+    /// is what Lucene forwards to the next hash of the chain.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `term_id` was never returned by [`Self::intern`] or
+    /// [`Self::intern_by_text_start`].
+    pub fn text_start(&self, term_id: i32) -> i32 {
+        self.bytes_hash.byte_start(term_id)
+    }
+
+    /// Positions `reader` over `stream` of `term_id`.
+    ///
+    /// Equivalent to `TermsHashPerField.initReader(ByteSliceReader, int, int)`.
+    /// The reader then reads from the pool the streams were written to.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stream` is not below this table's stream count, or if
+    /// `term_id` was never interned.
+    pub fn init_reader(
+        &self,
+        int_pool: &IntBlockPool,
+        reader: &mut ByteSliceReader,
+        term_id: i32,
+        stream: usize,
+    ) {
+        debug_assert!(stream < self.stream_count);
+        let slot = &self.postings[term_id as usize];
+        reader.init(
+            slot.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
+            stream_address(int_pool, slot.address_offset, stream),
+        );
+    }
+
+    /// Hands every byte this table charged back to the shared counter.
+    ///
+    /// The table keeps its contents but must not be charged again; callers
+    /// either discard it or re-create it right after. Java's tables are
+    /// reclaimed by the garbage collector with no change to the counter; this
+    /// port's callers release them where they drop them.
+    pub fn release_accounting(&mut self) {
+        self.clear_postings();
+        self.bytes_hash.release_accounting();
+    }
+
+    /// Discards every buffered term.
+    ///
+    /// Equivalent to `TermsHashPerField.reset()` (`TermsHashPerField.java:86-92`):
+    /// `bytesHash.clear(false)`, which drops the postings slots through
+    /// `PostingsBytesStartArray.clear()` and shrinks the hash table towards the
+    /// previous term count, and `sortedTermIDs = null`. The table is used
+    /// again only after [`reinit_hash`](Self::reinit_hash). The byte and int
+    /// pools are owned by [`TermsHash`] and are reset separately.
+    pub fn reset(&mut self) {
+        self.bytes_hash.clear();
+        self.clear_postings();
+        self.sorted_term_ids = None;
+    }
+
+    /// Interns `term_bytes` and, for a new term, allocates its stream slices.
+    ///
+    /// Equivalent to the body of `TermsHashPerField.add(BytesRef, int)` up to
+    /// the `newTerm`/`addTerm` dispatch, which the caller performs on the
+    /// returned [`TermSlot`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the term exceeds
+    /// [`crate::util::MAX_TERM_LENGTH`], and propagates pool-overflow errors.
+    pub fn intern(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_bytes: &[u8],
+        doc_id: i32,
+    ) -> Result<TermSlot> {
+        debug_assert!(self.assert_doc_id(doc_id));
+
+        let raw = self.bytes_hash.add(pool, term_bytes)?;
+        if raw >= 0 {
+            self.init_stream_slices(pool, int_pool, raw)?;
+            Ok(TermSlot {
+                term_id: raw,
+                is_new: true,
+            })
+        } else {
+            Ok(TermSlot {
+                term_id: self.position_stream_slice(raw),
+                is_new: false,
+            })
+        }
+    }
+
+    /// [`Self::intern`] for a table whose term text lives in its own pool.
+    ///
+    /// Equivalent to `TermsHashPerField.add(BytesRef, int)` when the
+    /// `termBytePool` the table was constructed with is not its `bytePool`
+    /// (`TermsHashPerField.java:65-84,186-198`): the text is interned in
+    /// `term_pool`, the stream slices are reserved in `pool`. The indexing
+    /// chain shares one pool for both (`TermsHash.java:52-56`) and calls
+    /// [`Self::intern`]; `TestTermsHashPerField` builds a table over two.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::intern`].
+    pub fn intern_into(
+        &mut self,
+        term_pool: &mut ByteBlockPool,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_bytes: &[u8],
+        doc_id: i32,
+    ) -> Result<TermSlot> {
+        debug_assert!(self.assert_doc_id(doc_id));
+        let raw = self.bytes_hash.add(term_pool, term_bytes)?;
+        if raw >= 0 {
+            self.init_stream_slices(pool, int_pool, raw)?;
+            Ok(TermSlot {
+                term_id: raw,
+                is_new: true,
+            })
+        } else {
+            Ok(TermSlot {
+                term_id: self.position_stream_slice(raw),
+                is_new: false,
+            })
+        }
+    }
+
+    /// Records an occurrence of the term already interned at `text_start` and,
+    /// for a term this table has not seen yet, allocates its stream slices.
+    ///
+    /// Equivalent to the private `TermsHashPerField.add(int textStart, int
+    /// docID)` — Lucene's *secondary* entry point, taken by every hash but the
+    /// first of the chain — up to the `newTerm`/`addTerm` dispatch, which the
+    /// caller performs on the returned [`TermSlot`].
+    ///
+    /// `streams` is the pool this table writes its streams to, which is *not*
+    /// the pool `text_start` points into.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the table was not created with
+    /// [`Self::new_chained`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates pool-overflow errors raised while reserving the slices.
+    pub fn intern_by_text_start(
+        &mut self,
+        streams: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        text_start: i32,
+    ) -> Result<TermSlot> {
+        let raw = self.bytes_hash.add_by_pool_offset(text_start);
+        if raw >= 0 {
+            self.init_stream_slices(streams, int_pool, raw)?;
+            Ok(TermSlot {
+                term_id: raw,
+                is_new: true,
+            })
+        } else {
+            Ok(TermSlot {
+                term_id: self.position_stream_slice(raw),
+                is_new: false,
+            })
+        }
+    }
+
+    /// Repositions this table on the streams of a term it has already seen,
+    /// turning the negative id the hash returns into the term's real id.
+    ///
+    /// Equivalent to `org.apache.lucene.index.TermsHashPerField#positionStreamSlice`.
+    ///
+    /// Lucene also caches `termStreamAddressBuffer` and `streamAddressOffset`
+    /// from the `IntBlockPool` here, and dispatches to `addTerm`. This port's
+    /// write methods take the term id and find its addresses through
+    /// [`FreqProxPosting::address_offset`] instead, and the `newTerm`/`addTerm`
+    /// dispatch is the caller's, on the returned [`TermSlot`].
+    fn position_stream_slice(&self, term_id: i32) -> i32 {
+        let term_id = -term_id - 1;
+        debug_assert!((term_id as usize) < self.postings.len());
+        term_id
+    }
+
+    /// Reserves `streamCount` addresses and one slice per stream for a freshly
+    /// interned term.
+    ///
+    /// Equivalent to `TermsHashPerField.initStreamSlices(int, int)`
+    /// (`TermsHashPerField.java:150-176`) up to the `newTerm` call, which is
+    /// the caller's.
+    fn init_stream_slices(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_id: i32,
+    ) -> Result<()> {
+        debug_assert_eq!(term_id, self.num_terms() - 1);
+        self.grow_postings(term_id as usize);
+        if self.stream_count + int_pool.int_upto() > INT_BLOCK_SIZE {
+            // Not enough space remaining in this buffer: jump to the next one
+            // and lose this remaining piece.
+            int_pool.next_buffer()?;
+        }
+        // Make sure at least one byte per stream fits in the current block, so
+        // that the streams of a term stay close together.
+        pool.ensure_capacity(2 * self.stream_count * FIRST_LEVEL_SIZE)?;
+
+        let block = int_pool.buffer_upto() as usize;
+        let stream_address_offset = int_pool.int_upto();
+        // Advance the pool to reserve the streams of this term.
+        int_pool.set_int_upto(stream_address_offset + self.stream_count);
+
+        let mut slot = FreqProxPosting {
+            address_offset: stream_address_offset as i32 + int_pool.int_offset(),
+            ..FreqProxPosting::default()
+        };
+        for stream in 0..self.stream_count {
+            let upto = ByteSlicePool::new_slice(pool, FIRST_LEVEL_SIZE)?;
+            int_pool.buffer_mut(block)[stream_address_offset + stream] =
+                upto as i32 + pool.byte_offset();
+        }
+        slot.byte_start = int_pool.buffer(block)[stream_address_offset];
+        self.postings[term_id as usize] = slot;
+        Ok(())
+    }
+
+    /// Makes room for `term_id`, charging the shared counter for every slot the
+    /// table allocates.
+    ///
+    /// Equivalent to `ParallelPostingsArray.grow()` together with
+    /// `TermsHashPerField.PostingsBytesStartArray.grow()`
+    /// (`TermsHashPerField.java:301-308`), which replaces the array with one of
+    /// `ArrayUtil.oversize(size + 1, bytesPerPosting())` slots and charges the
+    /// difference. Charging the *allocated* slots rather than the used ones is
+    /// what makes the RAM-driven flush trigger fire where Lucene's does.
+    ///
+    /// Java reaches this through `BytesRefHash`, whose `bytesStart` array *is*
+    /// the postings array's `textStarts` column; this port keeps the two apart,
+    /// so the growth is driven from here instead.
+    fn grow_postings(&mut self, term_id: usize) {
+        if term_id < self.postings.len() {
+            return;
+        }
+        let old_size = self.postings.len();
+        debug_assert!(old_size > 0, "the postings slots are initialised first");
+        let new_size = ArrayUtil::oversize(old_size + 1, self.bytes_per_posting as usize);
+        debug_assert!(new_size > term_id);
+        self.postings.resize(new_size, FreqProxPosting::default());
+        self.bytes_used.fetch_add(
+            self.bytes_per_posting * (new_size - old_size) as i64,
+            Ordering::AcqRel,
+        );
+    }
+
+    /// Appends one byte to `stream` of `term_id`.
+    ///
+    /// Equivalent to `TermsHashPerField.writeByte(int, byte)`
+    /// (`TermsHashPerField.java:220-234`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates pool-overflow errors raised while chaining a new slice.
+    pub fn write_byte(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_id: i32,
+        stream: usize,
+        value: u8,
+    ) -> Result<()> {
+        debug_assert!(stream < self.stream_count);
+        let address_offset = self.postings[term_id as usize].address_offset;
+        let address = stream_address(int_pool, address_offset, stream) as usize;
+        let block = address >> BYTE_BLOCK_SHIFT;
+        let offset = address & BYTE_BLOCK_MASK;
+
+        if pool.buffer(block)[offset] != 0 {
+            // End of slice: chain a new one and restart there.
+            let new_offset = ByteSlicePool::alloc_slice(pool, block, offset)?;
+            let new_block = pool.buffer_upto() as usize;
+            pool.buffer_mut(new_block)[new_offset] = value;
+            set_stream_address(
+                int_pool,
+                address_offset,
+                stream,
+                new_offset as i32 + pool.byte_offset() + 1,
+            );
+        } else {
+            pool.buffer_mut(block)[offset] = value;
+            set_stream_address(int_pool, address_offset, stream, address as i32 + 1);
+        }
+        Ok(())
+    }
+
+    /// Appends `value` to `stream` of `term_id`.
+    ///
+    /// Equivalent to `TermsHashPerField.writeBytes(int, byte[], int, int)`
+    /// (`TermsHashPerField.java:236-260`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates pool-overflow errors raised while chaining new slices.
+    pub fn write_bytes(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_id: i32,
+        stream: usize,
+        value: &[u8],
+    ) -> Result<()> {
+        debug_assert!(stream < self.stream_count);
+        let address_offset = self.postings[term_id as usize].address_offset;
+        let address = stream_address(int_pool, address_offset, stream) as usize;
+        let mut block = address >> BYTE_BLOCK_SHIFT;
+        let mut offset = address & BYTE_BLOCK_MASK;
+        let mut upto = address as i32;
+        let mut written = 0usize;
+
+        // Fill the remainder of the current slice, one byte at a time, until we
+        // hit its non-zero end marker.
+        while written < value.len() && pool.buffer(block)[offset] == 0 {
+            pool.buffer_mut(block)[offset] = value[written];
+            offset += 1;
+            written += 1;
+            upto += 1;
+        }
+        set_stream_address(int_pool, address_offset, stream, upto);
+
+        while written < value.len() {
+            let (new_offset, slice_len) =
+                ByteSlicePool::alloc_known_size_slice(pool, block, offset)?;
+            block = pool.buffer_upto() as usize;
+            offset = new_offset;
+            // The last byte of the new slice must stay free for its end marker.
+            let chunk = std::cmp::min(slice_len - 1, value.len() - written);
+            pool.buffer_mut(block)[offset..offset + chunk]
+                .copy_from_slice(&value[written..written + chunk]);
+            offset += chunk;
+            written += chunk;
+            set_stream_address(
+                int_pool,
+                address_offset,
+                stream,
+                offset as i32 + pool.byte_offset(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Appends `value` to `stream` of `term_id` as a variable-length integer.
+    ///
+    /// Equivalent to `TermsHashPerField.writeVInt(int, int)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates pool-overflow errors raised while chaining new slices.
+    pub fn write_v_int(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_id: i32,
+        stream: usize,
+        value: i32,
+    ) -> Result<()> {
+        let mut remaining = value as u32;
+        while remaining & !0x7F != 0 {
+            self.write_byte(
+                pool,
+                int_pool,
+                term_id,
+                stream,
+                ((remaining & 0x7F) | 0x80) as u8,
+            )?;
+            remaining >>= 7;
+        }
+        self.write_byte(pool, int_pool, term_id, stream, remaining as u8)
+    }
+}
+
+/// The next free byte offset of `stream` of the term whose addresses start at
+/// the global offset `address_offset` of `int_pool`.
+///
+/// Equivalent to Java's
+/// `intPool.buffers[addressOffset >> INT_BLOCK_SHIFT][(addressOffset & INT_BLOCK_MASK) + stream]`
+/// (`TermsHashPerField.java:94-104, 211-218`).
+fn stream_address(int_pool: &IntBlockPool, address_offset: i32, stream: usize) -> i32 {
+    let address_offset = address_offset as usize;
+    int_pool.buffer(address_offset >> INT_BLOCK_SHIFT)[(address_offset & INT_BLOCK_MASK) + stream]
+}
+
+/// Sets the next free byte offset of `stream` of the term whose addresses
+/// start at `address_offset`; see [`stream_address`].
+fn set_stream_address(int_pool: &mut IntBlockPool, address_offset: i32, stream: usize, value: i32) {
+    let address_offset = address_offset as usize;
+    int_pool.buffer_mut(address_offset >> INT_BLOCK_SHIFT)
+        [(address_offset & INT_BLOCK_MASK) + stream] = value;
+}
+
+// ---------------------------------------------------------------------------
+// FreqProxTermsWriterPerField
+// ---------------------------------------------------------------------------
+
+/// One inverted token, as read from the token stream's attributes.
+///
+/// Lucene reads these straight off the `AttributeSource` cached in
+/// `FieldInvertState`; grouping them keeps the per-field writer independent of
+/// the analysis package.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct InvertedToken<'a> {
+    /// Start offset reported by the token stream, before the field's offset gap.
+    pub start_offset: i32,
+    /// End offset reported by the token stream, before the field's offset gap.
+    pub end_offset: i32,
+    /// Payload attached to the token, if any.
+    pub payload: Option<&'a [u8]>,
+    /// Custom term frequency; `1` unless the stream set one.
+    pub term_freq: i32,
+    /// `true` when the token stream carries a `TermFrequencyAttribute` at all,
+    /// which Lucene distinguishes from a frequency that happens to be 1.
+    pub has_term_freq_attribute: bool,
+}
+
+/// Buffers the postings of one field.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriterPerField`.
+#[derive(Debug)]
+pub struct FreqProxTermsWriterPerField {
+    base: TermsHashPerField,
+    field_info: FieldInfo,
+    has_freq: bool,
+    has_prox: bool,
+    has_offsets: bool,
+    is_term_doc: bool,
+    saw_payloads: bool,
+}
+
+impl FreqProxTermsWriterPerField {
+    /// Creates a writer for `field_info`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the field's index options are [`IndexOptions::NONE`].
+    pub fn new(field_info: FieldInfo, bytes_used: Arc<AtomicI64>) -> Self {
+        let index_options = field_info.index_options;
+        let has_freq = index_options.subsumes(IndexOptions::DOCS_AND_FREQS);
+        let has_prox = index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        let has_offsets =
+            index_options.subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+        let stream_count = if has_prox { 2 } else { 1 };
+        Self {
+            base: TermsHashPerField::new(
+                stream_count,
+                field_info.name.clone(),
+                index_options,
+                bytes_used,
+            ),
+            is_term_doc: field_info.is_term_doc_field(),
+            field_info,
+            has_freq,
+            has_prox,
+            has_offsets,
+            saw_payloads: false,
+        }
+    }
+
+    /// Returns the field's metadata as it was when inversion started.
+    pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    /// Returns the field name.
+    pub fn field_name(&self) -> &str {
+        self.base.field_name()
+    }
+
+    /// Returns the number of distinct terms buffered.
+    pub fn num_terms(&self) -> i32 {
+        self.base.num_terms()
+    }
+
+    /// Returns `true` when any token of this field carried a payload.
+    ///
+    /// Equivalent to `FreqProxTermsWriterPerField.sawPayloads`, and to the
+    /// `FreqProxTermsWriterPerField.finish()` that reads it: Java's whole
+    /// override is `super.finish(); if (sawPayloads) fieldInfo.setStorePayloads();`,
+    /// and the base call is the chain walk this port does not have. The second
+    /// half runs in the indexing chain, which owns the `FieldInfo` this writer
+    /// only borrows, so the flag is exposed instead of the method.
+    pub fn saw_payloads(&self) -> bool {
+        self.saw_payloads
+    }
+
+    /// Discards every buffered term, keeping the writer usable.
+    ///
+    /// Equivalent to the `TermsHashPerField.reset()` this class inherits
+    /// without overriding (`TermsHashPerField.java:86-92`), so `sawPayloads`
+    /// is left as it is.
+    pub fn reset(&mut self) {
+        self.base.reset();
+    }
+
+    /// Hands every accounted byte back to the shared counter.
+    ///
+    /// Used when the writer is about to be dropped, where re-allocating the
+    /// term table that [`Self::reset`] leaves behind would be wasted work.
+    pub fn release_accounting(&mut self) {
+        self.base.release_accounting();
+        self.saw_payloads = false;
+    }
+
+    /// Records one occurrence of `term_bytes` in `doc_id` and returns the
+    /// offset `term_bytes` was interned at in `pool`.
+    ///
+    /// Equivalent to `TermsHashPerField.add(BytesRef, int)` followed by
+    /// `FreqProxTermsWriterPerField.newTerm` or `.addTerm`. The returned offset
+    /// is `postingsArray.textStarts[termID]`, the value Lucene hands to
+    /// `nextPerField.add(int, int)` so that the next hash of the chain — the
+    /// term-vectors consumer — can key on the already-interned text instead of
+    /// interning it a second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] for an over-long term,
+    /// [`LuceneErrorKind::IllegalState`] for a duplicate term in a term-doc field
+    /// and when a custom term frequency is combined with positions or with a
+    /// field that does not index frequencies, and
+    /// [`LuceneErrorKind::Arithmetic`] when a term's frequency overflows an `int`.
+    /// `Self::add_classified` reports the same failures with the duplicate
+    /// term told apart.
+    pub fn add(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        field_state: &mut FieldInvertState,
+        term_bytes: &[u8],
+        doc_id: i32,
+        token: &InvertedToken<'_>,
+    ) -> Result<i32> {
+        self.add_classified(pool, int_pool, field_state, term_bytes, doc_id, token)
+            .map_err(TermsHashAddError::into_error)
+    }
+
+    /// [`Self::add`], reporting a duplicate term apart from every other
+    /// failure.
+    ///
+    /// Java tells the two apart by class: `addTerm` throws
+    /// `TermsHashPerField.DuplicateTermException`, an `IllegalStateException`,
+    /// for a term a term-doc field repeats in one document
+    /// (`FreqProxTermsWriterPerField.java:193-194`), and
+    /// `TermsHashPerField.add` rethrows it with the term appended — `e.getMessage()
+    /// + " '" + termBytes.utf8ToString() + "'"` (`TermsHashPerField.java:199-204`).
+    /// `IndexingChain.invertTokenStream` turns exactly that class into a
+    /// document-level failure and treats every other one as aborting
+    /// (`IndexingChain.java:2022-2027`). Rust has no exception subclasses, so
+    /// the class is the [`TermsHashAddError`] variant.
+    ///
+    /// # Errors
+    ///
+    /// The failures of [`Self::add`], the duplicate term as
+    /// [`TermsHashAddError::DuplicateTerm`].
+    pub(crate) fn add_classified(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        field_state: &mut FieldInvertState,
+        term_bytes: &[u8],
+        doc_id: i32,
+        token: &InvertedToken<'_>,
+    ) -> std::result::Result<i32, TermsHashAddError> {
+        let slot = self.base.intern(pool, int_pool, term_bytes, doc_id)?;
+        if slot.is_new {
+            self.new_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
+        } else {
+            match self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token) {
+                Err(TermsHashAddError::DuplicateTerm(LuceneError {
+                    kind: LuceneErrorKind::IllegalState { message, cause },
+                    ..
+                })) => {
+                    // `BytesRef.utf8ToString()` decodes with
+                    // `UnicodeUtil.UTF8toUTF16`, which never rejects a byte.
+                    let mut utf16 = vec![0u16; term_bytes.len()];
+                    let length = crate::util::unicode_util::UnicodeUtil::utf8_to_utf16(
+                        term_bytes,
+                        0,
+                        term_bytes.len(),
+                        &mut utf16,
+                    );
+                    return Err(TermsHashAddError::DuplicateTerm(LuceneError::from(
+                        LuceneErrorKind::IllegalState {
+                            message: format!(
+                                "{message} '{}'",
+                                String::from_utf16_lossy(&utf16[..length])
+                            ),
+                            cause,
+                        },
+                    )));
+                }
+                other => other?,
+            }
+        }
+        Ok(self.base.text_start(slot.term_id))
+    }
+
+    /// Returns the frequency to record for the current token.
+    ///
+    /// Equivalent to `FreqProxTermsWriterPerField.getTermFreq()`.
+    fn term_freq(&self, token: &InvertedToken<'_>) -> Result<i32> {
+        let freq = if token.has_term_freq_attribute {
+            token.term_freq
+        } else {
+            1
+        };
+        if freq != 1 && self.has_prox {
+            return Err(LuceneError::illegal_state(format!(
+                "field \"{}\": cannot index positions while using custom TermFrequencyAttribute",
+                self.field_name()
+            )));
+        }
+        Ok(freq)
+    }
+
+    /// Writes the proximity entry of the current token.
+    ///
+    /// Equivalent to `FreqProxTermsWriterPerField.writeProx(int, int)`.
+    fn write_prox(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        field_state: &FieldInvertState,
+        term_id: i32,
+        prox_code: i32,
+        token: &InvertedToken<'_>,
+    ) -> Result<()> {
+        match token.payload {
+            Some(payload) if !payload.is_empty() => {
+                self.base
+                    .write_v_int(pool, int_pool, term_id, 1, (prox_code << 1) | 1)?;
+                self.base
+                    .write_v_int(pool, int_pool, term_id, 1, payload.len() as i32)?;
+                self.base.write_bytes(pool, int_pool, term_id, 1, payload)?;
+                self.saw_payloads = true;
+            }
+            _ => {
+                self.base
+                    .write_v_int(pool, int_pool, term_id, 1, prox_code << 1)?;
+            }
+        }
+        self.base.postings[term_id as usize].last_position = field_state.position();
+        Ok(())
+    }
+
+    /// Writes the offset entry of the current token.
+    ///
+    /// Equivalent to `FreqProxTermsWriterPerField.writeOffsets(int, int)`.
+    fn write_offsets(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        term_id: i32,
+        offset_accum: i32,
+        token: &InvertedToken<'_>,
+    ) -> Result<()> {
+        let start_offset = offset_accum + token.start_offset;
+        let end_offset = offset_accum + token.end_offset;
+        let last_offset = self.base.postings[term_id as usize].last_offset;
+        debug_assert!(start_offset - last_offset >= 0);
+        self.base
+            .write_v_int(pool, int_pool, term_id, 1, start_offset - last_offset)?;
+        self.base
+            .write_v_int(pool, int_pool, term_id, 1, end_offset - start_offset)?;
+        self.base.postings[term_id as usize].last_offset = start_offset;
+        Ok(())
+    }
+
+    /// Records the first occurrence of a term since the last flush.
+    ///
+    /// Equivalent to `FreqProxTermsWriterPerField.newTerm(int, int)`.
+    fn new_term(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        field_state: &mut FieldInvertState,
+        term_id: i32,
+        doc_id: i32,
+        token: &InvertedToken<'_>,
+    ) -> Result<()> {
+        self.base.postings[term_id as usize].last_doc_id = doc_id;
+        if !self.has_freq {
+            self.base.postings[term_id as usize].last_doc_code = doc_id;
+            field_state.set_max_term_frequency(std::cmp::max(1, field_state.max_term_frequency()));
+        } else {
+            let freq = self.term_freq(token)?;
+            self.base.postings[term_id as usize].last_doc_code = doc_id << 1;
+            self.base.postings[term_id as usize].term_freq = freq;
+            if self.has_prox {
+                let position = field_state.position();
+                self.write_prox(pool, int_pool, field_state, term_id, position, token)?;
+                if self.has_offsets {
+                    self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
+                }
+            } else {
+                debug_assert!(!self.has_offsets);
+            }
+            field_state
+                .set_max_term_frequency(std::cmp::max(freq, field_state.max_term_frequency()));
+        }
+        field_state.increment_unique_term_count();
+        Ok(())
+    }
+
+    /// Records a repeat occurrence of an already-seen term.
+    ///
+    /// Equivalent to `FreqProxTermsWriterPerField.addTerm(int, int)`.
+    fn add_term(
+        &mut self,
+        pool: &mut ByteBlockPool,
+        int_pool: &mut IntBlockPool,
+        field_state: &mut FieldInvertState,
+        term_id: i32,
+        doc_id: i32,
+        token: &InvertedToken<'_>,
+    ) -> std::result::Result<(), TermsHashAddError> {
+        let index = term_id as usize;
+        debug_assert!(!self.has_freq || self.base.postings[index].term_freq > 0);
+        if !self.has_freq {
+            if token.has_term_freq_attribute && token.term_freq != 1 {
+                return Err(LuceneError::illegal_state(format!(
+                    "field \"{}\": must index term freq while using custom TermFrequencyAttribute",
+                    self.field_name()
+                ))
+                .into());
+            }
+            if doc_id != self.base.postings[index].last_doc_id {
+                debug_assert!(doc_id > self.base.postings[index].last_doc_id);
+                // The previous document is complete; flush its doc code.
+                let code = self.base.postings[index].last_doc_code;
+                self.base.write_v_int(pool, int_pool, term_id, 0, code)?;
+                self.base.postings[index].last_doc_code =
+                    doc_id - self.base.postings[index].last_doc_id;
+                self.base.postings[index].last_doc_id = doc_id;
+                field_state.increment_unique_term_count();
+            }
+            return Ok(());
+        }
+
+        if doc_id != self.base.postings[index].last_doc_id {
+            debug_assert!(
+                doc_id > self.base.postings[index].last_doc_id,
+                "id: {doc_id} postings ID: {} termID: {term_id}",
+                self.base.postings[index].last_doc_id
+            );
+            // Now that the previous document's frequency is final, write it.
+            if self.base.postings[index].term_freq == 1 {
+                let code = self.base.postings[index].last_doc_code | 1;
+                self.base.write_v_int(pool, int_pool, term_id, 0, code)?;
+            } else {
+                let code = self.base.postings[index].last_doc_code;
+                let freq = self.base.postings[index].term_freq;
+                self.base.write_v_int(pool, int_pool, term_id, 0, code)?;
+                self.base.write_v_int(pool, int_pool, term_id, 0, freq)?;
+            }
+
+            let freq = self.term_freq(token)?;
+            self.base.postings[index].term_freq = freq;
+            field_state
+                .set_max_term_frequency(std::cmp::max(freq, field_state.max_term_frequency()));
+            self.base.postings[index].last_doc_code =
+                (doc_id - self.base.postings[index].last_doc_id) << 1;
+            self.base.postings[index].last_doc_id = doc_id;
+            if self.has_prox {
+                let position = field_state.position();
+                self.write_prox(pool, int_pool, field_state, term_id, position, token)?;
+                if self.has_offsets {
+                    self.base.postings[index].last_offset = 0;
+                    self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
+                }
+            } else {
+                debug_assert!(!self.has_offsets);
+            }
+            field_state.increment_unique_term_count();
+        } else {
+            if self.is_term_doc {
+                // `throw new DuplicateTermException("field '" + getFieldName()
+                // + "' has duplicate term")`
+                // (`FreqProxTermsWriterPerField.java:193-194`).
+                return Err(TermsHashAddError::DuplicateTerm(
+                    LuceneError::illegal_state(format!(
+                        "field '{}' has duplicate term",
+                        self.field_name()
+                    )),
+                ));
+            }
+            let freq = self.term_freq(token)?;
+            // `Math.addExact(postings.termFreqs[termID], getTermFreq())`
+            // (`FreqProxTermsWriterPerField.java:196`) throws
+            // `ArithmeticException("integer overflow")`.
+            self.base.postings[index].term_freq = self.base.postings[index]
+                .term_freq
+                .checked_add(freq)
+                .ok_or_else(LuceneError::integer_overflow)?;
+            field_state.set_max_term_frequency(std::cmp::max(
+                field_state.max_term_frequency(),
+                self.base.postings[index].term_freq,
+            ));
+            if self.has_prox {
+                let delta = field_state.position() - self.base.postings[index].last_position;
+                self.write_prox(pool, int_pool, field_state, term_id, delta, token)?;
+                if self.has_offsets {
+                    self.write_offsets(pool, int_pool, term_id, field_state.offset(), token)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why [`FreqProxTermsWriterPerField::add_classified`] failed.
+///
+/// Equivalent to the class of the exception `TermsHashPerField.add(BytesRef,
+/// int)` throws, which is all `IndexingChain` looks at: a
+/// `TermsHashPerField.DuplicateTermException` is a document-level failure of
+/// a token-stream field, everything else aborts the segment
+/// (`IndexingChain.java:2001-2027`).
+#[derive(Debug)]
+pub(crate) enum TermsHashAddError {
+    /// `TermsHashPerField.DuplicateTermException`
+    /// (`TermsHashPerField.java:366-370`), an `IllegalStateException` whose
+    /// message names the field and the repeated term.
+    DuplicateTerm(LuceneError),
+    /// Any other failure, with its own class.
+    Other(LuceneError),
+}
+
+impl TermsHashAddError {
+    /// The failure itself, whatever its class: what the `throw` hands a caller
+    /// that catches neither class apart.
+    pub(crate) fn into_error(self) -> LuceneError {
+        match self {
+            Self::DuplicateTerm(error) | Self::Other(error) => error,
+        }
+    }
+}
+
+impl From<LuceneError> for TermsHashAddError {
+    fn from(error: LuceneError) -> Self {
+        Self::Other(error)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FreqProxFields: read-back view over the buffered postings
+// ---------------------------------------------------------------------------
+
+/// Frozen buffers of one field, shared by the read-back iterators.
+#[derive(Debug)]
+struct FieldPostings {
+    field_name: String,
+    index_options: IndexOptions,
+    has_freq: bool,
+    has_prox: bool,
+    has_offsets: bool,
+    saw_payloads: bool,
+    /// Term ids ordered by their term bytes.
+    sorted_term_ids: Vec<i32>,
+    /// Maps a term id to the pool offset of its bytes.
+    bytes_start: Vec<i32>,
+    postings: Vec<FreqProxPosting>,
+    pool: Arc<ByteBlockPool>,
+    /// The stream addresses the postings point into; Java's `intPool`, which
+    /// `initReader` reads at flush.
+    int_pool: Arc<IntBlockPool>,
+}
+
+impl FieldPostings {
+    fn term_bytes(&self, ord: usize) -> &[u8] {
+        let term_id = self.sorted_term_ids[ord];
+        self.pool.term_bytes(self.bytes_start[term_id as usize])
+    }
+
+    /// Positions `reader` over `stream` of `term_id`.
+    ///
+    /// Equivalent to `TermsHashPerField.initReader(ByteSliceReader, int, int)`.
+    fn init_reader(&self, reader: &mut ByteSliceReader, term_id: i32, stream: usize) {
+        let slot = &self.postings[term_id as usize];
+        reader.init(
+            slot.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
+            stream_address(&self.int_pool, slot.address_offset, stream),
+        );
+    }
+}
+
+/// Read-back view over the postings buffered for a segment.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxFields`. Only iteration is
+/// supported: the buffers hold no per-term statistics, exactly as in Lucene.
+#[derive(Debug)]
+pub struct FreqProxFields {
+    /// Fields in ascending name order, matching Lucene's sorted field list.
+    fields: Vec<Arc<FieldPostings>>,
+    by_name: HashMap<String, usize>,
+}
+
+impl FreqProxFields {
+    fn new(fields: Vec<Arc<FieldPostings>>) -> Self {
+        let by_name = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| (field.field_name.clone(), index))
+            .collect();
+        Self { fields, by_name }
+    }
+}
+
+impl Fields for FreqProxFields {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        Box::new(self.fields.iter().map(|field| field.field_name.clone()))
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+        Ok(self.by_name.get(field).map(|index| {
+            Arc::new(FreqProxTerms {
+                field: Arc::clone(&self.fields[*index]),
+            }) as Arc<dyn Terms>
+        }))
+    }
+
+    fn size(&self) -> i32 {
+        self.fields.len() as i32
+    }
+}
+
+/// Terms of one buffered field.
+///
+/// Equivalent to `FreqProxFields.FreqProxTerms`.
+#[derive(Debug)]
+struct FreqProxTerms {
+    field: Arc<FieldPostings>,
+}
+
+impl Terms for FreqProxTerms {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        let mut terms_enum = FreqProxTermsEnum::new(Arc::clone(&self.field));
+        terms_enum.reset();
+        Ok(Box::new(terms_enum))
+    }
+
+    /// Throws `UnsupportedOperationException`, as Java's does: the buffers
+    /// keep no per-field statistics (`FreqProxFields.java:75-78`).
+    fn size(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Throws `UnsupportedOperationException` (`FreqProxFields.java:80-83`).
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Throws `UnsupportedOperationException` (`FreqProxFields.java:85-88`).
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Throws `UnsupportedOperationException` (`FreqProxFields.java:90-93`).
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.field
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS)
+    }
+
+    /// Note: the buffer may hold offsets because that is what the field infos
+    /// said when indexing started, but the options may have been downgraded
+    /// since; the field's options are therefore the authority, exactly as in
+    /// `FreqProxFields.FreqProxTerms`.
+    fn has_offsets(&self) -> bool {
+        self.field
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
+    }
+
+    /// See [`Terms::has_offsets`] on this type.
+    fn has_positions(&self) -> bool {
+        self.field
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.field.saw_payloads
+    }
+}
+
+/// Iterates the sorted terms of one buffered field.
+///
+/// Equivalent to `FreqProxFields.FreqProxTermsEnum`.
+#[derive(Debug)]
+struct FreqProxTermsEnum {
+    field: Arc<FieldPostings>,
+    num_terms: usize,
+    /// Current position, or `-1` before the first [`TermsEnum::next`].
+    ord: i64,
+    /// Java's `scratch`: the bytes of the term last read from the pool,
+    /// which `term()` returns whatever the position (empty before any).
+    /// Its `bytes` hold exactly the term (`offset` 0, `length ==
+    /// bytes.len()`), so that [`TermsEnum::term`] and [`TermsEnum::next`]
+    /// lend it as Java returns `scratch`.
+    scratch: BytesRef,
+    attributes: AttributeSource,
+}
+
+impl FreqProxTermsEnum {
+    fn new(field: Arc<FieldPostings>) -> Self {
+        let num_terms = field.sorted_term_ids.len();
+        Self {
+            field,
+            num_terms,
+            ord: -1,
+            scratch: BytesRef::default(),
+            attributes: AttributeSource::new(),
+        }
+    }
+
+    /// Equivalent to `FreqProxTermsEnum.reset()`: `ord = -1`.
+    fn reset(&mut self) {
+        self.ord = -1;
+    }
+
+    /// `sortedTermIDs[ord]`, which the JVM bounds-checks.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `sortedTermIDs` is the
+    /// compacted hash table, as long as its capacity, whose slots past
+    /// `numTerms` hold `-1` (then `textStarts[-1]` fails); the port keeps the
+    /// `numTerms` sorted ids only, so an ord at or past `numTerms` fails here,
+    /// with this array's length in the message.
+    fn sorted_term_id(&self, ord: i64) -> Result<i32> {
+        // `(int) ord`.
+        let ord = ord as i32;
+        usize::try_from(ord)
+            .ok()
+            .and_then(|index| self.field.sorted_term_ids.get(index).copied())
+            .ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!(
+                        "Index {ord} out of bounds for length {}",
+                        self.field.sorted_term_ids.len()
+                    ),
+                )
+            })
+    }
+
+    /// `termsPool.fillBytesRef(scratch, textStarts[sortedTermIDs[ord]])` for
+    /// an `ord` in `[0, numTerms)`.
+    fn fill_scratch(&mut self, ord: usize) {
+        self.scratch.bytes.clear();
+        self.scratch
+            .bytes
+            .extend_from_slice(self.field.term_bytes(ord));
+        self.scratch.offset = 0;
+        self.scratch.length = self.scratch.bytes.len();
+    }
+}
+
+impl std::fmt::Display for FreqProxTermsEnum {
+    /// `FreqProxTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl TermsEnum for FreqProxTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        &mut self.attributes
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        let target = text.slice();
+        let mut low = 0i64;
+        let mut high = self.num_terms as i64 - 1;
+        while high >= low {
+            let mid = (low + high) >> 1;
+            self.fill_scratch(mid as usize);
+            match self.scratch.slice().cmp(target) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid - 1,
+                std::cmp::Ordering::Equal => {
+                    self.ord = mid;
+                    debug_assert!(self.field.term_bytes(mid as usize) == target);
+                    return Ok(SeekStatus::FOUND);
+                }
+            }
+        }
+        self.ord = low;
+        if self.ord >= self.num_terms as i64 {
+            Ok(SeekStatus::END)
+        } else {
+            self.fill_scratch(self.ord as usize);
+            debug_assert!(self.scratch.slice() > target);
+            Ok(SeekStatus::NOT_FOUND)
+        }
+    }
+
+    /// Equivalent to `FreqProxTermsEnum.seekExact(long)`
+    /// (`FreqProxFields.java:180-185`): `this.ord = (int) ord`, then the
+    /// array reads, whose bounds the JVM checks.
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        self.ord = i64::from(ord as i32);
+        self.sorted_term_id(self.ord)?;
+        self.fill_scratch(self.ord as usize);
+        Ok(())
+    }
+
+    /// `return scratch;` (`FreqProxFields.java:199-202`): the term last read,
+    /// empty before any.
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        Ok(Some(&self.scratch))
+    }
+
+    fn ord(&self) -> Result<i64> {
+        Ok(self.ord)
+    }
+
+    /// Always fails: the buffers do not record a document frequency.
+    ///
+    /// Equivalent to `FreqProxTermsEnum.docFreq()`, which throws
+    /// `UnsupportedOperationException` for the same reason — computing it would
+    /// need an extra pass over the postings.
+    fn doc_freq(&mut self) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Always fails; see [`TermsEnum::doc_freq`] on this type.
+    fn total_term_freq(&mut self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Equivalent to `FreqProxTermsEnum.postings(PostingsEnum, int)`
+    /// (`FreqProxFields.java:226-272`).
+    ///
+    /// `reuse` is reset in place and handed back exactly when Java reuses it:
+    /// when it is a `FreqProxPostingsEnum` (positions requested) or a
+    /// `FreqProxDocsEnum` (otherwise) — [`PostingsEnum::as_any_mut`] standing
+    /// for `instanceof` — over this field's postings array
+    /// (`posEnum.postingsArray != postingsArray`, `FreqProxFields.java:242-249`,
+    /// `:262-269`). The postings array is the field's frozen buffers, shared
+    /// through one [`Arc`] by every enum of the field, so the reference
+    /// comparison is [`Arc::ptr_eq`].
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::IllegalArgument`] when `flags` ask for what the field did
+    /// not index, as Java refuses to lie (`FreqProxFields.java:229-239,
+    /// 256-260`): `did not index positions`, `did not index offsets`, or — for
+    /// a docs-only field asked for frequencies — `did not index freq`.
+    fn postings(
+        &mut self,
+        mut reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        // `sortedTermIDs[ord]` is read by the `reset` calls below, after the
+        // feature checks.
+        if crate::index::feature_requested(flags, POSTINGS_ENUM_POSITIONS) {
+            if !self.field.has_prox {
+                return Err(LuceneError::illegal_argument(
+                    "did not index positions".to_string(),
+                ));
+            }
+            if !self.field.has_offsets
+                && crate::index::feature_requested(flags, POSTINGS_ENUM_OFFSETS)
+            {
+                return Err(LuceneError::illegal_argument(
+                    "did not index offsets".to_string(),
+                ));
+            }
+
+            // `reuse instanceof FreqProxPostingsEnum`, and
+            // `posEnum.postingsArray == postingsArray`.
+            let can_reuse = reuse
+                .as_mut()
+                .and_then(|reuse| reuse.as_any_mut())
+                .and_then(|any| any.downcast_mut::<FreqProxPostingsEnum>())
+                .is_some_and(|pos_enum| Arc::ptr_eq(&pos_enum.field, &self.field));
+            let mut pos_enum: Box<dyn PostingsEnum> = match reuse {
+                Some(pos_enum) if can_reuse => pos_enum,
+                _ => Box::new(FreqProxPostingsEnum::new(Arc::clone(&self.field))),
+            };
+            pos_enum
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FreqProxPostingsEnum>())
+                .expect("INVARIANT: the enum was just checked or built as a FreqProxPostingsEnum")
+                .reset(self.sorted_term_id(self.ord)?);
+            return Ok(Some(pos_enum));
+        }
+
+        // Caller wants freqs but we didn't index them; don't lie
+        // (`FreqProxFields.java:256-260`).
+        if !self.field.has_freq && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS) {
+            return Err(LuceneError::illegal_argument(
+                "did not index freq".to_string(),
+            ));
+        }
+
+        // `reuse instanceof FreqProxDocsEnum`, and
+        // `docsEnum.postingsArray == postingsArray`.
+        let can_reuse = reuse
+            .as_mut()
+            .and_then(|reuse| reuse.as_any_mut())
+            .and_then(|any| any.downcast_mut::<FreqProxDocsEnum>())
+            .is_some_and(|docs_enum| Arc::ptr_eq(&docs_enum.field, &self.field));
+        let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
+            Some(docs_enum) if can_reuse => docs_enum,
+            _ => Box::new(FreqProxDocsEnum::new(Arc::clone(&self.field))),
+        };
+        docs_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<FreqProxDocsEnum>())
+            .expect("INVARIANT: the enum was just checked or built as a FreqProxDocsEnum")
+            .reset(self.sorted_term_id(self.ord)?);
+        Ok(Some(docs_enum))
+    }
+
+    /// Always fails: impacts require the on-disk postings format.
+    ///
+    /// Equivalent to `FreqProxTermsEnum.impacts(int)`.
+    fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.ord += 1;
+        if self.ord as usize >= self.num_terms {
+            Ok(None)
+        } else {
+            self.fill_scratch(self.ord as usize);
+            Ok(Some(&self.scratch))
+        }
+    }
+}
+
+/// Doc/freq iterator over one buffered term.
+///
+/// Equivalent to `FreqProxFields.FreqProxDocsEnum`.
+#[derive(Debug)]
+struct FreqProxDocsEnum {
+    field: Arc<FieldPostings>,
+    reader: ByteSliceReader,
+    read_term_freq: bool,
+    doc_id: i32,
+    freq: i32,
+    ended: bool,
+    term_id: i32,
+}
+
+impl FreqProxDocsEnum {
+    /// Equivalent to `FreqProxDocsEnum(FreqProxTermsWriterPerField, FreqProxPostingsArray)`
+    /// (`FreqProxFields.java:311-316`); [`reset`](Self::reset) positions it on
+    /// a term.
+    fn new(field: Arc<FieldPostings>) -> Self {
+        let read_term_freq = field.has_freq;
+        Self {
+            field,
+            reader: ByteSliceReader::new(),
+            read_term_freq,
+            doc_id: -1,
+            freq: 0,
+            ended: false,
+            term_id: 0,
+        }
+    }
+
+    /// Equivalent to `FreqProxDocsEnum.reset(int)` (`FreqProxFields.java:318-323`).
+    fn reset(&mut self, term_id: i32) {
+        self.term_id = term_id;
+        self.field.init_reader(&mut self.reader, term_id, 0);
+        self.ended = false;
+        self.doc_id = -1;
+    }
+}
+
+impl DocIdSetIterator for FreqProxDocsEnum {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.doc_id == -1 {
+            self.doc_id = 0;
+        }
+        if self.reader.eof() {
+            if self.ended {
+                return Ok(NO_MORE_DOCS);
+            }
+            self.ended = true;
+            let slot = &self.field.postings[self.term_id as usize];
+            self.doc_id = slot.last_doc_id;
+            if self.read_term_freq {
+                self.freq = slot.term_freq;
+            }
+        } else {
+            let code = self.reader.read_v_int(&self.field.pool)?;
+            if self.read_term_freq {
+                self.doc_id += ((code as u32) >> 1) as i32;
+                if code & 1 != 0 {
+                    self.freq = 1;
+                } else {
+                    self.freq = self.reader.read_v_int(&self.field.pool)?;
+                }
+            } else {
+                self.doc_id += code;
+            }
+
+            debug_assert!(self.doc_id != self.field.postings[self.term_id as usize].last_doc_id);
+        }
+        Ok(self.doc_id)
+    }
+
+    /// Always fails: the buffered postings are read strictly sequentially.
+    ///
+    /// Equivalent to `FreqProxDocsEnum.advance(int)`.
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Returns [`i64::MAX`]: the cost is unknown without a full pass.
+    ///
+    /// Lucene throws `UnsupportedOperationException`; the trait cannot fail, so
+    /// this reports the most pessimistic estimate instead.
+    fn cost(&self) -> i64 {
+        i64::MAX
+    }
+}
+
+impl std::fmt::Display for FreqProxDocsEnum {
+    /// `FreqProxDocsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxDocsEnum",
+            self,
+        ))
+    }
+}
+
+impl PostingsEnum for FreqProxDocsEnum {
+    fn freq(&self) -> Result<i32> {
+        if self.read_term_freq {
+            Ok(self.freq)
+        } else {
+            Err(LuceneError::illegal_state(
+                "freq was not indexed".to_string(),
+            ))
+        }
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        Ok(-1)
+    }
+
+    fn start_offset(&self) -> i32 {
+        -1
+    }
+
+    fn end_offset(&self) -> i32 {
+        -1
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        Ok(None)
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof FreqProxDocsEnum` (`FreqProxFields.java:262`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+/// Doc/freq/position iterator over one buffered term.
+///
+/// Equivalent to `FreqProxFields.FreqProxPostingsEnum`.
+#[derive(Debug)]
+struct FreqProxPostingsEnum {
+    field: Arc<FieldPostings>,
+    reader: ByteSliceReader,
+    pos_reader: ByteSliceReader,
+    read_offsets: bool,
+    doc_id: i32,
+    freq: i32,
+    position: i32,
+    start_offset: i32,
+    end_offset: i32,
+    positions_left: i32,
+    term_id: i32,
+    ended: bool,
+    payload: Vec<u8>,
+    has_payload: bool,
+}
+
+impl FreqProxPostingsEnum {
+    /// Equivalent to `FreqProxPostingsEnum(FreqProxTermsWriterPerField, FreqProxPostingsArray)`
+    /// (`FreqProxFields.java:424-431`); [`reset`](Self::reset) positions it on
+    /// a term.
+    fn new(field: Arc<FieldPostings>) -> Self {
+        debug_assert!(field.has_prox && field.has_freq);
+        let read_offsets = field.has_offsets;
+        Self {
+            field,
+            reader: ByteSliceReader::new(),
+            pos_reader: ByteSliceReader::new(),
+            read_offsets,
+            doc_id: -1,
+            freq: 0,
+            position: 0,
+            start_offset: 0,
+            end_offset: 0,
+            positions_left: 0,
+            term_id: 0,
+            ended: false,
+            payload: Vec::new(),
+            has_payload: false,
+        }
+    }
+
+    /// Equivalent to `FreqProxPostingsEnum.reset(int)`
+    /// (`FreqProxFields.java:433-440`): the position, offsets and payload of
+    /// the previous term stay until the first document moves them, as in
+    /// Java.
+    fn reset(&mut self, term_id: i32) {
+        self.term_id = term_id;
+        self.field.init_reader(&mut self.reader, term_id, 0);
+        self.field.init_reader(&mut self.pos_reader, term_id, 1);
+        self.ended = false;
+        self.doc_id = -1;
+        self.positions_left = 0;
+    }
+}
+
+impl DocIdSetIterator for FreqProxPostingsEnum {
+    fn doc_id(&self) -> i32 {
+        self.doc_id
+    }
+
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.doc_id == -1 {
+            self.doc_id = 0;
+        }
+        // The proximity stream must be drained before moving on, otherwise the
+        // next document would read this one's leftover positions.
+        while self.positions_left != 0 {
+            self.next_position()?;
+        }
+
+        if self.reader.eof() {
+            if self.ended {
+                return Ok(NO_MORE_DOCS);
+            }
+            self.ended = true;
+            let slot = &self.field.postings[self.term_id as usize];
+            self.doc_id = slot.last_doc_id;
+            self.freq = slot.term_freq;
+        } else {
+            let code = self.reader.read_v_int(&self.field.pool)?;
+            self.doc_id += ((code as u32) >> 1) as i32;
+            if code & 1 != 0 {
+                self.freq = 1;
+            } else {
+                self.freq = self.reader.read_v_int(&self.field.pool)?;
+            }
+
+            debug_assert!(self.doc_id != self.field.postings[self.term_id as usize].last_doc_id);
+        }
+
+        self.positions_left = self.freq;
+        self.position = 0;
+        self.start_offset = 0;
+        Ok(self.doc_id)
+    }
+
+    /// Always fails; see [`DocIdSetIterator::advance`] on [`FreqProxDocsEnum`].
+    fn advance(&mut self, _target: i32) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Returns [`i64::MAX`]; see [`DocIdSetIterator::cost`] on
+    /// [`FreqProxDocsEnum`].
+    fn cost(&self) -> i64 {
+        i64::MAX
+    }
+}
+
+impl std::fmt::Display for FreqProxPostingsEnum {
+    /// `FreqProxPostingsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxFields$FreqProxPostingsEnum",
+            self,
+        ))
+    }
+}
+
+impl PostingsEnum for FreqProxPostingsEnum {
+    fn freq(&self) -> Result<i32> {
+        Ok(self.freq)
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        debug_assert!(self.positions_left > 0);
+        self.positions_left -= 1;
+        let code = self.pos_reader.read_v_int(&self.field.pool)?;
+        self.position += ((code as u32) >> 1) as i32;
+        if code & 1 != 0 {
+            self.has_payload = true;
+            let length = self.pos_reader.read_v_int(&self.field.pool)? as usize;
+            self.payload.clear();
+            self.payload.resize(length, 0);
+            let pool = Arc::clone(&self.field.pool);
+            self.pos_reader.read_bytes(&pool, &mut self.payload);
+        } else {
+            self.has_payload = false;
+        }
+
+        if self.read_offsets {
+            self.start_offset += self.pos_reader.read_v_int(&self.field.pool)?;
+            self.end_offset = self.start_offset + self.pos_reader.read_v_int(&self.field.pool)?;
+        }
+
+        Ok(self.position)
+    }
+
+    /// Equivalent to `FreqProxPostingsEnum.startOffset()`
+    /// (`FreqProxFields.java:521-526`): `IllegalStateException("offsets were
+    /// not indexed")` without offsets. [`PostingsEnum::start_offset`] is
+    /// infallible, so the unchecked exception is thrown as the crate throws
+    /// every unchecked Java exception from an infallible method
+    /// ([`throw_unchecked`](crate::store::java_nio_file::throw_unchecked)).
+    fn start_offset(&self) -> i32 {
+        if !self.read_offsets {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalStateException",
+                Some("offsets were not indexed"),
+            );
+        }
+        self.start_offset
+    }
+
+    /// Equivalent to `FreqProxPostingsEnum.endOffset()`
+    /// (`FreqProxFields.java:528-534`); see
+    /// [`start_offset`](Self::start_offset).
+    fn end_offset(&self) -> i32 {
+        if !self.read_offsets {
+            crate::store::java_nio_file::throw_unchecked(
+                "java.lang.IllegalStateException",
+                Some("offsets were not indexed"),
+            );
+        }
+        self.end_offset
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        if self.has_payload {
+            Ok(Some(&self.payload))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof FreqProxPostingsEnum` (`FreqProxFields.java:242`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FreqProxTermsWriter
+// ---------------------------------------------------------------------------
+
+/// Buffers the postings of every field of a segment and flushes them.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter`.
+#[derive(Debug)]
+pub struct FreqProxTermsWriter {
+    terms_hash: TermsHash,
+    /// Per-field writers keyed by field name, in first-seen order.
+    fields: Vec<FreqProxTermsWriterPerField>,
+    field_index: HashMap<String, usize>,
+}
+
+impl FreqProxTermsWriter {
+    /// Creates an empty writer charging its buffers to `bytes_used`.
+    pub fn new(bytes_used: Arc<AtomicI64>) -> Self {
+        Self {
+            terms_hash: TermsHash::new(bytes_used),
+            fields: Vec::new(),
+            field_index: HashMap::new(),
+        }
+    }
+
+    /// Returns the per-field writer for `field_info`, creating it on first use.
+    ///
+    /// Equivalent to `FreqProxTermsWriter.addField(FieldInvertState, FieldInfo)`
+    /// combined with the `PerField` cache of `IndexingChain`.
+    pub fn add_field(&mut self, field_info: &FieldInfo) -> usize {
+        if let Some(index) = self.field_index.get(&field_info.name) {
+            return *index;
+        }
+        let index = self.fields.len();
+        self.fields.push(FreqProxTermsWriterPerField::new(
+            field_info.clone(),
+            Arc::clone(self.terms_hash.bytes_used()),
+        ));
+        self.field_index.insert(field_info.name.clone(), index);
+        index
+    }
+
+    /// Returns the *term* byte pool, where every token's text is interned.
+    ///
+    /// Equivalent to `TermsHash.termBytePool`, which Lucene shares with the
+    /// term-vectors hash: that hash keys on offsets into this pool and reads
+    /// the term bytes back from it at flush time.
+    pub fn pool(&self) -> &ByteBlockPool {
+        self.terms_hash.pool()
+    }
+
+    /// Returns the byte pool, the pool of stream addresses and the writer of
+    /// `index` at the same time.
+    ///
+    /// Splitting the borrow this way is what lets the shared pools serve every
+    /// per-field writer, which is exactly Lucene's arrangement.
+    pub fn pool_and_field(
+        &mut self,
+        index: usize,
+    ) -> (
+        &mut ByteBlockPool,
+        &mut IntBlockPool,
+        &mut FreqProxTermsWriterPerField,
+    ) {
+        let (pool, int_pool) = self.terms_hash.pools_mut();
+        (pool, int_pool, &mut self.fields[index])
+    }
+
+    /// Returns the per-field writer of `index`.
+    pub fn field(&self, index: usize) -> &FreqProxTermsWriterPerField {
+        &self.fields[index]
+    }
+
+    /// Returns the per-field writer for `field_name`, if the field was seen.
+    pub fn field_by_name(&self, field_name: &str) -> Option<&FreqProxTermsWriterPerField> {
+        self.field_index
+            .get(field_name)
+            .map(|index| &self.fields[*index])
+    }
+
+    /// Discards every buffered posting.
+    ///
+    /// Equivalent to `TermsHash.abort()` as `FreqProxTermsWriter` inherits it:
+    /// Java's `FreqProxTermsWriter extends TermsHash` and does not override
+    /// `abort`, so calling it on the postings writer *is* calling the base
+    /// method. The per-field release around it is this port's: Java's per-field
+    /// tables charge their postings arrays to the same counter the pools use, so
+    /// resetting the pools releases everything at once, while here each
+    /// [`TermsHashPerField`] holds its own `Vec` and has to hand its slots back.
+    pub fn abort(&mut self) {
+        for field in &mut self.fields {
+            field.release_accounting();
+        }
+        self.fields.clear();
+        self.field_index.clear();
+        self.terms_hash.abort();
+    }
+
+    /// Freezes the buffers into the read-back view the codec consumes.
+    ///
+    /// Equivalent to the `FreqProxFields` construction inside
+    /// `FreqProxTermsWriter.flush`: only fields that saw at least one term are
+    /// included, and they are sorted by name.
+    fn freeze(&mut self) -> FreqProxFields {
+        let pool = Arc::new(self.terms_hash.take_pool());
+        let int_pool = Arc::new(self.terms_hash.take_int_pool());
+        let mut frozen: Vec<Arc<FieldPostings>> = Vec::new();
+        for mut field in std::mem::take(&mut self.fields) {
+            if field.num_terms() == 0 {
+                field.base.release_accounting();
+                continue;
+            }
+            // `perField.sortTerms()` (`FreqProxTermsWriter.java:96`): the
+            // destructive `BytesRefHash.sort()`, of which the first
+            // `numTerms` slots are the sorted ids.
+            let num_terms = field.base.bytes_hash.size() as usize;
+            let sorted_term_ids = field.base.bytes_hash.sort(&pool)[..num_terms].to_vec();
+            let bytes_start: Vec<i32> = (0..field.base.bytes_hash.size())
+                .map(|term_id| field.base.bytes_hash.byte_start(term_id))
+                .collect();
+            // The buffers move into the frozen view; the counter must stop
+            // charging them here, because nothing will reset this table again.
+            let postings = std::mem::take(&mut field.base.postings);
+            field.base.release_accounting();
+            frozen.push(Arc::new(FieldPostings {
+                field_name: field.base.field_name.clone(),
+                index_options: field.base.index_options,
+                has_freq: field.has_freq,
+                has_prox: field.has_prox,
+                has_offsets: field.has_offsets,
+                saw_payloads: field.saw_payloads,
+                sorted_term_ids,
+                bytes_start,
+                postings,
+                pool: Arc::clone(&pool),
+                int_pool: Arc::clone(&int_pool),
+            }));
+        }
+        self.field_index.clear();
+        // `CollectionUtil.introSort(allFields)` orders by
+        // `TermsHashPerField.compareTo`, which is `String.compareTo`: UTF-16
+        // code-unit order, not UTF-8 byte order. The two differ above
+        // `U+E000`, and this order is written into the `.tim` file, so the
+        // Java comparator is the one that has to be reproduced.
+        frozen.sort_by(|left, right| compare_utf16(&left.field_name, &right.field_name));
+        FreqProxFields::new(frozen)
+    }
+
+    /// Writes the buffered postings into the segment described by `state`.
+    ///
+    /// Equivalent to `FreqProxTermsWriter.flush`. Segment-private delete terms,
+    /// read off `state.seg_updates` as Java reads `state.segUpdates`, are
+    /// applied first, so `state.live_docs` and `state.del_count_on_flush` may
+    /// be updated before the codec runs.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O or consistency error raised while writing.
+    ///
+    /// `sort_map` is the permutation the index sort produced, or `None` when
+    /// the segment is not sorted. The deletions are applied to the unsorted
+    /// postings first; the codec then reads them through [`SortingTerms`], so
+    /// every document is written under its sorted number
+    /// (`FreqProxTermsWriter.java:112-128`).
+    pub fn flush(
+        &mut self,
+        state: &mut SegmentWriteState<'_>,
+        sort_map: Option<&SorterDocMap>,
+        norms: Option<&dyn NormsProducer>,
+    ) -> Result<()> {
+        let fields = self.freeze();
+        self.terms_hash.reset();
+
+        if !state.field_infos.has_postings() {
+            debug_assert_eq!(fields.size(), 0);
+            return Ok(());
+        }
+
+        apply_deletes(state, &fields)?;
+
+        let codec = state
+            .segment_info
+            .codec()
+            .ok_or_else(crate::error::LuceneError::null_pointer)?;
+        let mut consumer = codec.postings_format().fields_consumer(state)?;
+        let outcome = match sort_map {
+            None => consumer.write(&fields, norms),
+            Some(sort_map) => {
+                // The anonymous `FilterFields` Java wraps the buffered fields
+                // in when the segment is sorted.
+                let sorting = SortingFields {
+                    base: FilterFields::new(Box::new(fields)),
+                    infos: state.field_infos,
+                    doc_map: Arc::new(sort_map.clone()),
+                };
+                consumer.write(&sorting, norms)
+            }
+        };
+        let closed = consumer.close();
+        outcome?;
+        closed
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flush-time index sorting
+// ---------------------------------------------------------------------------
+
+/// The buffered fields of a sorted segment, each field's terms wrapped in
+/// [`SortingTerms`].
+///
+/// Equivalent to the anonymous `FilterLeafReader.FilterFields` subclass
+/// `FreqProxTermsWriter.flush` builds when `sortMap != null`
+/// (`FreqProxTermsWriter.java:116-128`), which overrides `terms(String)` alone
+/// and inherits `iterator()` and `size()`.
+struct SortingFields<'a> {
+    base: FilterFields<FreqProxFields>,
+    /// `state.fieldInfos`, whose index options [`SortingTerms`] is built with.
+    infos: &'a crate::index::FieldInfos,
+    doc_map: Arc<SorterDocMap>,
+}
+
+impl Fields for SortingFields<'_> {
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        self.base.iterator()
+    }
+
+    /// Equivalent to the anonymous class's `terms(String)`: the buffered terms,
+    /// wrapped with the field's index options and the document map.
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+        let Some(terms) = self.base.get_delegate().terms(field)? else {
+            return Ok(None);
+        };
+        let index_options = self
+            .infos
+            .field_info(field)
+            // `infos.fieldInfo(field).getIndexOptions()` on `null`.
+            .ok_or_else(LuceneError::null_pointer)?
+            .index_options;
+        Ok(Some(Arc::new(SortingTerms::new(
+            terms,
+            index_options,
+            Arc::clone(&self.doc_map),
+        ))))
+    }
+
+    fn size(&self) -> i32 {
+        self.base.size()
+    }
+}
+
+/// The terms of one buffered field, handing out postings in the index sort's
+/// document order.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingTerms`
+/// (`FreqProxTermsWriter.java:143-163`), a `FilterLeafReader.FilterTerms`
+/// subclass that overrides `iterator()` and `intersect(CompiledAutomaton,
+/// BytesRef)` to wrap the enum they return in a [`SortingTermsEnum`], and
+/// inherits everything else.
+pub struct SortingTerms {
+    base: FilterTerms,
+    doc_map: Arc<SorterDocMap>,
+    index_options: IndexOptions,
+}
+
+impl SortingTerms {
+    /// Wraps `inner`, whose postings are mapped through `doc_map`.
+    ///
+    /// Equivalent to `SortingTerms(Terms, IndexOptions, Sorter.DocMap)`.
+    pub fn new(
+        inner: Arc<dyn Terms>,
+        index_options: IndexOptions,
+        doc_map: Arc<SorterDocMap>,
+    ) -> Self {
+        Self {
+            base: FilterTerms::new(inner),
+            doc_map,
+            index_options,
+        }
+    }
+}
+
+impl Terms for SortingTerms {
+    /// Equivalent to `SortingTerms.iterator()`.
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        Ok(Box::new(SortingTermsEnum::new(
+            self.base.get_delegate().iterator()?,
+            Arc::clone(&self.doc_map),
+            self.index_options,
+        )))
+    }
+
+    /// Equivalent to `SortingTerms.intersect(CompiledAutomaton, BytesRef)`.
+    fn intersect(
+        &self,
+        compiled: &CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        Ok(Box::new(SortingTermsEnum::new(
+            self.base.get_delegate().intersect(compiled, start_term)?,
+            Arc::clone(&self.doc_map),
+            self.index_options,
+        )))
+    }
+
+    fn size(&self) -> Result<i64> {
+        self.base.size()
+    }
+
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        self.base.sum_total_term_freq()
+    }
+
+    fn sum_doc_freq(&self) -> Result<i64> {
+        self.base.sum_doc_freq()
+    }
+
+    fn doc_count(&self) -> Result<i32> {
+        self.base.doc_count()
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.base.has_freqs()
+    }
+
+    fn has_offsets(&self) -> bool {
+        self.base.has_offsets()
+    }
+
+    fn has_positions(&self) -> bool {
+        self.base.has_positions()
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.base.has_payloads()
+    }
+
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
+        self.base.stats()
+    }
+}
+
+/// The terms enum of [`SortingTerms`], whose postings are re-ordered into the
+/// index sort's document order.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingTermsEnum`
+/// (`FreqProxTermsWriter.java:165-222`), a `FilterLeafReader.FilterTermsEnum`
+/// subclass that overrides `postings(PostingsEnum, int)` alone.
+pub struct SortingTermsEnum {
+    base: FilterTermsEnum,
+    doc_map: Arc<SorterDocMap>,
+    index_options: IndexOptions,
+}
+
+impl SortingTermsEnum {
+    /// Wraps `inner`.
+    ///
+    /// Equivalent to `SortingTermsEnum(TermsEnum, Sorter.DocMap, IndexOptions)`.
+    pub fn new(
+        inner: Box<dyn TermsEnum>,
+        doc_map: Arc<SorterDocMap>,
+        index_options: IndexOptions,
+    ) -> Self {
+        Self {
+            base: FilterTermsEnum::new(inner),
+            doc_map,
+            index_options,
+        }
+    }
+}
+
+impl std::fmt::Display for SortingTermsEnum {
+    /// `SortingTermsEnum` declares no `toString()`, so `java.lang.Object`'s
+    /// applies; see
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxTermsWriter$SortingTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl TermsEnum for SortingTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        self.base.attributes()
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        self.base.seek_ceil(text)
+    }
+
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        self.base.seek_exact(text)
+    }
+
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        self.base.seek_ord(ord)
+    }
+
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.base.next()
+    }
+
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        self.base.term()
+    }
+
+    fn ord(&self) -> Result<i64> {
+        self.base.ord()
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        self.base.doc_freq()
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        self.base.total_term_freq()
+    }
+
+    /// Equivalent to `SortingTermsEnum.postings(PostingsEnum, int)`
+    /// (`FreqProxTermsWriter.java:176-222`): a field that indexes
+    /// frequencies, asked for them, gets a [`SortingPostingsEnum`] that buffers
+    /// frequencies, positions, offsets and payloads per document; anything else
+    /// gets a [`SortingDocsEnum`].
+    ///
+    /// `reuse` is reused exactly when Java reuses it: when it is the matching
+    /// `Sorting*Enum` ([`PostingsEnum::as_any_mut`] standing for
+    /// `instanceof`), the box handed back is the one that came in, and the
+    /// enum it wraps ([`SortingPostingsEnum::get_wrapped`] /
+    /// [`SortingDocsEnum::get_wrapped`]) is what the delegate is offered as
+    /// `reuse`, "since some Codecs expect it". Any other `reuse` is offered to
+    /// the delegate as is, and a new wrapper is built.
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        if self.index_options.subsumes(IndexOptions::DOCS_AND_FREQS)
+            && crate::index::feature_requested(flags, POSTINGS_ENUM_FREQS)
+        {
+            let (mut wrap_reuse, in_reuse): (Box<dyn PostingsEnum>, Option<Box<dyn PostingsEnum>>) =
+                match reuse {
+                    Some(mut reuse) => {
+                        match reuse
+                            .as_any_mut()
+                            .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+                        {
+                            // if we're asked to reuse the given DocsEnum and it
+                            // is Sorting, return the wrapped one, since some
+                            // Codecs expect it.
+                            Some(wrap_reuse) => {
+                                let in_reuse = wrap_reuse.get_wrapped();
+                                (reuse, in_reuse)
+                            }
+                            None => (Box::new(SortingPostingsEnum::new()), Some(reuse)),
+                        }
+                    }
+                    None => (Box::new(SortingPostingsEnum::new()), None),
+                };
+
+            let in_docs_and_positions = self
+                .base
+                .postings(in_reuse, flags)?
+                .ok_or_else(LuceneError::null_pointer)?;
+            // we ignore the fact that positions/offsets may be stored but not
+            // asked for, since this code is expected to be used during
+            // addIndexes which will ask for everything. if that assumption
+            // changes in the future, we can factor in whether 'flags' says
+            // offsets are not required.
+            let store_positions = self
+                .index_options
+                .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+            let store_offsets = self
+                .index_options
+                .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+            wrap_reuse
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+                .ok_or_else(|| {
+                    LuceneError::illegal_state(
+                        "INVARIANT: the wrapper was just checked or built as a SortingPostingsEnum"
+                            .to_string(),
+                    )
+                })?
+                .reset(
+                    &self.doc_map,
+                    in_docs_and_positions,
+                    store_positions,
+                    store_offsets,
+                )?;
+            return Ok(Some(wrap_reuse));
+        }
+
+        let (mut wrap_reuse, in_reuse): (Box<dyn PostingsEnum>, Option<Box<dyn PostingsEnum>>) =
+            match reuse {
+                Some(mut reuse) => {
+                    match reuse
+                        .as_any_mut()
+                        .and_then(|any| any.downcast_mut::<SortingDocsEnum>())
+                    {
+                        // if we're asked to reuse the given DocsEnum and it is
+                        // Sorting, return the wrapped one, since some Codecs
+                        // expect it.
+                        Some(wrap_reuse) => {
+                            let in_reuse = wrap_reuse.get_wrapped();
+                            (reuse, in_reuse)
+                        }
+                        None => (Box::new(SortingDocsEnum::new()), Some(reuse)),
+                    }
+                }
+                None => (Box::new(SortingDocsEnum::new()), None),
+            };
+
+        let in_docs = self
+            .base
+            .postings(in_reuse, flags)?
+            .ok_or_else(LuceneError::null_pointer)?;
+        wrap_reuse
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<SortingDocsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the wrapper was just checked or built as a SortingDocsEnum"
+                        .to_string(),
+                )
+            })?
+            .reset(&self.doc_map, in_docs)?;
+        Ok(Some(wrap_reuse))
+    }
+
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.base.impacts(flags)
+    }
+
+    fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        self.base.seek_term_state(text, state)
+    }
+
+    fn prepare_seek_exact<'a>(
+        &'a mut self,
+        text: &BytesRef,
+    ) -> Result<Option<Box<dyn IOBooleanSupplier + 'a>>> {
+        self.base.prepare_seek_exact(text)
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.base.term_state()
+    }
+}
+
+/// The documents of one term in the index sort's order, without frequencies.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingDocsEnum`
+/// (`FreqProxTermsWriter.java:224-308`): `reset` drains the wrapped enum,
+/// maps every document through the doc map and sorts the new numbers.
+///
+/// Java sorts with an `LSBRadixSorter`; the documents of one term are distinct,
+/// so any correct sort yields the same sequence, and the standard library's is
+/// used.
+pub struct SortingDocsEnum {
+    in_: Option<Box<dyn PostingsEnum>>,
+    /// The sorted new document numbers, followed by `NO_MORE_DOCS`.
+    docs: Vec<i32>,
+    doc_it: i32,
+    up_to: i32,
+}
+
+impl Default for SortingDocsEnum {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SortingDocsEnum {
+    /// Creates an empty enum; [`reset`](Self::reset) fills it.
+    ///
+    /// Equivalent to `SortingDocsEnum()`.
+    pub fn new() -> Self {
+        Self {
+            in_: None,
+            docs: Vec::new(),
+            doc_it: -1,
+            up_to: 0,
+        }
+    }
+
+    /// Reads every document of `in_` and keeps their sorted new numbers.
+    ///
+    /// Equivalent to `SortingDocsEnum.reset(Sorter.DocMap, PostingsEnum)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `in_` raises.
+    pub fn reset(&mut self, doc_map: &SorterDocMap, mut in_: Box<dyn PostingsEnum>) -> Result<()> {
+        self.docs.clear();
+        let mut doc = in_.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            self.docs.push(doc_map.old_to_new(doc));
+            doc = in_.next_doc()?;
+        }
+        self.up_to = self.docs.len() as i32;
+        self.docs.sort_unstable();
+        self.docs.push(NO_MORE_DOCS);
+        self.doc_it = -1;
+        self.in_ = Some(in_);
+        Ok(())
+    }
+
+    /// Hands the wrapped enum to the caller, or `None` before the first
+    /// [`reset`](Self::reset).
+    ///
+    /// Equivalent to `SortingDocsEnum.getWrapped()`
+    /// (`FreqProxTermsWriter.java:258-260`), whose one caller,
+    /// `SortingTermsEnum.postings`, passes the result straight to the delegate
+    /// as `reuse` and then resets this enum on what the delegate answers. Java
+    /// returns a second reference to the wrapped enum; Rust moves it out,
+    /// which leaves this enum without one until that `reset`.
+    pub fn get_wrapped(&mut self) -> Option<Box<dyn PostingsEnum>> {
+        self.in_.take()
+    }
+}
+
+impl std::fmt::Display for SortingDocsEnum {
+    /// `SortingDocsEnum` declares no `toString()`, so `java.lang.Object`'s
+    /// applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxTermsWriter$SortingDocsEnum",
+            self,
+        ))
+    }
+}
+
+impl DocIdSetIterator for SortingDocsEnum {
+    /// Equivalent to `SortingDocsEnum.docID()`.
+    fn doc_id(&self) -> i32 {
+        if self.doc_it < 0 {
+            -1
+        } else {
+            self.docs[self.doc_it as usize]
+        }
+    }
+
+    /// Equivalent to `SortingDocsEnum.nextDoc()`, `docs[++docIt]`: the entry
+    /// after the last document is `NO_MORE_DOCS`. Java's contract forbids a
+    /// further call; this port stays on that entry rather than reading past
+    /// it.
+    fn next_doc(&mut self) -> Result<i32> {
+        if self.doc_it < self.up_to {
+            self.doc_it += 1;
+        }
+        Ok(self.docs[self.doc_it as usize])
+    }
+
+    /// Equivalent to `SortingDocsEnum.advance(int)`, which is `slowAdvance`.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.up_to)
+    }
+}
+
+impl PostingsEnum for SortingDocsEnum {
+    fn freq(&self) -> Result<i32> {
+        Ok(1)
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof SortingDocsEnum` (`FreqProxTermsWriter.java:208`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn next_position(&mut self) -> Result<i32> {
+        Ok(-1)
+    }
+
+    fn start_offset(&self) -> i32 {
+        -1
+    }
+
+    fn end_offset(&self) -> i32 {
+        -1
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        Ok(None)
+    }
+}
+
+/// The postings of one term in the index sort's order, with frequencies and,
+/// when the field indexes them, positions, offsets and payloads.
+///
+/// Equivalent to `org.apache.lucene.index.FreqProxTermsWriter.SortingPostingsEnum`
+/// (`FreqProxTermsWriter.java:310-535`): `reset` drains the wrapped enum into a
+/// buffer, one record per document — the frequency, then per position the
+/// delta-encoded position with a payload flag, the delta-encoded offsets and
+/// the payload — and sorts the new document numbers together with each
+/// record's offset in the buffer; iteration then seeks to each record in turn.
+///
+/// Java sorts the two parallel arrays with a `TimSorter`; the documents of one
+/// term are distinct, so any correct sort of the pairs by document yields the
+/// same sequence, and the standard library's is used.
+pub struct SortingPostingsEnum {
+    docs: Vec<i32>,
+    offsets: Vec<i64>,
+    upto: i32,
+    posting_input: Option<ByteBuffersDataInput>,
+    in_: Option<Box<dyn PostingsEnum>>,
+    store_positions: bool,
+    store_offsets: bool,
+    doc_it: i32,
+    pos: i32,
+    start_offset: i32,
+    end_offset: i32,
+    /// The current payload; empty stands for Java's zero-length `payload`,
+    /// which `getPayload()` reports as `null`.
+    payload: Vec<u8>,
+    curr_freq: i32,
+    buffer: ByteBuffersDataOutput,
+}
+
+impl Default for SortingPostingsEnum {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SortingPostingsEnum {
+    /// Creates an empty enum; [`reset`](Self::reset) fills it.
+    pub fn new() -> Self {
+        Self {
+            docs: Vec::new(),
+            offsets: Vec::new(),
+            upto: 0,
+            posting_input: None,
+            in_: None,
+            store_positions: false,
+            store_offsets: false,
+            doc_it: -1,
+            pos: 0,
+            start_offset: -1,
+            end_offset: -1,
+            payload: Vec::new(),
+            curr_freq: 0,
+            buffer: ByteBuffersDataOutput::new_resettable_instance(),
+        }
+    }
+
+    /// Reads every document of `in_` into the buffer and sorts the records by
+    /// new document number.
+    ///
+    /// Equivalent to `SortingPostingsEnum.reset(Sorter.DocMap, PostingsEnum,
+    /// boolean, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever iterating `in_` or writing the buffer raises.
+    pub fn reset(
+        &mut self,
+        doc_map: &SorterDocMap,
+        mut in_: Box<dyn PostingsEnum>,
+        store_positions: bool,
+        store_offsets: bool,
+    ) -> Result<()> {
+        self.store_positions = store_positions;
+        self.store_offsets = store_offsets;
+        self.doc_it = -1;
+        self.start_offset = -1;
+        self.end_offset = -1;
+
+        self.buffer.reset()?;
+        let mut records: Vec<(i32, i64)> = Vec::new();
+        let mut doc = in_.next_doc()?;
+        while doc != NO_MORE_DOCS {
+            records.push((doc_map.old_to_new(doc), self.buffer.size() as i64));
+            Self::add_positions(
+                in_.as_mut(),
+                &mut self.buffer,
+                store_positions,
+                store_offsets,
+            )?;
+            doc = in_.next_doc()?;
+        }
+        self.upto = records.len() as i32;
+        records.sort_unstable_by_key(|&(doc, _)| doc);
+        self.docs = records.iter().map(|&(doc, _)| doc).collect();
+        self.offsets = records.iter().map(|&(_, offset)| offset).collect();
+
+        self.posting_input = Some(self.buffer.to_data_input()?);
+        self.in_ = Some(in_);
+        Ok(())
+    }
+
+    /// Writes the current document's frequency and, when positions are
+    /// stored, its positions, offsets and payloads to `out`.
+    ///
+    /// Equivalent to the private
+    /// `SortingPostingsEnum.addPositions(PostingsEnum, DataOutput)`.
+    fn add_positions(
+        in_: &mut dyn PostingsEnum,
+        out: &mut dyn DataOutput,
+        store_positions: bool,
+        store_offsets: bool,
+    ) -> Result<()> {
+        let freq = in_.freq()?;
+        out.write_v_int(freq)?;
+        if store_positions {
+            let mut previous_position = 0;
+            let mut previous_end_offset = 0;
+            for _ in 0..freq {
+                let pos = in_.next_position()?;
+                let payload = in_.get_payload()?.map(<[u8]>::to_vec);
+                // The low-order bit of token is set only if there is a
+                // payload, the previous bits are the delta-encoded position.
+                let token = ((pos - previous_position) << 1) | i32::from(payload.is_some());
+                out.write_v_int(token)?;
+                previous_position = pos;
+                if store_offsets {
+                    // Don't encode offsets if they are not stored.
+                    let start_offset = in_.start_offset();
+                    let end_offset = in_.end_offset();
+                    out.write_v_int(start_offset - previous_end_offset)?;
+                    out.write_v_int(end_offset - start_offset)?;
+                    previous_end_offset = end_offset;
+                }
+                if let Some(payload) = payload {
+                    out.write_v_int(payload.len() as i32)?;
+                    out.write_bytes(&payload, 0, payload.len())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Hands the wrapped enum to the caller, or `None` before the first
+    /// [`reset`](Self::reset).
+    ///
+    /// Equivalent to `SortingPostingsEnum.getWrapped()`
+    /// (`FreqProxTermsWriter.java:527-529`); see
+    /// [`SortingDocsEnum::get_wrapped`] for why the enum is moved out.
+    pub fn get_wrapped(&mut self) -> Option<Box<dyn PostingsEnum>> {
+        self.in_.take()
+    }
+
+    fn posting_input(&mut self) -> Result<&mut ByteBuffersDataInput> {
+        self.posting_input
+            .as_mut()
+            .ok_or_else(LuceneError::null_pointer)
+    }
+}
+
+impl std::fmt::Display for SortingPostingsEnum {
+    /// `SortingPostingsEnum` declares no `toString()`, so `java.lang.Object`'s
+    /// applies.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.FreqProxTermsWriter$SortingPostingsEnum",
+            self,
+        ))
+    }
+}
+
+impl DocIdSetIterator for SortingPostingsEnum {
+    /// Equivalent to `SortingPostingsEnum.docID()`.
+    fn doc_id(&self) -> i32 {
+        if self.doc_it < 0 {
+            -1
+        } else if self.doc_it >= self.upto {
+            NO_MORE_DOCS
+        } else {
+            self.docs[self.doc_it as usize]
+        }
+    }
+
+    /// Equivalent to `SortingPostingsEnum.nextDoc()`.
+    fn next_doc(&mut self) -> Result<i32> {
+        self.doc_it += 1;
+        if self.doc_it >= self.upto {
+            return Ok(NO_MORE_DOCS);
+        }
+        let offset = self.offsets[self.doc_it as usize] as usize;
+        let input = self.posting_input()?;
+        input.seek(offset)?;
+        self.curr_freq = input.read_v_int()?;
+        // Reset the variables used in `next_position`.
+        self.pos = 0;
+        self.end_offset = 0;
+        Ok(self.docs[self.doc_it as usize])
+    }
+
+    /// Equivalent to `SortingPostingsEnum.advance(int)`, which is
+    /// `slowAdvance`.
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.slow_advance(target)
+    }
+
+    /// Equivalent to `SortingPostingsEnum.cost()`, the wrapped enum's.
+    fn cost(&self) -> i64 {
+        self.in_.as_ref().map_or(0, |in_| in_.cost())
+    }
+}
+
+impl PostingsEnum for SortingPostingsEnum {
+    fn freq(&self) -> Result<i32> {
+        Ok(self.curr_freq)
+    }
+
+    /// This enum answers with itself: it is the `true` arm of Java's
+    /// `reuse instanceof SortingPostingsEnum` (`FreqProxTermsWriter.java:183`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// Equivalent to `SortingPostingsEnum.nextPosition()`.
+    fn next_position(&mut self) -> Result<i32> {
+        if !self.store_positions {
+            return Ok(-1);
+        }
+        let input = self
+            .posting_input
+            .as_mut()
+            .ok_or_else(LuceneError::null_pointer)?;
+        let token = input.read_v_int()?;
+        // `pos += token >>> 1`.
+        self.pos += ((token as u32) >> 1) as i32;
+        if self.store_offsets {
+            self.start_offset = self.end_offset + input.read_v_int()?;
+            self.end_offset = self.start_offset + input.read_v_int()?;
+        }
+        if token & 1 != 0 {
+            let length = input.read_v_int()?.max(0) as usize;
+            self.payload.resize(length, 0);
+            input.read_bytes(Some(&mut self.payload), 0, length)?;
+        } else {
+            self.payload.clear();
+        }
+        Ok(self.pos)
+    }
+
+    fn start_offset(&self) -> i32 {
+        self.start_offset
+    }
+
+    fn end_offset(&self) -> i32 {
+        self.end_offset
+    }
+
+    /// Equivalent to `SortingPostingsEnum.getPayload()`, which reports a
+    /// zero-length payload as `null`.
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        Ok(if self.payload.is_empty() {
+            None
+        } else {
+            Some(&self.payload)
+        })
+    }
+}
+
+/// Applies this segment's buffered delete-by-term to the flushing segment.
+///
+/// Equivalent to `FreqProxTermsWriter.applyDeletes`
+/// (`FreqProxTermsWriter.java:53-80`), which reads the terms off
+/// `state.segUpdates.deleteTerms`. Each delete term removes every document
+/// strictly below its `docIDUpto`, which is the document count at the moment
+/// the delete was buffered.
+///
+/// # Errors
+///
+/// Propagates errors raised while reading the buffered postings.
+fn apply_deletes(state: &mut SegmentWriteState<'_>, fields: &FreqProxFields) -> Result<()> {
+    let seg_updates = state.seg_updates;
+    let max_doc = state.segment_info.max_doc()?;
+    apply_deletes_to(
+        fields,
+        &seg_updates.delete_terms,
+        max_doc,
+        &mut state.live_docs,
+        &mut state.del_count_on_flush,
+    )
+}
+
+/// Core of [`apply_deletes`], split out so it can be driven without a
+/// `SegmentWriteState`.
+///
+/// # Errors
+///
+/// Propagates errors raised while reading the buffered postings.
+fn apply_deletes_to(
+    fields: &FreqProxFields,
+    delete_terms: &DeletedTerms,
+    max_doc: i32,
+    live_docs: &mut Option<FixedBitSet>,
+    del_count_on_flush: &mut i32,
+) -> Result<()> {
+    if delete_terms.is_empty() || max_doc <= 0 {
+        return Ok(());
+    }
+
+    // `segDeletes.forEachOrdered(...)` hands the terms over grouped by field
+    // (fields by `String.compareTo`, UTF-16 code units) and sorted inside each
+    // field, so one terms enum serves each field; the resulting deletions are
+    // the same in any order.
+    let mut current_field: Option<String> = None;
+    let mut terms_enum: Option<Box<dyn TermsEnum>> = None;
+    delete_terms.for_each_ordered(|term, doc_id_upto| -> Result<()> {
+        if current_field.as_deref() != Some(term.field()) {
+            current_field = Some(term.field().to_string());
+            terms_enum = match fields.terms(term.field())? {
+                Some(terms) => Some(terms.iterator()?),
+                None => None,
+            };
+        }
+        let Some(enumerator) = terms_enum.as_mut() else {
+            return Ok(());
+        };
+        if !enumerator.seek_exact(term.bytes())? {
+            return Ok(());
+        }
+        let mut postings = enumerator
+            .postings(None, 0)?
+            .ok_or_else(LuceneError::null_pointer)?;
+        debug_assert!(doc_id_upto < NO_MORE_DOCS);
+        loop {
+            let doc = postings.next_doc()?;
+            if doc >= doc_id_upto || doc == NO_MORE_DOCS {
+                break;
+            }
+            let bits = live_docs.get_or_insert_with(|| {
+                let mut bits = FixedBitSet::new(max_doc as usize);
+                for index in 0..max_doc as usize {
+                    bits.set(index);
+                }
+                bits
+            });
+            if bits.get(doc as usize) {
+                bits.clear(doc as usize);
+                *del_count_on_flush += 1;
+            }
+        }
+        Ok(())
+    })
+}
+
+impl PartialEq for TermsHashPerField {
+    fn eq(&self, other: &Self) -> bool {
+        self.field_name == other.field_name
+    }
+}
+
+impl Eq for TermsHashPerField {}
+
+impl PartialOrd for TermsHashPerField {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TermsHashPerField {
+    /// Orders the tables by field name.
+    ///
+    /// Equivalent to `TermsHashPerField.compareTo(TermsHashPerField)`, which is
+    /// what puts the fields of a segment in name order at flush.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        crate::util::compare_utf16(&self.field_name, &other.field_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::terms::Term;
+    use crate::index::{
+        DocValuesSkipIndexType, DocValuesType, VectorEncoding, VectorSimilarityFunction,
+    };
+    use crate::util::BytesRef;
+
+    /// Builds a minimal `FieldInfo` for `name` with the given index options.
+    fn field_info(name: &str, options: IndexOptions, store_payloads: bool) -> FieldInfo {
+        FieldInfo::new_full(
+            name,
+            0,
+            false,
+            true,
+            store_payloads,
+            options,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("field info")
+    }
+
+    /// One position as read back from the buffered postings.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ReadPosition {
+        position: i32,
+        start_offset: i32,
+        end_offset: i32,
+        payload: Option<Vec<u8>>,
+    }
+
+    /// One document's postings as read back.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ReadDoc {
+        doc: i32,
+        freq: i32,
+        positions: Vec<ReadPosition>,
+    }
+
+    /// A scripted token, mirroring what the analysis chain would produce.
+    #[derive(Debug, Clone)]
+    struct Token {
+        term: &'static str,
+        position_increment: i32,
+        start_offset: i32,
+        end_offset: i32,
+        payload: Option<Vec<u8>>,
+        term_freq: i32,
+        has_term_freq_attribute: bool,
+    }
+
+    impl Token {
+        fn new(term: &'static str, position_increment: i32) -> Self {
+            Self {
+                term,
+                position_increment,
+                start_offset: 0,
+                end_offset: term.len() as i32,
+                payload: None,
+                term_freq: 1,
+                has_term_freq_attribute: false,
+            }
+        }
+
+        fn at(term: &'static str, position_increment: i32, start: i32, end: i32) -> Self {
+            Self {
+                start_offset: start,
+                end_offset: end,
+                ..Self::new(term, position_increment)
+            }
+        }
+
+        fn with_payload(mut self, payload: &[u8]) -> Self {
+            self.payload = Some(payload.to_vec());
+            self
+        }
+
+        fn with_term_freq(mut self, term_freq: i32) -> Self {
+            self.term_freq = term_freq;
+            self.has_term_freq_attribute = true;
+            self
+        }
+    }
+
+    /// Drives one field of one segment: feeds documents and freezes the result.
+    struct Harness {
+        writer: FreqProxTermsWriter,
+        field_state: FieldInvertState,
+        index: usize,
+    }
+
+    impl Harness {
+        fn new(options: IndexOptions) -> Self {
+            Self::with_field(field_info("body", options, false))
+        }
+
+        fn with_field(info: FieldInfo) -> Self {
+            let bytes_used = Arc::new(AtomicI64::new(0));
+            let mut writer = FreqProxTermsWriter::new(bytes_used);
+            let index = writer.add_field(&info);
+            let field_state = FieldInvertState::new(10, info.name.clone(), info.index_options);
+            Self {
+                writer,
+                field_state,
+                index,
+            }
+        }
+
+        /// Indexes one document as a single field value.
+        fn add_doc(&mut self, doc_id: i32, tokens: &[Token]) -> Result<()> {
+            self.field_state.reset();
+            self.add_value(doc_id, tokens)
+        }
+
+        /// Indexes one more value of the same field in the same document,
+        /// applying the position and offset gaps the way the chain does.
+        fn add_value(&mut self, doc_id: i32, tokens: &[Token]) -> Result<()> {
+            for token in tokens {
+                let next = self.field_state.position() + token.position_increment;
+                self.field_state.set_position(next);
+                let inverted = InvertedToken {
+                    start_offset: token.start_offset,
+                    end_offset: token.end_offset,
+                    payload: token.payload.as_deref(),
+                    term_freq: token.term_freq,
+                    has_term_freq_attribute: token.has_term_freq_attribute,
+                };
+                let (pool, int_pool, field) = self.writer.pool_and_field(self.index);
+                field.add(
+                    pool,
+                    int_pool,
+                    &mut self.field_state,
+                    token.term.as_bytes(),
+                    doc_id,
+                    &inverted,
+                )?;
+            }
+            Ok(())
+        }
+
+        /// Applies the gaps a multi-valued field pays between two values.
+        fn apply_gaps(&mut self, position_gap: i32, offset_gap: i32, last_end_offset: i32) {
+            let offset = self.field_state.offset() + last_end_offset + offset_gap;
+            self.field_state.set_offset(offset);
+            let position = self.field_state.position() + position_gap;
+            self.field_state.set_position(position);
+        }
+
+        fn freeze(&mut self) -> FreqProxFields {
+            self.writer.freeze()
+        }
+    }
+
+    /// Reads every term of `field` back out of the frozen buffers.
+    #[allow(clippy::type_complexity)]
+    fn read_back(fields: &FreqProxFields, field: &str) -> Vec<(String, Vec<ReadDoc>)> {
+        let terms = fields
+            .terms(field)
+            .expect("terms")
+            .expect("field is present");
+        let has_positions = terms.has_positions();
+        let has_offsets = terms.has_offsets();
+        let has_payloads = terms.has_payloads();
+        let has_freqs = terms.has_freqs();
+        let mut enumerator = terms.iterator().expect("iterator");
+        let mut out = Vec::new();
+        while let Some(term) = enumerator.next().expect("next term").cloned() {
+            let flags = if has_positions {
+                if has_offsets && has_payloads {
+                    crate::index::POSTINGS_ENUM_ALL
+                } else if has_offsets {
+                    POSTINGS_ENUM_OFFSETS
+                } else if has_payloads {
+                    crate::index::POSTINGS_ENUM_PAYLOADS
+                } else {
+                    POSTINGS_ENUM_POSITIONS
+                }
+            } else if has_freqs {
+                crate::index::POSTINGS_ENUM_FREQS
+            } else {
+                crate::index::POSTINGS_ENUM_NONE
+            };
+            let mut postings = enumerator.postings(None, flags).expect("postings").unwrap();
+            let mut docs = Vec::new();
+            loop {
+                let doc = postings.next_doc().expect("next doc");
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                let freq = if has_freqs {
+                    postings.freq().expect("freq")
+                } else {
+                    1
+                };
+                let mut positions = Vec::new();
+                if has_positions {
+                    for _ in 0..freq {
+                        let position = postings.next_position().expect("position");
+                        // `startOffset()` throws without offsets
+                        // (`FreqProxFields.java:521-534`).
+                        let (start_offset, end_offset) = if has_offsets {
+                            (postings.start_offset(), postings.end_offset())
+                        } else {
+                            (-1, -1)
+                        };
+                        positions.push(ReadPosition {
+                            position,
+                            start_offset,
+                            end_offset,
+                            payload: postings.get_payload().expect("payload").map(<[u8]>::to_vec),
+                        });
+                    }
+                }
+                docs.push(ReadDoc {
+                    doc,
+                    freq,
+                    positions,
+                });
+            }
+            out.push((
+                String::from_utf8(term.slice().to_vec()).expect("utf-8 term"),
+                docs,
+            ));
+        }
+        out
+    }
+
+    // -- ByteSlicePool / ByteSliceReader -----------------------------------
+
+    #[test]
+    fn new_slice_marks_the_end_of_the_slice_with_level_zero() {
+        let mut pool = ByteBlockPool::new(Arc::new(AtomicI64::new(0)));
+        let start = ByteSlicePool::new_slice(&mut pool, FIRST_LEVEL_SIZE).expect("slice");
+        let block = pool.buffer_upto() as usize;
+        assert_eq!(pool.buffer(block)[start + FIRST_LEVEL_SIZE - 1], 16);
+        assert!(pool.buffer(block)[start..start + FIRST_LEVEL_SIZE - 1]
+            .iter()
+            .all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn a_stream_longer_than_one_slice_round_trips_through_the_reader() {
+        // 4 000 bytes forces the allocator through every level of
+        // LEVEL_SIZE_ARRAY and several block boundaries.
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
+        assert!(slot.is_new);
+
+        let expected: Vec<u8> = (0..4000u32).map(|i| (i % 251) as u8).collect();
+        for byte in &expected {
+            field
+                .write_byte(&mut pool, &mut ints, slot.term_id, 0, *byte)
+                .expect("write byte");
+        }
+
+        let mut reader = ByteSliceReader::new();
+        let posting = *field.posting(slot.term_id);
+        reader.init(
+            posting.byte_start,
+            stream_address(&ints, posting.address_offset, 0),
+        );
+        let mut actual = Vec::with_capacity(expected.len());
+        while !reader.eof() {
+            actual.push(reader.read_byte(&pool));
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn write_bytes_spans_several_slices_and_reads_back_identically() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
+
+        // Each chunk is far longer than the first slice level, so `write_bytes`
+        // must chain slices in its second loop.
+        let chunks: Vec<Vec<u8>> = (1..40usize)
+            .map(|n| (0..n * 13).map(|i| (i % 253) as u8).collect())
+            .collect();
+        for chunk in &chunks {
+            field
+                .write_bytes(&mut pool, &mut ints, slot.term_id, 0, chunk)
+                .expect("write bytes");
+        }
+
+        let mut reader = ByteSliceReader::new();
+        let posting = *field.posting(slot.term_id);
+        reader.init(
+            posting.byte_start,
+            stream_address(&ints, posting.address_offset, 0),
+        );
+        for chunk in &chunks {
+            let mut actual = vec![0u8; chunk.len()];
+            reader.read_bytes(&pool, &mut actual);
+            assert_eq!(&actual, chunk);
+        }
+        assert!(reader.eof());
+    }
+
+    #[test]
+    fn v_ints_round_trip_across_slice_boundaries() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
+        let values: Vec<i32> = vec![0, 1, 127, 128, 300, 16_383, 16_384, 1 << 20, i32::MAX];
+        // Interleave the two streams to prove they stay independent.
+        for value in &values {
+            field
+                .write_v_int(&mut pool, &mut ints, slot.term_id, 0, *value)
+                .expect("stream 0");
+            field
+                .write_v_int(&mut pool, &mut ints, slot.term_id, 1, *value / 2)
+                .expect("stream 1");
+        }
+
+        let posting = *field.posting(slot.term_id);
+        for stream in 0..2 {
+            let mut reader = ByteSliceReader::new();
+            reader.init(
+                posting.byte_start + (stream * FIRST_LEVEL_SIZE) as i32,
+                stream_address(&ints, posting.address_offset, stream),
+            );
+            for value in &values {
+                let expected = if stream == 0 { *value } else { *value / 2 };
+                assert_eq!(reader.read_v_int(&pool).expect("v int"), expected);
+            }
+            assert!(reader.eof(), "stream {stream} must be fully consumed");
+        }
+    }
+
+    // -- Term interning ----------------------------------------------------
+
+    #[test]
+    fn interning_returns_the_same_id_for_a_repeated_term() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let first = field
+            .intern(&mut pool, &mut ints, b"alpha", 0)
+            .expect("alpha");
+        let second = field
+            .intern(&mut pool, &mut ints, b"beta", 0)
+            .expect("beta");
+        let again = field
+            .intern(&mut pool, &mut ints, b"alpha", 1)
+            .expect("alpha again");
+        assert_eq!((first.term_id, first.is_new), (0, true));
+        assert_eq!((second.term_id, second.is_new), (1, true));
+        assert_eq!((again.term_id, again.is_new), (0, false));
+        assert_eq!(field.num_terms(), 2);
+    }
+
+    #[test]
+    fn ram_accounting_grows_with_buffered_terms_and_returns_on_reset() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut writer = FreqProxTermsWriter::new(Arc::clone(&bytes_used));
+        let info = field_info("body", IndexOptions::DOCS_AND_FREQS, false);
+        let index = writer.add_field(&info);
+        let mut state = FieldInvertState::new(10, "body".to_string(), info.index_options);
+        state.reset();
+        for i in 0..500u32 {
+            let term = format!("term{i}");
+            state.set_position(state.position() + 1);
+            let (pool, int_pool, field) = writer.pool_and_field(index);
+            field
+                .add(
+                    pool,
+                    int_pool,
+                    &mut state,
+                    term.as_bytes(),
+                    0,
+                    &InvertedToken {
+                        start_offset: 0,
+                        end_offset: 1,
+                        payload: None,
+                        term_freq: 1,
+                        has_term_freq_attribute: false,
+                    },
+                )
+                .expect("add");
+        }
+        let after = bytes_used.load(Ordering::Acquire);
+        assert!(after > 0, "buffered terms must be accounted");
+        writer.abort();
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire),
+            0,
+            "aborting must return every accounted byte"
+        );
+    }
+
+    // -- Postings encoding, one test per IndexOptions level ----------------
+
+    #[test]
+    fn docs_only_records_documents_without_frequencies() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("alpha", 1)])
+            .expect("doc 0");
+        harness.add_doc(1, &[Token::new("beta", 1)]).expect("doc 1");
+        harness
+            .add_doc(2, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 2");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        assert!(!terms.has_freqs());
+        assert!(!terms.has_positions());
+
+        let read = read_back(&fields, "body");
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].0, "alpha");
+        assert_eq!(
+            read[0].1.iter().map(|doc| doc.doc).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(read[1].0, "beta");
+        assert_eq!(
+            read[1].1.iter().map(|doc| doc.doc).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn docs_and_freqs_records_the_occurrence_count_per_document() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1),
+                    Token::new("beta", 1),
+                    Token::new("alpha", 1),
+                    Token::new("alpha", 1),
+                ],
+            )
+            .expect("doc 0");
+        harness
+            .add_doc(3, &[Token::new("alpha", 1)])
+            .expect("doc 3");
+        let fields = harness.freeze();
+
+        let read = read_back(&fields, "body");
+        assert_eq!(read[0].0, "alpha");
+        assert_eq!(
+            read[0]
+                .1
+                .iter()
+                .map(|doc| (doc.doc, doc.freq))
+                .collect::<Vec<_>>(),
+            vec![(0, 3), (3, 1)]
+        );
+        assert_eq!(read[1].0, "beta");
+        assert_eq!(
+            read[1]
+                .1
+                .iter()
+                .map(|doc| (doc.doc, doc.freq))
+                .collect::<Vec<_>>(),
+            vec![(0, 1)]
+        );
+    }
+
+    #[test]
+    fn positions_are_recorded_with_their_increments() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1),
+                    Token::new("beta", 3),
+                    Token::new("alpha", 1),
+                    // A zero increment stacks a synonym on the previous position.
+                    Token::new("gamma", 0),
+                ],
+            )
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let read = read_back(&fields, "body");
+
+        let positions = |name: &str| -> Vec<i32> {
+            read.iter().find(|(term, _)| term == name).expect("term").1[0]
+                .positions
+                .iter()
+                .map(|position| position.position)
+                .collect()
+        };
+        assert_eq!(positions("alpha"), vec![0, 4]);
+        assert_eq!(positions("beta"), vec![3]);
+        assert_eq!(positions("gamma"), vec![4]);
+    }
+
+    #[test]
+    fn offsets_are_recorded_as_deltas_and_read_back_absolute() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::at("alpha", 1, 0, 5),
+                    Token::at("beta", 1, 6, 10),
+                    Token::at("alpha", 1, 11, 16),
+                ],
+            )
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let read = read_back(&fields, "body");
+
+        let alpha = &read
+            .iter()
+            .find(|(term, _)| term == "alpha")
+            .expect("alpha")
+            .1[0];
+        assert_eq!(
+            alpha
+                .positions
+                .iter()
+                .map(|position| (position.start_offset, position.end_offset))
+                .collect::<Vec<_>>(),
+            vec![(0, 5), (11, 16)]
+        );
+        let beta = &read
+            .iter()
+            .find(|(term, _)| term == "beta")
+            .expect("beta")
+            .1[0];
+        assert_eq!(
+            beta.positions
+                .iter()
+                .map(|position| (position.start_offset, position.end_offset))
+                .collect::<Vec<_>>(),
+            vec![(6, 10)]
+        );
+    }
+
+    #[test]
+    fn payloads_are_recorded_per_position_and_only_where_present() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1).with_payload(&[1, 2, 3]),
+                    Token::new("alpha", 1),
+                    // An empty payload must be treated as no payload at all.
+                    Token::new("alpha", 1).with_payload(&[]),
+                    Token::new("alpha", 1).with_payload(&vec![9u8; 300]),
+                ],
+            )
+            .expect("doc 0");
+        assert!(
+            harness.writer.field(harness.index).saw_payloads(),
+            "the field must remember that it saw a payload"
+        );
+        let fields = harness.freeze();
+        let read = read_back(&fields, "body");
+
+        let payloads: Vec<Option<Vec<u8>>> = read[0].1[0]
+            .positions
+            .iter()
+            .map(|position| position.payload.clone())
+            .collect();
+        assert_eq!(
+            payloads,
+            vec![Some(vec![1, 2, 3]), None, None, Some(vec![9u8; 300]),]
+        );
+    }
+
+    #[test]
+    fn a_multi_valued_field_applies_the_position_and_offset_gaps() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+        harness
+            .add_doc(0, &[Token::at("alpha", 1, 0, 5)])
+            .expect("first value");
+        // The chain adds the analyzer's gaps between two values of one field.
+        harness.apply_gaps(100, 1, 5);
+        harness
+            .add_value(0, &[Token::at("alpha", 1, 0, 5)])
+            .expect("second value");
+        let fields = harness.freeze();
+        let read = read_back(&fields, "body");
+
+        assert_eq!(
+            read[0].1[0]
+                .positions
+                .iter()
+                .map(|position| (
+                    position.position,
+                    position.start_offset,
+                    position.end_offset
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 5), (101, 6, 11)],
+            "the second value must start after the position and offset gaps"
+        );
+        assert_eq!(read[0].1[0].freq, 2);
+    }
+
+    #[test]
+    fn terms_are_frozen_in_ascending_byte_order() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("zeta", 1),
+                    Token::new("alpha", 1),
+                    Token::new("Alpha", 1),
+                    Token::new("beta", 1),
+                ],
+            )
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let read = read_back(&fields, "body");
+        assert_eq!(
+            read.iter()
+                .map(|(term, _)| term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alpha", "alpha", "beta", "zeta"]
+        );
+    }
+
+    #[test]
+    fn a_field_without_tokens_produces_no_terms_and_is_dropped_at_freeze() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness.add_doc(0, &[]).expect("empty doc");
+        assert_eq!(harness.writer.field(harness.index).num_terms(), 0);
+        let fields = harness.freeze();
+        assert_eq!(fields.size(), 0);
+        assert!(fields.terms("body").expect("terms").is_none());
+    }
+
+    // -- Error paths -------------------------------------------------------
+
+    #[test]
+    fn a_custom_term_frequency_is_rejected_when_positions_are_indexed() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        let error = harness
+            .add_doc(0, &[Token::new("alpha", 1).with_term_freq(4)])
+            .expect_err("must be rejected");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_custom_term_frequency_is_rejected_when_frequencies_are_not_indexed() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("first occurrence");
+        let error = harness
+            .add_doc(1, &[Token::new("alpha", 1).with_term_freq(4)])
+            .expect_err("must be rejected");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalState { .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_custom_term_frequency_is_accumulated_when_only_frequencies_are_indexed() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1).with_term_freq(3),
+                    Token::new("alpha", 1).with_term_freq(4),
+                ],
+            )
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let read = read_back(&fields, "body");
+        assert_eq!(read[0].1[0].freq, 7);
+    }
+
+    /// `postings.termFreqs[termID] = Math.addExact(postings.termFreqs[termID],
+    /// getTermFreq())` (`FreqProxTermsWriterPerField.java:196`): a term whose
+    /// custom frequencies overflow an `int` within one document is Java's
+    /// `ArithmeticException("integer overflow")`.
+    #[test]
+    fn a_term_frequency_past_an_int_is_an_arithmetic_error() {
+        let info = field_info("body", IndexOptions::DOCS_AND_FREQS, false);
+        let mut harness = Harness::with_field(info);
+        let error = harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1).with_term_freq(i32::MAX),
+                    Token::new("alpha", 1).with_term_freq(1),
+                ],
+            )
+            .expect_err("the frequency overflows");
+        assert!(
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(message), .. } if message == "integer overflow"),
+            "{error:?}"
+        );
+    }
+
+    /// `addTerm` throws `DuplicateTermException`, an `IllegalStateException`
+    /// (`FreqProxTermsWriterPerField.java:193-194`), and `TermsHashPerField.add`
+    /// rethrows it with the term appended (`TermsHashPerField.java:199-204`):
+    /// `field 'body' has duplicate term 'foo'` in `oracle/fix/ChainCatch.java`
+    /// (cases C and D2) against `lucene-core-10.5.0.jar`.
+    #[test]
+    fn a_duplicate_term_is_rejected_in_a_term_doc_field() {
+        // `FieldInfo.isTermDocField()` is exactly `DOCS_AND_CUSTOM_FREQS`.
+        let info = field_info("body", IndexOptions::DOCS_AND_CUSTOM_FREQS, false);
+        assert!(info.is_term_doc_field());
+        let mut harness = Harness::with_field(info);
+        let error = harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("alpha", 1)])
+            .expect_err("must be rejected");
+        assert!(
+            matches!(
+                error,
+                LuceneError { kind: LuceneErrorKind::IllegalState { ref message, cause: None }, .. }
+                    if message == "field 'body' has duplicate term 'alpha'"
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_term_longer_than_the_block_size_is_rejected() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let huge = vec![b'a'; crate::util::MAX_TERM_LENGTH + 1];
+        let error = field
+            .intern(&mut pool, &mut ints, &huge, 0)
+            .expect_err("too long");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::MaxBytesLengthExceeded(_),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(field.num_terms(), 0);
+    }
+
+    // -- Terms enum contract ----------------------------------------------
+
+    /// #594: `FreqProxTerms.iterator()` calls `FreqProxTermsEnum.reset()`
+    /// (`FreqProxFields.java`), so a fresh enum sits at `ord == -1` and
+    /// `term()` before `next()` is the empty `scratch`; `next()` then reads the
+    /// first term at ord 0.
+    #[test]
+    fn iterator_returns_an_enum_reset_before_the_first_term() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        assert_eq!(enumerator.ord().expect("ord"), -1);
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"");
+        assert_eq!(enumerator.next().expect("next").unwrap().slice(), b"alpha");
+        assert_eq!(enumerator.ord().expect("ord"), 0);
+    }
+
+    #[test]
+    fn seek_ceil_finds_terms_and_reports_the_next_one_otherwise() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(
+                0,
+                &[
+                    Token::new("alpha", 1),
+                    Token::new("delta", 1),
+                    Token::new("gamma", 1),
+                ],
+            )
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+
+        assert_eq!(
+            enumerator
+                .seek_ceil(&BytesRef::new(b"delta".to_vec()))
+                .expect("seek"),
+            SeekStatus::FOUND
+        );
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"delta");
+        assert_eq!(enumerator.ord().expect("ord"), 1);
+
+        assert_eq!(
+            enumerator
+                .seek_ceil(&BytesRef::new(b"beta".to_vec()))
+                .expect("seek"),
+            SeekStatus::NOT_FOUND
+        );
+        assert_eq!(enumerator.term().expect("term").unwrap().slice(), b"delta");
+
+        assert_eq!(
+            enumerator
+                .seek_ceil(&BytesRef::new(b"zulu".to_vec()))
+                .expect("seek"),
+            SeekStatus::END
+        );
+    }
+
+    #[test]
+    fn doc_freq_and_impacts_are_reported_as_unsupported() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        enumerator.next().expect("first term");
+        assert!(matches!(
+            enumerator.doc_freq(),
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            enumerator.total_term_freq(),
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            enumerator.impacts(0),
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
+    }
+
+    fn drain_positions(postings: &mut dyn PostingsEnum) -> Vec<(i32, Vec<i32>)> {
+        let mut out = Vec::new();
+        loop {
+            let doc = postings.next_doc().expect("next doc");
+            if doc == NO_MORE_DOCS {
+                return out;
+            }
+            let freq = postings.freq().expect("freq");
+            let positions = (0..freq)
+                .map(|_| postings.next_position().expect("position"))
+                .collect();
+            out.push((doc, positions));
+        }
+    }
+
+    /// G-111: `FreqProxPostingsEnum.startOffset()` and `endOffset()` throw
+    /// `IllegalStateException("offsets were not indexed")` when the field has
+    /// positions but no offsets (`FreqProxFields.java:520-534`).
+    #[test]
+    fn gap_g111_freq_prox_offsets_were_not_indexed() {
+        for end in [false, true] {
+            let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+            harness
+                .add_doc(0, &[Token::new("alpha", 1)])
+                .expect("doc 0");
+            let fields = harness.freeze();
+            let terms = fields.terms("body").expect("terms").expect("present");
+            let mut enumerator = terms.iterator().expect("iterator");
+            enumerator.next().expect("alpha");
+            let mut postings = enumerator
+                .postings(None, POSTINGS_ENUM_POSITIONS)
+                .expect("postings")
+                .unwrap();
+            postings.next_doc().unwrap();
+            postings.next_position().unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if end {
+                    postings.end_offset()
+                } else {
+                    postings.start_offset()
+                }
+            }));
+            let payload = result.expect_err("offsets were not indexed");
+            let text = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            assert!(text.contains("offsets were not indexed"), "{text}");
+        }
+    }
+
+    /// `FreqProxTermsEnum.postings` resets and hands back the
+    /// `FreqProxPostingsEnum` it is offered exactly when it reads the same
+    /// postings array (`FreqProxFields.java:242-249`): a later term of the
+    /// field, or another iterator over the field, reuses it; another field's
+    /// enum, or a `FreqProxDocsEnum`, does not.
+    #[test]
+    fn freq_prox_postings_enum_is_reused_over_the_same_postings_array() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        harness.add_doc(1, &[Token::new("beta", 1)]).expect("doc 1");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+
+        enumerator.next().expect("alpha");
+        let alpha = enumerator
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .expect("alpha")
+            .unwrap();
+        let alpha_identity = identity(alpha.as_ref());
+        enumerator.next().expect("beta");
+        let mut beta = enumerator
+            .postings(Some(alpha), POSTINGS_ENUM_POSITIONS)
+            .expect("beta")
+            .unwrap();
+        assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
+        assert_eq!(
+            drain_positions(beta.as_mut()),
+            vec![(0, vec![1]), (1, vec![0])]
+        );
+
+        let mut again = terms.iterator().expect("iterator");
+        again.next().expect("alpha");
+        let mut alpha = again
+            .postings(Some(beta), POSTINGS_ENUM_POSITIONS)
+            .expect("alpha")
+            .unwrap();
+        assert_eq!(identity(alpha.as_ref()), alpha_identity, "another iterator");
+        assert_eq!(drain_positions(alpha.as_mut()), vec![(0, vec![0])]);
+
+        let mut docs = again
+            .postings(Some(alpha), POSTINGS_ENUM_FREQS)
+            .expect("docs")
+            .unwrap();
+        assert_ne!(identity(docs.as_ref()), alpha_identity, "a docs request");
+        assert!(docs
+            .as_any_mut()
+            .is_some_and(|any| any.is::<FreqProxDocsEnum>()));
+
+        let mut other = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        other.add_doc(0, &[Token::new("alpha", 1)]).expect("doc 0");
+        let other_fields = other.freeze();
+        let other_terms = other_fields.terms("body").expect("terms").expect("present");
+        let mut other_enumerator = other_terms.iterator().expect("iterator");
+        other_enumerator.next().expect("alpha");
+        let foreign = other_enumerator
+            .postings(None, POSTINGS_ENUM_POSITIONS)
+            .expect("alpha")
+            .unwrap();
+        let foreign_identity = identity(foreign.as_ref());
+        let mine = again
+            .postings(Some(foreign), POSTINGS_ENUM_POSITIONS)
+            .expect("alpha")
+            .unwrap();
+        assert_ne!(
+            identity(mine.as_ref()),
+            foreign_identity,
+            "another postings array"
+        );
+    }
+
+    /// The `FreqProxDocsEnum` counterpart (`FreqProxFields.java:262-269`).
+    #[test]
+    fn freq_prox_docs_enum_is_reused_over_the_same_postings_array() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1), Token::new("beta", 1)])
+            .expect("doc 0");
+        harness.add_doc(2, &[Token::new("beta", 1)]).expect("doc 2");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+
+        enumerator.next().expect("alpha");
+        let alpha = enumerator
+            .postings(None, crate::index::POSTINGS_ENUM_NONE)
+            .expect("alpha")
+            .unwrap();
+        let alpha_identity = identity(alpha.as_ref());
+        enumerator.next().expect("beta");
+        let mut beta = enumerator
+            .postings(Some(alpha), crate::index::POSTINGS_ENUM_NONE)
+            .expect("beta")
+            .unwrap();
+        assert_eq!(identity(beta.as_ref()), alpha_identity, "a later term");
+        let mut docs = Vec::new();
+        loop {
+            let doc = beta.next_doc().expect("next doc");
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            docs.push(doc);
+        }
+        assert_eq!(docs, vec![0, 2]);
+
+        let mut other = Harness::new(IndexOptions::DOCS);
+        other.add_doc(0, &[Token::new("alpha", 1)]).expect("doc 0");
+        let other_fields = other.freeze();
+        let other_terms = other_fields.terms("body").expect("terms").expect("present");
+        let mut other_enumerator = other_terms.iterator().expect("iterator");
+        other_enumerator.next().expect("alpha");
+        let beta_identity = identity(beta.as_ref());
+        let foreign = other_enumerator
+            .postings(Some(beta), crate::index::POSTINGS_ENUM_NONE)
+            .expect("alpha")
+            .unwrap();
+        assert_ne!(
+            identity(foreign.as_ref()),
+            beta_identity,
+            "another postings array"
+        );
+    }
+
+    #[test]
+    fn requesting_positions_from_a_docs_only_field_is_refused() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        enumerator.next().expect("first term");
+        assert!(matches!(
+            enumerator.postings(None, POSTINGS_ENUM_POSITIONS),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn requesting_offsets_from_a_positions_only_field_is_refused() {
+        let mut harness = Harness::new(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        enumerator.next().expect("first term");
+        assert!(matches!(
+            enumerator.postings(None, POSTINGS_ENUM_OFFSETS),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
+    }
+
+    /// `FreqProxTermsEnum.postings` refuses `FREQS` on a field that did not
+    /// index them, `throw new IllegalArgumentException("did not index freq")`
+    /// (`FreqProxFields.java:256-260`), and still serves `NONE`.
+    #[test]
+    fn requesting_freqs_from_a_docs_only_field_is_refused() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+        let terms = fields.terms("body").expect("terms").expect("present");
+        let mut enumerator = terms.iterator().expect("iterator");
+        enumerator.next().expect("first term");
+        let error = match enumerator.postings(None, POSTINGS_ENUM_FREQS) {
+            Ok(_) => panic!("a docs-only field did not index freqs"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "did not index freq"),
+            "{error:?}"
+        );
+        assert!(enumerator
+            .postings(None, crate::index::POSTINGS_ENUM_NONE)
+            .is_ok());
+    }
+
+    // -- applyDeletes ------------------------------------------------------
+
+    #[test]
+    fn apply_deletes_clears_documents_below_the_doc_id_upto() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        for doc in 0..5 {
+            harness
+                .add_doc(doc, &[Token::new("alpha", 1)])
+                .expect("doc");
+        }
+        harness.add_doc(5, &[Token::new("beta", 1)]).expect("doc 5");
+        let fields = harness.freeze();
+
+        let mut live_docs = None;
+        let mut del_count = 0;
+        let mut deletes = DeletedTerms::new();
+        deletes
+            .put(&Term::new("body", BytesRef::new(b"alpha".to_vec())), 3)
+            .expect("put");
+        apply_deletes_to(&fields, &deletes, 6, &mut live_docs, &mut del_count).expect("deletes");
+
+        assert_eq!(del_count, 3, "docs 0, 1 and 2 carry the deleted term");
+        let bits = live_docs.expect("live docs");
+        assert!(!bits.get(0) && !bits.get(1) && !bits.get(2));
+        assert!(bits.get(3) && bits.get(4) && bits.get(5));
+    }
+
+    #[test]
+    fn apply_deletes_ignores_terms_and_fields_that_are_absent() {
+        let mut harness = Harness::new(IndexOptions::DOCS);
+        harness
+            .add_doc(0, &[Token::new("alpha", 1)])
+            .expect("doc 0");
+        let fields = harness.freeze();
+
+        let mut live_docs = None;
+        let mut del_count = 0;
+        let mut deletes = DeletedTerms::new();
+        deletes
+            .put(&Term::new("body", BytesRef::new(b"missing".to_vec())), 10)
+            .expect("put");
+        deletes
+            .put(&Term::new("other", BytesRef::new(b"alpha".to_vec())), 10)
+            .expect("put");
+        apply_deletes_to(&fields, &deletes, 1, &mut live_docs, &mut del_count).expect("deletes");
+        assert_eq!(del_count, 0);
+        assert!(
+            live_docs.is_none(),
+            "no bitset is allocated when nothing is deleted"
+        );
+    }
+
+    // -- Chained term hash --------------------------------------------------
+
+    #[test]
+    fn a_chained_table_keys_on_the_offset_the_primary_interned_the_term_at() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = TermsHashPerField::new(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+        let mut chained = TermsHashPerField::new_chained(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+
+        let mut text_starts = Vec::new();
+        for term in ["gamma", "alpha", "gamma", "beta"] {
+            let slot = primary
+                .intern(&mut term_pool, &mut ints, term.as_bytes(), 0)
+                .expect("intern");
+            text_starts.push(primary.text_start(slot.term_id));
+        }
+        // "gamma" was interned once, so it has one offset and one chained id.
+        assert_eq!(text_starts[0], text_starts[2]);
+
+        let ids: Vec<TermSlot> = text_starts
+            .iter()
+            .map(|start| {
+                chained
+                    .intern_by_text_start(&mut streams, &mut ints, *start)
+                    .expect("chained intern")
+            })
+            .collect();
+        assert_eq!(
+            ids[0],
+            TermSlot {
+                term_id: 0,
+                is_new: true
+            }
+        );
+        assert_eq!(
+            ids[1],
+            TermSlot {
+                term_id: 1,
+                is_new: true
+            }
+        );
+        assert_eq!(
+            ids[2],
+            TermSlot {
+                term_id: 0,
+                is_new: false
+            }
+        );
+        assert_eq!(
+            ids[3],
+            TermSlot {
+                term_id: 2,
+                is_new: true
+            }
+        );
+        assert_eq!(chained.num_terms(), 3);
+
+        chained.sort_terms(&term_pool);
+        let num_terms = chained.num_terms() as usize;
+        let sorted: Vec<&[u8]> = chained.get_sorted_term_ids()[..num_terms]
+            .iter()
+            .map(|&id| term_pool.term_bytes(chained.text_start(id)))
+            .collect();
+        assert_eq!(sorted, vec![&b"alpha"[..], &b"beta"[..], &b"gamma"[..]]);
+    }
+
+    #[test]
+    fn a_chained_table_writes_its_streams_into_its_own_pool() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut primary = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let mut chained = TermsHashPerField::new_chained(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = primary
+            .intern(&mut term_pool, &mut ints, b"alpha", 0)
+            .expect("intern");
+        let text_start = primary.text_start(slot.term_id);
+        let term_pool_len_before = term_pool.byte_upto();
+
+        let chained_slot = chained
+            .intern_by_text_start(&mut streams, &mut ints, text_start)
+            .expect("chained intern");
+        for stream in 0..2 {
+            for value in [0, 1, 300, 70_000] {
+                chained
+                    .write_v_int(&mut streams, &mut ints, chained_slot.term_id, stream, value)
+                    .expect("write");
+            }
+        }
+        assert_eq!(
+            term_pool.byte_upto(),
+            term_pool_len_before,
+            "the chained table must not touch the term pool"
+        );
+        for stream in 0..2 {
+            let mut reader = ByteSliceReader::new();
+            chained.init_reader(&ints, &mut reader, chained_slot.term_id, stream);
+            for value in [0, 1, 300, 70_000] {
+                assert_eq!(reader.read_v_int(&streams).expect("read"), value);
+            }
+            assert!(reader.eof());
+        }
+    }
+
+    #[test]
+    fn resetting_a_chained_table_keeps_it_keyed_on_pool_offsets() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut term_pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut streams = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let text_start = term_pool.add_bytes_ref(b"alpha").expect("intern");
+        let mut chained = TermsHashPerField::new_chained(
+            2,
+            "body".to_string(),
+            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS,
+            bytes_used,
+        );
+        chained
+            .intern_by_text_start(&mut streams, &mut ints, text_start)
+            .expect("first document");
+        chained.reset();
+        assert_eq!(chained.num_terms(), 0);
+        // `reinitHash()` precedes the next document, as
+        // `TermVectorsConsumerPerField.start` calls it.
+        chained.reinit_hash();
+        let slot = chained
+            .intern_by_text_start(&mut streams, &mut ints, text_start)
+            .expect("second document");
+        assert!(slot.is_new, "the reset dropped the previous document's ids");
+    }
+
+    // -- PooledSliceReader --------------------------------------------------
+
+    /// Java charges the term hash for the *slots it allocated*, not for the
+    /// terms it used: the `BytesRefHash` constructor calls
+    /// `PostingsBytesStartArray.init()`, which allocates two slots and charges
+    /// both, and `grow()` replaces the array with
+    /// `ArrayUtil.oversize(size + 1, bytesPerPosting())` slots and charges the
+    /// difference, at `FreqProxPostingsArray.bytesPerPosting()` — 20 bytes for
+    /// a docs-only field (`TermsHashPerField.java:290-308`,
+    /// `FreqProxTermsWriterPerField.java:292-305`).
+    #[test]
+    fn the_postings_table_charges_every_slot_it_allocates() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let bytes_per_posting = freq_prox_bytes_per_posting(IndexOptions::DOCS);
+        assert_eq!(bytes_per_posting, 20);
+
+        // The constructor charges the hash's `HASH_INIT_SIZE` slots and the two
+        // postings slots of `createPostingsArray(2)`.
+        assert_eq!(field.postings.len(), INITIAL_POSTINGS_SLOTS);
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire),
+            4 * 4 + INITIAL_POSTINGS_SLOTS as i64 * bytes_per_posting
+        );
+
+        // A term that fits in the slots already allocated charges nothing.
+        let before = bytes_used.load(Ordering::Acquire);
+        field.grow_postings(1);
+        assert_eq!(field.postings.len(), INITIAL_POSTINGS_SLOTS);
+        assert_eq!(bytes_used.load(Ordering::Acquire), before);
+
+        // The next one grows to `oversize(size + 1, bytesPerPosting)` and
+        // charges exactly the slots it added.
+        let grown = ArrayUtil::oversize(INITIAL_POSTINGS_SLOTS + 1, bytes_per_posting as usize);
+        assert!(grown > INITIAL_POSTINGS_SLOTS);
+        let before = bytes_used.load(Ordering::Acquire);
+        field.grow_postings(INITIAL_POSTINGS_SLOTS);
+        assert_eq!(field.postings.len(), grown);
+        assert_eq!(
+            bytes_used.load(Ordering::Acquire) - before,
+            (grown - INITIAL_POSTINGS_SLOTS) as i64 * bytes_per_posting
+        );
+
+        // And releasing hands every allocated slot and the hash back.
+        field.release_accounting();
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
+        assert!(field.postings.is_empty());
+    }
+
+    /// Interning terms drives the same growth, so a field holding three terms
+    /// has allocated — and charged for — more slots than it has terms.
+    #[test]
+    fn interning_terms_allocates_slots_ahead_of_the_terms_that_need_them() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        for term in [&b"a"[..], b"b", b"c"] {
+            field.intern(&mut pool, &mut ints, term, 0).expect("intern");
+        }
+        assert_eq!(field.num_terms(), 3);
+        assert_eq!(
+            field.postings.len(),
+            ArrayUtil::oversize(
+                INITIAL_POSTINGS_SLOTS + 1,
+                freq_prox_bytes_per_posting(IndexOptions::DOCS) as usize
+            )
+        );
+        assert!(field.postings.len() > field.num_terms() as usize);
+        // Every term still reads back its own slot.
+        for term_id in 0..3 {
+            assert!(field.posting(term_id).byte_start >= 0);
+        }
+    }
+
+    /// `IndexingChain.IntBlockAllocator.recycleIntBlocks(blocks, offset,
+    /// length)` subtracts `length` blocks, and `IntBlockPool.reset` passes the
+    /// end of the recycled range as `length` (`IndexingChain.java:2130-2133`,
+    /// `IntBlockPool.java:124`): with `reuseFirst` the kept first block is
+    /// subtracted too.
+    #[test]
+    fn recycling_int_blocks_subtracts_what_lucene_does() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = TermsHash::new_int_pool(&bytes_used);
+        for _ in 0..3 {
+            pool.next_buffer().unwrap();
+        }
+        let block = (INT_BLOCK_SIZE * std::mem::size_of::<i32>()) as i64;
+        assert_eq!(bytes_used.load(Ordering::Acquire), 3 * block);
+        pool.reset(false, true);
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
+        pool.next_buffer().unwrap();
+        pool.reset(false, false);
+        assert_eq!(bytes_used.load(Ordering::Acquire), -block);
+    }
+
+    /// `TermsHash.abort()` drops every buffered byte and gives the counter back
+    /// what the pool charged.
+    #[test]
+    fn aborting_a_terms_hash_releases_its_pool() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut hash = TermsHash::new(Arc::clone(&bytes_used));
+        hash.pool_mut()
+            .add_bytes_ref(b"a term long enough to take a block")
+            .expect("intern");
+        assert!(bytes_used.load(Ordering::Acquire) > 0);
+        hash.abort();
+        assert_eq!(bytes_used.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_pooled_slice_reader_reads_the_stream_as_a_data_input() {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
+        let payload: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        field
+            .write_v_int(&mut pool, &mut ints, slot.term_id, 0, 12_345)
+            .expect("v int");
+        field
+            .write_bytes(&mut pool, &mut ints, slot.term_id, 0, &payload)
+            .expect("bytes");
+
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&ints, &mut reader, slot.term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        assert_eq!(input.read_v_int().expect("v int"), 12_345);
+        let mut read_back = vec![0u8; payload.len()];
+        input
+            .read_bytes(Some(&mut read_back), 0, payload.len())
+            .expect("bytes");
+        assert_eq!(read_back, payload);
+        assert!(input.eof());
+    }
+
+    /// A pooled slice holding one byte, and a fresh reader over it.
+    fn one_byte_slice() -> (ByteBlockPool, IntBlockPool, TermsHashPerField, i32) {
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut pool = ByteBlockPool::new(Arc::clone(&bytes_used));
+        let mut ints = IntBlockPool::new();
+        let mut field = TermsHashPerField::new(
+            1,
+            "body".to_string(),
+            IndexOptions::DOCS,
+            Arc::clone(&bytes_used),
+        );
+        let slot = field
+            .intern(&mut pool, &mut ints, b"term", 0)
+            .expect("intern");
+        field
+            .write_byte(&mut pool, &mut ints, slot.term_id, 0, 7)
+            .expect("byte");
+        (pool, ints, field, slot.term_id)
+    }
+
+    /// `ByteSliceReader.readByte` begins with `assert !eof()`
+    /// (`ByteSliceReader.java:70-75`): a debug build — Java under `-ea` —
+    /// stops on a read past the end of the stream.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "assertion failed: !self.eof()")]
+    fn a_pooled_slice_over_read_trips_lucenes_eof_assertion_in_debug_builds() {
+        let (pool, ints, field, term_id) = one_byte_slice();
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&ints, &mut reader, term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        assert_eq!(input.read_byte().expect("byte"), 7);
+        let _ = input.read_byte();
+    }
+
+    /// `ByteSliceReader.skipBytes` refuses a negative count with
+    /// `IllegalArgumentException` (`ByteSliceReader.java:139-145`) and
+    /// otherwise reads the bytes it skips.
+    #[test]
+    fn a_pooled_slice_reader_skips_as_lucene_does() {
+        let (pool, ints, field, term_id) = one_byte_slice();
+        let mut reader = ByteSliceReader::new();
+        field.init_reader(&ints, &mut reader, term_id, 0);
+        let mut input = PooledSliceReader::new(reader, &pool);
+        let error = input.skip_bytes(-1).expect_err("negative skip");
+        assert!(
+            matches!(
+                error,
+                LuceneError {
+                    kind: LuceneErrorKind::IllegalArgument { .. },
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        input.skip_bytes(1).expect("one byte to skip");
+        assert!(input.eof());
+    }
+
+    // -- Field ordering ------------------------------------------------------
+
+    #[test]
+    fn buffered_fields_are_frozen_in_utf16_name_order() {
+        // `U+10000` sorts before `U+FFFF` in Java's `String.compareTo` and
+        // after it in Rust's `str` ordering; the order reaches the `.tim` file.
+        let bytes_used = Arc::new(AtomicI64::new(0));
+        let mut writer = FreqProxTermsWriter::new(Arc::clone(&bytes_used));
+        let names = ["\u{FFFF}", "\u{10000}", "a"];
+        for (number, name) in names.iter().enumerate() {
+            let mut info = FieldInfo::new(*name, number as i32);
+            info.index_options = IndexOptions::DOCS;
+            let index = writer.add_field(&info);
+            let mut state = FieldInvertState::new(10, (*name).to_string(), IndexOptions::DOCS);
+            let (pool, int_pool, field) = writer.pool_and_field(index);
+            field
+                .add(
+                    pool,
+                    int_pool,
+                    &mut state,
+                    b"token",
+                    0,
+                    &InvertedToken {
+                        start_offset: 0,
+                        end_offset: 5,
+                        payload: None,
+                        term_freq: 1,
+                        has_term_freq_attribute: false,
+                    },
+                )
+                .expect("add");
+        }
+        let fields = writer.freeze();
+        let frozen: Vec<String> = fields.iterator().collect();
+        assert_eq!(frozen, vec!["a", "\u{10000}", "\u{FFFF}"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // #276: `SortingTermsEnum.postings` reuses as Java does
+    // -----------------------------------------------------------------------
+
+    use std::sync::Mutex;
+
+    fn identity<T: ?Sized>(object: &T) -> usize {
+        object as *const T as *const () as usize
+    }
+
+    /// Postings over a fixed list of documents, each with frequency 1.
+    struct ListPostings {
+        docs: Vec<i32>,
+        upto: usize,
+        doc: i32,
+    }
+
+    impl ListPostings {
+        fn new(docs: Vec<i32>) -> Self {
+            Self {
+                docs,
+                upto: 0,
+                doc: -1,
+            }
+        }
+    }
+
+    impl std::fmt::Display for ListPostings {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ListPostings")
+        }
+    }
+
+    impl DocIdSetIterator for ListPostings {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.doc = match self.docs.get(self.upto) {
+                Some(&doc) => doc,
+                None => NO_MORE_DOCS,
+            };
+            self.upto += 1;
+            Ok(self.doc)
+        }
+
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.slow_advance(target)
+        }
+
+        fn cost(&self) -> i64 {
+            self.docs.len() as i64
+        }
+    }
+
+    impl PostingsEnum for ListPostings {
+        fn freq(&self) -> Result<i32> {
+            Ok(1)
+        }
+
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(-1)
+        }
+
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+    }
+
+    /// The delegate of a [`SortingTermsEnum`]: it records the identity of
+    /// every `reuse` it is offered (`None` for none) and reuses a
+    /// [`ListPostings`] in place, as a codec reuses its own enum.
+    struct RecordingTermsEnum {
+        terms: Vec<(BytesRef, Vec<i32>)>,
+        pos: usize,
+        offered: Arc<Mutex<Vec<Option<usize>>>>,
+        atts: AttributeSource,
+    }
+
+    impl std::fmt::Display for RecordingTermsEnum {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RecordingTermsEnum")
+        }
+    }
+
+    impl TermsEnum for RecordingTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+
+        fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+            Err(LuceneError::unsupported_operation("not used".to_string()))
+        }
+
+        fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+            Err(LuceneError::unsupported_operation("not used".to_string()))
+        }
+
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.pos - 1].0))
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("not used".to_string()))
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(self.terms[self.pos - 1].1.len() as i32)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(self.terms[self.pos - 1].1.len() as i64)
+        }
+
+        fn postings(
+            &mut self,
+            reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            self.offered
+                .lock()
+                .unwrap()
+                .push(reuse.as_deref().map(identity));
+            let docs = self.terms[self.pos - 1].1.clone();
+            if let Some(mut reuse) = reuse {
+                if let Some(postings) = reuse
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<ListPostings>())
+                {
+                    *postings = ListPostings::new(docs);
+                    return Ok(Some(reuse));
+                }
+            }
+            Ok(Some(Box::new(ListPostings::new(docs))))
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::unsupported_operation("not used".to_string()))
+        }
+
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            self.pos += 1;
+            Ok(self.terms.get(self.pos - 1).map(|(term, _)| term))
+        }
+    }
+
+    type Offered = Arc<Mutex<Vec<Option<usize>>>>;
+
+    /// A `SortingTermsEnum` over terms `a` (docs 0, 1) and `b` (doc 2) of a
+    /// four-document segment whose sort reverses the documents.
+    fn sorting_terms_enum(index_options: IndexOptions) -> (SortingTermsEnum, Offered) {
+        let offered: Offered = Arc::new(Mutex::new(Vec::new()));
+        let delegate = RecordingTermsEnum {
+            terms: vec![
+                (BytesRef::new(b"a".to_vec()), vec![0, 1]),
+                (BytesRef::new(b"b".to_vec()), vec![2]),
+            ],
+            pos: 0,
+            offered: Arc::clone(&offered),
+            atts: AttributeSource::new(),
+        };
+        let reverse: crate::index::index_sorter::DocComparator = Box::new(|a, b| b.cmp(&a));
+        let doc_map = crate::index::index_sorter::Sorter::sort(4, &reverse).unwrap();
+        (
+            SortingTermsEnum::new(Box::new(delegate), Arc::new(doc_map), index_options),
+            offered,
+        )
+    }
+
+    fn drain_sorted(postings: &mut dyn PostingsEnum) -> Vec<i32> {
+        let mut docs = Vec::new();
+        loop {
+            let doc = postings.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                return docs;
+            }
+            docs.push(doc);
+        }
+    }
+
+    #[test]
+    fn sorting_postings_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        let outer = identity(postings.as_ref());
+        assert!(postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<SortingPostingsEnum>()));
+        assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
+
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof SortingPostingsEnum`: the same object comes back"
+        );
+        assert_eq!(drain_sorted(postings.as_mut()), vec![1]);
+
+        let offered = offered.lock().unwrap();
+        assert_eq!(offered.len(), 2);
+        assert_eq!(offered[0], None);
+        assert!(
+            offered[1].is_some(),
+            "`inReuse = wrapReuse.getWrapped()` is offered to the delegate"
+        );
+    }
+
+    #[test]
+    fn sorting_docs_enum_is_reused_and_hands_its_wrapped_enum_to_the_delegate() {
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        let outer = identity(postings.as_ref());
+        assert!(postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<SortingDocsEnum>()));
+        assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
+
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof SortingDocsEnum`: the same object comes back"
+        );
+        assert_eq!(drain_sorted(postings.as_mut()), vec![1]);
+        let offered = offered.lock().unwrap();
+        assert_eq!(offered[0], None);
+        assert!(offered[1].is_some());
+    }
+
+    #[test]
+    fn the_wrapped_enum_offered_to_the_delegate_is_the_one_it_returned_last() {
+        // The delegate reuses its own enum, so the enum the wrapper holds after
+        // the second call is the very one it got from the first.
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        let wrapped = postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+            .unwrap()
+            .get_wrapped()
+            .unwrap();
+        let wrapped_identity = identity(wrapped.as_ref());
+        // Put it back, as `reset` would have left it.
+        postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<SortingPostingsEnum>())
+            .unwrap()
+            .in_ = Some(wrapped);
+
+        assert!(terms_enum.next().unwrap().is_some());
+        let _postings = terms_enum
+            .postings(Some(postings), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offered.lock().unwrap()[1], Some(wrapped_identity));
+    }
+
+    #[test]
+    fn a_reuse_of_another_type_goes_to_the_delegate_and_a_new_wrapper_is_built() {
+        // A SortingDocsEnum offered where a SortingPostingsEnum is wanted is
+        // neither reused nor unwrapped: `inReuse = reuse`.
+        let (mut docs_terms_enum, _) = sorting_terms_enum(IndexOptions::DOCS);
+        assert!(docs_terms_enum.next().unwrap().is_some());
+        let docs_enum = docs_terms_enum
+            .postings(None, POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        let docs_enum_identity = identity(docs_enum.as_ref());
+
+        let (mut terms_enum, offered) = sorting_terms_enum(IndexOptions::DOCS_AND_FREQS);
+        assert!(terms_enum.next().unwrap().is_some());
+        let mut postings = terms_enum
+            .postings(Some(docs_enum), POSTINGS_ENUM_FREQS)
+            .unwrap()
+            .unwrap();
+        assert_ne!(identity(postings.as_ref()), docs_enum_identity);
+        assert!(postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<SortingPostingsEnum>()));
+        assert_eq!(offered.lock().unwrap()[0], Some(docs_enum_identity));
+        assert_eq!(drain_sorted(postings.as_mut()), vec![2, 3]);
+    }
+}

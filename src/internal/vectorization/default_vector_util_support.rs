@@ -1,0 +1,701 @@
+//! Port of `org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport`.
+
+#![deny(unsafe_code)]
+
+use crate::error::{LuceneError, Result};
+use crate::internal::vectorization::VectorUtilSupport;
+use crate::util::vector_util;
+use crate::util::BitUtil;
+
+/// Scalar implementation of [`VectorUtilSupport`].
+///
+/// Equivalent to `org.apache.lucene.internal.vectorization.DefaultVectorUtilSupport`.
+///
+/// Every kernel is implemented here, operation by operation (the accumulator
+/// count and the summation order are observable in the float results);
+/// [`crate::util::vector_util`] reaches them, as Java's `VectorUtil` does,
+/// through the `VectorUtilSupport` of the selected provider.
+///
+/// # Divergence from Lucene 10.5.0
+///
+/// Lucene declares this class package-private. Rust has no package visibility,
+/// and the type must be nameable for
+/// [`DefaultVectorizationProvider`](super::DefaultVectorizationProvider) to
+/// return it, so it is `pub` here. It is not part of Rucene's supported API.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DefaultVectorUtilSupport;
+
+impl DefaultVectorUtilSupport {
+    /// Creates the (stateless) scalar support.
+    ///
+    /// Equivalent to the package-private `DefaultVectorUtilSupport()` constructor.
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Returns `a * b + c`, fusing the multiply and the add when the platform
+    /// offers a fast scalar FMA.
+    ///
+    /// Equivalent to the private static `DefaultVectorUtilSupport.fma(float,
+    /// float, float)` (`DefaultVectorUtilSupport.java:29-36`), which picks the
+    /// fused form on `Constants.HAS_FAST_SCALAR_FMA`. `HAS_FAST_SCALAR_FMA` is
+    /// the value of [`vector_util::use_fma`] (evaluated once, as Java's
+    /// `static final`), which each float kernel reads once per call and passes
+    /// here as a constant.
+    ///
+    /// PERF: Java's `static final` is a JIT constant, so its check costs nothing
+    /// per element; reading the `LazyLock` here per element cost a load, a
+    /// compare and a branch per element (cycle 5, #588 item 1). The kernels are
+    /// monomorphised on the flag instead: same operations, same order, so the
+    /// results are bit-identical.
+    #[inline(always)]
+    fn fma<const HAS_FAST_SCALAR_FMA: bool>(a: f32, b: f32, c: f32) -> f32 {
+        if HAS_FAST_SCALAR_FMA {
+            a.mul_add(b, c)
+        } else {
+            a * b + c
+        }
+    }
+
+    /// Computes the dot product between a transposed 4-bit query vector and a
+    /// transposed binary document vector.
+    ///
+    /// Equivalent to the `public static`
+    /// `DefaultVectorUtilSupport.int4BitDotProductImpl(byte[], byte[])`.
+    ///
+    /// Lucene only asserts that `q` is exactly four times as long as `d`
+    /// (`DefaultVectorUtilSupport.java:285`); the port keeps that as a
+    /// `debug_assert!`, and [`crate::util::vector_util::int4_bit_dot_product`]
+    /// performs the argument check, as `VectorUtil.int4BitDotProduct` does.
+    ///
+    /// # Errors
+    ///
+    /// Never fails; the `Result` is the shape of
+    /// `VectorUtilSupport::int4_bit_dot_product`.
+    pub fn int4_bit_dot_product_impl(q: &[u8], d: &[u8]) -> Result<i64> {
+        debug_assert!(q.len() == d.len() * 4);
+        Ok(Self::int4_bit_dot_product_stripe(q, d, 0, d.len()))
+    }
+
+    /// Computes the dot product between a transposed 4-bit query vector and a
+    /// transposed 2-bit document vector.
+    ///
+    /// Equivalent to the `public static`
+    /// `DefaultVectorUtilSupport.int4DibitDotProductImpl(byte[], byte[])`. The
+    /// dibit vector has two stripes (lower bits first, then upper bits), so the
+    /// scoring is two passes of the int4-bit dot product with the results
+    /// shifted appropriately.
+    ///
+    /// Lucene only asserts that `q` is exactly twice as long as `d`
+    /// (`DefaultVectorUtilSupport.java:304`); the port keeps that as a
+    /// `debug_assert!`, and [`crate::util::vector_util::int4_dibit_dot_product`]
+    /// performs the argument check, as `VectorUtil.int4DibitDotProduct` does.
+    ///
+    /// # Errors
+    ///
+    /// Never fails; the `Result` is the shape of
+    /// `VectorUtilSupport::int4_dibit_dot_product`.
+    pub fn int4_dibit_dot_product_impl(q: &[u8], d: &[u8]) -> Result<i64> {
+        debug_assert!(q.len() == d.len() * 2);
+        let stripe_size = d.len() / 2;
+        let ret0 = Self::int4_bit_dot_product_stripe(q, d, 0, stripe_size);
+        let ret1 = Self::int4_bit_dot_product_stripe(q, d, stripe_size, stripe_size);
+        Ok(ret0 + (ret1 << 1))
+    }
+
+    /// Computes the int4-bit dot product against one stripe of the document
+    /// vector.
+    ///
+    /// Equivalent to the private
+    /// `DefaultVectorUtilSupport.int4BitDotProductImpl(byte[], byte[], int, int)`.
+    ///
+    /// Lucene reads four bytes at a time through `BitUtil.VH_NATIVE_INT`. The
+    /// byte order is irrelevant to the result because the value is only ever
+    /// fed to a population count, which is invariant under byte permutation, so
+    /// this port reads little-endian unconditionally.
+    fn int4_bit_dot_product_stripe(q: &[u8], d: &[u8], d_offset: usize, stripe_size: usize) -> i64 {
+        let mut ret: i64 = 0;
+        for i in 0..4usize {
+            let mut r = 0usize;
+            let mut sub_ret: i64 = 0;
+            let upper_bound = stripe_size & !(std::mem::size_of::<i32>() - 1);
+            while r < upper_bound {
+                let qv = BitUtil::read_le_int(q, i * stripe_size + r) as u32;
+                let dv = BitUtil::read_le_int(d, d_offset + r) as u32;
+                sub_ret += i64::from((qv & dv).count_ones());
+                r += std::mem::size_of::<i32>();
+            }
+            while r < stripe_size {
+                sub_ret += i64::from((q[i * stripe_size + r] & d[d_offset + r]).count_ones());
+                r += 1;
+            }
+            ret += sub_ret << i;
+        }
+        ret
+    }
+}
+
+/// Reinterprets one stored byte as the signed Java `byte` it represents.
+///
+/// Lucene byte vectors hold values in `[-128, 127]`; Rucene stores them in a
+/// `u8` slice, so every arithmetic use must go through this reinterpretation.
+#[inline]
+fn signed(value: u8) -> i32 {
+    value as i8 as i32
+}
+
+/// `Byte.toUnsignedInt(byte)`.
+#[inline]
+fn unsigned(value: u8) -> i32 {
+    value as i32
+}
+
+/// Returns an error when the two vectors have different dimensions.
+///
+/// The message is verbatim from `VectorUtil`, which throws
+/// `IllegalArgumentException("vector dimensions differ: " + a.length + "!=" + b.length)`.
+#[inline]
+pub(crate) fn check_same_dimensions<T, U>(a: &[T], b: &[U]) -> Result<()> {
+    if a.len() != b.len() {
+        return Err(LuceneError::illegal_argument(format!(
+            "vector dimensions differ: {}!={}",
+            a.len(),
+            b.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Returns an error when `unpacked` cannot hold the two half-byte planes that
+/// `packed` addresses.
+#[inline]
+pub(crate) fn check_single_packed(unpacked: &[u8], packed: &[u8]) -> Result<()> {
+    if unpacked.len() < packed.len() * 2 {
+        return Err(LuceneError::illegal_argument(format!(
+            "vector dimensions differ: {}!={}",
+            unpacked.len(),
+            packed.len() * 2
+        )));
+    }
+    Ok(())
+}
+
+/// `Math.min(float, float)` as specified by the JLS.
+///
+/// `f32::min` in Rust returns the non-NaN operand when exactly one operand is
+/// NaN, whereas Java propagates NaN, and Java also prefers `-0.0` over `0.0`.
+#[inline]
+pub(crate) fn java_math_min(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && b.is_sign_negative() {
+        return b;
+    }
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.max(float, float)` as specified by the JLS.
+///
+/// See [`java_math_min`] for why `f32::max` cannot be used.
+#[inline]
+pub(crate) fn java_math_max(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && a.is_sign_negative() {
+        return b;
+    }
+    if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.round(float)` as specified by the JLS.
+///
+/// Reproduces `java.lang.Math.round(float)` bit for bit. `f32::round` in Rust
+/// rounds halves away from zero, whereas Java rounds them towards positive
+/// infinity (`Math.round(-0.5f)` is `0`, `f32::round(-0.5)` is `-1.0`), and the
+/// naive `floor(a + 0.5f)` form double-rounds for arguments just below a half.
+/// The scalar quantizer stores the result in a byte, so the difference is
+/// directly observable in the quantized vector.
+#[inline]
+fn java_math_round(a: f32) -> i32 {
+    /// `FloatConsts.SIGNIFICAND_WIDTH`.
+    const SIGNIFICAND_WIDTH: i32 = 24;
+    /// `FloatConsts.EXP_BIAS`.
+    const EXP_BIAS: i32 = 127;
+    /// `FloatConsts.EXP_BIT_MASK`.
+    const EXP_BIT_MASK: i32 = 0x7F80_0000;
+    /// `FloatConsts.SIGNIF_BIT_MASK`.
+    const SIGNIF_BIT_MASK: i32 = 0x007F_FFFF;
+
+    let int_bits = a.to_bits() as i32;
+    let biased_exp = (int_bits & EXP_BIT_MASK) >> (SIGNIFICAND_WIDTH - 1);
+    let shift = (SIGNIFICAND_WIDTH - 2 + EXP_BIAS) - biased_exp;
+    if (shift & -32) == 0 {
+        // shift is in [0, 32): the exponent is small enough that the rounded
+        // value fits, so round the significand directly.
+        let mut r = (int_bits & SIGNIF_BIT_MASK) | (SIGNIF_BIT_MASK + 1);
+        if int_bits < 0 {
+            r = -r;
+        }
+        ((r >> shift) + 1) >> 1
+    } else {
+        // The argument is NaN, zero, or too large to need rounding; Java's
+        // narrowing float-to-int conversion is saturating and maps NaN to zero,
+        // which is exactly what `as i32` does in Rust.
+        a as i32
+    }
+}
+
+/// The scalar quantizer used by `minMaxScalarQuantize` and
+/// `recalculateScalarQuantizationOffset`.
+///
+/// Equivalent to the package-private nested class
+/// `DefaultVectorUtilSupport.ScalarQuantizer`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScalarQuantizer {
+    alpha: f32,
+    scale: f32,
+    min_quantile: f32,
+    max_quantile: f32,
+}
+
+impl ScalarQuantizer {
+    pub(crate) fn new(alpha: f32, scale: f32, min_quantile: f32, max_quantile: f32) -> Self {
+        Self {
+            alpha,
+            scale,
+            min_quantile,
+            max_quantile,
+        }
+    }
+
+    /// Equivalent to `ScalarQuantizer.quantize(float[], byte[], int)`.
+    pub(crate) fn quantize(&self, vector: &[f32], dest: &mut [u8], start: usize) -> f32 {
+        debug_assert_eq!(vector.len(), dest.len());
+        let mut correction = 0.0f32;
+        for (v, d) in vector[start..].iter().zip(dest[start..].iter_mut()) {
+            correction += self.quantize_float(*v, Some(d));
+        }
+        correction
+    }
+
+    /// Equivalent to `ScalarQuantizer.recalculateOffset(byte[], int, float, float)`.
+    pub(crate) fn recalculate_offset(
+        &self,
+        vector: &[u8],
+        start: usize,
+        old_alpha: f32,
+        old_min_quantile: f32,
+    ) -> f32 {
+        let mut correction = 0.0f32;
+        for &b in &vector[start..] {
+            // undo the old quantization
+            let v = (old_alpha * unsigned(b) as f32) + old_min_quantile;
+            correction += self.quantize_float(v, None);
+        }
+        correction
+    }
+
+    /// Equivalent to `ScalarQuantizer.quantizeFloat(float, byte[], int)`.
+    ///
+    /// Java passes a `byte[]` plus an index, and `null` for the array when only
+    /// the corrective offset is wanted; the Rust port passes the destination
+    /// slot itself, or `None`.
+    fn quantize_float(&self, v: f32, dest: Option<&mut u8>) -> f32 {
+        // Make sure the value is within the quantile range, cutting off the
+        // tails. See the first parenthesis in the equation:
+        // byte = (float - minQuantile) * 127/(maxQuantile - minQuantile)
+        let dx = v - self.min_quantile;
+        let dxc = java_math_max(self.min_quantile, java_math_min(self.max_quantile, v))
+            - self.min_quantile;
+        // Scale the value to the range [0, 127]; this is our quantized value.
+        // scale = 127/(maxQuantile - minQuantile)
+        let rounded_dxs = java_math_round(self.scale * dxc);
+        // We multiply by `alpha` here to get the quantized value back into the
+        // original range, to aid in calculating the corrective offset.
+        let dxq = rounded_dxs as f32 * self.alpha;
+        if let Some(dest) = dest {
+            *dest = rounded_dxs as u8;
+        }
+        // Calculate the corrective offset that needs to be applied to the score
+        // in addition to the `byte * minQuantile * alpha` term in the equation:
+        // the `(dx - dxq) * dxq` term accounts for the rounding of the
+        // quantized value, and `minQuantile^2` is the global correction.
+        self.min_quantile * (v - self.min_quantile / 2.0f32) + (dx - dxq) * dxq
+    }
+}
+
+/// `a * b + c`, or `Math.fma(a, b, c)` when `Constants.HAS_FAST_SCALAR_FMA`
+/// (`FMA`, read once per kernel call).
+#[inline(always)]
+fn fma<const FMA: bool>(a: f32, b: f32, c: f32) -> f32 {
+    DefaultVectorUtilSupport::fma::<FMA>(a, b, c)
+}
+
+/// The body of `DefaultVectorUtilSupport.dotProduct(float[], float[])`: four
+/// accumulators beyond 32 elements, then a scalar tail; the summation order is
+/// observable in the result.
+fn dot_product_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
+    let mut res = 0.0f32;
+    let mut i = 0usize;
+
+    if a.len() > 32 {
+        let mut acc1 = 0.0f32;
+        let mut acc2 = 0.0f32;
+        let mut acc3 = 0.0f32;
+        let mut acc4 = 0.0f32;
+        let upper_bound = a.len() & !3;
+        while i < upper_bound {
+            acc1 = fma::<FMA>(a[i], b[i], acc1);
+            acc2 = fma::<FMA>(a[i + 1], b[i + 1], acc2);
+            acc3 = fma::<FMA>(a[i + 2], b[i + 2], acc3);
+            acc4 = fma::<FMA>(a[i + 3], b[i + 3], acc4);
+            i += 4;
+        }
+        res += acc1 + acc2 + acc3 + acc4;
+    }
+
+    while i < a.len() {
+        res = fma::<FMA>(a[i], b[i], res);
+        i += 1;
+    }
+    res
+}
+
+/// The body of `DefaultVectorUtilSupport.cosine(float[], float[])`.
+fn cosine_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
+    let mut sum = 0.0f32;
+    let mut norm1 = 0.0f32;
+    let mut norm2 = 0.0f32;
+    let mut i = 0usize;
+
+    if a.len() > 32 {
+        let mut sum1 = 0.0f32;
+        let mut sum2 = 0.0f32;
+        let mut norm1_1 = 0.0f32;
+        let mut norm1_2 = 0.0f32;
+        let mut norm2_1 = 0.0f32;
+        let mut norm2_2 = 0.0f32;
+
+        let upper_bound = a.len() & !1;
+        while i < upper_bound {
+            sum1 = fma::<FMA>(a[i], b[i], sum1);
+            norm1_1 = fma::<FMA>(a[i], a[i], norm1_1);
+            norm2_1 = fma::<FMA>(b[i], b[i], norm2_1);
+
+            sum2 = fma::<FMA>(a[i + 1], b[i + 1], sum2);
+            norm1_2 = fma::<FMA>(a[i + 1], a[i + 1], norm1_2);
+            norm2_2 = fma::<FMA>(b[i + 1], b[i + 1], norm2_2);
+            i += 2;
+        }
+        sum += sum1 + sum2;
+        norm1 += norm1_1 + norm1_2;
+        norm2 += norm2_1 + norm2_2;
+    }
+
+    while i < a.len() {
+        sum = fma::<FMA>(a[i], b[i], sum);
+        norm1 = fma::<FMA>(a[i], a[i], norm1);
+        norm2 = fma::<FMA>(b[i], b[i], norm2);
+        i += 1;
+    }
+
+    (f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32
+}
+
+/// The body of `DefaultVectorUtilSupport.squareDistance(float[], float[])`.
+fn square_distance_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
+    let mut res = 0.0f32;
+    let mut i = 0usize;
+
+    if a.len() > 32 {
+        let mut acc1 = 0.0f32;
+        let mut acc2 = 0.0f32;
+        let mut acc3 = 0.0f32;
+        let mut acc4 = 0.0f32;
+
+        let upper_bound = a.len() & !3;
+        while i < upper_bound {
+            let diff1 = a[i] - b[i];
+            acc1 = fma::<FMA>(diff1, diff1, acc1);
+
+            let diff2 = a[i + 1] - b[i + 1];
+            acc2 = fma::<FMA>(diff2, diff2, acc2);
+
+            let diff3 = a[i + 2] - b[i + 2];
+            acc3 = fma::<FMA>(diff3, diff3, acc3);
+
+            let diff4 = a[i + 3] - b[i + 3];
+            acc4 = fma::<FMA>(diff4, diff4, acc4);
+            i += 4;
+        }
+        res += acc1 + acc2 + acc3 + acc4;
+    }
+
+    while i < a.len() {
+        let diff = a[i] - b[i];
+        res = fma::<FMA>(diff, diff, res);
+        i += 1;
+    }
+    res
+}
+
+/// `DefaultVectorUtilSupport.dotProduct(float[], float[])`: reads
+/// `Constants.HAS_FAST_SCALAR_FMA` once and runs the kernel specialised on it.
+fn dot_product_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    if vector_util::use_fma() {
+        dot_product_f32_kernel_impl::<true>(a, b)
+    } else {
+        dot_product_f32_kernel_impl::<false>(a, b)
+    }
+}
+
+/// `DefaultVectorUtilSupport.cosine(float[], float[])`: reads
+/// `Constants.HAS_FAST_SCALAR_FMA` once and runs the kernel specialised on it.
+fn cosine_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    if vector_util::use_fma() {
+        cosine_f32_kernel_impl::<true>(a, b)
+    } else {
+        cosine_f32_kernel_impl::<false>(a, b)
+    }
+}
+
+/// `DefaultVectorUtilSupport.squareDistance(float[], float[])`: reads
+/// `Constants.HAS_FAST_SCALAR_FMA` once and runs the kernel specialised on it.
+fn square_distance_f32_kernel(a: &[f32], b: &[f32]) -> f32 {
+    if vector_util::use_fma() {
+        square_distance_f32_kernel_impl::<true>(a, b)
+    } else {
+        square_distance_f32_kernel_impl::<false>(a, b)
+    }
+}
+
+impl VectorUtilSupport for DefaultVectorUtilSupport {
+    fn dot_product_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
+        check_same_dimensions(a, b)?;
+        Ok(dot_product_f32_kernel(a, b))
+    }
+
+    fn cosine_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
+        check_same_dimensions(a, b)?;
+        Ok(cosine_f32_kernel(a, b))
+    }
+
+    fn square_distance_f32(&self, a: &[f32], b: &[f32]) -> Result<f32> {
+        check_same_dimensions(a, b)?;
+        Ok(square_distance_f32_kernel(a, b))
+    }
+
+    fn dot_product_bytes(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        check_same_dimensions(a, b)?;
+        let mut total: i32 = 0;
+        for i in 0..a.len() {
+            total = total.wrapping_add(signed(a[i]).wrapping_mul(signed(b[i])));
+        }
+        Ok(total)
+    }
+
+    fn uint8_dot_product(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        check_same_dimensions(a, b)?;
+        let mut total: i32 = 0;
+        for i in 0..a.len() {
+            total = total.wrapping_add(unsigned(a[i]).wrapping_mul(unsigned(b[i])));
+        }
+        Ok(total)
+    }
+
+    fn int4_dot_product(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        self.dot_product_bytes(a, b)
+    }
+
+    fn int4_dot_product_single_packed(&self, unpacked: &[u8], packed: &[u8]) -> Result<i32> {
+        check_single_packed(unpacked, packed)?;
+        let mut total: i32 = 0;
+        for i in 0..packed.len() {
+            let packed_byte = packed[i];
+            let unpacked1 = signed(unpacked[i]);
+            let unpacked2 = signed(unpacked[i + packed.len()]);
+            total = total.wrapping_add(i32::from(packed_byte & 0x0F).wrapping_mul(unpacked2));
+            total = total.wrapping_add(i32::from(packed_byte >> 4).wrapping_mul(unpacked1));
+        }
+        Ok(total)
+    }
+
+    fn int4_dot_product_both_packed(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        check_same_dimensions(a, b)?;
+        let mut total: i32 = 0;
+        for i in 0..a.len() {
+            let a_byte = a[i];
+            let b_byte = b[i];
+            total =
+                total.wrapping_add(i32::from(a_byte & 0x0F).wrapping_mul(i32::from(b_byte & 0x0F)));
+            total = total.wrapping_add(i32::from(a_byte >> 4).wrapping_mul(i32::from(b_byte >> 4)));
+        }
+        Ok(total)
+    }
+
+    fn cosine_bytes(&self, a: &[u8], b: &[u8]) -> Result<f32> {
+        check_same_dimensions(a, b)?;
+        let mut sum: i32 = 0;
+        let mut norm1: i32 = 0;
+        let mut norm2: i32 = 0;
+        for i in 0..a.len() {
+            let elem1 = signed(a[i]);
+            let elem2 = signed(b[i]);
+            sum = sum.wrapping_add(elem1.wrapping_mul(elem2));
+            norm1 = norm1.wrapping_add(elem1.wrapping_mul(elem1));
+            norm2 = norm2.wrapping_add(elem2.wrapping_mul(elem2));
+        }
+        Ok((f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32)
+    }
+
+    fn square_distance_bytes(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        check_same_dimensions(a, b)?;
+        let mut square_sum: i32 = 0;
+        for i in 0..a.len() {
+            let diff = signed(a[i]).wrapping_sub(signed(b[i]));
+            square_sum = square_sum.wrapping_add(diff.wrapping_mul(diff));
+        }
+        Ok(square_sum)
+    }
+
+    fn int4_square_distance(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        self.square_distance_bytes(a, b)
+    }
+
+    fn int4_square_distance_single_packed(&self, unpacked: &[u8], packed: &[u8]) -> Result<i32> {
+        check_single_packed(unpacked, packed)?;
+        let mut total: i32 = 0;
+        for i in 0..packed.len() {
+            let packed_byte = packed[i];
+            let unpacked1 = signed(unpacked[i]);
+            let unpacked2 = signed(unpacked[i + packed.len()]);
+
+            let diff1 = i32::from(packed_byte & 0x0F).wrapping_sub(unpacked2);
+            let diff2 = i32::from(packed_byte >> 4).wrapping_sub(unpacked1);
+
+            total = total.wrapping_add(
+                diff1
+                    .wrapping_mul(diff1)
+                    .wrapping_add(diff2.wrapping_mul(diff2)),
+            );
+        }
+        Ok(total)
+    }
+
+    fn int4_square_distance_both_packed(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        check_same_dimensions(a, b)?;
+        let mut total: i32 = 0;
+        for i in 0..a.len() {
+            let a_byte = a[i];
+            let b_byte = b[i];
+
+            let diff1 = i32::from(a_byte & 0x0F).wrapping_sub(i32::from(b_byte & 0x0F));
+            let diff2 = i32::from(a_byte >> 4).wrapping_sub(i32::from(b_byte >> 4));
+
+            total = total.wrapping_add(
+                diff1
+                    .wrapping_mul(diff1)
+                    .wrapping_add(diff2.wrapping_mul(diff2)),
+            );
+        }
+        Ok(total)
+    }
+
+    fn uint8_square_distance(&self, a: &[u8], b: &[u8]) -> Result<i32> {
+        check_same_dimensions(a, b)?;
+        // Note: this will not overflow if dim < 2^16, since max(ubyte * ubyte) = 2^16.
+        let mut square_sum: i32 = 0;
+        for i in 0..a.len() {
+            let diff = unsigned(a[i]).wrapping_sub(unsigned(b[i]));
+            square_sum = square_sum.wrapping_add(diff.wrapping_mul(diff));
+        }
+        Ok(square_sum)
+    }
+
+    fn find_next_geq(&self, buffer: &[i32], target: i32, from: usize, to: usize) -> usize {
+        for (i, &value) in buffer.iter().enumerate().take(to).skip(from) {
+            if value >= target {
+                return i;
+            }
+        }
+        to
+    }
+
+    fn int4_bit_dot_product(&self, int4_quantized: &[u8], binary_quantized: &[u8]) -> Result<i64> {
+        Self::int4_bit_dot_product_impl(int4_quantized, binary_quantized)
+    }
+
+    fn int4_dibit_dot_product(&self, int4_quantized: &[u8], dibit_quantized: &[u8]) -> Result<i64> {
+        Self::int4_dibit_dot_product_impl(int4_quantized, dibit_quantized)
+    }
+
+    fn min_max_scalar_quantize(
+        &self,
+        vector: &[f32],
+        dest: &mut [u8],
+        scale: f32,
+        alpha: f32,
+        min_quantile: f32,
+        max_quantile: f32,
+    ) -> Result<f32> {
+        if vector.len() != dest.len() {
+            return Err(LuceneError::illegal_argument(format!(
+                "vector dimensions differ: {}!={}",
+                vector.len(),
+                dest.len()
+            )));
+        }
+        Ok(
+            ScalarQuantizer::new(alpha, scale, min_quantile, max_quantile)
+                .quantize(vector, dest, 0),
+        )
+    }
+
+    fn recalculate_scalar_quantization_offset(
+        &self,
+        vector: &[u8],
+        old_alpha: f32,
+        old_min_quantile: f32,
+        scale: f32,
+        alpha: f32,
+        min_quantile: f32,
+        max_quantile: f32,
+    ) -> f32 {
+        ScalarQuantizer::new(alpha, scale, min_quantile, max_quantile).recalculate_offset(
+            vector,
+            0,
+            old_alpha,
+            old_min_quantile,
+        )
+    }
+
+    fn filter_by_score(
+        &self,
+        doc_buffer: &mut [i32],
+        score_buffer: &mut [f64],
+        min_score_inclusive: f64,
+        up_to: usize,
+    ) -> usize {
+        let mut new_size = 0usize;
+        for i in 0..up_to {
+            let doc = doc_buffer[i];
+            let score = score_buffer[i];
+            doc_buffer[new_size] = doc;
+            score_buffer[new_size] = score;
+            if score >= min_score_inclusive {
+                new_size += 1;
+            }
+        }
+        new_size
+    }
+}

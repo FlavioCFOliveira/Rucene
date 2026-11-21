@@ -11,8 +11,8 @@
 use std::collections::HashSet;
 
 use rucene::store::{
-    BufferedChecksum, ByteArrayDataInput, DataInput, Directory, FSDirectory, IndexInput,
-    IndexOutput, RamDirectory, DEFAULT_IO_CONTEXT,
+    BufferedChecksum, ByteArrayDataInput, ByteBuffersDirectory, DataInput, Directory, FSDirectory,
+    IndexInput, IndexOutput, DEFAULT_IO_CONTEXT,
 };
 use rucene::Result;
 
@@ -56,7 +56,7 @@ fn assert_portability_payload(input: &mut dyn IndexInput) -> Result<()> {
     assert_eq!(input.read_v_long()?, 1_000_000_000_000_i64);
     assert_eq!(input.read_string()?, "Rucene portability test");
     let mut tail = [0u8; 4];
-    input.read_bytes(&mut tail, 0, 4)?;
+    input.read_bytes(Some(&mut tail), 0, 4)?;
     assert_eq!(tail, [0x0A, 0x0B, 0x0C, 0x0D]);
     Ok(())
 }
@@ -96,7 +96,7 @@ fn java_hello_payload_bytes_match_reference_crc32() {
 
 #[test]
 fn ram_directory_writes_java_compatible_payload() -> Result<()> {
-    let dir = RamDirectory::new();
+    let dir = ByteBuffersDirectory::new();
     {
         let mut out = dir.create_output("test.bin", &*DEFAULT_IO_CONTEXT)?;
         write_portability_payload(out.as_mut())?;
@@ -111,7 +111,7 @@ fn ram_directory_writes_java_compatible_payload() -> Result<()> {
     // Read back the full bytes to prove byte equality with the Java fixture.
     input.seek(0)?;
     let mut rust_bytes = vec![0u8; JAVA_PAYLOAD_LEN];
-    input.read_bytes(&mut rust_bytes, 0, JAVA_PAYLOAD_LEN)?;
+    input.read_bytes(Some(&mut rust_bytes), 0, JAVA_PAYLOAD_LEN)?;
     assert_eq!(rust_bytes, java_payload_bytes());
     Ok(())
 }
@@ -139,7 +139,7 @@ fn fs_directory_writes_java_compatible_payload() -> Result<()> {
 #[test]
 fn rucene_reads_java_hello_fixture() -> Result<()> {
     let bytes = java_hello_bytes();
-    let mut input = ByteArrayDataInput::new(bytes);
+    let mut input = ByteArrayDataInput::new(&bytes);
     assert_eq!(input.read_string()?, "Hello Lucene");
     Ok(())
 }
@@ -155,7 +155,7 @@ fn rucene_crc32_matches_java_reference_for_known_payloads() -> Result<()> {
     assert_eq!(crc32_of(&hello), JAVA_HELLO_CRC32);
 
     // Ensure a fresh payload written through a Rucene output also matches.
-    let dir = RamDirectory::new();
+    let dir = ByteBuffersDirectory::new();
     {
         let mut out = dir.create_output("crc.bin", &*DEFAULT_IO_CONTEXT)?;
         out.write_bytes(&payload, 0, payload.len())?;
@@ -166,7 +166,7 @@ fn rucene_crc32_matches_java_reference_for_known_payloads() -> Result<()> {
     // The on-disk (in-heap) bytes must be identical.
     let mut input = dir.open_input("crc.bin", &*DEFAULT_IO_CONTEXT)?;
     let mut rust_bytes = vec![0u8; payload.len()];
-    input.read_bytes(&mut rust_bytes, 0, payload.len())?;
+    input.read_bytes(Some(&mut rust_bytes), 0, payload.len())?;
     assert_eq!(rust_bytes, payload);
 
     Ok(())

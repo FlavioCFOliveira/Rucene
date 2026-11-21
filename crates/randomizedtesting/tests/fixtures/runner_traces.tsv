@@ -1,0 +1,1412 @@
+=== hooks-deadbeef
+runStarted tests=4
+desc com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+desc   testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule superClassRule before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+rule classRuleA before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+rule classRuleB before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+beforeClassSuper
+beforeClass1 runner=DEADBEEF int=-947501565 long=-1711448574144802943
+beforeClass3
+beforeClass2
+started testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testB runner=DEADBEEF int=1045152590 long=2117529064156575661
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testD runner=DEADBEEF int=239317382 long=-2148464308835050390
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testC runner=DEADBEEF int=-1585093946 long=2411329051358585751 method=testC
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testA runner=DEADBEEF int=1398525931 long=3048721795528407426 thread=TEST-RunnerOracle$HookSub.testA-seed#[DEADBEEF]
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+afterClass2
+afterClass1
+afterClassSuper
+rule classRuleB after
+rule classRuleA after
+rule superClassRule after
+runFinished run=4 fail=0 ignore=0 assumption=0
+=== hooks-cafebabe
+runStarted tests=4
+desc com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+desc   testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule superClassRule before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+rule classRuleB before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+rule classRuleA before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+beforeClassSuper
+beforeClass2
+beforeClass3
+beforeClass1 runner=CAFEBABE int=-1116660491 long=-4561237410574784039
+started testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before2
+before1
+testC runner=CAFEBABE int=1327771562 long=4772039277916753411 method=testC
+after1
+after2
+afterSuper
+rule ruleA after
+rule inner after
+rule outer after
+rule ruleB after
+rule superRule after
+finished testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before2
+before1
+testA runner=CAFEBABE int=-614400437 long=7196030396271952329 thread=TEST-RunnerOracle$HookSub.testA-seed#[CAFEBABE]
+after1
+after2
+afterSuper
+rule ruleA after
+rule inner after
+rule outer after
+rule ruleB after
+rule superRule after
+finished testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before2
+before1
+testB runner=CAFEBABE int=632652626 long=4803878402157315344
+after1
+after2
+afterSuper
+rule ruleA after
+rule inner after
+rule outer after
+rule ruleB after
+rule superRule after
+finished testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before2
+before1
+testD runner=CAFEBABE int=-1118831445 long=4955864242407789497
+after1
+after2
+afterSuper
+rule ruleA after
+rule inner after
+rule outer after
+rule ruleB after
+rule superRule after
+finished testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+afterClass1
+afterClass2
+afterClassSuper
+rule classRuleA after
+rule classRuleB after
+rule superClassRule after
+runFinished run=4 fail=0 ignore=0 assumption=0
+=== hooks-seed-chain
+runStarted tests=4
+desc com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+desc   testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+desc   testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule superClassRule before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+rule classRuleA before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+rule classRuleB before com.carrotsearch.randomizedtesting.RunnerOracle$HookSub
+beforeClassSuper
+beforeClass1 runner=DEADBEEF int=-947501565 long=-1711448574144802943
+beforeClass3
+beforeClass2
+started testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testB runner=DEADBEEF int=-807459282 long=-5789320695819255545
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testB(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testD runner=DEADBEEF int=-807459282 long=-5789320695819255545
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testD(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testC runner=DEADBEEF int=-807459282 long=-5789320695819255545 method=testC
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testC(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+started testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+constructor
+rule superRule before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleA before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule outer before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule inner before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+rule ruleB before testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+beforeSuper
+before1
+before2
+testA runner=DEADBEEF int=-807459282 long=-5789320695819255545 thread=TEST-RunnerOracle$HookSub.testA-seed#[DEADBEEF]
+after2
+after1
+afterSuper
+rule ruleB after
+rule inner after
+rule outer after
+rule ruleA after
+rule superRule after
+finished testA(com.carrotsearch.randomizedtesting.RunnerOracle$HookSub)
+afterClass2
+afterClass1
+afterClassSuper
+rule classRuleB after
+rule classRuleA after
+rule superClassRule after
+runFinished run=4 fail=0 ignore=0 assumption=0
+=== seeds-annotations
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1
+desc   testSeeds
+desc     testSeeds {seed=[DEADBEEF:FFFFFFFFFFFFFFFF]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc     testSeeds {seed=[DEADBEEF:1]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc     testSeeds {seed=[DEADBEEF:2]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc     testSeeds {seed=[DEADBEEF:8A92106BBBEA7D8C]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc   testFixed(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[DEADBEEF:FFFFFFFFFFFFFFFF]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=DEADBEEF int=-98187874 long=-7545741006505325199
+finished testSeeds {seed=[DEADBEEF:FFFFFFFFFFFFFFFF]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[DEADBEEF:1]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=DEADBEEF int=-1074927858 long=7028500023043134886
+finished testSeeds {seed=[DEADBEEF:1]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[DEADBEEF:2]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=DEADBEEF int=33354639 long=-3833798561946593603
+finished testSeeds {seed=[DEADBEEF:2]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[DEADBEEF:8A92106BBBEA7D8C]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=DEADBEEF int=1588800268 long=6950581062704920982
+finished testSeeds {seed=[DEADBEEF:8A92106BBBEA7D8C]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testFixed(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testFixed runner=DEADBEEF int=-807459282 long=-5789320695819255545
+finished testFixed(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testPlain runner=DEADBEEF int=620883877 long=-3404733905064436079
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+runFinished run=6 fail=0 ignore=0 assumption=0
+=== seeds-annotations-overridden
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc   testSeeds
+desc     testSeeds {seed=[1:FFFFFFFFFFFFFFFF]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc     testSeeds {seed=[1:1]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc     testSeeds {seed=[1:2]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc     testSeeds {seed=[1:8A92106B6547C362]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+desc   testFixed(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testPlain runner=1 int=-107622140 long=8351019260055970031
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[1:FFFFFFFFFFFFFFFF]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=1 int=-98187874 long=-7545741006505325199
+finished testSeeds {seed=[1:FFFFFFFFFFFFFFFF]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[1:1]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=1 int=-1074927858 long=7028500023043134886
+finished testSeeds {seed=[1:1]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[1:2]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=1 int=33354639 long=-3833798561946593603
+finished testSeeds {seed=[1:2]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testSeeds {seed=[1:8A92106B6547C362]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testSeeds runner=1 int=-120688802 long=-6402156171927454770
+finished testSeeds {seed=[1:8A92106B6547C362]}(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+started testFixed(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+testFixed runner=1 int=-807459282 long=-5789320695819255545
+finished testFixed(com.carrotsearch.randomizedtesting.RunnerOracle$Seeds1)
+runFinished run=6 fail=0 ignore=0 assumption=0
+=== seed-chain-on-class
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass)
+desc   testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass)
+testOne runner=CAFEBABE int=1050865815 long=1738202621184424718
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass)
+started testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass)
+testTwo runner=CAFEBABE int=1050865815 long=1738202621184424718
+finished testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$SeedChainOnClass)
+runFinished run=2 fail=0 ignore=0 assumption=0
+=== repeat
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Repeats
+desc   testRepeat
+desc     testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testRepeat {seed=[DEADBEEF:1C37B78D8CD384D8]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc   testConstant
+desc     testConstant {seed=[DEADBEEF:ED3AE103CEDB4780]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testConstant {seed=[DEADBEEF:ED3AE103CEDB4780] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc   testOnce(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=1256549101 long=-91744128484341593
+finished testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=1201250308 long=6741640117147622041
+finished testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:1C37B78D8CD384D8]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=-162682334 long=-5215377479584071661
+finished testRepeat {seed=[DEADBEEF:1C37B78D8CD384D8]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testConstant {seed=[DEADBEEF:ED3AE103CEDB4780]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testConstant runner=DEADBEEF int=907587587 long=-8786983639387122901
+finished testConstant {seed=[DEADBEEF:ED3AE103CEDB4780]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testConstant {seed=[DEADBEEF:ED3AE103CEDB4780] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testConstant runner=DEADBEEF int=907587587 long=-8786983639387122901
+finished testConstant {seed=[DEADBEEF:ED3AE103CEDB4780] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testOnce(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testOnce runner=DEADBEEF int=259447101 long=-1874411590669003007
+finished testOnce(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+runFinished run=6 fail=0 ignore=0 assumption=0
+=== repeat-iters-property
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Repeats
+desc   testRepeat
+desc     testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc   testConstant
+desc     testConstant {seed=[DEADBEEF:ED3AE103CEDB4780]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testConstant {seed=[DEADBEEF:ED3AE103CEDB4780] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc   testOnce
+desc     testOnce {seed=[DEADBEEF:858DF3EE3836AC3E]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testOnce {seed=[DEADBEEF:31DB4F120CF46712]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=1256549101 long=-91744128484341593
+finished testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=1201250308 long=6741640117147622041
+finished testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testConstant {seed=[DEADBEEF:ED3AE103CEDB4780]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testConstant runner=DEADBEEF int=907587587 long=-8786983639387122901
+finished testConstant {seed=[DEADBEEF:ED3AE103CEDB4780]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testConstant {seed=[DEADBEEF:ED3AE103CEDB4780] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testConstant runner=DEADBEEF int=907587587 long=-8786983639387122901
+finished testConstant {seed=[DEADBEEF:ED3AE103CEDB4780] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testOnce {seed=[DEADBEEF:858DF3EE3836AC3E]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testOnce runner=DEADBEEF int=259447101 long=-1874411590669003007
+finished testOnce {seed=[DEADBEEF:858DF3EE3836AC3E]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testOnce {seed=[DEADBEEF:31DB4F120CF46712]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testOnce runner=DEADBEEF int=1807250909 long=6287429493824027365
+finished testOnce {seed=[DEADBEEF:31DB4F120CF46712]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+runFinished run=6 fail=0 ignore=0 assumption=0
+=== repeat-on-class
+runStarted tests=3
+desc com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass
+desc   testY(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+desc   testX
+desc     testX {seed=[DEADBEEF:1902AE21CF80C810]}(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+desc     testX {seed=[DEADBEEF:AD5412DDFB42033C]}(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+started testY(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+testY runner=DEADBEEF int=1600136164 long=6970231155980702924
+finished testY(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+started testX {seed=[DEADBEEF:1902AE21CF80C810]}(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+testX runner=DEADBEEF int=1590164340 long=1201977406923210021
+finished testX {seed=[DEADBEEF:1902AE21CF80C810]}(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+started testX {seed=[DEADBEEF:AD5412DDFB42033C]}(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+testX runner=DEADBEEF int=-1941958237 long=8297945203565822297
+finished testX {seed=[DEADBEEF:AD5412DDFB42033C]}(com.carrotsearch.randomizedtesting.RunnerOracle$RepeatsOnClass)
+runFinished run=3 fail=0 ignore=0 assumption=0
+=== repeat-append-seed
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Simple
+desc   testTwo {seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+desc   testOne {seed=[DEADBEEF:D40228C307D46C7F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started testTwo {seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+testTwo runner=DEADBEEF int=509262577 long=6446326323076977551
+finished testTwo {seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started testOne {seed=[DEADBEEF:D40228C307D46C7F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+testOne runner=DEADBEEF int=-1978229913 long=3852197707195956195
+finished testOne {seed=[DEADBEEF:D40228C307D46C7F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+runFinished run=2 fail=0 ignore=0 assumption=0
+=== failures
+runStarted tests=8
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Failures
+desc   testIgnored(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testExpectedMissing(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testRuntime(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testExpected(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testAssertion(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testExpectedWrong(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+desc   testAssume(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+ignored testIgnored(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testExpectedMissing(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+testExpectedMissing
+failure testExpectedMissing(com.carrotsearch.randomizedtesting.RunnerOracle$Failures) | java.lang.AssertionError: Expected an exception but the test passed: java.lang.IllegalArgumentException [seed [DEADBEEF:C23F8D37F8BFAA75]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Failures -Dtests.method=testExpectedMissing -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testExpectedMissing(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testRuntime(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+failure testRuntime(com.carrotsearch.randomizedtesting.RunnerOracle$Failures) | java.lang.RuntimeException: runtime boom [seed [DEADBEEF:81AFD7DBA0C8C196]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Failures -Dtests.method=testRuntime -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testRuntime(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testExpected(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+finished testExpected(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testAssertion(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+testAssertion
+failure testAssertion(com.carrotsearch.randomizedtesting.RunnerOracle$Failures) | java.lang.AssertionError: expected failure [seed [DEADBEEF:6A7A5613136FC0B1]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Failures -Dtests.method=testAssertion -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testAssertion(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+testPass
+finished testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testExpectedWrong(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+failure testExpectedWrong(com.carrotsearch.randomizedtesting.RunnerOracle$Failures) | java.lang.IllegalStateException: wrong [seed [DEADBEEF:80D578A77FE0BE4D]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Failures -Dtests.method=testExpectedWrong -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testExpectedWrong(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+started testAssume(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+assumption testAssume(com.carrotsearch.randomizedtesting.RunnerOracle$Failures) | org.junit.AssumptionViolatedException: not this time [seed [DEADBEEF:ACFC48B4E2260AE8]]
+finished testAssume(com.carrotsearch.randomizedtesting.RunnerOracle$Failures)
+runFinished run=7 fail=4 ignore=1 assumption=1
+=== hook-failures
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures)
+beforeA
+afterB
+afterA
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures) | java.lang.RuntimeException: beforeA failed
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures) | java.lang.RuntimeException: afterB failed
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures) | java.lang.RuntimeException: afterA failed
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures)
+afterClass
+failure com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures | java.lang.RuntimeException: afterClass failed [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$HookFailures -Dtests.prefix=tests -Dfile.encoding=UTF-8
+runFinished run=1 fail=4 ignore=0 assumption=0
+=== class-assumption
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$ClassAssumption
+desc   testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$ClassAssumption)
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$ClassAssumption)
+beforeClass
+assumption com.carrotsearch.randomizedtesting.RunnerOracle$ClassAssumption | org.junit.AssumptionViolatedException: class-level [seed [DEADBEEF]]
+ignored testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$ClassAssumption)
+ignored testOne(com.carrotsearch.randomizedtesting.RunnerOracle$ClassAssumption)
+runFinished run=0 fail=0 ignore=2 assumption=1
+=== before-class-failure
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$BeforeClassFailure
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$BeforeClassFailure)
+afterClass
+failure com.carrotsearch.randomizedtesting.RunnerOracle$BeforeClassFailure | java.lang.IllegalStateException: beforeClass failed [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$BeforeClassFailure -Dtests.prefix=tests -Dfile.encoding=UTF-8
+runFinished run=0 fail=1 ignore=0 assumption=0
+=== groups-default
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testFast
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testOther
+finished testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testPlain
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'nightly' test group is disabled (@Nightly(""))
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=6 fail=0 ignore=0 assumption=3
+=== groups-nightly
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testFast
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testOther
+finished testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testPlain
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testNightly nightly=true
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=6 fail=0 ignore=0 assumption=2
+=== groups-slow-disabled-fast
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'fast' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Fast())
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testSlow
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testOther
+finished testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'fast' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Fast())
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testPlain
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'nightly' test group is disabled (@Nightly(""))
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=6 fail=0 ignore=0 assumption=3
+=== groups-malformed
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testFast
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testOther
+finished testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testPlain
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'nightly' test group is disabled (@Nightly(""))
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=6 fail=0 ignore=0 assumption=3
+=== filter-slow-and-not-nightly
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testSlow
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testSlowFast
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=2 fail=0 ignore=0 assumption=0
+=== filter-default-or-nightly
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testFast
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testOther
+finished testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testPlain
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testNightly nightly=false
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=4 fail=0 ignore=0 assumption=0
+=== filter-not-default
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testOther(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testSlow
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testSlowFast
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testNightly nightly=false
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=3 fail=0 ignore=0 assumption=0
+=== filter-syntax-error
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | com.carrotsearch.randomizedtesting.FilterExpressionParser$SyntaxException: Missing argument for AND. At: "@slow >and<"
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Groups -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== filter-bad-token
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | com.carrotsearch.randomizedtesting.FilterExpressionParser$SyntaxException: Unrecognized token 'slow'. At: ">slow<"
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Groups -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== nightly-suite
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$NightlySuite
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$NightlySuite)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$NightlySuite)
+assumption testOne(com.carrotsearch.randomizedtesting.RunnerOracle$NightlySuite) | org.junit.AssumptionViolatedException: 'nightly' test group is disabled (@Nightly(""))
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$NightlySuite)
+runFinished run=1 fail=0 ignore=0 assumption=1
+=== method-filter
+runStarted tests=4
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+desc   testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'slow' test group is disabled (@com.carrotsearch.randomizedtesting.RunnerOracle.Slow())
+finished testSlowFast(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+testPlain
+finished testPlain(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+started testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+assumption testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups) | org.junit.AssumptionViolatedException: 'nightly' test group is disabled (@Nightly(""))
+finished testNightly(com.carrotsearch.randomizedtesting.RunnerOracle$Groups)
+runFinished run=4 fail=0 ignore=0 assumption=3
+=== method-filter-none
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Groups
+runFinished run=0 fail=0 ignore=0 assumption=0
+=== method-filter-repeat
+runStarted tests=4
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Repeats
+desc   testRepeat
+desc     testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc     testRepeat {seed=[DEADBEEF:1C37B78D8CD384D8]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+desc   testConstant
+started testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=1256549101 long=-91744128484341593
+finished testRepeat {seed=[DEADBEEF:26889DADE9D5073F]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=1201250308 long=6741640117147622041
+finished testRepeat {seed=[DEADBEEF:92DE2151DD17CC13]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+started testRepeat {seed=[DEADBEEF:1C37B78D8CD384D8]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+testRepeat runner=DEADBEEF int=-162682334 long=-5215377479584071661
+finished testRepeat {seed=[DEADBEEF:1C37B78D8CD384D8]}(com.carrotsearch.randomizedtesting.RunnerOracle$Repeats)
+runFinished run=3 fail=0 ignore=0 assumption=0
+=== class-filter-none
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Simple
+desc   testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+runFinished run=0 fail=0 ignore=0 assumption=0
+=== class-filter-match
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Simple
+desc   testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+testTwo runner=DEADBEEF int=509262577 long=6446326323076977551
+finished testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+testOne runner=DEADBEEF int=-1978229913 long=3852197707195956195
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+runFinished run=2 fail=0 ignore=0 assumption=0
+=== params
+runStarted tests=12
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Params
+desc   testTwo
+desc     testTwo {value=b p1=2 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=b p1=2 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=a p1=1 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=a p1=1 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=c p1=3 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=c p1=3 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=a p1=1 seed=[DEADBEEF:A6F9D55A0B7D6697] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testTwo {value=a p1=1 seed=[DEADBEEF:12AF69A63FBFADBB] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc   testOne
+desc     testOne {value=b p1=2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testOne {value=a p1=1}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testOne {value=c p1=3}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+desc     testOne {value=a p1=1 #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=b p1=2 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor b 2
+testTwo b 2
+finished testTwo {value=b p1=2 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=b p1=2 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor b 2
+testTwo b 2
+finished testTwo {value=b p1=2 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testOne {value=b p1=2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor b 2
+testOne b 2 runner=DEADBEEF int=-1978229913 long=3852197707195956195
+finished testOne {value=b p1=2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=a p1=1 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor a 1
+testTwo a 1
+finished testTwo {value=a p1=1 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=a p1=1 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor a 1
+testTwo a 1
+finished testTwo {value=a p1=1 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testOne {value=a p1=1}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor a 1
+testOne a 1 runner=DEADBEEF int=-1978229913 long=3852197707195956195
+finished testOne {value=a p1=1}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=c p1=3 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor c 3
+testTwo c 3
+finished testTwo {value=c p1=3 seed=[DEADBEEF:A6F9D55A0B7D6697]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=c p1=3 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor c 3
+testTwo c 3
+finished testTwo {value=c p1=3 seed=[DEADBEEF:12AF69A63FBFADBB]}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testOne {value=c p1=3}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor c 3
+testOne c 3 runner=DEADBEEF int=-1978229913 long=3852197707195956195
+finished testOne {value=c p1=3}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=a p1=1 seed=[DEADBEEF:A6F9D55A0B7D6697] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor a 1
+testTwo a 1
+finished testTwo {value=a p1=1 seed=[DEADBEEF:A6F9D55A0B7D6697] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testTwo {value=a p1=1 seed=[DEADBEEF:12AF69A63FBFADBB] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor a 1
+testTwo a 1
+finished testTwo {value=a p1=1 seed=[DEADBEEF:12AF69A63FBFADBB] #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+started testOne {value=a p1=1 #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+constructor a 1
+testOne a 1 runner=DEADBEEF int=-1978229913 long=3852197707195956195
+finished testOne {value=a p1=1 #2}(com.carrotsearch.randomizedtesting.RunnerOracle$Params)
+runFinished run=12 fail=0 ignore=0 assumption=0
+=== params-formatted
+runStarted tests=6
+desc com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted
+desc   testA
+desc     testA {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+desc     testA {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+desc   testM
+desc     testM {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+desc     testM {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+desc   testZ
+desc     testZ {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+desc     testZ {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+started testA {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+constructor x
+testA x
+finished testA {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+started testA {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+constructor y
+testA y
+finished testA {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+started testM {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+testM x
+finished testM {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+started testM {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+testM y
+finished testM {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+started testZ {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+testZ x
+finished testZ {10:x}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+started testZ {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+testZ y
+finished testZ {20:y}(com.carrotsearch.randomizedtesting.RunnerOracle$ParamsFormatted)
+runFinished run=6 fail=0 ignore=0 assumption=0
+=== junit3-listeners
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style
+desc   test2(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+desc   test1(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+auto runStarted com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style
+started test2(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+auto started test2(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+test2
+finished test2(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+started test1(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+auto started test1(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+test1
+finished test1(com.carrotsearch.randomizedtesting.RunnerOracle$JUnit3Style)
+auto runFinished run=2
+runFinished run=2 fail=0 ignore=0 assumption=0
+=== decorated
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Decorated
+desc   testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Decorated)
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Decorated)
+started testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Decorated)
+testTwo runner=DEADBEEF int=-2004067508 long=7306810727124522673
+finished testTwo(com.carrotsearch.randomizedtesting.RunnerOracle$Decorated)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Decorated)
+testOne runner=DEADBEEF int=-33018442 long=2077373852675203505
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Decorated)
+runFinished run=2 fail=0 ignore=0 assumption=0
+=== invalid-non-public
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest) | java.lang.RuntimeException: Test method com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest#testPackage should be public.
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NonPublicTest)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-static
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest) | java.lang.RuntimeException: Test method com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest#testStatic should be instance method (not static).
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$StaticTest)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-args
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest) | java.lang.RuntimeException: Test method com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest#testArgs should have 0 parameters and has these: [class java.lang.String, int]
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$ArgsTest)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-instance-before-class
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass) | java.lang.RuntimeException: @BeforeClass method com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass#beforeClass should be static.
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$InstanceBeforeClass)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-no-factory
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory) | java.lang.RuntimeException: A test class with a parameterized constructor is expected  to have a static @interface com.carrotsearch.randomizedtesting.annotations.ParametersFactory-annotated method: com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$NoFactory)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-method-seed
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed) | java.lang.RuntimeException: @Seed annotation invalid on method testOne, in class com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed: @Seed on methods must contain one seed only (no runner seed).
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$BadMethodSeed)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-tests-seed
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Simple
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple) | java.lang.IllegalArgumentException: Not a valid seed chain: XYZ
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Simple -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-tests-seed-chain
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Simple
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple) | java.lang.IllegalArgumentException: Invalid system property tests.seed specification: 1:2:3
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Simple -Dtests.method=initializationError -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== invalid-tests-iters
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Simple
+desc   initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+started initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+failure initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple) | java.lang.IllegalArgumentException: System property tests.iters must be >= 1: 0
+log WARNING No context available when dumping reproduce options?
+reproduce -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Simple -Dtests.method=initializationError -Dtests.prefix=tests -Dtests.iters=0 -Dfile.encoding=UTF-8
+finished initializationError(com.carrotsearch.randomizedtesting.RunnerOracle$Simple)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== reproduce-info-printer
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite
+desc   testFails(com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite)
+started testFails(com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite)
+failure testFails(com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite) | java.lang.RuntimeException: reproduce me [seed [DEADBEEF:3A0556015B862516]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite -Dtests.method=testFails -Dtests.prefix=tests -Dtests.iters=1 -Dfile.encoding=UTF-8
+finished testFails(com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite)
+runFinished run=1 fail=1 ignore=0 assumption=0
+stderr FAILURE  : testFails(com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite)
+stderr Message  : reproduce me
+stderr Reproduce:  -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$ReproducePrinter$Suite -Dtests.method=testFails -Dtests.prefix=tests -Dtests.iters=1 -Dfile.encoding=UTF-8
+stderr Throwable:
+stderr java.lang.RuntimeException: reproduce me
+=== leak-test
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest
+desc   testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
+desc   testAfterLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
+started testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
+log SEVERE 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest): 
+log INFO Starting to interrupt leaked threads:
+thread leaked-test interrupted
+log INFO All leaked threads terminated.
+failure testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest): \n   1) Thread[id=68, name=leaked-test, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakTest]\n        at java.base/java.lang.Thread.beforeSleep(Thread.java:473)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:504)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle.lambda$sleeper$0(RunnerOracle.java:353)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:E909199F87606AA4]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest -Dtests.method=testLeak -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+finished testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
+started testAfterLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
+testAfterLeak
+finished testAfterLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakTest)
+runFinished run=2 fail=1 ignore=0 assumption=0
+=== leak-suite
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite)
+log SEVERE 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite: 
+log INFO Starting to interrupt leaked threads:
+thread leaked-suite interrupted
+log INFO All leaked threads terminated.
+failure com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite: \n   1) Thread[id=70, name=leaked-suite, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakSuite]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle.lambda$sleeper$0(RunnerOracle.java:353)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$LeakSuite -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== leak-none
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakNone
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakNone)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakNone)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakNone)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== leak-linger
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakLinger
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakLinger)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakLinger)
+testOne
+log WARNING Will linger awaiting termination of 1 leaked thread(s).
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakLinger)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== leak-warn-only
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly)
+log SEVERE 1 thread leaked from TEST scope at testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly): 
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly): \n   1) Thread[id=86, name=warned, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakWarnOnly]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle.lambda$sleeper$0(RunnerOracle.java:353)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:D40228C307D46C7F]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakWarnOnly)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== leak-filtered
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakFiltered
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakFiltered)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakFiltered)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$LeakFiltered)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== leak-randomized-sleep
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep
+desc   testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep)
+started testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep)
+log SEVERE 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep): 
+log INFO Starting to interrupt leaked threads:
+thread leaked-randomized-sleep ended by java.lang.InterruptedException: sleep interrupted
+log INFO All leaked threads terminated.
+failure testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep): \n   1) Thread[id=90, name=leaked-randomized-sleep, state=TIMED_WAITING, group=TGRP-RunnerOracle$LeakRandomizedSleep]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RandomizedTest.sleep(RandomizedTest.java:701)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep.lambda$testLeak$0(RunnerOracle.java:371)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:E909199F87606AA4]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep -Dtests.method=testLeak -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+finished testLeak(com.carrotsearch.randomizedtesting.RunnerOracle$LeakRandomizedSleep)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== class-ignore
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$IgnoredClass
+ignored com.carrotsearch.randomizedtesting.RunnerOracle$IgnoredClass
+runFinished run=0 fail=0 ignore=1 assumption=0
+=== timeout-test
+runStarted tests=3
+desc com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+desc   testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log WARNING Test execution timed out: testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log SEVERE 1 thread leaked from TEST scope at testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout): 
+log INFO Starting to interrupt leaked threads:
+testSlow interrupted
+log INFO All leaked threads terminated.
+failure testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout) | java.lang.Exception: Test timeout exceeded (>= 300 msec). [seed [DEADBEEF:4A98F0A078215F06]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout -Dtests.method=testSlow -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+testFast
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+started testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log WARNING Test execution timed out: testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log SEVERE 1 thread leaked from TEST scope at testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout): 
+log INFO Starting to interrupt leaked threads:
+testJUnitTimeout interrupted
+log INFO All leaked threads terminated.
+failure testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout) | java.lang.Exception: Test timeout exceeded (>= 200 msec). [seed [DEADBEEF:A9218617DBA97369]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout -Dtests.method=testJUnitTimeout -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+finished testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+runFinished run=3 fail=2 ignore=0 assumption=0
+=== timeout-test-global-first
+runStarted tests=3
+desc com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout
+desc   testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+desc   testFast(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+desc   testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+started testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log WARNING Test execution timed out: testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log SEVERE 1 thread leaked from TEST scope at testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout): 
+log INFO Starting to interrupt leaked threads:
+testSlow interrupted
+log INFO All leaked threads terminated.
+failure testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout) | java.lang.Exception: Test timeout exceeded (>= 100 msec). [seed [DEADBEEF:4A98F0A078215F06]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout -Dtests.method=testSlow -Dtests.prefix=tests -Dtests.killwait=200 -Dtests.timeout=100! -Dfile.encoding=UTF-8
+finished testSlow(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+started testFast(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+testFast
+finished testFast(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+started testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log WARNING Test execution timed out: testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+log SEVERE 1 thread leaked from TEST scope at testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout): 
+log INFO Starting to interrupt leaked threads:
+testJUnitTimeout interrupted
+log INFO All leaked threads terminated.
+failure testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout) | java.lang.Exception: Test timeout exceeded (>= 100 msec). [seed [DEADBEEF:A9218617DBA97369]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout -Dtests.method=testJUnitTimeout -Dtests.prefix=tests -Dtests.killwait=200 -Dtests.timeout=100! -Dfile.encoding=UTF-8
+finished testJUnitTimeout(com.carrotsearch.randomizedtesting.RunnerOracle$TestTimeout)
+runFinished run=3 fail=2 ignore=0 assumption=0
+=== timeout-suite
+runStarted tests=3
+desc com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout
+desc   testHangs(com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout)
+desc   testA(com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout)
+desc   testB(com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout)
+started testHangs(com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout)
+log WARNING Suite execution timed out: com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout
+failure testHangs(com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout) | java.lang.Exception: Test abandoned because suite timeout was reached. [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout -Dtests.method=testHangs -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+finished testHangs(com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout)
+log SEVERE 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout: 
+log INFO Starting to interrupt leaked threads:
+testHangs interrupted
+log INFO All leaked threads terminated.
+failure com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout | java.lang.Exception: Suite timeout exceeded (>= 1000 msec). [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$SuiteTimeout -Dtests.prefix=tests -Dtests.killwait=200 -Dfile.encoding=UTF-8
+runFinished run=1 fail=2 ignore=0 assumption=0
+=== uncaught
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught
+desc   testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
+desc   testClean(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
+started testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
+log WARNING Uncaught exception in thread: Thread[#102,uncaught-thread,5,TGRP-RunnerOracle$Uncaught]
+testUncaught joined
+failure testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught) | com.carrotsearch.randomizedtesting.UncaughtExceptionError: Captured an uncaught exception in thread: Thread[id=102, name=uncaught-thread, state=RUNNABLE, group=TGRP-RunnerOracle$Uncaught] [seed [DEADBEEF:785C3E12F25B8820], [DEADBEEF]] <- java.lang.RuntimeException: boom in thread
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught -Dtests.method=testUncaught -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testUncaught(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
+started testClean(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
+testClean
+finished testClean(com.carrotsearch.randomizedtesting.RunnerOracle$Uncaught)
+runFinished run=2 fail=1 ignore=0 assumption=0
+=== uncaught-suite
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite)
+log WARNING Uncaught exception in thread: Thread[#104,uncaught-suite,5,TGRP-RunnerOracle$UncaughtSuite]
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite)
+testOne
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite) | com.carrotsearch.randomizedtesting.UncaughtExceptionError: Captured an uncaught exception in thread: Thread[id=104, name=uncaught-suite, state=RUNNABLE, group=TGRP-RunnerOracle$UncaughtSuite] [seed [DEADBEEF:D40228C307D46C7F], [DEADBEEF]] <- java.lang.IllegalStateException: boom in suite thread
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$UncaughtSuite)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== rule-restore
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule
+desc   testSets(com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule)
+desc   testSees(com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule)
+started testSets(com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule)
+testSets oracle.set=during
+finished testSets(com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule)
+started testSees(com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule)
+testSees oracle.prop=null oracle.set=during
+finished testSees(com.carrotsearch.randomizedtesting.RunnerOracle$RestoreRule)
+runFinished run=2 fail=0 ignore=0 assumption=0
+after oracle.prop=null oracle.set=null
+=== rule-invariant
+runStarted tests=5
+desc com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule
+desc   testRemoves(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+desc   testAdds(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+desc   testIgnored(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+desc   testChanges(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+desc   testClean(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+started testRemoves(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+failure testRemoves(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule) | java.lang.AssertionError: System properties invariant violated.\nMissing keys:\n  oracle.existing=before\n [seed [DEADBEEF:F5490F153C217917]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule -Dtests.method=testRemoves -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testRemoves(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+started testAdds(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+failure testAdds(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule) | java.lang.AssertionError: System properties invariant violated.\nNew keys:\n  oracle.added=x\n [seed [DEADBEEF:A95A2782C92D1913]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule -Dtests.method=testAdds -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testAdds(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+started testIgnored(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+finished testIgnored(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+started testChanges(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+failure testChanges(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule) | java.lang.AssertionError: System properties invariant violated.\nDifferent values:\n  [old]oracle.existing=before\n  [new]oracle.existing=changed\n [seed [DEADBEEF:F68A4B1DB2BC97FC]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule -Dtests.method=testChanges -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testChanges(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+started testClean(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+testClean
+finished testClean(com.carrotsearch.randomizedtesting.RunnerOracle$InvariantRule)
+runFinished run=5 fail=3 ignore=0 assumption=0
+after oracle.added=null oracle.existing=before oracle.ignored=y
+=== rule-no-shadow-pass
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSuper
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSuper)
+super setup
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSuper)
+super init
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSuper)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== rule-no-class-hooks-shadowing
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSub
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSub)
+failure com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSub | java.lang.RuntimeException: There are overridden methods annotated with org.junit.BeforeClass. These methods would not be executed by JUnit and need to manually chain themselves which can lead to maintenance problems. Consider using different method names or make hook methods private.\nMethods annotated with @org.junit.BeforeClass shadow or override each other:\n  - @BeforeClass public static void com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSuper.setup()\n  - @BeforeClass public static void com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSub.setup() [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSub -Dtests.prefix=tests -Dfile.encoding=UTF-8
+runFinished run=0 fail=1 ignore=0 assumption=0
+=== rule-no-instance-hooks-overrides
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub)
+super setup
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub)
+failure testOne(com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub) | java.lang.RuntimeException: There are overridden methods annotated with org.junit.Before. These methods would not be executed by JUnit and need to manually chain themselves which can lead to maintenance problems. Consider using different method names or make hook methods private.\nMethods annotated with @org.junit.Before shadow or override each other:\n  - @Before public void com.carrotsearch.randomizedtesting.RunnerOracle$ShadowSuper.init()\n  - @Before public void com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub.init() [seed [DEADBEEF:D40228C307D46C7F]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub -Dtests.method=testOne -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$OverrideSub)
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== virtual-dispatch-super
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper)
+super setUp
+super privateHook
+super packageHook
+testOne
+super tearDown
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSuper)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== virtual-dispatch-sub
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub)
+sub setUp
+super setUp
+super privateHook
+sub packageHook
+testOne
+super tearDown
+sub tearDown
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSub)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== virtual-dispatch-subsub
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub)
+subsub setUp
+super privateHook
+sub packageHook
+testOne
+super tearDown
+sub tearDown
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$VirtualSubSub)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== rule-static-fields-exceeding
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding)
+failure com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding | junit.framework.AssertionFailedError: Clean up static fields (in @AfterClass?), your test seems to hang on to approximately 1,139,240 bytes (threshold is 1,048,576). Field reference sizes (counted individually):\n  - 614,416 bytes, static byte[] com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding.field0\n  - 524,304 bytes, static long[] com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding.field1\n  - 416 bytes, static int[] com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding.field2\n  - 80 bytes, static java.lang.Object com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding.field3\n  - 24 bytes, static java.lang.Long com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding.field4 [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Exceeding -Dtests.prefix=tests -Dfile.encoding=UTF-8
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== rule-static-fields-under
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Under
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Under)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Under)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Under)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== rule-static-fields-unmeasurable
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable)
+failure com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable | junit.framework.AssertionFailedError: Clean up static fields (in @AfterClass?) and null them, your test still has references to classes of which the sizes cannot be measured due to security restrictions or Java 9 module encapsulation:\n  - static java.lang.String com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable.text [seed [DEADBEEF]] <- java.lang.IllegalStateException: Unable to access 'private final byte[] java.lang.String.value' to estimate memory usage <- java.lang.reflect.InaccessibleObjectException: Unable to make field private final byte[] java.lang.String.value accessible: module java.base does not "opens java.lang" to unnamed module @579bb367
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$StaticFields$Unmeasurable -Dtests.prefix=tests -Dfile.encoding=UTF-8
+runFinished run=1 fail=1 ignore=0 assumption=0
+=== rule-adapter
+runStarted tests=2
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Adapters
+desc   testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters)
+desc   testFail(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters)
+started testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters)
+adapter before
+testPass
+adapter afterIfSuccessful
+adapter afterAlways errors=0
+failure testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters) | java.lang.RuntimeException: afterAlways adds [seed [DEADBEEF:A8D84BF33BEC9D67]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Adapters -Dtests.method=testPass -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testPass(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters)
+started testFail(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters)
+adapter before
+adapter afterAlways errors=1
+failure testFail(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters) | java.lang.RuntimeException: test fails
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Adapters -Dtests.method=testFail -Dtests.prefix=tests -Dfile.encoding=UTF-8
+failure testFail(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters) | java.lang.RuntimeException: afterAlways adds
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Adapters -Dtests.method=testFail -Dtests.prefix=tests -Dfile.encoding=UTF-8
+finished testFail(com.carrotsearch.randomizedtesting.RunnerOracle$Adapters)
+runFinished run=2 fail=3 ignore=0 assumption=0
+=== require-assertions-match
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Assertions
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Assertions)
+started testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Assertions)
+testOne
+finished testOne(com.carrotsearch.randomizedtesting.RunnerOracle$Assertions)
+runFinished run=1 fail=0 ignore=0 assumption=0
+=== zombies
+runStarted tests=3
+desc com.carrotsearch.randomizedtesting.RunnerOracle$Zombies
+desc   testC(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+desc   testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+desc   testB(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+started testC(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+testC
+finished testC(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+started testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+testA
+log SEVERE 1 thread leaked from TEST scope at testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies): 
+log INFO Starting to interrupt leaked threads:
+log SEVERE There are still zombie threads that couldn't be terminated:
+failure testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from TEST scope at testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies): \n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:3C9258CBA67AC2BB]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.method=testA -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
+failure testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | com.carrotsearch.randomizedtesting.ThreadLeakError: There are still zombie threads that couldn't be terminated:\n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF:3C9258CBA67AC2BB]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.method=testA -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
+finished testA(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+started testB(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+assumption testB(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies) | org.junit.AssumptionViolatedException: Leaked background threads present (zombies). [seed [DEADBEEF:38E58E7C607374DD]]
+finished testB(com.carrotsearch.randomizedtesting.RunnerOracle$Zombies)
+log SEVERE 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies: 
+log INFO Starting to interrupt leaked threads:
+log SEVERE There are still zombie threads that couldn't be terminated:
+failure com.carrotsearch.randomizedtesting.RunnerOracle$Zombies | com.carrotsearch.randomizedtesting.ThreadLeakError: 1 thread leaked from SUITE scope at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies: \n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
+failure com.carrotsearch.randomizedtesting.RunnerOracle$Zombies | com.carrotsearch.randomizedtesting.ThreadLeakError: There are still zombie threads that couldn't be terminated:\n   1) Thread[id=116, name=zombie, state=TIMED_WAITING, group=TGRP-RunnerOracle$Zombies]\n        at java.base/java.lang.Thread.sleepNanos0(Native Method)\n        at java.base/java.lang.Thread.sleepNanos(Thread.java:509)\n        at java.base/java.lang.Thread.sleep(Thread.java:540)\n        at com.carrotsearch.randomizedtesting.RunnerOracle$Zombies.lambda$testA$0(RunnerOracle.java:475)\n        at java.base/java.lang.Thread.run(Thread.java:1474) [seed [DEADBEEF]]
+reproduce -Dtests.seed=DEADBEEF -Dtests.class=com.carrotsearch.randomizedtesting.RunnerOracle$Zombies -Dtests.prefix=tests -Dtests.killattempts=2 -Dtests.killwait=100 -Dfile.encoding=UTF-8
+runFinished run=3 fail=4 ignore=0 assumption=1
+=== after-zombies
+runStarted tests=1
+desc com.carrotsearch.randomizedtesting.RunnerOracle$AfterZombies
+desc   testOne(com.carrotsearch.randomizedtesting.RunnerOracle$AfterZombies)
+assumption com.carrotsearch.randomizedtesting.RunnerOracle$AfterZombies | org.junit.AssumptionViolatedException: Leaked background threads present (zombies). [seed [DEADBEEF]]
+ignored testOne(com.carrotsearch.randomizedtesting.RunnerOracle$AfterZombies)
+runFinished run=0 fail=0 ignore=1 assumption=1

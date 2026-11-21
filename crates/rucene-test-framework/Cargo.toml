@@ -1,0 +1,19 @@
+[package]
+name = "rucene-test-framework"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/test-framework."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-codecs = { path = "../rucene-codecs" }
+# Holds the `java.text.Collator` emulation (`jdk::collator`) that
+# `LuceneTestCase.collate` and the collation tests use; the runtime classes of
+# `org.apache.lucene.collation` need it, so it lives there, once.
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+randomizedtesting = { path = "../randomizedtesting" }

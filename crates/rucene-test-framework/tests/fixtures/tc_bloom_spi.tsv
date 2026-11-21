@@ -1,0 +1,5 @@
+# lookup	result
+getName	TestBloomFilteredLucenePostings
+toString	TestBloomFilteredLucenePostings(BloomFilteringPostingsFormat(PostingsFormat(name=Lucene104)))
+forName.getClass	org.apache.lucene.tests.codecs.bloom.TestBloomFilteredLucenePostings
+forName.toString	TestBloomFilteredLucenePostings(BloomFilteringPostingsFormat(PostingsFormat(name=Lucene104)))

@@ -19,6 +19,7 @@ pub mod lucene90;
 
 /// Bundled Lucene 9.4 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene94;
+pub mod lucene95;
 
 /// Bundled Lucene 9.9 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene99;
@@ -26,7 +27,6 @@ pub mod lucene99;
 /// Bundled Lucene 10.3 sub-formats reused by the default `Lucene104` codec.
 pub mod lucene103;
 
-/// Low-level helpers for the `Lucene104` postings format.
 pub mod lucene104;
 
 pub mod norms;
@@ -50,32 +50,27 @@ pub use codec_util::{
 };
 pub use compressing::{CompressionMode, Compressor, Decompressor, MatchingReaders};
 
-pub use compound::{
-    CompoundDirectory, CompoundFileDirectory, CompoundFileEntry, CompoundFormat,
-    EmptyCompoundDirectory, EmptyCompoundFormat,
-};
+pub use compound::{CompoundDirectory, CompoundFileEntry, CompoundFormat, EmptyCompoundDirectory};
 pub use doc_values::{
-    available_doc_values_formats, doc_values_for_name, BinaryDocValues, DocValuesConsumer,
-    DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer, DocValuesSkipper,
-    EmptyBinaryDocValues, EmptyDocValuesConsumer, EmptyDocValuesFormat, EmptyDocValuesProducer,
-    EmptyDocValuesSkipper, EmptyNumericDocValues, EmptySortedDocValues,
-    EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues,
+    available_doc_values_formats, doc_values_for_name, register_doc_values_format, BinaryDocValues,
+    DocValuesConsumer, DocValuesFormat, DocValuesFormatRegistry, DocValuesProducer,
+    DocValuesSkipper, EmptyBinaryDocValues, EmptyDocValuesProducer, EmptyNumericDocValues,
+    EmptySortedDocValues, EmptySortedNumericDocValues, EmptySortedSetDocValues, NumericDocValues,
+    SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
 };
-pub use field_infos::{EmptyFieldInfosFormat, FieldInfosFormat};
+pub use field_infos::FieldInfosFormat;
 pub use hnsw::{
     DefaultFlatVectorScorer, DocsWithFieldSet, FlatFieldVectorsWriter, FlatVectorScorerUtil,
     FlatVectorsFormat, FlatVectorsReader, FlatVectorsScorer, FlatVectorsWriter,
 };
 pub use knn_vectors::{
     available_knn_vectors_formats, knn_vectors_for_name, BufferingKnnVectorsWriter,
-    ByteVectorValues, EmptyBufferingKnnVectorsWriter, EmptyByteVectorValues,
-    EmptyFloatVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter, EmptyKnnVectorsFormat,
-    EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues, KnnCollector,
-    KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat, KnnVectorsFormatRegistry,
-    KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
+    BufferingKnnVectorsWriterImpl, ByteVectorValues, EmptyKnnCollector, EmptyKnnFieldVectorsWriter,
+    EmptyKnnVectorsFormat, EmptyKnnVectorsReader, EmptyKnnVectorsWriter, FloatVectorValues,
+    KnnCollector, KnnFieldVectorsWriter, KnnSearchStrategy, KnnVectorsFormat,
+    KnnVectorsFormatRegistry, KnnVectorsReader, KnnVectorsWriter, SorterDocMap, TopDocs,
 };
-pub use live_docs::{EmptyLiveDocsFormat, LiveDocsFormat};
+pub use live_docs::LiveDocsFormat;
 pub use lucene103::{
     Lucene103BlockTreeTermsReader, Lucene103BlockTreeTermsWriter, TrieBuilder, TrieReader,
 };
@@ -97,16 +92,13 @@ pub use lucene99::{
     Lucene99HnswVectorsFormat, Lucene99HnswVectorsReader, Lucene99HnswVectorsWriter,
     Lucene99SegmentInfoFormat,
 };
-pub use norms::{
-    EmptyNormsConsumer, EmptyNormsDocValues, EmptyNormsFormat, EmptyNormsProducer, NormsConsumer,
-    NormsFormat, NormsProducer,
-};
+pub use norms::{NormsConsumer, NormsFormat, NormsProducer};
 pub use per_field::{
     PerFieldDocValuesFormat, PerFieldKnnVectorsFormat, PerFieldMergeState, PerFieldPostingsFormat,
 };
 pub use points::{
-    EmptyPointValues, EmptyPointsFormat, EmptyPointsReader, EmptyPointsWriter, PointValues,
-    PointsFormat, PointsReader, PointsWriter,
+    EmptyPointsFormat, EmptyPointsReader, EmptyPointsWriter, PointValues, PointsFormat,
+    PointsReader, PointsWriter,
 };
 pub use postings::{
     available_postings_formats, postings_for_name, FieldsConsumer, FieldsProducer, MergeState,
@@ -114,14 +106,14 @@ pub use postings::{
     PushPostingsWriterBase, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS, POSTINGS_ENUM_NONE,
     POSTINGS_ENUM_OFFSETS, POSTINGS_ENUM_PAYLOADS, POSTINGS_ENUM_POSITIONS,
 };
-pub use segment_info::{EmptySegmentInfoFormat, SegmentInfoFormat};
+pub use segment_info::SegmentInfoFormat;
 pub use skip_list::{
     MultiLevelSkipListReader, MultiLevelSkipListWriter, SkipDataReader, SkipDataWriter,
 };
 pub use state::{SegmentReadState, SegmentWriteState};
 pub use stored_fields::{
-    EmptyStoredFieldsFormat, EmptyStoredFieldsReader, EmptyStoredFieldsWriter, StoredFieldsFormat,
-    StoredFieldsReader, StoredFieldsWriter,
+    EmptyStoredFieldsReader, EmptyStoredFieldsWriter, StoredFieldsFormat, StoredFieldsReader,
+    StoredFieldsWriter,
 };
 pub use term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact, TermStats};
 pub use term_vectors::{
@@ -129,9 +121,10 @@ pub use term_vectors::{
     TermVectorsReader, TermVectorsWriter,
 };
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, LazyLock, RwLock};
+
+use crate::util::spi::{NamedSPI, NamedSPILoader};
 
 use crate::error::{LuceneError, Result};
 
@@ -154,6 +147,18 @@ pub const DEFAULT_CODEC_NAME: &str = "Lucene104";
 pub trait Codec: Send + Sync + fmt::Debug {
     /// Returns this codec's name.
     fn name(&self) -> &str;
+
+    /// Answers Java's `codec instanceof X` with the cast: `Some(self)` for the
+    /// codecs a caller narrows (test codecs such as `CompressingCodec`),
+    /// `None` (the default) for every other codec.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** Java tests the runtime
+    /// class of any object; a Rust trait object cannot be narrowed without
+    /// this opt-in. Needed by `Test2BPostingsBytes` (`getCodec() instanceof
+    /// CompressingCodec`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 
     /// Returns the postings format used by this codec.
     fn postings_format(&self) -> &dyn PostingsFormat;
@@ -187,11 +192,24 @@ pub trait Codec: Send + Sync + fmt::Debug {
 
     /// Returns the KNN-vectors format used by this codec.
     fn knn_vectors_format(&self) -> &dyn KnnVectorsFormat;
+
+    /// Returns the text of Java's `toString()` for this codec.
+    ///
+    /// Port of `Codec.toString()` (`Codec.java:157-161`), which returns the
+    /// name and which subclasses may override (in Lucene 10.5.0 only the test
+    /// framework's `AssertingCodec`, `CrankyCodec` and `CompressingCodec` do).
+    /// Rust has no `toString()` on a trait object, so the trait carries it,
+    /// with Java's body as its default.
+    fn to_java_string(&self) -> String {
+        self.name().to_string()
+    }
 }
 
 impl fmt::Display for dyn Codec + '_ {
+    /// `Codec.toString()`: the text of [`Codec::to_java_string`], so a codec
+    /// that overrides it prints as its Java class does.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name())
+        f.write_str(&self.to_java_string())
     }
 }
 
@@ -201,7 +219,7 @@ impl fmt::Display for dyn Codec + '_ {
 
 /// A registry mapping codec short names to [`Codec`] implementations.
 ///
-/// The registry intentionally does not use reflection or SPI loading. Codecs are
+/// Rust has no run-time service discovery, so codecs are
 /// registered explicitly with [`CodecRegistry::register`] and looked up by
 /// name with [`CodecRegistry::for_name`].
 ///
@@ -211,9 +229,31 @@ impl fmt::Display for dyn Codec + '_ {
 ///
 /// Lucene Core equivalent: the static registry backing
 /// `org.apache.lucene.codecs.Codec#forName`.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CodecRegistry {
-    codecs: Arc<RwLock<HashMap<String, Arc<dyn Codec>>>>,
+    /// The providers, kept by a [`NamedSPILoader`] exactly as Java's
+    /// `Codec.Holder.LOADER` keeps them: first registration for a
+    /// name wins, lookups fail with the loader's message, and iteration is in
+    /// insertion order.
+    codecs: Arc<RwLock<NamedSPILoader<dyn Codec>>>,
+}
+
+impl Default for CodecRegistry {
+    fn default() -> Self {
+        Self {
+            codecs: Arc::new(RwLock::new(NamedSPILoader::empty(
+                "org.apache.lucene.codecs.Codec",
+            ))),
+        }
+    }
+}
+
+impl NamedSPI for dyn Codec {
+    /// Equivalent to `NamedSPILoader.NamedSPI.getName()`, which every
+    /// `Codec` implements by returning the name it was constructed with.
+    fn get_name(&self) -> &str {
+        self.name()
+    }
 }
 
 impl CodecRegistry {
@@ -226,9 +266,9 @@ impl CodecRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if `name` is empty, contains
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if `name` is empty, contains
     /// characters other than ASCII alphanumerics, or is longer than 127 bytes.
-    /// Returns [`LuceneError::IllegalState`] if the name is already registered.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
     pub fn register<C>(&self, name: impl Into<String>, codec: C) -> Result<()>
     where
         C: Codec + 'static,
@@ -236,17 +276,17 @@ impl CodecRegistry {
         let name = name.into();
         validate_service_name(&name)?;
 
-        let mut codecs = self.codecs.write().map_err(|_| {
-            LuceneError::IllegalState("codec registry lock was poisoned".to_string())
-        })?;
+        let mut codecs = self
+            .codecs
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if codecs.contains_key(&name) {
-            return Err(LuceneError::IllegalState(format!(
+        if codecs.lookup(&name).is_ok() {
+            return Err(LuceneError::illegal_state(format!(
                 "codec already registered: {name}"
             )));
         }
-
-        codecs.insert(name, Arc::new(codec));
+        codecs.register_as(&name, Arc::new(codec))?;
         Ok(())
     }
 
@@ -256,20 +296,41 @@ impl CodecRegistry {
     pub fn for_name(&self, name: &str) -> Option<Arc<dyn Codec>> {
         self.codecs
             .read()
-            .map_err(|_| LuceneError::IllegalState("codec registry lock was poisoned".to_string()))
-            .ok()?
-            .get(name)
-            .cloned()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lookup(name)
+            .ok()
     }
 
-    /// Returns the names of all registered codecs, sorted alphabetically.
+    /// Looks up a codec by name, failing as Lucene does.
+    ///
+    /// Equivalent to `Codec.forName(String)` (`Codec.java:117-120`), which is
+    /// `NamedSPILoader.lookup(String)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message,
+    /// listing the available names, when no codec is registered under `name`.
+    pub fn lookup(&self, name: &str) -> Result<Arc<dyn Codec>> {
+        self.codecs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lookup(name)
+    }
+
+    /// Returns the names of all registered codecs, in registration order.
+    ///
+    /// Equivalent to `NamedSPILoader.availableServices()`, the key set of
+    /// Java's insertion-ordered `LinkedHashMap`.
     pub fn available_codecs(&self) -> Vec<String> {
-        let Ok(codecs) = self.codecs.read() else {
-            return Vec::new();
-        };
-        let mut names: Vec<String> = codecs.keys().cloned().collect();
-        names.sort();
-        names
+        let codecs = self
+            .codecs
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        codecs
+            .available_services()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 
     /// Returns the codec registered under [`DEFAULT_CODEC_NAME`], if any.
@@ -282,31 +343,70 @@ impl CodecRegistry {
 /// and is between 1 and 127 bytes long.
 pub(crate) fn validate_service_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "codec name must not be empty".to_string(),
         ));
     }
     if name.len() > 127 {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "codec name too long ({} > 127 bytes): {name}",
             name.len()
         )));
     }
     if !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        return Err(LuceneError::IllegalArgument(format!(
+        return Err(LuceneError::illegal_argument(format!(
             "codec name must be ASCII alphanumeric: {name}"
         )));
     }
     Ok(())
 }
 
-static GLOBAL_REGISTRY: LazyLock<CodecRegistry> = LazyLock::new(CodecRegistry::new);
+/// `Codec.class`: the service type's binary name and the loader that defines
+/// it, `lucene-core`'s.
+fn codec_class() -> crate::util::spi::ServiceClass {
+    crate::util::spi::ServiceClass::new(
+        "org.apache.lucene.codecs.Codec",
+        Arc::clone(crate::util::spi::lucene_core_class_loader()),
+    )
+}
+
+/// The registry behind the module-level entry points.
+///
+/// Equivalent to `Codec.Holder.LOADER` (`Codec.java:44-60`),
+/// `new NamedSPILoader<>(Codec.class)`: it scans `lucene-core`'s loader
+/// ([`lucene_core_class_loader`](crate::util::spi::lucene_core_class_loader)),
+/// whose `META-INF/services/org.apache.lucene.codecs.Codec` lists
+/// `Lucene104Codec`, so `Lucene104` resolves without anyone registering it,
+/// and `Codec.Holder.defaultCodec`, `LOADER.lookup("Lucene104")`, is the
+/// fallback of [`get_default`].
+static GLOBAL_REGISTRY: LazyLock<CodecRegistry> = LazyLock::new(|| CodecRegistry {
+    codecs: Arc::new(RwLock::new(
+        NamedSPILoader::new(&codec_class(), None)
+            .expect("INVARIANT: lucene-core's codec names are legal service names"),
+    )),
+});
 
 /// Looks up a codec by name from the global registry.
 ///
 /// Returns `None` if no codec has been registered under the given name.
 pub fn for_name(name: &str) -> Option<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.for_name(name)
+}
+
+/// Looks up a codec by name from the global registry, failing as Lucene does.
+///
+/// Equivalent to `Codec.forName(String)` (`Codec.java:117-120`), which is
+/// `NamedSPILoader.lookup(String)` (`NamedSPILoader.java:102-115`) on the
+/// codec loader: the registered codec of that name, else an
+/// `IllegalArgumentException` naming the missing service and the available
+/// names. `TestNamedSPILoader.testBogusLookup` calls it.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) with the loader's message when no
+/// codec is registered under `name`.
+pub fn lookup(name: &str) -> Result<Arc<dyn Codec>> {
+    GLOBAL_REGISTRY.lookup(name)
 }
 
 /// Returns the names of all codecs registered in the global registry.
@@ -318,6 +418,93 @@ pub fn available_codecs() -> Vec<String> {
 /// registry, if any.
 pub fn default_codec() -> Option<Arc<dyn Codec>> {
     GLOBAL_REGISTRY.default_codec()
+}
+
+/// The codec newly created `IndexWriterConfig`s use.
+///
+/// Equivalent to `Codec.getDefault()` and `Codec.setDefault(Codec)`, which
+/// Java holds in a mutable static beside its SPI loader. A `RwLock` around an
+/// `Option` is the same thing here; the `None` state is the one Java reports
+/// with "You tried to lookup the default Codec before all Codecs could be
+/// initialized."
+static DEFAULT_CODEC: RwLock<Option<Arc<dyn Codec>>> = RwLock::new(None);
+
+/// Sets the codec newly created `IndexWriterConfig`s will use.
+///
+/// Equivalent to `Codec.setDefault(Codec)`.
+pub fn set_default(codec: Arc<dyn Codec>) {
+    {
+        let mut slot = DEFAULT_CODEC
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(codec);
+    }
+}
+
+/// Serialises the tests that install a default codec, so that one test's
+/// installation and restoration never interleave with another's.
+#[cfg(test)]
+pub(crate) static DEFAULT_CODEC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Replaces what [`set_default`] installed — `None` when it was never called —
+/// and returns the previous state, so that a test can restore it exactly.
+#[cfg(test)]
+pub(crate) fn swap_default(codec: Option<Arc<dyn Codec>>) -> Option<Arc<dyn Codec>> {
+    let mut slot = DEFAULT_CODEC
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::replace(&mut *slot, codec)
+}
+
+/// Returns the codec newly created `IndexWriterConfig`s use.
+///
+/// Equivalent to `Codec.getDefault()`. When [`set_default`] has never been
+/// called this falls back to the codec registered under
+/// [`DEFAULT_CODEC_NAME`], which is the codec Java's SPI loader would have
+/// found for the same name.
+pub fn get_default() -> Option<Arc<dyn Codec>> {
+    {
+        let slot = DEFAULT_CODEC
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(codec) = slot.as_ref() {
+            return Some(Arc::clone(codec));
+        }
+    }
+    default_codec()
+}
+
+/// Reloads the global registry from `classloader`, adding the
+/// codecs it has not seen.
+///
+/// Equivalent to `Codec.reloadCodecs(ClassLoader)`, which is
+/// `Holder.getLoader().reload(classloader)`: see
+/// [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload). Only
+/// new names are added; an existing one is never removed or replaced.
+///
+/// # Errors
+///
+/// Returns whatever [`NamedSPILoader::reload`](crate::util::spi::NamedSPILoader::reload)
+/// returns.
+pub fn reload_codecs(classloader: &Arc<crate::util::resource_loader::ClassLoader>) -> Result<()> {
+    GLOBAL_REGISTRY
+        .codecs
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reload(classloader)
+}
+
+/// Registers a codec in the global registry.
+///
+/// This mirrors the static `Codec.register` path used by `SegmentInfos` when
+/// resolving codec names read from `segments_N` files.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the name is invalid, or
+/// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the name is already registered.
+pub fn register_codec(name: impl Into<String>, codec: impl Codec + 'static) -> Result<()> {
+    GLOBAL_REGISTRY.register(name, codec)
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +705,11 @@ impl Codec for FilterCodec {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::error::LuceneErrorKind;
+    use std::collections::HashMap;
+
+    use super::doc_values::EmptyDocValuesConsumer;
+    use super::norms::{EmptyNormsConsumer, EmptyNormsProducer};
     use super::stub::*;
     use super::*;
 
@@ -529,7 +721,7 @@ pub(crate) mod tests {
         fn write(
             &mut self,
             _fields: &dyn crate::codecs::postings::Fields,
-            _norms: &dyn crate::codecs::postings::NormsProducer,
+            _norms: Option<&dyn crate::codecs::norms::NormsProducer>,
         ) -> Result<()> {
             Ok(())
         }
@@ -537,7 +729,7 @@ pub(crate) mod tests {
         fn merge(
             &mut self,
             _merge_state: &MergeState,
-            _norms: &dyn crate::codecs::postings::NormsProducer,
+            _norms: Option<&dyn crate::codecs::norms::NormsProducer>,
         ) -> Result<()> {
             Ok(())
         }
@@ -556,7 +748,7 @@ pub(crate) mod tests {
             0
         }
 
-        fn terms(&self, _field: &str) -> Result<Option<Box<dyn crate::codecs::postings::Terms>>> {
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::codecs::postings::Terms>>> {
             Ok(None)
         }
 
@@ -574,7 +766,7 @@ pub(crate) mod tests {
             Ok(Box::new(self.clone()))
         }
 
-        fn close(&mut self) -> Result<()> {
+        fn close(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -582,6 +774,12 @@ pub(crate) mod tests {
     /// A trivial named placeholder format used by the dummy codec in tests.
     #[derive(Debug)]
     pub(crate) struct DummyFormat(&'static str);
+
+    impl DummyFormat {
+        pub(crate) fn new(name: &'static str) -> Self {
+            Self(name)
+        }
+    }
 
     impl PostingsFormat for DummyFormat {
         fn name(&self) -> &str {
@@ -591,14 +789,14 @@ pub(crate) mod tests {
         fn fields_consumer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> Result<Box<dyn FieldsConsumer + 'a>> {
+        ) -> Result<Box<dyn FieldsConsumer>> {
             Ok(Box::new(DummyFieldsConsumer))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> Result<Box<dyn FieldsProducer + 'a>> {
+        ) -> Result<Box<dyn FieldsProducer>> {
             Ok(Box::new(DummyFieldsProducer))
         }
     }
@@ -611,14 +809,14 @@ pub(crate) mod tests {
         fn fields_consumer<'a>(
             &self,
             _state: &SegmentWriteState<'a>,
-        ) -> crate::error::Result<Box<dyn DocValuesConsumer + 'a>> {
+        ) -> crate::error::Result<Box<dyn DocValuesConsumer>> {
             Ok(Box::new(EmptyDocValuesConsumer))
         }
 
         fn fields_producer<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> crate::error::Result<Box<dyn DocValuesProducer + 'a>> {
+        ) -> crate::error::Result<Box<dyn DocValuesProducer>> {
             Ok(Box::new(EmptyDocValuesProducer))
         }
     }
@@ -640,7 +838,7 @@ pub(crate) mod tests {
 
         fn fields_writer(
             &self,
-            _directory: &dyn crate::store::Directory,
+            _directory: &std::sync::Arc<dyn crate::store::Directory>,
             _segment_info: &SegmentInfo,
             _context: &dyn crate::store::IOContext,
         ) -> crate::error::Result<Box<dyn StoredFieldsWriter>> {
@@ -665,7 +863,7 @@ pub(crate) mod tests {
 
         fn vectors_writer(
             &self,
-            _directory: &dyn crate::store::Directory,
+            _directory: &std::sync::Arc<dyn crate::store::Directory>,
             _segment_info: &SegmentInfo,
             _context: &dyn crate::store::IOContext,
         ) -> crate::error::Result<Box<dyn TermVectorsWriter>> {
@@ -707,7 +905,7 @@ pub(crate) mod tests {
 
         fn read(
             &self,
-            _directory: &dyn crate::store::Directory,
+            _directory: Arc<dyn crate::store::Directory>,
             segment_name: &str,
             segment_id: &[u8],
             _context: &dyn crate::store::IOContext,
@@ -717,7 +915,7 @@ pub(crate) mod tests {
             id[..len].copy_from_slice(&segment_id[..len]);
             SegmentInfo::new(
                 Arc::new(crate::store::FilterDirectory::new(Box::new(
-                    crate::store::RamDirectory::default(),
+                    crate::store::ByteBuffersDirectory::default(),
                 ))),
                 crate::util::Version::LUCENE_10_5_0,
                 Some(crate::util::Version::LUCENE_10_5_0),
@@ -729,7 +927,7 @@ pub(crate) mod tests {
                 HashMap::new(),
                 id,
                 HashMap::new(),
-                crate::search::Sort::default(),
+                None,
             )
         }
 
@@ -804,7 +1002,7 @@ pub(crate) mod tests {
 
         fn get_compound_reader(
             &self,
-            _dir: &dyn crate::store::Directory,
+            _dir: &std::sync::Arc<dyn crate::store::Directory>,
             _segment_info: &SegmentInfo,
         ) -> crate::error::Result<Box<dyn CompoundDirectory>> {
             Ok(Box::new(EmptyCompoundDirectory))
@@ -845,17 +1043,17 @@ pub(crate) mod tests {
             self.0
         }
 
-        fn fields_writer<'a>(
+        fn fields_writer(
             &self,
-            _state: &SegmentWriteState<'a>,
-        ) -> crate::error::Result<Box<dyn KnnVectorsWriter + 'a>> {
+            _state: &crate::codecs::state::OwnedSegmentWriteState,
+        ) -> crate::error::Result<Box<dyn KnnVectorsWriter>> {
             Ok(Box::new(EmptyKnnVectorsWriter))
         }
 
         fn fields_reader<'a>(
             &self,
             _state: &SegmentReadState<'a>,
-        ) -> crate::error::Result<Box<dyn KnnVectorsReader + 'a>> {
+        ) -> crate::error::Result<Box<dyn KnnVectorsReader>> {
             Ok(Box::new(EmptyKnnVectorsReader))
         }
 
@@ -951,21 +1149,483 @@ pub(crate) mod tests {
         }
     }
 
+    /// What a [`CloseTrackingDirectory`] records, and the closes it fails.
+    ///
+    /// Lucene's tests detect an input or output a failed constructor left
+    /// open through `MockDirectoryWrapper`, which tracks every `close()`; this
+    /// records each `close()` call by file name, in order.
+    #[derive(Debug, Default)]
+    pub(crate) struct CloseLog {
+        closed: std::sync::Mutex<Vec<String>>,
+        fail_close: std::sync::Mutex<std::collections::HashSet<String>>,
+        assertion_close: std::sync::Mutex<std::collections::HashSet<String>>,
+        panic_close: std::sync::Mutex<std::collections::HashSet<String>>,
+        fail_open: std::sync::Mutex<std::collections::HashSet<String>>,
+        panic_open: std::sync::Mutex<std::collections::HashSet<String>>,
+        fail_sync: std::sync::atomic::AtomicBool,
+        fail_write: std::sync::Mutex<std::collections::HashSet<String>>,
+    }
+
+    impl CloseLog {
+        /// The names closed through `close()`, in order, one entry per call.
+        pub(crate) fn closed(&self) -> Vec<String> {
+            self.closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+
+        /// How many times `name` was closed.
+        pub(crate) fn close_count(&self, name: &str) -> usize {
+            self.closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|n| *n == name)
+                .count()
+        }
+
+        /// Makes every later `close()` of `name` fail, after delegating it.
+        pub(crate) fn fail_close(&self, name: &str) {
+            self.fail_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
+        }
+
+        /// Makes every later `close()` of `name` fail with an
+        /// [`AssertionError`](crate::error::LuceneErrorKind::AssertionError), the
+        /// port's `java.lang.AssertionError`, after delegating it.
+        pub(crate) fn assertion_close(&self, name: &str) {
+            self.assertion_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
+        }
+
+        /// Makes every later `close()` of `name` panic, the port's form of an
+        /// unchecked throwable, after delegating it.
+        pub(crate) fn panic_close(&self, name: &str) {
+            self.panic_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
+        }
+
+        /// Makes every later `openInput`/`createOutput` of `name` fail.
+        pub(crate) fn fail_open(&self, name: &str) {
+            self.fail_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
+        }
+
+        /// Makes every later `openInput`/`createOutput` of `name` panic, the
+        /// port's form of an unchecked throwable.
+        pub(crate) fn panic_open(&self, name: &str) {
+            self.panic_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
+        }
+
+        /// Makes every later write to an output of `name` fail, as
+        /// `MockDirectoryWrapper`'s random `IOException` on a write does.
+        pub(crate) fn fail_write(&self, name: &str) {
+            self.fail_write
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(name.to_string());
+        }
+
+        fn check_write(&self, name: &str) -> Result<()> {
+            if self
+                .fail_write
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "write failed: {name}"
+                    ))),
+                ));
+            }
+            Ok(())
+        }
+
+        /// Makes every later `sync` fail.
+        pub(crate) fn fail_sync(&self) {
+            self.fail_sync
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn record_close(&self, name: &str) -> Result<()> {
+            self.closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(name.to_string());
+            if self
+                .panic_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
+                panic!("close panicked: {name}");
+            }
+            if self
+                .assertion_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::AssertionError(format!("close failed: {name}")),
+                ));
+            }
+            if self
+                .fail_close
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "close failed: {name}"
+                    ))),
+                ));
+            }
+            Ok(())
+        }
+
+        fn check_open(&self, name: &str) -> Result<()> {
+            if self
+                .panic_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
+                panic!("open panicked: {name}");
+            }
+            if self
+                .fail_open
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(name)
+            {
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "open failed: {name}"
+                    ))),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// A directory over a [`crate::store::ByteBuffersDirectory`] whose inputs
+    /// and outputs record each `close()` in a [`CloseLog`]; clones and slices
+    /// are not tracked.
+    #[derive(Debug, Default)]
+    pub(crate) struct CloseTrackingDirectory {
+        /// The directory the files live in.
+        pub(crate) inner: crate::store::ByteBuffersDirectory,
+        /// What was closed.
+        pub(crate) log: std::sync::Arc<CloseLog>,
+    }
+
+    struct TrackedInput {
+        name: String,
+        inner: Box<dyn crate::store::IndexInput>,
+        log: std::sync::Arc<CloseLog>,
+    }
+
+    impl crate::store::DataInput for TrackedInput {
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+            self.inner.to_java_string()
+        }
+
+        fn read_byte(&mut self) -> Result<u8> {
+            self.inner.read_byte()
+        }
+
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+            self.inner.read_bytes(b, offset, len)
+        }
+
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.inner.skip_bytes(num_bytes)
+        }
+    }
+
+    impl crate::store::IndexInput for TrackedInput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()?;
+            self.log.record_close(&self.name)
+        }
+
+        fn file_pointer(&self) -> Result<i64> {
+            self.inner.file_pointer()
+        }
+
+        fn length(&self) -> i64 {
+            self.inner.length()
+        }
+
+        fn seek(&mut self, pos: i64) -> Result<()> {
+            self.inner.seek(pos)
+        }
+
+        fn slice(
+            &self,
+            slice_description: &str,
+            offset: i64,
+            length: i64,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.slice(slice_description, offset, length)
+        }
+
+        fn clone_input(&self) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.clone_input()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+    }
+
+    struct TrackedOutput {
+        name: String,
+        inner: Box<dyn crate::store::IndexOutput>,
+        log: std::sync::Arc<CloseLog>,
+    }
+
+    impl crate::store::DataOutput for TrackedOutput {
+        fn write_byte(&mut self, b: u8) -> Result<()> {
+            self.log.check_write(&self.name)?;
+            self.inner.write_byte(b)
+        }
+
+        fn write_bytes(&mut self, b: &[u8], offset: usize, len: usize) -> Result<()> {
+            self.log.check_write(&self.name)?;
+            self.inner.write_bytes(b, offset, len)
+        }
+    }
+
+    impl crate::store::IndexOutput for TrackedOutput {
+        fn close(&mut self) -> Result<()> {
+            self.inner.close()?;
+            self.log.record_close(&self.name)
+        }
+
+        fn file_pointer(&self) -> i64 {
+            self.inner.file_pointer()
+        }
+
+        fn checksum(&self) -> Result<i64> {
+            self.inner.checksum()
+        }
+
+        fn resource_description(&self) -> &str {
+            self.inner.resource_description()
+        }
+
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+    }
+
+    impl crate::store::Directory for CloseTrackingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.log.check_open(name)?;
+            Ok(Box::new(TrackedOutput {
+                name: name.to_string(),
+                inner: self.inner.create_output(name, context)?,
+                log: std::sync::Arc::clone(&self.log),
+            }))
+        }
+
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+
+        fn sync(&self, names: &[&str]) -> Result<()> {
+            if self.log.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(crate::error::LuceneError::from(
+                    crate::error::LuceneErrorKind::Io(std::io::Error::other(format!(
+                        "sync failed: {names:?}"
+                    ))),
+                ));
+            }
+            self.inner.sync(names)
+        }
+
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.log.check_open(name)?;
+            Ok(Box::new(TrackedInput {
+                name: name.to_string(),
+                inner: self.inner.open_input(name, context)?,
+                log: std::sync::Arc::clone(&self.log),
+            }))
+        }
+
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_pending_deletions(&self) -> Result<std::collections::HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    /// A write state over `dir` for cross-module codec tests.
+    pub(crate) fn write_state<'a>(
+        dir: &'a std::sync::Arc<dyn crate::store::Directory>,
+        info: &'a SegmentInfo,
+        field_infos: &'a crate::index::FieldInfos,
+    ) -> crate::codecs::state::SegmentWriteState<'a> {
+        crate::codecs::state::SegmentWriteState::new(
+            &crate::util::NoOutputInfoStream,
+            std::sync::Arc::clone(dir),
+            info,
+            field_infos,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )
+    }
+
+    /// A read state over `dir` for cross-module codec tests.
+    pub(crate) fn read_state<'a>(
+        dir: &'a dyn crate::store::Directory,
+        info: &'a SegmentInfo,
+        field_infos: &'a crate::index::FieldInfos,
+    ) -> crate::codecs::state::SegmentReadState<'a> {
+        crate::codecs::state::SegmentReadState::new(
+            dir,
+            info,
+            field_infos,
+            &*crate::store::DEFAULT_IO_CONTEXT,
+        )
+    }
+
+    /// An owned write state over `dir` with no fields, for cross-module codec
+    /// tests.
+    pub(crate) fn owned_write_state(
+        dir: &std::sync::Arc<dyn crate::store::Directory>,
+        info: &SegmentInfo,
+    ) -> crate::codecs::state::OwnedSegmentWriteState {
+        crate::codecs::state::OwnedSegmentWriteState::new(
+            std::sync::Arc::new(crate::util::NoOutputInfoStream),
+            std::sync::Arc::clone(dir),
+            info.clone(),
+            crate::index::FieldInfos::default(),
+            crate::codecs::stub::BufferedUpdates::default(),
+            std::sync::Arc::new(crate::store::DefaultIOContext::default()),
+        )
+    }
+
+    /// Rewrites the bytes of `name` in `dir` through `edit`.
+    pub(crate) fn rewrite_file(
+        dir: &CloseTrackingDirectory,
+        name: &str,
+        edit: impl FnOnce(&mut Vec<u8>),
+    ) {
+        use crate::store::Directory;
+        let mut input = dir
+            .inner
+            .open_input(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let mut bytes = vec![0u8; input.length() as usize];
+        let len = bytes.len();
+        input.read_bytes(Some(&mut bytes), 0, len).unwrap();
+        edit(&mut bytes);
+        dir.inner.delete_file(name).unwrap();
+        let mut output = dir
+            .inner
+            .create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        output.write_bytes(&bytes, 0, bytes.len()).unwrap();
+        output.close().unwrap();
+    }
+
+    /// A [`CloseTrackingDirectory`], the same directory as a trait object,
+    /// and its [`CloseLog`].
+    pub(crate) fn tracking_directory() -> (
+        std::sync::Arc<dyn crate::store::Directory>,
+        std::sync::Arc<CloseTrackingDirectory>,
+        std::sync::Arc<CloseLog>,
+    ) {
+        let dir = std::sync::Arc::new(CloseTrackingDirectory::default());
+        let log = std::sync::Arc::clone(&dir.log);
+        (
+            std::sync::Arc::clone(&dir) as std::sync::Arc<dyn crate::store::Directory>,
+            dir,
+            log,
+        )
+    }
+
     /// Returns a minimal `SegmentInfo` for use in cross-module codec tests.
     pub(crate) fn test_segment_info(name: &str, max_doc: i32) -> SegmentInfo {
+        test_segment_info_with_codec(name, max_doc, std::sync::Arc::new(DummyCodec::new("Dummy")))
+    }
+
+    /// [`test_segment_info`] built with `codec`: `SegmentInfo.setCodec` may
+    /// only be called once (`SegmentInfo.java:174-176`).
+    pub(crate) fn test_segment_info_with_codec(
+        name: &str,
+        max_doc: i32,
+        codec: std::sync::Arc<dyn crate::codecs::Codec>,
+    ) -> SegmentInfo {
         SegmentInfo::new(
-            std::sync::Arc::new(crate::store::RamDirectory::default()),
+            std::sync::Arc::new(crate::store::ByteBuffersDirectory::default()),
             crate::util::Version::LUCENE_10_5_0,
             Some(crate::util::Version::LUCENE_10_5_0),
             name.to_string(),
             max_doc,
             false,
             false,
-            std::sync::Arc::new(DummyCodec::new("Dummy")),
+            codec,
             std::collections::HashMap::new(),
             [0u8; crate::util::string_helper::ID_LENGTH],
             std::collections::HashMap::new(),
-            crate::search::Sort::default(),
+            None,
         )
         .expect("test segment info should be valid")
     }
@@ -1025,7 +1685,13 @@ pub(crate) mod tests {
         let err = registry
             .register("Dummy", DummyCodec::new("Dummy2"))
             .expect_err("duplicate registration should fail");
-        assert!(matches!(err, LuceneError::IllegalState(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1034,12 +1700,24 @@ pub(crate) mod tests {
         let err = registry
             .register("", DummyCodec::new("Empty"))
             .expect_err("empty name should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
 
         let err = registry
             .register("Bad Name", DummyCodec::new("Bad"))
             .expect_err("name with space should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

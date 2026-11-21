@@ -1,0 +1,1095 @@
+//! `ShapeField` and `LateInteractionField` ported from
+//! `org.apache.lucene.document`.
+//!
+//! A shape is indexed as a set of triangles, each packed into a seven-dimension
+//! point whose first four dimensions are its bounding box — which is what lets
+//! a BKD tree prune whole subtrees of a polygon.
+
+use crate::analysis::{Analyzer, TokenStream};
+use crate::document::{
+    binary_doc_values_field_type, FieldData, FieldType, InvertableType, NumericValue, StoredValue,
+};
+use crate::error::{LuceneError, Result};
+use crate::index::{IndexableField, IndexableFieldType};
+use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell};
+use crate::util::{BytesRef, NumericUtils};
+use std::sync::Arc;
+
+/// How many bytes one encoded coordinate occupies.
+pub const BYTES: usize = 4;
+
+/// How the query shape must relate to a document's shape for it to match.
+///
+/// Equivalent to `ShapeField.QueryRelation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryRelation {
+    /// The two shapes share any point.
+    Intersects,
+    /// The document's shape lies inside the query's.
+    Within,
+    /// The two shapes share no point.
+    Disjoint,
+    /// The document's shape encloses the query's.
+    Contains,
+}
+
+impl QueryRelation {
+    /// Java's `QueryRelation.hashCode()`.
+    ///
+    /// An enum constant does not override `hashCode()`, so Java answers its JVM
+    /// identity hash, which differs between runs; the stable stand-in of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replaces it.
+    pub fn java_hash_code(self) -> i32 {
+        crate::util::java_collections::java_identity_hash_code_stand_in(match self {
+            QueryRelation::Intersects => {
+                "org.apache.lucene.document.ShapeField$QueryRelation.INTERSECTS"
+            }
+            QueryRelation::Within => "org.apache.lucene.document.ShapeField$QueryRelation.WITHIN",
+            QueryRelation::Disjoint => {
+                "org.apache.lucene.document.ShapeField$QueryRelation.DISJOINT"
+            }
+            QueryRelation::Contains => {
+                "org.apache.lucene.document.ShapeField$QueryRelation.CONTAINS"
+            }
+        })
+    }
+}
+
+/// Which degenerate form a decoded triangle takes.
+///
+/// Equivalent to `ShapeField.DecodedTriangle.TYPE`, declared in the same order:
+/// the ordinal is written to the shape doc-values stream by
+/// [`ShapeDocValues`](crate::document::ShapeDocValues), so the order is part of
+/// the file format.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TriangleType {
+    /// All three vertices coincide.
+    ///
+    /// Also the default, because a default-constructed
+    /// [`DecodedTriangle`] has all six coordinates at zero, which is exactly
+    /// what [`DecodedTriangle::resolve_triangle_type`] resolves to a point.
+    #[default]
+    Point,
+    /// The first and third vertices coincide.
+    Line,
+    /// All three vertices differ.
+    Triangle,
+}
+
+impl TriangleType {
+    /// Returns the ordinal this type is written with.
+    ///
+    /// Equivalent to `ShapeField.DecodedTriangle.TYPE.ordinal()`.
+    pub fn ordinal(self) -> i32 {
+        match self {
+            Self::Point => 0,
+            Self::Line => 1,
+            Self::Triangle => 2,
+        }
+    }
+
+    /// Returns the type with the given ordinal.
+    ///
+    /// Equivalent to `ShapeField.DecodedTriangle.TYPE.values()[ordinal]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) for an ordinal outside `[0, 2]`,
+    /// where Java throws `ArrayIndexOutOfBoundsException`.
+    pub fn from_ordinal(ordinal: i32) -> Result<Self> {
+        match ordinal {
+            0 => Ok(Self::Point),
+            1 => Ok(Self::Line),
+            2 => Ok(Self::Triangle),
+            other => Err(LuceneError::corrupt_index(
+                format!("invalid triangle type ordinal {other}"),
+                "shape doc values",
+            )),
+        }
+    }
+}
+
+/// A triangle read back out of the index.
+///
+/// Equivalent to `ShapeField.DecodedTriangle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct DecodedTriangle {
+    /// Which degenerate form the triangle takes.
+    ///
+    /// Equivalent to the `DecodedTriangle.type` field, which
+    /// [`resolve_triangle_type`](Self::resolve_triangle_type) sets. Note that
+    /// Java excludes it from `equals`/`hashCode`, which compare only the
+    /// coordinates and the edge flags; `PartialEq` here includes it, and cannot
+    /// disagree, because the type is a function of the coordinates.
+    pub triangle_type: TriangleType,
+    /// X of the first vertex.
+    pub a_x: i32,
+    /// Y of the first vertex.
+    pub a_y: i32,
+    /// X of the second vertex.
+    pub b_x: i32,
+    /// Y of the second vertex.
+    pub b_y: i32,
+    /// X of the third vertex.
+    pub c_x: i32,
+    /// Y of the third vertex.
+    pub c_y: i32,
+    /// Whether edge `a`→`b` belongs to the original shape's outline.
+    pub ab: bool,
+    /// Whether edge `b`→`c` belongs to the original shape's outline.
+    pub bc: bool,
+    /// Whether edge `c`→`a` belongs to the original shape's outline.
+    pub ca: bool,
+}
+
+impl std::fmt::Display for DecodedTriangle {
+    /// pretty print the triangle vertices
+    ///
+    /// Equivalent to `DecodedTriangle.toString()`:
+    /// `aX + ", " + aY + " " + bX + ", " + bY + " " + cX + ", " + cY + " [" + ab + "," + bc + "," + ca + "]"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}, {} {}, {} {}, {} [{},{},{}]",
+            self.a_x, self.a_y, self.b_x, self.b_y, self.c_x, self.c_y, self.ab, self.bc, self.ca
+        )
+    }
+}
+
+impl DecodedTriangle {
+    /// Equivalent to `DecodedTriangle.hashCode()`:
+    /// `Objects.hash(aX, aY, bX, bY, cX, cY, ab, bc, ca)`, which leaves the
+    /// type out.
+    pub fn hash_code(&self) -> i32 {
+        use crate::util::java_collections::{java_arrays_hash_code_ints, java_boolean_hash_code};
+        java_arrays_hash_code_ints(&[
+            self.a_x,
+            self.a_y,
+            self.b_x,
+            self.b_y,
+            self.c_x,
+            self.c_y,
+            java_boolean_hash_code(self.ab),
+            java_boolean_hash_code(self.bc),
+            java_boolean_hash_code(self.ca),
+        ])
+    }
+
+    /// Sets the six coordinates and the three edge flags.
+    ///
+    /// Equivalent to `DecodedTriangle.setValues(...)`, which takes its
+    /// arguments in the same `(x, y, edge)` triples per vertex. It does *not*
+    /// set the type: call
+    /// [`resolve_triangle_type`](Self::resolve_triangle_type) afterwards, as
+    /// `ShapeField.decodeTriangle` does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_values(
+        &mut self,
+        a_x: i32,
+        a_y: i32,
+        ab: bool,
+        b_x: i32,
+        b_y: i32,
+        bc: bool,
+        c_x: i32,
+        c_y: i32,
+        ca: bool,
+    ) {
+        self.a_x = a_x;
+        self.a_y = a_y;
+        self.ab = ab;
+        self.b_x = b_x;
+        self.b_y = b_y;
+        self.bc = bc;
+        self.c_x = c_x;
+        self.c_y = c_y;
+        self.ca = ca;
+    }
+
+    /// Resolves the triangle's type, **normalising its vertices and edge flags
+    /// in the process**.
+    ///
+    /// Equivalent to the package-private static
+    /// `ShapeField.resolveTriangleType(DecodedTriangle)`. A triangle with two
+    /// coincident vertices is a line segment, and Lucene rewrites it into the
+    /// canonical line form — `a`→`b` with `c` repeating `a` — merging the edge
+    /// flags of the two edges that collapse into one. Callers of
+    /// [`ShapeField::decode_triangle`] therefore see the same `b`/`c`
+    /// coordinates and the same `ab` flag Java's do; skipping this step changes
+    /// which documents a shape query matches, and what a shape doc value
+    /// serialises to.
+    pub fn resolve_triangle_type(&mut self) {
+        if self.a_x == self.b_x && self.a_y == self.b_y {
+            if self.a_x == self.c_x && self.a_y == self.c_y {
+                self.triangle_type = TriangleType::Point;
+            } else {
+                // `a` and `b` are identical: remove `ab`, and merge `bc` and `ca`.
+                self.ab = self.bc | self.ca;
+                self.b_x = self.c_x;
+                self.b_y = self.c_y;
+                self.c_x = self.a_x;
+                self.c_y = self.a_y;
+                self.triangle_type = TriangleType::Line;
+            }
+        } else if self.a_x == self.c_x && self.a_y == self.c_y {
+            // `a` and `c` are identical: remove `ac`, and merge `ab` and `bc`.
+            self.ab |= self.bc;
+            self.triangle_type = TriangleType::Line;
+        } else if self.b_x == self.c_x && self.b_y == self.c_y {
+            // `b` and `c` are identical: remove `bc`, and merge `ab` and `ca`.
+            self.ab |= self.ca;
+            self.c_x = self.a_x;
+            self.c_y = self.a_y;
+            self.triangle_type = TriangleType::Line;
+        } else {
+            self.triangle_type = TriangleType::Triangle;
+        }
+    }
+}
+
+/// The eight vertex orderings the encoding distinguishes, so a decoder can
+/// recover which vertex held the minimum and maximum of each axis.
+const MINY_MINX_MAXY_MAXX_Y_X: i32 = 0;
+const MINY_MINX_Y_X_MAXY_MAXX: i32 = 1;
+const MAXY_MINX_Y_X_MINY_MAXX: i32 = 2;
+const MAXY_MINX_MINY_MAXX_Y_X: i32 = 3;
+const Y_MINX_MINY_X_MAXY_MAXX: i32 = 4;
+const Y_MINX_MINY_MAXX_MAXY_X: i32 = 5;
+const MAXY_MINX_MINY_X_Y_MAXX: i32 = 6;
+const MINY_MINX_Y_MAXX_MAXY_X: i32 = 7;
+
+/// Packs and unpacks the triangles a shape is decomposed into.
+///
+/// Equivalent to `org.apache.lucene.document.ShapeField`.
+pub struct ShapeField;
+
+impl ShapeField {
+    /// Returns the one frozen type every shape's triangles are indexed with:
+    /// seven dimensions, of which the first four are indexed as the bounding
+    /// box.
+    ///
+    /// Equivalent to the static `ShapeField.TYPE` (`ShapeField.java:49-54`),
+    /// which every `Triangle` of every `LatLonShape` and `XYShape` shares.
+    /// Every triangle holds the one shared object, as Java's triangles do.
+    pub fn field_type() -> &'static FieldType {
+        Self::shared_field_type()
+    }
+
+    /// The one shared object behind [`field_type`](Self::field_type), which
+    /// every triangle holds, as Java's triangles hold the one static `TYPE`.
+    fn shared_field_type() -> &'static Arc<FieldType> {
+        static TYPE: std::sync::OnceLock<Arc<FieldType>> = std::sync::OnceLock::new();
+        TYPE.get_or_init(|| {
+            let ft = FieldType::new();
+            ft.set_dimensions_with_index_count(7, 4, BYTES as i32)
+                .expect("INVARIANT: seven dimensions, four indexed, fit a new, mutable type");
+            ft.freeze();
+            Arc::new(ft)
+        })
+    }
+
+    /// Packs one triangle into `bytes`.
+    ///
+    /// Equivalent to `ShapeField.encodeTriangle`. The vertices are first
+    /// rotated so the one with the smallest x comes first, then the bounding
+    /// box and the remaining vertex are written, with a bit field recording
+    /// which rotation was applied and which edges belong to the shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_triangle(
+        bytes: &mut [u8],
+        mut a_y: i32,
+        mut a_x: i32,
+        mut ab: bool,
+        mut b_y: i32,
+        mut b_x: i32,
+        mut bc: bool,
+        mut c_y: i32,
+        mut c_x: i32,
+        mut ca: bool,
+    ) -> Result<()> {
+        debug_assert!(bytes.len() == 7 * BYTES);
+        if bytes.len() != 7 * BYTES {
+            return Err(LuceneError::illegal_argument(format!(
+                "bytes must be {} long, got {}",
+                7 * BYTES,
+                bytes.len()
+            )));
+        }
+
+        // Rotate so that vertex `a` holds the smallest x, breaking a tie on the
+        // smallest y.
+        if b_x < a_x || c_x < a_x {
+            let (temp_x, temp_y, temp_bool) = (a_x, a_y, ab);
+            if b_x < c_x {
+                a_x = b_x;
+                a_y = b_y;
+                ab = bc;
+                b_x = c_x;
+                b_y = c_y;
+                bc = ca;
+                c_x = temp_x;
+                c_y = temp_y;
+                ca = temp_bool;
+            } else {
+                a_x = c_x;
+                a_y = c_y;
+                ab = ca;
+                c_x = b_x;
+                c_y = b_y;
+                ca = bc;
+                b_x = temp_x;
+                b_y = temp_y;
+                bc = temp_bool;
+            }
+        } else if a_x == b_x && a_x == c_x && (b_y < a_y || c_y < a_y) {
+            let (temp_x, temp_y, temp_bool) = (a_x, a_y, ab);
+            if b_y < c_y {
+                a_x = b_x;
+                a_y = b_y;
+                ab = bc;
+                b_x = c_x;
+                b_y = c_y;
+                bc = ca;
+                c_x = temp_x;
+                c_y = temp_y;
+                ca = temp_bool;
+            } else {
+                a_x = c_x;
+                a_y = c_y;
+                ab = ca;
+                c_x = b_x;
+                c_y = b_y;
+                ca = bc;
+                b_x = temp_x;
+                b_y = temp_y;
+                bc = temp_bool;
+            }
+        }
+
+        // change orientation if CW (`ShapeField.java:214-228`)
+        if crate::geo::GeoUtils::orient(
+            f64::from(a_x),
+            f64::from(a_y),
+            f64::from(b_x),
+            f64::from(b_y),
+            f64::from(c_x),
+            f64::from(c_y),
+        ) == -1
+        {
+            // swap b with c
+            let (temp_x, temp_y, temp_bool) = (b_x, b_y, ab);
+            // a_x and a_y do not change, ab becomes bc
+            ab = bc;
+            b_x = c_x;
+            b_y = c_y;
+            // bc does not change, ca becomes ab
+            c_x = temp_x;
+            c_y = temp_y;
+            ca = temp_bool;
+        }
+
+        let min_x = a_x;
+        let min_y = a_y.min(b_y).min(c_y);
+        let max_x = a_x.max(b_x).max(c_x);
+        let max_y = a_y.max(b_y).max(c_y);
+
+        let (mut bits, x, y);
+        if min_y == a_y {
+            if max_y == b_y && max_x == b_x {
+                y = c_y;
+                x = c_x;
+                bits = MINY_MINX_MAXY_MAXX_Y_X;
+            } else if max_y == c_y && max_x == c_x {
+                y = b_y;
+                x = b_x;
+                bits = MINY_MINX_Y_X_MAXY_MAXX;
+            } else {
+                y = b_y;
+                x = c_x;
+                bits = MINY_MINX_Y_MAXX_MAXY_X;
+            }
+        } else if max_y == a_y {
+            if min_y == b_y && max_x == b_x {
+                y = c_y;
+                x = c_x;
+                bits = MAXY_MINX_MINY_MAXX_Y_X;
+            } else if min_y == c_y && max_x == c_x {
+                y = b_y;
+                x = b_x;
+                bits = MAXY_MINX_Y_X_MINY_MAXX;
+            } else {
+                y = c_y;
+                x = b_x;
+                bits = MAXY_MINX_MINY_X_Y_MAXX;
+            }
+        } else if max_x == b_x && min_y == b_y {
+            y = a_y;
+            x = c_x;
+            bits = Y_MINX_MINY_MAXX_MAXY_X;
+        } else if max_x == c_x && max_y == c_y {
+            y = a_y;
+            x = b_x;
+            bits = Y_MINX_MINY_X_MAXY_MAXX;
+        } else {
+            return Err(LuceneError::illegal_argument(
+                "Could not encode the provided triangle".to_string(),
+            ));
+        }
+
+        // The three high bits record which edges belong to the shape's outline.
+        bits |= if ab { 1 << 3 } else { 0 };
+        bits |= if bc { 1 << 4 } else { 0 };
+        bits |= if ca { 1 << 5 } else { 0 };
+
+        NumericUtils::int_to_sortable_bytes(min_y, bytes, 0);
+        NumericUtils::int_to_sortable_bytes(min_x, bytes, BYTES);
+        NumericUtils::int_to_sortable_bytes(max_y, bytes, 2 * BYTES);
+        NumericUtils::int_to_sortable_bytes(max_x, bytes, 3 * BYTES);
+        NumericUtils::int_to_sortable_bytes(y, bytes, 4 * BYTES);
+        NumericUtils::int_to_sortable_bytes(x, bytes, 5 * BYTES);
+        NumericUtils::int_to_sortable_bytes(bits, bytes, 6 * BYTES);
+        Ok(())
+    }
+
+    /// Unpacks one triangle from `bytes`.
+    ///
+    /// Equivalent to `ShapeField.decodeTriangle`, which reverses the rotation
+    /// the bit field records.
+    pub fn decode_triangle(bytes: &[u8]) -> Result<DecodedTriangle> {
+        // The first read, `NumericUtils.sortableBytesToInt(t, 6 * BYTES)`
+        // through `BitUtil.VH_BE_INT`, is the view's
+        // `ArrayIndexOutOfBoundsException` (`Index 24 out of bounds for length
+        // <t.length - 3>`) when the bytes are too short; every later read
+        // lies below it.
+        if bytes.len() < 7 * BYTES {
+            return Err(LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!(
+                    "Index {} out of bounds for length {}",
+                    6 * BYTES,
+                    bytes.len() as i64 - (BYTES as i64 - 1)
+                ),
+            ));
+        }
+        let min_y = NumericUtils::sortable_bytes_to_int(bytes, 0);
+        let min_x = NumericUtils::sortable_bytes_to_int(bytes, BYTES);
+        let max_y = NumericUtils::sortable_bytes_to_int(bytes, 2 * BYTES);
+        let max_x = NumericUtils::sortable_bytes_to_int(bytes, 3 * BYTES);
+        let y = NumericUtils::sortable_bytes_to_int(bytes, 4 * BYTES);
+        let x = NumericUtils::sortable_bytes_to_int(bytes, 5 * BYTES);
+        let bits = NumericUtils::sortable_bytes_to_int(bytes, 6 * BYTES);
+
+        let mut t = DecodedTriangle {
+            ab: bits & (1 << 3) != 0,
+            bc: bits & (1 << 4) != 0,
+            ca: bits & (1 << 5) != 0,
+            ..Default::default()
+        };
+
+        match bits & 0x07 {
+            MINY_MINX_MAXY_MAXX_Y_X => {
+                t.a_y = min_y;
+                t.a_x = min_x;
+                t.b_y = max_y;
+                t.b_x = max_x;
+                t.c_y = y;
+                t.c_x = x;
+            }
+            MINY_MINX_Y_X_MAXY_MAXX => {
+                t.a_y = min_y;
+                t.a_x = min_x;
+                t.b_y = y;
+                t.b_x = x;
+                t.c_y = max_y;
+                t.c_x = max_x;
+            }
+            MAXY_MINX_Y_X_MINY_MAXX => {
+                t.a_y = max_y;
+                t.a_x = min_x;
+                t.b_y = y;
+                t.b_x = x;
+                t.c_y = min_y;
+                t.c_x = max_x;
+            }
+            MAXY_MINX_MINY_MAXX_Y_X => {
+                t.a_y = max_y;
+                t.a_x = min_x;
+                t.b_y = min_y;
+                t.b_x = max_x;
+                t.c_y = y;
+                t.c_x = x;
+            }
+            Y_MINX_MINY_X_MAXY_MAXX => {
+                t.a_y = y;
+                t.a_x = min_x;
+                t.b_y = min_y;
+                t.b_x = x;
+                t.c_y = max_y;
+                t.c_x = max_x;
+            }
+            Y_MINX_MINY_MAXX_MAXY_X => {
+                t.a_y = y;
+                t.a_x = min_x;
+                t.b_y = min_y;
+                t.b_x = max_x;
+                t.c_y = max_y;
+                t.c_x = x;
+            }
+            MAXY_MINX_MINY_X_Y_MAXX => {
+                t.a_y = max_y;
+                t.a_x = min_x;
+                t.b_y = min_y;
+                t.b_x = x;
+                t.c_y = y;
+                t.c_x = max_x;
+            }
+            MINY_MINX_Y_MAXX_MAXY_X => {
+                t.a_y = min_y;
+                t.a_x = min_x;
+                t.b_y = y;
+                t.b_x = max_x;
+                t.c_y = max_y;
+                t.c_x = x;
+            }
+            other => {
+                return Err(LuceneError::corrupt_index(
+                    format!("Could not decode the provided triangle: bits {other}"),
+                    "shape field",
+                ))
+            }
+        }
+        // Points of the decoded triangle must be co-planar or CCW oriented
+        debug_assert!(
+            crate::geo::GeoUtils::orient(
+                f64::from(t.a_x),
+                f64::from(t.a_y),
+                f64::from(t.b_x),
+                f64::from(t.b_y),
+                f64::from(t.c_x),
+                f64::from(t.c_y)
+            ) >= 0
+        );
+        // Java's `decodeTriangle` finishes with `resolveTriangleType(triangle)`,
+        // which both classifies the triangle and normalises a degenerate one.
+        t.resolve_triangle_type();
+        Ok(t)
+    }
+}
+
+/// One triangle of a shape, as an indexable field.
+///
+/// Equivalent to `ShapeField.Triangle`.
+#[derive(Debug)]
+pub struct Triangle {
+    name: String,
+    /// The one static `FieldType` every Java instance references, shared.
+    field_type: Arc<FieldType>,
+    fields_data: FieldData,
+}
+
+impl std::fmt::Display for Triangle {
+    /// `ShapeField.Triangle` extends `Field` and overrides no `toString()` —
+    /// the `toString()` further down `ShapeField.java` belongs to the unrelated
+    /// `DecodedTriangle`. Measured against `lucene-core-10.5.0.jar`, where a
+    /// tessellated line renders as
+    /// `pointDimensionCount=7,pointIndexDimensionCount=4,pointNumBytes=4<shape:[80 0 …]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            &self.field_type,
+            &self.name,
+            &crate::document::field_data_to_string(&self.fields_data),
+        )
+    }
+}
+
+impl Triangle {
+    /// Creates the field from three already encoded vertices.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: impl Into<String>,
+        a_x: i32,
+        a_y: i32,
+        b_x: i32,
+        b_y: i32,
+        c_x: i32,
+        c_y: i32,
+    ) -> Result<Self> {
+        // `super(name, TYPE)`, then `setTriangleValue(...)`.
+        let mut triangle = Self {
+            name: name.into(),
+            field_type: Arc::clone(ShapeField::shared_field_type()),
+            fields_data: FieldData::Null,
+        };
+        triangle.set_triangle_value(a_x, a_y, true, b_x, b_y, true, c_x, c_y, true)?;
+        Ok(triangle)
+    }
+
+    /// sets the vertices of the triangle as integer encoded values
+    ///
+    /// Equivalent to the protected `Triangle.setTriangleValue(int, int,
+    /// boolean, int, int, boolean, int, int, boolean)`: the first call
+    /// allocates the `7 * BYTES` value, later ones encode into it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`ShapeField::encode_triangle`] raises.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_triangle_value(
+        &mut self,
+        a_x: i32,
+        a_y: i32,
+        ab_from_shape: bool,
+        b_x: i32,
+        b_y: i32,
+        bc_from_shape: bool,
+        c_x: i32,
+        c_y: i32,
+        ca_from_shape: bool,
+    ) -> Result<()> {
+        if !matches!(self.fields_data, FieldData::Bytes(_)) {
+            self.fields_data = FieldData::Bytes(BytesRef::new(vec![0u8; 7 * BYTES]));
+        }
+        let FieldData::Bytes(bytes) = &mut self.fields_data else {
+            unreachable!("the value was set to bytes above");
+        };
+        ShapeField::encode_triangle(
+            &mut bytes.bytes,
+            a_y,
+            a_x,
+            ab_from_shape,
+            b_y,
+            b_x,
+            bc_from_shape,
+            c_y,
+            c_x,
+            ca_from_shape,
+        )
+    }
+
+    /// Returns the field's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the field's type.
+    pub fn field_type(&self) -> &FieldType {
+        &self.field_type
+    }
+
+    /// Creates the field from a tessellated triangle, carrying over which of
+    /// its edges belong to the original polygon.
+    ///
+    /// Equivalent to `ShapeField.Triangle(String, Tessellator.Triangle)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever [`ShapeField::encode_triangle`] raises.
+    pub fn from_tessellator_triangle(
+        name: impl Into<String>,
+        t: &crate::geo::tessellator::Triangle,
+    ) -> Result<Self> {
+        // `super(name, TYPE)`, then `setTriangleValue(...)`.
+        let mut triangle = Self {
+            name: name.into(),
+            field_type: Arc::clone(ShapeField::shared_field_type()),
+            fields_data: FieldData::Null,
+        };
+        triangle.set_triangle_value(
+            t.get_encoded_x(0),
+            t.get_encoded_y(0),
+            t.is_edge_from_polygon(0),
+            t.get_encoded_x(1),
+            t.get_encoded_y(1),
+            t.is_edge_from_polygon(1),
+            t.get_encoded_x(2),
+            t.get_encoded_y(2),
+            t.is_edge_from_polygon(2),
+        )?;
+        Ok(triangle)
+    }
+
+    /// Returns the packed triangle.
+    pub fn packed_value(&self) -> Option<&[u8]> {
+        match &self.fields_data {
+            FieldData::Bytes(bytes) => Some(bytes.slice()),
+            _ => None,
+        }
+    }
+
+    /// Returns the packed triangle as a `BytesRef`, which is what
+    /// `Field.binaryValue()` answers for a shape field.
+    pub fn binary_value(&self) -> Option<&BytesRef> {
+        match &self.fields_data {
+            FieldData::Bytes(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+}
+
+impl IndexableField for Triangle {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        &*self.field_type
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        let value = self
+            .packed_value()
+            .map(|bytes| BytesRef::new(bytes.to_vec()))
+            .unwrap_or_else(|| BytesRef::new(Vec::new()));
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(value).unwrap(),
+        ))
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Triangle::binary_value(self).cloned()
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        Some(InvertableType::BINARY)
+    }
+}
+
+/// A multi-vector value, stored as binary doc values.
+///
+/// Equivalent to `org.apache.lucene.document.LateInteractionField`, which holds
+/// one vector per token so a late-interaction model can score against every one.
+#[derive(Clone, Debug)]
+pub struct LateInteractionField {
+    name: String,
+    value: AtomicRefCell<BytesRef>,
+}
+
+impl std::fmt::Display for LateInteractionField {
+    /// `LateInteractionField` extends `BinaryDocValuesField`, which extends
+    /// `Field`, and overrides no `toString()`. Measured against
+    /// `lucene-core-10.5.0.jar`:
+    /// `docValuesType=BINARY<li:[2 0 0 0 0 0 80 3f 0 0 0 40]>`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::document::field_to_string(
+            f,
+            crate::document::binary_doc_values_field_type(),
+            &self.name,
+            &crate::document::bytes_ref_to_string(self.value.borrow().slice()),
+        )
+    }
+}
+
+impl LateInteractionField {
+    /// Creates the field from one vector per token.
+    ///
+    /// `value` is Java's `float[][]`, which may be `null` (`None`) and hold
+    /// `null` rows; [`encode`](Self::encode) raises Java's errors for them.
+    pub fn new(name: impl Into<String>, value: Option<&[Option<Vec<f32>>]>) -> Result<Self> {
+        Ok(Self {
+            name: name.into(),
+            value: AtomicRefCell::new(Self::encode(value)?),
+        })
+    }
+
+    /// Replaces the value.
+    pub fn set_value(&self, value: Option<&[Option<Vec<f32>>]>) -> Result<()> {
+        *self.value.borrow_mut() = Self::encode(value)?;
+        Ok(())
+    }
+
+    /// Returns the field's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the stored bytes.
+    pub fn binary_value(&self) -> AtomicRef<'_, BytesRef> {
+        self.value.borrow()
+    }
+
+    /// Returns the vectors the field holds.
+    pub fn get_value(&self) -> Result<Vec<Vec<f32>>> {
+        Self::decode(&self.value.borrow())
+    }
+
+    /// Packs the vectors: the dimension as a little-endian int, then every
+    /// vector's components as little-endian floats.
+    ///
+    /// Equivalent to `LateInteractionField.encode(float[][])`.
+    pub fn encode(value: Option<&[Option<Vec<f32>>]>) -> Result<BytesRef> {
+        // `if (value == null || value.length == 0)`.
+        let value = match value {
+            Some(v) if !v.is_empty() => v,
+            _ => {
+                return Err(LuceneError::illegal_argument(
+                    "Value should not be null or empty".to_string(),
+                ))
+            }
+        };
+        // `if (value[0] == null || value[0].length == 0)`.
+        let dimension = match &value[0] {
+            Some(first) if !first.is_empty() => first.len(),
+            _ => {
+                return Err(LuceneError::illegal_argument(
+                    "Composing token vectors should not be null or empty".to_string(),
+                ))
+            }
+        };
+        let mut bytes = Vec::with_capacity(4 + value.len() * dimension * 4);
+        bytes.extend_from_slice(&(dimension as i32).to_le_bytes());
+        for (i, vector) in value.iter().enumerate() {
+            // `value[i].length` dereferences the row: a `null` one throws
+            // `NullPointerException`.
+            let vector = vector.as_ref().ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.NullPointerException",
+                    format!("Cannot read the array length because \"value[{i}]\" is null"),
+                )
+            })?;
+            if vector.len() != dimension {
+                return Err(LuceneError::illegal_argument(format!(
+                    "Composing token vectors should have the same dimension. Mismatching \
+                     dimensions detected between token[0] and token[{i}], {dimension} != {}",
+                    vector.len()
+                )));
+            }
+            for &component in vector {
+                bytes.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+        Ok(BytesRef::new(bytes))
+    }
+
+    /// Unpacks what [`encode`](Self::encode) wrote.
+    ///
+    /// Equivalent to `LateInteractionField.decode(BytesRef)`.
+    pub fn decode(payload: &BytesRef) -> Result<Vec<Vec<f32>>> {
+        let bytes = payload.slice();
+        let underflow = || {
+            LuceneError::from(crate::error::LuceneErrorKind::Unchecked {
+                class: "java.nio.BufferUnderflowException",
+                message: None,
+                cause: None,
+            })
+        };
+        // `buffer.getInt()`: `BufferUnderflowException` below four bytes.
+        if bytes.len() < 4 {
+            return Err(underflow());
+        }
+        let length = bytes.len() as i32;
+        let dimension = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        // `(payload.length - Integer.BYTES) / (tokenVectorDimension *
+        // Float.BYTES)` in `int` arithmetic: `ArithmeticException` for a zero
+        // divisor.
+        let divisor = dimension.wrapping_mul(4);
+        if divisor == 0 {
+            return Err(LuceneError::from(
+                crate::error::LuceneErrorKind::Arithmetic("/ by zero".to_string()),
+            ));
+        }
+        let num_vectors = (length - 4).wrapping_div(divisor);
+        if num_vectors
+            .wrapping_mul(dimension)
+            .wrapping_mul(4)
+            .wrapping_add(4)
+            != length
+        {
+            return Err(LuceneError::illegal_argument(format!(
+                "Provided payload does not appear to have been encoded via \
+                 LateInteractionField.encode. Payload length should be equal to 4 + numVectors * \
+                 tokenVectorDimension, got {length} != 4 + {num_vectors} * {dimension}"
+            )));
+        }
+        // `new float[numVectors][]`, then `new float[tokenVectorDimension]`
+        // per row: the JVM's `NegativeArraySizeException`.
+        if num_vectors < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                num_vectors.to_string(),
+            ));
+        }
+        if num_vectors > 0 && dimension < 0 {
+            return Err(LuceneError::unchecked(
+                "java.lang.NegativeArraySizeException",
+                dimension.to_string(),
+            ));
+        }
+        let (num_vectors, dimension) = (num_vectors as usize, dimension as usize);
+        let mut value = Vec::with_capacity(num_vectors);
+        let mut pos = 4;
+        for _ in 0..num_vectors {
+            // `floatBuffer.get(value[i])`: `BufferUnderflowException` when the
+            // row does not fit.
+            if pos + dimension * 4 > bytes.len() {
+                return Err(underflow());
+            }
+            let mut vector = Vec::with_capacity(dimension);
+            for _ in 0..dimension {
+                vector.push(f32::from_le_bytes([
+                    bytes[pos],
+                    bytes[pos + 1],
+                    bytes[pos + 2],
+                    bytes[pos + 3],
+                ]));
+                pos += 4;
+            }
+            value.push(vector);
+        }
+        Ok(value)
+    }
+}
+
+impl IndexableField for LateInteractionField {
+    /// This field as `Any`, for the `instanceof` tests and casts Java
+    /// makes on a field it holds; the setters take `&self`, so a cast
+    /// reference changes the field in place.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn field_type(&self) -> &dyn IndexableFieldType {
+        binary_doc_values_field_type()
+    }
+
+    fn token_stream(
+        &self,
+        _analyzer: Option<&dyn Analyzer>,
+        _reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Box<dyn TokenStream>> {
+        Ok(Box::new(
+            crate::analysis::BinaryTokenStream::new(self.value.borrow().clone()).unwrap(),
+        ))
+    }
+
+    fn binary_value(&self) -> Option<BytesRef> {
+        Some(self.value.borrow().clone())
+    }
+
+    fn string_value(&self) -> Option<String> {
+        None
+    }
+
+    fn reader_value(&self) -> Option<crate::document::SharedReader> {
+        None
+    }
+
+    fn numeric_value(&self) -> Option<NumericValue> {
+        None
+    }
+
+    fn stored_value(&self) -> Result<Option<StoredValue>> {
+        Ok(None)
+    }
+
+    fn invertable_type(&self) -> Option<InvertableType> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod decoded_triangle_and_set_triangle_value_tests {
+    use super::*;
+
+    fn decoded(values: [i32; 6], edges: [bool; 3]) -> DecodedTriangle {
+        DecodedTriangle {
+            a_x: values[0],
+            a_y: values[1],
+            b_x: values[2],
+            b_y: values[3],
+            c_x: values[4],
+            c_y: values[5],
+            ab: edges[0],
+            bc: edges[1],
+            ca: edges[2],
+            ..DecodedTriangle::default()
+        }
+    }
+
+    /// #594: `DecodedTriangle.toString()` is `aX + ", " + aY + " " + bX +
+    /// ", " + bY + " " + cX + ", " + cY + " [" + ab + "," + bc + "," + ca +
+    /// "]"`.
+    #[test]
+    fn decoded_triangle_to_string_matches_java() {
+        assert_eq!(
+            decoded([1, 2, 3, 4, 5, 6], [true, false, true]).to_string(),
+            "1, 2 3, 4 5, 6 [true,false,true]"
+        );
+    }
+
+    /// #594: `DecodedTriangle.hashCode()` is `Objects.hash(aX, aY, bX, bY,
+    /// cX, cY, ab, bc, ca)` (`Boolean.hashCode` 1231/1237), the type left
+    /// out. Expected values computed with Java's formula.
+    #[test]
+    fn decoded_triangle_hash_code_matches_java() {
+        assert_eq!(
+            decoded([1, 2, 3, 4, 5, 6], [true, false, true]).hash_code(),
+            -30_268_027
+        );
+        let mut other = decoded([-7, 0, i32::MAX, i32::MIN, 10, 20], [false, false, true]);
+        assert_eq!(other.hash_code(), -1_305_678_468);
+        other.triangle_type = TriangleType::Line;
+        assert_eq!(other.hash_code(), -1_305_678_468, "the type is left out");
+    }
+
+    /// #594: `Triangle.setTriangleValue` encodes into the `7 * BYTES` value
+    /// the constructor allocated; both constructors produce the bytes
+    /// `ShapeField.encodeTriangle` writes.
+    #[test]
+    fn set_triangle_value_reencodes_into_the_same_value() {
+        let expected = |ax, ay, ab, bx, by, bc, cx, cy, ca| {
+            let mut bytes = vec![0u8; 7 * BYTES];
+            ShapeField::encode_triangle(&mut bytes, ay, ax, ab, by, bx, bc, cy, cx, ca).unwrap();
+            bytes
+        };
+        let mut triangle = Triangle::new("f", 0, 0, 10, 0, 0, 10).unwrap();
+        let value = triangle.binary_value().unwrap();
+        assert_eq!(
+            value.slice(),
+            expected(0, 0, true, 10, 0, true, 0, 10, true)
+        );
+        let address = value.bytes.as_ptr();
+
+        triangle
+            .set_triangle_value(5, 5, false, 20, 5, true, 5, 20, false)
+            .unwrap();
+        let value = triangle.binary_value().unwrap();
+        assert_eq!(
+            value.slice(),
+            expected(5, 5, false, 20, 5, true, 5, 20, false)
+        );
+        assert_eq!(value.bytes.as_ptr(), address, "the same array");
+    }
+}

@@ -1,0 +1,314 @@
+# class	method	event	detail (FrameworkTestsOracle, Lucene 10.5.0, JDK 25)
+org.apache.lucene.tests.util.TestMaxFailuresRule	#counts	run=2 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestMaxFailuresRule	testMaxFailures	S	-
+org.apache.lucene.tests.util.TestMaxFailuresRule	testZombieThreadFailures	S	-
+org.apache.lucene.tests.util.TestExceptionInBeforeClassHooks	#counts	run=3 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestExceptionInBeforeClassHooks	testExceptionInBeforeClassFailsTheTest	S	-
+org.apache.lucene.tests.util.TestExceptionInBeforeClassHooks	testExceptionWithinBefore	S	-
+org.apache.lucene.tests.util.TestExceptionInBeforeClassHooks	testExceptionWithinTestFailsTheTest	S	-
+org.apache.lucene.tests.util.TestExpectThrows	#counts	run=6 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestExpectThrows	testExpectingNestedAssume	S	-
+org.apache.lucene.tests.util.TestExpectThrows	testExpectingNestedFail	S	-
+org.apache.lucene.tests.util.TestExpectThrows	testFail	S	-
+org.apache.lucene.tests.util.TestExpectThrows	testNestedAssume	S	-
+org.apache.lucene.tests.util.TestExpectThrows	testNestedFail	S	-
+org.apache.lucene.tests.util.TestExpectThrows	testPass	S	-
+org.apache.lucene.tests.util.TestFailIfDirectoryNotClosed	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestFailIfDirectoryNotClosed	testFailIfDirectoryNotClosed	S	-
+org.apache.lucene.tests.util.TestFailIfUnreferencedFiles	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestFailIfUnreferencedFiles	testFailIfUnreferencedFiles	S	-
+org.apache.lucene.tests.util.TestFloatingPointUlpEquality	#counts	run=0 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestGroupFiltering	#counts	run=4 fail=0 ignore=0 assume=4	-
+org.apache.lucene.tests.util.TestGroupFiltering	testBar	A	'bar' test group is disabled (@org.apache.lucene.tests.util.TestGroupFiltering.Bar())
+org.apache.lucene.tests.util.TestGroupFiltering	testBar	S	-
+org.apache.lucene.tests.util.TestGroupFiltering	testFoo	A	'foo' test group is disabled (@org.apache.lucene.tests.util.TestGroupFiltering.Foo())
+org.apache.lucene.tests.util.TestGroupFiltering	testFoo	S	-
+org.apache.lucene.tests.util.TestGroupFiltering	testFooBar	A	'bar' test group is disabled (@org.apache.lucene.tests.util.TestGroupFiltering.Bar())
+org.apache.lucene.tests.util.TestGroupFiltering	testFooBar	S	-
+org.apache.lucene.tests.util.TestGroupFiltering	testJira	A	'jira' test group is disabled (@org.apache.lucene.tests.util.TestGroupFiltering.Jira(bug="JIRA bug reference"))
+org.apache.lucene.tests.util.TestGroupFiltering	testJira	S	-
+org.apache.lucene.tests.util.TestJvmInfo	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestJvmInfo	testEchoJvmInfo	S	-
+org.apache.lucene.tests.util.TestLineFileDocs	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestLineFileDocs	testDateFieldNormalization	S	-
+org.apache.lucene.tests.util.TestRamUsageTesterOnWildAnimals	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestRamUsageTesterOnWildAnimals	testOverflowMaxChainLength	S	-
+org.apache.lucene.tests.util.TestSeedFromUncaught	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.util.TestSeedFromUncaught	testUncaughtDumpsSeed	S	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	#counts	run=0 fail=0 ignore=6 assume=0	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	testLaaaaaargeOutput	I	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	testProgressiveOutput	I	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	testThreadLeak	I	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	testTimeout	I	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	testUncaughtException	I	-
+org.apache.lucene.tests.util.TestWorstCaseTestBehavior	testZombie	I	-
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	#counts	run=4 fail=0 ignore=0 assume=4	-
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testCompletelyForbidden1	A	runWithRestrictedPermissions requires a SecurityManager enabled
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testCompletelyForbidden1	S	-
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testCompletelyForbidden2	A	runWithRestrictedPermissions requires a SecurityManager enabled
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testCompletelyForbidden2	S	-
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testDefaultsPass	A	runWithRestrictedPermissions requires a SecurityManager enabled
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testDefaultsPass	S	-
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testNormallyAllowedStuff	A	runWithRestrictedPermissions requires a SecurityManager enabled
+org.apache.lucene.tests.util.TestRunWithRestrictedPermissions	testNormallyAllowedStuff	S	-
+org.apache.lucene.tests.util.TestTestObjectInputFilterFactory	#counts	run=0 fail=0 ignore=4 assume=1	-
+org.apache.lucene.tests.util.TestTestObjectInputFilterFactory	null	A	Only works when TestObjectInputFilterFactory is installed in JVM
+org.apache.lucene.tests.util.TestTestObjectInputFilterFactory	testBadCodeJustSettingNullFilter	I	-
+org.apache.lucene.tests.util.TestTestObjectInputFilterFactory	testDeserializationWithAllowFilter	I	-
+org.apache.lucene.tests.util.TestTestObjectInputFilterFactory	testDeserializationWithDenyFilter	I	-
+org.apache.lucene.tests.util.TestTestObjectInputFilterFactory	testDeserializationWithoutFilter	I	-
+org.apache.lucene.tests.index.TestAssertingLeafReader	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.index.TestAssertingLeafReader	testAssertBits	S	-
+org.apache.lucene.tests.index.TestForceMergePolicy	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.index.TestForceMergePolicy	testForceMergePolicy	S	-
+org.apache.lucene.tests.index.TestMockRandomMergePolicy	#counts	run=1 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.index.TestMockRandomMergePolicy	testReverseWithParents	S	-
+org.apache.lucene.tests.search.TestAssertingLeafCollector	#counts	run=3 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.search.TestAssertingLeafCollector	testScoreAllowedDuringRangeCollectionWithNonScorer	S	-
+org.apache.lucene.tests.search.TestAssertingLeafCollector	testScoreRejectedDuringDocIdStreamCollection	S	-
+org.apache.lucene.tests.search.TestAssertingLeafCollector	testScoreRejectedDuringRangeCollection	S	-
+org.apache.lucene.tests.search.TestPerThreadPKLookup	#counts	run=2 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.search.TestPerThreadPKLookup	testPKLookupWithUpdate	S	-
+org.apache.lucene.tests.search.TestPerThreadPKLookup	testReopen	S	-
+org.apache.lucene.tests.search.TestQueryUtils	#counts	run=10 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckFirstSkipToDetectsBrokenAdvance	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckFirstSkipToDetectsEarlyTermination	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckFirstSkipToDetectsScoreMismatch	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckFirstSkipToDetectsUnstableScore	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckFirstSkipToDetectsWrongDocFromAdvance	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckSkipToDetectsBrokenAdvance	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckSkipToDetectsEarlyTermination	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckSkipToDetectsScoreMismatch	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckSkipToDetectsUnstableScore	S	-
+org.apache.lucene.tests.search.TestQueryUtils	testCheckSkipToDetectsWrongDocFromAdvance	S	-
+org.apache.lucene.tests.search.TestBaseExplanationTestCase	#counts	run=4 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.search.TestBaseExplanationTestCase	testIncorrectExplainMatches	S	-
+org.apache.lucene.tests.search.TestBaseExplanationTestCase	testIncorrectExplainScores	S	-
+org.apache.lucene.tests.search.TestBaseExplanationTestCase	testQueryMatchWhenNotExpected	S	-
+org.apache.lucene.tests.search.TestBaseExplanationTestCase	testQueryNoMatchWhenExpected	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	#counts	run=64 fail=0 ignore=0 assume=3	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testAbuseCloneAfterParentClosed	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testAbuseCloneOfCloneAfterParentClosed	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testAbuseClosedIndexInput	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testAlignedFloats	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testAlignedInts	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testAlignedLittleEndianLongs	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testByte	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testChecksum	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCopyBytes	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCopyBytesWithThreads	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCopyFrom	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCorruptOnCloseIsWorkingFSDir	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCorruptOnCloseIsWorkingOnByteBuffersDirectory	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCreateOutputForExistingFile	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testCreateTempOutput	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testDataTypes	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testDeleteFile	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testDetectClose	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testDiskFull	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testDoubleCloseInput	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testDoubleCloseOutput	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testFileExistsInListAfterCreated	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testFloatsUnderflow	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testFsyncDoesntCreateNewFiles	A	test only works for FSDirectory subclasses
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testFsyncDoesntCreateNewFiles	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testGroupVInt	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testGroupVIntOverflow	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testIllegalEOF	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testIndexOutputToString	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testInt	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testIntsUnderflow	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testIsLoaded	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testIsLoadedOnSlice	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testLargeWrites	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testListAllIsSorted	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testLittleEndianLongsUnderflow	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testLong	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testMDWinsideOfMDW	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testMapOfStrings	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testNoDir	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testPendingDeletions	A	we can only install VirusCheckingFS on an FSDirectory
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testPendingDeletions	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testPrefetch	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testPrefetchOnSlice	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testRandomByte	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testRandomInt	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testRandomLong	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testRandomShort	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testRename	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSeekBeyondEndOfFile	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSeekPastEOF	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSeekToEOFThenBack	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSeekToEndOfFile	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSetOfStrings	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testShort	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSliceOfSlice	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testSliceOutOfBounds	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testString	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testThreadSafetyInListAll	A	'nightly' test group is disabled (@org.apache.lucene.tests.util.LuceneTestCase.Nightly())
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testThreadSafetyInListAll	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testUnalignedFloats	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testUnalignedInts	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testUnalignedLittleEndianLongs	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testVInt	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testVLong	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testZInt	S	-
+org.apache.lucene.tests.store.TestMockDirectoryWrapper	testZLong	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	#counts	run=59 fail=0 ignore=0 assume=2	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testAlignedFloats	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testAlignedInts	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testAlignedLittleEndianLongs	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testByte	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testChecksum	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testCopyBytes	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testCopyBytesWithThreads	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testCopyFrom	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testCreateOutputForExistingFile	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testCreateTempOutput	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testDataTypes	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testDeleteFile	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testDetectClose	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testDoubleCloseInput	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testDoubleCloseOutput	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testFileExistsInListAfterCreated	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testFloatsUnderflow	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testFsyncDoesntCreateNewFiles	A	test only works for FSDirectory subclasses
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testFsyncDoesntCreateNewFiles	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testGroupVInt	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testGroupVIntOverflow	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testIllegalEOF	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testIndexOutputToString	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testInt	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testIntsUnderflow	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testIsLoaded	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testIsLoadedOnSlice	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testLargeWrites	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testListAllIsSorted	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testLittleEndianLongsUnderflow	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testLong	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testMapOfStrings	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testNoDir	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testParallelReads	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testPendingDeletions	A	we can only install VirusCheckingFS on an FSDirectory
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testPendingDeletions	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testPrefetch	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testPrefetchOnSlice	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testRandomByte	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testRandomInt	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testRandomLong	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testRandomShort	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testRename	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSeekBeyondEndOfFile	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSeekPastEOF	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSeekToEOFThenBack	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSeekToEndOfFile	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSequentialReads	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSetOfStrings	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testShort	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSliceOfSlice	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testSliceOutOfBounds	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testString	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testThreadSafetyInListAll	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testUnalignedFloats	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testUnalignedInts	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testUnalignedLittleEndianLongs	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testVInt	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testVLong	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testZInt	S	-
+org.apache.lucene.tests.store.TestSerializedIOCountingDirectory	testZLong	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	#counts	run=7 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testFsyncWorks	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestDisableFsyncFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	#counts	run=9 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testExtraDirectory	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testExtraFile	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testNoExtras	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestExtrasFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	#counts	run=7 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testTooManyOpenFiles	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestHandleLimitFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	#counts	run=8 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testOnCloseThrowsException	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testOnOpenThrowsException	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestHandleTrackingFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	#counts	run=11 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testLeakAsyncFileChannel	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testLeakByteChannel	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testLeakFileChannel	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testLeakInputStream	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testLeakOutputStream	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestLeakFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	#counts	run=10 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testActuallyShuffles	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testConsistentOrder	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testFileNameOnly	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testShuffleWorks	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestShuffleFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	#counts	run=16 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testAsyncFileChannel	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testByteChannel	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testCopy	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testCreateDirectory	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testDelete	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testDeleteIfExists	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testFileChannel	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testMove	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testNewOutputStream	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestVerboseFS	testVerboseFSNoSuchFileException	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	#counts	run=7 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testDeleteSometimesFails	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestVirusCheckingFS	testURIumlaute	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	#counts	run=12 fail=0 ignore=0 assume=0	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testDeleteIfExistsOpenFile	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testDeleteOpenFile	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testDirectoryStreamFiltered	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testDirectoryStreamGlobFiltered	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testFileName	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testHashCodeEquals	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testMove	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testOpenDeleteConcurrently	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testRenameOpenFile	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testURI	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testURIchinese	S	-
+org.apache.lucene.tests.mockfile.TestWindowsFS	testURIumlaute	S	-

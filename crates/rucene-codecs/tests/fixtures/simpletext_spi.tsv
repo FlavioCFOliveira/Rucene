@@ -1,0 +1,7 @@
+# lookup	result
+Codec.forName(SimpleText)	SimpleText
+Codec.forName(SimpleText).getClass()	org.apache.lucene.codecs.simpletext.SimpleTextCodec
+postingsFormat	SimpleText
+docValuesFormat	SimpleText
+knnVectorsFormat	SimpleTextKnnVectorsFormat
+PostingsFormat.forName(SimpleText)	java.lang.IllegalArgumentException

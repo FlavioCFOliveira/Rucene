@@ -1,0 +1,2142 @@
+//! Tracking and deletion of the index files a directory still needs.
+//!
+//! Port of `org.apache.lucene.index.IndexFileDeleter` from Apache Lucene Core
+//! 10.5.0 (`lucene/core/src/java/org/apache/lucene/index/IndexFileDeleter.java`).
+//!
+//! This type keeps track of every `SegmentInfos` that is still *live* — either
+//! because a `segments_N` file in the directory names it (a commit), or because
+//! a writer is actively updating it in memory and has not committed it yet. It
+//! reference-counts those `SegmentInfos` down to individual file names, and
+//! deletes a file once the last commit referencing it is gone.
+//!
+//! The division of labour matches Lucene's:
+//!
+//! - the [`IndexDeletionPolicy`] decides **when a commit point may go**;
+//! - `IndexFileDeleter` decides **which files that makes unreferenced**;
+//! - [`FileDeleter`] performs the deletion and the ordering that makes it safe.
+//!
+//! # Deferred deletion lives in the `Directory`, not here
+//!
+//! A delete that fails — the case Windows forced on Lucene, where a file still
+//! open cannot be unlinked — must be retried later rather than be fatal. In
+//! Lucene 10.5.0 that retry is **not** in this class. Verified against the
+//! 10.5.0 sources: `IndexFileDeleter.java` contains no `deletable` list and no
+//! `deletePendingFiles`; the pending set and its retry live in the directory,
+//! at `FSDirectory.java:282,315,335,407` (`deletePendingFiles()` and
+//! `getPendingDeletions()`). `IndexFileDeleter` merely *consults*
+//! `Directory::get_pending_deletions` once during construction, to fold those
+//! names into the set fed to [`inflate_gens`] (`IndexFileDeleter.java:211-217`).
+//!
+//! Rucene follows 10.5.0: the retry lives in `FSDirectory::delete_pending_files`
+//! (`src/store.rs`), which is already ported, and this module does not carry a
+//! `deletable` list. Adding one here would be a divergence from the reference
+//! version, not fidelity to it.
+//!
+//! # The `IndexWriter` seam
+//!
+//! Java's constructor takes a non-null `IndexWriter` and uses it for exactly
+//! three things: an assertion that the caller holds the writer's monitor
+//! (`locked()`, `IndexFileDeleter.java:94-96`), one info-stream message built
+//! from `writer.segString(writer.toLiveInfos(segmentInfos))`
+//! (`IndexFileDeleter.java:557-561`), and `ensureOpen()`/`isClosed()`, which
+//! consult the writer's closed state and tragic exception
+//! (`IndexFileDeleter.java:382-403`).
+//!
+//! This type carries no writer field, and the three uses are answered
+//! differently:
+//!
+//! - The `locked()` assertion has no analogue and needs none: Java asserts by
+//!   convention what Rust enforces in the type system, since every mutating
+//!   method here takes `&mut self`.
+//! - [`IndexFileDeleter::ensure_open`] and [`IndexFileDeleter::is_closed`] take
+//!   the writer as an argument instead of reading it from a field.
+//! - [`IndexFileDeleter::new`] and [`IndexFileDeleter::checkpoint`], the two
+//!   places a checkpoint is described, take the writer's rendering of the
+//!   segments ([`WriterSegString`]) as an argument.
+//!
+//! **Divergence from Lucene 10.5.0.** Java's deleter holds a back-reference to
+//! the `IndexWriter` that constructed it. Here the writer owns its deleter *by
+//! value*, inside the state its own mutex guards, so a field pointing back at
+//! the writer would be a reference cycle; the writer is handed in per call
+//! instead. The calls read exactly what Java reads through that field —
+//! `writer.ensureOpen(false)`, `writer.getTragicException()` and
+//! `writer.segString(writer.toLiveInfos(segmentInfos))` — and nothing else in
+//! this module needs the writer, so the divergence is confined to those
+//! signatures. In Lucene `ensureOpen` is reachable only through `isClosed`,
+//! which only `IndexWriter.isDeleterClosed()` calls, so the caller that has to
+//! supply the argument is the one that already holds the writer. The segment
+//! rendering is a function rather than the writer itself because Java's
+//! `segString` and `toLiveInfos` are `synchronized` on the writer and run
+//! while the caller already holds that (reentrant) monitor; the writer's
+//! state mutex is not reentrant, so the caller hands in a function over the
+//! state it already holds.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+
+use crate::error::{LuceneError, Result};
+use crate::index::index_commit::IndexCommit;
+use crate::index::index_deletion_policy::IndexDeletionPolicy;
+use crate::index::index_file_names::{
+    is_codec_file, parse_generation, parse_segment_name, IndexFileName, PENDING_SEGMENTS, SEGMENTS,
+};
+use crate::index::index_writer::IndexWriter;
+use crate::index::segment_infos::SegmentInfos;
+use crate::store::Directory;
+use crate::util::file_deleter::{FileDeleter, Messenger, MsgType};
+use crate::util::java_collections::JavaHashSet;
+use crate::util::InfoStream;
+
+/// The info-stream component name Lucene logs index-file deletion under.
+const IFD: &str = "IFD";
+
+/// The name of the write lock, which is never reference-counted.
+///
+/// Equivalent to `IndexWriter.WRITE_LOCK_NAME` (`IndexWriter.java:237`). It is
+/// defined in this module, and `IndexWriter` imports it from here.
+pub const WRITE_LOCK_NAME: &str = "write.lock";
+
+/// The writer's rendering of a checkpoint's segments.
+///
+/// Equivalent to the `writer.segString(writer.toLiveInfos(segmentInfos))` that
+/// `IndexFileDeleter.checkpoint` logs (`IndexFileDeleter.java:557-561`): it is
+/// called with the `SegmentInfos` being checkpointed, and only when the `IFD`
+/// component of the info stream is enabled, as Java builds the message only
+/// then. See the module note on the `IndexWriter` seam for why it is an
+/// argument rather than a field.
+pub type WriterSegString<'a> = &'a dyn Fn(&SegmentInfos) -> Result<String>;
+
+/// Radix Lucene encodes segment names and generations in.
+///
+/// Java spells this `Character.MAX_RADIX`.
+const MAX_RADIX: u32 = 36;
+
+/// A commit point held by an [`IndexFileDeleter`], and handed to the deletion
+/// policy.
+///
+/// Port of the private inner class `IndexFileDeleter.CommitPoint`.
+///
+/// Note, as Lucene notes, that the natural ordering of commit points (by
+/// generation) is inconsistent with equality.
+pub struct CommitPoint {
+    /// `Collections.unmodifiableCollection(segmentInfos.files(true))`
+    /// (`IndexFileDeleter.java:670`): the `java.util.HashSet`
+    /// `SegmentInfos.files` builds, iteration order included, which is the
+    /// order `deleteCommits` decrements it in.
+    files: JavaHashSet<IndexFileName>,
+    segments_file_name: String,
+    deleted: AtomicBool,
+    directory_orig: Arc<dyn Directory>,
+    commits_to_delete: Arc<Mutex<Vec<Arc<CommitPoint>>>>,
+    generation: i64,
+    user_data: HashMap<String, String>,
+    segment_count: i32,
+    /// Self-reference, so that [`CommitPoint::delete`] can enqueue *this*
+    /// commit point on `commits_to_delete`.
+    ///
+    /// Java's inner class simply writes `commitsToDelete.add(this)`
+    /// (`IndexFileDeleter.java:714`). A Rust `&self` cannot recover its own
+    /// `Arc`, so the `Arc` is built with [`Arc::new_cyclic`] and the weak
+    /// handle stored. This is a mechanical adaptation of the same structure,
+    /// not a behavioural change.
+    self_ref: Weak<CommitPoint>,
+}
+
+impl std::fmt::Debug for CommitPoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Matches Java's `IndexFileDeleter.CommitPoint(segments_N)` toString.
+        write!(
+            f,
+            "IndexFileDeleter.CommitPoint({})",
+            self.segments_file_name
+        )
+    }
+}
+
+impl CommitPoint {
+    /// Builds a commit point describing `segment_infos`.
+    ///
+    /// Equivalent to the `CommitPoint(Collection<CommitPoint>, Directory,
+    /// SegmentInfos)` constructor.
+    fn new(
+        commits_to_delete: Arc<Mutex<Vec<Arc<CommitPoint>>>>,
+        directory_orig: Arc<dyn Directory>,
+        segment_infos: &SegmentInfos,
+    ) -> Result<Arc<Self>> {
+        let user_data = segment_infos.user_data().clone();
+        // Commit points are built from committed infos, whose generation
+        // names a file.
+        let segments_file_name = segment_infos
+            .segments_file_name()
+            .expect("INVARIANT: a commit point's SegmentInfos names its segments file");
+        let generation = segment_infos.generation();
+        let files = segment_infos.files_ordered(true)?;
+        let segment_count = segment_infos.size() as i32;
+
+        Ok(Arc::new_cyclic(|self_ref| CommitPoint {
+            files,
+            segments_file_name,
+            deleted: AtomicBool::new(false),
+            directory_orig,
+            commits_to_delete,
+            generation,
+            user_data: user_data.to_std(),
+            segment_count,
+            self_ref: self_ref.clone(),
+        }))
+    }
+
+    /// Returns the files this commit point references, including its
+    /// `segments_N`.
+    fn files(&self) -> &JavaHashSet<IndexFileName> {
+        &self.files
+    }
+}
+
+impl std::fmt::Display for CommitPoint {
+    /// Equivalent to `IndexFileDeleter.CommitPoint.toString()`
+    /// (`IndexFileDeleter.java:674-677`), which is
+    /// `"IndexFileDeleter.CommitPoint(" + segmentsFileName + ")"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "IndexFileDeleter.CommitPoint({})",
+            self.segments_file_name
+        )
+    }
+}
+
+impl IndexCommit for CommitPoint {
+    fn get_segments_file_name(&self) -> String {
+        self.segments_file_name.clone()
+    }
+
+    fn get_file_names(&self) -> Result<HashSet<String>> {
+        Ok(self.files.to_std())
+    }
+
+    fn get_directory(&self) -> Arc<dyn Directory> {
+        Arc::clone(&self.directory_orig)
+    }
+
+    /// Marks this commit point for removal.
+    ///
+    /// Called only by the deletion policy. The commit point is queued on the
+    /// deleter's `commits_to_delete` list; the files are not decremented until
+    /// the deleter next runs `delete_commits`.
+    ///
+    /// Equivalent to `CommitPoint.delete()`.
+    fn delete(&self) -> Result<()> {
+        // `swap` gives Java's `if (!deleted) { deleted = true; ... }` in one
+        // step, so a commit point is enqueued at most once even under races.
+        if !self.deleted.swap(true, Ordering::AcqRel) {
+            if let Some(this) = self.self_ref.upgrade() {
+                self.commits_to_delete
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(this);
+            }
+        }
+        Ok(())
+    }
+
+    fn is_deleted(&self) -> bool {
+        self.deleted.load(Ordering::Acquire)
+    }
+
+    fn get_segment_count(&self) -> i32 {
+        self.segment_count
+    }
+
+    fn get_generation(&self) -> i64 {
+        self.generation
+    }
+
+    fn get_user_data(&self) -> Result<HashMap<String, String>> {
+        Ok(self.user_data.clone())
+    }
+}
+
+/// Tracks which index files are still referenced and deletes the rest.
+///
+/// Port of `org.apache.lucene.index.IndexFileDeleter`.
+///
+/// # Thread safety
+///
+/// As in Lucene, this type is not internally synchronised — Java guards it with
+/// `synchronized (writer)` and asserts so in `locked()`. Rucene expresses the
+/// same contract through `&mut self`, so exclusive access is checked at compile
+/// time. The one exception is [`CommitPoint::delete`], which the deletion policy
+/// may call re-entrantly while the deleter is mid-`checkpoint`; that path uses
+/// interior mutability, exactly as Java's does.
+pub struct IndexFileDeleter {
+    /// Every commit (`segments_N`) currently in the index, oldest to newest.
+    ///
+    /// With the default `KeepOnlyLastCommitDeletionPolicy` this holds a single
+    /// entry; policies that retain history make it longer.
+    commits: Vec<Arc<CommitPoint>>,
+
+    /// Files incremented by the previous *non-commit* checkpoint.
+    last_files: Vec<IndexFileName>,
+
+    /// Commits the deletion policy has asked to remove, not yet processed.
+    commits_to_delete: Arc<Mutex<Vec<Arc<CommitPoint>>>>,
+
+    info_stream: Arc<dyn InfoStream>,
+
+    /// The directory commit-point metadata is read from and reported against.
+    directory_orig: Arc<dyn Directory>,
+
+    /// The directory files are actually deleted from.
+    directory: Arc<dyn Directory>,
+
+    policy: Arc<dyn IndexDeletionPolicy>,
+
+    /// Whether the commit the deleter was opened on was deleted during `on_init`.
+    ///
+    /// Equivalent to the package-private field `startingCommitDeleted`.
+    pub starting_commit_deleted: bool,
+
+    /// The newest `SegmentInfos` seen while scanning the directory.
+    last_segment_infos: Option<SegmentInfos>,
+
+    file_deleter: FileDeleter,
+}
+
+impl std::fmt::Debug for IndexFileDeleter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IndexFileDeleter")
+            .field("commits", &self.commits.len())
+            .field("last_files", &self.last_files.len())
+            .field("starting_commit_deleted", &self.starting_commit_deleted)
+            .field("file_deleter", &self.file_deleter)
+            .finish()
+    }
+}
+
+/// Forwards one [`FileDeleter`] message to the info stream, dropping the
+/// reference-count chatter.
+///
+/// Equivalent to the private `org.apache.lucene.index.IndexFileDeleter#logInfo`,
+/// which Java installs as the `BiConsumer<MsgType, String>` its `FileDeleter`
+/// reports through: [`MsgType::Ref`] messages are deliberately silent, and
+/// everything else reaches the `"IFD"` component when it is enabled.
+fn log_info(info_stream: &dyn InfoStream, msg_type: MsgType, msg: &str) {
+    if msg_type == MsgType::Ref {
+        // do not log anything
+    } else if info_stream.is_enabled(IFD) {
+        info_stream.message(IFD, msg);
+    }
+}
+
+impl IndexFileDeleter {
+    /// Returns whether the caller holds the lock that guards this deleter.
+    ///
+    /// Equivalent to the private `org.apache.lucene.index.IndexFileDeleter#locked`,
+    /// which reads `writer == null || Thread.holdsLock(writer)` and is called
+    /// only from assertions.
+    ///
+    /// This port carries no writer — see the module note on the `IndexWriter`
+    /// seam — so the first disjunct holds and the answer is always `true`,
+    /// which is exactly what Java answers for a null writer. The guarantee is
+    /// not weaker for it: `IndexWriter` reaches its deleter only through the
+    /// guard on its own state mutex, and every mutating method here takes
+    /// `&mut self`, so a caller that can call one provably holds the lock.
+    pub(crate) fn locked(&self) -> bool {
+        true
+    }
+
+    /// Initialises the deleter: finds every previous commit in the directory,
+    /// increments the files each references, and lets the policy delete commits.
+    /// Any file not referenced by a surviving commit is removed.
+    ///
+    /// `files` is the directory listing to adopt. `segment_infos` is the
+    /// in-memory commit the caller is working from; it is mutated by
+    /// [`inflate_gens`] so that future writes never collide with a generation
+    /// already present on disk.
+    ///
+    /// The caller must hold the index write lock: this opens `segments_N` files
+    /// directly, with no retry logic.
+    ///
+    /// Equivalent to the `IndexFileDeleter(...)` constructor
+    /// (`IndexFileDeleter.java:105-249`). Its `IndexWriter` argument is
+    /// `writer`, the writer's rendering of the segments the two checkpoints
+    /// this constructor takes describe (`IndexFileDeleter.java:206, 241`); see
+    /// the module docs on the `IndexWriter` seam.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        files: &[String],
+        directory_orig: Arc<dyn Directory>,
+        directory: Arc<dyn Directory>,
+        policy: Arc<dyn IndexDeletionPolicy>,
+        segment_infos: &mut SegmentInfos,
+        info_stream: Arc<dyn InfoStream>,
+        writer: WriterSegString<'_>,
+        initial_index_exists: bool,
+        is_reader_init: bool,
+    ) -> Result<Self> {
+        let current_segments_file = segment_infos.segments_file_name();
+
+        if info_stream.is_enabled(IFD) {
+            info_stream.message(
+                IFD,
+                &format!(
+                    "init: current segments file is \"{}\"; deletionPolicy={policy:?}",
+                    current_segments_file.as_deref().unwrap_or("null")
+                ),
+            );
+        }
+
+        let commits_to_delete: Arc<Mutex<Vec<Arc<CommitPoint>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let messenger: Messenger = {
+            let info_stream = Arc::clone(&info_stream);
+            Arc::new(move |msg_type, msg| log_info(info_stream.as_ref(), msg_type, msg))
+        };
+        let mut file_deleter = FileDeleter::new(Arc::clone(&directory), Some(messenger));
+
+        // First pass: walk the directory listing and seed the reference counts.
+        let mut commits: Vec<Arc<CommitPoint>> = Vec::new();
+        let mut current_commit_point: Option<Arc<CommitPoint>> = None;
+        let mut last_segment_infos: Option<SegmentInfos> = None;
+
+        if current_segments_file.is_some() {
+            for file_name in files {
+                if file_name.ends_with(WRITE_LOCK_NAME) {
+                    continue;
+                }
+                if !(is_codec_file(file_name)
+                    || file_name.starts_with(SEGMENTS)
+                    || file_name.starts_with(PENDING_SEGMENTS))
+                {
+                    continue;
+                }
+
+                // Adopt the file with an initial count of zero.
+                file_deleter.init_ref_count(file_name);
+
+                if file_name.starts_with(SEGMENTS) {
+                    // A commit point. Load it and increment everything it
+                    // references, its own `segments_N` included.
+                    if info_stream.is_enabled(IFD) {
+                        info_stream.message(IFD, &format!("init: load commit \"{file_name}\""));
+                    }
+                    let sis = SegmentInfos::read_commit(Arc::clone(&directory_orig), file_name)?;
+
+                    let commit_point = CommitPoint::new(
+                        Arc::clone(&commits_to_delete),
+                        Arc::clone(&directory_orig),
+                        &sis,
+                    )?;
+                    if sis.generation() == segment_infos.generation() {
+                        current_commit_point = Some(Arc::clone(&commit_point));
+                    }
+                    commits.push(commit_point);
+                    for file in sis.files_ordered(true)?.iter() {
+                        file_deleter.inc_ref(file);
+                    }
+
+                    if last_segment_infos
+                        .as_ref()
+                        .is_none_or(|last| sis.generation() > last.generation())
+                    {
+                        last_segment_infos = Some(sis);
+                    }
+                }
+            }
+        }
+
+        if current_commit_point.is_none() && current_segments_file.is_some() && initial_index_exists
+        {
+            // We never saw the `segments_N` matching the incoming SegmentInfos,
+            // yet it must exist because the caller holds the write lock. A stale
+            // directory listing can do this (e.g. an NFS client caching it), so
+            // open the commit point explicitly.
+            let name = current_segments_file
+                .as_deref()
+                .expect("checked is_some above");
+            // `catch (IOException e) { throw new CorruptIndexException("unable
+            // to read current segments_N file", currentSegmentsFile, e); }`
+            // (`IndexFileDeleter.java:188-193`).
+            let sis =
+                SegmentInfos::read_commit(Arc::clone(&directory_orig), name).map_err(|e| {
+                    if e.is_io_exception() {
+                        LuceneError::corrupt_index_with_cause(
+                            "unable to read current segments_N file",
+                            name,
+                            e,
+                        )
+                    } else {
+                        e
+                    }
+                })?;
+            if info_stream.is_enabled(IFD) {
+                info_stream.message(IFD, &format!("forced open of current segments file {name}"));
+            }
+            let commit_point = CommitPoint::new(
+                Arc::clone(&commits_to_delete),
+                Arc::clone(&directory_orig),
+                &sis,
+            )?;
+            current_commit_point = Some(Arc::clone(&commit_point));
+            commits.push(commit_point);
+            for file in sis.files_ordered(true)?.iter() {
+                file_deleter.inc_ref(file);
+            }
+        }
+
+        let mut this = Self {
+            commits,
+            last_files: Vec::new(),
+            commits_to_delete,
+            info_stream: Arc::clone(&info_stream),
+            directory_orig: Arc::clone(&directory_orig),
+            directory,
+            policy,
+            starting_commit_deleted: false,
+            last_segment_infos,
+            file_deleter,
+        };
+
+        if is_reader_init {
+            // The incoming SegmentInfos may hold NRT changes that no commit
+            // reflects yet, so its files need protecting too.
+            this.checkpoint(segment_infos, false, writer)?;
+        }
+
+        // Keep the commit list sorted oldest to newest. Java uses
+        // `CollectionUtil.timSort`, relying on `IndexCommit.compareTo`, which
+        // compares generations (`IndexCommit.java:101-110`).
+        this.commits.sort_by_key(|c| c.generation);
+
+        let mut relevant_files: HashSet<String> = this
+            .file_deleter
+            .get_all_files()
+            .map(str::to_string)
+            .collect();
+        relevant_files.extend(this.directory_orig.get_pending_deletions()?);
+
+        // Note the reference counts hold only "normal" file names — never
+        // `write.lock`.
+        inflate_gens(segment_infos, &relevant_files, info_stream.as_ref())?;
+
+        // Anything still at a count of zero is abandoned — typically the debris
+        // of an IndexWriter that crashed. `getUnrefedFiles` returns a
+        // `java.util.HashSet` filled in `refCounts` order, and it is walked and
+        // handed on in that set's order (`IndexFileDeleter.java:222-233`).
+        let to_delete = this.file_deleter.get_unrefed_files();
+        for file_name in to_delete.iter() {
+            if file_name.starts_with(SEGMENTS) {
+                return Err(LuceneError::illegal_state(format!(
+                    "file \"{file_name}\" has refCount=0, which should never happen on init"
+                )));
+            }
+            if info_stream.is_enabled(IFD) {
+                info_stream.message(
+                    IFD,
+                    &format!("init: removing unreferenced file \"{file_name}\""),
+                );
+            }
+        }
+        this.file_deleter.delete_files_if_no_ref(to_delete.iter())?;
+
+        // Finally let the policy drop commits on startup.
+        this.policy.on_init(&this.commits_as_index_commits())?;
+
+        // Always protect the incoming SegmentInfos: it is not always the most
+        // recent commit.
+        this.checkpoint(segment_infos, false, writer)?;
+
+        this.starting_commit_deleted = current_commit_point
+            .as_ref()
+            .is_some_and(|c| c.is_deleted());
+
+        this.delete_commits()?;
+
+        Ok(this)
+    }
+
+    /// Returns the live commits as trait objects, for handing to the policy.
+    fn commits_as_index_commits(&self) -> Vec<Arc<dyn IndexCommit>> {
+        self.commits
+            .iter()
+            .map(|c| Arc::clone(c) as Arc<dyn IndexCommit>)
+            .collect()
+    }
+
+    /// Returns the newest `SegmentInfos` found while scanning the directory.
+    ///
+    /// **Addition, not a port.** Lucene keeps `lastSegmentInfos` in a `private`
+    /// field with no accessor. Exposed here for observation only; nothing in the
+    /// port reads it, and it changes no behaviour.
+    pub fn last_segment_infos(&self) -> Option<&SegmentInfos> {
+        self.last_segment_infos.as_ref()
+    }
+
+    /// Returns the commits currently known to the deleter, oldest to newest.
+    ///
+    /// **Addition, not a port.** Lucene keeps `commits` in a `private` field and
+    /// lets the deletion policy see it only as the argument to `onInit`/
+    /// `onCommit`. Exposed here so the portability tests can check that Rucene
+    /// rebuilt the same commit points Lucene did; it hands out the same
+    /// `Arc`s the policy receives and changes no behaviour.
+    pub fn commits(&self) -> Vec<Arc<dyn IndexCommit>> {
+        self.commits_as_index_commits()
+    }
+
+    /// Removes the commit points the policy queued, decrementing their files.
+    ///
+    /// # Errors
+    ///
+    /// The first commit's error, with the later commits' errors added to it
+    /// as suppressed; the commit list is compacted first either way.
+    ///
+    /// Equivalent to `IndexFileDeleter.deleteCommits`
+    /// (`IndexFileDeleter.java:409-455`).
+    fn delete_commits(&mut self) -> Result<()> {
+        let queued: Vec<Arc<CommitPoint>> = {
+            let mut guard = self
+                .commits_to_delete
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *guard)
+        };
+
+        if queued.is_empty() {
+            return Ok(());
+        }
+
+        // Decrement everything the now-dead commits referenced. Every commit is
+        // processed even if one fails; the first error is the one reported,
+        // with every later one added to it as suppressed: `firstThrowable =
+        // IOUtils.useOrSuppress(firstThrowable, t)` (`IndexFileDeleter.java:417-429`).
+        let mut first_error: Option<LuceneError> = None;
+        for commit in &queued {
+            if self.info_stream.is_enabled(IFD) {
+                self.info_stream.message(
+                    IFD,
+                    &format!(
+                        "deleteCommits: now decRef commit \"{}\"",
+                        commit.segments_file_name
+                    ),
+                );
+            }
+            if let Err(e) = self.file_deleter.dec_ref_files(commit.files()) {
+                match &mut first_error {
+                    Some(first) => first.add_suppressed(e),
+                    None => first_error = Some(e),
+                }
+            }
+        }
+
+        // Compact the commit list, preserving order.
+        self.commits.retain(|c| !c.is_deleted());
+
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Re-lists the directory and removes files nothing references.
+    ///
+    /// The writer calls this after an error forced a rollback, since that may
+    /// have left unreferenced files behind. The names are collected in a
+    /// `java.util.HashSet`, in listing order, and handed on in that set's
+    /// order (`IndexFileDeleter.java:463-493`).
+    ///
+    /// Equivalent to `IndexFileDeleter.refresh`.
+    pub fn refresh(&mut self) -> Result<()> {
+        debug_assert!(self.locked());
+        // `Set<String> toDelete = new HashSet<>()`.
+        let mut to_delete = JavaHashSet::new();
+
+        for file_name in self.directory.list_all()? {
+            if file_name.ends_with(WRITE_LOCK_NAME) || self.file_deleter.exists(&file_name) {
+                continue;
+            }
+            // `pending_segments_N` is cleared only here, during rollback: it is
+            // never reference-counted. Anything left over is deleted on the next
+            // writer start-up anyway.
+            if is_codec_file(&file_name)
+                || file_name.starts_with(SEGMENTS)
+                || file_name.starts_with(PENDING_SEGMENTS)
+            {
+                if self.info_stream.is_enabled(IFD) {
+                    self.info_stream.message(
+                        IFD,
+                        &format!(
+                            "refresh: removing newly created unreferenced file \"{file_name}\""
+                        ),
+                    );
+                }
+                to_delete.insert(file_name);
+            }
+        }
+
+        self.file_deleter.delete_files_if_no_ref(to_delete.iter())
+    }
+
+    /// Decrements the files held by the last non-commit checkpoint.
+    ///
+    /// Equivalent to `IndexFileDeleter.close`. Java's class implements
+    /// `Closeable`; here it is an inherent fallible method, the same shape
+    /// `Directory::close` already uses in this crate, because the release can
+    /// fail and the failure must reach the caller rather than be swallowed by a
+    /// `Drop`.
+    pub fn close(&mut self) -> Result<()> {
+        debug_assert!(self.locked());
+        if self.last_files.is_empty() {
+            return Ok(());
+        }
+        let files = std::mem::take(&mut self.last_files);
+        self.file_deleter.dec_ref_files(files)
+    }
+
+    /// Re-runs [`IndexDeletionPolicy::on_commit`] over the known commits.
+    ///
+    /// Useful with a policy that holds commits open: the application may know
+    /// that some are no longer held and want the now-unused ones collected.
+    ///
+    /// Equivalent to `IndexFileDeleter.revisitPolicy`.
+    pub fn revisit_policy(&mut self) -> Result<()> {
+        debug_assert!(self.locked());
+        if self.info_stream.is_enabled(IFD) {
+            self.info_stream.message(IFD, "now revisitPolicy");
+        }
+
+        if !self.commits.is_empty() {
+            Self::assert_commits_are_not_deleted(&self.commits);
+            self.policy.on_commit(&self.commits_as_index_commits())?;
+            self.delete_commits()?;
+        }
+        Ok(())
+    }
+
+    /// Records that the index has reached a consistent state.
+    ///
+    /// The writer calls this once new files are on disk and the in-memory
+    /// `SegmentInfos` points at them. This may or may not be a commit —
+    /// `segments_N` may or may not have been written.
+    ///
+    /// The files the new `SegmentInfos` references are incremented and those
+    /// seen at the previous checkpoint are decremented. When `is_commit` is
+    /// true the deletion policy is consulted and any commits it drops have their
+    /// files decremented as well.
+    ///
+    /// Equivalent to `IndexFileDeleter.checkpoint(SegmentInfos, boolean)`
+    /// (`IndexFileDeleter.java:552-599`). `writer` renders the segments for
+    /// the info-stream message, as Java's
+    /// `writer.segString(writer.toLiveInfos(segmentInfos))` does
+    /// (`IndexFileDeleter.java:557-561`); see the module docs on the
+    /// `IndexWriter` seam.
+    pub fn checkpoint(
+        &mut self,
+        segment_infos: &SegmentInfos,
+        is_commit: bool,
+        writer: WriterSegString<'_>,
+    ) -> Result<()> {
+        debug_assert!(self.locked());
+        let t0 = std::time::Instant::now();
+        if self.info_stream.is_enabled(IFD) {
+            // `"now checkpoint \"" + writer.segString(writer.toLiveInfos(segmentInfos))
+            // + "\" [" + segmentInfos.size() + " segments " + "; isCommit = "
+            // + isCommit + "]"` (`IndexFileDeleter.java:557-567`).
+            let segments = writer(segment_infos)?;
+            self.info_stream.message(
+                IFD,
+                &format!(
+                    "now checkpoint \"{segments}\" [{} segments ; isCommit = {is_commit}]",
+                    segment_infos.size()
+                ),
+            );
+        }
+
+        self.inc_ref_segment_infos(segment_infos, is_commit)?;
+
+        if is_commit {
+            let commit_point = CommitPoint::new(
+                Arc::clone(&self.commits_to_delete),
+                Arc::clone(&self.directory_orig),
+                segment_infos,
+            )?;
+            self.commits.push(commit_point);
+
+            Self::assert_commits_are_not_deleted(&self.commits);
+            self.policy.on_commit(&self.commits_as_index_commits())?;
+
+            // Decrement the files of whatever the policy dropped.
+            self.delete_commits()?;
+        } else {
+            // DecRef old files from the last checkpoint, if any: `try {
+            // decRef(lastFiles); } finally { lastFiles.clear(); }`
+            // (`IndexFileDeleter.java:584-589`). A failed decrement leaves
+            // `last_files` cleared and propagates before this checkpoint's
+            // files are saved (`IndexFileDeleter.java:591-592`).
+            let previous = std::mem::take(&mut self.last_files);
+            self.file_deleter.dec_ref_files(previous)?;
+
+            // Save files so we can decr on next checkpoint/commit.
+            self.last_files.extend(segment_infos.files_ordered(false)?);
+        }
+
+        if self.info_stream.is_enabled(IFD) {
+            // `TimeUnit.NANOSECONDS.toMillis(t1 - t0) + " ms to checkpoint"`
+            // (`IndexFileDeleter.java:595-598`), timed from the method's
+            // start (`IndexFileDeleter.java:556`).
+            self.info_stream.message(
+                IFD,
+                &format!("{} ms to checkpoint", t0.elapsed().as_millis()),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Increments the files referenced by `segment_infos`.
+    ///
+    /// When `is_commit` is true the `segments_N` file itself is included.
+    ///
+    /// Equivalent to `IndexFileDeleter.incRef(SegmentInfos, boolean)`.
+    pub fn inc_ref_segment_infos(
+        &mut self,
+        segment_infos: &SegmentInfos,
+        is_commit: bool,
+    ) -> Result<()> {
+        debug_assert!(self.locked());
+        for file_name in segment_infos.files_ordered(is_commit)?.iter() {
+            self.file_deleter.inc_ref(file_name);
+        }
+        Ok(())
+    }
+
+    /// Increments the reference count of every named file.
+    ///
+    /// This is how a merge or an NRT reader pins the files it is using: the
+    /// writer increments the reader's segment files and decrements them when the
+    /// reader is dropped (see `IndexWriter.java:4070,5202,5274` in Lucene
+    /// 10.5.0).
+    ///
+    /// Equivalent to `IndexFileDeleter.incRef(Collection<String>)`.
+    pub fn inc_ref_files<I, S>(&mut self, files: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        debug_assert!(self.locked());
+        self.file_deleter.inc_ref_files(files);
+    }
+
+    /// Decrements every named file, deleting those that reach zero.
+    ///
+    /// Every file is decremented even if one fails; the first error is returned.
+    ///
+    /// Equivalent to `IndexFileDeleter.decRef(Collection<String>)`.
+    pub fn dec_ref_files<I, S>(&mut self, files: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        debug_assert!(self.locked());
+        self.file_deleter.dec_ref_files(files)
+    }
+
+    /// Decrements the files referenced by `segment_infos`, excluding its
+    /// `segments_N`.
+    ///
+    /// Equivalent to `IndexFileDeleter.decRef(SegmentInfos)`.
+    pub fn dec_ref_segment_infos(&mut self, segment_infos: &SegmentInfos) -> Result<()> {
+        debug_assert!(self.locked());
+        let files = segment_infos.files_ordered(false)?;
+        self.file_deleter.dec_ref_files(files.iter())
+    }
+
+    /// Fails once the owning writer has been closed or has hit a tragic error.
+    ///
+    /// Equivalent to `IndexFileDeleter.ensureOpen()`
+    /// (`IndexFileDeleter.java:382-392`), which calls `writer.ensureOpen(false)`
+    /// — so a *closing* writer is still open here — and then refuses separately
+    /// if the writer recorded a tragic exception, because a writer that hit one
+    /// may be closing for exactly that reason.
+    ///
+    /// See the module documentation for why `writer` is an argument rather than
+    /// a field.
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when the writer is closed, and also when
+    /// it hit a tragic error, with that error as its cause.
+    pub fn ensure_open(&self, writer: &IndexWriter) -> Result<()> {
+        writer.ensure_open_with(false)?;
+        // `new AlreadyClosedException("refusing to delete any files: this
+        // IndexWriter hit an unrecoverable exception",
+        // writer.getTragicException())` (`IndexFileDeleter.java:386-390`).
+        match writer.get_tragic_exception() {
+            Some(tragedy) => Err(LuceneError::already_closed_with_cause(
+                "refusing to delete any files: this IndexWriter hit an unrecoverable exception",
+                tragedy,
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns whether this deleter will refuse further work.
+    ///
+    /// Equivalent to `IndexFileDeleter.isClosed()`
+    /// (`IndexFileDeleter.java:394-403`), which answers by calling
+    /// [`ensure_open`](Self::ensure_open) and reading whether it threw.
+    pub fn is_closed(&self, writer: &IndexWriter) -> bool {
+        self.ensure_open(writer).is_err()
+    }
+
+    /// Checks that no commit in `commits` has already been deleted.
+    ///
+    /// Equivalent to `IndexFileDeleter.assertCommitsAreNotDeleted(List)`
+    /// (`IndexFileDeleter.java:510-516`), which Java calls from inside an
+    /// `assert` — so it runs only with assertions enabled, exactly as this runs
+    /// only under [`debug_assert!`].
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, when a commit in `commits` is already deleted.
+    fn assert_commits_are_not_deleted(commits: &[Arc<CommitPoint>]) {
+        for commit in commits {
+            debug_assert!(
+                !commit.is_deleted(),
+                "Commit [{commit}] was deleted already"
+            );
+        }
+    }
+
+    /// Returns whether `file_name` is tracked and currently referenced.
+    ///
+    /// Equivalent to `IndexFileDeleter.exists`.
+    pub fn exists(&self, file_name: &str) -> bool {
+        debug_assert!(self.locked());
+        self.file_deleter.exists(file_name)
+    }
+
+    /// Returns the current reference count of `file_name`, or `0`.
+    ///
+    /// **Addition, not a port, and test-only.** Lucene's `IndexFileDeleter`
+    /// holds its `FileDeleter` in a `private` field and exposes no such
+    /// accessor. This one exists solely so the unit tests can assert reference
+    /// counts, and it is compiled out of every non-test build, so the shipped
+    /// API surface stays exactly Lucene's.
+    #[cfg(test)]
+    pub(crate) fn get_ref_count(&self, file_name: &str) -> i32 {
+        self.file_deleter.get_ref_count(file_name)
+    }
+
+    /// Deletes the named files, but only those that were never incremented.
+    ///
+    /// Equivalent to `IndexFileDeleter.deleteNewFiles`.
+    pub fn delete_new_files<I, S>(&mut self, files: I) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        debug_assert!(self.locked());
+        self.file_deleter.delete_files_if_no_ref(files)
+    }
+}
+
+/// Pushes every generation past what the directory already shows, so that a
+/// writer which did not close or roll back gracefully — a crash, a power cut —
+/// can never write a file name that already exists.
+///
+/// `files` is the set of names to learn from: the reference-counted names plus
+/// whatever the directory reports as pending deletion.
+///
+/// Equivalent to the static `IndexFileDeleter.inflateGens`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CorruptIndex`](crate::error::LuceneErrorKind::CorruptIndex) if a per-segment file name carries a
+/// segment ordinal that does not fit in an `i64`. Java lets the resulting
+/// `NumberFormatException` escape at the same point
+/// (`IndexFileDeleter.java:303-304` is deliberately *not* inside a `try`, unlike
+/// the `parseGeneration` call below it); Rucene reports it as an error rather
+/// than panicking, so that a corrupt or hostile directory listing cannot abort
+/// the process.
+pub fn inflate_gens(
+    infos: &mut SegmentInfos,
+    files: &HashSet<String>,
+    info_stream: &dyn InfoStream,
+) -> Result<()> {
+    let mut max_segment_gen = i64::MIN;
+    let mut max_segment_name = i64::MIN;
+
+    // Confusingly this is the union of the live-docs, field-infos and doc-values
+    // generations. Lucene accepts the imprecision — doc-values updates will jump
+    // to the generation after live docs', for instance — because there is no API
+    // to ask the codec which file is which.
+    let mut max_per_segment_gen: HashMap<String, i64> = HashMap::new();
+
+    for file_name in files {
+        if file_name == WRITE_LOCK_NAME {
+            // Never carries a generation.
+        } else if let Some(rest) = file_name.strip_prefix(PENDING_SEGMENTS) {
+            // `pending_segments_N` -> read the `_N` that follows.
+            // Checked before the `segments` arm: `PENDING_SEGMENTS` does not
+            // start with `SEGMENTS`, but testing it first keeps the two
+            // unambiguous regardless of future constant changes.
+            // `catch (NumberFormatException ignore)`: a trash file, since
+            // anything starting with `pending_segments` is allowed here; any
+            // other exception propagates (`IndexFileDeleter.java:281-292`).
+            match SegmentInfos::generation_from_segments_file_name(&format!("{SEGMENTS}{rest}")) {
+                Ok(gen) => max_segment_gen = max_segment_gen.max(gen),
+                Err(error) if error.is_number_format_exception() => {}
+                Err(error) => return Err(error),
+            }
+        } else if file_name.starts_with(SEGMENTS) {
+            // `catch (NumberFormatException ignore)` only
+            // (`IndexFileDeleter.java:272-280`).
+            match SegmentInfos::generation_from_segments_file_name(file_name) {
+                Ok(gen) => max_segment_gen = max_segment_gen.max(gen),
+                Err(error) if error.is_number_format_exception() => {}
+                Err(error) => return Err(error),
+            }
+        } else {
+            let segment_name = parse_segment_name(file_name);
+            debug_assert!(
+                segment_name.starts_with('_'),
+                "unexpected file name: {file_name}"
+            );
+
+            if file_name.to_lowercase().ends_with(".tmp") {
+                // A temp file: it carries no meaningful generation.
+                continue;
+            }
+
+            // Java writes `segmentName.substring(1)`. Drop one *character*, not
+            // one byte: a pending-deletion name is arbitrary and may begin with
+            // a multi-byte UTF-8 character, which byte-slicing would panic on.
+            let ordinal_str = {
+                let mut chars = segment_name.chars();
+                chars.next();
+                chars.as_str()
+            };
+            // `Long.parseLong(segmentName.substring(1), Character.MAX_RADIX)`
+            // (`IndexFileDeleter.java:304`).
+            let ordinal = crate::util::extra::java_parse_long_radix(ordinal_str, MAX_RADIX)
+                .ok_or_else(|| {
+                    LuceneError::number_format_for_input_string(ordinal_str, MAX_RADIX)
+                })?;
+            max_segment_name = max_segment_name.max(ordinal);
+
+            let entry = max_per_segment_gen
+                .entry(segment_name.to_string())
+                .or_insert(0);
+            // `catch (NumberFormatException ignore)`: the codec regex is only
+            // so good (`IndexFileDeleter.java:310-316`).
+            match parse_generation(file_name) {
+                Ok(gen) => *entry = (*entry).max(gen),
+                Err(error) if error.is_number_format_exception() => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    // The generation is advanced before a write, so setting it to the maximum
+    // seen is enough to guarantee the next name is fresh.
+    infos.set_next_write_generation(infos.generation().max(max_segment_gen))?;
+
+    // `i64::MIN + 1` is representable, so this cannot overflow even when no
+    // per-segment file was seen; the comparison then simply fails.
+    let next_counter = max_segment_name.wrapping_add(1);
+    if infos.counter < next_counter {
+        if info_stream.is_enabled(IFD) {
+            info_stream.message(
+                IFD,
+                &format!(
+                    "init: inflate infos.counter to {next_counter} vs current={}",
+                    infos.counter
+                ),
+            );
+        }
+        infos.counter = next_counter;
+    }
+
+    for info in infos.iter_mut() {
+        let gen = max_per_segment_gen.get(&info.info.name).copied();
+        debug_assert!(gen.is_some());
+        // Without assertions Java unboxes the null `Long`
+        // (`IndexFileDeleter.java:339`): a `NullPointerException`.
+        let gen = gen.ok_or_else(LuceneError::null_pointer)?;
+        let next = gen + 1;
+
+        if info.get_next_write_del_gen() < next {
+            if info_stream.is_enabled(IFD) {
+                info_stream.message(
+                    IFD,
+                    &format!(
+                        "init: seg={} set nextWriteDelGen={next} vs current={}",
+                        info.info.name,
+                        info.get_next_write_del_gen()
+                    ),
+                );
+            }
+            info.set_next_write_del_gen(next);
+        }
+        if info.get_next_write_field_infos_gen() < next {
+            if info_stream.is_enabled(IFD) {
+                info_stream.message(
+                    IFD,
+                    &format!(
+                        "init: seg={} set nextWriteFieldInfosGen={next} vs current={}",
+                        info.info.name,
+                        info.get_next_write_field_infos_gen()
+                    ),
+                );
+            }
+            info.set_next_write_field_infos_gen(next);
+        }
+        if info.get_next_write_doc_values_gen() < next {
+            if info_stream.is_enabled(IFD) {
+                info_stream.message(
+                    IFD,
+                    &format!(
+                        "init: seg={} set nextWriteDocValuesGen={next} vs current={}",
+                        info.info.name,
+                        info.get_next_write_doc_values_gen()
+                    ),
+                );
+            }
+            info.set_next_write_doc_values_gen(next);
+        }
+    }
+
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codecs::lucene99::Lucene99SegmentInfoFormat;
+    use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
+    use crate::codecs::{register_codec, Codec, FilterCodec, SegmentInfoFormat};
+    use crate::error::LuceneErrorKind;
+    use crate::index::index_deletion_policy::{
+        KeepOnlyLastCommitDeletionPolicy, NoDeletionPolicy, SnapshotDeletionPolicy,
+    };
+    use crate::index::SegmentCommitInfo;
+    use crate::search::{Sort, SortField, SortFieldType};
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use crate::util::string_helper::StringHelper;
+    use crate::util::NoOutputInfoStream;
+
+    fn codec() -> Arc<dyn Codec> {
+        static REGISTER: std::sync::Once = std::sync::Once::new();
+        REGISTER.call_once(|| {
+            let registered = FilterCodec::new("IFDTestCodec", Arc::new(DummyCodec::new("Dummy")))
+                .with_segment_info_format(Lucene99SegmentInfoFormat::new());
+            let _ = register_codec("IFDTestCodec", registered);
+        });
+        Arc::new(
+            FilterCodec::new("IFDTestCodec", Arc::new(DummyCodec::new("Dummy")))
+                .with_segment_info_format(Lucene99SegmentInfoFormat::new()),
+        )
+    }
+
+    fn info_stream() -> Arc<dyn InfoStream> {
+        Arc::new(NoOutputInfoStream)
+    }
+
+    /// Stands in for the `IndexWriter` the deleter describes its checkpoints
+    /// through: the segment names, as `segString` renders segments that have
+    /// no deletions (without their version and document count).
+    fn names(sis: &SegmentInfos) -> Result<String> {
+        Ok(sis
+            .iter()
+            .map(|info| info.info.name.clone())
+            .collect::<Vec<_>>()
+            .join(" "))
+    }
+
+    /// Records every `IFD` message.
+    #[derive(Debug, Default)]
+    struct RecordingInfoStream {
+        messages: Mutex<Vec<String>>,
+    }
+
+    impl InfoStream for RecordingInfoStream {
+        fn java_class_name(&self) -> &'static str {
+            "org.apache.lucene.tests.util.RecordingInfoStream"
+        }
+
+        fn message(&self, component: &str, message: &str) {
+            if component == IFD {
+                self.messages.lock().unwrap().push(message.to_string());
+            }
+        }
+
+        fn is_enabled(&self, _component: &str) -> bool {
+            true
+        }
+
+        fn close(&self) {}
+    }
+
+    /// The checkpoint message carries the writer's rendering of the
+    /// checkpointed segments, in Java's shape: `"now checkpoint \"" +
+    /// writer.segString(writer.toLiveInfos(segmentInfos)) + "\" [" +
+    /// segmentInfos.size() + " segments " + "; isCommit = " + isCommit + "]"`
+    /// (`IndexFileDeleter.java:557-567`) — note the space before the `;`.
+    #[test]
+    fn checkpoint_message_carries_the_writers_segment_list() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let recording = Arc::new(RecordingInfoStream::default());
+        let files = dir.list_all().unwrap();
+        let mut d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            Arc::clone(&recording) as Arc<dyn InfoStream>,
+            &|sis: &SegmentInfos| Ok(format!("<{}>", names(sis)?)),
+            true,
+            false,
+        )
+        .unwrap();
+        // The constructor's own checkpoint describes the writer's segments.
+        assert!(
+            recording
+                .messages
+                .lock()
+                .unwrap()
+                .contains(&"now checkpoint \"<_0>\" [1 segments ; isCommit = false]".to_string()),
+            "{:?}",
+            recording.messages.lock().unwrap()
+        );
+
+        let next = next_commit(dir.as_ref(), &sis, &["_1"], 2);
+        recording.messages.lock().unwrap().clear();
+        d.checkpoint(&next, true, &|sis: &SegmentInfos| {
+            Ok(format!("<{}>", names(sis)?))
+        })
+        .unwrap();
+        assert_eq!(
+            recording
+                .messages
+                .lock()
+                .unwrap()
+                .first()
+                .map(String::as_str),
+            Some("now checkpoint \"<_1>\" [1 segments ; isCommit = true]")
+        );
+    }
+
+    /// Every checkpoint ends by reporting how long it took:
+    /// `TimeUnit.NANOSECONDS.toMillis(t1 - t0) + " ms to checkpoint"`
+    /// (`IndexFileDeleter.java:595-598`), for a commit and for a plain
+    /// checkpoint alike.
+    #[test]
+    fn checkpoint_reports_how_long_it_took() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let recording = Arc::new(RecordingInfoStream::default());
+        let files = dir.list_all().unwrap();
+        let mut d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            Arc::clone(&recording) as Arc<dyn InfoStream>,
+            &names,
+            true,
+            false,
+        )
+        .unwrap();
+        let is_duration = |message: &str| {
+            message
+                .strip_suffix(" ms to checkpoint")
+                .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
+        };
+        for (is_commit, segment, counter) in [(true, "_1", 2), (false, "_2", 3)] {
+            let next = next_commit(dir.as_ref(), &sis, &[segment], counter);
+            recording.messages.lock().unwrap().clear();
+            d.checkpoint(&next, is_commit, &names).unwrap();
+            let messages = recording.messages.lock().unwrap();
+            assert!(
+                messages.last().is_some_and(|m| is_duration(m)),
+                "isCommit={is_commit}: {messages:?}"
+            );
+            sis = next;
+        }
+    }
+
+    /// A plain checkpoint whose decrement of the previous checkpoint's files
+    /// fails leaves `lastFiles` cleared and does not record its own files:
+    /// `try { decRef(lastFiles); } finally { lastFiles.clear(); }`, and the
+    /// failure propagates before `lastFiles.addAll(...)`
+    /// (`IndexFileDeleter.java:584-592`).
+    #[test]
+    fn a_failed_checkpoint_decrement_leaves_the_last_files_cleared() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        // A checkpoint over `_0` and a new `_1`, which only it references.
+        let mut with_new = sis.clone();
+        with_new.add(make_segment(dir.as_ref(), "_1")).unwrap();
+        d.checkpoint(&with_new, false, &names).unwrap();
+        assert!(d.last_files.iter().any(|f| f == "_1.fdt"));
+
+        // Back to `_0` alone: `_1`'s files drop to zero references and are
+        // deleted, and one of them is already gone.
+        dir.delete_file("_1.fdt").unwrap();
+        let error = d.checkpoint(&sis, false, &names).unwrap_err();
+        assert!(
+            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::NotFound),
+            "{error:?}"
+        );
+        assert!(d.last_files.is_empty(), "{:?}", d.last_files);
+    }
+
+    fn touch(dir: &dyn Directory, name: &str) {
+        let mut out = dir
+            .create_output(name, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        out.close().unwrap();
+    }
+
+    /// Creates segment `name` with two data files, writes its `.si`, and returns
+    /// the commit info.
+    fn make_segment(dir: &dyn Directory, name: &str) -> SegmentCommitInfo {
+        let mut info = test_segment_info_with_codec(name, 10, codec());
+        // The shared helper builds an unsorted segment; give it an index sort.
+        info.set_index_sort(Some(
+            Sort::new_fields(vec![SortField::new(
+                Some("id".to_string()),
+                SortFieldType::String,
+            )
+            .unwrap()])
+            .unwrap(),
+        ));
+        let data = format!("{name}.fnm");
+        let data2 = format!("{name}.fdt");
+        touch(dir, &data);
+        touch(dir, &data2);
+        info.set_files(HashSet::from([data, data2])).unwrap();
+        Lucene99SegmentInfoFormat::new()
+            .write(dir, &info, &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        SegmentCommitInfo::new(info, 0, 0, -1, -1, -1, StringHelper::random_id()).unwrap()
+    }
+
+    /// Builds `SegmentInfos` over the named segments and commits it.
+    fn commit_with(dir: &dyn Directory, segments: &[&str], counter: i64) -> SegmentInfos {
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.counter = counter;
+        for name in segments {
+            sis.add(make_segment(dir, name)).unwrap();
+        }
+        sis.changed();
+        sis.commit(dir).unwrap();
+        sis
+    }
+
+    /// Builds a follow-on commit over `segments`, carrying `previous`'
+    /// generation forward so the new `segments_N` does not collide.
+    fn next_commit(
+        dir: &dyn Directory,
+        previous: &SegmentInfos,
+        segments: &[&str],
+        counter: i64,
+    ) -> SegmentInfos {
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.update_generation(previous);
+        sis.counter = counter;
+        for name in segments {
+            sis.add(make_segment(dir, name)).unwrap();
+        }
+        sis.changed();
+        sis.commit(dir).unwrap();
+        sis
+    }
+
+    fn deleter(
+        dir: &Arc<dyn Directory>,
+        policy: Arc<dyn IndexDeletionPolicy>,
+        sis: &mut SegmentInfos,
+    ) -> IndexFileDeleter {
+        let files = dir.list_all().unwrap();
+        IndexFileDeleter::new(
+            &files,
+            Arc::clone(dir),
+            Arc::clone(dir),
+            policy,
+            sis,
+            info_stream(),
+            &names,
+            true,
+            false,
+        )
+        .unwrap()
+    }
+
+    fn listing(dir: &dyn Directory) -> HashSet<String> {
+        dir.list_all().unwrap().into_iter().collect()
+    }
+
+    /// A directory that records the name of every `delete_file` call, in
+    /// order, and fails the deletion of the names in `failing` with an
+    /// `IOException("fake delete failure: " + name)`, as the `FilterDirectory`
+    /// the Java oracle of these tests runs on does.
+    struct RecordingDirectory {
+        inner: Arc<dyn Directory>,
+        deleted: Mutex<Vec<String>>,
+        failing: Mutex<Vec<String>>,
+    }
+
+    impl RecordingDirectory {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: Arc::new(ByteBuffersDirectory::new()),
+                deleted: Mutex::new(Vec::new()),
+                failing: Mutex::new(Vec::new()),
+            })
+        }
+
+        /// Returns the deletions recorded since the last call, and forgets
+        /// them.
+        fn take_deleted(&self) -> Vec<String> {
+            std::mem::take(&mut *self.deleted.lock().unwrap())
+        }
+    }
+
+    impl Directory for RecordingDirectory {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.deleted.lock().unwrap().push(name.to_string());
+            if self.failing.lock().unwrap().iter().any(|f| f == name) {
+                return Err(LuceneError::from(std::io::Error::other(format!(
+                    "fake delete failure: {name}"
+                ))));
+            }
+            self.inner.delete_file(name)
+        }
+        fn file_length(&self, name: &str) -> Result<i64> {
+            self.inner.file_length(name)
+        }
+        fn create_output(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_output(name, context)
+        }
+        fn create_temp_output(
+            &self,
+            prefix: &str,
+            suffix: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexOutput>> {
+            self.inner.create_temp_output(prefix, suffix, context)
+        }
+        fn sync(&self, names: &[&str]) -> Result<()> {
+            self.inner.sync(names)
+        }
+        fn sync_metadata(&self) -> Result<()> {
+            self.inner.sync_metadata()
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn open_input(
+            &self,
+            name: &str,
+            context: &dyn crate::store::IOContext,
+        ) -> Result<Box<dyn crate::store::IndexInput>> {
+            self.inner.open_input(name, context)
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn crate::store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_pending_deletions(&self) -> Result<HashSet<String>> {
+            self.inner.get_pending_deletions()
+        }
+    }
+
+    // -- construction ---------------------------------------------------------
+
+    #[test]
+    fn init_adopts_the_commit_and_reference_counts_its_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+
+        let d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        assert_eq!(d.commits().len(), 1);
+        assert!(!d.starting_commit_deleted);
+        // Each data file is referenced twice: once by the commit point loaded
+        // from `segments_1`, and once by the closing `checkpoint(sis, false)`
+        // the constructor always performs (IndexFileDeleter.java:241), which
+        // protects the incoming SegmentInfos even when it is not the newest
+        // commit. `segments_1` itself is referenced only by the commit point,
+        // because a non-commit checkpoint excludes the segments file.
+        for f in ["_0.si", "_0.fnm", "_0.fdt"] {
+            assert_eq!(d.get_ref_count(f), 2, "{f}: commit point + checkpoint");
+            assert!(d.exists(f));
+        }
+        assert_eq!(d.get_ref_count("segments_1"), 1);
+        assert!(d.exists("segments_1"));
+    }
+
+    #[test]
+    fn init_deletes_files_no_commit_references() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        // Debris from a crashed writer: matches the codec pattern, referenced by
+        // nothing.
+        touch(dir.as_ref(), "_9.fdt");
+        touch(dir.as_ref(), "_9.si");
+        assert!(listing(dir.as_ref()).contains("_9.fdt"));
+
+        let _d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("_9.fdt"), "orphan must be deleted on init");
+        assert!(!files.contains("_9.si"), "orphan must be deleted on init");
+        assert!(files.contains("_0.fdt"), "referenced file must survive");
+        assert!(files.contains("segments_1"));
+    }
+
+    /// Regression (rmp #351): a new `SegmentInfos` has generation 0, so its
+    /// segments file is `segments` and not `null` (`SegmentInfos.java:132-133,
+    /// 169-179`); the deleter of a writer that opens a directory with no
+    /// commit yet therefore scans it, pushes the segment counter past the
+    /// files it finds and deletes those no commit references
+    /// (`IndexFileDeleter.java:139-225`), such as the files a tragically
+    /// aborted segment left behind.
+    #[test]
+    fn init_over_a_new_segment_infos_deletes_unreferenced_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        touch(dir.as_ref(), "_0.fdm");
+        touch(dir.as_ref(), "_0.fdt");
+        let mut sis = SegmentInfos::new(10).unwrap();
+        assert_eq!(sis.segments_file_name().as_deref(), Some("segments"));
+
+        // `new IndexFileDeleter(files, ..., segmentInfos, ..., indexExists =
+        // false, ...)`, as `IndexWriter`'s constructor builds it over a
+        // directory without a commit.
+        let files = dir.list_all().unwrap();
+        let _d = IndexFileDeleter::new(
+            &files,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis,
+            info_stream(),
+            &names,
+            false,
+            false,
+        )
+        .unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("_0.fdm"), "{files:?}");
+        assert!(!files.contains("_0.fdt"), "{files:?}");
+        assert_eq!(sis.counter, 1, "the next segment is not named _0 again");
+    }
+
+    /// The constructor deletes the debris of a crashed writer, and `refresh`
+    /// the debris of a rollback, in the order Lucene 10.5.0's own
+    /// `IndexFileDeleter` does on JDK 25.0.5 for the same directory.
+    ///
+    /// The constructor hands `deleteFilesIfNoRef` the set `getUnrefedFiles`
+    /// fills in `refCounts` order (`IndexFileDeleter.java:222-233`,
+    /// `FileDeleter.java:159-170`), so the order depends on the map's buckets
+    /// too: `refCounts` has 64, the set 32. `_1.nvm` precedes `_1.fnm` (one
+    /// map bucket, where `computeIfAbsent` puts the newer name first), and
+    /// `_2.cfe` precedes `_1_Lucene104_0.doc` and `.tim` (map buckets 20, 20,
+    /// 52); filling the set in listing order would reverse both. `refresh`
+    /// fills its set in listing order (`IndexFileDeleter.java:463-493`), so
+    /// there `_1.fnm` precedes `_1.nvm`.
+    #[test]
+    fn init_and_refresh_delete_in_lucenes_order() {
+        let recording = RecordingDirectory::new();
+        let dir: Arc<dyn Directory> = Arc::clone(&recording) as Arc<dyn Directory>;
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        for name in [
+            "_1.fdt",
+            "_1.fdm",
+            "_1.fdx",
+            "_1.fnm",
+            "_1.si",
+            "_1.nvd",
+            "_1.nvm",
+            "_1_Lucene104_0.doc",
+            "_1_Lucene104_0.tim",
+            "_1_Lucene104_0.tip",
+            "_1_Lucene104_0.tmd",
+            "_2.cfs",
+            "_2.cfe",
+            "_2.si",
+            "_2_1.liv",
+            "_3.kdd",
+            "_3.kdi",
+            "_3.kdm",
+            "_3.vec",
+            "_3.vem",
+            "_3.vex",
+            "pending_segments_2",
+            "write.lock",
+        ] {
+            touch(dir.as_ref(), name);
+        }
+        assert_eq!(dir.list_all().unwrap().len(), 27, "the oracle's listing");
+        recording.take_deleted();
+
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        assert_eq!(
+            recording.take_deleted(),
+            [
+                "_1_Lucene104_0.tmd",
+                "_1.si",
+                "_2.si",
+                "_1.nvd",
+                "_3.vem",
+                "_2.cfs",
+                "pending_segments_2",
+                "_1.nvm",
+                "_1.fnm",
+                "_3.vex",
+                "_3.kdd",
+                "_1_Lucene104_0.tip",
+                "_2.cfe",
+                "_1_Lucene104_0.doc",
+                "_1_Lucene104_0.tim",
+                "_1.fdm",
+                "_3.kdi",
+                "_3.vec",
+                "_1.fdx",
+                "_3.kdm",
+                "_2_1.liv",
+                "_1.fdt",
+            ]
+        );
+        assert_eq!(
+            dir.list_all().unwrap(),
+            ["_0.fdt", "_0.fnm", "_0.si", "segments_1", "write.lock"]
+        );
+
+        for name in [
+            "_4.fdt",
+            "_4.fdm",
+            "_4.fdx",
+            "_4.fnm",
+            "_4.si",
+            "_4.cfs",
+            "_4.cfe",
+            "_4_Lucene104_0.doc",
+            "_4_Lucene104_0.tim",
+            "_4_Lucene104_0.tip",
+            "_4_Lucene104_0.tmd",
+            "_1.fnm",
+            "_1.nvm",
+            "_2_1.liv",
+            "pending_segments_3",
+            "extra.txt",
+        ] {
+            touch(dir.as_ref(), name);
+        }
+        d.refresh().unwrap();
+
+        assert_eq!(
+            recording.take_deleted(),
+            [
+                "_4.fnm",
+                "_4_Lucene104_0.tmd",
+                "_4.cfe",
+                "_1.fnm",
+                "_1.nvm",
+                "_4.fdx",
+                "pending_segments_3",
+                "_4.fdt",
+                "_4_Lucene104_0.tip",
+                "_4_Lucene104_0.doc",
+                "_4_Lucene104_0.tim",
+                "_4.cfs",
+                "_4.fdm",
+                "_2_1.liv",
+                "_4.si",
+            ]
+        );
+        assert_eq!(
+            dir.list_all().unwrap(),
+            [
+                "_0.fdt",
+                "_0.fnm",
+                "_0.si",
+                "extra.txt",
+                "segments_1",
+                "write.lock"
+            ]
+        );
+    }
+
+    /// `deleteCommits` decrements every queued commit even after one failed,
+    /// and throws the first commit's error with the later commits' errors
+    /// suppressed into it: `firstThrowable =
+    /// IOUtils.useOrSuppress(firstThrowable, t)` (`IndexFileDeleter.java:417-429,
+    /// 452-454`). The expected result is that of Lucene 10.5.0's own
+    /// `IndexFileDeleter` on JDK 25.0.5 for the same directory: three
+    /// commits, the policy dropping the two older ones, and both their
+    /// `segments_N` deletes failing.
+    #[test]
+    fn delete_commits_suppresses_the_errors_of_later_commits() {
+        let recording = RecordingDirectory::new();
+        let dir: Arc<dyn Directory> = Arc::clone(&recording) as Arc<dyn Directory>;
+        let sis1 = commit_with(dir.as_ref(), &["_0"], 1);
+        let sis2 = next_commit(dir.as_ref(), &sis1, &["_1"], 2);
+        let mut sis3 = next_commit(dir.as_ref(), &sis2, &["_2"], 3);
+        let before = dir.list_all().unwrap();
+        assert_eq!(
+            before,
+            [
+                "_0.fdt",
+                "_0.fnm",
+                "_0.si",
+                "_1.fdt",
+                "_1.fnm",
+                "_1.si",
+                "_2.fdt",
+                "_2.fnm",
+                "_2.si",
+                "segments_1",
+                "segments_2",
+                "segments_3"
+            ]
+        );
+        *recording.failing.lock().unwrap() =
+            vec!["segments_1".to_string(), "segments_2".to_string()];
+        recording.take_deleted();
+
+        let Err(error) = IndexFileDeleter::new(
+            &before,
+            Arc::clone(&dir),
+            Arc::clone(&dir),
+            Arc::new(KeepOnlyLastCommitDeletionPolicy),
+            &mut sis3,
+            info_stream(),
+            &names,
+            true,
+            false,
+        ) else {
+            panic!("the failed deletes must surface");
+        };
+
+        let io_message = |e: &LuceneError| match e.kind() {
+            LuceneErrorKind::Io(io) => io.to_string(),
+            other => panic!("expected an IOException, got {other:?}"),
+        };
+        assert_eq!(io_message(&error), "fake delete failure: segments_1");
+        let suppressed: Vec<String> = error
+            .get_suppressed()
+            .iter()
+            .map(|e| io_message(e.as_ref()))
+            .collect();
+        assert_eq!(suppressed, ["fake delete failure: segments_2"]);
+        assert_eq!(recording.take_deleted(), ["segments_1", "segments_2"]);
+        assert_eq!(dir.list_all().unwrap(), before);
+    }
+
+    #[test]
+    fn init_leaves_unknown_non_codec_files_alone() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        touch(dir.as_ref(), "extra.txt");
+
+        let _d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        assert!(
+            listing(dir.as_ref()).contains("extra.txt"),
+            "a file that is neither a codec file nor a segments file is not ours to delete"
+        );
+    }
+
+    #[test]
+    fn init_reconstructs_every_commit_generation_on_disk() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        sis.add(make_segment(dir.as_ref(), "_1")).unwrap();
+        sis.counter = 2;
+        sis.changed();
+        sis.commit(dir.as_ref()).unwrap();
+
+        // NoDeletionPolicy keeps both generations alive.
+        let d = deleter(&dir, NoDeletionPolicy::instance(), &mut sis);
+
+        let gens: Vec<i64> = d.commits().iter().map(|c| c.get_generation()).collect();
+        assert_eq!(gens, vec![1, 2], "commits must be sorted oldest to newest");
+        // `_0` is in both commits, plus the closing `checkpoint(sis, false)`.
+        assert_eq!(d.get_ref_count("_0.fdt"), 3);
+        // `_1` is only in the newest commit, plus that same checkpoint.
+        assert_eq!(d.get_ref_count("_1.fdt"), 2);
+    }
+
+    #[test]
+    fn init_drops_older_commits_under_keep_only_last() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let sis = commit_with(dir.as_ref(), &["_0"], 1);
+        // Second commit uses a different segment, so gen 1's files become
+        // unreferenced once gen 1 goes.
+        let mut sis2 = next_commit(dir.as_ref(), &sis, &["_1"], 2);
+
+        let d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis2);
+
+        assert_eq!(d.commits().len(), 1);
+        assert_eq!(d.commits()[0].get_generation(), 2);
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("segments_1"), "old commit point removed");
+        assert!(!files.contains("_0.fdt"), "its unreferenced files removed");
+        assert!(files.contains("segments_2"));
+        assert!(files.contains("_1.fdt"));
+        let _ = sis;
+    }
+
+    // -- checkpoint -----------------------------------------------------------
+
+    #[test]
+    fn commit_checkpoint_retires_the_previous_commit_and_its_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        // Replace `_0` with `_1` and commit: gen 1 becomes collectable.
+        let next = next_commit(dir.as_ref(), &sis, &["_1"], 2);
+
+        // IndexWriter checkpoints the in-memory change first and only then
+        // commits; only the non-commit branch releases `last_files`
+        // (IndexFileDeleter.java:583-593), so both steps are needed for the
+        // previous generation's files to become collectable.
+        d.checkpoint(&next, false, &names).unwrap();
+        d.checkpoint(&next, true, &names).unwrap();
+
+        assert_eq!(d.commits().len(), 1, "policy kept only the newest commit");
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("segments_1"));
+        assert!(
+            !files.contains("_0.fdt"),
+            "unreferenced after the new commit"
+        );
+        assert!(files.contains("_1.fdt"));
+    }
+
+    #[test]
+    fn non_commit_checkpoint_protects_then_releases_the_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        // An uncommitted (NRT) segment: on disk, referenced by no commit.
+        let mut nrt = sis.clone();
+        nrt.add(make_segment(dir.as_ref(), "_5")).unwrap();
+
+        d.checkpoint(&nrt, false, &names).unwrap();
+        assert_eq!(d.get_ref_count("_5.fdt"), 1, "NRT file is protected");
+        assert!(listing(dir.as_ref()).contains("_5.fdt"));
+
+        // A later non-commit checkpoint that no longer names `_5` releases it.
+        d.checkpoint(&sis, false, &names).unwrap();
+        assert_eq!(d.get_ref_count("_5.fdt"), 0);
+        assert!(
+            !listing(dir.as_ref()).contains("_5.fdt"),
+            "released NRT file is deleted"
+        );
+    }
+
+    #[test]
+    fn close_releases_the_last_checkpoint() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        let mut nrt = sis.clone();
+        nrt.add(make_segment(dir.as_ref(), "_5")).unwrap();
+        d.checkpoint(&nrt, false, &names).unwrap();
+        assert_eq!(d.get_ref_count("_5.fdt"), 1);
+
+        d.close().unwrap();
+        assert_eq!(d.get_ref_count("_5.fdt"), 0);
+        assert!(!listing(dir.as_ref()).contains("_5.fdt"));
+
+        // Idempotent: closing twice must not double-decrement.
+        d.close().unwrap();
+        assert_eq!(d.get_ref_count("_5.fdt"), 0);
+    }
+
+    // -- pinning --------------------------------------------------------------
+
+    #[test]
+    fn a_snapshot_pins_its_commit_files_against_a_later_commit() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let policy = Arc::new(SnapshotDeletionPolicy::new(Some(Arc::new(
+            KeepOnlyLastCommitDeletionPolicy,
+        ))));
+        let mut d = deleter(
+            &dir,
+            policy.clone() as Arc<dyn IndexDeletionPolicy>,
+            &mut sis,
+        );
+
+        // Snapshot generation 1.
+        let snapshot = policy.snapshot().unwrap();
+        assert_eq!(snapshot.get_generation(), 1);
+
+        // Commit a generation that shares nothing with gen 1.
+        let next = next_commit(dir.as_ref(), &sis, &["_1"], 2);
+        // IndexWriter checkpoints the in-memory change first and only then
+        // commits; only the non-commit branch releases `last_files`
+        // (IndexFileDeleter.java:583-593), so both steps are needed for the
+        // previous generation's files to become collectable.
+        d.checkpoint(&next, false, &names).unwrap();
+        d.checkpoint(&next, true, &names).unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(
+            files.contains("segments_1"),
+            "the snapshotted commit point must survive"
+        );
+        assert!(
+            files.contains("_0.fdt"),
+            "files the snapshot pins must survive"
+        );
+        assert!(files.contains("segments_2"));
+
+        // Releasing the snapshot and revisiting the policy collects it.
+        policy.release(snapshot.as_ref()).unwrap();
+        d.revisit_policy().unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("segments_1"), "released snapshot collected");
+        assert!(!files.contains("_0.fdt"));
+        assert!(files.contains("_1.fdt"));
+    }
+
+    #[test]
+    fn files_pinned_by_a_reader_survive_the_commit_that_orphans_them() {
+        // This is how IndexWriter pins an NRT reader's segment: it increments
+        // the reader's file names directly (IndexWriter.java:4070,5274) and
+        // decrements them when the reader is dropped (IndexWriter.java:5202).
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        let reader_files: Vec<String> = sis.info(0).files().unwrap().into_iter().collect();
+        d.inc_ref_files(&reader_files);
+
+        // Commit a generation that no longer contains `_0`.
+        let next = next_commit(dir.as_ref(), &sis, &["_1"], 2);
+        // IndexWriter checkpoints the in-memory change first and only then
+        // commits; only the non-commit branch releases `last_files`
+        // (IndexFileDeleter.java:583-593), so both steps are needed for the
+        // previous generation's files to become collectable.
+        d.checkpoint(&next, false, &names).unwrap();
+        d.checkpoint(&next, true, &names).unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(
+            files.contains("_0.fdt"),
+            "a file pinned by a live reader must not be deleted"
+        );
+        assert!(
+            !files.contains("segments_1"),
+            "the commit point itself is not pinned by the reader"
+        );
+
+        // Closing the reader releases them.
+        d.dec_ref_files(&reader_files).unwrap();
+        assert!(!listing(dir.as_ref()).contains("_0.fdt"));
+    }
+
+    // -- refresh / new files --------------------------------------------------
+
+    #[test]
+    fn refresh_removes_unreferenced_files_left_by_a_rollback() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        // Debris a failed operation would leave behind.
+        touch(dir.as_ref(), "_7.fdt");
+        touch(dir.as_ref(), "pending_segments_3");
+
+        d.refresh().unwrap();
+
+        let files = listing(dir.as_ref());
+        assert!(!files.contains("_7.fdt"));
+        assert!(
+            !files.contains("pending_segments_3"),
+            "pending_segments is cleared during rollback"
+        );
+        assert!(files.contains("_0.fdt"), "referenced files untouched");
+        assert!(files.contains("segments_1"));
+    }
+
+    #[test]
+    fn delete_new_files_spares_referenced_files_and_is_idempotent() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = commit_with(dir.as_ref(), &["_0"], 1);
+        let mut d = deleter(&dir, Arc::new(KeepOnlyLastCommitDeletionPolicy), &mut sis);
+
+        touch(dir.as_ref(), "_8.fdt");
+        let batch = vec!["_8.fdt".to_string(), "_0.fdt".to_string()];
+
+        d.delete_new_files(&batch).unwrap();
+        assert!(!listing(dir.as_ref()).contains("_8.fdt"));
+        assert!(
+            listing(dir.as_ref()).contains("_0.fdt"),
+            "an incref'd file is never a 'new' file"
+        );
+
+        // Second call over the same batch: the file is already gone. Deletion
+        // must remain safe and leave the bookkeeping consistent.
+        let _ = d.delete_new_files(&batch);
+        assert!(listing(dir.as_ref()).contains("_0.fdt"));
+        // Commit point + the constructor's closing `checkpoint(sis, false)`.
+        assert_eq!(d.get_ref_count("_0.fdt"), 2);
+    }
+
+    // -- inflate_gens ---------------------------------------------------------
+
+    #[test]
+    fn inflate_gens_pushes_the_counter_past_the_largest_segment_on_disk() {
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.counter = 0;
+        // `_z` is ordinal 35 in radix 36.
+        let files = HashSet::from(["_z.fdt".to_string(), "_3.si".to_string()]);
+
+        inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap();
+
+        assert_eq!(sis.counter, 36, "counter must clear the largest name seen");
+    }
+
+    #[test]
+    fn inflate_gens_pushes_the_generation_past_the_largest_segments_file() {
+        let mut sis = SegmentInfos::new(10).unwrap();
+        let files = HashSet::from([
+            "segments_5".to_string(),
+            "pending_segments_9".to_string(),
+            "write.lock".to_string(),
+        ]);
+
+        inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap();
+
+        // `pending_segments_9` is generation 9 (radix 36), and outranks
+        // `segments_5`; the next write must clear it.
+        assert_eq!(sis.generation(), 9);
+    }
+
+    #[test]
+    fn inflate_gens_advances_per_segment_generations() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.add(make_segment(dir.as_ref(), "_0")).unwrap();
+        assert_eq!(sis.info(0).get_next_write_del_gen(), 1);
+
+        // A live-docs file at generation 4 exists on disk for `_0`.
+        let files = HashSet::from(["_0.fdt".to_string(), "_0_4.liv".to_string()]);
+        inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap();
+
+        let info = sis.info(0);
+        assert_eq!(info.get_next_write_del_gen(), 5);
+        assert_eq!(info.get_next_write_field_infos_gen(), 5);
+        assert_eq!(info.get_next_write_doc_values_gen(), 5);
+    }
+
+    #[test]
+    fn inflate_gens_ignores_trash_and_temp_files() {
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.counter = 0;
+        let files = HashSet::from([
+            // `!` is not a radix-36 digit, so neither name yields a generation.
+            "segments_!!".to_string(),
+            "pending_segments_!!".to_string(),
+            "_5_9.tmp".to_string(),
+            "_3.fdt".to_string(),
+        ]);
+
+        let generation_before = sis.generation();
+        inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap();
+
+        // `_5_9.tmp` is skipped, so `_3` is the largest name that counts.
+        assert_eq!(sis.counter, 4);
+        assert_eq!(
+            sis.generation(),
+            generation_before,
+            "unparsable segments names yield no generation and leave it alone"
+        );
+    }
+
+    /// Java asserts `gen != null` (`IndexFileDeleter.java:338`): with
+    /// assertions enabled (debug builds) the assert fails; without, unboxing
+    /// the null throws `NullPointerException`.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "gen.is_some()"))]
+    fn inflate_gens_asserts_a_commit_naming_a_segment_with_no_files() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let mut sis = SegmentInfos::new(10).unwrap();
+        sis.add(make_segment(dir.as_ref(), "_0")).unwrap();
+
+        // The listing does not mention `_0` at all.
+        let files = HashSet::from(["segments_1".to_string()]);
+        let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
+
+        assert!(
+            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. }
+                if *class == "java.lang.NullPointerException"),
+            "expected a NullPointerException, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn inflate_gens_survives_a_non_ascii_pending_deletion_name() {
+        // `IndexFileDeleter` folds the directory's pending-deletion set into the
+        // names handed here, and that set is not filtered by the codec pattern.
+        // A non-ASCII name must not panic (byte-slicing the leading character
+        // would).
+        // Java asserts that such a name starts with `_` (IndexFileDeleter.java:296)
+        // and Rucene keeps that assertion, so the interesting case is a name
+        // that satisfies it yet is still not ASCII.
+        let mut sis = SegmentInfos::new(10).unwrap();
+        let files = HashSet::from([
+            "_é.si".to_string(),
+            "_\u{10348}xyz.fdt".to_string(),
+            "_0_é.liv".to_string(),
+        ]);
+
+        // The names carry no valid ordinal: `Long.parseLong(..., 36)` throws
+        // `NumberFormatException`. The point of the test is that it does not
+        // panic: byte-slicing the leading character used to abort the process
+        // here.
+        let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LuceneError {
+                    kind: LuceneErrorKind::Unchecked { class, .. },
+                    ..
+                } if *class == "java.lang.NumberFormatException"
+            ),
+            "got {err:?}"
+        );
+    }
+}

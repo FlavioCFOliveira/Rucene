@@ -1,0 +1,5 @@
+# format	step	encoderCalled	blocksEncoded	fieldsMetadataEncoded	dictionaryEncoded	decoderCalled
+UniformSplitRot13	write	false	true	true	true	true
+UniformSplitRot13	read	false	true	true	true	true
+STUniformSplitRot13	write	false	true	true	true	true
+STUniformSplitRot13	read	false	true	true	true	true

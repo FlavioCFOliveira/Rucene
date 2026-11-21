@@ -7,10 +7,29 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
+use crate::error::LuceneErrorKind;
 use crate::error::{LuceneError, Result};
+use crate::search::binary_sort_field::BinarySortField;
+use crate::search::comparators::numeric_comparator::NumericDocValuesSource;
+use crate::search::comparators::{
+    DocComparator, DoubleComparator, FloatComparator, IntComparator, LongComparator,
+    TermOrdValComparator,
+};
+use crate::search::field_comparator::{
+    FieldComparator, RelevanceComparator, SharedFieldComparator, TermValComparator,
+};
+use crate::search::field_comparator_source::FieldComparatorSource;
+use crate::search::index_searcher::IndexSearcher;
+use crate::search::pruning::Pruning;
+use crate::search::sorted_numeric_selector::{SortedNumericSelector, SortedNumericSelectorType};
+use crate::search::sorted_numeric_sort_field::SortedNumericSortField;
+use crate::search::sorted_set_selector::{SortedSetSelector, SortedSetSelectorType};
+use crate::search::sorted_set_sort_field::SortedSetSortField;
 use crate::store::{DataInput, DataOutput};
 
 /// Canonical NaN bit pattern used by Java's `Float.floatToIntBits`.
@@ -110,7 +129,10 @@ pub enum SortFieldType {
 
 impl SortFieldType {
     /// Returns the Java-compatible enum name used during serialization.
-    fn java_name(self) -> &'static str {
+    ///
+    /// Equivalent to `SortField.Type.toString()`, which is the enum constant's
+    /// name.
+    pub fn java_name(self) -> &'static str {
         match self {
             SortFieldType::Score => "SCORE",
             SortFieldType::Doc => "DOC",
@@ -126,7 +148,16 @@ impl SortFieldType {
     }
 
     /// Parses a Java enum name into a [`SortFieldType`].
-    fn parse(name: &str) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// For a name that is not a constant, the error `SortField.readType`
+    /// throws (`SortField.java:258-264`):
+    /// [`LuceneErrorKind::IllegalArgument`],
+    /// `Can't deserialize SortField - unknown type <name>`, whose cause is
+    /// `Type.valueOf`'s
+    /// `No enum constant org.apache.lucene.search.SortField.Type.<name>`.
+    pub fn parse(name: &str) -> Result<Self> {
         match name {
             "SCORE" => Ok(SortFieldType::Score),
             "DOC" => Ok(SortFieldType::Doc),
@@ -138,14 +169,24 @@ impl SortFieldType {
             "CUSTOM" => Ok(SortFieldType::Custom),
             "STRING_VAL" => Ok(SortFieldType::StringVal),
             "REWRITEABLE" => Ok(SortFieldType::Rewriteable),
-            _ => Err(LuceneError::IllegalArgument(format!(
-                "Can't deserialize SortField - unknown type {name}"
-            ))),
+            // `SortField.readType` catches the `IllegalArgumentException` of
+            // `Type.valueOf(type)` and rethrows it as the cause
+            // (`SortField.java:258-264`); `valueOf`'s message names the enum
+            // (observed with the 10.5.0 oracle).
+            _ => Err(LuceneError::illegal_argument_with_cause(
+                format!("Can't deserialize SortField - unknown type {name}"),
+                std::sync::Arc::new(LuceneError::illegal_argument(format!(
+                    "No enum constant org.apache.lucene.search.SortField.Type.{name}"
+                ))),
+            )),
         }
     }
 
     /// Returns true if this sort-field type can be persisted in segment info.
-    fn is_serializable(self) -> bool {
+    ///
+    /// This also indicates whether the type can be used as an index sorter,
+    /// matching the Java `SortField.getIndexSorter() != null` check.
+    pub fn is_serializable(self) -> bool {
         matches!(
             self,
             SortFieldType::String
@@ -220,8 +261,25 @@ impl fmt::Display for MissingValue {
             MissingValue::StringLast => f.write_str("SortField.STRING_LAST"),
             MissingValue::Int(v) => write!(f, "{v}"),
             MissingValue::Long(v) => write!(f, "{v}"),
-            MissingValue::Float(v) => write!(f, "{v}"),
-            MissingValue::Double(v) => write!(f, "{v}"),
+            // `Float.toString` / `Double.toString`, as Java's `+ missingValue`.
+            MissingValue::Float(v) => f.write_str(&crate::util::java_fmt::float_to_string(*v)),
+            MissingValue::Double(v) => f.write_str(&crate::util::java_fmt::double_to_string(*v)),
+        }
+    }
+}
+
+impl MissingValue {
+    /// Java's `getClass().toString()` of the boxed missing value: the two
+    /// string sentinels are the anonymous classes `SortField$1` and
+    /// `SortField$2` (`SortField.java:310-326`).
+    fn java_class_string(&self) -> &'static str {
+        match self {
+            MissingValue::StringFirst => "class org.apache.lucene.search.SortField$1",
+            MissingValue::StringLast => "class org.apache.lucene.search.SortField$2",
+            MissingValue::Int(_) => "class java.lang.Integer",
+            MissingValue::Long(_) => "class java.lang.Long",
+            MissingValue::Float(_) => "class java.lang.Float",
+            MissingValue::Double(_) => "class java.lang.Double",
         }
     }
 }
@@ -241,15 +299,174 @@ impl Hash for MissingValue {
 
 impl Eq for MissingValue {}
 
+/// Which `SortField` class a sort field stands for.
+///
+/// **Divergence from Lucene 10.5.0.** Java models the variants of a sort field
+/// as subclasses of `SortField` — `SortedNumericSortField`,
+/// `SortedSetSortField` and `BinarySortField` — which override
+/// `getComparator`, `toString`, `equals` and `hashCode`. Rust has no
+/// implementation inheritance, and [`Sort`] must still hold a homogeneous list,
+/// so the subclass identity travels with the sort field as this enum and the
+/// overridden behaviour is dispatched on it. The wrapper types
+/// [`SortedNumericSortField`],
+/// [`SortedSetSortField`] and
+/// [`BinarySortField`] build and read back the
+/// sort fields that carry each variant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SortFieldKind {
+    /// `org.apache.lucene.search.SortField` itself.
+    Plain,
+    /// `org.apache.lucene.search.SortedNumericSortField`: a multi-valued
+    /// numeric field reduced by a selector.
+    SortedNumeric {
+        /// The selector reducing the document's values to one.
+        selector: SortedNumericSelectorType,
+        /// The numeric type of the values, which is one of
+        /// [`SortFieldType::Int`], [`SortFieldType::Long`],
+        /// [`SortFieldType::Float`] or [`SortFieldType::Double`].
+        numeric_type: SortFieldType,
+    },
+    /// `org.apache.lucene.search.SortedSetSortField`: a multi-valued term field
+    /// reduced by a selector.
+    SortedSet {
+        /// The selector reducing the document's ordinals to one.
+        selector: SortedSetSelectorType,
+    },
+    /// `org.apache.lucene.search.BinarySortField`: a binary doc-values field
+    /// compared by its raw bytes.
+    Binary {
+        /// The name the sort field is serialised under, which a subclass of
+        /// `BinarySortField` may replace.
+        provider_name: String,
+        /// The override of the protected
+        /// `BinarySortField.getSortKeyDocValues(LeafReader)` a subclass
+        /// declares, or `None` for `BinarySortField` itself.
+        sort_key: Option<crate::search::binary_sort_field::SortKeySource>,
+    },
+    /// `org.apache.lucene.document.FeatureSortField`: the value of one feature
+    /// of a `FeatureField`, decoded from the term frequency.
+    Feature {
+        /// The name of the feature whose value is sorted on.
+        feature_name: String,
+    },
+    /// `org.apache.lucene.document.LatLonPointSortField`: the haversine
+    /// distance of a `LatLonDocValuesField` from an origin. The coordinates
+    /// are held as `Double.doubleToLongBits`, which is what the subclass's
+    /// `equals` and `hashCode` compare (`LatLonPointSortField.java:61-82`).
+    LatLonDistance {
+        /// `Double.doubleToLongBits(latitude)`.
+        latitude_bits: u64,
+        /// `Double.doubleToLongBits(longitude)`.
+        longitude_bits: u64,
+    },
+    /// `org.apache.lucene.document.XYPointSortField`: the euclidean distance
+    /// of an `XYDocValuesField` from an origin. The coordinates are held as
+    /// `Float.floatToIntBits` (`XYPointSortField.java:58-78`).
+    XYDistance {
+        /// `Float.floatToIntBits(x)`.
+        x_bits: u32,
+        /// `Float.floatToIntBits(y)`.
+        y_bits: u32,
+    },
+    /// A `SortField` subclass of another module that declares
+    /// [`SortFieldType::Rewriteable`] and overrides only
+    /// `rewrite(IndexSearcher)`: `ValueSource.ValueSourceSortField` of
+    /// `lucene/queries` (`ValueSource.java:349-362`). Such a subclass keeps
+    /// `SortField`'s `equals`, `hashCode`, `toString` and comparator, so the
+    /// variant behaves as [`SortFieldKind::Plain`] everywhere except in
+    /// [`SortField::rewrite`], which calls the rewriter.
+    Rewriteable {
+        /// The subclass's `rewrite(IndexSearcher)`.
+        rewriter: SortFieldRewriter,
+    },
+}
+
+/// The `rewrite(IndexSearcher)` override a [`SortFieldKind::Rewriteable`] sort
+/// field carries: it receives the sort field (Java's `this`) and the searcher,
+/// and returns the rewritten sort field.
+pub type SortFieldRewriteFn = dyn Fn(&SortField, &IndexSearcher) -> Result<SortField> + Send + Sync;
+
+/// The override held by [`SortFieldKind::Rewriteable`].
+///
+/// It takes no part in equality or hashing — every rewriter compares equal
+/// and hashes to nothing — because the Java subclass it stands for does not
+/// override `SortField.equals` or `SortField.hashCode`.
+#[derive(Clone)]
+pub struct SortFieldRewriter(pub Arc<SortFieldRewriteFn>);
+
+impl PartialEq for SortFieldRewriter {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SortFieldRewriter {}
+
+impl Hash for SortFieldRewriter {
+    fn hash<H: Hasher>(&self, _state: &mut H) {}
+}
+
+impl fmt::Debug for SortFieldRewriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SortFieldRewriter")
+    }
+}
+
 /// Describes how to sort documents by terms in an individual field.
 ///
 /// Equivalent to `org.apache.lucene.search.SortField`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct SortField {
     field: Option<String>,
     field_type: SortFieldType,
     reverse: bool,
     missing_value: Option<MissingValue>,
+    comparator_source: Option<Arc<dyn FieldComparatorSource>>,
+    optimize_sort_with_indexed_data: bool,
+    kind: SortFieldKind,
+}
+
+impl PartialEq for SortField {
+    /// Equivalent to `SortField.equals(Object)`, which compares the field name,
+    /// the type, the reverse flag, the comparator source and the missing value
+    /// — and, in each subclass, the subclass's own state. The deprecated
+    /// `optimizeSortWithIndexedData` flag takes no part in equality, exactly as
+    /// in Java.
+    ///
+    /// Java compares comparator sources with `Object.equals`, which is identity
+    /// unless a source overrides it; this port compares them by pointer, which
+    /// is that same identity.
+    fn eq(&self, other: &Self) -> bool {
+        self.field == other.field
+            && self.field_type == other.field_type
+            && self.reverse == other.reverse
+            && self.missing_value == other.missing_value
+            && self.kind == other.kind
+            && match (&self.comparator_source, &other.comparator_source) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+}
+
+impl Eq for SortField {}
+
+impl Hash for SortField {
+    /// Equivalent to `SortField.hashCode()`, which is
+    /// `Objects.hash(field, type, reverse, comparatorSource, missingValue)`,
+    /// combined with the subclass state where one exists.
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.field.hash(state);
+        self.field_type.hash(state);
+        self.reverse.hash(state);
+        self.missing_value.hash(state);
+        self.kind.hash(state);
+        match &self.comparator_source {
+            None => state.write_u8(0),
+            Some(source) => state.write_usize(Arc::as_ptr(source) as *const () as usize),
+        }
+    }
 }
 
 impl SortField {
@@ -259,6 +476,9 @@ impl SortField {
         field_type: SortFieldType::Score,
         reverse: false,
         missing_value: None,
+        comparator_source: None,
+        optimize_sort_with_indexed_data: true,
+        kind: SortFieldKind::Plain,
     };
 
     /// Sort by document number (index order).
@@ -267,6 +487,9 @@ impl SortField {
         field_type: SortFieldType::Doc,
         reverse: false,
         missing_value: None,
+        comparator_source: None,
+        optimize_sort_with_indexed_data: true,
+        kind: SortFieldKind::Plain,
     };
 
     /// Creates a sort by terms in the given field with the type explicitly given.
@@ -293,13 +516,118 @@ impl SortField {
         reverse: bool,
         missing_value: Option<MissingValue>,
     ) -> Result<Self> {
+        // `SortField(String, Type, boolean, Object)` (`SortField.java:170-176`)
+        // stores the missing value as given and runs only `validateField`
+        // (`SortField.java:371-383`); the per-type checks belong to
+        // `setMissingValue`, which this constructor does not call — so
+        // `LatLonPointSortField`'s `CUSTOM` type with a `Double` missing value
+        // is legal here.
         validate_field(&field, field_type, missing_value)?;
         Ok(Self {
             field,
             field_type,
             reverse,
             missing_value,
+            comparator_source: None,
+            optimize_sort_with_indexed_data: true,
+            kind: SortFieldKind::Plain,
         })
+    }
+
+    /// The name this sort field's `SortFieldProvider` is registered under.
+    ///
+    /// Equivalent to `SortField.Provider.NAME`.
+    pub const NAME: &'static str = "SortField";
+
+    /// Returns the [`IndexSorter`](crate::index::index_sorter::IndexSorter) that sorts a segment by this field, or
+    /// `None` when the field cannot sort an index.
+    ///
+    /// Equivalent to `SortField.getIndexSorter()`. `SCORE`, `DOC`, `CUSTOM`,
+    /// `STRING_VAL` and `REWRITEABLE` all answer `None`: none of them reads a
+    /// doc-values field, and index sorting has nothing else to read at flush
+    /// time.
+    pub fn get_index_sorter(&self) -> Option<Arc<dyn crate::index::index_sorter::IndexSorter>> {
+        use crate::index::index_sorter::{NumericSortKind, NumericSorter, StringSorter};
+        // `SortedNumericSortField` and `SortedSetSortField` override
+        // `getIndexSorter()` (`SortedNumericSortField.java:379-402`,
+        // `SortedSetSortField.java:203-206`); Java dispatches on the subclass,
+        // this port on the kind that records it.
+        match &self.kind {
+            SortFieldKind::SortedNumeric { .. } => {
+                return SortedNumericSortField::from_sort_field(self.clone())
+                    .and_then(|field| field.get_index_sorter())
+                    .ok();
+            }
+            SortFieldKind::SortedSet { .. } => {
+                return SortedSetSortField::from_sort_field(self.clone())
+                    .and_then(|field| field.get_index_sorter())
+                    .ok();
+            }
+            _ => {}
+        }
+        // `BinarySortField` overrides `getIndexSorter()`
+        // (`BinarySortField.java:178-182`).
+        if let SortFieldKind::Binary { .. } = &self.kind {
+            return BinarySortField::from_sort_field(self.clone())
+                .map(|field| field.get_index_sorter())
+                .ok();
+        }
+        let field = self.field.clone()?;
+        match self.field_type {
+            SortFieldType::String => {
+                let name = field.clone();
+                // `reader -> DocValues.getSorted(reader, field)`
+                // (`SortField.java:604-606`; `DocValues.java:206-222, 273-281`):
+                // a field the reader knows without sorted doc values is
+                // refused with `IllegalStateException`, and an absent one
+                // reads as empty values.
+                Some(Arc::new(StringSorter::new(
+                    Self::NAME,
+                    matches!(self.missing_value, Some(MissingValue::StringLast)),
+                    self.reverse,
+                    Arc::new(move |reader: &dyn crate::index::LeafReader| {
+                        crate::index::DocValues::get_sorted(reader, &name).map(Some)
+                    }),
+                )))
+            }
+            SortFieldType::Int
+            | SortFieldType::Long
+            | SortFieldType::Float
+            | SortFieldType::Double => {
+                let kind = match self.field_type {
+                    SortFieldType::Int => NumericSortKind::Int,
+                    SortFieldType::Long => NumericSortKind::Long,
+                    SortFieldType::Float => NumericSortKind::Float,
+                    _ => NumericSortKind::Double,
+                };
+                // The doc values hold the raw sortable encoding, which is what
+                // the sorter compares; the missing value is converted into the
+                // same encoding here.
+                let missing = match self.missing_value {
+                    Some(MissingValue::Int(v)) => Some(i64::from(v)),
+                    Some(MissingValue::Long(v)) => Some(v),
+                    Some(MissingValue::Float(v)) => Some(i64::from(v.to_bits() as i32)),
+                    Some(MissingValue::Double(v)) => Some(v.to_bits() as i64),
+                    _ => None,
+                };
+                let name = field.clone();
+                // `reader -> DocValues.getNumeric(reader, field)`
+                // (`SortField.java:607-630`; `DocValues.java:234-242`): a
+                // field the reader knows without numeric doc values is refused
+                // with `IllegalStateException`, and an absent one reads as
+                // empty values.
+                Some(Arc::new(NumericSorter::new(
+                    Self::NAME,
+                    kind,
+                    missing,
+                    self.reverse,
+                    Arc::new(move |reader: &dyn crate::index::LeafReader| {
+                        crate::index::DocValues::get_numeric(reader, &name).map(Some)
+                    }),
+                )))
+            }
+            _ => None,
+        }
     }
 
     /// Returns the field name, if any.
@@ -307,7 +635,9 @@ impl SortField {
         self.field.as_deref()
     }
 
-    /// Returns the sort field type.
+    /// Returns the type of the contents of the field.
+    ///
+    /// Equivalent to `SortField.getType()`.
     pub fn field_type(&self) -> SortFieldType {
         self.field_type
     }
@@ -323,8 +653,566 @@ impl SortField {
     }
 
     /// Returns true if the relevance score is needed to sort documents.
+    ///
+    /// The sort fields `DoubleValuesSource.getSortField` and
+    /// `LongValuesSource.getSortField` build — Java's `DoubleValuesSortField`
+    /// and `LongValuesSortField`, recognised here by their comparator source —
+    /// answer their producer's `needsScores()`, as those subclasses' overrides
+    /// do (`DoubleValuesSource.java:543-546`, `LongValuesSource.java:304-307`).
     pub fn needs_scores(&self) -> bool {
+        let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+        }) {
+            return source.producer_needs_scores();
+        }
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::long_values_source::LongValuesComparatorSource>()
+        }) {
+            return source.producer_needs_scores();
+        }
         self.field_type == SortFieldType::Score
+    }
+
+    /// Creates a sort, possibly in reverse, with a custom comparison function.
+    ///
+    /// Equivalent to
+    /// `new SortField(String, FieldComparatorSource, boolean)`, which forces
+    /// the type to [`SortFieldType::Custom`] and leaves the missing value unset
+    /// — it is factored into the comparator source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `field` is `None`.
+    pub fn new_custom(
+        field: Option<String>,
+        comparator: Arc<dyn FieldComparatorSource>,
+        reverse: bool,
+    ) -> Result<Self> {
+        validate_field(&field, SortFieldType::Custom, None)?;
+        Ok(Self {
+            field,
+            field_type: SortFieldType::Custom,
+            reverse,
+            missing_value: None,
+            comparator_source: Some(comparator),
+            optimize_sort_with_indexed_data: true,
+            kind: SortFieldKind::Plain,
+        })
+    }
+
+    /// Returns the [`FieldComparatorSource`] used for custom sorting.
+    ///
+    /// Equivalent to `SortField.getComparatorSource()`.
+    pub fn comparator_source(&self) -> Option<&Arc<dyn FieldComparatorSource>> {
+        self.comparator_source.as_ref()
+    }
+
+    /// Returns which `SortField` class this sort field stands for.
+    ///
+    /// See [`SortFieldKind`] for why the subclass identity is a field here.
+    pub fn kind(&self) -> &SortFieldKind {
+        &self.kind
+    }
+
+    /// Sets the value to use for documents that do not have one.
+    ///
+    /// Equivalent to `SortField.setMissingValue(Object)`, which Lucene 10.5.0
+    /// deprecates, and to the overrides `SortedSetSortField.setMissingValue`
+    /// (which only accepts the two string sentinels) and
+    /// `SortedNumericSortField.setMissingValue` (which accepts anything).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the value does not match
+    /// the sort type, with the message text Java produces.
+    pub fn set_missing_value(&mut self, missing_value: Option<MissingValue>) -> Result<()> {
+        match &self.kind {
+            SortFieldKind::SortedNumeric { .. } => {
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+            SortFieldKind::SortedSet { .. } => {
+                if !matches!(
+                    missing_value,
+                    Some(MissingValue::StringFirst) | Some(MissingValue::StringLast)
+                ) {
+                    return Err(LuceneError::illegal_argument(
+                        "For SORTED_SET type, missing value must be either STRING_FIRST or STRING_LAST"
+                            .to_string(),
+                    ));
+                }
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+            // `FeatureSortField.setMissingValue(Object)` refuses every value.
+            SortFieldKind::Feature { .. } => {
+                return Err(LuceneError::illegal_argument(
+                    "Missing value not supported for FeatureSortField".to_string(),
+                ));
+            }
+            // `LatLonPointSortField.setMissingValue(Object)` and
+            // `XYPointSortField.setMissingValue(Object)`: only positive
+            // infinity, missing values last (`LatLonPointSortField.java:51-58`).
+            SortFieldKind::LatLonDistance { .. } | SortFieldKind::XYDistance { .. } => {
+                if missing_value != Some(MissingValue::Double(f64::INFINITY)) {
+                    let got = match missing_value {
+                        None => "null".to_string(),
+                        Some(MissingValue::Double(v)) => crate::util::java_fmt::double_to_string(v),
+                        Some(MissingValue::Float(v)) => crate::util::java_fmt::float_to_string(v),
+                        Some(other) => other.to_string(),
+                    };
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Missing value can only be Double.POSITIVE_INFINITY (missing values last), but got {got}"
+                    )));
+                }
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+            SortFieldKind::Binary { .. }
+            | SortFieldKind::Plain
+            | SortFieldKind::Rewriteable { .. } => {}
+        }
+        // `DoubleValuesSortField.setMissingValue(Object)` and
+        // `LongValuesSortField.setMissingValue(Object)`: a `Number` is kept and
+        // handed to the shared comparator source as `doubleValue()` /
+        // `longValue()`; anything else goes to `super.setMissingValue`
+        // (`DoubleValuesSource.java:532-541`, `LongValuesSource.java:293-302`).
+        // Both subclasses are recognised by their comparator source.
+        let number = match missing_value {
+            Some(MissingValue::Int(v)) => Some((f64::from(v), i64::from(v))),
+            Some(MissingValue::Long(v)) => Some((v as f64, v)),
+            Some(MissingValue::Float(v)) => Some((f64::from(v), v as i64)),
+            Some(MissingValue::Double(v)) => Some((v, v as i64)),
+            _ => None,
+        };
+        if let Some((double_value, long_value)) = number {
+            let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+            if let Some(source) = source.and_then(|s| {
+                s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+            }) {
+                source.set_missing_value(double_value);
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+            if let Some(source) = source.and_then(|s| {
+                s.downcast_ref::<crate::search::long_values_source::LongValuesComparatorSource>()
+            }) {
+                source.set_missing_value(long_value);
+                self.missing_value = missing_value;
+                return Ok(());
+            }
+        }
+        match self.field_type {
+            SortFieldType::String | SortFieldType::StringVal => {
+                if !matches!(
+                    missing_value,
+                    Some(MissingValue::StringFirst) | Some(MissingValue::StringLast)
+                ) {
+                    return Err(LuceneError::illegal_argument(
+                        "For STRING type, missing value must be either STRING_FIRST or STRING_LAST"
+                            .to_string(),
+                    ));
+                }
+            }
+            SortFieldType::Int => {
+                if let Some(other) = missing_value.filter(|m| !matches!(m, MissingValue::Int(_))) {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Missing values for Type.INT can only be of type java.lang.Integer, but got {}",
+                        other.java_class_string()
+                    )));
+                }
+            }
+            SortFieldType::Long => {
+                if let Some(other) = missing_value.filter(|m| !matches!(m, MissingValue::Long(_))) {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Missing values for Type.LONG can only be of type java.lang.Long, but got {}",
+                        other.java_class_string()
+                    )));
+                }
+            }
+            SortFieldType::Float => {
+                if let Some(other) = missing_value.filter(|m| !matches!(m, MissingValue::Float(_)))
+                {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Missing values for Type.FLOAT can only be of type java.lang.Float, but got {}",
+                        other.java_class_string()
+                    )));
+                }
+            }
+            SortFieldType::Double => {
+                if let Some(other) = missing_value.filter(|m| !matches!(m, MissingValue::Double(_)))
+                {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Missing values for Type.DOUBLE can only be of type java.lang.Double, but got {}",
+                        other.java_class_string()
+                    )));
+                }
+            }
+            // The final `else` (`SortField.java:361-363`) throws for every
+            // other type whatever the value, `null` included.
+            _ => {
+                return Err(LuceneError::illegal_argument(
+                    "Missing value only works for numeric or STRING types".to_string(),
+                ));
+            }
+        }
+        self.missing_value = missing_value;
+        Ok(())
+    }
+
+    /// Enables or disables the sort optimization that uses the indexed data.
+    ///
+    /// Equivalent to `SortField.setOptimizeSortWithIndexedData(boolean)`, which
+    /// Lucene 10.5.0 deprecates. It is enabled by default: sorting on a numeric
+    /// field activates a point-based optimization that efficiently skips
+    /// non-competitive hits, and sorting on a `SORTED`/`SORTED_SET` field
+    /// activates a term-index-based one. Both require that the same data is
+    /// indexed twice — with points or the term index, and with doc values — and
+    /// that the sort type matches the indexed type; pass `false` when those
+    /// requirements cannot be met.
+    pub fn set_optimize_sort_with_indexed_data(&mut self, optimize: bool) {
+        self.optimize_sort_with_indexed_data = optimize;
+    }
+
+    /// Returns whether the sort optimization that uses the indexed data is
+    /// enabled.
+    ///
+    /// Equivalent to `SortField.getOptimizeSortWithIndexedData()`.
+    pub fn get_optimize_sort_with_indexed_data(&self) -> bool {
+        self.optimize_sort_with_indexed_data
+    }
+
+    /// Enables or disables the sort optimization that uses the points index.
+    ///
+    /// Equivalent to `SortField.setOptimizeSortWithPoints(boolean)`, which
+    /// Lucene 10.5.0 deprecates as a duplicate of
+    /// [`set_optimize_sort_with_indexed_data`](Self::set_optimize_sort_with_indexed_data)
+    /// and implements by delegating to it.
+    pub fn set_optimize_sort_with_points(&mut self, optimize: bool) {
+        self.set_optimize_sort_with_indexed_data(optimize);
+    }
+
+    /// Returns whether the sort optimization that uses the points index is
+    /// enabled.
+    ///
+    /// Equivalent to `SortField.getOptimizeSortWithPoints()`, which Lucene
+    /// 10.5.0 deprecates as a duplicate of
+    /// [`get_optimize_sort_with_indexed_data`](Self::get_optimize_sort_with_indexed_data).
+    pub fn get_optimize_sort_with_points(&self) -> bool {
+        self.get_optimize_sort_with_indexed_data()
+    }
+
+    /// Returns the [`FieldComparator`] to use for sorting.
+    ///
+    /// Equivalent to `SortField.getComparator(int, Pruning)` and to the
+    /// overrides in `SortedNumericSortField`, `SortedSetSortField` and
+    /// `BinarySortField`.
+    ///
+    /// * `num_hits` — the number of top hits the queue will store;
+    /// * `pruning` — how the comparator may skip documents through
+    ///   [`LeafFieldComparator::competitive_iterator`](crate::search::LeafFieldComparator::competitive_iterator).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`] for
+    /// [`SortFieldType::Rewriteable`], which must be rewritten first, and for a
+    /// [`SortFieldType::Custom`] sort with no comparator source; propagates any
+    /// error a [`FieldComparatorSource`] raises.
+    pub fn get_comparator(
+        &self,
+        num_hits: usize,
+        pruning: Pruning,
+    ) -> Result<Box<dyn FieldComparator>> {
+        let field = self.field.as_deref().unwrap_or("");
+        let mut comparator: Box<dyn FieldComparator> = match &self.kind {
+            // `FeatureSortField.getComparator(int, Pruning)` returns its
+            // comparator directly, without the `disableSkipping()` call the
+            // base class makes.
+            SortFieldKind::Feature { feature_name } => {
+                return Ok(Box::new(
+                    crate::search::simple_field_comparator::SimpleFieldComparator::new(
+                        crate::document::feature_field::FeatureComparator::new(
+                            num_hits,
+                            field,
+                            feature_name,
+                        ),
+                    ),
+                ));
+            }
+            // `LatLonPointSortField.getComparator(int, Pruning)` and
+            // `XYPointSortField.getComparator(int, Pruning)` return the
+            // distance comparator directly (`LatLonPointSortField.java:40-43`).
+            SortFieldKind::LatLonDistance {
+                latitude_bits,
+                longitude_bits,
+            } => {
+                return Ok(Box::new(SharedFieldComparator::new(
+                    crate::document::LatLonPointDistanceComparator::new(
+                        field,
+                        f64::from_bits(*latitude_bits),
+                        f64::from_bits(*longitude_bits),
+                        num_hits,
+                    ),
+                )));
+            }
+            SortFieldKind::XYDistance { x_bits, y_bits } => {
+                return Ok(Box::new(SharedFieldComparator::new(
+                    crate::document::XYPointDistanceComparator::new(
+                        field,
+                        f32::from_bits(*x_bits),
+                        f32::from_bits(*y_bits),
+                        num_hits,
+                    ),
+                )));
+            }
+            SortFieldKind::SortedNumeric {
+                selector,
+                numeric_type,
+            } => {
+                // Sort optimization with points is possible when the selector
+                // is MIN or MAX, because a successful iterator over the points
+                // can still be built in that case.
+                let is_min_or_max = *selector == SortedNumericSelectorType::MAX
+                    || *selector == SortedNumericSelectorType::MIN;
+                let selector_pruning = if is_min_or_max { pruning } else { Pruning::NONE };
+                let selector = *selector;
+                let numeric_type = *numeric_type;
+                let source: NumericDocValuesSource = Arc::new(
+                    move |reader: &dyn crate::index::LeafReader,
+                          field: &str|
+                          -> Result<Box<dyn crate::index::NumericDocValues>> {
+                        SortedNumericSelector::wrap(
+                            crate::index::DocValues::get_sorted_numeric(reader, field)?,
+                            selector,
+                            numeric_type,
+                        )
+                    },
+                );
+                match numeric_type {
+                    SortFieldType::Int => {
+                        let mut c = IntComparator::new(
+                            num_hits,
+                            field,
+                            match self.missing_value {
+                                Some(MissingValue::Int(v)) => Some(v),
+                                _ => None,
+                            },
+                            self.reverse,
+                            selector_pruning,
+                        );
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
+                    }
+                    SortFieldType::Float => {
+                        let mut c = FloatComparator::new(
+                            num_hits,
+                            field,
+                            match self.missing_value {
+                                Some(MissingValue::Float(v)) => Some(v),
+                                _ => None,
+                            },
+                            self.reverse,
+                            selector_pruning,
+                        );
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
+                    }
+                    SortFieldType::Long => {
+                        let mut c = LongComparator::new(
+                            num_hits,
+                            field,
+                            match self.missing_value {
+                                Some(MissingValue::Long(v)) => Some(v),
+                                _ => None,
+                            },
+                            self.reverse,
+                            selector_pruning,
+                        );
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
+                    }
+                    SortFieldType::Double => {
+                        let mut c = DoubleComparator::new(
+                            num_hits,
+                            field,
+                            match self.missing_value {
+                                Some(MissingValue::Double(v)) => Some(v),
+                                _ => None,
+                            },
+                            self.reverse,
+                            selector_pruning,
+                        );
+                        c.set_numeric_doc_values_source(Arc::clone(&source));
+                        Box::new(SharedFieldComparator::new(c))
+                    }
+                    // `default: throw new AssertionError();`
+                    // (`SortedNumericSortField.java:364-365`).
+                    _ => {
+                        return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                            String::new(),
+                        )))
+                    }
+                }
+            }
+            SortFieldKind::SortedSet { selector } => {
+                let final_pruning = if self.optimize_sort_with_indexed_data {
+                    pruning
+                } else {
+                    Pruning::NONE
+                };
+                let selector = *selector;
+                let mut comparator = TermOrdValComparator::new(
+                    num_hits,
+                    field,
+                    self.missing_value == Some(MissingValue::StringLast),
+                    self.reverse,
+                    final_pruning,
+                );
+                comparator.set_sorted_doc_values_source(Arc::new(
+                    move |reader: &dyn crate::index::LeafReader, field: &str| {
+                        SortedSetSelector::wrap(
+                            crate::index::DocValues::get_sorted_set(reader, field)?,
+                            selector,
+                        )
+                    },
+                ));
+                Box::new(SharedFieldComparator::new(comparator))
+            }
+            SortFieldKind::Binary { .. } => {
+                // `BinarySortField.getComparator` (`BinarySortField.java:185-194`):
+                // a `TermValComparator` whose `getBinaryDocValues` returns
+                // `getSortKeyDocValues(context.reader())`.
+                let mut comparator = TermValComparator::new(
+                    num_hits,
+                    field,
+                    self.missing_value == Some(MissingValue::StringLast),
+                );
+                let this = crate::search::binary_sort_field::BinarySortField::from_sort_field(
+                    self.clone(),
+                )?;
+                comparator.set_binary_doc_values_source(Arc::new(
+                    move |context: &crate::index::LeafReaderContext, _field: &str| {
+                        this.get_sort_key_doc_values(context.leaf_reader().as_ref())
+                    },
+                ));
+                Box::new(SharedFieldComparator::new(comparator))
+            }
+            SortFieldKind::Plain | SortFieldKind::Rewriteable { .. } => match self.field_type {
+                SortFieldType::Score => Box::new(SharedFieldComparator::new(RelevanceComparator::new(num_hits))),
+                SortFieldType::Doc => {
+                    Box::new(SharedFieldComparator::new(DocComparator::new(num_hits, self.reverse, pruning)))
+                }
+                SortFieldType::Int => Box::new(SharedFieldComparator::new(IntComparator::new(
+                    num_hits,
+                    field,
+                    match self.missing_value {
+                        Some(MissingValue::Int(v)) => Some(v),
+                        _ => None,
+                    },
+                    self.reverse,
+                    pruning,
+                ))),
+                SortFieldType::Float => Box::new(SharedFieldComparator::new(FloatComparator::new(
+                    num_hits,
+                    field,
+                    match self.missing_value {
+                        Some(MissingValue::Float(v)) => Some(v),
+                        _ => None,
+                    },
+                    self.reverse,
+                    pruning,
+                ))),
+                SortFieldType::Long => Box::new(SharedFieldComparator::new(LongComparator::new(
+                    num_hits,
+                    field,
+                    match self.missing_value {
+                        Some(MissingValue::Long(v)) => Some(v),
+                        _ => None,
+                    },
+                    self.reverse,
+                    pruning,
+                ))),
+                SortFieldType::Double => Box::new(SharedFieldComparator::new(DoubleComparator::new(
+                    num_hits,
+                    field,
+                    match self.missing_value {
+                        Some(MissingValue::Double(v)) => Some(v),
+                        _ => None,
+                    },
+                    self.reverse,
+                    pruning,
+                ))),
+                SortFieldType::Custom => match self.comparator_source.as_ref() {
+                    Some(source) => source.new_comparator(field, num_hits, pruning, self.reverse)?,
+                    None => {
+                        // `assert comparatorSource != null;` (`SortField.java:545`).
+                        // Without `-ea`, `comparatorSource.newComparator(...)`
+                        // dereferences `null`.
+                        debug_assert!(self.comparator_source.is_some());
+                        return Err(LuceneError::null_pointer());
+                    }
+                },
+                SortFieldType::String => Box::new(SharedFieldComparator::new(TermOrdValComparator::new(
+                    num_hits,
+                    field,
+                    self.missing_value == Some(MissingValue::StringLast),
+                    self.reverse,
+                    pruning,
+                ))),
+                SortFieldType::StringVal => Box::new(SharedFieldComparator::new(TermValComparator::new(
+                    num_hits,
+                    field,
+                    self.missing_value == Some(MissingValue::StringLast),
+                ))),
+                SortFieldType::Rewriteable => {
+                    return Err(LuceneError::illegal_state(
+                        "SortField needs to be rewritten through Sort.rewrite(..) and SortField.rewrite(..)"
+                            .to_string(),
+                    ))
+                }
+            },
+        };
+        if !self.get_optimize_sort_with_indexed_data() {
+            comparator.disable_skipping();
+        }
+        Ok(comparator)
+    }
+
+    /// Builds a sort field carrying a subclass identity.
+    ///
+    /// Used by [`SortedNumericSortField`],
+    /// [`SortedSetSortField`] and
+    /// [`BinarySortField`], all of which pass
+    /// [`SortFieldType::Custom`] to the `SortField` constructor and then
+    /// override the behaviour selected by `kind`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new_with_missing`](Self::new_with_missing).
+    pub fn with_kind(
+        field: Option<String>,
+        field_type: SortFieldType,
+        reverse: bool,
+        missing_value: Option<MissingValue>,
+        kind: SortFieldKind,
+    ) -> Result<Self> {
+        // The subclasses call `super(field, Type.CUSTOM, reverse, missingValue)`,
+        // whose body stores the missing value as given and only runs
+        // `validateField` (`SortField.java:170-176`) — it never calls
+        // `setMissingValue`, which refuses any missing value on a `CUSTOM`
+        // sort. `BinarySortField` relies on that to carry `STRING_FIRST` or
+        // `STRING_LAST`, and checks the value itself.
+        validate_field(&field, field_type, missing_value)?;
+        Ok(Self {
+            field,
+            field_type,
+            reverse,
+            missing_value,
+            comparator_source: None,
+            optimize_sort_with_indexed_data: true,
+            kind,
+        })
     }
 
     /// Serializes this sort field to `output` using the Java `SortFieldProvider`
@@ -335,49 +1223,137 @@ impl SortField {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` for types that cannot be persisted
-    /// (`Score`, `Doc`, `Custom`, `StringVal`, `Rewriteable`).
+    /// Returns `LuceneErrorKind::IllegalArgument`, after the header is
+    /// written, when a missing value is set on a type that cannot persist it
+    /// (`Score`, `Doc`, `Custom`, `StringVal`, `Rewriteable`), as Java does.
     pub fn serialize(&self, output: &mut dyn DataOutput) -> Result<()> {
-        if !self.field_type.is_serializable() {
-            return Err(LuceneError::IllegalArgument(format!(
-                "Cannot serialize SortField of type {}",
-                self.field_type
-            )));
-        }
-        output.write_string(self.field.as_deref().unwrap_or(""))?;
+        // `SortField.serialize(DataOutput)` (`SortField.java:265-306`): the
+        // header is written first, and the type is only checked when a
+        // missing value follows.
+        //
+        // `out.writeString(field)` with a null field (`FIELD_SCORE`,
+        // `FIELD_DOC`) throws `NullPointerException` before writing a byte;
+        // its helpful message names the output's own `writeString` locals
+        // (measured on `lucene-core-10.5.0.jar` with a `ByteBuffersDataOutput`:
+        // `Cannot invoke "String.length()" because "v" is null`), so no
+        // message is reproduced here.
+        let Some(field) = self.field.as_deref() else {
+            return Err(LuceneError::null_pointer());
+        };
+        output.write_string(field)?;
         output.write_string(self.field_type.java_name())?;
         output.write_int(if self.reverse { 1 } else { 0 })?;
-        if let Some(missing) = self.missing_value {
-            output.write_int(1)?;
-            match (self.field_type, missing) {
-                (SortFieldType::String, MissingValue::StringLast) => output.write_int(0)?,
-                (SortFieldType::String, MissingValue::StringFirst) => output.write_int(1)?,
-                (SortFieldType::Int, MissingValue::Int(v)) => output.write_int(v)?,
-                (SortFieldType::Long, MissingValue::Long(v)) => output.write_long(v)?,
-                (SortFieldType::Float, MissingValue::Float(v)) => {
-                    output.write_int(float_to_sortable_int(v))?
-                }
-                (SortFieldType::Double, MissingValue::Double(v)) => {
-                    output.write_long(double_to_sortable_long(v))?
-                }
+        let Some(missing) = self.missing_value else {
+            output.write_int(0)?;
+            return Ok(());
+        };
+        output.write_int(1)?;
+        let cast = |target: &str| {
+            // `(int) missingValue` and friends on a box of another class.
+            LuceneError::unchecked(
+                "java.lang.ClassCastException",
+                format!(
+                    "{} cannot be cast to class {target}",
+                    missing.java_class_string()
+                ),
+            )
+        };
+        match self.field_type {
+            SortFieldType::String => match missing {
+                MissingValue::StringLast => output.write_int(0)?,
+                MissingValue::StringFirst => output.write_int(1)?,
                 _ => {
-                    return Err(LuceneError::IllegalArgument(format!(
-                        "Cannot serialize missing value of {missing} for type {}",
-                        self.field_type
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Cannot serialize missing value of {missing} for type STRING"
                     )))
                 }
+            },
+            SortFieldType::Int => match missing {
+                MissingValue::Int(v) => output.write_int(v)?,
+                _ => return Err(cast("java.lang.Integer")),
+            },
+            SortFieldType::Long => match missing {
+                MissingValue::Long(v) => output.write_long(v)?,
+                _ => return Err(cast("java.lang.Long")),
+            },
+            SortFieldType::Float => match missing {
+                MissingValue::Float(v) => output.write_int(float_to_sortable_int(v))?,
+                _ => return Err(cast("java.lang.Float")),
+            },
+            SortFieldType::Double => match missing {
+                MissingValue::Double(v) => output.write_long(double_to_sortable_long(v))?,
+                _ => return Err(cast("java.lang.Double")),
+            },
+            _ => {
+                return Err(LuceneError::illegal_argument(format!(
+                    "Cannot serialize SortField of type {}",
+                    self.field_type
+                )))
             }
-        } else {
-            output.write_int(0)?;
         }
         Ok(())
     }
 
+    /// Reads a [`SortFieldType`] written as its Java enum constant name.
+    ///
+    /// Equivalent to the `protected static SortField.readType(DataInput)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates read errors, and returns
+    /// [`LuceneErrorKind::IllegalArgument`]
+    /// when the name is not a known type — the `IllegalArgumentException` Java
+    /// throws, whose cause is the one `Type.valueOf` threw.
+    pub fn read_type(input: &mut dyn DataInput) -> Result<SortFieldType> {
+        SortFieldType::parse(&input.read_string()?)
+    }
+
+    /// Rewrites this sort field, returning a new one when a change is made.
+    ///
+    /// Equivalent to `SortField.rewrite(IndexSearcher)`, whose base
+    /// implementation returns `this` (`SortField.java:582-584`). Java's
+    /// `this` is [`Cow::Borrowed`] of `self` here, so a caller can tell an
+    /// unchanged rewrite by identity, as [`Sort::rewrite`] does; a field
+    /// that changes is a [`Cow::Owned`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rewriting.
+    ///
+    /// The sort fields `DoubleValuesSource.getSortField` and
+    /// `LongValuesSource.getSortField` build — Java's `DoubleValuesSortField`
+    /// and `LongValuesSortField`, recognised here by their comparator source —
+    /// rewrite their producer as those subclasses' overrides do
+    /// (`DoubleValuesSource.java:557-566`, `LongValuesSource.java:318-327`).
+    pub fn rewrite<'a>(&'a self, searcher: &IndexSearcher) -> Result<Cow<'a, SortField>> {
+        // The override of a `REWRITEABLE` subclass declared in another module
+        // (`ValueSource.ValueSourceSortField.rewrite`).
+        if let SortFieldKind::Rewriteable { rewriter } = &self.kind {
+            return Ok(Cow::Owned((rewriter.0)(self, searcher)?));
+        }
+        let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+        }) {
+            return source.rewrite_sort_field(self, searcher);
+        }
+        if let Some(source) = source.and_then(|s| {
+            s.downcast_ref::<crate::search::long_values_source::LongValuesComparatorSource>()
+        }) {
+            return source.rewrite_sort_field(self, searcher);
+        }
+        Ok(Cow::Borrowed(self))
+    }
+
     /// Reads a sort field previously written with [`Self::serialize`].
+    ///
+    /// The field name is read as written, the empty name included: Java's
+    /// `SortField.Provider.readSortField` passes `in.readString()` to the
+    /// constructor (`SortField.java:216-218`), so a sort on the field `""`
+    /// reads back as that field, never as a `null` one.
     pub fn deserialize(input: &mut dyn DataInput) -> Result<Self> {
-        let field = input.read_string()?;
-        let field = if field.is_empty() { None } else { Some(field) };
-        let field_type = SortFieldType::parse(&input.read_string()?)?;
+        let field = Some(input.read_string()?);
+        let field_type = Self::read_type(input)?;
         let reverse = input.read_int()? == 1;
         let missing_value = if input.read_int()? == 1 {
             Some(match field_type {
@@ -398,7 +1374,7 @@ impl SortField {
                     MissingValue::Double(sortable_long_to_double(input.read_long()?))
                 }
                 _ => {
-                    return Err(LuceneError::IllegalArgument(format!(
+                    return Err(LuceneError::illegal_argument(format!(
                         "Cannot deserialize sort of type {field_type}"
                     )))
                 }
@@ -410,8 +1386,105 @@ impl SortField {
     }
 }
 
+impl SortField {
+    /// The ` missingValue=...>` tail of the distance sort fields' `toString`:
+    /// written only when the missing value is not positive infinity.
+    fn write_distance_missing(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.missing_value {
+            Some(MissingValue::Double(v)) if v == f64::INFINITY => {}
+            Some(MissingValue::Double(v)) => write!(
+                f,
+                " missingValue={}",
+                crate::util::java_fmt::double_to_string(v)
+            )?,
+            Some(other) => write!(f, " missingValue={other}")?,
+            None => f.write_str(" missingValue=null")?,
+        }
+        f.write_str(">")
+    }
+}
+
 impl fmt::Display for SortField {
+    /// Equivalent to `SortField.toString()` and to the overrides in
+    /// `SortedNumericSortField`, `SortedSetSortField` and `BinarySortField`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            SortFieldKind::SortedNumeric {
+                selector,
+                numeric_type,
+            } => {
+                write!(
+                    f,
+                    "<sortednumeric: \"{}\">",
+                    self.field.as_deref().unwrap_or("")
+                )?;
+                if self.reverse {
+                    f.write_str("!")?;
+                }
+                if let Some(missing) = self.missing_value {
+                    write!(f, " missingValue={missing}")?;
+                }
+                return write!(f, " selector={selector} type={numeric_type}");
+            }
+            SortFieldKind::SortedSet { selector } => {
+                write!(
+                    f,
+                    "<sortedset: \"{}\">",
+                    self.field.as_deref().unwrap_or("")
+                )?;
+                if self.reverse {
+                    f.write_str("!")?;
+                }
+                if let Some(missing) = self.missing_value {
+                    write!(f, " missingValue={missing}")?;
+                }
+                return write!(f, " selector={selector}");
+            }
+            // `FeatureSortField.toString()`.
+            SortFieldKind::Feature { feature_name } => {
+                return write!(
+                    f,
+                    "<feature:\"{}\" featureName={feature_name}>",
+                    self.field.as_deref().unwrap_or("")
+                );
+            }
+            // `LatLonPointSortField.toString()` (`LatLonPointSortField.java:84-100`).
+            SortFieldKind::LatLonDistance {
+                latitude_bits,
+                longitude_bits,
+            } => {
+                write!(
+                    f,
+                    "<distance:\"{}\" latitude={} longitude={}",
+                    self.field.as_deref().unwrap_or(""),
+                    crate::util::java_fmt::double_to_string(f64::from_bits(*latitude_bits)),
+                    crate::util::java_fmt::double_to_string(f64::from_bits(*longitude_bits))
+                )?;
+                return self.write_distance_missing(f);
+            }
+            // `XYPointSortField.toString()` (`XYPointSortField.java:80-95`).
+            SortFieldKind::XYDistance { x_bits, y_bits } => {
+                write!(
+                    f,
+                    "<distance:\"{}\" x={} y={}",
+                    self.field.as_deref().unwrap_or(""),
+                    crate::util::java_fmt::float_to_string(f32::from_bits(*x_bits)),
+                    crate::util::java_fmt::float_to_string(f32::from_bits(*y_bits))
+                )?;
+                return self.write_distance_missing(f);
+            }
+            SortFieldKind::Binary { .. } => {
+                write!(f, "<binary: \"{}\">", self.field.as_deref().unwrap_or(""))?;
+                if self.reverse {
+                    f.write_str("!")?;
+                }
+                if let Some(missing) = self.missing_value {
+                    write!(f, " missingValue={missing}")?;
+                }
+                return Ok(());
+            }
+            SortFieldKind::Plain | SortFieldKind::Rewriteable { .. } => {}
+        }
         match self.field_type {
             SortFieldType::Score => f.write_str("<score>")?,
             SortFieldType::Doc => f.write_str("<doc>")?,
@@ -433,11 +1506,29 @@ impl fmt::Display for SortField {
             SortFieldType::Double => {
                 write!(f, "<double: \"{}\">", self.field.as_deref().unwrap_or(""))?
             }
-            SortFieldType::Custom => write!(
-                f,
-                "<custom:\"{}\": null>",
-                self.field.as_deref().unwrap_or("")
-            )?,
+            SortFieldType::Custom => {
+                // `DoubleValuesSortField.toString()` and
+                // `LongValuesSortField.toString()`: `"<" + getField() + ">"`,
+                // then `!` when reversed (`DoubleValuesSource.java:549-554`,
+                // `LongValuesSource.java:310-315`).
+                let source = self.comparator_source.as_deref().and_then(|s| s.as_any());
+                let values_sort = source.is_some_and(|s| {
+                    s.is::<crate::search::double_values_source::DoubleValuesComparatorSource>()
+                        || s.is::<crate::search::long_values_source::LongValuesComparatorSource>()
+                });
+                if values_sort {
+                    write!(f, "<{}>", self.field.as_deref().unwrap_or(""))?;
+                    if self.reverse {
+                        f.write_str("!")?;
+                    }
+                    return Ok(());
+                }
+                write!(
+                    f,
+                    "<custom:\"{}\": null>",
+                    self.field.as_deref().unwrap_or("")
+                )?
+            }
             SortFieldType::Rewriteable => write!(
                 f,
                 "<rewriteable: \"{}\">",
@@ -454,61 +1545,28 @@ impl fmt::Display for SortField {
     }
 }
 
-/// Validates field name and missing-value compatibility.
+/// Validates the field name and, for a string sort, the missing value.
+///
+/// Equivalent to the private `SortField.validateField(String, Type, Object)`,
+/// whose two checks are the only ones the constructor performs. The stricter
+/// per-type checks Java applies belong to
+/// [`SortField::set_missing_value`], which reproduces them.
 fn validate_field(
     field: &Option<String>,
     field_type: SortFieldType,
     missing_value: Option<MissingValue>,
 ) -> Result<()> {
     if field.is_none() && field_type != SortFieldType::Score && field_type != SortFieldType::Doc {
-        return Err(LuceneError::IllegalArgument(
+        return Err(LuceneError::illegal_argument(
             "field can only be null when type is SCORE or DOC".to_string(),
         ));
     }
     if field_type == SortFieldType::String {
         if let Some(missing) = missing_value {
             if missing != MissingValue::StringFirst && missing != MissingValue::StringLast {
-                return Err(LuceneError::IllegalArgument(
+                return Err(LuceneError::illegal_argument(
                     "For Type.STRING, missing value must be either STRING_FIRST or STRING_LAST"
                         .to_string(),
-                ));
-            }
-        }
-    }
-    if let Some(missing) = missing_value {
-        match field_type {
-            SortFieldType::Int => {
-                if !matches!(missing, MissingValue::Int(_)) {
-                    return Err(LuceneError::IllegalArgument(
-                        "Missing values for Type.INT can only be of type Integer".to_string(),
-                    ));
-                }
-            }
-            SortFieldType::Long => {
-                if !matches!(missing, MissingValue::Long(_)) {
-                    return Err(LuceneError::IllegalArgument(
-                        "Missing values for Type.LONG can only be of type Long".to_string(),
-                    ));
-                }
-            }
-            SortFieldType::Float => {
-                if !matches!(missing, MissingValue::Float(_)) {
-                    return Err(LuceneError::IllegalArgument(
-                        "Missing values for Type.FLOAT can only be of type Float".to_string(),
-                    ));
-                }
-            }
-            SortFieldType::Double => {
-                if !matches!(missing, MissingValue::Double(_)) {
-                    return Err(LuceneError::IllegalArgument(
-                        "Missing values for Type.DOUBLE can only be of type Double".to_string(),
-                    ));
-                }
-            }
-            SortFieldType::String => {}
-            _ => {
-                return Err(LuceneError::IllegalArgument(
-                    "Missing value only works for numeric or STRING types".to_string(),
                 ));
             }
         }
@@ -540,17 +1598,20 @@ impl Sort {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `fields` is empty.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `fields` is empty.
     pub fn new_fields(fields: Vec<SortField>) -> Result<Self> {
         if fields.is_empty() {
-            return Err(LuceneError::IllegalArgument(
+            return Err(LuceneError::illegal_argument(
                 "There must be at least 1 sort field".to_string(),
             ));
         }
         Ok(Self { fields })
     }
 
-    /// Returns the sort fields.
+    /// Returns the sort criteria, in the order they were supplied.
+    ///
+    /// Equivalent to `Sort.getSort()`, which returns the backing
+    /// `SortField[]`.
     pub fn fields(&self) -> &[SortField] {
         &self.fields
     }
@@ -558,6 +1619,35 @@ impl Sort {
     /// Returns true if the relevance score is needed to sort documents.
     pub fn needs_scores(&self) -> bool {
         self.fields.iter().any(|f| f.needs_scores())
+    }
+
+    /// Rewrites the [`SortField`]s of this sort, returning a new [`Sort`] when
+    /// any of them changes during its rewriting.
+    ///
+    /// Equivalent to `Sort.rewrite(IndexSearcher)` (`Sort.java:86-97`): a
+    /// field changed when its rewrite is not the same object
+    /// ([`Cow::Owned`]), and an unchanged sort returns `this`
+    /// ([`Cow::Borrowed`] of `self`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while rewriting a field.
+    pub fn rewrite<'a>(&'a self, searcher: &IndexSearcher) -> Result<Cow<'a, Sort>> {
+        let mut changed = false;
+        let mut rewritten_sort_fields = Vec::with_capacity(self.fields.len());
+        for field in &self.fields {
+            let rewritten = field.rewrite(searcher)?;
+            if !std::ptr::eq(field, &*rewritten) {
+                changed = true;
+            }
+            rewritten_sort_fields.push(rewritten.into_owned());
+        }
+
+        if changed {
+            Ok(Cow::Owned(Self::new_fields(rewritten_sort_fields)?))
+        } else {
+            Ok(Cow::Borrowed(self))
+        }
     }
 }
 
@@ -580,53 +1670,145 @@ impl fmt::Display for Sort {
 }
 
 /// Writes a [`Sort`] in the segment-info format used by
-/// `Lucene99SegmentInfoFormat`.
+/// `Lucene99SegmentInfoFormat`: the field count as a VInt, then each sort field
+/// as the name of the `SortFieldProvider` that can read it back followed by
+/// what that provider writes.
 ///
-/// This writes the count as a VInt, followed by each sort field prefixed by the
-/// provider name "SortField". It is a convenience helper; a real segment-info
-/// writer will embed this in the full `.si` payload.
+/// Equivalent to the index-sort block of `Lucene99SegmentInfoFormat.write`
+/// (`Lucene99SegmentInfoFormat.java:223-234`): the provider name is the one the
+/// field's `IndexSorter` reports, and the payload is written through
+/// `SortFieldProvider.write`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`] when a sort field has no index
+/// sorter, and propagates the provider's error and any I/O error.
 pub fn write_sort(output: &mut dyn DataOutput, sort: &Sort) -> Result<()> {
     output.write_v_int(sort.fields.len() as i32)?;
     for field in &sort.fields {
-        output.write_string("SortField")?;
-        field.serialize(output)?;
+        let Some(sorter) = field.get_index_sorter() else {
+            return Err(LuceneError::illegal_argument(format!(
+                "cannot serialize SortField {field}"
+            )));
+        };
+        output.write_string(sorter.get_provider_name())?;
+        crate::index::index_sorter::write_sort_field(field, output)?;
     }
     Ok(())
 }
 
 /// Reads a [`Sort`] previously written with [`write_sort`].
+///
+/// Equivalent to the index-sort block of `Lucene99SegmentInfoFormat.read`
+/// (`Lucene99SegmentInfoFormat.java:137-150`), which resolves each provider
+/// name through `SortFieldProvider.forName(String)` and lets it read its sort
+/// field.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CorruptIndex`] for a negative field count,
+/// [`LuceneErrorKind::IllegalArgument`] for an unknown provider name, and
+/// propagates the per-field deserialization error.
 pub fn read_sort(input: &mut dyn DataInput) -> Result<Option<Sort>> {
     let count = input.read_v_int()?;
     if count < 0 {
-        return Err(LuceneError::CorruptIndex(format!(
-            "invalid index sort field count: {count}"
-        )));
+        // `Lucene99SegmentInfoFormat.java:146-147`.
+        return Err(LuceneError::corrupt_index(
+            format!("invalid index sort field count: {count}"),
+            input.to_java_string(),
+        ));
     }
     if count == 0 {
         return Ok(None);
     }
     let mut fields = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let provider = input.read_string()?;
-        if provider != "SortField" {
-            return Err(LuceneError::IllegalArgument(format!(
-                "unknown sort field provider: {provider}"
-            )));
-        }
-        fields.push(SortField::deserialize(input)?);
+        let name = input.read_string()?;
+        fields.push(
+            crate::index::index_sorter::sort_field_provider_for_name(&name)?
+                .read_sort_field(input)?,
+        );
     }
     Ok(Some(Sort::new_fields(fields)?))
+}
+
+/// The `SortFieldProvider` for plain sort fields, registered as
+/// [`SortField::NAME`].
+///
+/// Equivalent to the nested class `SortField.Provider` (`SortField.java:204-268`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Provider;
+
+impl Provider {
+    /// Creates a new provider.
+    ///
+    /// Equivalent to `new SortField.Provider()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::util::spi::NamedSPI for Provider {
+    fn get_name(&self) -> &str {
+        SortField::NAME
+    }
+}
+
+impl crate::index::index_sorter::SortFieldProvider for Provider {
+    /// Equivalent to `SortField.Provider.readSortField(DataInput)`.
+    fn read_sort_field(&self, input: &mut dyn DataInput) -> Result<SortField> {
+        SortField::deserialize(input)
+    }
+
+    /// Equivalent to `SortField.Provider.writeSortField(SortField, DataOutput)`,
+    /// which is `sf.serialize(out)`.
+    fn write_sort_field(&self, sort_field: &SortField, output: &mut dyn DataOutput) -> Result<()> {
+        sort_field.serialize(output)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput};
+    use crate::store::{ByteArrayDataInput, VecDataOutput};
+
+    /// `SortField.readType` over an unknown name throws
+    /// `IllegalArgumentException("Can't deserialize SortField - unknown type " + type, e)`,
+    /// whose cause `e` is `Type.valueOf`'s
+    /// `IllegalArgumentException("No enum constant
+    /// org.apache.lucene.search.SortField.Type.FOO")` (`SortField.java:258-264`;
+    /// the cause's message observed with the 10.5.0 oracle, `PassAOracle`,
+    /// section 3).
+    #[test]
+    fn read_type_keeps_value_of_failure_as_its_cause() {
+        let mut out = VecDataOutput::new();
+        out.write_string("FOO").unwrap();
+        let bytes = out.into_inner();
+        let error = SortField::read_type(&mut ByteArrayDataInput::new(&bytes)).unwrap_err();
+        match &error {
+            LuceneError {
+                kind:
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    },
+                ..
+            } => {
+                assert_eq!(message, "Can't deserialize SortField - unknown type FOO");
+                assert!(
+                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. }
+                        if m == "No enum constant org.apache.lucene.search.SortField.Type.FOO"),
+                    "{cause:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// Helper to serialize a single `SortField` to bytes, including the
     /// "SortField" provider name used by `Lucene99SegmentInfoFormat`.
     fn serialize_sort_field(field: &SortField) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         field.serialize(&mut out).unwrap();
         out.into_inner()
@@ -634,7 +1816,7 @@ mod tests {
 
     /// Helper to serialize a full `Sort` using the segment-info count prefix.
     fn serialize_sort(sort: &Sort) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         write_sort(&mut out, sort).unwrap();
         out.into_inner()
     }
@@ -669,6 +1851,10 @@ mod tests {
     }
 
     #[test]
+    /// `SortField(String, Type, boolean, Object)` runs only `validateField`
+    /// (`SortField.java:170-176, 371-383`), which refuses a `STRING` missing
+    /// value other than the two sentinels; the per-type checks of
+    /// `setMissingValue` (`SortField.java:337-366`) belong to the setter.
     fn sortfield_validation_rejects_bad_missing_value() {
         assert!(SortField::new_with_missing(
             Some("f".to_string()),
@@ -677,13 +1863,78 @@ mod tests {
             Some(MissingValue::Int(0))
         )
         .is_err());
-        assert!(SortField::new_with_missing(
+        let mut sort_field = SortField::new_with_missing(
             Some("f".to_string()),
             SortFieldType::Int,
             false,
-            Some(MissingValue::Long(0))
+            Some(MissingValue::Long(0)),
         )
-        .is_err());
+        .expect("the constructor does not check the missing value's type");
+        assert!(sort_field
+            .set_missing_value(Some(MissingValue::Long(0)))
+            .is_err());
+    }
+
+    /// The final `else` of `SortField.setMissingValue` (`SortField.java:361-363`)
+    /// throws for a type that is neither numeric nor a string whatever the
+    /// value, `null` included: `new SortField("f", Type.CUSTOM)
+    /// .setMissingValue(null)` throws `IllegalArgumentException("Missing value
+    /// only works for numeric or STRING types")`. A numeric type accepts
+    /// `null` (`SortField.java:342-360`).
+    #[test]
+    fn set_missing_value_refuses_null_for_a_non_numeric_non_string_type() {
+        let expected =
+            LuceneError::illegal_argument("Missing value only works for numeric or STRING types")
+                .to_string();
+        for mut sort_field in [
+            SortField::FIELD_SCORE.clone(),
+            SortField::FIELD_DOC.clone(),
+            SortField::new(Some("f".to_string()), SortFieldType::Custom).unwrap(),
+        ] {
+            for missing in [None, Some(MissingValue::Int(0))] {
+                let error = sort_field.set_missing_value(missing).unwrap_err();
+                assert_eq!(error.to_string(), expected, "{sort_field} {missing:?}");
+            }
+        }
+        let mut numeric = SortField::new(Some("f".to_string()), SortFieldType::Int).unwrap();
+        numeric.set_missing_value(None).unwrap();
+        assert_eq!(numeric.missing_value(), None);
+    }
+
+    /// `SortedSetSortField(String, boolean, Type, Object)` reaches
+    /// `SortField(field, Type.CUSTOM, reverse, missingValue)`
+    /// (`SortedSetSortField.java:74-81`), whose `validateField` checks only a
+    /// `STRING` missing value, so an `Integer` is accepted at construction;
+    /// the override `SortedSetSortField.setMissingValue`
+    /// (`SortedSetSortField.java:178-184`) accepts only the two sentinels and
+    /// refuses anything else, `null` included.
+    #[test]
+    fn sorted_set_sort_field_missing_value_validation_matches_java() {
+        let mut sort_field = SortedSetSortField::with_missing_value(
+            "f",
+            false,
+            SortedSetSelectorType::MIN,
+            Some(MissingValue::Int(7)),
+        )
+        .expect("the constructor accepts any missing value")
+        .into_sort_field();
+        assert_eq!(sort_field.missing_value(), Some(MissingValue::Int(7)));
+        let expected = LuceneError::illegal_argument(
+            "For SORTED_SET type, missing value must be either STRING_FIRST or STRING_LAST",
+        )
+        .to_string();
+        for missing in [
+            None,
+            Some(MissingValue::Int(7)),
+            Some(MissingValue::Long(7)),
+        ] {
+            let error = sort_field.set_missing_value(missing).unwrap_err();
+            assert_eq!(error.to_string(), expected, "{missing:?}");
+        }
+        for missing in [MissingValue::StringFirst, MissingValue::StringLast] {
+            sort_field.set_missing_value(Some(missing)).unwrap();
+            assert_eq!(sort_field.missing_value(), Some(missing));
+        }
     }
 
     #[test]
@@ -724,7 +1975,7 @@ mod tests {
         reverse: bool,
         missing: Option<MissingValue>,
     ) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string("STRING").unwrap();
@@ -796,7 +2047,7 @@ mod tests {
         reverse: bool,
         value: i64,
     ) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string(field_type.java_name()).unwrap();
@@ -811,7 +2062,7 @@ mod tests {
     }
 
     fn bytes_for_float_sort_field(field: &str, reverse: bool, value: f32) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string("FLOAT").unwrap();
@@ -822,7 +2073,7 @@ mod tests {
     }
 
     fn bytes_for_double_sort_field(field: &str, reverse: bool, value: f64) -> Vec<u8> {
-        let mut out = ByteArrayDataOutput::new();
+        let mut out = VecDataOutput::new();
         out.write_string("SortField").unwrap();
         out.write_string(field).unwrap();
         out.write_string("DOUBLE").unwrap();
@@ -877,12 +2128,28 @@ mod tests {
 
         for original in originals {
             let bytes = serialize_sort_field(&original);
-            let mut input = ByteArrayDataInput::new(bytes);
+            let mut input = ByteArrayDataInput::new(&bytes);
             let provider = input.read_string().unwrap();
             assert_eq!(provider, "SortField");
             let round_tripped = SortField::deserialize(&mut input).unwrap();
             assert_eq!(original, round_tripped);
         }
+    }
+
+    /// `SortField.Provider.readSortField` reads the field name with
+    /// `in.readString()` (`SortField.java:216-218`): a sort on the empty
+    /// field name `""` (a name `TestUtil.randomSimpleString` can draw in
+    /// `BaseSegmentInfoFormatTestCase.testSort`) round-trips to the same
+    /// field instead of failing as a `null` field of type `INT`.
+    #[test]
+    fn sortfield_with_an_empty_field_name_round_trips() {
+        let original =
+            SortField::new_with_missing(Some(String::new()), SortFieldType::Int, true, None)
+                .unwrap();
+        let bytes = serialize_sort_field(&original);
+        let mut input = ByteArrayDataInput::new(&bytes);
+        assert_eq!(input.read_string().unwrap(), "SortField");
+        assert_eq!(SortField::deserialize(&mut input).unwrap(), original);
     }
 
     #[test]
@@ -912,7 +2179,7 @@ mod tests {
         .unwrap();
 
         let bytes = serialize_sort(&sort);
-        let mut input = ByteArrayDataInput::new(bytes);
+        let mut input = ByteArrayDataInput::new(&bytes);
         let round_tripped = read_sort(&mut input).unwrap().unwrap();
         assert_eq!(sort, round_tripped);
     }
@@ -942,13 +2209,26 @@ mod tests {
         );
     }
 
+    /// `FIELD_SCORE` and `FIELD_DOC` have a null field, so
+    /// `out.writeString(field)` throws `NullPointerException` before writing
+    /// anything (`SortField.java:267-268`; measured on `lucene-core-10.5.0.jar`
+    /// through `SortField.Provider.writeSortField`).
     #[test]
     fn sortfield_score_and_doc_do_not_serialize() {
-        assert!(SortField::FIELD_SCORE
-            .serialize(&mut ByteArrayDataOutput::new())
-            .is_err());
-        assert!(SortField::FIELD_DOC
-            .serialize(&mut ByteArrayDataOutput::new())
-            .is_err());
+        for field in [&SortField::FIELD_SCORE, &SortField::FIELD_DOC] {
+            let mut output = VecDataOutput::new();
+            let error = field.serialize(&mut output).unwrap_err();
+            assert!(
+                matches!(
+                    &error.kind,
+                    LuceneErrorKind::Unchecked {
+                        class: "java.lang.NullPointerException",
+                        ..
+                    }
+                ),
+                "{field}: {error:?}"
+            );
+            assert!(output.is_empty(), "{field}: nothing is written");
+        }
     }
 }

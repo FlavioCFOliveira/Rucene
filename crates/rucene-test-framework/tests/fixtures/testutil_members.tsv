@@ -1,0 +1,89 @@
+# method	case	result (value, or class<TAB>message)
+reduceOpenFiles	tiered cms	noCFSRatio=0.1 maxMergeAtOnce=10 segmentsPerTier=8.0 maxMergeCount=13 maxThreadCount=8 -> noCFSRatio=1.0 maxMergeAtOnce=5 segmentsPerTier=5.0 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	tiered cms(6,4)	noCFSRatio=0.1 maxMergeAtOnce=10 segmentsPerTier=8.0 maxMergeCount=6 maxThreadCount=4 -> noCFSRatio=1.0 maxMergeAtOnce=5 segmentsPerTier=5.0 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	tiered serial	noCFSRatio=0.1 maxMergeAtOnce=10 segmentsPerTier=8.0 SerialMergeScheduler -> noCFSRatio=1.0 maxMergeAtOnce=5 segmentsPerTier=5.0 SerialMergeScheduler
+reduceOpenFiles	tiered(3,4.0) cms	noCFSRatio=0.1 maxMergeAtOnce=3 segmentsPerTier=4.0 maxMergeCount=13 maxThreadCount=8 -> noCFSRatio=1.0 maxMergeAtOnce=3 segmentsPerTier=4.0 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	tiered(3,4.0) cms(6,4)	noCFSRatio=0.1 maxMergeAtOnce=3 segmentsPerTier=4.0 maxMergeCount=6 maxThreadCount=4 -> noCFSRatio=1.0 maxMergeAtOnce=3 segmentsPerTier=4.0 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	tiered(3,4.0) serial	noCFSRatio=0.1 maxMergeAtOnce=3 segmentsPerTier=4.0 SerialMergeScheduler -> noCFSRatio=1.0 maxMergeAtOnce=3 segmentsPerTier=4.0 SerialMergeScheduler
+reduceOpenFiles	tiered(20,30.0) cms	noCFSRatio=0.1 maxMergeAtOnce=20 segmentsPerTier=30.0 maxMergeCount=13 maxThreadCount=8 -> noCFSRatio=1.0 maxMergeAtOnce=5 segmentsPerTier=5.0 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	tiered(20,30.0) cms(6,4)	noCFSRatio=0.1 maxMergeAtOnce=20 segmentsPerTier=30.0 maxMergeCount=6 maxThreadCount=4 -> noCFSRatio=1.0 maxMergeAtOnce=5 segmentsPerTier=5.0 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	tiered(20,30.0) serial	noCFSRatio=0.1 maxMergeAtOnce=20 segmentsPerTier=30.0 SerialMergeScheduler -> noCFSRatio=1.0 maxMergeAtOnce=5 segmentsPerTier=5.0 SerialMergeScheduler
+reduceOpenFiles	logdoc cms	noCFSRatio=0.1 mergeFactor=10 maxMergeCount=13 maxThreadCount=8 -> noCFSRatio=1.0 mergeFactor=5 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	logdoc cms(6,4)	noCFSRatio=0.1 mergeFactor=10 maxMergeCount=6 maxThreadCount=4 -> noCFSRatio=1.0 mergeFactor=5 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	logdoc serial	noCFSRatio=0.1 mergeFactor=10 SerialMergeScheduler -> noCFSRatio=1.0 mergeFactor=5 SerialMergeScheduler
+reduceOpenFiles	logbytes(3) cms	noCFSRatio=0.1 mergeFactor=3 maxMergeCount=13 maxThreadCount=8 -> noCFSRatio=1.0 mergeFactor=3 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	logbytes(3) cms(6,4)	noCFSRatio=0.1 mergeFactor=3 maxMergeCount=6 maxThreadCount=4 -> noCFSRatio=1.0 mergeFactor=3 maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	logbytes(3) serial	noCFSRatio=0.1 mergeFactor=3 SerialMergeScheduler -> noCFSRatio=1.0 mergeFactor=3 SerialMergeScheduler
+reduceOpenFiles	filter(tiered) cms	noCFSRatio=0.1 delegate(noCFSRatio=0.1 maxMergeAtOnce=10 segmentsPerTier=8.0) maxMergeCount=13 maxThreadCount=8 -> noCFSRatio=1.0 delegate(noCFSRatio=1.0 maxMergeAtOnce=10 segmentsPerTier=8.0) maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	filter(tiered) cms(6,4)	noCFSRatio=0.1 delegate(noCFSRatio=0.1 maxMergeAtOnce=10 segmentsPerTier=8.0) maxMergeCount=6 maxThreadCount=4 -> noCFSRatio=1.0 delegate(noCFSRatio=1.0 maxMergeAtOnce=10 segmentsPerTier=8.0) maxMergeCount=3 maxThreadCount=2
+reduceOpenFiles	filter(tiered) serial	noCFSRatio=0.1 delegate(noCFSRatio=0.1 maxMergeAtOnce=10 segmentsPerTier=8.0) SerialMergeScheduler -> noCFSRatio=1.0 delegate(noCFSRatio=1.0 maxMergeAtOnce=10 segmentsPerTier=8.0) SerialMergeScheduler
+getPostingsFormat	lucene104 f	Lucene104
+getDocValuesFormat	lucene104 f	Lucene90
+getPostingsFormat	lucene104 id	Lucene104
+getDocValuesFormat	lucene104 id	Lucene90
+getPostingsFormat	asserting f	Asserting
+getDocValuesFormat	asserting f	Asserting
+getPostingsFormat	asserting id	Asserting
+getDocValuesFormat	asserting id	Asserting
+getPostingsFormat	alwaysFixedGap f	LuceneFixedGap
+getDocValuesFormat	alwaysFixedGap f	Asserting
+getPostingsFormat	alwaysFixedGap id	LuceneFixedGap
+getDocValuesFormat	alwaysFixedGap id	Asserting
+getPostingsFormat	alwaysLucene90 f	Asserting
+getDocValuesFormat	alwaysLucene90 f	Lucene90
+getPostingsFormat	alwaysLucene90 id	Asserting
+getDocValuesFormat	alwaysLucene90 id	Lucene90
+getPostingsFormat	simpletext f	SimpleText
+getDocValuesFormat	simpletext f	SimpleText
+getPostingsFormat	simpletext id	SimpleText
+getDocValuesFormat	simpletext id	SimpleText
+getPostingsFormat	cheapbastard f	Lucene104
+getDocValuesFormat	cheapbastard f	Lucene90
+getPostingsFormat	cheapbastard id	Lucene104
+getDocValuesFormat	cheapbastard id	Lucene90
+getPostingsFormat	default f	Lucene104
+getDocValuesFormat	default f	Lucene90
+fieldSupportsHugeBinaryDocValues	f	true
+cloneDocument	kw	stored,indexed,omitNorms,indexOptions=DOCS,docValuesType=SORTED_SET<kw:v1>
+cloneDocument	kw2	indexed,omitNorms,indexOptions=DOCS,docValuesType=SORTED_SET<kw2:v2>
+cloneDocument	int	IntField <int:7>
+cloneDocument	int2	IntField <int2:-3>
+cloneDocument	ndv	docValuesType=NUMERIC<ndv:42>
+cloneDocument	bdv	docValuesType=BINARY<bdv:[62 69 6e]>
+cloneDocument	sdv	docValuesType=SORTED<sdv:[73 6f 72 74 65 64]>
+cloneDocument	bp	pointDimensionCount=2,pointIndexDimensionCount=2,pointNumBytes=2<bp:[1 2 3 4]>
+cloneDocument	ip	pointDimensionCount=2,pointIndexDimensionCount=2,pointNumBytes=4<ip:[80 0 0 5 80 0 0 6]>
+cloneDocument	s	stored,indexed,omitNorms,indexOptions=DOCS<s:str>
+cloneDocument	t	indexed,tokenized<t:some text>
+cloneDocument	st	stored<st:stored>
+cloneDocument	lf	java.lang.IllegalStateException	unknown Type: SORTED_NUMERIC
+cloneDocument	ssdv	java.lang.IllegalStateException	unknown Type: SORTED_SET
+cloneDocument	sti	stored<sti:5>
+addIndexesSlowly	a(3)+b(2,-1)	segments=1 maxDoc=4 numDocs=4
+assertConsistent	same	ok
+assertConsistent	zero-vs-two	java.lang.AssertionError	wrong total hits expected:<true> but was:<false>
+assertConsistent	two-vs-zero	java.lang.AssertionError	wrong total hits expected:<false> but was:<true>
+assertConsistent	eq5-vs-eq4	java.lang.AssertionError	wrong total hits\nExpected: <5L>\n     but: was <4L>
+assertConsistent	eq5-vs-gte6	java.lang.AssertionError	wrong total hits\nExpected: a value less than or equal to <5L>\n     but: <6L> was greater than <5L>
+assertConsistent	eq5-vs-gte3	ok
+assertConsistent	gte5-vs-eq4	java.lang.AssertionError	wrong total hits\nExpected: a value equal to or greater than <5L>\n     but: <4L> was less than <5L>
+assertConsistent	gte5-vs-eq7	ok
+assertConsistent	gte5-vs-gte1	ok
+assertConsistent	size	java.lang.AssertionError	wrong hit count\nExpected: an array with size <3>\n     but: array size was <2>
+assertConsistent	doc	java.lang.AssertionError	wrong hit docID\nExpected: <2>\n     but: was <4>
+assertConsistent	score	java.lang.AssertionError	wrong hit score expected:<1.5> but was:<0.10000000149011612>
+assertConsistent	score-nan	ok
+assertConsistent	score-zero	ok
+assertConsistent	fields-same	ok
+assertConsistent	fields-int	org.junit.internal.ArrayComparisonFailure	wrong sort field values: arrays first differed at element [0]; expected:<3> but was:<4>
+assertConsistent	fields-bytes	org.junit.internal.ArrayComparisonFailure	wrong sort field values: arrays first differed at element [1]; expected:<[61 62]> but was:<[61 63]>
+assertConsistent	fields-float	org.junit.internal.ArrayComparisonFailure	wrong sort field values: arrays first differed at element [0]; expected:<1.0> but was:<2.0>
+assertConsistent	fields-long-int	org.junit.internal.ArrayComparisonFailure	wrong sort field values: arrays first differed at element [0]; expected: java.lang.Long<5> but was: java.lang.Integer<5>
+assertConsistent	fields-null-value	org.junit.internal.ArrayComparisonFailure	wrong sort field values: arrays first differed at element [0]; expected:<null> but was:<5>
+assertConsistent	fields-longer	org.junit.internal.ArrayComparisonFailure	wrong sort field values: array lengths differed, expected.length=1 actual.length=2; arrays first differed at element [1]; expected:<end of array> but was:<1.0>
+assertConsistent	fields-shorter	org.junit.internal.ArrayComparisonFailure	wrong sort field values: array lengths differed, expected.length=2 actual.length=1; arrays first differed at element [1]; expected:<1.0> but was:<end of array>
+assertConsistent	fields-null	java.lang.AssertionError	wrong sort field values: expected array was null
+assertConsistent	fields-null-actual	java.lang.AssertionError	wrong sort field values: actual array was null
+assertConsistent	fields-both-null	ok
+assertConsistent	fielddoc-vs-scoredoc	java.lang.AssertionError	\nExpected: an instance of org.apache.lucene.search.FieldDoc\n     but: <doc=1 score=1.0 shardIndex=-1> is a org.apache.lucene.search.ScoreDoc
+assertConsistent	scoredoc-vs-fielddoc	java.lang.AssertionError	\nExpected: not an instance of org.apache.lucene.search.FieldDoc\n     but: was <doc=1 score=1.0 shardIndex=-1 fields=[3, 2.5]>

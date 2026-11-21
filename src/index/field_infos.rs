@@ -6,15 +6,18 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
 
 use crate::error::{LuceneError, Result};
+use crate::index::index_reader::IndexReader;
+use crate::index::reader_context::LeafReaderContext;
 use crate::index::{
     DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding, VectorSimilarityFunction,
     MAX_INDEX_DIMENSIONS, MAX_NUM_BYTES,
 };
-use crate::store::DataOutput;
+use crate::util::java_collections::JavaStringMap;
 
 // -----------------------------------------------------------------------------
 // FieldInfo
@@ -82,7 +85,110 @@ pub struct FieldInfo {
     store_payloads: bool,
 
     /// Codec-private attributes.
-    attributes: RwLock<HashMap<String, String>>,
+    ///
+    /// The type carries the map's iteration order because `.fnm` does:
+    /// `Lucene94FieldInfosFormat.write` serialises it with
+    /// `DataOutput.writeMapOfStrings`, which walks it. Java stores whatever
+    /// `Map` its caller passed — the `HashMap` `putAttribute` rebuilds, or the
+    /// `TreeMap`/`HashMap` `DataInput.readMapOfStrings` returned — and this
+    /// field stores the same choice. See [`JavaStringMap`].
+    ///
+    /// Java's map is never changed in place — `putAttribute` swaps in a new
+    /// one (`FieldInfo.java:670-679`) — so several fields can hold the same
+    /// map, as `Lucene94FieldInfosFormat.read` makes consecutive fields with
+    /// equal attributes do (`Lucene94FieldInfosFormat.java:197-201`). The
+    /// [`Arc`] is that shared reference.
+    attributes: RwLock<Arc<JavaStringMap>>,
+}
+
+/// `Collections.emptyMap()`: the one empty attribute map every field without
+/// attributes shares, as Java's fields share the singleton.
+static EMPTY_ATTRIBUTES: LazyLock<Arc<JavaStringMap>> =
+    LazyLock::new(|| Arc::new(JavaStringMap::default()));
+
+/// The shared empty attribute map, `Collections.emptyMap()`.
+pub(crate) fn empty_attributes() -> Arc<JavaStringMap> {
+    Arc::clone(&EMPTY_ATTRIBUTES)
+}
+
+/// A codec attribute value, as [`FieldInfo::get_attribute`] hands it out: the
+/// value inside the field's attribute map, shared rather than copied.
+///
+/// Java's `FieldInfo.getAttribute` returns the map's own `String`
+/// (`FieldInfo.java:658-660`). The map is never changed in place —
+/// `putAttribute` swaps in a new one (`FieldInfo.java:670-679`) — so the value
+/// stays what it was when it was read, whatever is put afterwards. This handle
+/// keeps that map alive and reads the value out of it; it dereferences to
+/// [`str`].
+#[derive(Clone)]
+pub struct AttributeValue {
+    map: Arc<JavaStringMap>,
+    slot: (usize, usize),
+}
+
+impl AttributeValue {
+    /// The value, as a string slice.
+    pub fn as_str(&self) -> &str {
+        self.map.value_at(self.slot)
+    }
+}
+
+impl std::ops::Deref for AttributeValue {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for AttributeValue {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for AttributeValue {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Debug for AttributeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for AttributeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq for AttributeValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for AttributeValue {}
+
+impl PartialEq<str> for AttributeValue {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for AttributeValue {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for AttributeValue {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other.as_str()
+    }
 }
 
 impl Default for FieldInfo {
@@ -105,7 +211,7 @@ impl Default for FieldInfo {
             store_term_vector: false,
             omit_norms: false,
             store_payloads: false,
-            attributes: RwLock::new(HashMap::new()),
+            attributes: RwLock::new(empty_attributes()),
         }
     }
 }
@@ -130,7 +236,13 @@ impl Clone for FieldInfo {
             store_term_vector: self.store_term_vector,
             omit_norms: self.omit_norms,
             store_payloads: self.store_payloads,
-            attributes: RwLock::new(self.attributes.read().unwrap().clone()),
+            // The map is never mutated in place, so the copy shares it.
+            attributes: RwLock::new(Arc::clone(
+                &self
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )),
         }
     }
 }
@@ -149,7 +261,13 @@ impl std::fmt::Debug for FieldInfo {
             .field("store_term_vector", &self.store_term_vector)
             .field("omit_norms", &self.omit_norms)
             .field("store_payloads", &self.store_payloads)
-            .field("attributes", &self.attributes.read().unwrap())
+            .field(
+                "attributes",
+                &self
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
             .field("doc_values_gen", &self.doc_values_gen)
             .field("point_dimension_count", &self.point_dimension_count)
             .field(
@@ -179,7 +297,14 @@ impl PartialEq for FieldInfo {
             && self.store_term_vector == other.store_term_vector
             && self.omit_norms == other.omit_norms
             && self.store_payloads == other.store_payloads
-            && *self.attributes.read().unwrap() == *other.attributes.read().unwrap()
+            && *self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == *other
+                    .attributes
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
             && self.doc_values_gen == other.doc_values_gen
             && self.point_dimension_count == other.point_dimension_count
             && self.point_index_dimension_count == other.point_index_dimension_count
@@ -214,7 +339,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the supplied combination of
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the supplied combination of
     /// options is inconsistent.
     #[allow(clippy::too_many_arguments)]
     pub fn new_full(
@@ -227,7 +352,7 @@ impl FieldInfo {
         doc_values_type: DocValuesType,
         doc_values_skip_index_type: DocValuesSkipIndexType,
         doc_values_gen: i64,
-        attributes: HashMap<String, String>,
+        attributes: JavaStringMap,
         point_dimension_count: i32,
         point_index_dimension_count: i32,
         point_num_bytes: i32,
@@ -237,7 +362,61 @@ impl FieldInfo {
         soft_deletes_field: bool,
         is_parent_field: bool,
     ) -> Result<Self> {
-        let info = Self {
+        let info = Self::new_unchecked(
+            name,
+            number,
+            store_term_vector,
+            omit_norms,
+            store_payloads,
+            index_options,
+            doc_values_type,
+            doc_values_skip_index_type,
+            doc_values_gen,
+            Arc::new(attributes),
+            point_dimension_count,
+            point_index_dimension_count,
+            point_num_bytes,
+            vector_dimension,
+            vector_encoding,
+            vector_similarity_function,
+            soft_deletes_field,
+            is_parent_field,
+        );
+        info.check_consistency()?;
+        Ok(info)
+    }
+
+    /// The field assignments of the Java constructor, without its closing
+    /// `checkConsistency()` call (`FieldInfo.java:78-125`).
+    ///
+    /// [`new_full`](Self::new_full) is this followed by
+    /// [`check_consistency`](Self::check_consistency). A reader that must
+    /// report a failed check with the field's name, as
+    /// `Lucene94FieldInfosFormat.read` does (`Lucene94FieldInfosFormat.java:215-240`),
+    /// runs the two steps itself, so that the name is still at hand when the
+    /// check fails.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_unchecked(
+        name: impl Into<String>,
+        number: i32,
+        store_term_vector: bool,
+        omit_norms: bool,
+        store_payloads: bool,
+        index_options: IndexOptions,
+        doc_values_type: DocValuesType,
+        doc_values_skip_index_type: DocValuesSkipIndexType,
+        doc_values_gen: i64,
+        attributes: Arc<JavaStringMap>,
+        point_dimension_count: i32,
+        point_index_dimension_count: i32,
+        point_num_bytes: i32,
+        vector_dimension: i32,
+        vector_encoding: VectorEncoding,
+        vector_similarity_function: VectorSimilarityFunction,
+        soft_deletes_field: bool,
+        is_parent_field: bool,
+    ) -> Self {
+        Self {
             name: name.into(),
             number,
             index_options,
@@ -268,9 +447,7 @@ impl FieldInfo {
                 store_payloads
             },
             attributes: RwLock::new(attributes),
-        };
-        info.check_consistency()?;
-        Ok(info)
+        }
     }
 
     /// Convenience helper for the postings-layer tests and stubs that used to
@@ -318,16 +495,17 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the type is `None` or if it
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the type is `None` or if it
     /// conflicts with a previously set type.
     pub fn set_doc_values_type(&mut self, doc_values_type: DocValuesType) -> Result<()> {
         if self.doc_values_type != DocValuesType::NONE
             && doc_values_type != DocValuesType::NONE
             && self.doc_values_type != doc_values_type
         {
-            return Err(LuceneError::IllegalArgument(format!(
-                "cannot change DocValues type from {} to {} for field '{}'",
-                self.doc_values_type as i32, doc_values_type as i32, self.name
+            // `FieldInfo.java:548-558`.
+            return Err(LuceneError::illegal_argument(format!(
+                "cannot change DocValues type from {:?} to {:?} for field \"{}\"",
+                self.doc_values_type, doc_values_type, self.name
             )));
         }
         self.doc_values_type = doc_values_type;
@@ -347,6 +525,9 @@ impl FieldInfo {
     /// Sets the DocValues generation for this field.
     pub fn set_doc_values_gen(&mut self, doc_values_gen: i64) {
         self.doc_values_gen = doc_values_gen;
+        // Java re-validates after changing the generation.
+        self.check_consistency()
+            .expect("set_doc_values_gen produced an inconsistent FieldInfo");
     }
 
     /// Returns `true` if term vectors are stored for this field.
@@ -358,16 +539,12 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the field is not indexed.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) from the consistency check if the
+    /// field is not indexed; as in Java, the flag stays set
+    /// (`FieldInfo.java:611-614`).
     pub fn set_store_term_vectors(&mut self) -> Result<()> {
-        if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::IllegalState(format!(
-                "non-indexed field '{}' cannot store term vectors",
-                self.name
-            )));
-        }
         self.store_term_vector = true;
-        Ok(())
+        self.check_consistency()
     }
 
     /// Returns `true` if norms are explicitly omitted for this field.
@@ -379,13 +556,13 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalState`] if the field is not indexed.
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the field is not indexed.
     pub fn set_omits_norms(&mut self) -> Result<()> {
         if self.index_options == IndexOptions::NONE {
-            return Err(LuceneError::IllegalState(format!(
-                "cannot omit norms: field '{}' is not indexed",
-                self.name
-            )));
+            // `FieldInfo.java:630-632`.
+            return Err(LuceneError::illegal_state(
+                "cannot omit norms: this field is not indexed",
+            ));
         }
         self.omit_norms = true;
         Ok(())
@@ -409,6 +586,9 @@ impl FieldInfo {
         {
             self.store_payloads = true;
         }
+        // Java also re-validates after mutating payload storage.
+        self.check_consistency()
+            .expect("store_payloads produced an inconsistent FieldInfo");
     }
 
     /// Returns `true` if this field has vector values.
@@ -450,7 +630,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the dimensions or byte count
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the dimensions or byte count
     /// are invalid or conflict with previously set values.
     pub fn set_point_dimensions(
         &mut self,
@@ -458,56 +638,57 @@ impl FieldInfo {
         index_dimension_count: i32,
         num_bytes: i32,
     ) -> Result<()> {
+        // `FieldInfo.setPointDimensions` (`FieldInfo.java:432-510`), messages
+        // verbatim.
+        let name = &self.name;
         if dimension_count <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "point dimension count must be > 0; got {dimension_count} for field='{}'",
-                self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "point dimension count must be >= 0; got {dimension_count} for field=\"{name}\""
             )));
         }
         if index_dimension_count > MAX_INDEX_DIMENSIONS {
-            return Err(LuceneError::IllegalArgument(format!(
-                "point index dimension count must be <= PointValues.MAX_INDEX_DIMENSIONS (={}); got {index_dimension_count} for field='{}'",
-                MAX_INDEX_DIMENSIONS,
-                self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "point index dimension count must be < PointValues.MAX_INDEX_DIMENSIONS (= \
+                 {MAX_INDEX_DIMENSIONS}); got {index_dimension_count} for field=\"{name}\""
             )));
         }
         if index_dimension_count > dimension_count {
-            return Err(LuceneError::IllegalArgument(format!(
-                "point index dimension count must be <= point dimension count (={dimension_count}); got {index_dimension_count} for field='{}'",
-                self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "point index dimension count must be <= point dimension count (= \
+                 {dimension_count}); got {index_dimension_count} for field=\"{name}\""
             )));
         }
         if num_bytes <= 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "point numBytes must be > 0; got {num_bytes} for field='{}'",
-                self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "point numBytes must be >= 0; got {num_bytes} for field=\"{name}\""
             )));
         }
         if num_bytes > MAX_NUM_BYTES {
-            return Err(LuceneError::IllegalArgument(format!(
-                "point numBytes must be <= PointValues.MAX_NUM_BYTES (={}); got {num_bytes} for field='{}'",
-                MAX_NUM_BYTES,
-                self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "point numBytes must be <= PointValues.MAX_NUM_BYTES (= {MAX_NUM_BYTES}); got \
+                 {num_bytes} for field=\"{name}\""
             )));
         }
         if self.point_dimension_count != 0 && self.point_dimension_count != dimension_count {
-            return Err(LuceneError::IllegalArgument(format!(
-                "cannot change point dimension count from {} to {dimension_count} for field='{}'",
-                self.point_dimension_count, self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "cannot change point dimension count from {} to {dimension_count} for \
+                 field=\"{name}\"",
+                self.point_dimension_count
             )));
         }
         if self.point_index_dimension_count != 0
             && self.point_index_dimension_count != index_dimension_count
         {
-            return Err(LuceneError::IllegalArgument(format!(
-                "cannot change point index dimension count from {} to {index_dimension_count} for field='{}'",
-                self.point_index_dimension_count, self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "cannot change point index dimension count from {} to {index_dimension_count} \
+                 for field=\"{name}\"",
+                self.point_index_dimension_count
             )));
         }
         if self.point_num_bytes != 0 && self.point_num_bytes != num_bytes {
-            return Err(LuceneError::IllegalArgument(format!(
-                "cannot change point numBytes from {} to {num_bytes} for field='{}'",
-                self.point_num_bytes, self.name
+            return Err(LuceneError::illegal_argument(format!(
+                "cannot change point numBytes from {} to {num_bytes} for field=\"{name}\"",
+                self.point_num_bytes
             )));
         }
 
@@ -533,32 +714,89 @@ impl FieldInfo {
     }
 
     /// Returns a codec attribute value, or `None` if absent.
-    pub fn get_attribute(&self, key: &str) -> Option<String> {
-        self.attributes.read().unwrap().get(key).cloned()
+    ///
+    /// Equivalent to `FieldInfo.getAttribute` (`FieldInfo.java:658-660`),
+    /// which returns the map's own `String`: the [`AttributeValue`] shares the
+    /// value instead of copying it.
+    pub fn get_attribute(&self, key: &str) -> Option<AttributeValue> {
+        // PERF: shares the map; copying the value cost one allocation per
+        // lookup, two per field at every segment open.
+        let map = Arc::clone(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let slot = map.slot_of(key)?;
+        Some(AttributeValue { map, slot })
     }
 
     /// Stores a codec attribute value, returning the previous value if any.
+    ///
+    /// Equivalent to `FieldInfo.putAttribute` (`FieldInfo.java:670-679`), which
+    /// does **not** mutate the map in place: it builds
+    /// `new HashMap<>(attributes)`, puts into the copy and swaps the copy in,
+    /// so that readers of the old map are never disturbed. The copy is what
+    /// makes the resulting iteration order what it is — the copy constructor
+    /// pre-sizes its table from the source's size, so the same two attributes
+    /// come out in a different order than if they had been put into a map built
+    /// by `new HashMap<>()` — and reproducing it is the point of doing it this
+    /// way here too.
     pub fn put_attribute(
         &self,
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Option<String> {
-        self.attributes
+        let mut guard = self
+            .attributes
             .write()
-            .unwrap()
-            .insert(key.into(), value.into())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut new_map = guard.to_java_hash_map();
+        let old_value = new_map.insert(key.into(), value.into());
+        *guard = Arc::new(JavaStringMap::Hash(new_map));
+        old_value
     }
 
-    /// Returns a copy of the internal codec attributes map.
-    pub fn attributes(&self) -> HashMap<String, String> {
-        self.attributes.read().unwrap().clone()
+    /// Whether `self` and `other` hold the very same attribute map, as two
+    /// Java fields holding one `Map` reference do.
+    #[cfg(test)]
+    pub(crate) fn shares_attributes_with(&self, other: &FieldInfo) -> bool {
+        Arc::ptr_eq(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &other
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Returns a copy of the internal codec attributes map, iteration order
+    /// included.
+    ///
+    /// Equivalent to `FieldInfo.attributes()` (`FieldInfo.java:682-685`), which
+    /// returns the internal map itself. Its iteration order is observable:
+    /// `Lucene94FieldInfosFormat.write` serialises the map in that order
+    /// (`writeMapOfStrings(fi.attributes())`, `Lucene94FieldInfosFormat.java:448`),
+    /// and `FieldInfos.Builder.add` re-puts the attributes in it
+    /// (`FieldInfos.java:775-776, 801`). This port returns a copy because the
+    /// map is behind a lock.
+    pub fn attributes(&self) -> JavaStringMap {
+        JavaStringMap::clone(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Verifies that the combination of field options is internally consistent.
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if any option combination is
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if any option combination is
     /// invalid.
     pub fn check_consistency(&self) -> Result<()> {
         if self.index_options != IndexOptions::NONE {
@@ -567,26 +805,26 @@ impl FieldInfo {
                 .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
                 && self.store_payloads
             {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "indexed field '{}' cannot have payloads without positions",
                     self.name
                 )));
             }
         } else {
             if self.store_term_vector {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "non-indexed field '{}' cannot store term vectors",
                     self.name
                 )));
             }
             if self.store_payloads {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "non-indexed field '{}' cannot store payloads",
                     self.name
                 )));
             }
             if self.omit_norms {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "non-indexed field '{}' cannot omit norms",
                     self.name
                 )));
@@ -597,65 +835,65 @@ impl FieldInfo {
             .doc_values_skip_index_type
             .is_compatible_with(self.doc_values_type)
         {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field '{}' cannot have docValuesSkipIndexType={:?} with doc values type {:?}",
                 self.name, self.doc_values_skip_index_type, self.doc_values_type
             )));
         }
 
         if self.doc_values_gen != -1 && self.doc_values_type == DocValuesType::NONE {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field '{}' cannot have a docvalues update generation without having docvalues",
                 self.name
             )));
         }
 
         if self.point_dimension_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointDimensionCount must be >= 0; got {} (field: '{}')",
                 self.point_dimension_count, self.name
             )));
         }
         if self.point_index_dimension_count < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointIndexDimensionCount must be >= 0; got {} (field: '{}')",
                 self.point_index_dimension_count, self.name
             )));
         }
         if self.point_num_bytes < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointNumBytes must be >= 0; got {} (field: '{}')",
                 self.point_num_bytes, self.name
             )));
         }
         if self.point_dimension_count != 0 && self.point_num_bytes == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointNumBytes must be > 0 when pointDimensionCount={} (field: '{}')",
                 self.point_dimension_count, self.name
             )));
         }
         if self.point_index_dimension_count != 0 && self.point_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointIndexDimensionCount must be 0 when pointDimensionCount=0 (field: '{}')",
                 self.name
             )));
         }
         if self.point_num_bytes != 0 && self.point_dimension_count == 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "pointDimensionCount must be > 0 when pointNumBytes={} (field: '{}')",
                 self.point_num_bytes, self.name
             )));
         }
 
         if self.vector_dimension < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
-                "vectorDimension must be >= 0; got {} (field: '{}')",
+            return Err(LuceneError::illegal_argument(format!(
+                "vectorDimension must be >=0; got {} (field: '{}')",
                 self.vector_dimension, self.name
             )));
         }
 
         if self.soft_deletes_field && self.is_parent_field {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "field can't be used as soft-deletes field and parent document field (field: '{}')",
                 self.name
             )));
@@ -668,7 +906,7 @@ impl FieldInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if the schemas differ.
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the schemas differ.
     pub fn verify_same_schema(&self, other: &FieldInfo) -> Result<()> {
         verify_same_index_options(&self.name, self.index_options, other.index_options)?;
         if self.index_options != IndexOptions::NONE {
@@ -705,62 +943,7 @@ impl FieldInfo {
         )?;
         Ok(())
     }
-
-    /// Writes this field using the Lucene94 FieldInfos per-field payload.
-    ///
-    /// This does not include the file header, footer or field count; those are
-    /// the responsibility of the enclosing format.
-    pub fn write(&self, output: &mut dyn DataOutput) -> Result<()> {
-        self.check_consistency()?;
-
-        output.write_string(&self.name)?;
-        output.write_v_int(self.number)?;
-
-        let mut bits = 0u8;
-        if self.store_term_vector {
-            bits |= STORE_TERMVECTOR;
-        }
-        if self.omit_norms {
-            bits |= OMIT_NORMS;
-        }
-        if self.store_payloads {
-            bits |= STORE_PAYLOADS;
-        }
-        if self.soft_deletes_field {
-            bits |= SOFT_DELETES_FIELD;
-        }
-        if self.is_parent_field {
-            bits |= PARENT_FIELD_FIELD;
-        }
-        output.write_byte(bits)?;
-
-        output.write_byte(index_options_to_byte(self.index_options))?;
-        output.write_byte(doc_values_type_to_byte(self.doc_values_type))?;
-        output.write_byte(doc_values_skip_index_type_to_byte(
-            self.doc_values_skip_index_type,
-        ))?;
-        output.write_long(self.doc_values_gen)?;
-        output.write_map_of_strings(&self.attributes.read().unwrap())?;
-        output.write_v_int(self.point_dimension_count)?;
-        if self.point_dimension_count != 0 {
-            output.write_v_int(self.point_index_dimension_count)?;
-            output.write_v_int(self.point_num_bytes)?;
-        }
-        output.write_v_int(self.vector_dimension)?;
-        output.write_byte(vector_encoding_to_byte(self.vector_encoding))?;
-        output.write_byte(vector_similarity_function_to_byte(
-            self.vector_similarity_function,
-        ))?;
-        Ok(())
-    }
 }
-
-// Field bits used by Lucene94FieldInfosFormat.
-const STORE_TERMVECTOR: u8 = 0x1;
-const OMIT_NORMS: u8 = 0x2;
-const STORE_PAYLOADS: u8 = 0x4;
-const SOFT_DELETES_FIELD: u8 = 0x8;
-const PARENT_FIELD_FIELD: u8 = 0x10;
 
 fn verify_same_index_options(
     field_name: &str,
@@ -768,7 +951,7 @@ fn verify_same_index_options(
     index_options2: IndexOptions,
 ) -> Result<()> {
     if index_options1 != index_options2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from index options={index_options1:?} to inconsistent index options={index_options2:?}"
         )))
     } else {
@@ -782,7 +965,7 @@ fn verify_same_doc_values_type(
     doc_values_type2: DocValuesType,
 ) -> Result<()> {
     if doc_values_type1 != doc_values_type2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from doc values type={doc_values_type1:?} to inconsistent doc values type={doc_values_type2:?}"
         )))
     } else {
@@ -796,7 +979,7 @@ fn verify_same_doc_values_skip_index(
     skip_index2: DocValuesSkipIndexType,
 ) -> Result<()> {
     if skip_index1 != skip_index2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from docValuesSkipIndexType={skip_index1:?} to inconsistent docValuesSkipIndexType={skip_index2:?}"
         )))
     } else {
@@ -810,7 +993,7 @@ fn verify_same_store_term_vectors(
     store_term_vector2: bool,
 ) -> Result<()> {
     if store_term_vector1 != store_term_vector2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from storeTermVector={store_term_vector1} to inconsistent storeTermVector={store_term_vector2}"
         )))
     } else {
@@ -820,7 +1003,7 @@ fn verify_same_store_term_vectors(
 
 fn verify_same_omit_norms(field_name: &str, omit_norms1: bool, omit_norms2: bool) -> Result<()> {
     if omit_norms1 != omit_norms2 {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from omitNorms={omit_norms1} to inconsistent omitNorms={omit_norms2}"
         )))
     } else {
@@ -841,7 +1024,7 @@ fn verify_same_points_options(
         || point_index_dimension_count1 != point_index_dimension_count2
         || point_num_bytes1 != point_num_bytes2
     {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from points dimensionCount={point_dimension_count1}, indexDimensionCount={point_index_dimension_count1}, numBytes={point_num_bytes1} to inconsistent dimensionCount={point_dimension_count2}, indexDimensionCount={point_index_dimension_count2}, numBytes={point_num_bytes2}"
         )))
     } else {
@@ -862,120 +1045,11 @@ fn verify_same_vector_options(
         || vector_encoding1 != vector_encoding2
         || vector_similarity_function1 != vector_similarity_function2
     {
-        Err(LuceneError::IllegalArgument(format!(
+        Err(LuceneError::illegal_argument(format!(
             "cannot change field \"{field_name}\" from vector dimension={vector_dimension1}, vector encoding={vector_encoding1:?}, vector similarity function={vector_similarity_function1:?} to inconsistent vector dimension={vector_dimension2}, vector encoding={vector_encoding2:?}, vector similarity function={vector_similarity_function2:?}"
         )))
     } else {
         Ok(())
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Byte encoding helpers matching Lucene94FieldInfosFormat
-// -----------------------------------------------------------------------------
-
-fn index_options_to_byte(options: IndexOptions) -> u8 {
-    match options {
-        IndexOptions::NONE => 0,
-        IndexOptions::DOCS => 1,
-        IndexOptions::DOCS_AND_FREQS => 2,
-        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS => 3,
-        IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS => 4,
-        IndexOptions::DOCS_AND_CUSTOM_FREQS => 5,
-    }
-}
-
-fn index_options_from_byte(b: u8) -> Result<IndexOptions> {
-    match b {
-        0 => Ok(IndexOptions::NONE),
-        1 => Ok(IndexOptions::DOCS),
-        2 => Ok(IndexOptions::DOCS_AND_FREQS),
-        3 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS),
-        4 => Ok(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS),
-        5 => Ok(IndexOptions::DOCS_AND_CUSTOM_FREQS),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid IndexOptions byte: {b}"
-        ))),
-    }
-}
-
-fn doc_values_type_to_byte(dv_type: DocValuesType) -> u8 {
-    match dv_type {
-        DocValuesType::NONE => 0,
-        DocValuesType::NUMERIC => 1,
-        DocValuesType::BINARY => 2,
-        DocValuesType::SORTED => 3,
-        DocValuesType::SORTED_SET => 4,
-        DocValuesType::SORTED_NUMERIC => 5,
-    }
-}
-
-fn doc_values_type_from_byte(b: u8) -> Result<DocValuesType> {
-    match b {
-        0 => Ok(DocValuesType::NONE),
-        1 => Ok(DocValuesType::NUMERIC),
-        2 => Ok(DocValuesType::BINARY),
-        3 => Ok(DocValuesType::SORTED),
-        4 => Ok(DocValuesType::SORTED_SET),
-        5 => Ok(DocValuesType::SORTED_NUMERIC),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid docvalues byte: {b}"
-        ))),
-    }
-}
-
-fn doc_values_skip_index_type_to_byte(skip_index: DocValuesSkipIndexType) -> u8 {
-    match skip_index {
-        DocValuesSkipIndexType::NONE => 0,
-        DocValuesSkipIndexType::RANGE => 1,
-    }
-}
-
-fn doc_values_skip_index_type_from_byte(b: u8) -> Result<DocValuesSkipIndexType> {
-    match b {
-        0 => Ok(DocValuesSkipIndexType::NONE),
-        1 => Ok(DocValuesSkipIndexType::RANGE),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid docvaluesskipindex byte: {b}"
-        ))),
-    }
-}
-
-fn vector_encoding_to_byte(encoding: VectorEncoding) -> u8 {
-    match encoding {
-        VectorEncoding::BYTE => 0,
-        VectorEncoding::FLOAT32 => 1,
-    }
-}
-
-fn vector_encoding_from_byte(b: u8) -> Result<VectorEncoding> {
-    match b {
-        0 => Ok(VectorEncoding::BYTE),
-        1 => Ok(VectorEncoding::FLOAT32),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector encoding: {b}"
-        ))),
-    }
-}
-
-fn vector_similarity_function_to_byte(func: VectorSimilarityFunction) -> u8 {
-    match func {
-        VectorSimilarityFunction::EUCLIDEAN => 0,
-        VectorSimilarityFunction::DOT_PRODUCT => 1,
-        VectorSimilarityFunction::COSINE => 2,
-        VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT => 3,
-    }
-}
-
-fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunction> {
-    match b {
-        0 => Ok(VectorSimilarityFunction::EUCLIDEAN),
-        1 => Ok(VectorSimilarityFunction::DOT_PRODUCT),
-        2 => Ok(VectorSimilarityFunction::COSINE),
-        3 => Ok(VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT),
-        _ => Err(LuceneError::CorruptIndex(format!(
-            "invalid vector similarity function: {b}"
-        ))),
     }
 }
 
@@ -986,11 +1060,20 @@ fn vector_similarity_function_from_byte(b: u8) -> Result<VectorSimilarityFunctio
 /// Immutable collection of [`FieldInfo`] objects for a segment.
 ///
 /// Equivalent to `org.apache.lucene.index.FieldInfos`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// Java's `FieldInfos` is immutable once built, and every reader of a segment
+/// holds the one object by reference (for example `this.fieldInfos = fn` in
+/// `Lucene90CompressingStoredFieldsReader.java:106`, and
+/// `SegmentReadState.fieldInfos`). The immutable tables therefore live in one
+/// shared `FieldInfosCore`, so that [`Clone`] hands out another handle onto the
+/// same object, as copying a Java reference does, instead of a copy.
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct FieldInfos {
-    by_number: Vec<Option<FieldInfo>>,
-    by_name: HashMap<String, i32>,
-    values: Vec<FieldInfo>,
+    /// The immutable tables, shared by every clone of this `FieldInfos`.
+    // PERF: a clone is one reference-count increment, not a rebuild of the
+    // tables and their strings; readers clone the segment's `FieldInfos` at
+    // open.
+    core: Arc<FieldInfosCore>,
 
     has_freq: bool,
     has_postings: bool,
@@ -1003,13 +1086,129 @@ pub struct FieldInfos {
     has_point_values: bool,
     has_vector_values: bool,
 
-    soft_deletes_field: Option<String>,
-    parent_field: Option<String>,
-
     /// When present, iteration and lookup are restricted to the named subset
     /// while internal field numbers are preserved for merge contexts.
     /// This mirrors the filtered view previously provided by the codec stub.
-    filtered_names: Option<HashSet<String>>,
+    filtered_names: Option<Arc<HashSet<String>>>,
+}
+
+impl std::fmt::Debug for FieldInfos {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldInfos")
+            .field("by_number", &self.core.by_number)
+            .field("by_name", &self.core.by_name)
+            .field("values", &self.core.values)
+            .field("has_freq", &self.has_freq)
+            .field("has_postings", &self.has_postings)
+            .field("has_prox", &self.has_prox)
+            .field("has_payloads", &self.has_payloads)
+            .field("has_offsets", &self.has_offsets)
+            .field("has_term_vectors", &self.has_term_vectors)
+            .field("has_norms", &self.has_norms)
+            .field("has_doc_values", &self.has_doc_values)
+            .field("has_point_values", &self.has_point_values)
+            .field("has_vector_values", &self.has_vector_values)
+            .field("soft_deletes_field", &self.core.soft_deletes_field)
+            .field("parent_field", &self.core.parent_field)
+            .field("filtered_names", &self.filtered_names.as_deref())
+            .finish()
+    }
+}
+
+/// A map key that is a field's own name: the field's [`FieldInfo`], hashed,
+/// compared and ordered by [`FieldInfo::name`] exactly as that `String` is,
+/// and borrowable as `str` for lookups.
+///
+/// Java's name-keyed maps hold the field's own `String` reference —
+/// `byName.put(info.name, info)` (`FieldInfos.java:102`),
+/// `fields.put(fieldName, ...)` (`PerFieldPostingsFormat.java:320`) — not a
+/// copy. A Rust map must own its keys, so this key owns a handle onto the one
+/// `FieldInfo` object instead of a copy of its name.
+#[derive(Clone)]
+pub(crate) struct FieldName(Arc<FieldInfo>);
+
+impl FieldName {
+    /// The key of `info`.
+    pub(crate) fn new(info: &Arc<FieldInfo>) -> Self {
+        Self(Arc::clone(info))
+    }
+
+    /// The field name.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0.name
+    }
+}
+
+impl Borrow<str> for FieldName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::hash::Hash for FieldName {
+    /// The hash of the name as a `str`, as [`Borrow<str>`] requires.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialEq for FieldName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for FieldName {}
+
+impl PartialOrd for FieldName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FieldName {
+    /// The order of the name as a `str`, as [`Borrow<str>`] requires.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl std::fmt::Debug for FieldName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+/// The immutable tables of a [`FieldInfos`], shared by all its clones.
+#[derive(Debug, PartialEq, Eq, Default)]
+struct FieldInfosCore {
+    /// Field metadata indexed by field number, with a gap for every number no
+    /// field was assigned.
+    ///
+    /// Java stores `FieldInfo[] byNumber` and `Collection<FieldInfo> values`
+    /// (`FieldInfos.java:64-68`) and fills both from the very same objects —
+    /// `values = Arrays.asList(byNumber)`, or `Arrays.asList(infos)` when the
+    /// numbering is sparse (`FieldInfos.java:157-185`). Every handle onto a
+    /// field is therefore a handle onto *one* object, which is what lets a
+    /// codec mutate a `FieldInfo` through one of them and have the change seen
+    /// through the others. `PerFieldPostingsFormat.FieldsWriter.write` relies
+    /// on exactly that: it looks a field up by name and calls `putAttribute`
+    /// (`PerFieldPostingsFormat.java:253-254`), and `IndexingChain.flush` then
+    /// serialises the very same objects while iterating
+    /// (`IndexingChain.java:382-387`).
+    ///
+    /// The two collections hold `Arc<FieldInfo>` so that they alias one object
+    /// per field, as Java's references do; storing `FieldInfo` by value in each
+    /// would make them independent copies and silently drop such a mutation.
+    by_number: Vec<Option<Arc<FieldInfo>>>,
+    /// `byName`, keyed by each field's own name (see [`FieldName`]).
+    by_name: HashMap<FieldName, i32>,
+    /// The same objects as [`Self::by_number`], in the order Java's `values`
+    /// collection presents them.
+    values: Vec<Arc<FieldInfo>>,
+
+    soft_deletes_field: Option<String>,
+    parent_field: Option<String>,
 }
 
 impl FieldInfos {
@@ -1017,11 +1216,18 @@ impl FieldInfos {
     ///
     /// # Errors
     ///
-    /// Returns [`LuceneError::IllegalArgument`] if any field number is negative,
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if any field number is negative,
     /// if field names or numbers are duplicated, or if multiple soft-deletes or
     /// parent fields are present.
     pub fn new(infos: Vec<FieldInfo>) -> Result<Self> {
-        let mut by_name: HashMap<String, i32> = HashMap::with_capacity(infos.len());
+        // One `Arc` per field, shared by `by_name`, `by_number` and `values`,
+        // so that the collections alias a single object exactly as Java's
+        // map and arrays do.
+        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+        // A `FieldName` hashes the field's name alone, which never changes;
+        // the interior mutability the lint sees is the attribute map.
+        #[allow(clippy::mutable_key_type)]
+        let mut by_name: HashMap<FieldName, i32> = HashMap::with_capacity(infos.len());
         let mut max_field_number: i32 = -1;
         let mut field_number_strictly_ascending = true;
         let mut soft_deletes_field: Option<String> = None;
@@ -1038,11 +1244,11 @@ impl FieldInfos {
         let mut has_point_values = false;
         let mut has_vector_values = false;
 
+        // `FieldInfos.java:91-137`: Java does not re-run `checkConsistency()`
+        // here; each `FieldInfo` was checked when it was built or changed.
         for info in &infos {
-            info.check_consistency()?;
-
             if info.number < 0 {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "illegal field number: {} for field {}",
                     info.number, info.name
                 )));
@@ -1053,8 +1259,10 @@ impl FieldInfos {
                 field_number_strictly_ascending = false;
             }
 
-            if let Some(previous) = by_name.insert(info.name.clone(), info.number) {
-                return Err(LuceneError::IllegalArgument(format!(
+            // PERF: the key is the field's own name, as Java's
+            // `byName.put(info.name, info)` (`FieldInfos.java:102`), not a copy.
+            if let Some(previous) = by_name.insert(FieldName::new(info), info.number) {
+                return Err(LuceneError::illegal_argument(format!(
                     "duplicate field names: {previous} and {} have: {}",
                     info.number, info.name
                 )));
@@ -1078,7 +1286,7 @@ impl FieldInfos {
             if info.is_soft_deletes_field() {
                 if let Some(ref existing) = soft_deletes_field {
                     if existing != &info.name {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "multiple soft-deletes fields [{}, {}]",
                             info.name, existing
                         )));
@@ -1090,7 +1298,7 @@ impl FieldInfos {
             if info.is_parent_field() {
                 if let Some(ref existing) = parent_field {
                     if existing != &info.name {
-                        return Err(LuceneError::IllegalArgument(format!(
+                        return Err(LuceneError::illegal_argument(format!(
                             "multiple parent fields [{}, {}]",
                             info.name, existing
                         )));
@@ -1100,17 +1308,18 @@ impl FieldInfos {
             }
         }
 
-        let mut by_number: Vec<Option<FieldInfo>> = vec![None; (max_field_number + 1) as usize];
+        let mut by_number: Vec<Option<Arc<FieldInfo>>> =
+            vec![None; (max_field_number + 1) as usize];
         for info in &infos {
             let slot = &mut by_number[info.number as usize];
             if slot.is_some() {
                 let existing = slot.as_ref().unwrap();
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "duplicate field numbers: {} and {} have: {}",
                     existing.name, info.name, info.number
                 )));
             }
-            *slot = Some(info.clone());
+            *slot = Some(Arc::clone(info));
         }
 
         let values =
@@ -1124,9 +1333,13 @@ impl FieldInfos {
             };
 
         Ok(Self {
-            by_number,
-            by_name,
-            values,
+            core: Arc::new(FieldInfosCore {
+                by_number,
+                by_name,
+                values,
+                soft_deletes_field,
+                parent_field,
+            }),
             has_freq,
             has_postings,
             has_prox,
@@ -1137,8 +1350,6 @@ impl FieldInfos {
             has_doc_values,
             has_point_values,
             has_vector_values,
-            soft_deletes_field,
-            parent_field,
             filtered_names: None,
         })
     }
@@ -1173,7 +1384,19 @@ impl FieldInfos {
 
     /// Returns an iterator over the visible fields in ascending field-number order.
     pub fn iter(&self) -> impl Iterator<Item = &FieldInfo> {
-        self.values
+        self.core
+            .values
+            .iter()
+            .map(Arc::as_ref)
+            .filter(move |fi| self.is_visible(&fi.name))
+    }
+
+    /// [`iter`](Self::iter), answering the shared handle onto each field's
+    /// one `FieldInfo` object, for a reader that keeps a field's reference as
+    /// Java does.
+    pub(crate) fn iter_shared(&self) -> impl Iterator<Item = &Arc<FieldInfo>> {
+        self.core
+            .values
             .iter()
             .filter(move |fi| self.is_visible(&fi.name))
     }
@@ -1183,17 +1406,74 @@ impl FieldInfos {
         if !self.is_visible(name) {
             return None;
         }
-        self.by_name
+        self.core
+            .by_name
             .get(name)
             .and_then(|&number| self.field_info_by_number(number))
     }
 
-    /// Looks up a visible field by number.
-    pub fn field_info_by_number(&self, number: i32) -> Option<&FieldInfo> {
-        if number < 0 || number as usize >= self.by_number.len() {
+    /// [`field_info`](Self::field_info), answering the shared handle onto the
+    /// field's one `FieldInfo` object, as Java's `fieldInfo(String)` answers
+    /// the reference itself.
+    pub fn shared_field_info(&self, name: &str) -> Option<&Arc<FieldInfo>> {
+        if !self.is_visible(name) {
             return None;
         }
-        let fi = self.by_number[number as usize].as_ref()?;
+        self.core
+            .by_name
+            .get(name)
+            .and_then(|&number| self.shared_field_info_by_number(number))
+    }
+
+    /// Looks up a field by number with Java's argument check.
+    ///
+    /// Equivalent to `FieldInfos.fieldInfo(int)` (`FieldInfos.java:341-346`):
+    /// a negative number throws `IllegalArgumentException("Illegal field
+    /// number: " + fieldNumber)`, an unknown one yields `null` (`None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument)
+    /// for a negative number.
+    pub fn field_info_checked(&self, number: i32) -> Result<Option<&FieldInfo>> {
+        if number < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Illegal field number: {number}"
+            )));
+        }
+        Ok(self.field_info_by_number(number))
+    }
+
+    /// Looks up a visible field by number.
+    pub fn field_info_by_number(&self, number: i32) -> Option<&FieldInfo> {
+        self.shared_field_info_by_number(number).map(Arc::as_ref)
+    }
+
+    /// [`field_info_checked`](Self::field_info_checked), answering the shared
+    /// handle onto the field's one `FieldInfo` object rather than a borrow, for
+    /// a reader that keeps the field as Java keeps the reference it got from
+    /// `FieldInfos.fieldInfo(int)` (`FieldInfos.java:341-346`).
+    ///
+    /// # Errors
+    ///
+    /// As [`field_info_checked`](Self::field_info_checked).
+    pub(crate) fn field_info_checked_shared(&self, number: i32) -> Result<Option<&Arc<FieldInfo>>> {
+        if number < 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Illegal field number: {number}"
+            )));
+        }
+        Ok(self.shared_field_info_by_number(number))
+    }
+
+    /// The shared handle behind [`field_info_by_number`](Self::field_info_by_number):
+    /// the field's one `FieldInfo` object, as Java's `fieldInfo(int)` answers
+    /// the reference itself, for a stored-fields reader to hand its visitor.
+    pub fn shared_field_info_by_number(&self, number: i32) -> Option<&Arc<FieldInfo>> {
+        if number < 0 || number as usize >= self.core.by_number.len() {
+            return None;
+        }
+        let fi = self.core.by_number[number as usize].as_ref()?;
         if !self.is_visible(&fi.name) {
             return None;
         }
@@ -1251,24 +1531,149 @@ impl FieldInfos {
     }
 
     /// Returns the soft-deletes field name if any.
+    /// Returns the field infos of every leaf of `reader`, merged.
+    ///
+    /// Equivalent to `FieldInfos.getMergedFieldInfos(IndexReader)`. A reader
+    /// with no leaf answers the empty infos, and one with a single leaf answers
+    /// that leaf's own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when the leaves disagree about
+    /// the parent field, and propagates whatever adding a field raises.
+    pub fn get_merged_field_infos(reader: Arc<dyn IndexReader>) -> Result<FieldInfos> {
+        let leaves = reader.leaves()?;
+        if leaves.is_empty() {
+            return Ok(FieldInfos::empty());
+        }
+        if leaves.len() == 1 {
+            return Ok(leaves[0].leaf_reader().get_field_infos());
+        }
+        let soft_deletes_field = leaves.iter().find_map(|l| {
+            l.leaf_reader()
+                .get_field_infos()
+                .get_soft_deletes_field()
+                .map(str::to_string)
+        });
+        let parent_field = Self::get_and_validate_parent_field(&leaves)?;
+        let numbers = Arc::new(FieldNumbers::new(soft_deletes_field, parent_field)?);
+        let mut builder = FieldInfosBuilder::new(numbers);
+        for ctx in &leaves {
+            for field_info in ctx.leaf_reader().get_field_infos().iter() {
+                builder.add(field_info)?;
+            }
+        }
+        builder.finish()
+    }
+
+    /// Returns the parent field every leaf agrees on.
+    ///
+    /// Equivalent to the private
+    /// `FieldInfos.getAndValidateParentField(List<LeafReaderContext>)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when two leaves name different
+    /// parent fields.
+    pub fn get_and_validate_parent_field(
+        leaves: &[Arc<LeafReaderContext>],
+    ) -> Result<Option<String>> {
+        let mut set = false;
+        let mut the_field: Option<String> = None;
+        for ctx in leaves {
+            let field = ctx
+                .leaf_reader()
+                .get_field_infos()
+                .get_parent_field()
+                .map(str::to_string);
+            if set && field != the_field {
+                return Err(LuceneError::illegal_state(format!(
+                    "expected parent doc field to be \"{} \" across all segments but found a \
+                     segment with different field \"{}\"",
+                    the_field.as_deref().unwrap_or("null"),
+                    field.as_deref().unwrap_or("null")
+                )));
+            }
+            the_field = field;
+            set = true;
+        }
+        Ok(the_field)
+    }
+
+    /// Returns the names of the fields that have a terms index.
+    ///
+    /// Equivalent to `FieldInfos.getIndexedFields(IndexReader)`
+    /// (`FieldInfos.java:241-249`), which streams the leaves' field infos and
+    /// collects the indexed names with `Collectors.toSet()`: a
+    /// `java.util.HashSet` filled by `add` in stream order, iterated in its
+    /// `String.hashCode` bucket order, which [`JavaHashSet`] reproduces.
+    ///
+    /// [`JavaHashSet`]: crate::util::java_collections::JavaHashSet
+    ///
+    /// # Errors
+    ///
+    /// [`LuceneErrorKind::AlreadyClosed`](crate::error::LuceneErrorKind::AlreadyClosed) when `reader` is closed, as Java's
+    /// `reader.leaves()` fails.
+    pub fn get_indexed_fields(
+        reader: Arc<dyn IndexReader>,
+    ) -> Result<crate::util::java_collections::JavaHashSet> {
+        let mut fields = crate::util::java_collections::JavaHashSet::new();
+        for ctx in reader.leaves()? {
+            for fi in ctx.leaf_reader().get_field_infos().iter() {
+                if fi.get_index_options() != IndexOptions::NONE {
+                    fields.insert(fi.name.clone());
+                }
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Returns the soft-deletes field name, if any.
+    ///
+    /// Equivalent to `FieldInfos.getSoftDeletesField()`, which returns `null`
+    /// where this returns `None`.
     pub fn get_soft_deletes_field(&self) -> Option<&str> {
-        self.soft_deletes_field.as_deref()
+        self.core.soft_deletes_field.as_deref()
     }
 
     /// Returns the parent-document field name if any.
     pub fn get_parent_field(&self) -> Option<&str> {
-        self.parent_field.as_deref()
+        self.core.parent_field.as_deref()
     }
 
     /// Creates a filtered view that keeps all original fields for numbering
     /// but only exposes the given names through iteration and lookup.
     ///
-    /// Aggregate flags are recomputed for the visible subset.
+    /// Equivalent to the private `PerFieldMergeState.FilterFieldInfos`
+    /// (`PerFieldMergeState.java:76-228`). Its constructor recomputes nine
+    /// aggregate flags over the visible fields and overrides their accessors;
+    /// `hasVectorValues()` is not among them, so it keeps the value Java's
+    /// `FieldInfos` constructor computed over *every* field, and so does this
+    /// view.
+    ///
+    /// The view's accessors are this type's own, which read the filtered flags
+    /// and names: they answer the overrides `FilterFieldInfos.iterator()`
+    /// ([`iter`](Self::iter)), `FilterFieldInfos.size()`,
+    /// `FilterFieldInfos.hasFreq()`, `FilterFieldInfos.hasPostings()`,
+    /// `FilterFieldInfos.hasProx()`, `FilterFieldInfos.hasPayloads()`,
+    /// `FilterFieldInfos.hasOffsets()`, `FilterFieldInfos.hasTermVectors()`,
+    /// `FilterFieldInfos.hasNorms()`, `FilterFieldInfos.hasDocValues()` and
+    /// `FilterFieldInfos.hasPointValues()`; the clone that keeps every
+    /// field for numbering is `FilterFieldInfos.toArray(FieldInfos)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** `FilterFieldInfos`'s `fieldInfo(String)` and
+    /// `fieldInfo(int)` throw `IllegalArgumentException` for a field outside
+    /// the view (`PerFieldMergeState.java:200-227`); this port's
+    /// [`field_info`](Self::field_info) and
+    /// [`field_info_by_number`](Self::field_info_by_number) answer `None`,
+    /// because they return an `Option` for every `FieldInfos` and have no error
+    /// to raise. A consumer that only asks for the fields it was given — every
+    /// merge does — sees the same answers.
     pub fn filter(&self, names: impl IntoIterator<Item = String>) -> Self {
         let filtered_names: HashSet<String> = names.into_iter().collect();
 
         let mut result = self.clone();
-        result.filtered_names = Some(filtered_names);
+        result.filtered_names = Some(Arc::new(filtered_names));
 
         // Recompute aggregate flags for the visible subset.
         result.has_term_vectors = false;
@@ -1280,13 +1685,14 @@ impl FieldInfos {
         result.has_norms = false;
         result.has_doc_values = false;
         result.has_point_values = false;
-        result.has_vector_values = false;
 
         // Collect visible field references first to avoid borrowing `result`
         // mutably while the filter closure holds an immutable borrow.
         let visible: Vec<&FieldInfo> = result
+            .core
             .values
             .iter()
+            .map(Arc::as_ref)
             .filter(|fi| result.is_visible(&fi.name))
             .collect();
 
@@ -1304,95 +1710,542 @@ impl FieldInfos {
             result.has_doc_values |= fi.doc_values_type != DocValuesType::NONE;
             result.has_payloads |= fi.has_payloads();
             result.has_point_values |= fi.point_dimension_count != 0;
-            result.has_vector_values |= fi.vector_dimension != 0;
         }
 
         result
     }
+}
 
-    /// The caller is responsible for the file header and footer.
-    pub fn write(&self, output: &mut dyn DataOutput) -> Result<()> {
-        let visible: Vec<&FieldInfo> = self.iter().collect();
-        output.write_v_int(visible.len() as i32)?;
-        for info in visible {
-            info.write(output)?;
+// -----------------------------------------------------------------------------
+// FieldNumbers / FieldInfos.Builder
+// -----------------------------------------------------------------------------
+
+/// Index-wide registry that assigns a stable field number to every field name.
+///
+/// Equivalent to `org.apache.lucene.index.FieldInfos.FieldNumbers`.
+///
+/// A single instance is shared by every `DocumentsWriterPerThread` of an
+/// `IndexWriter` so that a given field name always maps to the same field
+/// number in every segment the writer produces. Lucene relies on that
+/// invariant when merging segments, so it is a hard requirement for index
+/// compatibility.
+///
+/// # Java to Rust adaptation
+///
+/// Java synchronises every method on the instance monitor. Here the mutable
+/// part lives behind a single [`Mutex`], which gives exactly the same mutual
+/// exclusion; the immutable soft-deletes/parent field names are stored outside
+/// the lock so they can be read without blocking.
+///
+/// Java's `FieldProperties` record stores precisely the properties that
+/// `FieldInfo::verify_same_schema` compares, so this port keeps the first
+/// [`FieldInfo`] seen for a name as the canonical schema and verifies against
+/// it directly.
+#[derive(Debug)]
+pub struct FieldNumbers {
+    inner: Mutex<FieldNumbersInner>,
+    soft_deletes_field_name: Option<String>,
+    parent_field_name: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct FieldNumbersInner {
+    /// Reverse map used to detect field-number collisions.
+    number_to_name: HashMap<i32, String>,
+    /// Canonical schema for every field name known to this index.
+    field_properties: HashMap<String, FieldInfo>,
+    /// Lowest field number that has not been handed out yet, minus one.
+    lowest_unassigned_field_number: i32,
+}
+
+impl FieldNumbers {
+    /// Creates an empty registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the same field name is
+    /// configured both as the soft-deletes field and as the parent field.
+    pub fn new(
+        soft_deletes_field_name: Option<String>,
+        parent_field_name: Option<String>,
+    ) -> Result<Self> {
+        if let (Some(soft), Some(parent)) = (&soft_deletes_field_name, &parent_field_name) {
+            if soft == parent {
+                return Err(LuceneError::illegal_argument(format!(
+                    "parent document and soft-deletes field can't be the same field \"{parent}\""
+                )));
+            }
+        }
+        Ok(Self {
+            inner: Mutex::new(FieldNumbersInner {
+                number_to_name: HashMap::new(),
+                field_properties: HashMap::new(),
+                lowest_unassigned_field_number: -1,
+            }),
+            soft_deletes_field_name,
+            parent_field_name,
+        })
+    }
+
+    /// Returns the configured soft-deletes field name, if any.
+    pub fn soft_deletes_field_name(&self) -> Option<&str> {
+        self.soft_deletes_field_name.as_deref()
+    }
+
+    /// Returns the configured parent field name, if any.
+    pub fn parent_field_name(&self) -> Option<&str> {
+        self.parent_field_name.as_deref()
+    }
+
+    /// Verifies that `info` is consistent with what this index already knows
+    /// about the field, without registering it.
+    ///
+    /// Equivalent to `FieldNumbers.verifyFieldInfo(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the schema conflicts.
+    pub fn verify_field_info(&self, info: &FieldInfo) -> Result<()> {
+        let name = info.get_name();
+        self.verify_soft_deletes_field_name(name, info.is_soft_deletes_field())?;
+        self.verify_parent_field_name(name, info.is_parent_field())?;
+        let inner = self.lock();
+        if let Some(current) = inner.field_properties.get(name) {
+            current.verify_same_schema(info)?;
         }
         Ok(())
     }
 
-    /// Reads the field count and every field from the input and returns a new
-    /// `FieldInfos`.
-    pub fn read(input: &mut dyn crate::store::DataInput) -> Result<Self> {
-        let size = input.read_v_int()? as usize;
-        let mut infos = Vec::with_capacity(size);
-        for _ in 0..size {
-            infos.push(FieldInfo::read(input)?);
-        }
-        Self::new(infos)
-    }
-}
+    /// Returns the field number for `info`, assigning a new one the first time
+    /// the field name is seen in this index.
+    ///
+    /// Equivalent to `FieldNumbers.addOrGet(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field schema conflicts
+    /// with the schema already recorded for that name.
+    pub fn add_or_get(&self, info: &FieldInfo) -> Result<i32> {
+        let name = info.get_name();
+        self.verify_soft_deletes_field_name(name, info.is_soft_deletes_field())?;
+        self.verify_parent_field_name(name, info.is_parent_field())?;
 
-impl FieldInfo {
-    /// Reads a single field from the Lucene94 FieldInfos per-field payload.
-    fn read(input: &mut dyn crate::store::DataInput) -> Result<Self> {
-        let name = input.read_string()?;
-        let number = input.read_v_int()?;
-        if number < 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "invalid field number for field: {name}, fieldNumber={number}"
-            )));
+        let mut inner = self.lock();
+        if let Some(current) = inner.field_properties.get(name) {
+            current.verify_same_schema(info)?;
+            return Ok(current.get_field_number());
         }
 
-        let bits = input.read_byte()?;
-        let store_term_vector = (bits & STORE_TERMVECTOR) != 0;
-        let omit_norms = (bits & OMIT_NORMS) != 0;
-        let store_payloads = (bits & STORE_PAYLOADS) != 0;
-        let is_soft_deletes_field = (bits & SOFT_DELETES_FIELD) != 0;
-        let is_parent_field = (bits & PARENT_FIELD_FIELD) != 0;
-
-        if (bits & 0xC0) != 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "unused bits are set \"{bits:b}\""
-            )));
-        }
-
-        let index_options = index_options_from_byte(input.read_byte()?)?;
-        let doc_values_type = doc_values_type_from_byte(input.read_byte()?)?;
-        let doc_values_skip_index_type = doc_values_skip_index_type_from_byte(input.read_byte()?)?;
-        let doc_values_gen = input.read_long()?;
-        let attributes = input.read_map_of_strings()?;
-
-        let point_dimension_count = input.read_v_int()?;
-        let (point_index_dimension_count, point_num_bytes) = if point_dimension_count != 0 {
-            (input.read_v_int()?, input.read_v_int()?)
+        // First time we see this field in this index.
+        let preferred = info.get_field_number();
+        let field_number = if preferred != -1 && !inner.number_to_name.contains_key(&preferred) {
+            preferred
         } else {
-            (0, 0)
+            loop {
+                inner.lowest_unassigned_field_number += 1;
+                let candidate = inner.lowest_unassigned_field_number;
+                if !inner.number_to_name.contains_key(&candidate) {
+                    break candidate;
+                }
+            }
         };
+        debug_assert!(field_number >= 0);
 
-        let vector_dimension = input.read_v_int()?;
-        let vector_encoding = vector_encoding_from_byte(input.read_byte()?)?;
-        let vector_similarity_function = vector_similarity_function_from_byte(input.read_byte()?)?;
+        inner.number_to_name.insert(field_number, name.to_string());
+        let mut canonical = info.clone();
+        canonical.number = field_number;
+        inner.field_properties.insert(name.to_string(), canonical);
+        Ok(field_number)
+    }
 
+    /// Returns the number assigned to `name`, if the field is known.
+    pub fn field_number(&self, name: &str) -> Option<i32> {
+        self.lock()
+            .field_properties
+            .get(name)
+            .map(FieldInfo::get_field_number)
+    }
+
+    /// Returns `true` if `name` is already registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.lock().field_properties.contains_key(name)
+    }
+
+    /// Returns every field name this registry knows about.
+    ///
+    /// Equivalent to `FieldInfos.FieldNumbers.getFieldNames()`:
+    /// `Set.copyOf(fieldProperties.keySet())` (`FieldInfos.java:690-692`), an
+    /// unmodifiable copy.
+    pub fn get_field_names(&self) -> crate::util::java_collections::ImmutableSet<String> {
+        crate::util::java_collections::ImmutableSet::copy_of(
+            self.lock().field_properties.keys().cloned(),
+        )
+    }
+
+    /// Builds a doc-values-only [`FieldInfo`] for an existing global field, under
+    /// a segment-local number.
+    ///
+    /// Equivalent to `FieldInfos.FieldNumbers.constructFieldInfo(String,
+    /// DocValuesType, int)` (`FieldInfos.java:659-688`), which
+    /// `ReadersAndUpdates.writeFieldUpdates` uses to add an updated field to a
+    /// segment that does not carry it yet. The soft-deletes and parent flags
+    /// come from the names this registry was configured with, so the field
+    /// keeps the role the index gave it.
+    ///
+    /// Returns `None`, as Java returns `null`, when the field is unknown or its
+    /// doc-values type is not `dv_type`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the error [`FieldInfo::new_full`] raises for an invalid
+    /// combination; the one built here is always valid.
+    pub fn construct_field_info(
+        &self,
+        field_name: &str,
+        dv_type: DocValuesType,
+        new_field_number: i32,
+    ) -> Result<Option<FieldInfo>> {
+        let dv_type0 = match self.lock().field_properties.get(field_name) {
+            Some(properties) => properties.doc_values_type,
+            None => return Ok(None),
+        };
+        if dv_type != dv_type0 {
+            return Ok(None);
+        }
+        let is_soft_deletes_field = self.soft_deletes_field_name.as_deref() == Some(field_name);
+        let is_parent_field = self.parent_field_name.as_deref() == Some(field_name);
         FieldInfo::new_full(
-            name,
-            number,
-            store_term_vector,
-            omit_norms,
-            store_payloads,
-            index_options,
-            doc_values_type,
-            doc_values_skip_index_type,
-            doc_values_gen,
-            attributes,
-            point_dimension_count,
-            point_index_dimension_count,
-            point_num_bytes,
-            vector_dimension,
-            vector_encoding,
-            vector_similarity_function,
+            field_name,
+            new_field_number,
+            false,
+            false,
+            false,
+            IndexOptions::NONE,
+            dv_type,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
             is_soft_deletes_field,
             is_parent_field,
         )
+        .map(Some)
+    }
+
+    /// Checks that `field_name` may carry `dv_type` doc-values updates, creating
+    /// a doc-values-only field when it does not exist yet.
+    ///
+    /// Equivalent to
+    /// `FieldInfos.FieldNumbers.verifyOrCreateDvOnlyField(String, DocValuesType, boolean)`,
+    /// which `IndexWriter.updateNumericDocValue`, `updateBinaryDocValue` and
+    /// `updateDocValues` call before buffering an update. A field that is also
+    /// indexed with postings, points or vectors, or that carries a doc-values
+    /// skip index, cannot be updated in place, so each of those is rejected with
+    /// the same message Java produces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field does not exist and
+    /// `field_must_exist` is set, when its doc-values type differs from
+    /// `dv_type`, or when it is not a doc-values-only field.
+    pub fn verify_or_create_dv_only_field(
+        &self,
+        field_name: &str,
+        dv_type: DocValuesType,
+        field_must_exist: bool,
+    ) -> Result<()> {
+        let existing = self.lock().field_properties.get(field_name).cloned();
+        let Some(properties) = existing else {
+            if field_must_exist {
+                return Err(LuceneError::illegal_argument(format!(
+                    "Can't update [{dv_type:?}] doc values; the field [{field_name}] doesn't exist."
+                )));
+            }
+            // Create a doc-values-only field, exactly as Java does: no postings,
+            // no points, no vectors, and the field number left to `add_or_get`.
+            let soft_deletes = self.soft_deletes_field_name.as_deref() == Some(field_name);
+            let is_parent = self.parent_field_name.as_deref() == Some(field_name);
+            let info = FieldInfo::new_full(
+                field_name,
+                -1,
+                false,
+                false,
+                false,
+                IndexOptions::NONE,
+                dv_type,
+                DocValuesSkipIndexType::NONE,
+                -1,
+                JavaStringMap::default(),
+                0,
+                0,
+                0,
+                0,
+                VectorEncoding::FLOAT32,
+                VectorSimilarityFunction::EUCLIDEAN,
+                soft_deletes,
+                is_parent,
+            )?;
+            self.add_or_get(&info)?;
+            return Ok(());
+        };
+
+        if dv_type != properties.doc_values_type {
+            return Err(LuceneError::illegal_argument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] has inconsistent \
+                 doc values' type of [{:?}].",
+                properties.doc_values_type
+            )));
+        }
+        if properties.doc_values_skip_index_type != DocValuesSkipIndexType::NONE {
+            return Err(LuceneError::illegal_argument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, bit it has doc values skip index"
+            )));
+        }
+        if properties.point_dimension_count != 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, but is also indexed with points."
+            )));
+        }
+        if properties.index_options != IndexOptions::NONE {
+            return Err(LuceneError::illegal_argument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, but is also indexed with postings."
+            )));
+        }
+        if properties.vector_dimension != 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "Can't update [{dv_type:?}] doc values; the field [{field_name}] must be doc \
+                 values only field, but is also indexed with vectors."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Returns the number of registered field names.
+    pub fn len(&self) -> usize {
+        self.lock().field_properties.len()
+    }
+
+    /// Returns `true` if no field has been registered yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Forgets every registered field.
+    ///
+    /// Equivalent to `FieldNumbers.clear()`; used when an `IndexWriter` rolls
+    /// back or deletes all documents.
+    pub fn clear(&self) {
+        let mut inner = self.lock();
+        inner.number_to_name.clear();
+        inner.field_properties.clear();
+        inner.lowest_unassigned_field_number = -1;
+    }
+
+    fn lock(&self) -> MutexGuard<'_, FieldNumbersInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn verify_soft_deletes_field_name(&self, name: &str, is_soft_deletes: bool) -> Result<()> {
+        match (&self.soft_deletes_field_name, is_soft_deletes) {
+            (None, true) => Err(LuceneError::illegal_argument(format!(
+                "this index has [{name}] as soft-deletes already but soft-deletes field is not configured in IWC"
+            ))),
+            (Some(configured), true) if configured != name => {
+                Err(LuceneError::illegal_argument(format!(
+                    "cannot configure [{configured}] as soft-deletes; this index uses [{name}] as soft-deletes already"
+                )))
+            }
+            (Some(configured), false) if configured == name => {
+                Err(LuceneError::illegal_argument(format!(
+                    "cannot configure [{configured}] as soft-deletes; this index uses [{name}] as non-soft-deletes already"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn verify_parent_field_name(&self, name: &str, is_parent: bool) -> Result<()> {
+        match (&self.parent_field_name, is_parent) {
+            (None, true) => Err(LuceneError::illegal_argument(format!(
+                "can't add field [{name}] as parent document field; this IndexWriter has no parent document field configured"
+            ))),
+            (Some(configured), true) if configured != name => {
+                Err(LuceneError::illegal_argument(format!(
+                    "can't add field [{name}] as parent document field; this IndexWriter is configured with [{configured}] as parent document field"
+                )))
+            }
+            (Some(configured), false) if configured == name => {
+                Err(LuceneError::illegal_argument(format!(
+                    "can't add [{name}] as non parent document field; this IndexWriter is configured with [{configured}] as parent document field"
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Accumulates the [`FieldInfo`]s of one segment while it is being indexed.
+///
+/// Equivalent to `org.apache.lucene.index.FieldInfos.Builder`.
+///
+/// One builder belongs to exactly one `DocumentsWriterPerThread` and is never
+/// shared between threads, so it needs no interior locking; the shared
+/// [`FieldNumbers`] it delegates to provides the cross-thread synchronisation.
+#[derive(Debug)]
+pub struct FieldInfosBuilder {
+    by_name: HashMap<String, FieldInfo>,
+    global_field_numbers: Arc<FieldNumbers>,
+    finished: bool,
+}
+
+impl FieldInfosBuilder {
+    /// Creates a builder backed by the writer-wide field-number registry.
+    pub fn new(global_field_numbers: Arc<FieldNumbers>) -> Self {
+        Self {
+            by_name: HashMap::new(),
+            global_field_numbers,
+            finished: false,
+        }
+    }
+
+    /// Returns the soft-deletes field name configured for this index.
+    pub fn soft_deletes_field_name(&self) -> Option<&str> {
+        self.global_field_numbers.soft_deletes_field_name()
+    }
+
+    /// Returns the parent field name configured for this index.
+    pub fn parent_field_name(&self) -> Option<&str> {
+        self.global_field_numbers.parent_field_name()
+    }
+
+    /// Returns the shared field-number registry.
+    pub fn global_field_numbers(&self) -> &Arc<FieldNumbers> {
+        &self.global_field_numbers
+    }
+
+    /// Adds `info` to this segment, merging it with the entry already present
+    /// for that field name.
+    ///
+    /// Equivalent to `FieldInfos.Builder.add(FieldInfo)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) if the schema conflicts with a
+    /// previous definition of the same field, and
+    /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if the builder has already been finished.
+    pub fn add(&mut self, info: &FieldInfo) -> Result<&FieldInfo> {
+        self.add_with_doc_values_gen(info, -1)
+    }
+
+    /// Same as [`add`](Self::add) but forces the doc-values generation of a
+    /// newly created entry.
+    ///
+    /// Equivalent to the package-private `FieldInfos.Builder.add(FieldInfo, long)`.
+    ///
+    /// # Errors
+    ///
+    /// See [`add`](Self::add).
+    pub fn add_with_doc_values_gen(&mut self, info: &FieldInfo, dv_gen: i64) -> Result<&FieldInfo> {
+        let name = info.get_name().to_string();
+        if self.by_name.contains_key(&name) {
+            // Verify first, then merge attributes/payloads into the existing entry.
+            {
+                let current = &self.by_name[&name];
+                current.verify_same_schema(info)?;
+            }
+            // `FieldInfos.Builder.add` walks `fi.attributes().keySet()`, so
+            // the order the attributes are re-put in is the source map's
+            // iteration order and the merged map's own order follows from it.
+            let attributes = info.attributes();
+            let has_payloads = info.has_payloads();
+            let current = self
+                .by_name
+                .get_mut(&name)
+                .expect("INVARIANT: presence checked above");
+            for (key, value) in attributes.iter() {
+                current.put_attribute(key.clone(), value.clone());
+            }
+            if has_payloads {
+                current.set_store_payloads();
+            }
+            return Ok(current);
+        }
+
+        // `assert assertNotFinished();` (`FieldInfos.java:787,819-824`): the
+        // check only runs with assertions enabled.
+        if cfg!(debug_assertions) && self.finished {
+            return Err(LuceneError::illegal_state(
+                "FieldInfos.Builder was already finished; cannot add new fields".to_string(),
+            ));
+        }
+
+        let field_number = self.global_field_numbers.add_or_get(info)?;
+        let new_info = FieldInfo::new_full(
+            name.clone(),
+            field_number,
+            info.has_term_vectors(),
+            info.omits_norms(),
+            info.has_payloads(),
+            info.get_index_options(),
+            info.get_doc_values_type(),
+            info.doc_values_skip_index_type(),
+            dv_gen,
+            info.attributes(),
+            info.get_point_dimension_count(),
+            info.get_point_index_dimension_count(),
+            info.get_point_num_bytes(),
+            info.get_vector_dimension(),
+            info.get_vector_encoding(),
+            info.get_vector_similarity_function(),
+            info.is_soft_deletes_field(),
+            info.is_parent_field(),
+        )?;
+        Ok(self.by_name.entry(name).or_insert(new_info))
+    }
+
+    /// Returns the field info recorded for `name` in this segment.
+    pub fn field_info(&self, name: &str) -> Option<&FieldInfo> {
+        self.by_name.get(name)
+    }
+
+    /// Returns a mutable view of the field info recorded for `name`.
+    pub fn field_info_mut(&mut self, name: &str) -> Option<&mut FieldInfo> {
+        self.by_name.get_mut(name)
+    }
+
+    /// Returns the number of fields seen so far.
+    pub fn len(&self) -> usize {
+        self.by_name.len()
+    }
+
+    /// Returns `true` if no field has been added yet.
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    /// Seals the builder and materialises the segment's [`FieldInfos`].
+    ///
+    /// Equivalent to `FieldInfos.Builder.finish()`. Field infos are emitted in
+    /// ascending field-number order, which is the order Lucene writes them in.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the validation errors of [`FieldInfos::new`].
+    pub fn finish(&mut self) -> Result<FieldInfos> {
+        self.finished = true;
+        let mut infos: Vec<FieldInfo> = self.by_name.values().cloned().collect();
+        infos.sort_by_key(FieldInfo::get_field_number);
+        FieldInfos::new(infos)
     }
 }
 
@@ -1403,7 +2256,7 @@ impl FieldInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ByteArrayDataInput, ByteArrayDataOutput, IndexInput, RamDirectory};
+    use crate::error::LuceneErrorKind;
 
     #[test]
     fn field_info_default_is_empty() {
@@ -1432,12 +2285,54 @@ mod tests {
     fn field_info_attributes_round_trip() {
         let fi = FieldInfo::new("body", 0);
         assert_eq!(fi.put_attribute("fmt", "Lucene90"), None);
-        assert_eq!(fi.get_attribute("fmt"), Some("Lucene90".to_string()));
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Lucene90"));
         assert_eq!(
             fi.put_attribute("fmt", "Other"),
             Some("Lucene90".to_string())
         );
-        assert_eq!(fi.get_attribute("fmt"), Some("Other".to_string()));
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Other"));
+    }
+
+    /// `getAttribute` returns the map's own value and `putAttribute` swaps in
+    /// a new map (`FieldInfo.java:658-680`): a value obtained before a put
+    /// keeps reading what it read, and a copy of the field shares the map.
+    #[test]
+    fn field_info_attribute_values_are_shared_and_stable() {
+        let fi = FieldInfo::new("body", 0);
+        fi.put_attribute("fmt", "Lucene90");
+        let before = fi.get_attribute("fmt").unwrap();
+        let copy = fi.clone();
+        assert!(copy.shares_attributes_with(&fi));
+
+        fi.put_attribute("fmt", "Other");
+        assert_eq!(before, "Lucene90");
+        assert_eq!(before.to_string(), "Lucene90");
+        assert_eq!(format!("{before:?}"), "\"Lucene90\"");
+        assert_eq!(fi.get_attribute("fmt").as_deref(), Some("Other"));
+        assert!(!copy.shares_attributes_with(&fi));
+        assert_eq!(copy.get_attribute("fmt").as_deref(), Some("Lucene90"));
+        assert!(fi.get_attribute("missing").is_none());
+    }
+
+    /// `byName.put(info.name, info)` (`FieldInfos.java:102`): the name lookup
+    /// keyed by each field's own name finds every field, and a duplicate name
+    /// is still rejected with Java's message.
+    #[test]
+    fn field_infos_by_name_is_keyed_by_the_fields_own_names() {
+        let infos =
+            FieldInfos::new(vec![FieldInfo::new("title", 0), FieldInfo::new("body", 1)]).unwrap();
+        assert_eq!(infos.field_info("title").unwrap().number, 0);
+        assert_eq!(infos.field_info("body").unwrap().number, 1);
+        assert!(infos.field_info("missing").is_none());
+
+        let error = FieldInfos::new(vec![FieldInfo::new("title", 0), FieldInfo::new("title", 1)])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate field names: 0 and 1 have: title"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1457,7 +2352,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.store_payloads = true; // direct mutation for test
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1465,7 +2366,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.store_term_vector = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1473,7 +2380,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.omit_norms = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1481,7 +2394,42 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.doc_values_skip_index_type = DocValuesSkipIndexType::RANGE;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn field_info_set_doc_values_gen_re_validates() {
+        let mut fi = FieldInfo::new("f", 0);
+        fi.doc_values_type = DocValuesType::NUMERIC;
+        fi.set_doc_values_gen(1);
+        assert_eq!(fi.get_doc_values_gen(), 1);
+
+        let mut fi2 = FieldInfo::new("f2", 1);
+        // Setting a generation without doc values should panic (via expect in the
+        // setter), matching Java's IllegalArgumentException.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fi2.set_doc_values_gen(1);
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn field_info_set_store_payloads_re_validates() {
+        let mut fi = FieldInfo::new("f", 0);
+        fi.index_options = IndexOptions::DOCS;
+        fi.set_store_payloads(); // no-op because positions are absent
+        assert!(!fi.has_payloads());
+
+        let mut fi2 = FieldInfo::new("f2", 1);
+        fi2.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        fi2.set_store_payloads();
+        assert!(fi2.has_payloads());
     }
 
     #[test]
@@ -1489,7 +2437,13 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.doc_values_gen = 1;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1498,7 +2452,13 @@ mod tests {
         fi.soft_deletes_field = true;
         fi.is_parent_field = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1512,7 +2472,13 @@ mod tests {
         let err = fi
             .set_point_dimensions(3, 1, 8)
             .expect_err("dimension change should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1524,7 +2490,13 @@ mod tests {
             false,
         );
         let err = a.verify_same_schema(&b).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1532,42 +2504,6 @@ mod tests {
         let a = FieldInfo::new("f", 0).with_postings_options(IndexOptions::DOCS, false, false);
         let b = FieldInfo::new("f", 1).with_postings_options(IndexOptions::DOCS, false, false);
         a.verify_same_schema(&b).unwrap();
-    }
-
-    #[test]
-    fn field_info_write_read_round_trip() {
-        let mut out = ByteArrayDataOutput::new();
-        let mut fi = FieldInfo::new("body", 0);
-        fi.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
-        fi.store_term_vector = true;
-        fi.store_payloads = true;
-        fi.doc_values_type = DocValuesType::SORTED;
-        fi.put_attribute("fmt", "Lucene90");
-        fi.set_point_dimensions(2, 1, 8).unwrap();
-        fi.vector_dimension = 3;
-        fi.vector_encoding = VectorEncoding::FLOAT32;
-        fi.vector_similarity_function = VectorSimilarityFunction::COSINE;
-        fi.write(&mut out).unwrap();
-
-        let mut input = ByteArrayDataInput::new(out.into_inner());
-        let read = FieldInfo::read(&mut input).unwrap();
-        assert_eq!(read.name, "body");
-        assert_eq!(read.number, 0);
-        assert_eq!(
-            read.index_options,
-            IndexOptions::DOCS_AND_FREQS_AND_POSITIONS
-        );
-        assert!(read.has_term_vectors());
-        assert!(read.has_payloads());
-        assert_eq!(read.doc_values_type, DocValuesType::SORTED);
-        assert_eq!(read.get_attribute("fmt"), Some("Lucene90".to_string()));
-        assert_eq!(read.get_point_dimension_count(), 2);
-        assert_eq!(read.vector_dimension, 3);
-        assert_eq!(read.vector_encoding, VectorEncoding::FLOAT32);
-        assert_eq!(
-            read.vector_similarity_function,
-            VectorSimilarityFunction::COSINE
-        );
     }
 
     #[test]
@@ -1609,7 +2545,13 @@ mod tests {
     fn field_infos_rejects_negative_number() {
         let fi = FieldInfo::new("bad", -1);
         let err = FieldInfos::new(vec![fi]).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1617,7 +2559,13 @@ mod tests {
         let a = FieldInfo::new("dup", 0);
         let b = FieldInfo::new("dup", 1);
         let err = FieldInfos::new(vec![a, b]).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1625,32 +2573,13 @@ mod tests {
         let a = FieldInfo::new("a", 0);
         let b = FieldInfo::new("b", 0);
         let err = FieldInfos::new(vec![a, b]).expect_err("should fail");
-        assert!(matches!(err, LuceneError::IllegalArgument(_)));
-    }
-
-    #[test]
-    fn field_infos_write_read_round_trip() {
-        let mut body = FieldInfo::new("body", 0);
-        body.index_options = IndexOptions::DOCS_AND_FREQS;
-        let mut title = FieldInfo::new("title", 1);
-        title.doc_values_type = DocValuesType::SORTED;
-        let mut vector = FieldInfo::new("vector", 2);
-        vector.vector_dimension = 3;
-        vector.vector_encoding = VectorEncoding::BYTE;
-        vector.vector_similarity_function = VectorSimilarityFunction::DOT_PRODUCT;
-        let fis = FieldInfos::new(vec![body, title, vector]).unwrap();
-
-        let mut out = ByteArrayDataOutput::new();
-        fis.write(&mut out).unwrap();
-
-        let mut input = ByteArrayDataInput::new(out.into_inner());
-        let read = FieldInfos::read(&mut input).unwrap();
-        assert_eq!(read.size(), 3);
-        assert!(read.has_postings());
-        assert!(read.has_doc_values());
-        assert!(read.has_vector_values());
-        assert_eq!(read.field_info("vector").unwrap().vector_dimension, 3);
-        assert_eq!(read, fis);
+        assert!(matches!(
+            err,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1666,77 +2595,196 @@ mod tests {
         assert_eq!(names, vec!["b", "a"]);
     }
 
-    /// A mock format that wraps [`FieldInfos::write`] and [`FieldInfos::read`]
-    /// with a Lucene-style index header and footer.
-    struct MockFieldInfosFormat;
+    // -- FieldNumbers / FieldInfos.Builder ---------------------------------
 
-    impl MockFieldInfosFormat {
-        const FILE_NAME: &'static str = "_0.mock-fnm";
-        const CODEC_NAME: &'static str = "MockFieldInfos";
-        const VERSION: i32 = 0;
-
-        fn write(&self, directory: &dyn crate::store::Directory, infos: &FieldInfos) -> Result<()> {
-            let ctx: &dyn crate::store::IOContext = &*crate::store::DEFAULT_IO_CONTEXT;
-            let mut output = directory.create_output(Self::FILE_NAME, ctx)?;
-            crate::codecs::codec_util::write_index_header(
-                &mut *output,
-                Self::CODEC_NAME,
-                Self::VERSION,
-                &[0u8; 16],
-                "",
-            )?;
-            infos.write(&mut *output)?;
-            crate::codecs::codec_util::write_footer(&mut *output)?;
-            output.close()
-        }
-
-        fn read(&self, directory: &dyn crate::store::Directory) -> Result<FieldInfos> {
-            let mut input = directory.open_checksum_input(Self::FILE_NAME)?;
-            let _version = crate::codecs::codec_util::check_index_header(
-                &mut *input,
-                Self::CODEC_NAME,
-                Self::VERSION,
-                Self::VERSION,
-                &[0u8; 16],
-                "",
-            )?;
-            let infos = FieldInfos::read(&mut *input)?;
-            crate::codecs::codec_util::check_footer(&mut *input)?;
-            input.close()?;
-            Ok(infos)
-        }
+    fn indexed_field(name: &str) -> FieldInfo {
+        FieldInfo::new_full(
+            name,
+            -1,
+            false,
+            false,
+            false,
+            IndexOptions::DOCS,
+            DocValuesType::NONE,
+            DocValuesSkipIndexType::NONE,
+            -1,
+            crate::util::java_collections::JavaStringMap::default(),
+            0,
+            0,
+            0,
+            0,
+            VectorEncoding::FLOAT32,
+            VectorSimilarityFunction::EUCLIDEAN,
+            false,
+            false,
+        )
+        .expect("valid field info")
     }
 
     #[test]
-    fn mock_field_infos_format_round_trip() {
-        let dir = RamDirectory::default();
-        let mut body = FieldInfo::new("body", 0);
-        body.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
-        body.store_term_vector = true;
-        body.doc_values_type = DocValuesType::SORTED;
-        let mut title = FieldInfo::new("title", 1);
-        title.index_options = IndexOptions::DOCS;
-        title.put_attribute("fmt", "MockPostings");
-        let mut point = FieldInfo::new("point", 2);
-        point.set_point_dimensions(3, 2, 8).unwrap();
-        let mut vec = FieldInfo::new("vec", 3);
-        vec.vector_dimension = 10;
-        vec.vector_encoding = VectorEncoding::FLOAT32;
-        vec.vector_similarity_function = VectorSimilarityFunction::MAXIMUM_INNER_PRODUCT;
-        let infos = FieldInfos::new(vec![body, title, point, vec]).unwrap();
-
-        let format = MockFieldInfosFormat;
-        format.write(&dir, &infos).unwrap();
-        let read = format.read(&dir).unwrap();
-
-        assert_eq!(read, infos);
-        assert!(read.has_term_vectors());
-        assert!(read.has_doc_values());
-        assert!(read.has_point_values());
-        assert!(read.has_vector_values());
+    fn field_numbers_assign_dense_numbers_and_are_stable_per_name() {
+        let numbers = FieldNumbers::new(None, None).unwrap();
+        assert!(numbers.is_empty());
+        assert_eq!(numbers.add_or_get(&indexed_field("a")).unwrap(), 0);
+        assert_eq!(numbers.add_or_get(&indexed_field("b")).unwrap(), 1);
         assert_eq!(
-            read.field_info("title").unwrap().get_attribute("fmt"),
-            Some("MockPostings".to_string())
+            numbers.add_or_get(&indexed_field("a")).unwrap(),
+            0,
+            "a field name always keeps its first number"
         );
+        assert_eq!(numbers.len(), 2);
+        assert_eq!(numbers.field_number("b"), Some(1));
+        assert!(numbers.contains("a"));
+
+        numbers.clear();
+        assert!(numbers.is_empty());
+        assert_eq!(numbers.add_or_get(&indexed_field("z")).unwrap(), 0);
+    }
+
+    #[test]
+    fn field_numbers_honour_a_preferred_free_number() {
+        let numbers = FieldNumbers::new(None, None).unwrap();
+        let mut preferred = indexed_field("a");
+        preferred.number = 7;
+        assert_eq!(numbers.add_or_get(&preferred).unwrap(), 7);
+        // 7 is taken, so the next field falls back to the lowest free number.
+        assert_eq!(numbers.add_or_get(&indexed_field("b")).unwrap(), 0);
+    }
+
+    #[test]
+    fn field_numbers_reject_conflicting_schemas() {
+        let numbers = FieldNumbers::new(None, None).unwrap();
+        numbers.add_or_get(&indexed_field("a")).unwrap();
+
+        let mut conflicting = indexed_field("a");
+        conflicting.index_options = IndexOptions::DOCS_AND_FREQS;
+        let error = numbers.add_or_get(&conflicting).unwrap_err();
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            }
+        ));
+        assert!(numbers.verify_field_info(&conflicting).is_err());
+        assert!(numbers.verify_field_info(&indexed_field("a")).is_ok());
+    }
+
+    #[test]
+    fn field_numbers_enforce_the_soft_deletes_and_parent_field_names() {
+        assert!(
+            FieldNumbers::new(Some("x".to_string()), Some("x".to_string())).is_err(),
+            "the parent field and the soft-deletes field must differ"
+        );
+
+        let numbers = FieldNumbers::new(Some("soft".to_string()), None).unwrap();
+        assert_eq!(numbers.soft_deletes_field_name(), Some("soft"));
+        // A non-soft-deletes field may not use the configured name.
+        assert!(numbers.add_or_get(&indexed_field("soft")).is_err());
+
+        let plain = FieldNumbers::new(None, None).unwrap();
+        let mut soft = indexed_field("soft");
+        soft.soft_deletes_field = true;
+        assert!(
+            plain.add_or_get(&soft).is_err(),
+            "a soft-deletes field needs the writer to be configured for it"
+        );
+    }
+
+    #[test]
+    fn field_infos_builder_shares_field_numbers_across_segments() {
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let mut first = FieldInfosBuilder::new(Arc::clone(&numbers));
+        first.add(&indexed_field("title")).unwrap();
+        first.add(&indexed_field("body")).unwrap();
+
+        // A second segment that sees the fields in the opposite order must
+        // still number them identically, otherwise the segments cannot merge.
+        let mut second = FieldInfosBuilder::new(Arc::clone(&numbers));
+        second.add(&indexed_field("body")).unwrap();
+        second.add(&indexed_field("title")).unwrap();
+
+        let first = first.finish().unwrap();
+        let second = second.finish().unwrap();
+        for name in ["title", "body"] {
+            assert_eq!(
+                first.field_info(name).unwrap().get_field_number(),
+                second.field_info(name).unwrap().get_field_number(),
+                "field {name} must keep the same number in every segment"
+            );
+        }
+        assert_eq!(first.size(), 2);
+    }
+
+    #[test]
+    fn field_infos_builder_merges_attributes_and_payloads_into_the_existing_entry() {
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let mut builder = FieldInfosBuilder::new(Arc::clone(&numbers));
+        let mut base = indexed_field("title");
+        base.index_options = IndexOptions::DOCS_AND_FREQS_AND_POSITIONS;
+        builder.add(&base).unwrap();
+
+        let mut again = base.clone();
+        again.put_attribute("fmt", "MockPostings");
+        again.set_store_payloads();
+        builder.add(&again).unwrap();
+
+        let info = builder.field_info("title").unwrap();
+        assert_eq!(info.get_attribute("fmt").as_deref(), Some("MockPostings"));
+        assert!(info.has_payloads());
+        assert_eq!(builder.len(), 1);
+        assert!(!builder.is_empty());
+    }
+
+    #[test]
+    fn field_infos_builder_refuses_new_fields_after_finish() {
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let mut builder = FieldInfosBuilder::new(numbers);
+        builder.add(&indexed_field("a")).unwrap();
+        builder.finish().unwrap();
+        // Re-adding a known field is still fine; a new one is not.
+        assert!(builder.add(&indexed_field("a")).is_ok());
+        let error = builder.add(&indexed_field("b")).unwrap_err();
+        assert!(matches!(
+            error,
+            LuceneError {
+                kind: LuceneErrorKind::IllegalState { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn field_numbers_are_thread_safe() {
+        use std::thread;
+
+        let numbers = Arc::new(FieldNumbers::new(None, None).unwrap());
+        let names: Vec<String> = (0..64).map(|i| format!("f{i}")).collect();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let numbers = Arc::clone(&numbers);
+            let names = names.clone();
+            handles.push(thread::spawn(move || {
+                names
+                    .iter()
+                    .map(|name| numbers.add_or_get(&indexed_field(name)).unwrap())
+                    .collect::<Vec<i32>>()
+            }));
+        }
+        let results: Vec<Vec<i32>> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        for result in &results[1..] {
+            assert_eq!(
+                result, &results[0],
+                "every thread must observe the same field numbering"
+            );
+        }
+        let mut unique = results[0].clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "field numbers must be unique");
+        assert_eq!(numbers.len(), names.len());
     }
 }

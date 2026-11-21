@@ -1,0 +1,186 @@
+//! Query-tree traversal, ported from `org.apache.lucene.search.QueryVisitor`.
+
+#![deny(unsafe_code)]
+
+use crate::index::Term;
+use crate::search::boolean_clause::Occur;
+use crate::search::query::Query;
+use crate::util::ByteRunAutomaton;
+
+/// Allows recursion through a query tree.
+///
+/// Equivalent to the abstract class `org.apache.lucene.search.QueryVisitor`,
+/// passed to [`Query::visit`].
+pub trait QueryVisitor {
+    /// Called by leaf queries that match on specific terms.
+    ///
+    /// Equivalent to `QueryVisitor.consumeTerms(Query, Term...)`; the Java
+    /// varargs become a slice.
+    fn consume_terms(&mut self, _query: &dyn Query, _terms: &[Term]) {}
+
+    /// Called by leaf queries that match on a class of terms.
+    ///
+    /// Equivalent to
+    /// `QueryVisitor.consumeTermsMatching(Query, String, Supplier<ByteRunAutomaton>)`,
+    /// whose default delegates to [`visit_leaf`](Self::visit_leaf) for backward
+    /// compatibility. The Java `Supplier` becomes a closure so that building
+    /// the automaton stays lazy.
+    fn consume_terms_matching(
+        &mut self,
+        query: &dyn Query,
+        _field: &str,
+        _automaton: &dyn Fn() -> ByteRunAutomaton,
+    ) {
+        self.visit_leaf(query); // default impl for backward compatibility
+    }
+
+    /// Called by leaf queries that do not match on terms.
+    ///
+    /// Equivalent to `QueryVisitor.visitLeaf(Query)`.
+    fn visit_leaf(&mut self, _query: &dyn Query) {}
+
+    /// Whether this field is of interest to the visitor.
+    ///
+    /// Equivalent to `QueryVisitor.acceptField(String)`, which returns `true`
+    /// by default. Implement it to avoid collecting terms from heavy queries
+    /// that are not running on fields of interest.
+    fn accept_field(&self, _field: &str) -> bool {
+        true
+    }
+
+    /// Whether a query whose field is `null` is of interest to the visitor.
+    ///
+    /// Equivalent to `QueryVisitor.acceptField(String)` called with `null`,
+    /// which the span queries without clauses do (`SpanOrQuery.java:86`,
+    /// `SpanNearQuery.java:279`); like Java's default, it returns `true`.
+    /// [`accept_field`](Self::accept_field) takes a `&str`, so the `null`
+    /// argument is this method: a visitor that overrides `acceptField`
+    /// overrides it too, with the answer its `acceptField(null)` gives.
+    fn accept_null_field(&self) -> bool {
+        true
+    }
+
+    /// Pulls a visitor instance for visiting the child clauses of a query.
+    ///
+    /// Equivalent to `QueryVisitor.getSubVisitor(BooleanClause.Occur, Query)`,
+    /// whose default returns `this` unless `occur` is
+    /// [`Occur::MUST_NOT`], in which case it returns the empty visitor.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java returns a bare reference, which
+    /// is either the same object or a shared immutable singleton. Rust cannot
+    /// return "either a borrow of self or a static", so the result is boxed;
+    /// the identity of the visitor — and therefore the state it accumulates —
+    /// is preserved by boxing a borrow of `self`.
+    fn get_sub_visitor<'a>(
+        &'a mut self,
+        occur: Occur,
+        _parent: &dyn Query,
+    ) -> Box<dyn QueryVisitor + 'a>
+    where
+        Self: 'a,
+    {
+        if occur == Occur::MUST_NOT {
+            return Box::new(EmptyQueryVisitor);
+        }
+        Box::new(self)
+    }
+}
+
+impl<T: QueryVisitor + ?Sized> QueryVisitor for &mut T {
+    fn consume_terms(&mut self, query: &dyn Query, terms: &[Term]) {
+        (**self).consume_terms(query, terms);
+    }
+
+    fn consume_terms_matching(
+        &mut self,
+        query: &dyn Query,
+        field: &str,
+        automaton: &dyn Fn() -> ByteRunAutomaton,
+    ) {
+        (**self).consume_terms_matching(query, field, automaton);
+    }
+
+    fn visit_leaf(&mut self, query: &dyn Query) {
+        (**self).visit_leaf(query);
+    }
+
+    fn accept_field(&self, field: &str) -> bool {
+        (**self).accept_field(field)
+    }
+
+    fn accept_null_field(&self) -> bool {
+        (**self).accept_null_field()
+    }
+
+    /// Delegates to the wrapped visitor.
+    ///
+    /// This override is load-bearing, not a convenience: the default body boxes
+    /// `self`, so for `&mut T` it would box a `&mut &mut T`, whose own default
+    /// would box a `&mut &mut &mut T`, and so on without end. Delegating to `T`
+    /// terminates the chain and is also the faithful behaviour — Java's
+    /// `getSubVisitor` returns the same visitor object, and reaching through the
+    /// reference preserves exactly that identity.
+    fn get_sub_visitor<'a>(
+        &'a mut self,
+        occur: Occur,
+        parent: &dyn Query,
+    ) -> Box<dyn QueryVisitor + 'a>
+    where
+        Self: 'a,
+    {
+        (**self).get_sub_visitor(occur, parent)
+    }
+}
+
+/// A [`QueryVisitor`] implementation that does nothing.
+///
+/// Equivalent to the `QueryVisitor.EMPTY_VISITOR` constant, whose
+/// `acceptField` returns `false` so that a subtree is skipped entirely.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EmptyQueryVisitor;
+
+impl QueryVisitor for EmptyQueryVisitor {
+    fn accept_field(&self, _field: &str) -> bool {
+        false
+    }
+
+    fn accept_null_field(&self) -> bool {
+        false
+    }
+}
+
+/// A [`QueryVisitor`] that collects every term that may match a query.
+///
+/// Equivalent to the visitor returned by
+/// `QueryVisitor.termCollector(Set<Term>)`, which adds every consumed term to
+/// the caller's `Set` (`QueryVisitor.java:79-86`). As in Java the set is the
+/// caller's choice: any collection that can be extended with terms. Lucene's
+/// callers pass a `java.util.HashSet`, whose iteration order
+/// [`JavaObjectHashSet`](crate::util::java_collections::JavaObjectHashSet)
+/// reproduces over [`Term::hash_code`].
+#[derive(Debug)]
+pub struct TermCollectorVisitor<'a, S: Extend<Term>> {
+    term_set: &'a mut S,
+}
+
+impl<'a, S: Extend<Term>> TermCollectorVisitor<'a, S> {
+    /// Builds a visitor that adds every collected term to `term_set`.
+    ///
+    /// Equivalent to `QueryVisitor.termCollector(Set<Term>)`.
+    pub fn new(term_set: &'a mut S) -> Self {
+        Self { term_set }
+    }
+}
+
+/// Returns a visitor that adds every collected term to `term_set`.
+///
+/// Equivalent to the static `QueryVisitor.termCollector(Set<Term>)`.
+pub fn term_collector<S: Extend<Term>>(term_set: &mut S) -> TermCollectorVisitor<'_, S> {
+    TermCollectorVisitor::new(term_set)
+}
+
+impl<S: Extend<Term>> QueryVisitor for TermCollectorVisitor<'_, S> {
+    fn consume_terms(&mut self, _query: &dyn Query, terms: &[Term]) {
+        self.term_set.extend(terms.iter().cloned());
+    }
+}

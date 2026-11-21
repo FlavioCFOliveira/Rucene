@@ -14,6 +14,8 @@ use crate::codecs::lucene90::{
 };
 use std::sync::Arc;
 
+use crate::error::{LuceneError, LuceneErrorKind, Result};
+
 use crate::codecs::{
     Codec, CompoundFormat, DocValuesFormat, FieldInfosFormat, KnnVectorsFormat, LiveDocsFormat,
     Lucene104PostingsFormat, Lucene90DocValuesFormat, Lucene90StoredFieldsFormat,
@@ -57,7 +59,6 @@ impl std::fmt::Display for Mode {
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104Codec`.
 #[derive(Debug)]
 pub struct Lucene104Codec {
-    mode: Mode,
     stored_fields_format: Lucene90StoredFieldsFormat,
     default_postings_format: Arc<dyn PostingsFormat>,
     per_field_postings_format: PerFieldPostingsFormat,
@@ -69,21 +70,37 @@ pub struct Lucene104Codec {
 
 impl Lucene104Codec {
     /// Creates the codec with the default stored-fields mode (`BestSpeed`).
+    // Lucene: `Lucene104Codec()` is a constructor; Java has no `Default` counterpart.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self::with_mode(Mode::default())
+        Self::with_mode(Some(Mode::default())).expect("INVARIANT: the default mode is not null")
     }
 
     /// Creates the codec with the given stored-fields mode.
-    pub fn with_mode(mode: Mode) -> Self {
-        let stored_fields_format = Lucene90StoredFieldsFormat::with_mode(mode.stored_mode());
+    ///
+    /// Equivalent to `Lucene104Codec(Mode)` (`Lucene104Codec.java:117-124`):
+    /// `None` is Java's `null`, on which `Objects.requireNonNull(mode)`
+    /// throws `NullPointerException`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` (an unchecked error) when `mode` is `None`.
+    pub fn with_mode(mode: Option<Mode>) -> Result<Self> {
+        let Some(mode) = mode else {
+            return Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
+                cause: None,
+            }));
+        };
+        let stored_fields_format = Lucene90StoredFieldsFormat::with_mode(Some(mode.stored_mode()))?;
         let default_postings_format: Arc<dyn PostingsFormat> =
             Arc::new(Lucene104PostingsFormat::new());
         let default_doc_values_format: Arc<dyn DocValuesFormat> =
             Arc::new(Lucene90DocValuesFormat::new());
         let default_knn_vectors_format: Arc<dyn KnnVectorsFormat> =
             Arc::new(Lucene99HnswVectorsFormat::new());
-        Self {
-            mode,
+        Ok(Self {
             stored_fields_format,
             per_field_postings_format: PerFieldPostingsFormat::from_map(
                 std::collections::HashMap::new(),
@@ -100,12 +117,7 @@ impl Lucene104Codec {
                 Arc::clone(&default_knn_vectors_format),
             ),
             default_knn_vectors_format,
-        }
-    }
-
-    /// Returns the stored-fields compression mode configured for this codec.
-    pub fn mode(&self) -> Mode {
-        self.mode
+        })
     }
 
     /// Returns the postings format used for fields that do not select a custom
@@ -223,17 +235,5 @@ mod tests {
         assert_eq!(codec.live_docs_format().name(), "Lucene90LiveDocs");
         assert_eq!(codec.compound_format().name(), "Lucene90CompoundFormat");
         assert_eq!(codec.points_format().name(), "Lucene90");
-    }
-
-    #[test]
-    fn codec_supports_both_modes() {
-        assert_eq!(
-            Lucene104Codec::with_mode(Mode::BestSpeed).mode(),
-            Mode::BestSpeed
-        );
-        assert_eq!(
-            Lucene104Codec::with_mode(Mode::BestCompression).mode(),
-            Mode::BestCompression
-        );
     }
 }

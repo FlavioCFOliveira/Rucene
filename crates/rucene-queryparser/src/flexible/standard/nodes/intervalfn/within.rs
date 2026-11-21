@@ -1,0 +1,83 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! Port of `Within.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn`.
+
+use std::sync::Arc;
+
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_queries::intervals::intervals::Intervals;
+use rucene_queries::intervals::intervals_source::IntervalsSource;
+
+use super::interval_function::{require_non_null, IntervalFunction};
+
+/// An interval function equivalent to `Intervals.within(IntervalsSource, int, IntervalsSource)`.
+///
+/// Equivalent to `org.apache.lucene.queryparser.flexible.standard.nodes.intervalfn.Within`.
+#[derive(Debug)]
+pub struct Within {
+    positions: i32,
+    source: Arc<dyn IntervalFunction>,
+    reference: Arc<dyn IntervalFunction>,
+}
+
+impl Within {
+    /// Equivalent to `new Within(IntervalFunction source, int positions,
+    /// IntervalFunction reference)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` of `Objects.requireNonNull` for a `None`
+    /// argument.
+    pub fn new(
+        source: Option<Arc<dyn IntervalFunction>>,
+        positions: i32,
+        reference: Option<Arc<dyn IntervalFunction>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            positions,
+            source: require_non_null(source)?,
+            reference: require_non_null(reference)?,
+        })
+    }
+}
+
+impl IntervalFunction for Within {
+    fn to_interval_source(
+        &self,
+        field: &str,
+        analyzer: &dyn Analyzer,
+    ) -> Result<Arc<dyn IntervalsSource>> {
+        Intervals::within(
+            self.source.to_interval_source(field, analyzer)?,
+            self.positions,
+            self.reference.to_interval_source(field, analyzer)?,
+        )
+    }
+
+    /// Equivalent to `Within.toString()`.
+    fn to_java_string(&self) -> String {
+        format!(
+            "fn:within({} {} {})",
+            self.source.to_java_string(),
+            self.positions,
+            self.reference.to_java_string()
+        )
+    }
+}

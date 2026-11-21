@@ -1,0 +1,574 @@
+//! Index-level utilities ported from `org.apache.lucene.index`.
+//!
+//! Groups the small support types the indexing engine needs: the query-timeout
+//! contract and the approximate priority queues that `DocumentsWriter` uses to
+//! pick a thread state.
+
+use crate::error::{LuceneError, Result};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
+use std::time::Instant;
+
+// -----------------------------------------------------------------------------
+// QueryTimeout
+// -----------------------------------------------------------------------------
+
+/// Asks whether a long-running operation should stop.
+///
+/// Equivalent to `org.apache.lucene.index.QueryTimeout`.
+pub trait QueryTimeout: Send + Sync + std::fmt::Debug {
+    /// Returns `true` once the operation has run past its allowance.
+    ///
+    /// Equivalent to `QueryTimeout.shouldExit()`.
+    fn should_exit(&self) -> bool;
+
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
+}
+
+/// A [`QueryTimeout`] that expires a fixed number of milliseconds after it is
+/// created.
+///
+/// Equivalent to `org.apache.lucene.index.QueryTimeoutImpl`.
+///
+/// **Divergence from Lucene 10.5.0.** Java stores an absolute `System.nanoTime()`
+/// deadline in a mutable `Long` field that `reset()` sets to `null`. Rust has no
+/// process-wide monotonic epoch to compare against, so this port stores an
+/// `Instant` deadline behind a lock. The observable behaviour is the same:
+/// `should_exit` is `false` before the deadline, `true` after it, and always
+/// `false` once `reset` has been called.
+#[derive(Debug)]
+pub struct QueryTimeoutImpl {
+    timeout_at: RwLock<Option<Instant>>,
+}
+
+impl QueryTimeoutImpl {
+    /// Creates a timeout that expires `time_allowed` milliseconds from now.
+    ///
+    /// A negative `time_allowed` means no timeout, as `Long.MAX_VALUE` does in
+    /// Java.
+    pub fn new(time_allowed: i64) -> Self {
+        let deadline = if time_allowed < 0 {
+            None
+        } else {
+            Instant::now().checked_add(std::time::Duration::from_millis(time_allowed as u64))
+        };
+        Self {
+            timeout_at: RwLock::new(deadline),
+        }
+    }
+
+    /// Returns the deadline, if one is set.
+    ///
+    /// Equivalent to `QueryTimeoutImpl.getTimeoutAt()`.
+    pub fn get_timeout_at(&self) -> Option<Instant> {
+        *self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Clears the deadline, so the timeout never fires again.
+    ///
+    /// Equivalent to `QueryTimeoutImpl.reset()`.
+    pub fn reset(&self) {
+        {
+            let mut guard = self
+                .timeout_at
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = None;
+        }
+    }
+}
+
+impl QueryTimeout for QueryTimeoutImpl {
+    /// `QueryTimeoutImpl.toString()`; see the [`Display`](std::fmt::Display)
+    /// implementation.
+    fn java_to_string(&self) -> String {
+        self.to_string()
+    }
+
+    fn should_exit(&self) -> bool {
+        match *self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Some(deadline) => Instant::now() > deadline,
+            None => false,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ApproximatePriorityQueue
+// -----------------------------------------------------------------------------
+
+/// Number of sparse slots, one per bit of the `used_slots` bitset.
+const SPARSE_SLOTS: usize = u64::BITS as usize;
+
+/// A priority queue that only approximately orders its entries by weight.
+///
+/// Equivalent to `org.apache.lucene.index.ApproximatePriorityQueue`. Slots `0` to
+/// `63` are sparsely populated and indexed by the number of leading zeros of an
+/// entry's weight, so heavier entries sit closer to the front; slots from `64`
+/// onwards are densely populated and polled back to front.
+pub struct ApproximatePriorityQueue<T> {
+    slots: Vec<Option<T>>,
+    used_slots: u64,
+}
+
+impl<T> Default for ApproximatePriorityQueue<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> ApproximatePriorityQueue<T> {
+    /// Creates an empty queue.
+    pub fn new() -> Self {
+        let mut slots = Vec::with_capacity(SPARSE_SLOTS);
+        slots.resize_with(SPARSE_SLOTS, || None);
+        Self {
+            slots,
+            used_slots: 0,
+        }
+    }
+
+    /// Adds `entry` with the given `weight`.
+    ///
+    /// Equivalent to `ApproximatePriorityQueue.add(T, long)`.
+    pub fn add(&mut self, entry: T, weight: i64) {
+        let expected_slot = (weight as u64).leading_zeros() as usize;
+        let free_slots = !self.used_slots;
+        // Java's `>>>` takes the shift count modulo 64, so a weight of zero
+        // (64 leading zeros) shifts by nothing; `wrapping_shr` does the same.
+        let destination_slot = expected_slot
+            + free_slots
+                .wrapping_shr(expected_slot as u32)
+                .trailing_zeros() as usize;
+        debug_assert!(destination_slot >= expected_slot);
+        if destination_slot < SPARSE_SLOTS {
+            self.used_slots |= 1u64 << destination_slot;
+            debug_assert!(self.slots[destination_slot].is_none());
+            self.slots[destination_slot] = Some(entry);
+        } else {
+            self.slots.push(Some(entry));
+        }
+    }
+
+    /// Removes and returns the first entry satisfying `predicate`, or `None`.
+    ///
+    /// Equivalent to `ApproximatePriorityQueue.poll(Predicate<T>)`.
+    pub fn poll(&mut self, mut predicate: impl FnMut(&T) -> bool) -> Option<T> {
+        let mut next_slot = 0usize;
+        while next_slot < SPARSE_SLOTS {
+            let next_used_slot =
+                next_slot + (self.used_slots >> next_slot).trailing_zeros() as usize;
+            if next_used_slot >= SPARSE_SLOTS {
+                break;
+            }
+            let matches = self.slots[next_used_slot]
+                .as_ref()
+                .map(&mut predicate)
+                .unwrap_or(false);
+            if matches {
+                self.used_slots &= !(1u64 << next_used_slot);
+                return self.slots[next_used_slot].take();
+            }
+            next_slot = next_used_slot + 1;
+        }
+
+        // The dense region is polled in descending order, so that a shrinking
+        // number of indexing threads keeps reusing the same entry and the list
+        // only ever shortens from its end.
+        let mut index = self.slots.len();
+        while index > SPARSE_SLOTS {
+            index -= 1;
+            let matches = self.slots[index]
+                .as_ref()
+                .map(&mut predicate)
+                .unwrap_or(false);
+            if matches {
+                return self.slots.remove(index);
+            }
+        }
+        None
+    }
+
+    /// Returns `true` when the queue holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.used_slots == 0 && self.slots.len() == SPARSE_SLOTS
+    }
+}
+
+impl<T: PartialEq> ApproximatePriorityQueue<T> {
+    /// Returns `true` when `entry` is in the queue.
+    pub fn contains(&self, entry: &T) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.as_ref().is_some_and(|value| value == entry))
+    }
+
+    /// Removes `entry`, returning whether it was present.
+    pub fn remove(&mut self, entry: &T) -> bool {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|value| value == entry))
+        else {
+            return false;
+        };
+        if index >= SPARSE_SLOTS {
+            self.slots.remove(index);
+        } else {
+            self.used_slots &= !(1u64 << index);
+            self.slots[index] = None;
+        }
+        true
+    }
+}
+
+// -----------------------------------------------------------------------------
+// ConcurrentApproximatePriorityQueue
+// -----------------------------------------------------------------------------
+
+/// Lowest concurrency a [`ConcurrentApproximatePriorityQueue`] accepts.
+pub const MIN_CONCURRENCY: usize = 1;
+/// Highest concurrency a [`ConcurrentApproximatePriorityQueue`] accepts.
+pub const MAX_CONCURRENCY: usize = 256;
+
+/// Returns the default concurrency: roughly four entries per slot when indexing
+/// with one thread per core.
+fn default_concurrency() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    (cores / 4).clamp(MIN_CONCURRENCY, MAX_CONCURRENCY)
+}
+
+/// Shards an [`ApproximatePriorityQueue`] across several locks.
+///
+/// Equivalent to `org.apache.lucene.index.ConcurrentApproximatePriorityQueue`.
+pub struct ConcurrentApproximatePriorityQueue<T> {
+    queues: Vec<Mutex<ApproximatePriorityQueue<T>>>,
+}
+
+impl<T> Default for ConcurrentApproximatePriorityQueue<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> ConcurrentApproximatePriorityQueue<T> {
+    /// Creates a queue with the default concurrency.
+    ///
+    /// Equivalent to `ConcurrentApproximatePriorityQueue()`
+    /// (`ConcurrentApproximatePriorityQueue.java:47-49`), whose concurrency
+    /// `getConcurrency()` keeps inside the accepted range.
+    pub fn new() -> Self {
+        Self::build(default_concurrency())
+    }
+
+    /// Creates a queue sharded `concurrency` ways.
+    ///
+    /// Equivalent to `ConcurrentApproximatePriorityQueue(int)`
+    /// (`ConcurrentApproximatePriorityQueue.java:51-70`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgument("concurrency must be in [1, 256], got N")` when
+    /// `concurrency` is outside `[MIN_CONCURRENCY, MAX_CONCURRENCY]`.
+    pub fn with_concurrency(concurrency: usize) -> Result<Self> {
+        if !(MIN_CONCURRENCY..=MAX_CONCURRENCY).contains(&concurrency) {
+            return Err(LuceneError::illegal_argument(format!(
+                "concurrency must be in [{MIN_CONCURRENCY}, {MAX_CONCURRENCY}], got {concurrency}"
+            )));
+        }
+        Ok(Self::build(concurrency))
+    }
+
+    /// The body of the constructor once `concurrency` is known to be valid.
+    fn build(concurrency: usize) -> Self {
+        let mut queues = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            queues.push(Mutex::new(ApproximatePriorityQueue::new()));
+        }
+        Self { queues }
+    }
+
+    /// Returns how many shards this queue has.
+    pub fn concurrency(&self) -> usize {
+        self.queues.len()
+    }
+
+    /// The shards: Java's package-private `locks` and `queues` arrays, the
+    /// lock `locks[i]` guarding `queues[i]` being `queues()[i]` itself. `pub`
+    /// for `TestConcurrentApproximatePriorityQueue`, which reads a shard and
+    /// holds its lock.
+    pub fn queues(&self) -> &[Mutex<ApproximatePriorityQueue<T>>] {
+        &self.queues
+    }
+
+    /// Seeds the shard scan so entries spread across shards with a little thread
+    /// affinity, as Java does with the thread's hash code.
+    ///
+    /// Equivalent to `Thread.currentThread().hashCode() & 0xFFFF`
+    /// (`ConcurrentApproximatePriorityQueue.java:76, 101`). Java's identity
+    /// hash is computed once per thread and kept in the object header; the
+    /// port's stand-in, the SipHash of the thread's [`ThreadId`](std::thread::ThreadId),
+    /// is likewise computed once per thread and kept in a thread-local.
+    ///
+    /// PERF: hashing `std::thread::current()` on every `add` and `poll` cost
+    /// 0.93 % of `test_postings_suite_draws_match_lucene` (cycle 5, #588
+    /// item 3); the cached value is the same per thread, so shard order is
+    /// unchanged.
+    fn seed(&self) -> usize {
+        fn compute() -> usize {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            std::thread::current().id().hash(&mut hasher);
+            (hasher.finish() & 0xFFFF) as usize
+        }
+        thread_local! {
+            static THREAD_SEED: usize = compute();
+        }
+        // A thread-local already destroyed (a call from another
+        // thread-local's destructor) falls back to computing the same value.
+        THREAD_SEED
+            .try_with(|seed| *seed)
+            .unwrap_or_else(|_| compute())
+    }
+
+    /// Adds `entry` with the given `weight`, preferring an uncontended shard.
+    pub fn add(&self, entry: T, weight: i64) {
+        let seed = self.seed();
+        let n = self.queues.len();
+        for i in 0..n {
+            let index = (seed + i) % n;
+            if let Ok(mut queue) = self.queues[index].try_lock() {
+                queue.add(entry, weight);
+                return;
+            }
+        }
+        let index = seed % n;
+        {
+            let mut queue = self.queues[index]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue.add(entry, weight);
+        }
+    }
+
+    /// Removes and returns an entry satisfying `predicate`, scanning uncontended
+    /// shards first and then blocking on each in turn.
+    pub fn poll(&self, mut predicate: impl FnMut(&T) -> bool) -> Option<T> {
+        let seed = self.seed();
+        let n = self.queues.len();
+        for i in 0..n {
+            let index = (seed + i) % n;
+            if let Ok(mut queue) = self.queues[index].try_lock() {
+                if let Some(entry) = queue.poll(&mut predicate) {
+                    return Some(entry);
+                }
+            }
+        }
+        for i in 0..n {
+            let index = (seed + i) % n;
+            {
+                let mut queue = self.queues[index]
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(entry) = queue.poll(&mut predicate) {
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<T: PartialEq> ConcurrentApproximatePriorityQueue<T> {
+    /// Returns `true` when `entry` is in any shard.
+    ///
+    /// Only used for assertions: as Java's (`ConcurrentApproximatePriorityQueue.java:137-142`),
+    /// it fails when assertions are disabled.
+    pub fn contains(&self, entry: &T) -> bool {
+        // `boolean assertionsAreEnabled = false; assert assertionsAreEnabled =
+        // true; if (assertionsAreEnabled == false) throw new AssertionError(...)`.
+        if !cfg!(debug_assertions) {
+            panic!("contains should only be used for assertions");
+        }
+        self.queues.iter().any(|queue| {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(entry)
+        })
+    }
+
+    /// Removes `entry` from whichever shard holds it.
+    pub fn remove(&self, entry: &T) -> bool {
+        for queue in &self.queues {
+            {
+                let mut queue = queue
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if queue.remove(entry) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+// -----------------------------------------------------------------------------
+// LockableConcurrentApproximatePriorityQueue
+// -----------------------------------------------------------------------------
+
+/// An entry that can be locked before being handed out by
+/// [`LockableConcurrentApproximatePriorityQueue`].
+///
+/// **Divergence from Lucene 10.5.0.** Java bounds the queue's element type on
+/// `java.util.concurrent.locks.Lock` and calls `tryLock`/`unlock` on the entry
+/// itself. Rust's standard library has no object-safe lock trait to bound on, so
+/// the port declares the two operations it actually uses. The lock taken by
+/// [`try_lock_entry`](Self::try_lock_entry) is held by the entry until
+/// [`unlock_entry`](Self::unlock_entry), or until the owner takes it over, as
+/// `DocumentsWriterPerThreadPool.getAndLock` does with the DWPT it polls.
+pub trait TryLockable {
+    /// Attempts to take the entry's lock without blocking.
+    fn try_lock_entry(&self) -> bool;
+    /// Releases the entry's lock.
+    fn unlock_entry(&self);
+}
+
+/// A queue whose entries are handed out already locked.
+///
+/// Equivalent to
+/// `org.apache.lucene.index.LockableConcurrentApproximatePriorityQueue`.
+pub struct LockableConcurrentApproximatePriorityQueue<T: TryLockable> {
+    queue: ConcurrentApproximatePriorityQueue<T>,
+    add_and_unlock_counter: AtomicUsize,
+}
+
+impl<T: TryLockable> Default for LockableConcurrentApproximatePriorityQueue<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: TryLockable> LockableConcurrentApproximatePriorityQueue<T> {
+    /// Creates a queue with the default concurrency.
+    pub fn new() -> Self {
+        Self {
+            queue: ConcurrentApproximatePriorityQueue::new(),
+            add_and_unlock_counter: AtomicUsize::new(0),
+        }
+    }
+
+    /// Creates a queue sharded `concurrency` ways.
+    ///
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue(int)`
+    /// (`LockableConcurrentApproximatePriorityQueue.java:28-30`).
+    ///
+    /// # Errors
+    ///
+    /// As [`ConcurrentApproximatePriorityQueue::with_concurrency`].
+    pub fn with_concurrency(concurrency: usize) -> Result<Self> {
+        Ok(Self {
+            queue: ConcurrentApproximatePriorityQueue::with_concurrency(concurrency)?,
+            add_and_unlock_counter: AtomicUsize::new(0),
+        })
+    }
+
+    /// Polls an entry whose lock could be taken, retrying while entries keep
+    /// arriving.
+    ///
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue.lockAndPoll()`.
+    pub fn lock_and_poll(&self) -> Option<T> {
+        loop {
+            let before = self.add_and_unlock_counter.load(Ordering::Acquire);
+            if let Some(entry) = self.queue.poll(|entry| entry.try_lock_entry()) {
+                return Some(entry);
+            }
+            if before == self.add_and_unlock_counter.load(Ordering::Acquire) {
+                return None;
+            }
+        }
+    }
+
+    /// Adds `entry`, then releases its lock.
+    ///
+    /// Equivalent to `LockableConcurrentApproximatePriorityQueue.addAndUnlock`
+    /// (`LockableConcurrentApproximatePriorityQueue.java:69-73`): the entry is
+    /// queued while still locked, so a concurrent `lock_and_poll` cannot take
+    /// it before it is released, and the counter bump tells such a poller that
+    /// retrying is worthwhile. Java keeps a reference to the entry after
+    /// handing it to the queue; here the caller's handle is cloned, which is
+    /// why `T` must be `Clone` (an `Arc` in practice).
+    pub fn add_and_unlock(&self, entry: T, weight: i64)
+    where
+        T: Clone,
+    {
+        self.queue.add(entry.clone(), weight);
+        entry.unlock_entry();
+        self.add_and_unlock_counter.fetch_add(1, Ordering::Release);
+    }
+}
+
+impl<T: TryLockable + PartialEq> LockableConcurrentApproximatePriorityQueue<T> {
+    /// Returns `true` when `entry` is in the queue.
+    pub fn contains(&self, entry: &T) -> bool {
+        self.queue.contains(entry)
+    }
+
+    /// Removes `entry` from the queue.
+    pub fn remove(&self, entry: &T) -> bool {
+        self.queue.remove(entry)
+    }
+}
+
+impl std::fmt::Display for QueryTimeoutImpl {
+    /// Port of `QueryTimeoutImpl.toString()`, which is
+    /// `"timeoutAt: " + timeoutAt + " (System.nanoTime(): " + nanoTime() + ")"`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `timeoutAt` is a `Long` — a
+    /// `System.nanoTime()` reading, or `null` when no timeout was set — and the
+    /// second figure is a fresh `nanoTime()`. Rust's [`Instant`] is opaque and
+    /// has no such absolute reading, so both numbers are expressed as
+    /// nanoseconds relative to the process's own reference point: the deadline
+    /// as nanoseconds from now (negative once it has passed), and the current
+    /// reading as `0`. Neither number is stable between runs in Java either —
+    /// `nanoTime()`'s origin is arbitrary — so nothing may parse them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let deadline = self
+            .timeout_at
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match deadline.as_ref() {
+            Some(instant) => {
+                let now = std::time::Instant::now();
+                let remaining = if *instant >= now {
+                    (*instant - now).as_nanos() as i128
+                } else {
+                    -((now - *instant).as_nanos() as i128)
+                };
+                write!(f, "timeoutAt: {remaining} (System.nanoTime(): 0)")
+            }
+            None => f.write_str("timeoutAt: null (System.nanoTime(): 0)"),
+        }
+    }
+}

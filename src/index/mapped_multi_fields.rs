@@ -1,0 +1,1219 @@
+//! `MappedMultiFields` ported from `org.apache.lucene.index`.
+//!
+//! This is the [`Fields`] view a segment merge reads from. It layers two
+//! translations on top of the source segments:
+//!
+//! 1. [`MultiFields`] / [`MultiTerms`] / [`MultiTermsEnum`] merge the source
+//!    segments' term dictionaries into one sorted, deduplicated stream;
+//! 2. [`MappingMultiPostingsEnum`] re-maps each term's postings out of the
+//!    composite doc-ID space and into the merged segment's, dropping deleted
+//!    documents and applying any index sort.
+//!
+//! The per-term statistics (`doc_freq`, `total_term_freq`, and the field-level
+//! sums) are deliberately unavailable: during a merge they would have to be
+//! recomputed after deletions, and the codec that consumes this view derives
+//! them from the postings it actually writes. Lucene enforces that by throwing
+//! `UnsupportedOperationException`, and so does this port.
+//!
+//! # Reference
+//!
+//! - `org.apache.lucene.index.MappedMultiFields`
+//! - `org.apache.lucene.index.FilterLeafReader.FilterFields` /
+//!   `FilterTerms` / `FilterTermsEnum` (the delegation bases it extends)
+
+#![deny(unsafe_code)]
+
+use std::sync::Arc;
+
+use crate::error::{LuceneError, Result};
+use crate::index::filter_reader::FilterFields;
+use crate::index::mapping_multi_postings_enum::MappingMultiPostingsEnum;
+use crate::index::merge::MergeState;
+use crate::index::multi_fields::{MultiFields, MultiPostingsEnum, MultiTerms, MultiTermsEnum};
+use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
+use crate::index::terms::{EmptyTermsEnum, Fields, SeekStatus, TermState, Terms, TermsEnum};
+use crate::util::attribute::AttributeSource;
+use crate::util::BytesRef;
+
+/// A [`Fields`] view that merges several segments' fields into one and maps
+/// around deleted documents. Used for merging.
+///
+/// Equivalent to `org.apache.lucene.index.MappedMultiFields`.
+///
+/// Java derives this class from `FilterLeafReader.FilterFields` and inherits
+/// `iterator()` and `size()` from it; this port composes the same base, as a
+/// [`FilterFields`] over the [`MultiFields`] the constructor takes, and
+/// forwards those two methods to it.
+///
+/// **Deliberate divergence**: the base is typed over `MultiFields` — the only
+/// delegate the constructor accepts — rather than over any `Fields`, so the
+/// delegate is reached typed and the two downcasts the Java class needs to get
+/// back to the concrete types (`(MultiTerms) in.terms(f)` and
+/// `(MultiTermsEnum) in.iterator()`) disappear.
+pub struct MappedMultiFields {
+    merge_state: Arc<MergeState>,
+    base: FilterFields<MultiFields>,
+}
+
+impl std::fmt::Debug for MappedMultiFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MappedMultiFields")
+            .field("num_subs", &self.base.get_delegate().get_sub_fields().len())
+            .field("merge_state", &self.merge_state)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MappedMultiFields {
+    /// Creates a `MappedMultiFields` for merging, over `merge_state` and the
+    /// merged view of terms in `multi_fields`.
+    ///
+    /// Equivalent to `MappedMultiFields(MergeState, MultiFields)`.
+    ///
+    /// `merge_state` is shared with every terms enum and postings enum this
+    /// view hands out, which is why it arrives as an [`Arc`]: Java passes the
+    /// same `MergeState` object by reference for exactly the same reason.
+    pub fn new(merge_state: Arc<MergeState>, multi_fields: MultiFields) -> Self {
+        Self {
+            merge_state,
+            base: FilterFields::new(Box::new(multi_fields)),
+        }
+    }
+
+    /// Returns the merged, unmapped view this instance wraps.
+    ///
+    /// Equivalent to reading the protected `FilterFields.in` field.
+    pub fn inner(&self) -> &MultiFields {
+        self.base.get_delegate()
+    }
+}
+
+impl Fields for MappedMultiFields {
+    /// Inherited from `FilterFields.iterator()`.
+    fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        self.base.iterator()
+    }
+
+    fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+        Ok(self.base.get_delegate().multi_terms(field)?.map(|terms| {
+            Arc::new(MappedMultiTerms::new(
+                field,
+                Arc::clone(&self.merge_state),
+                terms,
+            )) as Arc<dyn Terms>
+        }))
+    }
+
+    /// Inherited from `FilterFields.size()`.
+    fn size(&self) -> i32 {
+        self.base.size()
+    }
+}
+
+/// The [`Terms`] of one field, merged across the source segments and mapped
+/// into the merged segment's doc-ID space.
+///
+/// Equivalent to `MappedMultiFields.MappedMultiTerms`.
+///
+/// As in Java, [`Terms::size`], [`Terms::sum_total_term_freq`],
+/// [`Terms::sum_doc_freq`] and [`Terms::doc_count`] throw
+/// `UnsupportedOperationException` (`MappedMultiFields.java:74-92`), so that a
+/// codec consulting them during a merge fails loudly rather than writing
+/// statistics that ignore deletions.
+struct MappedMultiTerms {
+    field: String,
+    merge_state: Arc<MergeState>,
+    /// The unmapped merged view. Held as the shared handle `MultiFields`
+    /// memoises per field, so wrapping does not force a rebuild.
+    inner: Arc<MultiTerms>,
+}
+
+impl MappedMultiTerms {
+    fn new(field: &str, merge_state: Arc<MergeState>, inner: Arc<MultiTerms>) -> Self {
+        Self {
+            field: field.to_string(),
+            merge_state,
+            inner,
+        }
+    }
+
+    /// Wraps a merged terms enum, or returns the empty enum when the merge
+    /// produced no terms at all (LUCENE-6826).
+    fn wrap(&self, merged: Option<MultiTermsEnum>) -> Box<dyn TermsEnum> {
+        match merged {
+            None => Box::new(EmptyTermsEnum::new()) as Box<dyn TermsEnum>,
+            Some(enumerator) => Box::new(MappedMultiTermsEnum::new(
+                &self.field,
+                Arc::clone(&self.merge_state),
+                enumerator,
+            )) as Box<dyn TermsEnum>,
+        }
+    }
+}
+
+impl Terms for MappedMultiTerms {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        Ok(self.wrap(self.inner.multi_iterator()?))
+    }
+
+    fn size(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn doc_count(&self) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.inner.has_freqs()
+    }
+
+    fn has_offsets(&self) -> bool {
+        self.inner.has_offsets()
+    }
+
+    fn has_positions(&self) -> bool {
+        self.inner.has_positions()
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.inner.has_payloads()
+    }
+
+    fn min(&self) -> Result<Option<BytesRef>> {
+        self.inner.min()
+    }
+
+    fn max(&self) -> Result<Option<BytesRef>> {
+        self.inner.max()
+    }
+}
+
+/// The merged [`TermsEnum`] of one field, handing out postings already mapped
+/// into the merged segment's doc-ID space.
+///
+/// Equivalent to `MappedMultiFields.MappedMultiTermsEnum`.
+struct MappedMultiTermsEnum {
+    field: String,
+    merge_state: Arc<MergeState>,
+    inner: MultiTermsEnum,
+}
+
+impl MappedMultiTermsEnum {
+    fn new(field: &str, merge_state: Arc<MergeState>, inner: MultiTermsEnum) -> Self {
+        Self {
+            field: field.to_string(),
+            merge_state,
+            inner,
+        }
+    }
+
+    /// `throw new UnsupportedOperationException()`
+    /// (`MappedMultiFields.java:107-114`), which has no message.
+    fn unsupported(&self, _what: &str) -> LuceneError {
+        LuceneError::unsupported_operation(String::new())
+    }
+}
+
+impl std::fmt::Display for MappedMultiTermsEnum {
+    /// `MappedMultiTermsEnum` declares no `toString()` in Lucene 10.5.0, so
+    /// `java.lang.Object`'s applies: the binary class name, `@`, and the
+    /// identity hash. See
+    /// [`java_object_to_string`](crate::index::index_reader::java_object_to_string)
+    /// for why only the hexadecimal suffix diverges.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string(
+            "org.apache.lucene.index.MappedMultiFields$MappedMultiTermsEnum",
+            self,
+        ))
+    }
+}
+
+impl TermsEnum for MappedMultiTermsEnum {
+    fn attributes(&mut self) -> &mut AttributeSource {
+        self.inner.attributes()
+    }
+
+    fn seek_exact(&mut self, text: &BytesRef) -> Result<bool> {
+        self.inner.seek_exact(text)
+    }
+
+    fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+        self.inner.seek_ceil(text)
+    }
+
+    fn seek_ord(&mut self, ord: i64) -> Result<()> {
+        self.inner.seek_ord(ord)
+    }
+
+    fn seek_term_state(&mut self, text: &BytesRef, state: &dyn TermState) -> Result<()> {
+        self.inner.seek_term_state(text, state)
+    }
+
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        self.inner.term()
+    }
+
+    fn ord(&self) -> Result<i64> {
+        self.inner.ord()
+    }
+
+    fn doc_freq(&mut self) -> Result<i32> {
+        Err(self.unsupported("doc_freq"))
+    }
+
+    fn total_term_freq(&mut self) -> Result<i64> {
+        Err(self.unsupported("total_term_freq"))
+    }
+
+    /// Equivalent to `MappedMultiTermsEnum.postings(PostingsEnum, int)`
+    /// (`MappedMultiFields.java:116-134`).
+    ///
+    /// `reuse` is reused exactly when Java reuses it: when it is a
+    /// [`MappingMultiPostingsEnum`] ([`PostingsEnum::as_any_mut`] standing for
+    /// `instanceof`) for this very field; the box handed back is then the one
+    /// that came in. Its [`MultiPostingsEnum`] is offered to the wrapped
+    /// [`MultiTermsEnum`] as `reuse` in turn, and what comes back — cast to
+    /// `MultiPostingsEnum`, as Java casts — resets it.
+    ///
+    /// # Errors
+    ///
+    /// Returns Java's `ClassCastException`
+    /// when the wrapped enum answers anything but a `MultiPostingsEnum`, and
+    /// propagates whatever building or resetting the postings raises.
+    fn postings(
+        &mut self,
+        reuse: Option<Box<dyn PostingsEnum>>,
+        flags: i32,
+    ) -> Result<Option<Box<dyn PostingsEnum>>> {
+        let mut mapping_docs_and_positions_enum: Box<dyn PostingsEnum> = match reuse {
+            // `reuse instanceof MappingMultiPostingsEnum postings`
+            Some(mut reuse) => match reuse
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            {
+                Some(postings) if postings.field() == self.field => reuse,
+                _ => Box::new(MappingMultiPostingsEnum::new(
+                    &self.field,
+                    Arc::clone(&self.merge_state),
+                )?),
+            },
+            None => Box::new(MappingMultiPostingsEnum::new(
+                &self.field,
+                Arc::clone(&self.merge_state),
+            )?),
+        };
+        let mapping = mapping_docs_and_positions_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked or built as a MappingMultiPostingsEnum"
+                        .to_string(),
+                )
+            })?;
+
+        let mut docs_and_positions_enum = self
+            .inner
+            .postings(mapping.take_multi_docs_and_positions_enum(), flags)?
+            // A `null` passes Java's cast and fails in `reset`, which
+            // dereferences it at once.
+            .ok_or_else(LuceneError::null_pointer)?;
+        // `(MultiPostingsEnum) in.postings(...)`
+        if docs_and_positions_enum
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
+            .is_none()
+        {
+            return Err(LuceneError::unchecked(
+                "java.lang.ClassCastException",
+                format!(
+                    "{docs_and_positions_enum} cannot be cast to class \
+                     org.apache.lucene.index.MultiPostingsEnum"
+                ),
+            ));
+        }
+        mapping.reset(docs_and_positions_enum)?;
+        Ok(Some(mapping_docs_and_positions_enum))
+    }
+
+    /// Inherited from `FilterTermsEnum.impacts(int)`, which delegates to the
+    /// wrapped `MultiTermsEnum` (`FilterLeafReader.java:232-235`),
+    /// so its documents are in the composite doc-ID space, not the merged one.
+    fn impacts(&mut self, flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+        self.inner.impacts(flags)
+    }
+
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        self.inner.term_state()
+    }
+
+    fn prefer_seek_exact(&self) -> bool {
+        self.inner.prefer_seek_exact()
+    }
+
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.inner.next()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::LuceneErrorKind;
+    use crate::util::automaton::CompiledAutomaton;
+
+    use std::collections::{BTreeMap, HashMap};
+
+    use crate::index::merge::{deletion_doc_map, identity_doc_map, DocMap};
+    use crate::index::{FieldInfos, ReaderSlice, SegmentInfo};
+    use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use crate::util::{Bits, StringHelper, Version};
+
+    // -----------------------------------------------------------------------
+    // Fixtures: an in-memory Fields / Terms / TermsEnum / PostingsEnum
+    // -----------------------------------------------------------------------
+
+    /// Postings over an explicit list of local doc IDs.
+    struct VecPostings {
+        docs: Vec<i32>,
+        pos: i32,
+    }
+
+    impl VecPostings {
+        fn boxed(docs: &[i32]) -> Box<dyn PostingsEnum> {
+            Box::new(Self {
+                docs: docs.to_vec(),
+                pos: -1,
+            })
+        }
+    }
+
+    impl DocIdSetIterator for VecPostings {
+        fn doc_id(&self) -> i32 {
+            if self.pos < 0 {
+                -1
+            } else if (self.pos as usize) >= self.docs.len() {
+                NO_MORE_DOCS
+            } else {
+                self.docs[self.pos as usize]
+            }
+        }
+
+        fn next_doc(&mut self) -> Result<i32> {
+            self.pos += 1;
+            if (self.pos as usize) >= self.docs.len() {
+                Ok(NO_MORE_DOCS)
+            } else {
+                Ok(self.docs[self.pos as usize])
+            }
+        }
+
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            while self.pos + 1 < self.docs.len() as i32
+                && self.docs[(self.pos + 1) as usize] < target
+            {
+                self.pos += 1;
+            }
+            self.next_doc()
+        }
+
+        fn cost(&self) -> i64 {
+            self.docs.len() as i64
+        }
+    }
+
+    impl std::fmt::Display for VecPostings {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecPostings")
+        }
+    }
+
+    impl PostingsEnum for VecPostings {
+        fn freq(&self) -> Result<i32> {
+            Ok(1)
+        }
+        fn next_position(&mut self) -> Result<i32> {
+            Ok(-1)
+        }
+        fn start_offset(&self) -> i32 {
+            -1
+        }
+        fn end_offset(&self) -> i32 {
+            -1
+        }
+        fn get_payload(&self) -> Result<Option<&[u8]>> {
+            Ok(None)
+        }
+    }
+
+    /// A term with its statistics and its local postings list.
+    type Entry = (BytesRef, i32, i64, Vec<i32>);
+
+    struct VecTermsEnum {
+        entries: Vec<Entry>,
+        pos: i32,
+        atts: AttributeSource,
+    }
+
+    impl VecTermsEnum {
+        fn new(entries: Vec<Entry>) -> Self {
+            Self {
+                entries,
+                pos: -1,
+                atts: AttributeSource::new(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for VecTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("VecTermsEnum")
+        }
+    }
+
+    impl TermsEnum for VecTermsEnum {
+        fn attributes(&mut self) -> &mut AttributeSource {
+            &mut self.atts
+        }
+
+        fn seek_ceil(&mut self, text: &BytesRef) -> Result<SeekStatus> {
+            match self.entries.iter().position(|(t, _, _, _)| t >= text) {
+                Some(i) => {
+                    self.pos = i as i32;
+                    if self.entries[i].0 == *text {
+                        Ok(SeekStatus::FOUND)
+                    } else {
+                        Ok(SeekStatus::NOT_FOUND)
+                    }
+                }
+                None => {
+                    self.pos = self.entries.len() as i32;
+                    Ok(SeekStatus::END)
+                }
+            }
+        }
+
+        fn seek_ord(&mut self, ord: i64) -> Result<()> {
+            self.pos = ord as i32;
+            Ok(())
+        }
+
+        fn term(&self) -> Result<Option<&BytesRef>> {
+            Ok(Some(&self.entries[self.pos as usize].0))
+        }
+
+        fn ord(&self) -> Result<i64> {
+            Ok(self.pos as i64)
+        }
+
+        fn doc_freq(&mut self) -> Result<i32> {
+            Ok(self.entries[self.pos as usize].1)
+        }
+
+        fn total_term_freq(&mut self) -> Result<i64> {
+            Ok(self.entries[self.pos as usize].2)
+        }
+
+        fn postings(
+            &mut self,
+            _reuse: Option<Box<dyn PostingsEnum>>,
+            _flags: i32,
+        ) -> Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(VecPostings::boxed(&self.entries[self.pos as usize].3)))
+        }
+
+        fn impacts(&mut self, _flags: i32) -> Result<Box<dyn ImpactsEnum>> {
+            Err(LuceneError::unsupported_operation("not used".to_string()))
+        }
+
+        fn next(&mut self) -> Result<Option<&BytesRef>> {
+            self.pos += 1;
+            if (self.pos as usize) >= self.entries.len() {
+                self.pos = self.entries.len() as i32;
+                Ok(None)
+            } else {
+                Ok(Some(&self.entries[self.pos as usize].0))
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct VecTerms {
+        entries: Vec<Entry>,
+        has_freqs: bool,
+        has_offsets: bool,
+        has_positions: bool,
+        has_payloads: bool,
+    }
+
+    impl VecTerms {
+        fn new(entries: Vec<Entry>) -> Self {
+            Self {
+                entries,
+                has_freqs: true,
+                has_offsets: false,
+                has_positions: true,
+                has_payloads: false,
+            }
+        }
+    }
+
+    impl Terms for VecTerms {
+        fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+            Ok(Box::new(VecTermsEnum::new(self.entries.clone())))
+        }
+
+        fn intersect(
+            &self,
+            _compiled: &CompiledAutomaton,
+            _start_term: Option<&BytesRef>,
+        ) -> Result<Box<dyn TermsEnum>> {
+            // The automaton is irrelevant here: the point of the test that uses
+            // this is that whatever comes back is still wrapped and mapped.
+            self.iterator()
+        }
+
+        fn size(&self) -> Result<i64> {
+            Ok(self.entries.len() as i64)
+        }
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, _, ttf, _)| *ttf).sum())
+        }
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.entries.iter().map(|(_, df, _, _)| *df as i64).sum())
+        }
+        fn doc_count(&self) -> Result<i32> {
+            Ok({
+                self.entries
+                    .iter()
+                    .flat_map(|(_, _, _, docs)| docs.iter().copied())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len() as i32
+            })
+        }
+        fn has_freqs(&self) -> bool {
+            self.has_freqs
+        }
+        fn has_offsets(&self) -> bool {
+            self.has_offsets
+        }
+        fn has_positions(&self) -> bool {
+            self.has_positions
+        }
+        fn has_payloads(&self) -> bool {
+            self.has_payloads
+        }
+    }
+
+    struct VecFields {
+        fields: BTreeMap<String, VecTerms>,
+    }
+
+    impl VecFields {
+        fn boxed<I>(iter: I) -> Box<dyn Fields>
+        where
+            I: IntoIterator<Item = (&'static str, VecTerms)>,
+        {
+            Box::new(Self {
+                fields: iter
+                    .into_iter()
+                    .map(|(name, terms)| (name.to_string(), terms))
+                    .collect(),
+            })
+        }
+    }
+
+    impl Fields for VecFields {
+        fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+            Box::new(self.fields.keys().cloned().collect::<Vec<_>>().into_iter())
+        }
+
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+            Ok(self
+                .fields
+                .get(field)
+                .map(|t| Arc::new(t.clone()) as Arc<dyn Terms>))
+        }
+
+        fn size(&self) -> i32 {
+            self.fields.len() as i32
+        }
+    }
+
+    fn term(text: &str) -> BytesRef {
+        BytesRef::new(text.as_bytes().to_vec())
+    }
+
+    fn entry(text: &str, docs: &[i32]) -> Entry {
+        (
+            term(text),
+            docs.len() as i32,
+            docs.len() as i64,
+            docs.to_vec(),
+        )
+    }
+
+    #[derive(Debug)]
+    struct LiveBits {
+        len: usize,
+        deleted: Vec<usize>,
+    }
+
+    impl Bits for LiveBits {
+        fn get(&self, index: usize) -> bool {
+            !self.deleted.contains(&index)
+        }
+        fn length(&self) -> usize {
+            self.len
+        }
+    }
+
+    fn segment_info(max_doc: i32) -> SegmentInfo {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        SegmentInfo::new_without_codec(
+            dir,
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_merged".to_string(),
+            max_doc,
+            false,
+            false,
+            HashMap::new(),
+            StringHelper::random_id(),
+            HashMap::new(),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn merge_state(doc_maps: Vec<DocMap>, max_docs: Vec<i32>) -> Arc<MergeState> {
+        let count = doc_maps.len();
+        Arc::new(MergeState::new(
+            doc_maps,
+            segment_info(max_docs.iter().sum()),
+            FieldInfos::empty(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| FieldInfos::empty()).collect(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| None).collect(),
+            (0..count).map(|_| None).collect(),
+            max_docs,
+            None,
+            false,
+            None,
+        ))
+    }
+
+    /// The scenario shared by most tests below.
+    ///
+    /// Two source segments:
+    ///
+    /// * segment 0 has 3 documents, of which local doc 1 is deleted, and holds
+    ///   `apple` on docs 0 and 2 and `pear` on the deleted doc 1;
+    /// * segment 1 has 2 documents, none deleted, and holds `apple` on doc 1
+    ///   and `plum` on doc 0. It also has a `title` field.
+    ///
+    /// The merged segment therefore numbers segment 0's surviving documents 0
+    /// and 1, and segment 1's documents 2 and 3. The composite (unmapped) view
+    /// would instead number them 0, 2, 3 and 4, so any test asserting a merged
+    /// doc ID also proves the mapping ran.
+    fn scenario() -> (Arc<MergeState>, MappedMultiFields) {
+        let seg0 = VecFields::boxed([(
+            "body",
+            VecTerms::new(vec![entry("apple", &[0, 2]), entry("pear", &[1])]),
+        )]);
+        let seg1 = VecFields::boxed([
+            (
+                "body",
+                VecTerms::new(vec![entry("apple", &[1]), entry("plum", &[0])]),
+            ),
+            ("title", VecTerms::new(vec![entry("rust", &[0])])),
+        ]);
+        let multi = MultiFields::new(
+            vec![seg0, seg1],
+            vec![ReaderSlice::new(0, 3, 0), ReaderSlice::new(3, 2, 1)],
+        );
+        let live = Box::new(LiveBits {
+            len: 3,
+            deleted: vec![1],
+        }) as Box<dyn Bits>;
+        let state = merge_state(
+            vec![deletion_doc_map(3, live, 0), identity_doc_map(2, 2)],
+            vec![3, 2],
+        );
+        let fields = MappedMultiFields::new(Arc::clone(&state), multi);
+        (state, fields)
+    }
+
+    fn drain(postings: &mut dyn PostingsEnum) -> Vec<i32> {
+        let mut docs = Vec::new();
+        loop {
+            let doc = postings.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                return docs;
+            }
+            docs.push(doc);
+        }
+    }
+
+    /// Positions a fresh terms enum on `text` and returns its mapped postings.
+    fn postings_for(fields: &MappedMultiFields, field: &str, text: &str) -> Vec<i32> {
+        let terms = fields.terms(field).unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(
+            enumerator.seek_exact(&term(text)).unwrap(),
+            "term '{text}' must exist"
+        );
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
+        drain(postings.as_mut())
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn postings_are_mapped_into_the_merged_doc_id_space() {
+        let (_state, fields) = scenario();
+        assert_eq!(
+            postings_for(&fields, "body", "apple"),
+            vec![0, 1, 3],
+            "segment 0's docs 0 and 2 become 0 and 1; segment 1's doc 1 becomes 3"
+        );
+    }
+
+    #[test]
+    fn the_unmapped_view_underneath_still_reports_composite_doc_ids() {
+        // Guards the test above from passing by accident: the merged view this
+        // type wraps numbers the same postings differently.
+        let (_state, fields) = scenario();
+        let terms = fields.inner().terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
+        assert_eq!(drain(postings.as_mut()), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn postings_drop_the_documents_the_merge_deletes() {
+        let (_state, fields) = scenario();
+        assert!(
+            postings_for(&fields, "body", "pear").is_empty(),
+            "'pear' only occurs on a deleted document"
+        );
+    }
+
+    #[test]
+    fn postings_of_a_term_held_by_a_single_segment_are_still_mapped() {
+        let (_state, fields) = scenario();
+        assert_eq!(postings_for(&fields, "body", "plum"), vec![2]);
+    }
+
+    #[test]
+    fn term_iteration_merges_and_deduplicates_the_source_segments() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        let mut seen = Vec::new();
+        while let Some(t) = enumerator.next().unwrap() {
+            seen.push(String::from_utf8(t.slice().to_vec()).unwrap());
+        }
+        assert_eq!(
+            seen,
+            vec!["apple".to_string(), "pear".to_string(), "plum".to_string()],
+            "'apple' appears in both segments but is exposed once"
+        );
+    }
+
+    #[test]
+    fn field_names_are_the_union_across_the_source_segments() {
+        let (_state, fields) = scenario();
+        let names: Vec<String> = fields.iterator().collect();
+        assert_eq!(names, vec!["body".to_string(), "title".to_string()]);
+        assert_eq!(
+            fields.size(),
+            -1,
+            "the merged field count is reported unknown"
+        );
+    }
+
+    #[test]
+    fn terms_are_none_for_a_field_no_segment_has() {
+        let (_state, fields) = scenario();
+        assert!(fields.terms("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_field_held_by_one_segment_only_is_still_available() {
+        let (_state, fields) = scenario();
+        assert_eq!(postings_for(&fields, "title", "rust"), vec![2]);
+    }
+
+    #[test]
+    fn field_level_statistics_are_unavailable_while_merging() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        // Java throws UnsupportedOperationException from all four
+        // (MappedMultiFields.java:74-92).
+        let unsupported = |e: Option<LuceneError>| {
+            matches!(
+                e,
+                Some(LuceneError {
+                    kind: LuceneErrorKind::UnsupportedOperation { .. },
+                    ..
+                })
+            )
+        };
+        assert!(unsupported(terms.size().err()));
+        assert!(unsupported(terms.sum_total_term_freq().err()));
+        assert!(unsupported(terms.sum_doc_freq().err()));
+        assert!(unsupported(terms.doc_count().err()));
+    }
+
+    #[test]
+    fn per_term_statistics_are_rejected_while_merging() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        assert!(matches!(
+            enumerator.doc_freq(),
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            enumerator.total_term_freq(),
+            Err(LuceneError {
+                kind: LuceneErrorKind::UnsupportedOperation { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn feature_flags_are_delegated_to_the_merged_terms() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        assert!(terms.has_freqs());
+        assert!(terms.has_positions());
+        assert!(!terms.has_offsets());
+        assert!(!terms.has_payloads());
+    }
+
+    #[test]
+    fn min_and_max_are_delegated_to_the_merged_terms() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        assert_eq!(
+            terms.min().unwrap().map(|t| text_of(&t)),
+            Some("apple".to_string())
+        );
+        assert_eq!(
+            terms.max().unwrap().map(|t| text_of(&t)),
+            Some("plum".to_string())
+        );
+    }
+
+    fn text_of(bytes: &BytesRef) -> String {
+        String::from_utf8(bytes.slice().to_vec()).unwrap()
+    }
+
+    #[test]
+    fn seek_ceil_and_ord_are_delegated_to_the_merged_enum() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert_eq!(
+            enumerator.seek_ceil(&term("peach")).unwrap(),
+            SeekStatus::NOT_FOUND
+        );
+        assert_eq!(text_of(enumerator.term().unwrap().unwrap()), "pear");
+        assert_eq!(enumerator.seek_ceil(&term("zzz")).unwrap(), SeekStatus::END);
+    }
+
+    #[test]
+    fn a_merge_with_no_terms_at_all_yields_the_empty_terms_enum() {
+        // LUCENE-6826: `MultiTermsEnum.reset` collapses to `TermsEnum.EMPTY`
+        // when no sub contributed a term, and the mapped view must not wrap it.
+        let seg0 = VecFields::boxed([("body", VecTerms::new(vec![]))]);
+        let seg1 = VecFields::boxed([("body", VecTerms::new(vec![]))]);
+        let multi = MultiFields::new(
+            vec![seg0, seg1],
+            vec![ReaderSlice::new(0, 2, 0), ReaderSlice::new(2, 2, 1)],
+        );
+        let state = merge_state(
+            vec![identity_doc_map(2, 0), identity_doc_map(2, 2)],
+            vec![2, 2],
+        );
+        let fields = MappedMultiFields::new(state, multi);
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.next().unwrap().is_none());
+    }
+
+    /// `MappedMultiTermsEnum` inherits `FilterTermsEnum.impacts`, which asks the
+    /// wrapped `MultiTermsEnum` (`FilterLeafReader.java:232-235`): its
+    /// documents are in the composite doc-ID space, deletions included.
+    #[test]
+    fn impacts_report_the_composite_doc_ids() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        let mut impacts = enumerator.impacts(0).unwrap();
+        let mut docs = Vec::new();
+        loop {
+            let doc = impacts.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                break;
+            }
+            docs.push(doc);
+        }
+        assert_eq!(docs, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn impacts_expose_a_single_trivial_level() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        let mut impacts_enum = enumerator.impacts(0).unwrap();
+        let impacts = impacts_enum.get_impacts().unwrap();
+        assert_eq!(impacts.num_levels(), 1);
+    }
+
+    /// `MappedMultiTerms` inherits `Terms.intersect` (`Terms.java:64-96`),
+    /// which walks the type's own iterator: the postings it hands out are the
+    /// mapped ones.
+    #[test]
+    fn intersect_walks_the_mapped_iterator() {
+        let (_state, fields) = scenario();
+        let automaton = crate::util::automaton::Automata::make_string("apple");
+        let compiled = CompiledAutomaton::new(automaton, true, false, false).unwrap();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.intersect(&compiled, None).unwrap();
+        assert_eq!(text_of(enumerator.next().unwrap().unwrap()), "apple");
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+        assert!(enumerator.next().unwrap().is_none());
+    }
+
+    /// With a start term, the default `Terms.intersect` seeks past it: its
+    /// `AutomatonTermsEnum` subclass substitutes `startTerm` for the first,
+    /// `null`, seek term (`Terms.java:85-94`), so the first term is after it.
+    #[test]
+    fn intersect_starts_after_the_start_term() {
+        let (_state, fields) = scenario();
+        let compiled = || {
+            CompiledAutomaton::new(
+                crate::util::automaton::Automata::make_any_string(),
+                false,
+                false,
+                false,
+            )
+            .unwrap()
+        };
+        let terms = fields.terms("body").unwrap().unwrap();
+        let collect = |start: Option<&BytesRef>| {
+            let mut enumerator = terms.intersect(&compiled(), start).unwrap();
+            let mut seen = Vec::new();
+            while let Some(term) = enumerator.next().unwrap() {
+                seen.push(text_of(term));
+            }
+            seen
+        };
+        assert_eq!(collect(None), vec!["apple", "pear", "plum"]);
+        assert_eq!(collect(Some(&term("pear"))), vec!["plum"]);
+    }
+
+    /// The default `Terms.intersect` rejects an automaton that is not
+    /// `NORMAL` (`Terms.java:79-81`).
+    #[test]
+    fn intersect_rejects_a_special_automaton() {
+        let (_state, fields) = scenario();
+        let automaton = crate::util::automaton::Automata::make_string("apple");
+        let compiled = CompiledAutomaton::new(automaton, true, true, false).unwrap();
+        let terms = fields.terms("body").unwrap().unwrap();
+        assert!(matches!(
+            terms.intersect(&compiled, None),
+            Err(LuceneError {
+                kind: LuceneErrorKind::IllegalArgument { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn every_call_hands_out_an_independent_postings_enum() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.seek_exact(&term("apple")).unwrap());
+        let mut first = enumerator.postings(None, 0).unwrap().unwrap();
+        assert_eq!(first.next_doc().unwrap(), 0);
+        // Rucene never reuses the enum handed back as `reuse`, so the second
+        // call starts from the beginning rather than resuming the first.
+        let mut second = enumerator.postings(Some(first), 0).unwrap().unwrap();
+        assert_eq!(drain(second.as_mut()), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn a_failed_seek_exact_does_not_drop_a_segment_from_the_mapped_enum() {
+        // Regression guard for the LUCENE-2130 seek optimisation, reached
+        // through `MappedMultiTermsEnum`, which delegates `seek_exact` straight
+        // to the underlying `MultiTermsEnum`. Segment 0 has no `pear`, so its
+        // exact seek fails and leaves it unpositioned; the following
+        // `seek_exact("plum")` must still re-seek it.
+        let seg0 = VecFields::boxed([(
+            "body",
+            VecTerms::new(vec![entry("apple", &[0]), entry("plum", &[2])]),
+        )]);
+        let seg1 = VecFields::boxed([(
+            "body",
+            VecTerms::new(vec![entry("pear", &[0]), entry("plum", &[1])]),
+        )]);
+        let multi = MultiFields::new(
+            vec![seg0, seg1],
+            vec![ReaderSlice::new(0, 3, 0), ReaderSlice::new(3, 2, 1)],
+        );
+        let live = Box::new(LiveBits {
+            len: 3,
+            deleted: vec![1],
+        }) as Box<dyn Bits>;
+        let state = merge_state(
+            vec![deletion_doc_map(3, live, 0), identity_doc_map(2, 2)],
+            vec![3, 2],
+        );
+        let fields = MappedMultiFields::new(Arc::clone(&state), multi);
+
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+        assert!(enumerator.seek_exact(&term("pear")).unwrap());
+        assert!(enumerator.seek_exact(&term("plum")).unwrap());
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
+        assert_eq!(
+            drain(postings.as_mut()),
+            vec![1, 3],
+            "segment 0 was dropped by the seek optimisation"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #276: `MappedMultiTermsEnum.postings` reuses as Java does
+    // -----------------------------------------------------------------------
+
+    fn identity<T: ?Sized>(object: &T) -> *const () {
+        object as *const T as *const ()
+    }
+
+    /// The identity of the `MultiPostingsEnum` a mapped postings holds.
+    fn inner_identity(postings: &mut Box<dyn PostingsEnum>) -> *const () {
+        identity(
+            postings
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+                .expect("MappedMultiTermsEnum hands out a MappingMultiPostingsEnum")
+                .multi_docs_and_positions_enum()
+                .expect("reset stored the MultiPostingsEnum"),
+        )
+    }
+
+    #[test]
+    fn postings_reuses_a_mapping_enum_of_the_same_field_and_its_multi_postings_enum() {
+        let (_state, fields) = scenario();
+        let terms = fields.terms("body").unwrap().unwrap();
+        let mut enumerator = terms.iterator().unwrap();
+
+        assert_eq!(enumerator.next().unwrap(), Some(&term("apple")));
+        let mut postings = enumerator.postings(None, 0).unwrap().unwrap();
+        let outer = identity(postings.as_ref());
+        let inner = inner_identity(&mut postings);
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+
+        assert_eq!(enumerator.next().unwrap(), Some(&term("pear")));
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap().unwrap();
+        assert_eq!(
+            identity(postings.as_ref()),
+            outer,
+            "`reuse instanceof MappingMultiPostingsEnum` of the same field comes back"
+        );
+        assert_eq!(
+            inner_identity(&mut postings),
+            inner,
+            "its `multiDocsAndPositionsEnum` is reused by the MultiTermsEnum that built it"
+        );
+        assert!(
+            drain(postings.as_mut()).is_empty(),
+            "pear's only doc is deleted"
+        );
+
+        assert_eq!(enumerator.next().unwrap(), Some(&term("plum")));
+        let mut postings = enumerator.postings(Some(postings), 0).unwrap().unwrap();
+        assert_eq!(identity(postings.as_ref()), outer);
+        assert_eq!(inner_identity(&mut postings), inner);
+        assert_eq!(drain(postings.as_mut()), vec![2]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_a_mapping_enum_of_another_field() {
+        let (_state, fields) = scenario();
+        let mut title = fields.terms("title").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(title.next().unwrap(), Some(&term("rust")));
+        let foreign = title.postings(None, 0).unwrap().unwrap();
+        let foreign_identity = identity(foreign.as_ref());
+
+        let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(body.next().unwrap(), Some(&term("apple")));
+        let mut postings = body.postings(Some(foreign), 0).unwrap().unwrap();
+        assert_ne!(
+            identity(postings.as_ref()),
+            foreign_identity,
+            "`postings.field.equals(this.field)` is false"
+        );
+        let mapping = postings
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
+            .unwrap();
+        assert_eq!(mapping.field(), "body");
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+    }
+
+    #[test]
+    fn postings_does_not_reuse_an_enum_of_another_type() {
+        let (_state, fields) = scenario();
+        let mut body = fields.terms("body").unwrap().unwrap().iterator().unwrap();
+        assert_eq!(body.next().unwrap(), Some(&term("apple")));
+        let other = VecPostings::boxed(&[0]);
+        let other_identity = identity(other.as_ref());
+        let mut postings = body.postings(Some(other), 0).unwrap().unwrap();
+        assert_ne!(identity(postings.as_ref()), other_identity);
+        assert_eq!(drain(postings.as_mut()), vec![0, 1, 3]);
+    }
+}

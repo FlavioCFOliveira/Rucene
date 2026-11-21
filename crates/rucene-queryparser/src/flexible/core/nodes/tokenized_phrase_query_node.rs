@@ -1,0 +1,142 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! Port of `TokenizedPhraseQueryNode.java`, of the Java package
+//! `org.apache.lucene.queryparser.flexible.core.nodes`.
+use std::any::Any;
+use std::sync::{Arc, Weak};
+
+use rucene::error::Result;
+
+use super::fieldable_node::{FieldableNode, FIELDABLE_NODE_CLASS};
+use super::query_node::{QueryNode, QueryNodeRef};
+use super::query_node_impl::{QueryNodeImpl, QUERY_NODE_IMPL_CLASS};
+use crate::flexible::core::parser::escape_query_syntax::EscapeQuerySyntax;
+use crate::jdk::char_sequence::CharSequence;
+use crate::jdk::class::JavaClass;
+
+/// `org.apache.lucene.queryparser.flexible.core.nodes.TokenizedPhraseQueryNode`.
+pub static TOKENIZED_PHRASE_QUERY_NODE_CLASS: JavaClass = JavaClass::class(
+    "org.apache.lucene.queryparser.flexible.core.nodes.TokenizedPhraseQueryNode",
+    Some(&QUERY_NODE_IMPL_CLASS),
+    &[&FIELDABLE_NODE_CLASS],
+);
+
+/// A [`TokenizedPhraseQueryNode`] represents a node created by a code that
+/// tokenizes/lemmatizes/analyzes.
+///
+/// Equivalent to
+/// `org.apache.lucene.queryparser.flexible.core.nodes.TokenizedPhraseQueryNode`.
+#[derive(Debug)]
+pub struct TokenizedPhraseQueryNode {
+    base: QueryNodeImpl,
+}
+
+impl TokenizedPhraseQueryNode {
+    /// Equivalent to `new TokenizedPhraseQueryNode()`: not a leaf, with an
+    /// empty children list.
+    pub fn new() -> Arc<Self> {
+        let node = Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: QueryNodeImpl::new(this.clone()),
+        });
+        node.base.set_leaf(false);
+        node.base.allocate();
+        node
+    }
+}
+
+impl QueryNode for TokenizedPhraseQueryNode {
+    fn query_node_impl(&self) -> &QueryNodeImpl {
+        &self.base
+    }
+
+    fn java_class(&self) -> &'static JavaClass {
+        &TOKENIZED_PHRASE_QUERY_NODE_CLASS
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn to_java_string(&self) -> Result<String> {
+        match self.get_children() {
+            Some(children) if !children.is_empty() => {
+                let mut sb = String::from("<tokenizedphrase>");
+                for child in &children {
+                    sb.push('\n');
+                    sb.push_str(&child.to_java_string()?);
+                }
+                sb.push_str("\n</tokenizedphrase>");
+                Ok(sb)
+            }
+            _ => Ok("<tokenizedphrase/>".to_string()),
+        }
+    }
+
+    /// This text representation is not re-parseable
+    fn to_query_string(
+        &self,
+        escape_syntax_parser: &dyn EscapeQuerySyntax,
+    ) -> Result<CharSequence> {
+        let Some(children) = self.get_children().filter(|c| !c.is_empty()) else {
+            return Ok(CharSequence::from(""));
+        };
+        let mut sb = String::new();
+        let mut filler = "";
+        for child in &children {
+            sb.push_str(filler);
+            sb.push_str(&child.to_query_string(escape_syntax_parser)?.to_string());
+            filler = ",";
+        }
+        Ok(CharSequence::from(format!("[TP[{sb}]]")))
+    }
+
+    fn clone_tree(&self) -> Result<QueryNodeRef> {
+        let clauses = self.base.clone_children()?;
+        Ok(Arc::new_cyclic(|this: &Weak<Self>| Self {
+            base: self.base.cloned_state(this.clone(), clauses),
+        }))
+    }
+
+    fn as_fieldable_node(&self) -> Option<&dyn FieldableNode> {
+        Some(self)
+    }
+}
+
+impl FieldableNode for TokenizedPhraseQueryNode {
+    fn get_field(&self) -> Result<Option<CharSequence>> {
+        if let Some(children) = self.get_children() {
+            for child in &children {
+                if let Some(fieldable) = child.as_fieldable_node() {
+                    return fieldable.get_field();
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn set_field(&self, field_name: Option<CharSequence>) -> Result<()> {
+        if let Some(children) = self.get_children() {
+            for child in &children {
+                if let Some(fieldable) = child.as_fieldable_node() {
+                    fieldable.set_field(field_name.clone())?;
+                }
+            }
+        }
+        Ok(())
+    }
+}

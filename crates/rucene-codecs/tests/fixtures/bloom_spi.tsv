@@ -1,0 +1,5 @@
+# lookup	result
+getName	BloomFilter
+toString	BloomFilteringPostingsFormat(PostingsFormat(name=Lucene104))
+forName.getClass	org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat
+forName.toString	BloomFilteringPostingsFormat(null)

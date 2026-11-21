@@ -1,0 +1,7135 @@
+//! `CheckIndex` and `IndexUpgrader` ported from `org.apache.lucene.index`.
+//!
+//! [`CheckIndex`] walks a commit point and verifies, segment by segment, that
+//! everything the codecs wrote back agrees with everything else they wrote: the
+//! live docs against the recorded deletion count, the terms dictionary against
+//! the postings it indexes, the postings against the norms, the doc values
+//! against their own iterators, the points against the BKD cell boundaries, and
+//! the term vectors against the inverted index.
+//!
+//! [`IndexUpgrader`] rewrites every segment of an index in the current segment
+//! file format.
+
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
+use std::thread::Scope;
+use std::time::{Duration, Instant};
+
+use crate::codecs::doc_values::DocValuesProducer;
+use crate::codecs::knn_vectors::KnnVectorsReader;
+use crate::codecs::norms::NormsProducer;
+use crate::codecs::Codec;
+use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::index::codec_reader::CodecReader;
+use crate::index::doc_values::{
+    BinaryDocValues, DocValuesIterator, DocValuesSkipper, NumericDocValues, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues,
+};
+use crate::index::field_infos::{FieldInfo, FieldInfos};
+use crate::index::index_deletion_policy::KeepOnlyLastCommitDeletionPolicy;
+use crate::index::index_file_deleter::WRITE_LOCK_NAME;
+use crate::index::index_writer::IndexWriter;
+use crate::index::index_writer_config::IndexWriterConfig;
+use crate::index::indexing_chain::MAX_POSITION;
+use crate::index::leaf_reader::LeafReader;
+use crate::index::merge_policy::UpgradeIndexMergePolicy;
+use crate::index::postings_enum::{
+    DocAndFloatFeatureBuffer, Impacts, PostingsEnum, POSTINGS_ENUM_ALL, POSTINGS_ENUM_FREQS,
+    POSTINGS_ENUM_NONE, POSTINGS_ENUM_POSITIONS,
+};
+use crate::index::segment_infos::SegmentInfos;
+use crate::index::terms::{Fields, SeekStatus, Terms};
+use crate::index::{
+    DocValuesSkipIndexType, DocValuesType, IndexOptions, SegmentCommitInfo, SegmentReader,
+};
+use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::Sort;
+use crate::store::{Directory, FSDirectory, Lock, DEFAULT_IO_CONTEXT};
+use crate::util::automaton::ByteRunnable;
+use crate::util::bit_set::BitSet;
+use crate::util::{
+    Automata, Automaton, Bits, ByteArrayPrintStream, ByteRunAutomaton, BytesRef, CommandLineUtil,
+    CompiledAutomaton, FixedBitSet, InfoStream, InterruptHandle, LongBitSet, NamedThreadFactory,
+    Operations, PrintStream, PrintStreamInfoStream, StringHelper, Version, WriterPrintStream,
+    DEFAULT_DETERMINIZE_WORK_LIMIT,
+};
+
+// ---------------------------------------------------------------------------
+// CheckIndexException
+// ---------------------------------------------------------------------------
+
+/// Runs one check, recording any throwable it raises — a panic included — as
+/// its error, as `CheckIndex.testSegment` and every `test*` method do with
+/// `catch (Throwable t)`; with `fail_fast` the throwable propagates instead.
+///
+/// Equivalent to the `try { ... } catch (Throwable e)` blocks of
+/// `CheckIndex.testSegment` and the `test*` methods (`CheckIndex.java:1050-1180`
+/// and the per-test bodies).
+///
+/// A panic is this crate's carrier of Java's unchecked throwables (a
+/// `RuntimeException` or an `Error` raised by codec code on corrupt data, an
+/// `ArrayIndexOutOfBoundsException` for one); it is caught and turned into the
+/// error Java records ([`panic_to_error`](crate::util::concurrent::panic_to_error)).
+/// With `fail_fast`, Java's `throw IOUtils.rethrowAlways(t)` rethrows the
+/// throwable unchanged, so the panic resumes unwinding. An `Err` is returned as
+/// it is, and the caller applies the same `fail_fast` rule to it.
+fn record_throwable<T>(fail_fast: bool, check: impl FnOnce() -> Result<T>) -> Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            if fail_fast {
+                std::panic::resume_unwind(payload);
+            }
+            Err(crate::util::concurrent::panic_to_error(&*payload))
+        }
+    }
+}
+
+/// Builds the error `CheckIndex` raises when it detects an integrity failure:
+/// `new CheckIndexException(message)`, [`LuceneErrorKind::CheckIndex`].
+fn check_index_error(message: impl Into<String>) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::CheckIndex {
+        message: message.into(),
+        cause: None,
+    })
+}
+
+/// Wraps a failure reported by one of the per-area checks, the way Java's
+/// `new CheckIndexException("<area> test failed", cause)` does: the message
+/// is `message`, and the cause is kept as the error's source.
+fn check_index_error_with_cause(message: &str, cause: &LuceneError) -> LuceneError {
+    LuceneError::from(LuceneErrorKind::CheckIndex {
+        message: message.to_string(),
+        cause: Some(Arc::new(cause.duplicate())),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Level
+// ---------------------------------------------------------------------------
+
+/// The `-level` values `CheckIndex` accepts; the higher the value, the more
+/// checks are run.
+///
+/// Equivalent to `CheckIndex.Level`.
+pub struct Level;
+
+impl Level {
+    /// Minimum valid level.
+    pub const MIN_VALUE: i32 = 1;
+    /// Maximum valid level.
+    pub const MAX_VALUE: i32 = 3;
+    /// The level used when none is specified.
+    pub const DEFAULT_VALUE: i32 = Self::MIN_VALUE;
+    /// Minimum level required to run checksum checks.
+    pub const MIN_LEVEL_FOR_CHECKSUM_CHECKS: i32 = 1;
+    /// Minimum level required to run integrity checks.
+    pub const MIN_LEVEL_FOR_INTEGRITY_CHECKS: i32 = 2;
+    /// Minimum level required to run slow checks.
+    pub const MIN_LEVEL_FOR_SLOW_CHECKS: i32 = 3;
+
+    /// Checks that `level_val` is within the allowed bounds.
+    ///
+    /// Equivalent to `CheckIndex.Level.checkIfLevelInBounds`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the value is out of range,
+    /// which is Java's `IllegalArgumentException`.
+    pub fn check_if_level_in_bounds(level_val: i32) -> Result<()> {
+        if !(Self::MIN_VALUE..=Self::MAX_VALUE).contains(&level_val) {
+            return Err(LuceneError::illegal_argument(format!(
+                "ERROR: given value: '{}' for -level option is out of bounds. Please use a value from '{}'->'{}'",
+                level_val,
+                Self::MIN_VALUE,
+                Self::MAX_VALUE
+            )));
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
+/// Status from testing live docs.
+///
+/// Equivalent to `CheckIndex.Status.LiveDocStatus`.
+#[derive(Debug, Default)]
+pub struct LiveDocStatus {
+    /// Number of deleted documents.
+    pub num_deleted: i32,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing field infos.
+///
+/// Equivalent to `CheckIndex.Status.FieldInfoStatus`.
+#[derive(Debug, Default)]
+pub struct FieldInfoStatus {
+    /// Number of fields successfully tested.
+    pub tot_fields: i64,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing field norms.
+///
+/// Equivalent to `CheckIndex.Status.FieldNormStatus`.
+#[derive(Debug, Default)]
+pub struct FieldNormStatus {
+    /// Number of fields successfully tested.
+    pub tot_fields: i64,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing the term index.
+///
+/// Equivalent to `CheckIndex.Status.TermIndexStatus`.
+#[derive(Debug, Default)]
+pub struct TermIndexStatus {
+    /// Number of terms with at least one live doc.
+    pub term_count: i64,
+    /// Number of terms with zero live docs.
+    pub del_term_count: i64,
+    /// Total frequency across all terms.
+    pub tot_freq: i64,
+    /// Total number of positions.
+    pub tot_pos: i64,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+    /// Per-field details of the block allocations in the terms dictionary, when
+    /// the segment's postings format publishes them.
+    ///
+    /// Equivalent to `TermIndexStatus.blockTreeStats` (`CheckIndex.java:317`), a
+    /// `HashMap<String, Object>` of each field's `Terms.getStats()` object —
+    /// the blocktree `Stats` for the default codec, which
+    /// [`StatsObject::as_any`](crate::index::terms::StatsObject::as_any)
+    /// downcasts — iterated in Java's order.
+    pub block_tree_stats: Option<
+        crate::util::java_collections::JavaHashMap<Box<dyn crate::index::terms::StatsObject>>,
+    >,
+}
+
+/// Status from testing stored fields.
+///
+/// Equivalent to `CheckIndex.Status.StoredFieldStatus`.
+#[derive(Debug, Default)]
+pub struct StoredFieldStatus {
+    /// Number of documents tested.
+    pub doc_count: i32,
+    /// Total number of stored fields tested.
+    pub tot_fields: i64,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing term vectors.
+///
+/// Equivalent to `CheckIndex.Status.TermVectorStatus`.
+#[derive(Debug, Default)]
+pub struct TermVectorStatus {
+    /// Number of documents tested.
+    pub doc_count: i32,
+    /// Total number of term vectors tested.
+    pub tot_vectors: i64,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing doc values.
+///
+/// Equivalent to `CheckIndex.Status.DocValuesStatus`.
+#[derive(Debug, Default)]
+pub struct DocValuesStatus {
+    /// Total number of doc values fields tested.
+    pub total_value_fields: i64,
+    /// Total number of numeric fields.
+    pub total_numeric_fields: i64,
+    /// Total number of binary fields.
+    pub total_binary_fields: i64,
+    /// Total number of sorted fields.
+    pub total_sorted_fields: i64,
+    /// Total number of sorted numeric fields.
+    pub total_sorted_numeric_fields: i64,
+    /// Total number of sorted set fields.
+    pub total_sorted_set_fields: i64,
+    /// Total number of skipping indexes tested.
+    pub total_skipping_index: i64,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing point values.
+///
+/// Equivalent to `CheckIndex.Status.PointsStatus`.
+#[derive(Debug, Default)]
+pub struct PointsStatus {
+    /// Total number of points tested.
+    pub total_value_points: i64,
+    /// Total number of fields with points.
+    pub total_value_fields: i32,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing vector values.
+///
+/// Equivalent to `CheckIndex.Status.VectorValuesStatus`.
+#[derive(Debug, Default)]
+pub struct VectorValuesStatus {
+    /// Total number of vector values tested.
+    pub total_vector_values: i64,
+    /// Total number of fields with vectors.
+    pub total_knn_vector_fields: i32,
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing the index sort.
+///
+/// Equivalent to `CheckIndex.Status.IndexSortStatus`.
+#[derive(Debug, Default)]
+pub struct IndexSortStatus {
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// Status from testing soft deletes.
+///
+/// Equivalent to `CheckIndex.Status.SoftDeletesStatus`.
+#[derive(Debug, Default)]
+pub struct SoftDeletesStatus {
+    /// The failure this check hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// What `CheckIndex` found about one segment.
+///
+/// Equivalent to `CheckIndex.Status.SegmentInfoStatus`.
+#[derive(Debug, Default)]
+pub struct SegmentInfoStatus {
+    /// Name of the segment.
+    pub name: String,
+    /// Codec used to read this segment.
+    pub codec: Option<Arc<dyn Codec>>,
+    /// Document count, which does not take deletions into account.
+    pub max_doc: i32,
+    /// Whether the segment is stored in the compound file format.
+    pub compound: bool,
+    /// Number of files referenced by this segment.
+    pub num_files: usize,
+    /// Net size, in megabytes, of the files referenced by this segment.
+    pub size_mb: f64,
+    /// Whether this segment has pending deletions.
+    pub has_deletions: bool,
+    /// Current deletions generation.
+    pub deletions_gen: i64,
+    /// Whether a `CodecReader` could be opened on this segment.
+    pub open_reader_passed: bool,
+    /// How many documents would be lost by dropping this segment.
+    pub to_lose_doc_count: i32,
+    /// The debugging details `IndexWriter` recorded into this segment.
+    pub diagnostics: HashMap<String, String>,
+    /// Status of the live docs check.
+    pub live_doc_status: Option<LiveDocStatus>,
+    /// Status of the field infos check.
+    pub field_info_status: Option<FieldInfoStatus>,
+    /// Status of the field norms check.
+    pub field_norm_status: Option<FieldNormStatus>,
+    /// Status of the term index check.
+    pub term_index_status: Option<TermIndexStatus>,
+    /// Status of the stored fields check.
+    pub stored_field_status: Option<StoredFieldStatus>,
+    /// Status of the term vectors check.
+    pub term_vector_status: Option<TermVectorStatus>,
+    /// Status of the doc values check.
+    pub doc_values_status: Option<DocValuesStatus>,
+    /// Status of the point values check.
+    pub points_status: Option<PointsStatus>,
+    /// Status of the index sort check.
+    pub index_sort_status: Option<IndexSortStatus>,
+    /// Status of the vector values check.
+    pub vector_values_status: Option<VectorValuesStatus>,
+    /// Status of the soft deletes check.
+    pub soft_deletes_status: Option<SoftDeletesStatus>,
+    /// The failure this segment hit, if any.
+    pub error: Option<LuceneError>,
+}
+
+/// What `CheckIndex` found about the whole index.
+///
+/// Equivalent to `CheckIndex.Status`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `Status` also carries the
+/// `Directory` it checked, so that `exorciseIndex` can commit into it. This
+/// port keeps the directory on the [`CheckIndex`] instance instead, because a
+/// `Status` that owns an `Arc<dyn Directory>` would make the result harder to
+/// hold across threads for no benefit; [`CheckIndex::exorcise_index`] is a
+/// method on the checker, so it already has the directory in hand.
+#[derive(Debug, Default)]
+pub struct Status {
+    /// Whether no problems were found with the index.
+    pub clean: bool,
+    /// Whether the `segments_N` file could not be located or loaded.
+    pub missing_segments: bool,
+    /// Name of the latest `segments_N` file in the index.
+    pub segments_file_name: Option<String>,
+    /// Number of segments in the index.
+    pub num_segments: usize,
+    /// Empty unless a specific segment list was passed to
+    /// [`CheckIndex::check_index_segments`].
+    pub segments_checked: Vec<String>,
+    /// Whether the index was created by a newer Lucene than this tool.
+    pub tool_out_of_date: bool,
+    /// One entry per segment.
+    pub segment_infos: Vec<SegmentInfoStatus>,
+    /// The segments that had no problems, used by
+    /// [`CheckIndex::exorcise_index`] to repair the index.
+    pub(crate) new_segments: Option<SegmentInfos>,
+    /// How many documents will be lost to bad segments.
+    pub tot_lose_doc_count: i32,
+    /// How many bad segments were found.
+    pub num_bad_segments: usize,
+    /// Whether only a subset of the segments was checked.
+    pub partial: bool,
+    /// The greatest segment name seen.
+    pub max_segment_name: i64,
+    /// Whether `SegmentInfos.counter` is greater than every segment name.
+    pub valid_counter: bool,
+    /// The user data of the last commit in the index.
+    pub user_data: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// CheckIndex
+// ---------------------------------------------------------------------------
+
+/// Writes one line to the info stream.
+///
+/// Equivalent to `CheckIndex.msg(PrintStream, String)` (`CheckIndex.java:520-524`):
+/// `if (out != null) out.println(msg)`.
+fn msg(info_stream: Option<&dyn PrintStream>, text: &str) {
+    if let Some(stream) = info_stream {
+        stream.println(text);
+    }
+}
+
+/// Writes `text` without a line separator: the `if (infoStream != null)
+/// infoStream.print(...)` with which every check announces itself before it
+/// runs, so that its outcome lands on the same line.
+fn print(info_stream: Option<&dyn PrintStream>, text: &str) {
+    if let Some(stream) = info_stream {
+        stream.print(text);
+    }
+}
+
+/// `e.printStackTrace(infoStream)`: the throwable's `toString()` and its
+/// causes.
+///
+/// **Divergence from Lucene 10.5.0.** Java also prints one `\tat` line per
+/// stack frame of the JVM; a Rust error carries no Java frames, so only the
+/// `Throwable.toString()` line and its `Caused by: ` lines are printed.
+fn print_stack_trace(info_stream: Option<&dyn PrintStream>, error: &LuceneError) {
+    let Some(stream) = info_stream else {
+        return;
+    };
+    stream.println(&crate::util::concurrent::throwable_to_string(error));
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        stream.println(&format!("Caused by: {current}"));
+        cause = current.source();
+    }
+}
+
+/// `AbstractMap.toString()` of a `Map<String, String>`: `{k1=v1, k2=v2}` in
+/// the map's Java iteration order.
+fn java_map_to_string(map: &crate::util::java_collections::JavaStringMap) -> String {
+    let mut out = String::from("{");
+    for (i, (key, value)) in map.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(key);
+        out.push('=');
+        out.push_str(value);
+    }
+    out.push('}');
+    out
+}
+
+/// `NumberFormat.getInstance(Locale.ROOT).format(value)` for a finite,
+/// non-negative `value`: the `#,##0.###` pattern of the root locale — the
+/// integer part grouped in threes with `,`, at most three fraction digits,
+/// trailing zeros dropped — rounded `HALF_EVEN`.
+///
+/// `DecimalFormat` rounds the shortest decimal representation of the double
+/// (`Double.toString`'s digits), deciding a tie from the exact binary value
+/// (JDK-7131459), which is what this does.
+fn java_root_number_format(value: f64) -> String {
+    let scaled = value * 1000.0;
+    let floor = scaled.floor();
+    let fraction = scaled - floor;
+    let mut units = floor as u128;
+    if fraction > 0.5 {
+        units += 1;
+    } else if fraction == 0.5 {
+        // A tie in the scaled value; decide it on the exact value: a
+        // representable `x.xxx5` either lies exactly on the tie or not.
+        let tie = (floor + 0.5) / 1000.0;
+        if value > tie || (value == tie && units % 2 == 1) {
+            units += 1;
+        }
+    }
+    let int_part = units / 1000;
+    let frac_part = (units % 1000) as u32;
+    let digits = int_part.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    if frac_part != 0 {
+        let mut frac = format!("{frac_part:03}");
+        while frac.ends_with('0') {
+            frac.pop();
+        }
+        grouped.push('.');
+        grouped.push_str(&frac);
+    }
+    grouped
+}
+
+/// Formats an elapsed duration the way Java's `nsToSec` plus `%.3f` does:
+/// every "took %.3f sec" message converts `System.nanoTime() - startNS`
+/// through `nsToSec` (`CheckIndex.java:909, 1006, 1016, 1230, ...`).
+fn took(start: Instant) -> String {
+    let elapsed_ns = i64::try_from(start.elapsed().as_nanos()).unwrap_or(i64::MAX);
+    // `%.3f`, which rounds `HALF_UP` where Rust's `{:.3}` rounds to even.
+    format!(
+        "{} sec",
+        crate::util::java_fmt::format_fixed(ns_to_sec(elapsed_ns), 3)
+    )
+}
+
+/// Returns the number of set bits in `bits`.
+///
+/// Equivalent to `CheckIndex.bitsCardinality(Bits)` (`CheckIndex.java:1312-1326`),
+/// which batches 1024 bits at a time through [`Bits::apply_mask`] into a
+/// scratch [`FixedBitSet`] and adds up its cardinality.
+///
+/// # Errors
+///
+/// Returns the error [`Bits::apply_mask`] raises.
+fn bits_cardinality(bits: &dyn Bits) -> Result<i32> {
+    let mut cardinality = 0i32;
+    let mut copy = FixedBitSet::new(1024);
+    let mut offset = 0usize;
+    while offset < bits.length() {
+        let num_bits_to_copy = (bits.length() - offset).min(copy.length());
+        copy.set_range(0, copy.length());
+        if num_bits_to_copy < copy.length() {
+            // Clear ghost bits
+            copy.clear_range(num_bits_to_copy, copy.length());
+        }
+        bits.apply_mask(&mut copy, offset)?;
+        cardinality += copy.cardinality() as i32;
+        offset += copy.length();
+    }
+    Ok(cardinality)
+}
+
+/// Verifies the structural integrity of an index.
+///
+/// Equivalent to `org.apache.lucene.index.CheckIndex`.
+///
+/// As this tool checks every byte in the index, on a large index it can take a
+/// long time to run.
+///
+/// **Warning:** only run this when the index is not opened by any writer.
+pub struct CheckIndex {
+    dir: Arc<dyn Directory>,
+    write_lock: Option<Box<dyn Lock>>,
+    info_stream: Option<Arc<dyn PrintStream>>,
+    verbose: bool,
+    level: i32,
+    fail_fast: bool,
+    thread_count: usize,
+    closed: bool,
+    /// The name of the thread each segment check ran on, in the order the
+    /// checks started; for the tests of the pool.
+    #[cfg(test)]
+    segment_check_threads: Mutex<Vec<Option<String>>>,
+}
+
+impl CheckIndex {
+    /// Creates a checker over `dir`, taking the index write lock.
+    ///
+    /// Equivalent to `CheckIndex(Directory)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::LockObtainFailed`] when a writer already holds
+    /// the lock.
+    pub fn new(dir: Arc<dyn Directory>) -> Result<Self> {
+        let write_lock = dir.obtain_lock(WRITE_LOCK_NAME)?;
+        Ok(Self::with_write_lock(dir, Some(write_lock)))
+    }
+
+    /// Expert: creates a checker over `dir` with a caller-supplied write lock.
+    ///
+    /// Equivalent to `CheckIndex(Directory, Lock)`. This exists only to support
+    /// tests that would otherwise have to close their writer for each check.
+    pub fn with_write_lock(dir: Arc<dyn Directory>, write_lock: Option<Box<dyn Lock>>) -> Self {
+        Self {
+            dir,
+            write_lock,
+            info_stream: None,
+            verbose: false,
+            level: 0,
+            fail_fast: false,
+            // Java defaults to `Runtime.availableProcessors()`.
+            thread_count: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            closed: false,
+            #[cfg(test)]
+            segment_check_threads: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Fails when this checker has already been closed.
+    ///
+    /// Equivalent to `CheckIndex.ensureOpen`.
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(LuceneError::already_closed(
+                "this instance is closed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Releases the write lock.
+    ///
+    /// Equivalent to `CheckIndex.close()` (`CheckIndex.java:450-454`),
+    /// `closed = true; IOUtils.close(writeLock)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure of releasing the lock.
+    pub fn close(&mut self) -> Result<()> {
+        self.closed = true;
+        crate::util::IOUtils::close([self.write_lock.take().map(|lock| move || lock.close())])
+    }
+
+    /// Sets the detail level; the higher the value, the more checks are run.
+    ///
+    /// Equivalent to `CheckIndex.setLevel`. See [`Level`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `v` is out of range.
+    pub fn set_level(&mut self, v: i32) -> Result<&mut Self> {
+        Level::check_if_level_in_bounds(v)?;
+        self.level = v;
+        Ok(self)
+    }
+
+    /// Returns the detail level. See [`CheckIndex::set_level`].
+    pub fn level(&self) -> i32 {
+        self.level
+    }
+
+    /// When set, the first corruption found is raised immediately instead of
+    /// being recorded so that the remaining segments can be checked too.
+    ///
+    /// Equivalent to `CheckIndex.setFailFast`.
+    pub fn set_fail_fast(&mut self, v: bool) -> &mut Self {
+        self.fail_fast = v;
+        self
+    }
+
+    /// Returns whether the checker stops at the first corruption.
+    pub fn fail_fast(&self) -> bool {
+        self.fail_fast
+    }
+
+    /// Sets how many threads may check segments concurrently.
+    ///
+    /// Equivalent to `CheckIndex.setThreadCount`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `tc` is not positive.
+    pub fn set_thread_count(&mut self, tc: i32) -> Result<&mut Self> {
+        if tc <= 0 {
+            return Err(LuceneError::illegal_argument(format!(
+                "setThreadCount requires a number larger than 0, but got: {tc}"
+            )));
+        }
+        self.thread_count = tc as usize;
+        Ok(self)
+    }
+
+    /// Returns the configured thread count.
+    pub fn thread_count(&self) -> usize {
+        self.thread_count
+    }
+
+    /// Sets where progress messages go, and whether to print extra detail.
+    ///
+    /// Equivalent to `CheckIndex.setInfoStream(PrintStream, boolean)`.
+    pub fn set_info_stream_verbose(
+        &mut self,
+        info_stream: Option<Arc<dyn PrintStream>>,
+        verbose: bool,
+    ) -> &mut Self {
+        self.info_stream = info_stream;
+        self.verbose = verbose;
+        self
+    }
+
+    /// Sets where progress messages go.
+    ///
+    /// Equivalent to `CheckIndex.setInfoStream(PrintStream)`.
+    pub fn set_info_stream(&mut self, info_stream: Arc<dyn PrintStream>) -> &mut Self {
+        self.set_info_stream_verbose(Some(info_stream), false)
+    }
+
+    /// Borrows the info stream as a trait object, for the free-standing checks.
+    fn info(&self) -> Option<&dyn PrintStream> {
+        self.info_stream.as_deref()
+    }
+}
+
+impl Drop for CheckIndex {
+    fn drop(&mut self) {
+        // Java implements `Closeable`; callers use try-with-resources. Rust has
+        // no such construct, so the lock is released here as well as in
+        // `close()`, which is idempotent because `close()` takes the lock out.
+        let _ = self.close();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// checkIndex / testSegment / exorciseIndex
+// ---------------------------------------------------------------------------
+
+/// Replays one segment's buffered output to `info_stream`.
+///
+/// Equivalent to `CheckIndex.msg(PrintStream, ByteArrayOutputStream)`
+/// (`CheckIndex.java:514-518`), `out.println(output.toString(UTF_8))`: the
+/// whole buffer of one segment, whose every line ends with its own line
+/// separator, and then the separator of `println`, which is the blank line
+/// after each replay. The buffer is never reset, so a second replay prints it
+/// all again, as the interrupted branch of `checkIndex(List, ExecutorService)`
+/// does.
+fn msg_buffer(info_stream: Option<&dyn PrintStream>, output: &ByteArrayPrintStream) {
+    msg(info_stream, &output.to_string_utf8());
+}
+
+/// A task the segment-check pool runs.
+type PoolTask<'scope> = Box<dyn FnOnce() + Send + 'scope>;
+
+/// What the threads of a [`SegmentCheckPool`] share.
+struct PoolShared<'scope> {
+    state: Mutex<PoolState<'scope>>,
+    /// Signalled when a task is queued or the pool shuts down.
+    work_available: Condvar,
+    /// Signalled when a worker exits; shared so that
+    /// [`wait_interruptibly`](crate::util::wait_interruptibly) can wait on it.
+    terminated: Arc<Condvar>,
+}
+
+/// The state of a [`SegmentCheckPool`], guarded by its lock.
+struct PoolState<'scope> {
+    /// `ThreadPoolExecutor.workQueue`, an unbounded `LinkedBlockingQueue`.
+    queue: VecDeque<PoolTask<'scope>>,
+    /// Set by `shutdown()`.
+    shutdown: bool,
+    /// The workers that have not exited yet.
+    live_workers: usize,
+    /// The interrupt handle of every worker started, which `shutdownNow()`
+    /// interrupts.
+    workers: Vec<InterruptHandle>,
+}
+
+/// The fixed thread pool that checks segments concurrently.
+///
+/// Equivalent to the `ExecutorService` `CheckIndex.checkIndex(List)` creates
+/// with `Executors.newFixedThreadPool(threadCount, new
+/// NamedThreadFactory("async-check-index"))` (`CheckIndex.java:550-553`): a
+/// `ThreadPoolExecutor` whose core and maximum size are `threadCount`, over an
+/// unbounded queue. As `ThreadPoolExecutor.execute` does, a submitted task
+/// starts a new worker — named by the factory, `async-check-index-N-thread-M` —
+/// while fewer than `threadCount` workers exist, and waits in the queue
+/// otherwise; a worker takes queued tasks until the pool is shut down and the
+/// queue is empty.
+///
+/// **Divergence from Lucene 10.5.0.** Java's workers are free-standing
+/// threads, and `checkIndex(List)` returns after `awaitTermination(5,
+/// SECONDS)` and `shutdownNow()` even if a check is still running. A check
+/// borrows this `CheckIndex` — only `&self`: the commit's `SegmentInfos` is
+/// shared through an `Arc`, as Java's lambda captures `finalSis` — and Rust
+/// lets a thread borrow `&self` only on a scoped thread, so the workers live in
+/// a [`std::thread::scope`] that waits for the check a worker is running when
+/// `shutdownNow()` returns; the queued checks are dropped and the workers
+/// interrupted, as in Java.
+struct SegmentCheckPool<'scope, 'env> {
+    scope: &'scope Scope<'scope, 'env>,
+    thread_factory: NamedThreadFactory,
+    /// `corePoolSize`, `threadCount`.
+    core_pool_size: usize,
+    shared: Arc<PoolShared<'scope>>,
+}
+
+impl<'scope, 'env> SegmentCheckPool<'scope, 'env> {
+    fn new(
+        scope: &'scope Scope<'scope, 'env>,
+        thread_factory: NamedThreadFactory,
+        core_pool_size: usize,
+    ) -> Self {
+        Self {
+            scope,
+            thread_factory,
+            core_pool_size: core_pool_size.max(1),
+            shared: Arc::new(PoolShared {
+                state: Mutex::new(PoolState {
+                    queue: VecDeque::new(),
+                    shutdown: false,
+                    live_workers: 0,
+                    workers: Vec::new(),
+                }),
+                work_available: Condvar::new(),
+                terminated: Arc::new(Condvar::new()),
+            }),
+        }
+    }
+
+    /// Runs `task` on a worker of the pool.
+    ///
+    /// Equivalent to `ThreadPoolExecutor.execute(Runnable)`: while fewer than
+    /// `corePoolSize` workers exist, a new worker starts with `task` as its
+    /// first task; otherwise `task` is queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::Io`] when the worker thread cannot be spawned.
+    fn execute(&self, task: PoolTask<'scope>) -> Result<()> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if state.workers.len() < self.core_pool_size {
+            let shared = Arc::clone(&self.shared);
+            let (started_tx, started_rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name(self.thread_factory.next_thread_name())
+                .spawn_scoped(self.scope, move || {
+                    let _ = started_tx.send(InterruptHandle::current());
+                    Self::run_worker(&shared, task);
+                })
+                .map_err(LuceneError::from)?;
+            let handle = started_rx.recv().map_err(|_| {
+                LuceneError::illegal_state("a segment check worker exited before it started")
+            })?;
+            state.workers.push(handle);
+            state.live_workers += 1;
+        } else {
+            state.queue.push_back(task);
+            self.shared.work_available.notify_one();
+        }
+        Ok(())
+    }
+
+    /// The loop of one worker: its first task, then every task it takes from
+    /// the queue, until the pool is shut down and the queue is empty.
+    ///
+    /// Equivalent to `ThreadPoolExecutor.runWorker` with `getTask`.
+    fn run_worker(shared: &PoolShared<'scope>, first_task: PoolTask<'scope>) {
+        let mut task = Some(first_task);
+        loop {
+            if let Some(task) = task.take() {
+                task();
+            }
+            let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if let Some(next) = state.queue.pop_front() {
+                    task = Some(next);
+                    break;
+                }
+                if state.shutdown {
+                    state.live_workers -= 1;
+                    shared.terminated.notify_all();
+                    return;
+                }
+                state = shared
+                    .work_available
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+
+    /// Accepts no new task; the queued ones still run.
+    ///
+    /// Equivalent to `ExecutorService.shutdown()`.
+    fn shutdown(&self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.shutdown = true;
+        self.shared.work_available.notify_all();
+    }
+
+    /// Waits until every worker has exited, or `timeout` has elapsed; returns
+    /// whether the workers exited.
+    ///
+    /// Equivalent to `ExecutorService.awaitTermination(long, TimeUnit)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterruptedException`](crate::util::InterruptedException)
+    /// when the calling thread is interrupted while it waits.
+    fn await_termination(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<bool, crate::util::InterruptedException> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while state.live_workers > 0 {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(false);
+            }
+            let (reacquired, waited) = crate::util::wait_interruptibly(
+                &self.shared.terminated,
+                state,
+                Some(deadline - now),
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+            state = reacquired;
+            waited?;
+        }
+        Ok(true)
+    }
+
+    /// Drops the queued tasks and interrupts the workers.
+    ///
+    /// Equivalent to `ExecutorService.shutdownNow()`, whose list of the tasks
+    /// that never ran `checkIndex(List)` ignores.
+    fn shutdown_now(&self) {
+        let workers = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            state.shutdown = true;
+            state.queue.clear();
+            self.shared.work_available.notify_all();
+            state.workers.clone()
+        };
+        for worker in workers {
+            worker.interrupt();
+        }
+    }
+}
+
+/// The outcome of one segment check, as its future yields it: the check's
+/// result, or the panic it raised.
+type SegmentCheckOutcome = std::thread::Result<Result<SegmentInfoStatus>>;
+
+/// The future one segment check completes.
+///
+/// Equivalent to the `CompletableFuture<Status.SegmentInfoStatus>` that
+/// `CheckIndex.runAsyncSegmentCheck` returns, as far as `checkIndex(List,
+/// ExecutorService)` uses it: the task completes it once, and `get()` waits
+/// for it interruptibly.
+struct SegmentCheckFuture {
+    outcome: Mutex<Option<SegmentCheckOutcome>>,
+    /// Signalled when the outcome is set; shared so that
+    /// [`wait_interruptibly`](crate::util::wait_interruptibly) can wait on it.
+    completed: Arc<Condvar>,
+}
+
+impl SegmentCheckFuture {
+    fn new() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            completed: Arc::new(Condvar::new()),
+        }
+    }
+
+    /// Sets the outcome and wakes the thread waiting for it.
+    ///
+    /// Equivalent to the completion `CompletableFuture.supplyAsync`'s task
+    /// performs.
+    fn complete(&self, outcome: SegmentCheckOutcome) {
+        *self.outcome.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        self.completed.notify_all();
+    }
+
+    /// Waits for the outcome and takes it.
+    ///
+    /// Equivalent to `CompletableFuture.get()`, whose behaviour on an
+    /// interrupt the JDK 25 oracle (`oracle/passG2/FutureGetOracle.java`)
+    /// pins: a completed future returns its outcome and leaves the interrupt
+    /// status set; a pending one throws `InterruptedException` at once when
+    /// the status is set on entry, or as soon as the thread is interrupted
+    /// while it waits, clearing the status — unless the outcome arrived
+    /// meanwhile, which `waitingGet` then returns, interrupting the thread
+    /// again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InterruptedException`](crate::util::InterruptedException)
+    /// when the thread is interrupted before the outcome is available.
+    fn get(&self) -> std::result::Result<SegmentCheckOutcome, crate::util::InterruptedException> {
+        let mut outcome = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(outcome) = outcome.take() {
+                return Ok(outcome);
+            }
+            let (reacquired, waited) =
+                crate::util::wait_interruptibly(&self.completed, outcome, None)
+                    .unwrap_or_else(PoisonError::into_inner);
+            outcome = reacquired;
+            if let Err(interrupted) = waited {
+                return match outcome.take() {
+                    Some(outcome) => {
+                        crate::util::InterruptHandle::current().interrupt();
+                        Ok(outcome)
+                    }
+                    None => Err(interrupted),
+                };
+            }
+        }
+    }
+}
+
+/// Submits one segment check to `pool` and hands back the future that yields
+/// its outcome.
+///
+/// Equivalent to `CheckIndex.runAsyncSegmentCheck(Callable, ExecutorService)`,
+/// `CompletableFuture.supplyAsync(callableToSupplier(asyncCallable),
+/// executorService)`. As `supplyAsync`'s task does, the task catches what the
+/// check throws — here a panic — so that the worker survives it and the
+/// future carries it.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::Io`] when the pool cannot spawn a worker.
+fn run_async_segment_check<'scope, F>(
+    async_callable: F,
+    pool: &SegmentCheckPool<'scope, '_>,
+) -> Result<Arc<SegmentCheckFuture>>
+where
+    F: FnOnce() -> Result<SegmentInfoStatus> + Send + 'scope,
+{
+    let supplier = callable_to_supplier(async_callable);
+    let future = Arc::new(SegmentCheckFuture::new());
+    let completion = Arc::clone(&future);
+    pool.execute(Box::new(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(supplier));
+        completion.complete(outcome);
+    }))?;
+    Ok(future)
+}
+
+/// Adapts a fallible segment check into the form the thread that runs it
+/// expects.
+///
+/// Equivalent to the private `CheckIndex.callableToSupplier(Callable<T>)`,
+/// which exists only so that a `Callable`, whose `call()` may throw a *checked*
+/// exception, can stand in for the `Supplier` that
+/// `CompletableFuture.supplyAsync` demands: it rethrows `RuntimeException` and
+/// `Error` unchanged and wraps every other `Throwable` in a
+/// `CompletionException`, so the future can carry it to whoever joins.
+///
+/// **Divergence from Lucene 10.5.0.** Rust draws no checked/unchecked line: a
+/// failure is a [`Result`] on the ordinary return path, and the future
+/// [`run_async_segment_check`] returns already carries it, so there is nothing
+/// to convert and the task is passed through as it is. The one failure that
+/// does not travel as a value — a panic — is caught by the pool's task and
+/// surfaces from the future as `Err`, which the caller turns into a
+/// `CheckIndexException` just as Java's future surfaces a
+/// `CompletionException`.
+fn callable_to_supplier<T, F>(callable: F) -> impl FnOnce() -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    callable
+}
+
+impl CheckIndex {
+    /// Returns a [`Status`] describing the state of the whole index.
+    ///
+    /// Equivalent to `CheckIndex.checkIndex()`.
+    ///
+    /// As this method checks every byte in the index, on a large index it can
+    /// take a long time to run.
+    ///
+    /// **Warning:** only call this when the index is not opened by any writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IndexNotFound`] when the directory holds no
+    /// commit, and propagates the first corruption found when
+    /// [`set_fail_fast`](CheckIndex::set_fail_fast) is set; otherwise a
+    /// corruption is recorded in the returned status.
+    pub fn check_index(&self) -> Result<Status> {
+        self.check_index_segments(None)
+    }
+
+    /// Returns a [`Status`] describing the state of the named segments, or of
+    /// every segment when `only_segments` is `None`.
+    ///
+    /// Equivalent to `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`),
+    /// which, when the thread count is greater than one, creates the fixed
+    /// thread pool of `NamedThreadFactory("async-check-index")` threads that
+    /// checks the segments concurrently, and shuts it down in its `finally`:
+    /// `shutdown()`, `awaitTermination(5, SECONDS)` — reporting an
+    /// `InterruptedException` — and `shutdownNow()`, once the check, "Took …
+    /// total." included, is over, however it ended. The pool's threads are
+    /// scoped (`SegmentCheckPool`), so the scope spans that `try`.
+    ///
+    /// # Errors
+    ///
+    /// As [`CheckIndex::check_index`].
+    ///
+    /// # Panics
+    ///
+    /// Panics with Java's `NullPointerException` message, `Cannot read field
+    /// "error" because "segmentInfoStatus" is null`, when the thread is
+    /// interrupted while it waits for a concurrent segment check, as Lucene
+    /// 10.5.0 throws that exception there (`CheckIndex.java:855-875`); a panic
+    /// is the port's form of an unchecked exception. The pool is shut down
+    /// first.
+    pub fn check_index_segments(&self, only_segments: Option<&[String]>) -> Result<Status> {
+        // If threadCount == 1, then no executor is created and use the main
+        // thread to do index checking sequentially.
+        if self.thread_count <= 1 {
+            msg(
+                self.info(),
+                &format!("Checking index with threadCount: {}", self.thread_count),
+            );
+            return self.check_index_impl(only_segments, None);
+        }
+        std::thread::scope(|scope| {
+            let pool = SegmentCheckPool::new(
+                scope,
+                NamedThreadFactory::new("async-check-index"),
+                self.thread_count,
+            );
+            msg(
+                self.info(),
+                &format!("Checking index with threadCount: {}", self.thread_count),
+            );
+            // `try { return checkIndex(onlySegments, executorService); }`: the
+            // `finally` below runs whatever the check raised, a panic included.
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.check_index_impl(only_segments, Some(&pool))
+            }));
+            // `finally { executorService.shutdown(); try {
+            // executorService.awaitTermination(5, TimeUnit.SECONDS); } catch
+            // (InterruptedException e) { ... } finally {
+            // executorService.shutdownNow(); } }`.
+            pool.shutdown();
+            if let Err(e) = pool.await_termination(Duration::from_secs(5)) {
+                msg(
+                    self.info(),
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                );
+                // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                msg(self.info(), &format!("{e}"));
+            }
+            pool.shutdown_now();
+            match checked {
+                Ok(checked) => checked,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        })
+    }
+
+    /// Walks the commit points and checks the segments of the last one.
+    ///
+    /// Equivalent to `CheckIndex.checkIndex(List, ExecutorService)`; `pool`
+    /// is Java's executor, `None` where Java's is `null`.
+    fn check_index_impl<'scope>(
+        &'scope self,
+        only_segments: Option<&[String]>,
+        pool: Option<&SegmentCheckPool<'scope, '_>>,
+    ) -> Result<Status> {
+        self.ensure_open()?;
+        let start = Instant::now();
+
+        let mut result = Status::default();
+        let files = self.dir.list_all()?;
+        let Some(last_segments_file) = SegmentInfos::get_last_commit_segments_file_name(&files)?
+        else {
+            // `"no segments* file found in " + dir + ": files: " +
+            // Arrays.toString(files)` (`CheckIndex.java:592-593`).
+            return Err(LuceneError::from(LuceneErrorKind::IndexNotFound(format!(
+                "no segments* file found in {}: files: [{}]",
+                self.dir.directory_to_string(),
+                files.join(", ")
+            ))));
+        };
+
+        // https://github.com/apache/lucene/issues/7820: also attempt to open any
+        // older commit points (segments_N), which will catch certain corruption
+        // like missing _N.si files for segments not also referenced by the newest
+        // commit point (which was already loaded, successfully, above). Note that
+        // we do not do a deeper check of segments referenced ONLY by these older
+        // commit points, because such corruption would not prevent a new
+        // IndexWriter from opening on the newest commit point. But it is still
+        // corruption, e.g. a reader opened on those old commit points can hit
+        // corruption exceptions which we (still) will not detect here. Progress
+        // not perfection!
+        let mut all_segments_files: Vec<(i64, &String)> = Vec::new();
+        for file_name in &files {
+            if file_name.starts_with(crate::index::index_file_names::SEGMENTS)
+                && file_name != crate::index::segment_infos::OLD_SEGMENTS_GEN
+            {
+                let generation = SegmentInfos::generation_from_segments_file_name(file_name)?;
+                all_segments_files.push((generation, file_name));
+            }
+        }
+
+        // Sort descending by generation so that we always attempt to read the
+        // last commit first. This way if an index has a broken last commit AND a
+        // broken old commit, we report the last commit error first.
+        all_segments_files.sort_by_key(|(generation, _)| std::cmp::Reverse(*generation));
+
+        let mut last_commit: Option<SegmentInfos> = None;
+        for (_, file_name) in &all_segments_files {
+            let is_last_commit = **file_name == last_segments_file;
+
+            // Do not use `SegmentInfos::read_latest_commit`, since the spooky
+            // retrying it does is not necessary here (we hold the write lock);
+            // always open old indices if codecs are around.
+            let infos = match SegmentInfos::read_commit_with_min_version(
+                Arc::clone(&self.dir),
+                file_name,
+                0,
+            ) {
+                Ok(infos) => infos,
+                Err(error) => {
+                    if self.fail_fast {
+                        return Err(error);
+                    }
+                    let message = if is_last_commit {
+                        format!(
+                            "ERROR: could not read latest commit point from segments file \
+                                 \"{file_name}\" in directory"
+                        )
+                    } else {
+                        format!(
+                            "ERROR: could not read old (not latest) commit point segments \
+                                 file \"{file_name}\" in directory"
+                        )
+                    };
+                    msg(self.info(), &message);
+                    msg(self.info(), &format!("{error}"));
+                    result.missing_segments = true;
+                    return Ok(result);
+                }
+            };
+
+            if is_last_commit {
+                // Record the latest commit point: we will deeply check all
+                // segments referenced by it.
+                last_commit = Some(infos);
+            }
+        }
+
+        // We know there is a `last_segments_file`, so we must have attempted to
+        // load it in the loop above; if it failed to load we either returned the
+        // failure or recorded it. So we should always have a valid last commit.
+        let Some(last_commit) = last_commit else {
+            msg(
+                self.info(),
+                "ERROR: could not read any segments file in directory",
+            );
+            result.missing_segments = true;
+            return Ok(result);
+        };
+
+        if self.info().is_some() {
+            let mut max_doc = 0i64;
+            let mut del_count = 0i64;
+            for info in last_commit.iter() {
+                max_doc += i64::from(info.info.max_doc()?);
+                del_count += i64::from(info.get_del_count());
+            }
+            msg(
+                self.info(),
+                &format!(
+                    "{}% total deletions; {max_doc} documents; {del_count} deletions",
+                    // `%.2f` (`HALF_UP`).
+                    crate::util::java_fmt::format_fixed(
+                        100.0 * del_count as f64 / max_doc as f64,
+                        2
+                    )
+                ),
+            );
+        }
+
+        // Find the oldest and newest segment versions. Java also tracks an
+        // `oldSegs` marker for pre-3.1 segments, whose `SegmentInfo.getVersion()`
+        // is null; this port's `SegmentInfo::version` is not optional, because
+        // the codecs it can read all record a version, so that marker has no
+        // counterpart here.
+        let mut oldest: Option<Version> = None;
+        let mut newest: Option<Version> = None;
+        for si in last_commit.iter() {
+            let version = si.info.version();
+            if oldest.is_none_or(|oldest| !version.on_or_after(&oldest)) {
+                oldest = Some(version);
+            }
+            if newest.is_none_or(|newest| version.on_or_after(&newest)) {
+                newest = Some(version);
+            }
+        }
+
+        let num_segments = last_commit.size();
+        let segments_file_name = last_commit.segments_file_name();
+        result.segments_file_name = segments_file_name.clone();
+        result.num_segments = num_segments;
+        result.user_data = last_commit.user_data().to_std();
+        // `" userData=" + lastCommit.getUserData()`: `AbstractMap.toString()`
+        // over the map in its Java iteration order.
+        let user_data_string = if result.user_data.is_empty() {
+            String::new()
+        } else {
+            format!(" userData={}", java_map_to_string(last_commit.user_data()))
+        };
+
+        let version_string = match (oldest, newest) {
+            (Some(oldest), Some(newest)) if oldest == newest => format!("version={oldest}"),
+            (Some(oldest), Some(newest)) => format!("versions=[{oldest} .. {newest}]"),
+            _ => String::new(),
+        };
+
+        let commit_id = last_commit.id();
+        msg(
+            self.info(),
+            &format!(
+                "Segments file={} numSegments={num_segments} {version_string} id={}{user_data_string}",
+                segments_file_name.as_deref().unwrap_or_default(),
+                StringHelper::id_to_string(Some(&commit_id))
+            ),
+        );
+
+        if let Some(only_segments) = only_segments {
+            result.partial = true;
+            // `infoStream.print("\nChecking only these segments:")`, one
+            // `print(" " + s)` per segment, then `msg(infoStream, ":")`
+            // (`CheckIndex.java:753-761`).
+            print(self.info(), "\nChecking only these segments:");
+            for segment in only_segments {
+                print(self.info(), &format!(" {segment}"));
+            }
+            msg(self.info(), ":");
+            result
+                .segments_checked
+                .extend(only_segments.iter().cloned());
+        }
+
+        let mut new_segments = last_commit.clone();
+        new_segments.clear();
+        result.new_segments = Some(new_segments);
+        result.max_segment_name = -1;
+
+        // Shared with the pool's tasks, which Java's lambdas capture as
+        // `finalSis`.
+        let last_commit = Arc::new(last_commit);
+        if let Some(pool) = pool {
+            self.check_segments_concurrently(
+                &last_commit,
+                num_segments,
+                only_segments,
+                pool,
+                &mut result,
+            )?;
+        } else {
+            // Checks segments sequentially.
+            for i in 0..num_segments {
+                let info = last_commit.info(i);
+                self.update_max_segment_name(&mut result, info)?;
+                if is_skipped_segment(only_segments, &info.info.name) {
+                    continue;
+                }
+
+                msg(
+                    self.info(),
+                    &format!(
+                        "{} of {num_segments}: name={} maxDoc={}",
+                        1 + i,
+                        info.info.name,
+                        info.info.max_doc()?
+                    ),
+                );
+                let segment_info_status = self.test_segment(&last_commit, info, self.info())?;
+
+                self.process_segment_info_status_result(&mut result, info, segment_info_status)?;
+            }
+        }
+
+        if result.num_bad_segments == 0 {
+            result.clean = true;
+        } else {
+            msg(
+                self.info(),
+                &format!(
+                    "WARNING: {} broken segments (containing {} documents) detected",
+                    result.num_bad_segments, result.tot_lose_doc_count
+                ),
+            );
+        }
+
+        result.valid_counter = result.max_segment_name < last_commit.counter;
+        if !result.valid_counter {
+            result.clean = false;
+            if let Some(new_segments) = result.new_segments.as_mut() {
+                new_segments.counter = result.max_segment_name + 1;
+            }
+            msg(
+                self.info(),
+                &format!(
+                    "ERROR: Next segment name counter {} is not greater than max segment name {}",
+                    last_commit.counter, result.max_segment_name
+                ),
+            );
+        }
+
+        if result.clean {
+            msg(self.info(), "No problems were detected with this index.\n");
+        }
+
+        msg(self.info(), &format!("Took {} total.", took(start)));
+
+        Ok(result)
+    }
+
+    /// Checks the segments of `last_commit` on the pool, larger segments
+    /// first, and records their results in segment order.
+    ///
+    /// Equivalent to the concurrent branch of `CheckIndex.checkIndex(List,
+    /// ExecutorService)` (`CheckIndex.java:791-876`). The pool belongs to the
+    /// caller, which shuts it down, as Java's executor belongs to
+    /// `checkIndex(List)`.
+    ///
+    /// Waiting for a segment's result is `futures[i].get()`, which an
+    /// interrupt ends ([`SegmentCheckFuture::get`]). Java then reports the
+    /// segment's buffered output, an `ERROR` line and the exception, falls
+    /// through to report the output a second time, and hands the `null`
+    /// result to `processSegmentInfoStatusResult`, whose
+    /// `segmentInfoStatus.error` throws `NullPointerException`; this port
+    /// reports the same and panics with that exception's message, a panic
+    /// being the port's form of an unchecked exception.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CheckIndexException` naming the segment whose check failed —
+    /// which happens only with [`set_fail_fast`](CheckIndex::set_fail_fast) —
+    /// or panicked.
+    ///
+    /// # Panics
+    ///
+    /// Panics as described above when the thread is interrupted while it
+    /// waits for a segment's result.
+    fn check_segments_concurrently<'scope>(
+        &'scope self,
+        last_commit: &Arc<SegmentInfos>,
+        num_segments: usize,
+        only_segments: Option<&[String]>,
+        pool: &SegmentCheckPool<'scope, '_>,
+        result: &mut Status,
+    ) -> Result<()> {
+        // Sort the segments by size, as a smaller segment tends to finish
+        // faster and hence its output can be printed out faster
+        // (`CheckIndex.java:801-815`). The comparator reads each segment's
+        // cached `sizeInBytes()`; a comparison whose sizes cannot be read logs
+        // the failure and answers `0`, once per failing comparison.
+        //
+        // **Divergence from Lucene 10.5.0.** Java sorts with
+        // `java.util.TimSort` (`List.sort`), the port with the standard library's
+        // stable merge sort. With a consistent comparator both are stable sorts
+        // and order the segments identically; only when a size cannot be read
+        // — and the comparator answers `0` for that pair alone — may the two
+        // algorithms compare different pairs, and so differ in the number of
+        // error lines and in the resulting order. `java.util.TimSort` has no
+        // port in this crate.
+        let mut segment_commit_infos: Vec<usize> = (0..num_segments).collect();
+        segment_commit_infos.sort_by(|&a, &b| {
+            match (
+                last_commit.info(a).size_in_bytes(),
+                last_commit.info(b).size_in_bytes(),
+            ) {
+                (Ok(size_a), Ok(size_b)) => size_a.cmp(&size_b),
+                (Err(error), _) | (_, Err(error)) => {
+                    msg(
+                        self.info(),
+                        "ERROR: IOException occurred when comparing SegmentCommitInfo file \
+                         sizes",
+                    );
+                    print_stack_trace(self.info(), &error);
+                    std::cmp::Ordering::Equal
+                }
+            }
+        });
+
+        let mut buffers: Vec<Option<Arc<ByteArrayPrintStream>>> =
+            (0..num_segments).map(|_| None).collect();
+        let mut futures: Vec<Option<Arc<SegmentCheckFuture>>> =
+            (0..num_segments).map(|_| None).collect();
+
+        // Start larger segments earlier.
+        for i in (0..num_segments).rev() {
+            let info = last_commit.info(segment_commit_infos[i]);
+            self.update_max_segment_name(result, info)?;
+            if is_skipped_segment(only_segments, &info.info.name) {
+                continue;
+            }
+
+            // `new PrintStream(output, true, UTF_8)` over a fresh
+            // `ByteArrayOutputStream` (`CheckIndex.java:827-828`).
+            let buffer = Arc::new(ByteArrayPrintStream::new());
+            msg(
+                Some(buffer.as_ref() as &dyn PrintStream),
+                &format!(
+                    "{} of {num_segments}: name={} maxDoc={}",
+                    1 + i,
+                    info.info.name,
+                    info.info.max_doc()?
+                ),
+            );
+
+            let task_buffer = Arc::clone(&buffer);
+            // Java's lambda captures `finalSis` and `info`.
+            let final_sis = Arc::clone(last_commit);
+            let index = segment_commit_infos[i];
+            buffers[i] = Some(buffer);
+            futures[i] = Some(run_async_segment_check(
+                move || {
+                    #[cfg(test)]
+                    self.segment_check_threads
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(std::thread::current().name().map(str::to_string));
+                    self.test_segment(
+                        &final_sis,
+                        final_sis.info(index),
+                        Some(task_buffer.as_ref() as &dyn PrintStream),
+                    )
+                },
+                pool,
+            )?);
+        }
+
+        for i in 0..num_segments {
+            let info = last_commit.info(segment_commit_infos[i]);
+            // A segment left out of the check has neither a buffer nor a
+            // future, which is what makes this the same skip as above.
+            let (Some(buffer), Some(future)) = (buffers[i].take(), futures[i].take()) else {
+                continue;
+            };
+
+            // Print the segment results in order.
+            let segment_info_status = match future.get() {
+                Ok(Ok(Ok(segment_info_status))) => Some(segment_info_status),
+                Ok(Ok(Err(error))) => {
+                    // The check only fails instead of recording the failure
+                    // when `fail_fast` is set, which is Java's `assert
+                    // failFast` on this path; Java prints
+                    // `output.toString(UTF_8)` here (`CheckIndex.java:867`),
+                    // which is the same `println` as `msg(infoStream, output)`.
+                    debug_assert!(self.fail_fast);
+                    msg(self.info(), &buffer.to_string_utf8());
+                    return Err(check_index_error_with_cause(
+                        &format!("Segment {} check failed.", info.info.name),
+                        &error,
+                    ));
+                }
+                Ok(Err(payload)) => {
+                    // A panic — Java's unchecked throwable — only escapes the
+                    // check with `fail_fast` (`record_throwable` records it
+                    // otherwise); the `CompletableFuture` reports it as an
+                    // `ExecutionException` like any other failure, whose cause
+                    // the `CheckIndexException` keeps.
+                    msg(self.info(), &buffer.to_string_utf8());
+                    let error = crate::util::concurrent::panic_to_error(&*payload);
+                    return Err(check_index_error_with_cause(
+                        &format!("Segment {} check failed.", info.info.name),
+                        &error,
+                    ));
+                }
+                Err(interrupted) => {
+                    // The segment test output should come before the
+                    // interrupted exception message that follows, hence it is
+                    // not emitted from a `finally` clause.
+                    msg_buffer(self.info(), &buffer);
+                    msg(
+                        self.info(),
+                        &format!(
+                            "ERROR: Interrupted exception occurred when getting segment check \
+                             result for segment {}",
+                            info.info.name
+                        ),
+                    );
+                    // `e.printStackTrace(infoStream)`, without the JVM's frames.
+                    msg(self.info(), &format!("{interrupted}"));
+                    None
+                }
+            };
+
+            msg_buffer(self.info(), &buffer);
+
+            // `processSegmentInfoStatusResult(result, info, segmentInfoStatus)`
+            // reads `segmentInfoStatus.error` (`CheckIndex.java:924`), which a
+            // `null` status turns into `NullPointerException`.
+            let Some(segment_info_status) = segment_info_status else {
+                panic!("Cannot read field \"error\" because \"segmentInfoStatus\" is null");
+            };
+            self.process_segment_info_status_result(result, info, segment_info_status)?;
+        }
+        Ok(())
+    }
+
+    /// Raises `result.max_segment_name` to `info`'s segment name when that name
+    /// is the greater of the two.
+    ///
+    /// Equivalent to `CheckIndex.updateMaxSegmentName`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when the segment name is not a
+    /// leading `_` followed by a base-36 number, which is Java's
+    /// `NumberFormatException`.
+    fn update_max_segment_name(&self, result: &mut Status, info: &SegmentCommitInfo) -> Result<()> {
+        // `Long.parseLong(info.info.name.substring(1), Character.MAX_RADIX)`
+        // (`CheckIndex.java:915`).
+        let name = &info.info.name;
+        let mut chars = name.chars();
+        if chars.next().is_none() {
+            return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                "Range [1, 0) out of bounds for length 0".to_string(),
+            )));
+        }
+        let digits = chars.as_str();
+        let segment_name = crate::util::extra::java_parse_long_radix(digits, 36)
+            .ok_or_else(|| LuceneError::number_format_for_input_string(digits, 36))?;
+        if segment_name > result.max_segment_name {
+            result.max_segment_name = segment_name;
+        }
+        Ok(())
+    }
+
+    /// Files one segment's result into `result`, keeping the segment only when
+    /// it passed.
+    ///
+    /// Equivalent to `CheckIndex.processSegmentInfoStatusResult`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure of adding the kept segment to the repaired
+    /// `SegmentInfos`.
+    fn process_segment_info_status_result(
+        &self,
+        result: &mut Status,
+        info: &SegmentCommitInfo,
+        segment_info_status: SegmentInfoStatus,
+    ) -> Result<()> {
+        let failed = segment_info_status.error.is_some();
+        let to_lose_doc_count = segment_info_status.to_lose_doc_count;
+        result.segment_infos.push(segment_info_status);
+        if failed {
+            result.tot_lose_doc_count += to_lose_doc_count;
+            result.num_bad_segments += 1;
+        } else if let Some(new_segments) = result.new_segments.as_mut() {
+            // Keeper.
+            new_segments.add(info.java_clone())?;
+        }
+        Ok(())
+    }
+
+    /// Checks one segment of `sis` from end to end.
+    ///
+    /// Equivalent to `CheckIndex.testSegment(SegmentInfos, SegmentCommitInfo, PrintStream)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::CheckIndex`] when the segment claims a
+    /// non-positive document count, and propagates the first corruption found
+    /// when [`set_fail_fast`](CheckIndex::set_fail_fast) is set; otherwise the
+    /// corruption is recorded in the returned status.
+    fn test_segment(
+        &self,
+        sis: &SegmentInfos,
+        info: &SegmentCommitInfo,
+        info_stream: Option<&dyn PrintStream>,
+    ) -> Result<SegmentInfoStatus> {
+        let max_doc = info.info.max_doc()?;
+        let mut seg_info_stat = SegmentInfoStatus {
+            name: info.info.name.clone(),
+            max_doc,
+            ..SegmentInfoStatus::default()
+        };
+
+        let version = info.info.version();
+        if max_doc <= 0 {
+            return Err(check_index_error(format!(
+                " illegal number of documents: maxDoc={max_doc}"
+            )));
+        }
+
+        let mut to_lose_doc_count = max_doc;
+
+        // Java closes the `SegmentReader` in the `finally` block
+        // (`CheckIndex.java:1155-1157`); the reader the `try` block opens is
+        // kept here to be closed after it, on both the success and the
+        // failure path.
+        let mut opened: Option<Arc<SegmentReader>> = None;
+        let outcome = record_throwable(self.fail_fast, || -> Result<()> {
+            msg(info_stream, &format!("    version={version}"));
+            let id = info.info.id();
+            msg(
+                info_stream,
+                &format!("    id={}", StringHelper::id_to_string(Some(&id))),
+            );
+            let codec = info.info.codec();
+            msg(
+                info_stream,
+                &format!(
+                    "    codec={}",
+                    codec
+                        .as_ref()
+                        .map_or_else(|| "null".to_string(), |codec| codec.to_java_string())
+                ),
+            );
+            seg_info_stat.codec = codec;
+            msg(
+                info_stream,
+                &format!("    compound={}", info.info.get_use_compound_file()),
+            );
+            seg_info_stat.compound = info.info.get_use_compound_file();
+            let num_files = info.files()?.len();
+            msg(info_stream, &format!("    numFiles={num_files}"));
+            // Java runs `testSort` only for a non-null sort
+            // (`CheckIndex.java:974-977`, `:1089-1092`).
+            let index_sort = info.info.index_sort();
+            if let Some(index_sort) = index_sort {
+                msg(info_stream, &format!("    sort={index_sort}"));
+            }
+            seg_info_stat.num_files = num_files;
+            // `info.sizeInBytes()`, the cached size (`CheckIndex.java:978`).
+            seg_info_stat.size_mb = info.size_in_bytes()? as f64 / (1024.0 * 1024.0);
+            // `nf.format(segInfoStat.sizeMB)` with
+            // `NumberFormat.getInstance(Locale.ROOT)` (`CheckIndex.java:110`, `:983`).
+            msg(
+                info_stream,
+                &format!(
+                    "    size (MB)={}",
+                    java_root_number_format(seg_info_stat.size_mb)
+                ),
+            );
+            // `"    diagnostics = " + diagnostics`: `Map.toString()` in the map's
+            // Java iteration order.
+            let java_diagnostics = info.info.get_diagnostics();
+            if !java_diagnostics.is_empty() {
+                msg(
+                    info_stream,
+                    &format!("    diagnostics = {}", java_map_to_string(java_diagnostics)),
+                );
+            }
+            seg_info_stat.diagnostics = java_diagnostics.to_std();
+
+            if !info.has_deletions() {
+                msg(info_stream, "    no deletions");
+                seg_info_stat.has_deletions = false;
+            } else {
+                msg(
+                    info_stream,
+                    &format!("    has deletions [delGen={}]", info.get_del_gen()),
+                );
+                seg_info_stat.has_deletions = true;
+                seg_info_stat.deletions_gen = info.get_del_gen();
+            }
+
+            let start_open_reader = Instant::now();
+            print(info_stream, "    test: open reader.........");
+            let reader = Arc::new(SegmentReader::new(
+                info.clone(),
+                sis.index_created_version_major(),
+                &*DEFAULT_IO_CONTEXT,
+            )?);
+            opened = Some(Arc::clone(&reader));
+            msg(
+                info_stream,
+                &format!("OK [took {}]", took(start_open_reader)),
+            );
+
+            seg_info_stat.open_reader_passed = true;
+
+            let start_integrity = Instant::now();
+            print(info_stream, "    test: check integrity.....");
+            reader.check_integrity()?;
+            msg(info_stream, &format!("OK [took {}]", took(start_integrity)));
+
+            if reader.max_doc() != max_doc {
+                return Err(check_index_error(format!(
+                    "SegmentReader.maxDoc() {} != SegmentInfo.maxDoc {max_doc}",
+                    reader.max_doc()
+                )));
+            }
+
+            let num_docs = reader.num_docs();
+            to_lose_doc_count = num_docs;
+
+            // `has_deletions` lives on `IndexReader`, whose `max_doc` and
+            // `num_docs` would shadow `LeafReader`'s if the trait were imported.
+            if crate::index::index_reader::IndexReader::has_deletions(&*reader) {
+                if num_docs != max_doc - info.get_del_count() {
+                    return Err(check_index_error(format!(
+                        "delete count mismatch: info={} vs reader={num_docs}",
+                        max_doc - info.get_del_count()
+                    )));
+                }
+                if (max_doc - num_docs) > reader.max_doc() {
+                    return Err(check_index_error(format!(
+                        "too many deleted docs: maxDoc()={} vs del count={}",
+                        reader.max_doc(),
+                        max_doc - num_docs
+                    )));
+                }
+                if max_doc - num_docs != info.get_del_count() {
+                    return Err(check_index_error(format!(
+                        "delete count mismatch: info={} vs reader={}",
+                        info.get_del_count(),
+                        max_doc - num_docs
+                    )));
+                }
+            } else if info.get_del_count() != 0 {
+                return Err(check_index_error(format!(
+                    "delete count mismatch: info={} vs reader={}",
+                    info.get_del_count(),
+                    max_doc - num_docs
+                )));
+            }
+
+            if self.level >= Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS {
+                let codec_reader: &dyn CodecReader = &*reader;
+
+                // Test live docs.
+                seg_info_stat.live_doc_status =
+                    Some(test_live_docs(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test field infos.
+                seg_info_stat.field_info_status =
+                    Some(test_field_infos(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test field norms.
+                seg_info_stat.field_norm_status =
+                    Some(test_field_norms(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test the term index.
+                seg_info_stat.term_index_status = Some(test_postings(
+                    codec_reader,
+                    info_stream,
+                    self.verbose,
+                    self.level,
+                    self.fail_fast,
+                )?);
+
+                // Test stored fields.
+                seg_info_stat.stored_field_status = Some(test_stored_fields(
+                    codec_reader,
+                    info_stream,
+                    self.fail_fast,
+                )?);
+
+                // Test term vectors.
+                seg_info_stat.term_vector_status = Some(test_term_vectors(
+                    codec_reader,
+                    info_stream,
+                    self.verbose,
+                    self.level,
+                    self.fail_fast,
+                )?);
+
+                // Test doc values.
+                seg_info_stat.doc_values_status =
+                    Some(test_doc_values(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test point values.
+                seg_info_stat.points_status =
+                    Some(test_points(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test float vector values and byte vector values.
+                seg_info_stat.vector_values_status =
+                    Some(test_vectors(codec_reader, info_stream, self.fail_fast)?);
+
+                // Test the index sort.
+                if index_sort.is_some() {
+                    seg_info_stat.index_sort_status = Some(test_sort(
+                        &(Arc::clone(&reader) as Arc<dyn CodecReader>),
+                        index_sort,
+                        info_stream,
+                        self.fail_fast,
+                    )?);
+                }
+
+                // Test soft deletes.
+                let field_infos = reader.get_field_infos();
+                if let Some(soft_deletes_field) = field_infos.get_soft_deletes_field() {
+                    seg_info_stat.soft_deletes_status = Some(check_soft_deletes(
+                        soft_deletes_field,
+                        info.get_soft_del_count(),
+                        &*reader as &dyn LeafReader,
+                        info_stream,
+                        self.fail_fast,
+                    )?);
+                }
+
+                // Rethrow the first failure encountered. This causes the stats
+                // for failed segments to be incremented properly. A check
+                // running on another thread cannot (easily) be stopped, so every
+                // check is run to completion first, rather than failing here
+                // while another one may still be reporting.
+                if let Some(error) = seg_info_stat
+                    .live_doc_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("Live docs test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .field_info_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Field Info test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .field_norm_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Field Norm test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .term_index_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Term Index test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .stored_field_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Stored Field test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .term_vector_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Term Vector test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .doc_values_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("DocValues test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .points_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("Points test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .vector_values_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause("Vectors test failed", error));
+                } else if let Some(error) = seg_info_stat
+                    .index_sort_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Index Sort test failed",
+                        error,
+                    ));
+                } else if let Some(error) = seg_info_stat
+                    .soft_deletes_status
+                    .as_ref()
+                    .and_then(|status| status.error.as_ref())
+                {
+                    return Err(check_index_error_with_cause(
+                        "Soft Deletes test failed",
+                        error,
+                    ));
+                }
+            }
+
+            msg(info_stream, "");
+            Ok(())
+        });
+
+        let result = match outcome {
+            Err(error) if self.fail_fast => Err(error),
+            Err(error) => {
+                seg_info_stat.to_lose_doc_count = to_lose_doc_count;
+                msg(info_stream, "FAILED");
+                let comment = "exorciseIndex() would remove reference to this segment";
+                msg(
+                    info_stream,
+                    &format!("    WARNING: {comment}; full exception:"),
+                );
+                print_stack_trace(info_stream, &error);
+                seg_info_stat.error = Some(error);
+                msg(info_stream, "");
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        };
+        // `finally { if (reader != null) reader.close(); }`: a failure closing
+        // the reader replaces the outcome, as an exception thrown from a
+        // `finally` block does.
+        if let Some(reader) = opened {
+            crate::index::index_reader::IndexReader::close(reader.as_ref())?;
+        }
+        result.map(|()| seg_info_stat)
+    }
+
+    /// Repairs the index from a [`Status`] previously returned by
+    /// [`CheckIndex::check_index`].
+    ///
+    /// Equivalent to `CheckIndex.exorciseIndex(Status)`. Note that this does not
+    /// remove any of the unreferenced files afterwards; you must separately open
+    /// an [`IndexWriter`], which deletes unreferenced files when it is created.
+    ///
+    /// **Warning:** this writes a new segments file into the index, effectively
+    /// removing every document of the broken segments from the index. Be
+    /// careful.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `result` covers only a
+    /// subset of the segments, or when it carries no repaired `SegmentInfos`
+    /// because the check never got as far as reading the commit. Propagates the
+    /// failure of writing the new segments file.
+    pub fn exorcise_index(&self, result: &mut Status) -> Result<()> {
+        self.ensure_open()?;
+        if result.partial {
+            return Err(LuceneError::illegal_argument(
+                "can only exorcise an index that was fully checked (this status checked a subset \
+                 of segments)"
+                    .to_string(),
+            ));
+        }
+        // `result.newSegments.changed()` (`CheckIndex.java:4279`): a status
+        // whose check returned before the commit was read has none, and the
+        // dereference throws `NullPointerException`.
+        let Some(new_segments) = result.new_segments.as_mut() else {
+            return Err(LuceneError::null_pointer());
+        };
+        new_segments.changed();
+        new_segments.commit(self.dir.as_ref())?;
+        Ok(())
+    }
+
+    /// Actually performs the index check, and returns `0` when the index is
+    /// clean and `1` otherwise.
+    ///
+    /// Equivalent to `CheckIndex.doCheck(Options)`.
+    ///
+    /// The report goes to `opts.out`, which `doMain` sets to `System.out`;
+    /// the info stream is `opts.out` too (`setInfoStream(opts.out,
+    /// opts.verbose)`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when `opts` holds an out of
+    /// range level or thread count, Java's `NullPointerException` when a
+    /// report is due and `opts.out` is `None`, and propagates whatever
+    /// [`CheckIndex::check_index_segments`] and [`CheckIndex::exorcise_index`]
+    /// raise.
+    pub fn do_check(&mut self, opts: &Options) -> Result<i32> {
+        self.set_level(opts.level)?;
+        self.set_info_stream_verbose(opts.out.clone(), opts.verbose);
+        // A thread count given on the command line overrides the default.
+        if opts.thread_count > 0 {
+            self.set_thread_count(opts.thread_count)?;
+        }
+
+        // Java's `parseOptions` nulls out an empty segment list, so that an
+        // empty one never means "check nothing".
+        let only_segments = if opts.only_segments.is_empty() {
+            None
+        } else {
+            Some(opts.only_segments.as_slice())
+        };
+        let mut result = self.check_index_segments(only_segments)?;
+        // `opts.out.println(...)`: a `null` stream throws `NullPointerException`.
+        let out = || -> Result<Option<&dyn PrintStream>> {
+            Ok(Some(
+                opts.out.as_deref().ok_or_else(LuceneError::null_pointer)?,
+            ))
+        };
+
+        if result.missing_segments {
+            return Ok(1);
+        }
+
+        if !result.clean {
+            if !opts.do_exorcise {
+                msg(
+                    out()?,
+                    &format!(
+                        "WARNING: would write new segments file, and {} documents would be lost, \
+                         if -exorcise were specified\n",
+                        result.tot_lose_doc_count
+                    ),
+                );
+            } else {
+                msg(
+                    out()?,
+                    &format!(
+                        "WARNING: {} documents will be lost\n",
+                        result.tot_lose_doc_count
+                    ),
+                );
+                msg(
+                    out()?,
+                    &format!(
+                        "NOTE: will write new segments file in 5 seconds; this will remove {} \
+                         docs from the index. YOU WILL LOSE DATA. THIS IS YOUR LAST CHANCE TO \
+                         CTRL+C!",
+                        result.tot_lose_doc_count
+                    ),
+                );
+                for s in 0..5 {
+                    std::thread::sleep(Duration::from_secs(1));
+                    msg(out()?, &format!("  {}...", 5 - s));
+                }
+                msg(out()?, "Writing...");
+                self.exorcise_index(&mut result)?;
+                msg(out()?, "OK");
+                msg(
+                    out()?,
+                    &format!(
+                        "Wrote new segments file \"{}\"",
+                        result
+                            .new_segments
+                            .as_ref()
+                            .and_then(SegmentInfos::segments_file_name)
+                            .unwrap_or_default()
+                    ),
+                );
+            }
+        }
+        msg(out()?, "");
+
+        Ok(if result.clean { 0 } else { 1 })
+    }
+}
+
+/// Returns whether a segment named `name` is left out of a check restricted to
+/// `only_segments`.
+///
+/// Equivalent to Java's `onlySegments != null && !onlySegments.contains(info.info.name)`.
+fn is_skipped_segment(only_segments: Option<&[String]>, name: &str) -> bool {
+    only_segments.is_some_and(|only| !only.iter().any(|segment| segment == name))
+}
+
+// ---------------------------------------------------------------------------
+// testLiveDocs / testFieldInfos
+// ---------------------------------------------------------------------------
+
+/// Tests the live docs of one segment.
+///
+/// Equivalent to `CheckIndex.testLiveDocs`.
+///
+/// # Errors
+///
+/// Propagates the failure when `fail_fast` is set; otherwise the failure is
+/// recorded in the returned status and `Ok` is returned.
+pub fn test_live_docs(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<LiveDocStatus> {
+    let start = Instant::now();
+    let mut status = LiveDocStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: check live docs.....");
+        let num_docs = reader.num_docs();
+        // `LeafReader` in this crate does not inherit `IndexReader`, so the two
+        // derived quantities are computed here exactly as Java's
+        // `IndexReader.numDeletedDocs`/`hasDeletions` derive them.
+        let num_deleted_docs = reader.max_doc() - num_docs;
+        let has_deletions = num_deleted_docs > 0;
+
+        if has_deletions {
+            let Some(live_docs) = reader.get_live_docs() else {
+                return Err(check_index_error(
+                    "segment should have deletions, but liveDocs is null",
+                ));
+            };
+            let num_live = bits_cardinality(live_docs.as_ref())?;
+            if num_live != num_docs {
+                return Err(check_index_error(format!(
+                    "liveDocs count mismatch: info={num_docs}, vs bits={num_live}"
+                )));
+            }
+            status.num_deleted = num_deleted_docs;
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} deleted docs] [took {}]",
+                    status.num_deleted,
+                    took(start)
+                ),
+            );
+        } else {
+            if let Some(live_docs) = reader.get_live_docs() {
+                // It is fine for it to be non-null here, as long as none are set.
+                for j in 0..live_docs.length() {
+                    if !live_docs.get(j) {
+                        return Err(check_index_error(format!(
+                            "liveDocs mismatch: info says no deletions but doc {j} is deleted."
+                        )));
+                    }
+                }
+            }
+            msg(info_stream, &format!("OK [took {}]", took(start)));
+        }
+        Ok(())
+    });
+
+    if let Err(e) = outcome {
+        if fail_fast {
+            return Err(e);
+        }
+        msg(info_stream, &format!("ERROR [{e}]"));
+        print_stack_trace(info_stream, &e);
+        status.error = Some(e);
+    }
+
+    Ok(status)
+}
+
+/// Tests the field infos of one segment.
+///
+/// Equivalent to `CheckIndex.testFieldInfos`.
+///
+/// # Errors
+///
+/// Propagates the failure when `fail_fast` is set.
+pub fn test_field_infos(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<FieldInfoStatus> {
+    let start = Instant::now();
+    let mut status = FieldInfoStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        // Test Field Infos
+        print(info_stream, "    test: field infos.........");
+        let field_infos = reader.get_field_infos();
+        for f in field_infos.iter() {
+            f.check_consistency()?;
+        }
+        msg(
+            info_stream,
+            &format!("OK [{} fields] [took {}]", field_infos.size(), took(start)),
+        );
+        status.tot_fields = field_infos.size() as i64;
+        Ok(())
+    });
+
+    if let Err(e) = outcome {
+        if fail_fast {
+            return Err(e);
+        }
+        msg(info_stream, &format!("ERROR [{e}]"));
+        print_stack_trace(info_stream, &e);
+        status.error = Some(e);
+    }
+
+    Ok(status)
+}
+
+// ---------------------------------------------------------------------------
+// Low-level iterator checks
+// ---------------------------------------------------------------------------
+
+/// Verifies that the runs of consecutive doc IDs an iterator advertises through
+/// `doc_id_run_end` agree with the doc IDs it actually returns.
+///
+/// Equivalent to `CheckIndex.checkDocIDRuns`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
+fn check_doc_id_runs<I: DocIdSetIterator + ?Sized>(iterator: &mut I) -> Result<()> {
+    let mut prev_doc = -1i32;
+    let mut run_end = 0i32;
+    let mut doc = iterator.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        if prev_doc + 1 < run_end && doc != prev_doc + 1 {
+            return Err(check_index_error(format!(
+                "Run end is {run_end} but next doc after {prev_doc} is {doc}"
+            )));
+        }
+        let new_run_end = iterator.doc_id_run_end()?;
+        if new_run_end <= doc {
+            return Err(check_index_error(format!(
+                "Run end {new_run_end} is <= doc ID {doc}"
+            )));
+        }
+        if new_run_end > run_end {
+            run_end = new_run_end;
+        }
+        prev_doc = doc;
+        doc = iterator.next_doc()?;
+    }
+
+    if run_end != prev_doc + 1 {
+        return Err(check_index_error(format!(
+            "Run end is {run_end} but last doc is {prev_doc}"
+        )));
+    }
+    Ok(())
+}
+
+/// Verifies the internal consistency of an [`Impacts`] instance.
+///
+/// Equivalent to `CheckIndex.checkImpacts`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] when the impacts are missing, out of
+/// order, duplicated, or fail to dominate the level below.
+pub fn check_impacts(impacts: &mut dyn Impacts, last_target: i32) -> Result<()> {
+    let num_levels = impacts.num_levels();
+    if num_levels < 1 {
+        return Err(check_index_error(format!(
+            "The number of impact levels must be >= 1, got {num_levels}"
+        )));
+    }
+
+    let doc_id_up_to0 = impacts.doc_id_up_to(0);
+    if doc_id_up_to0 < last_target {
+        return Err(check_index_error(format!(
+            "getDocIdUpTo returned {doc_id_up_to0} on level 0, which is less than the target {last_target}"
+        )));
+    }
+
+    for impacts_level in 1..num_levels {
+        let doc_id_up_to = impacts.doc_id_up_to(impacts_level);
+        let previous_doc_id_up_to = impacts.doc_id_up_to(impacts_level - 1);
+        if doc_id_up_to < previous_doc_id_up_to {
+            return Err(check_index_error(format!(
+                "Decreasing return for getDocIdUpTo: level {} returned {} but level {} returned {} for target {}",
+                impacts_level - 1,
+                previous_doc_id_up_to,
+                impacts_level,
+                doc_id_up_to,
+                last_target
+            )));
+        }
+    }
+
+    for impacts_level in 0..num_levels {
+        let per_level_impacts = impacts.get_impacts(impacts_level);
+        if per_level_impacts.size == 0 {
+            return Err(check_index_error(format!(
+                "Got empty list of impacts on level {impacts_level}"
+            )));
+        }
+        let first_freq = per_level_impacts.freqs[0];
+        let first_norm = per_level_impacts.norms[0];
+        if first_freq < 1 {
+            return Err(check_index_error(format!(
+                "First impact had a freq <= 0: {first_freq}"
+            )));
+        }
+        if first_norm == 0 {
+            return Err(check_index_error(format!(
+                "First impact had a norm == 0: {first_norm}"
+            )));
+        }
+        // Impacts must be in increasing order of norm AND freq. The norm
+        // comparison is unsigned, as in Java's `Long.compareUnsigned`.
+        let mut prev_freq = first_freq;
+        let mut prev_norm = first_norm;
+        for i in 1..per_level_impacts.size {
+            let freq = per_level_impacts.freqs[i];
+            let norm = per_level_impacts.norms[i];
+            if freq <= prev_freq || (norm as u64) <= (prev_norm as u64) {
+                return Err(check_index_error(format!(
+                    "Impacts are not ordered or contain dups, got ({prev_freq},{prev_norm}) then ({freq},{norm})"
+                )));
+            }
+            prev_freq = freq;
+            prev_norm = norm;
+        }
+
+        if impacts_level > 0 {
+            // Impacts at level N must trigger better scores than at level N-1.
+            // Both levels may be served from one buffer, so each is copied
+            // before the other is read (`ArrayUtil.copyOfSubArray`,
+            // `CheckIndex.java:2579-2586`).
+            let size = per_level_impacts.size;
+            let freqs = per_level_impacts.freqs[..size].to_vec();
+            let norms = per_level_impacts.norms[..size].to_vec();
+
+            let prev_level_impacts = impacts.get_impacts(impacts_level - 1);
+            let prev_size = prev_level_impacts.size;
+            let prev_freqs = prev_level_impacts.freqs[..prev_size].to_vec();
+            let prev_norms = prev_level_impacts.norms[..prev_size].to_vec();
+
+            let mut prev_index = 0usize;
+            let mut freq = freqs[0];
+            let mut norm = norms[0];
+            let mut index = 1usize;
+            while prev_index < prev_size {
+                let p_freq = prev_freqs[prev_index];
+                let p_norm = prev_norms[prev_index];
+                prev_index += 1;
+
+                if p_freq <= freq && (p_norm as u64) >= (norm as u64) {
+                    // The previous impact triggers a lower score than the
+                    // current one, all good.
+                    continue;
+                }
+                if index >= size {
+                    return Err(check_index_error(format!(
+                        "Found impact ({p_freq},{p_norm}) on level {} but no impact on level {} triggers a better score: freqs={:?} norms={:?}",
+                        impacts_level - 1,
+                        impacts_level,
+                        freqs,
+                        norms
+                    )));
+                }
+                freq = freqs[index];
+                norm = norms[index];
+                index += 1;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Doc values checks
+// ---------------------------------------------------------------------------
+
+/// Verifies that `advance` and `advance_exact` agree with plain iteration on a
+/// doc values iterator.
+///
+/// Equivalent to `CheckIndex.checkDVIterator`. Java passes a
+/// `DocValuesIteratorSupplier` functional interface; this port takes a closure
+/// that produces a fresh iterator of the concrete kind under test, which keeps
+/// the caller from having to erase the kind.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
+fn check_dv_iterator<I, F>(fi: &FieldInfo, producer: F) -> Result<()>
+where
+    I: DocValuesIterator + ?Sized,
+    F: Fn() -> Result<Box<I>>,
+{
+    let field = fi.get_name();
+
+    // Check advance.
+    let mut it1 = producer()?;
+    let mut it2 = producer()?;
+    let mut i = 0i32;
+    let mut doc = it1.next_doc()?;
+    loop {
+        let should_check = {
+            let r = i % 10 == 1;
+            i += 1;
+            r
+        };
+        if should_check {
+            let mut doc2 = it2.advance(doc - 1)?;
+            if doc2 < doc - 1 {
+                return Err(check_index_error(format!(
+                    "dv iterator field={field}: doc={} went backwords (got: {doc2})",
+                    doc - 1
+                )));
+            }
+            if doc2 == doc - 1 {
+                doc2 = it2.next_doc()?;
+            }
+            if doc2 != doc {
+                return Err(check_index_error(format!(
+                    "dv iterator field={field}: doc={doc} was not found through advance() (got: {doc2})"
+                )));
+            }
+            if it2.doc_id() != doc {
+                return Err(check_index_error(format!(
+                    "dv iterator field={field}: doc={doc} reports wrong doc ID (got: {})",
+                    it2.doc_id()
+                )));
+            }
+        }
+
+        if doc == NO_MORE_DOCS {
+            break;
+        }
+        doc = it1.next_doc()?;
+    }
+
+    // Check advance_exact.
+    let mut it1 = producer()?;
+    let mut it2 = producer()?;
+    let mut i = 0i32;
+    let mut last_doc = -1i32;
+    let mut doc = it1.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        let should_check = {
+            let r = i % 13 == 1;
+            i += 1;
+            r
+        };
+        if should_check {
+            let found = it2.advance_exact(doc - 1)?;
+            if (doc - 1 == last_doc) != found {
+                return Err(check_index_error(format!(
+                    "dv iterator field={field}: doc={} disagrees about whether document exists (got: {found})",
+                    doc - 1
+                )));
+            }
+            if it2.doc_id() != doc - 1 {
+                return Err(check_index_error(format!(
+                    "dv iterator field={field}: doc={} reports wrong doc ID (got: {})",
+                    doc - 1,
+                    it2.doc_id()
+                )));
+            }
+
+            let found2 = it2.advance_exact(doc - 1)?;
+            if found != found2 {
+                return Err(check_index_error(format!(
+                    "dv iterator field={field}: doc={} has unstable advanceExact",
+                    doc - 1
+                )));
+            }
+
+            if i % 2 == 0 {
+                let doc2 = it2.next_doc()?;
+                if doc != doc2 {
+                    return Err(check_index_error(format!(
+                        "dv iterator field={field}: doc={doc} was not found through advance() (got: {doc2})"
+                    )));
+                }
+                if it2.doc_id() != doc {
+                    return Err(check_index_error(format!(
+                        "dv iterator field={field}: doc={doc} reports wrong doc ID (got: {})",
+                        it2.doc_id()
+                    )));
+                }
+            }
+        }
+
+        last_doc = doc;
+        doc = it1.next_doc()?;
+    }
+
+    Ok(())
+}
+
+/// Verifies a doc values skipping index.
+///
+/// Equivalent to `CheckIndex.checkDocValueSkipper`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
+fn check_doc_value_skipper(fi: &FieldInfo, skipper: &mut dyn DocValuesSkipper) -> Result<()> {
+    let field_name = fi.get_name();
+    if skipper.max_doc_id(0) != -1 {
+        return Err(check_index_error(format!(
+            "binary dv iterator for field: {field_name} should start at docID=-1, but got {}",
+            skipper.max_doc_id(0)
+        )));
+    }
+    if skipper.global_doc_count() > 0 && skipper.global_min_value() > skipper.global_max_value() {
+        return Err(check_index_error(format!(
+            "skipper dv iterator for field: {field_name} reports wrong global value range, got  {} > {}",
+            skipper.global_min_value(),
+            skipper.global_max_value()
+        )));
+    }
+    if skipper.max_value_count() < -1 {
+        return Err(check_index_error(format!(
+            "skipper dv iterator for field: {field_name} reports invalid maxValueCount, got {}",
+            skipper.max_value_count()
+        )));
+    }
+    if skipper.global_doc_count() == 0 && skipper.max_value_count() != 0 {
+        return Err(check_index_error(format!(
+            "skipper dv iterator for field: {field_name} reports maxValueCount for an empty field, got {}",
+            skipper.max_value_count()
+        )));
+    }
+
+    let mut doc_count = 0i32;
+    loop {
+        let doc = skipper.max_doc_id(0) + 1;
+        skipper.advance(doc)?;
+        if skipper.max_doc_id(0) == NO_MORE_DOCS {
+            break;
+        }
+        if skipper.min_doc_id(0) < doc {
+            return Err(check_index_error(format!(
+                "skipper dv iterator for field: {field_name} reports wrong minDocID, got {} < {doc}",
+                skipper.min_doc_id(0)
+            )));
+        }
+        let levels = skipper.num_levels();
+        for level in 0..levels {
+            if skipper.min_doc_id(level) > skipper.max_doc_id(level) {
+                return Err(check_index_error(format!(
+                    "skipper dv iterator for field: {field_name} reports wrong doc range, got {} > {}",
+                    skipper.min_doc_id(level),
+                    skipper.max_doc_id(level)
+                )));
+            }
+            if skipper.global_min_value() > skipper.min_value(level) {
+                return Err(check_index_error(format!(
+                    "skipper dv iterator for field: {field_name} : global minValue  {} , got  {}",
+                    skipper.global_min_value(),
+                    skipper.min_value(level)
+                )));
+            }
+            if skipper.global_max_value() < skipper.max_value(level) {
+                return Err(check_index_error(format!(
+                    "skipper dv iterator for field: {field_name} : global maxValue  {} , got  {}",
+                    skipper.global_max_value(),
+                    skipper.max_value(level)
+                )));
+            }
+            if skipper.min_value(level) > skipper.max_value(level) {
+                return Err(check_index_error(format!(
+                    "skipper dv iterator for field: {field_name} reports wrong value range, got  {} > {}",
+                    skipper.min_value(level),
+                    skipper.max_value(level)
+                )));
+            }
+        }
+        doc_count += skipper.doc_count(0);
+    }
+    if skipper.global_doc_count() != doc_count {
+        return Err(check_index_error(format!(
+            "skipper dv iterator for field: {field_name} inconsistent docCount, got {} != {doc_count}",
+            skipper.global_doc_count()
+        )));
+    }
+    Ok(())
+}
+
+/// Cross-checks a numeric doc values field against a second iterator over the
+/// same field.
+///
+/// Equivalent to `CheckIndex.checkNumericDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
+pub fn check_numeric_doc_values(
+    field_name: &str,
+    ndv: &mut dyn NumericDocValues,
+    ndv2: &mut dyn NumericDocValues,
+) -> Result<()> {
+    if ndv.doc_id() != -1 {
+        return Err(check_index_error(format!(
+            "dv iterator for field: {field_name} should start at docID=-1, but got {}",
+            ndv.doc_id()
+        )));
+    }
+    let mut doc = ndv.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        let value = ndv.long_value()?;
+        if !ndv2.advance_exact(doc)? {
+            return Err(check_index_error(format!(
+                "advanceExact did not find matching doc ID: {doc}"
+            )));
+        }
+        let value2 = ndv2.long_value()?;
+        if value != value2 {
+            return Err(check_index_error(format!(
+                "advanceExact reports different value: {value} != {value2}"
+            )));
+        }
+        doc = ndv.next_doc()?;
+    }
+    Ok(())
+}
+
+/// Cross-checks the bulk `long_values` accessor against `advance_exact`.
+///
+/// Equivalent to `CheckIndex.checkBulkFetchNumericDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
+pub fn check_bulk_fetch_numeric_doc_values(
+    ndv: &mut dyn NumericDocValues,
+    ndv2: &mut dyn NumericDocValues,
+    max_doc: i32,
+) -> Result<()> {
+    let mut docs = [0i32; 16];
+    let mut values = [0i64; 16];
+
+    let mut doc = -1i32;
+    while doc < max_doc {
+        let mut size = 0usize;
+        for j in 0..docs.len() {
+            doc += 1 + (j as i32 & 0x03);
+            if doc >= max_doc {
+                break;
+            }
+            docs[size] = doc;
+            size += 1;
+        }
+
+        let default_value = 42i64;
+        // This crate's `long_values` takes explicit source and destination
+        // offsets, which Java's `NumericDocValues.longValues` does not; both are
+        // zero here, which is exactly Java's behaviour.
+        ndv.long_values(size as i32, &docs, 0, &mut values, 0, default_value)?;
+
+        for j in 0..size {
+            let expected = if ndv2.advance_exact(docs[j])? {
+                ndv2.long_value()?
+            } else {
+                default_value
+            };
+            if values[j] != expected {
+                return Err(check_index_error(format!(
+                    "#longValues reports different value: {} != {expected}",
+                    values[j]
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cross-checks a binary doc values field against a second iterator.
+///
+/// Equivalent to `CheckIndex.checkBinaryDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
+pub fn check_binary_doc_values(
+    field_name: &str,
+    bdv: &mut dyn BinaryDocValues,
+    bdv2: &mut dyn BinaryDocValues,
+) -> Result<()> {
+    if bdv.doc_id() != -1 {
+        return Err(check_index_error(format!(
+            "binary dv iterator for field: {field_name} should start at docID=-1, but got {}",
+            bdv.doc_id()
+        )));
+    }
+    let mut doc = bdv.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        let value = bdv.binary_value()?;
+        value.is_valid()?;
+
+        if !bdv2.advance_exact(doc)? {
+            return Err(check_index_error(format!(
+                "advanceExact did not find matching doc ID: {doc}"
+            )));
+        }
+        let value2 = bdv2.binary_value()?;
+        if !value.bytes_equals(&value2) {
+            return Err(check_index_error(format!(
+                "nextDoc and advanceExact report different values: {} != {}",
+                value.to_hex_string(),
+                value2.to_hex_string()
+            )));
+        }
+        doc = bdv.next_doc()?;
+    }
+    Ok(())
+}
+
+/// Cross-checks a sorted doc values field against a second iterator, and
+/// verifies that its ordinals are dense and its terms sorted.
+///
+/// Equivalent to `CheckIndex.checkSortedDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
+pub fn check_sorted_doc_values(
+    field_name: &str,
+    dv: &mut dyn SortedDocValues,
+    dv2: &mut dyn SortedDocValues,
+) -> Result<()> {
+    if dv.doc_id() != -1 {
+        return Err(check_index_error(format!(
+            "sorted dv iterator for field: {field_name} should start at docID=-1, but got {}",
+            dv.doc_id()
+        )));
+    }
+    let value_count = dv.get_value_count()?;
+    let max_ord = value_count - 1;
+    let mut seen_ords = FixedBitSet::new(value_count.max(0) as usize);
+    let mut max_ord2 = -1i32;
+
+    let mut doc = dv.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        let ord = dv.ord_value()?;
+        if ord == -1 {
+            return Err(check_index_error(format!(
+                "dv for field: {field_name} has -1 ord"
+            )));
+        } else if ord < -1 || ord > max_ord {
+            return Err(check_index_error(format!("ord out of bounds: {ord}")));
+        } else {
+            max_ord2 = max_ord2.max(ord);
+            seen_ords.set(ord as usize);
+        }
+
+        if !dv2.advance_exact(doc)? {
+            return Err(check_index_error(format!(
+                "advanceExact did not find matching doc ID: {doc}"
+            )));
+        }
+        let ord2 = dv2.ord_value()?;
+        if ord != ord2 {
+            return Err(check_index_error(format!(
+                "nextDoc and advanceExact report different ords: {ord} != {ord2}"
+            )));
+        }
+        doc = dv.next_doc()?;
+    }
+    if max_ord != max_ord2 {
+        return Err(check_index_error(format!(
+            "dv for field: {field_name} reports wrong maxOrd={max_ord} but this is not the case: {max_ord2}"
+        )));
+    }
+    if seen_ords.cardinality() as i32 != value_count {
+        return Err(check_index_error(format!(
+            "dv for field: {field_name} has holes in its ords, valueCount={value_count} but only used: {}",
+            seen_ords.cardinality()
+        )));
+    }
+
+    let mut last_value: Option<BytesRef> = None;
+    for i in 0..=max_ord {
+        let term = dv.lookup_ord(i)?;
+        term.is_valid()?;
+        if let Some(last) = &last_value {
+            if term.slice() <= last.slice() {
+                return Err(check_index_error(format!(
+                    "dv for field: {field_name} has ords out of order: {} >={}",
+                    last.to_hex_string(),
+                    term.to_hex_string()
+                )));
+            }
+        }
+        last_value = Some(BytesRef::deep_copy_of(term));
+    }
+    Ok(())
+}
+
+/// Cross-checks a sorted set doc values field against a second iterator.
+///
+/// Equivalent to `CheckIndex.checkSortedSetDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
+pub fn check_sorted_set_doc_values(
+    field_name: &str,
+    dv: &mut dyn SortedSetDocValues,
+    dv2: &mut dyn SortedSetDocValues,
+) -> Result<()> {
+    let value_count = dv.get_value_count()?;
+    let max_ord = value_count - 1;
+    let mut seen_ords = LongBitSet::new(value_count.max(0))?;
+    let mut max_ord2 = -1i64;
+
+    let mut doc_id = dv.next_doc()?;
+    while doc_id != NO_MORE_DOCS {
+        let count = dv.doc_value_count()?;
+        if count == 0 {
+            return Err(check_index_error(format!(
+                "sortedset dv for field: {field_name} returned docValueCount=0 for docID={doc_id}"
+            )));
+        }
+        if !dv2.advance_exact(doc_id)? {
+            return Err(check_index_error(format!(
+                "advanceExact did not find matching doc ID: {doc_id}"
+            )));
+        }
+        let count2 = dv2.doc_value_count()?;
+        if count != count2 {
+            return Err(check_index_error(format!(
+                "advanceExact reports different value count: {count} != {count2}"
+            )));
+        }
+        let mut last_ord = -1i64;
+        let mut ord_count = 0i32;
+        for _ in 0..count {
+            if count != dv.doc_value_count()? {
+                return Err(check_index_error(format!(
+                    "value count changed from {count} to {} during iterating over all values",
+                    dv.doc_value_count()?
+                )));
+            }
+            let ord = dv.next_ord()?;
+            let ord2 = dv2.next_ord()?;
+            if ord != ord2 {
+                return Err(check_index_error(format!(
+                    "nextDoc and advanceExact report different ords: {ord} != {ord2}"
+                )));
+            }
+            if ord <= last_ord {
+                return Err(check_index_error(format!(
+                    "ords out of order: {ord} <= {last_ord} for doc: {doc_id}"
+                )));
+            }
+            if ord < 0 || ord > max_ord {
+                return Err(check_index_error(format!("ord out of bounds: {ord}")));
+            }
+            last_ord = ord;
+            max_ord2 = max_ord2.max(ord);
+            seen_ords.set(ord);
+            ord_count += 1;
+        }
+        if dv.doc_value_count()? != dv2.doc_value_count()? {
+            return Err(check_index_error(format!(
+                "dv and dv2 report different values count after iterating over all values: {} != {}",
+                dv.doc_value_count()?,
+                dv2.doc_value_count()?
+            )));
+        }
+        if ord_count == 0 {
+            return Err(check_index_error(format!(
+                "dv for field: {field_name} returned docID={doc_id} yet has no ordinals"
+            )));
+        }
+        doc_id = dv.next_doc()?;
+    }
+    if max_ord != max_ord2 {
+        return Err(check_index_error(format!(
+            "dv for field: {field_name} reports wrong maxOrd={max_ord} but this is not the case: {max_ord2}"
+        )));
+    }
+    if seen_ords.cardinality() != value_count {
+        return Err(check_index_error(format!(
+            "dv for field: {field_name} has holes in its ords, valueCount={value_count} but only used: {}",
+            seen_ords.cardinality()
+        )));
+    }
+
+    let mut last_value: Option<BytesRef> = None;
+    for i in 0..=max_ord {
+        let term = dv.lookup_ord(i)?;
+        debug_assert!(term.is_valid().is_ok());
+        term.is_valid()?;
+        if let Some(last) = &last_value {
+            if term.slice() <= last.slice() {
+                return Err(check_index_error(format!(
+                    "dv for field: {field_name} has ords out of order: {} >={}",
+                    last.to_hex_string(),
+                    term.to_hex_string()
+                )));
+            }
+        }
+        last_value = Some(BytesRef::deep_copy_of(term));
+    }
+    Ok(())
+}
+
+/// Cross-checks a sorted numeric doc values field against a second iterator.
+///
+/// Equivalent to `CheckIndex.checkSortedNumericDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first disagreement.
+pub fn check_sorted_numeric_doc_values(
+    field_name: &str,
+    ndv: &mut dyn SortedNumericDocValues,
+    ndv2: &mut dyn SortedNumericDocValues,
+) -> Result<()> {
+    if ndv.doc_id() != -1 {
+        return Err(check_index_error(format!(
+            "dv iterator for field: {field_name} should start at docID=-1, but got {}",
+            ndv.doc_id()
+        )));
+    }
+    let mut doc_id = ndv.next_doc()?;
+    while doc_id != NO_MORE_DOCS {
+        let count = ndv.doc_value_count()?;
+        if count == 0 {
+            return Err(check_index_error(format!(
+                "sorted numeric dv for field: {field_name} returned docValueCount=0 for docID={doc_id}"
+            )));
+        }
+        if !ndv2.advance_exact(doc_id)? {
+            return Err(check_index_error(format!(
+                "advanceExact did not find matching doc ID: {doc_id}"
+            )));
+        }
+        let count2 = ndv2.doc_value_count()?;
+        if count != count2 {
+            return Err(check_index_error(format!(
+                "advanceExact reports different value count: {count} != {count2}"
+            )));
+        }
+        let mut previous = i64::MIN;
+        for _ in 0..count {
+            let value = ndv.next_value()?;
+            if value < previous {
+                return Err(check_index_error(format!(
+                    "values out of order: {value} < {previous} for doc: {doc_id}"
+                )));
+            }
+            previous = value;
+
+            let value2 = ndv2.next_value()?;
+            if value != value2 {
+                return Err(check_index_error(format!(
+                    "advanceExact reports different value: {value} != {value2}"
+                )));
+            }
+        }
+        doc_id = ndv.next_doc()?;
+    }
+    Ok(())
+}
+
+/// Runs every doc values check that applies to one field.
+///
+/// Equivalent to `CheckIndex.checkDocValues`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency, or
+/// [`LuceneErrorKind::IllegalState`] when the field claims no doc values type,
+/// which is Java's `AssertionError`.
+fn check_doc_values(
+    fi: &FieldInfo,
+    max_doc: i32,
+    dv_reader: &dyn DocValuesProducer,
+    status: &mut DocValuesStatus,
+) -> Result<()> {
+    if fi.doc_values_skip_index_type() != DocValuesSkipIndexType::NONE {
+        status.total_skipping_index += 1;
+        // Java dereferences the result unchecked (`CheckIndex.java:3910-3912`,
+        // `:3397-3400`), so a missing skipper is Java's `NullPointerException`.
+        let mut skipper = dv_reader.get_skipper(fi)?.ok_or_else(|| {
+            LuceneError::null_pointer_with_message(
+                "Cannot invoke \"org.apache.lucene.index.DocValuesSkipper.maxDocID(int)\" \
+                 because \"skipper\" is null",
+            )
+        })?;
+        check_doc_value_skipper(fi, skipper.as_mut())?;
+    }
+    match fi.get_doc_values_type() {
+        DocValuesType::SORTED => {
+            status.total_sorted_fields += 1;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_sorted(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_sorted(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_sorted(fi)?, fi)?;
+            check_sorted_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
+        }
+        DocValuesType::SORTED_NUMERIC => {
+            status.total_sorted_numeric_fields += 1;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_sorted_numeric(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_sorted_numeric(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_sorted_numeric(fi)?, fi)?;
+            check_sorted_numeric_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
+        }
+        DocValuesType::SORTED_SET => {
+            status.total_sorted_set_fields += 1;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_sorted_set(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_sorted_set(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_sorted_set(fi)?, fi)?;
+            check_sorted_set_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
+        }
+        DocValuesType::BINARY => {
+            status.total_binary_fields += 1;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_binary(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_binary(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_binary(fi)?, fi)?;
+            check_binary_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
+        }
+        DocValuesType::NUMERIC => {
+            status.total_numeric_fields += 1;
+            check_dv_iterator(fi, || {
+                crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)
+            })?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
+            check_numeric_doc_values(fi.get_name(), a.as_mut(), b.as_mut())?;
+            let mut a = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
+            let mut b = crate::codecs::doc_values::non_null(dv_reader.get_numeric(fi)?, fi)?;
+            check_bulk_fetch_numeric_doc_values(a.as_mut(), b.as_mut(), max_doc)?;
+        }
+        // `case NONE: default: throw new AssertionError();`
+        // (`CheckIndex.java:3941-3943`).
+        DocValuesType::NONE => {
+            return Err(LuceneError::from(LuceneErrorKind::AssertionError(
+                String::new(),
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Tests the doc values of one segment.
+///
+/// Equivalent to `CheckIndex.testDocValues`.
+///
+/// # Errors
+///
+/// Propagates the failure when `fail_fast` is set.
+pub fn test_doc_values(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<DocValuesStatus> {
+    let start = Instant::now();
+    let mut status = DocValuesStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: docvalues...........");
+        let dv_reader = match reader.get_doc_values_reader()? {
+            Some(producer) => Some(producer.get_merge_instance()?),
+            None => None,
+        };
+        let field_infos = reader.get_field_infos();
+        for field_info in field_infos.iter() {
+            if field_info.get_doc_values_type() != DocValuesType::NONE {
+                status.total_value_fields += 1;
+                let Some(dv_reader) = dv_reader.as_ref() else {
+                    return Err(check_index_error(format!(
+                        "there are fields with doc values, but reader.getDocValuesReader() is null: {}",
+                        field_info.get_name()
+                    )));
+                };
+                check_doc_values(
+                    field_info,
+                    reader.max_doc(),
+                    dv_reader.as_ref(),
+                    &mut status,
+                )?;
+            }
+        }
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} docvalues fields; {} BINARY; {} NUMERIC; {} SORTED; {} SORTED_NUMERIC; {} SORTED_SET; {} SKIPPING INDEX] [took {}]",
+                status.total_value_fields,
+                status.total_binary_fields,
+                status.total_numeric_fields,
+                status.total_sorted_fields,
+                status.total_sorted_numeric_fields,
+                status.total_sorted_set_fields,
+                status.total_skipping_index,
+                took(start)
+            ),
+        );
+        Ok(())
+    });
+
+    if let Err(e) = outcome {
+        if fail_fast {
+            return Err(e);
+        }
+        msg(info_stream, &format!("ERROR [{e}]"));
+        status.error = Some(e);
+        if let Some(e) = status.error.as_ref() {
+            print_stack_trace(info_stream, e);
+        }
+    }
+
+    Ok(status)
+}
+
+/// Tests the field norms of one segment.
+///
+/// Equivalent to `CheckIndex.testFieldNorms`.
+///
+/// # Errors
+///
+/// Propagates the failure when `fail_fast` is set.
+pub fn test_field_norms(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<FieldNormStatus> {
+    let start = Instant::now();
+    let mut status = FieldNormStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        // Test Field Norms
+        print(info_stream, "    test: field norms.........");
+        let norms_reader = match reader.get_norms_reader()? {
+            Some(producer) => Some(producer.get_merge_instance()?),
+            None => None,
+        };
+        let field_infos = reader.get_field_infos();
+        for info in field_infos.iter() {
+            if info.has_norms() {
+                let Some(norms_reader) = norms_reader.as_ref() else {
+                    return Err(check_index_error(format!(
+                        "field \"{}\" has norms, but reader.getNormsReader() is null",
+                        info.get_name()
+                    )));
+                };
+                let mut a =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
+                let mut b =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
+                check_numeric_doc_values(info.get_name(), a.as_mut(), b.as_mut())?;
+                let mut a =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
+                let mut b =
+                    crate::codecs::doc_values::non_null(norms_reader.get_norms(info)?, info)?;
+                check_bulk_fetch_numeric_doc_values(a.as_mut(), b.as_mut(), reader.max_doc())?;
+                status.tot_fields += 1;
+            }
+        }
+        msg(
+            info_stream,
+            &format!("OK [{} fields] [took {}]", status.tot_fields, took(start)),
+        );
+        Ok(())
+    });
+
+    if let Err(e) = outcome {
+        if fail_fast {
+            return Err(e);
+        }
+        msg(info_stream, &format!("ERROR [{e}]"));
+        print_stack_trace(info_stream, &e);
+        status.error = Some(e);
+    }
+
+    Ok(status)
+}
+
+// ---------------------------------------------------------------------------
+// checkFields
+// ---------------------------------------------------------------------------
+
+/// Verifies that `Terms::intersect` enumerates exactly the terms an equivalent
+/// linear scan accepts.
+///
+/// Equivalent to `CheckIndex.checkTermsIntersect`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first mismatch.
+fn check_terms_intersect(
+    terms: &dyn Terms,
+    automaton: &Automaton,
+    start_term: Option<&BytesRef>,
+) -> Result<()> {
+    let mut all_terms = terms.iterator()?;
+    // `Operations.determinize` throws `TooComplexToDeterminizeException`,
+    // which propagates (`CheckIndex.java:2446`).
+    let automaton = Operations::determinize(automaton, DEFAULT_DETERMINIZE_WORK_LIMIT)?;
+    let compiled_automaton = CompiledAutomaton::new(automaton.clone(), false, true, true)?;
+    let run_automaton = ByteRunAutomaton::new(automaton, true)?;
+    let mut filtered_terms = terms.intersect(&compiled_automaton, start_term)?;
+
+    let mut term = if let Some(start_term) = start_term {
+        match all_terms.seek_ceil(start_term)? {
+            SeekStatus::FOUND => all_terms.next()?,
+            SeekStatus::NOT_FOUND => all_terms.term()?,
+            SeekStatus::END => None,
+        }
+    } else {
+        all_terms.next()?
+    };
+
+    while let Some(t) = term {
+        if run_automaton.run_range(&t.bytes, t.offset, t.length) {
+            let filtered_term = filtered_terms.next()?;
+            let same = match &filtered_term {
+                Some(f) => f.bytes_equals(t),
+                None => false,
+            };
+            if !same {
+                return Err(check_index_error(format!(
+                    "Expected next filtered term: {}, but got {}",
+                    t.to_hex_string(),
+                    filtered_term
+                        .as_ref()
+                        .map(|f| f.to_hex_string())
+                        .unwrap_or_else(|| "(null)".to_string())
+                )));
+            }
+        }
+        term = all_terms.next()?;
+    }
+
+    if let Some(filtered_term) = filtered_terms.next()? {
+        return Err(check_index_error(format!(
+            "Expected exhausted TermsEnum, but got {}",
+            filtered_term.to_hex_string()
+        )));
+    }
+    Ok(())
+}
+
+/// Checks that a [`Fields`] instance is internally consistent, and consistent
+/// with the field infos, live docs and norms of its segment.
+///
+/// Equivalent to `CheckIndex.checkFields`. This is the longest and most
+/// valuable check in `CheckIndex`: it walks every term of every field and
+/// cross-checks the terms dictionary against the postings it indexes, the
+/// recorded `docFreq`/`totalTermFreq`/`sumDocFreq`/`sumTotalTermFreq`/`docCount`
+/// against recomputed values, the positions/offsets/payloads against their
+/// declared presence, the impacts against the postings, and the terms against
+/// the norms.
+///
+/// `is_vectors` selects the term-vector flavour of the check, where a "field" is
+/// a single document's vector and many of the postings-only invariants do not
+/// apply.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::CheckIndex`] on the first inconsistency.
+#[allow(clippy::too_many_arguments)]
+fn check_fields(
+    fields: &dyn Fields,
+    live_docs: Option<&dyn Bits>,
+    max_doc: i32,
+    field_infos: &FieldInfos,
+    norms_producer: Option<&dyn NormsProducer>,
+    do_print: bool,
+    is_vectors: bool,
+    info_stream: Option<&dyn PrintStream>,
+    verbose: bool,
+    level: i32,
+) -> Result<TermIndexStatus> {
+    let start = Instant::now();
+
+    let mut status = TermIndexStatus::default();
+    let mut computed_field_count = 0i32;
+
+    let mut postings: Option<Box<dyn PostingsEnum>> = None;
+    let mut bulk_postings: Option<Box<dyn PostingsEnum>> = None;
+
+    let mut last_field: Option<String> = None;
+    let field_names: Vec<String> = fields.iterator().collect();
+
+    for field in field_names {
+        // `MultiFieldsEnum` relies on this order.
+        if let Some(last) = &last_field {
+            if field.as_str() <= last.as_str() {
+                return Err(check_index_error(format!(
+                    "fields out of order: lastField={last} field={field}"
+                )));
+            }
+        }
+        last_field = Some(field.clone());
+
+        // Check that the field is in the field infos, and is indexed.
+        let Some(field_info) = field_infos.field_info(&field) else {
+            return Err(check_index_error(format!(
+                "fieldsEnum inconsistent with fieldInfos, no fieldInfos for: {field}"
+            )));
+        };
+        if field_info.get_index_options() == IndexOptions::NONE {
+            return Err(check_index_error(format!(
+                "fieldsEnum inconsistent with fieldInfos, isIndexed == false for: {field}"
+            )));
+        }
+
+        computed_field_count += 1;
+
+        let Some(terms) = fields.terms(&field)? else {
+            continue;
+        };
+
+        if terms.doc_count()? > max_doc {
+            return Err(check_index_error(format!(
+                "docCount > maxDoc for field: {field}, docCount={}, maxDoc={max_doc}",
+                terms.doc_count()?
+            )));
+        }
+
+        let has_freqs = terms.has_freqs();
+        let has_positions = terms.has_positions();
+        let has_payloads = terms.has_payloads();
+        let has_offsets = terms.has_offsets();
+
+        let (min_term, max_term) = if is_vectors {
+            // Term vector implementations can be very slow for `max`.
+            (None, None)
+        } else {
+            let min_term = match terms.min()? {
+                Some(bb) => {
+                    debug_assert!(bb.is_valid().is_ok());
+                    bb.is_valid()?;
+                    Some(BytesRef::deep_copy_of(&bb))
+                }
+                None => None,
+            };
+            let max_term = match terms.max()? {
+                Some(bb) => {
+                    debug_assert!(bb.is_valid().is_ok());
+                    bb.is_valid()?;
+                    if min_term.is_none() {
+                        return Err(check_index_error(format!(
+                            "field \"{field}\" has null minTerm but non-null maxTerm"
+                        )));
+                    }
+                    Some(BytesRef::deep_copy_of(&bb))
+                }
+                None => {
+                    if min_term.is_some() {
+                        return Err(check_index_error(format!(
+                            "field \"{field}\" has non-null minTerm but null maxTerm"
+                        )));
+                    }
+                    None
+                }
+            };
+            (min_term, max_term)
+        };
+
+        // Term vectors cannot omit TF.
+        let expected_has_freqs = is_vectors
+            || field_info
+                .get_index_options()
+                .subsumes(IndexOptions::DOCS_AND_FREQS);
+
+        if has_freqs != expected_has_freqs {
+            return Err(check_index_error(format!(
+                "field \"{field}\" should have hasFreqs={expected_has_freqs} but got {has_freqs}"
+            )));
+        }
+
+        if !is_vectors {
+            let expected_has_positions = field_info
+                .get_index_options()
+                .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
+            if has_positions != expected_has_positions {
+                return Err(check_index_error(format!(
+                    "field \"{field}\" should have hasPositions={expected_has_positions} but got {has_positions}"
+                )));
+            }
+
+            let expected_has_payloads = field_info.has_payloads();
+            if has_payloads != expected_has_payloads {
+                return Err(check_index_error(format!(
+                    "field \"{field}\" should have hasPayloads={expected_has_payloads} but got {has_payloads}"
+                )));
+            }
+
+            let expected_has_offsets = field_info
+                .get_index_options()
+                .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+            if has_offsets != expected_has_offsets {
+                return Err(check_index_error(format!(
+                    "field \"{field}\" should have hasOffsets={expected_has_offsets} but got {has_offsets}"
+                )));
+            }
+        }
+
+        let mut terms_enum = terms.iterator()?;
+
+        let mut has_ord = true;
+        let term_count_start = status.del_term_count + status.term_count;
+
+        let mut last_term: Option<BytesRef> = None;
+
+        let mut sum_total_term_freq = 0i64;
+        let mut sum_doc_freq = 0i64;
+        let mut visited_docs = FixedBitSet::new(max_doc.max(0) as usize);
+
+        // The term is copied: it is still read after `doc_freq` and `postings`
+        // move the enum's borrow on (Java keeps the enum's own `BytesRef`).
+        while let Some(term) = terms_enum.next()?.cloned() {
+            debug_assert!(term.is_valid().is_ok());
+            term.is_valid()?;
+
+            // Terms must arrive in order.
+            match &last_term {
+                None => last_term = Some(BytesRef::deep_copy_of(&term)),
+                Some(last) => {
+                    if last.slice() >= term.slice() {
+                        return Err(check_index_error(format!(
+                            "terms out of order: lastTerm={} term={}",
+                            last.to_hex_string(),
+                            term.to_hex_string()
+                        )));
+                    }
+                    last_term = Some(BytesRef::deep_copy_of(&term));
+                }
+            }
+
+            if !is_vectors {
+                let Some(min_term) = min_term.as_ref() else {
+                    // We checked this above:
+                    debug_assert!(max_term.is_none());
+                    return Err(check_index_error(format!(
+                        "field=\"{field}\": invalid term: term={}, minTerm=(null)",
+                        term.to_hex_string()
+                    )));
+                };
+                if term.slice() < min_term.slice() {
+                    return Err(check_index_error(format!(
+                        "field=\"{field}\": invalid term: term={}, minTerm={}",
+                        term.to_hex_string(),
+                        min_term.to_hex_string()
+                    )));
+                }
+                // `max_term` is non-null whenever `min_term` is, per the check above.
+                let max_term = max_term.as_ref().expect(
+                    "INVARIANT: checkFields rejects a non-null minTerm with a null maxTerm above",
+                );
+                if term.slice() > max_term.slice() {
+                    return Err(check_index_error(format!(
+                        "field=\"{field}\": invalid term: term={}, maxTerm={}",
+                        term.to_hex_string(),
+                        max_term.to_hex_string()
+                    )));
+                }
+            }
+
+            let doc_freq = terms_enum.doc_freq()?;
+            if doc_freq <= 0 {
+                return Err(check_index_error(format!(
+                    "docfreq: {doc_freq} is out of bounds"
+                )));
+            }
+            sum_doc_freq += doc_freq as i64;
+
+            let mut p = terms_enum
+                .postings(postings.take(), POSTINGS_ENUM_ALL)?
+                .ok_or_else(LuceneError::null_pointer)?;
+            // `bulkPostings = termsEnum.postings(bulkPostings, PostingsEnum.ALL)`
+            // (`CheckIndex.java:1633`): the previous term's enum is offered for
+            // reuse.
+            let mut bulk = terms_enum
+                .postings(bulk_postings.take(), POSTINGS_ENUM_ALL)?
+                .ok_or_else(LuceneError::null_pointer)?;
+            bulk.next_doc()?;
+            let mut buffer = DocAndFloatFeatureBuffer::new();
+            let mut buffer_index = 0usize;
+
+            if !has_freqs && terms_enum.total_term_freq()? != terms_enum.doc_freq()? as i64 {
+                return Err(check_index_error(format!(
+                    "field \"{field}\" hasFreqs is false, but TermsEnum.totalTermFreq()={} (should be {})",
+                    terms_enum.total_term_freq()?,
+                    terms_enum.doc_freq()?
+                )));
+            }
+
+            if has_ord {
+                let ord = match terms_enum.ord() {
+                    Ok(ord) => Some(ord),
+                    Err(LuceneError {
+                        kind: LuceneErrorKind::UnsupportedOperation { .. },
+                        ..
+                    }) => {
+                        has_ord = false;
+                        None
+                    }
+                    Err(e) => return Err(e),
+                };
+
+                if let Some(ord) = ord {
+                    let ord_expected = status.del_term_count + status.term_count - term_count_start;
+                    if ord != ord_expected {
+                        return Err(check_index_error(format!(
+                            "ord mismatch: TermsEnum has ord={ord} vs actual={ord_expected}"
+                        )));
+                    }
+                }
+            }
+
+            let mut last_doc = -1i32;
+            let mut doc_count = 0i32;
+            let mut has_non_deleted_docs = false;
+            let mut total_term_freq = 0i64;
+            loop {
+                let doc = p.next_doc()?;
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                visited_docs.set(doc as usize);
+                let freq = p.freq()?;
+                if freq <= 0 {
+                    return Err(check_index_error(format!(
+                        "term {}: doc {doc}: freq {freq} is out of bounds",
+                        term.to_hex_string()
+                    )));
+                }
+
+                if buffer_index == buffer.size {
+                    let up_to = (bulk.doc_id() as i64 + 64).min(i32::MAX as i64) as i32;
+                    bulk.next_postings(up_to, &mut buffer)?;
+                    buffer_index = 0;
+                }
+                if buffer_index >= buffer.size {
+                    return Err(check_index_error(format!(
+                        "Doc {doc} not found by PostingsEnum#nextPostings"
+                    )));
+                }
+                if doc != buffer.docs[buffer_index] {
+                    return Err(check_index_error(format!(
+                        "PostingsEnum#nextPostings returns {} as next doc while PostingsEnum#nextDoc returns {doc}",
+                        buffer.docs[buffer_index]
+                    )));
+                }
+                if freq as f32 != buffer.features[buffer_index] {
+                    return Err(check_index_error(format!(
+                        "PostingsEnum#nextPostings returns {} as term freq while PostingsEnum#freq returns {freq}",
+                        buffer.features[buffer_index]
+                    )));
+                }
+                buffer_index += 1;
+
+                if !has_freqs && p.freq()? != 1 {
+                    // A field that did not index freqs must consistently
+                    // pretend the freq was 1.
+                    return Err(check_index_error(format!(
+                        "term {}: doc {doc}: freq {freq} != 1 when Terms.hasFreqs() is false",
+                        term.to_hex_string()
+                    )));
+                }
+                total_term_freq += freq as i64;
+
+                if live_docs.is_none_or(|bits| bits.get(doc as usize)) {
+                    has_non_deleted_docs = true;
+                    status.tot_freq += 1;
+                    if freq >= 0 {
+                        status.tot_pos += freq as i64;
+                    }
+                }
+                doc_count += 1;
+
+                if doc <= last_doc {
+                    return Err(check_index_error(format!(
+                        "term {}: doc {doc} <= lastDoc {last_doc}",
+                        term.to_hex_string()
+                    )));
+                }
+                if doc >= max_doc {
+                    return Err(check_index_error(format!(
+                        "term {}: doc {doc} >= maxDoc {max_doc}",
+                        term.to_hex_string()
+                    )));
+                }
+
+                last_doc = doc;
+
+                let mut last_pos = -1i32;
+                let mut last_offset = 0i32;
+                if has_positions {
+                    for _ in 0..freq {
+                        let pos = p.next_position()?;
+
+                        if pos < 0 {
+                            return Err(check_index_error(format!(
+                                "term {}: doc {doc}: pos {pos} is out of bounds",
+                                term.to_hex_string()
+                            )));
+                        }
+                        if pos > MAX_POSITION {
+                            return Err(check_index_error(format!(
+                                "term {}: doc {doc}: pos {pos} > IndexWriter.MAX_POSITION={MAX_POSITION}",
+                                term.to_hex_string()
+                            )));
+                        }
+                        if pos < last_pos {
+                            return Err(check_index_error(format!(
+                                "term {}: doc {doc}: pos {pos} < lastPos {last_pos}",
+                                term.to_hex_string()
+                            )));
+                        }
+                        last_pos = pos;
+                        if let Some(payload) = p.get_payload()? {
+                            if payload.is_empty() {
+                                return Err(check_index_error(format!(
+                                    "term {}: doc {doc}: pos {pos} payload length is out of bounds {}",
+                                    term.to_hex_string(),
+                                    payload.len()
+                                )));
+                            }
+                        }
+                        if has_offsets {
+                            let start_offset = p.start_offset();
+                            let end_offset = p.end_offset();
+                            if start_offset < 0 {
+                                return Err(check_index_error(format!(
+                                    "term {}: doc {doc}: pos {pos}: startOffset {start_offset} is out of bounds",
+                                    term.to_hex_string()
+                                )));
+                            }
+                            if start_offset < last_offset {
+                                return Err(check_index_error(format!(
+                                    "term {}: doc {doc}: pos {pos}: startOffset {start_offset} < lastStartOffset {last_offset}; consider using the FixBrokenOffsets tool in Lucene's backward-codecs module to correct your index",
+                                    term.to_hex_string()
+                                )));
+                            }
+                            if end_offset < 0 {
+                                return Err(check_index_error(format!(
+                                    "term {}: doc {doc}: pos {pos}: endOffset {end_offset} is out of bounds",
+                                    term.to_hex_string()
+                                )));
+                            }
+                            if end_offset < start_offset {
+                                return Err(check_index_error(format!(
+                                    "term {}: doc {doc}: pos {pos}: endOffset {end_offset} < startOffset {start_offset}",
+                                    term.to_hex_string()
+                                )));
+                            }
+                            last_offset = start_offset;
+                        }
+                    }
+                }
+            }
+
+            if has_non_deleted_docs {
+                status.term_count += 1;
+            } else {
+                status.del_term_count += 1;
+            }
+
+            let total_term_freq2 = terms_enum.total_term_freq()?;
+
+            if doc_count != doc_freq {
+                return Err(check_index_error(format!(
+                    "term {} docFreq={doc_freq} != tot docs w/o deletions {doc_count}",
+                    term.to_hex_string()
+                )));
+            }
+            if doc_freq > terms.doc_count()? {
+                return Err(check_index_error(format!(
+                    "term {} docFreq={doc_freq} > docCount={}",
+                    term.to_hex_string(),
+                    terms.doc_count()?
+                )));
+            }
+            if total_term_freq2 <= 0 {
+                return Err(check_index_error(format!(
+                    "totalTermFreq: {total_term_freq2} is out of bounds"
+                )));
+            }
+            sum_total_term_freq += total_term_freq;
+            if total_term_freq != total_term_freq2 {
+                return Err(check_index_error(format!(
+                    "term {} totalTermFreq={total_term_freq2} != recomputed totalTermFreq={total_term_freq}",
+                    term.to_hex_string()
+                )));
+            }
+            if total_term_freq2 < doc_freq as i64 {
+                return Err(check_index_error(format!(
+                    "totalTermFreq: {total_term_freq2} is out of bounds, docFreq={doc_freq}"
+                )));
+            }
+            if !has_freqs && total_term_freq != doc_freq as i64 {
+                return Err(check_index_error(format!(
+                    "term {} totalTermFreq={total_term_freq} !=  docFreq={doc_freq}",
+                    term.to_hex_string()
+                )));
+            }
+
+            // Test skipping.
+            if has_positions {
+                for idx in 0..7i64 {
+                    let skip_doc_id = ((idx + 1) * max_doc as i64 / 8) as i32;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_ALL)?
+                        .ok_or_else(LuceneError::null_pointer)?;
+                    let doc_id = p.advance(skip_doc_id)?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    if doc_id < skip_doc_id {
+                        return Err(check_index_error(format!(
+                            "term {}: advance(docID={skip_doc_id}) returned docID={doc_id}",
+                            term.to_hex_string()
+                        )));
+                    }
+                    let freq = p.freq()?;
+                    if freq <= 0 {
+                        return Err(check_index_error(format!(
+                            "termFreq {freq} is out of bounds"
+                        )));
+                    }
+                    let mut last_position = -1i32;
+                    let mut last_offset = 0i32;
+                    for _ in 0..freq {
+                        let pos = p.next_position()?;
+                        if pos < 0 {
+                            return Err(check_index_error(format!(
+                                "position {pos} is out of bounds"
+                            )));
+                        }
+                        if pos < last_position {
+                            return Err(check_index_error(format!(
+                                "position {pos} is < lastPosition {last_position}"
+                            )));
+                        }
+                        last_position = pos;
+                        if has_offsets {
+                            let start_offset = p.start_offset();
+                            let end_offset = p.end_offset();
+                            // No bounds can be enforced on term vector offsets:
+                            // they were a free-for-all before. For postings the
+                            // checks are fine, IndexWriter always enforced them.
+                            if !is_vectors {
+                                if start_offset < 0 {
+                                    return Err(check_index_error(format!(
+                                        "term {}: doc {doc_id}: pos {pos}: startOffset {start_offset} is out of bounds",
+                                        term.to_hex_string()
+                                    )));
+                                }
+                                if start_offset < last_offset {
+                                    return Err(check_index_error(format!(
+                                        "term {}: doc {doc_id}: pos {pos}: startOffset {start_offset} < lastStartOffset {last_offset}",
+                                        term.to_hex_string()
+                                    )));
+                                }
+                                if end_offset < 0 {
+                                    return Err(check_index_error(format!(
+                                        "term {}: doc {doc_id}: pos {pos}: endOffset {end_offset} is out of bounds",
+                                        term.to_hex_string()
+                                    )));
+                                }
+                                if end_offset < start_offset {
+                                    return Err(check_index_error(format!(
+                                        "term {}: doc {doc_id}: pos {pos}: endOffset {end_offset} < startOffset {start_offset}",
+                                        term.to_hex_string()
+                                    )));
+                                }
+                            }
+                            last_offset = start_offset;
+                        }
+                    }
+
+                    let next_doc_id = p.next_doc()?;
+                    if next_doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    if next_doc_id <= doc_id {
+                        return Err(check_index_error(format!(
+                            "term {}: advance(docID={skip_doc_id}), then .next() returned docID={next_doc_id} vs prev docID={doc_id}",
+                            term.to_hex_string()
+                        )));
+                    }
+
+                    if is_vectors {
+                        // Only one doc in the postings for term vectors, so only
+                        // one advance is tested.
+                        break;
+                    }
+                }
+            } else {
+                for idx in 0..7i64 {
+                    let skip_doc_id = ((idx + 1) * max_doc as i64 / 8) as i32;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_NONE)?
+                        .ok_or_else(LuceneError::null_pointer)?;
+                    let doc_id = p.advance(skip_doc_id)?;
+                    if doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    if doc_id < skip_doc_id {
+                        return Err(check_index_error(format!(
+                            "term {}: advance(docID={skip_doc_id}) returned docID={doc_id}",
+                            term.to_hex_string()
+                        )));
+                    }
+                    let next_doc_id = p.next_doc()?;
+                    if next_doc_id == NO_MORE_DOCS {
+                        break;
+                    }
+                    if next_doc_id <= doc_id {
+                        return Err(check_index_error(format!(
+                            "term {}: advance(docID={skip_doc_id}), then .next() returned docID={next_doc_id} vs prev docID={doc_id}",
+                            term.to_hex_string()
+                        )));
+                    }
+                    if is_vectors {
+                        break;
+                    }
+                }
+            }
+
+            // Checking score blocks and doc ID runs is heavy, so it is only done
+            // on long postings lists, on every 1024th term, or when slow checks
+            // are enabled.
+            if level >= Level::MIN_LEVEL_FOR_SLOW_CHECKS
+                || doc_freq > 1024
+                || (status.term_count + status.del_term_count) % 1024 == 0
+            {
+                p = terms_enum
+                    .postings(Some(p), POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?;
+                check_doc_id_runs(p.as_mut())?;
+                if has_freqs {
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?;
+                    check_doc_id_runs(p.as_mut())?;
+                }
+                if has_positions {
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_POSITIONS)?
+                        .ok_or_else(LuceneError::null_pointer)?;
+                    check_doc_id_runs(p.as_mut())?;
+                }
+
+                // First check max scores and block uptos, but only when slow
+                // checks are enabled, since this visits every doc.
+                if level >= Level::MIN_LEVEL_FOR_SLOW_CHECKS {
+                    let mut max = -1i32;
+                    let mut max_freq = 0i32;
+                    let mut impacts_enum = terms_enum.impacts(POSTINGS_ENUM_FREQS)?;
+                    p = terms_enum
+                        .postings(Some(p), POSTINGS_ENUM_FREQS)?
+                        .ok_or_else(LuceneError::null_pointer)?;
+                    loop {
+                        let doc = impacts_enum.next_doc()?;
+                        if p.next_doc()? != doc {
+                            return Err(check_index_error(format!(
+                                "Wrong next doc: {doc}, expected {}",
+                                p.doc_id()
+                            )));
+                        }
+                        if doc == NO_MORE_DOCS {
+                            break;
+                        }
+                        if p.freq()? != impacts_enum.freq()? {
+                            return Err(check_index_error(format!(
+                                "Wrong freq, expected {}, but got {}",
+                                p.freq()?,
+                                impacts_enum.freq()?
+                            )));
+                        }
+                        if doc > max {
+                            impacts_enum.advance_shallow(doc)?;
+                            let mut impacts = impacts_enum.get_impacts()?;
+                            check_impacts(&mut *impacts, doc)?;
+                            max = impacts.doc_id_up_to(0);
+                            let impacts0 = impacts.get_impacts(0);
+                            max_freq = impacts0.freqs[impacts0.size - 1];
+                        }
+                        if impacts_enum.freq()? > max_freq {
+                            return Err(check_index_error(format!(
+                                "freq {} is greater than the max freq according to impacts {max_freq}",
+                                impacts_enum.freq()?
+                            )));
+                        }
+                    }
+                }
+
+                // Now check advancing.
+                let mut impacts_enum = terms_enum.impacts(POSTINGS_ENUM_FREQS)?;
+                p = terms_enum
+                    .postings(Some(p), POSTINGS_ENUM_FREQS)?
+                    .ok_or_else(LuceneError::null_pointer)?;
+
+                let mut max = -1i32;
+                let mut max_freq = 0i32;
+                let field_hash = java_string_hash_code(&field);
+                loop {
+                    let mut doc = impacts_enum.doc_id();
+                    let advance;
+                    let target;
+                    // Java's `int` arithmetic wraps here (`CheckIndex.java:2094-2115`):
+                    // before the first document `doc` is -1, so
+                    // `NO_MORE_DOCS - doc` overflows to `Integer.MIN_VALUE` and the
+                    // target wraps round to `NO_MORE_DOCS`. The same wrapping is
+                    // reproduced rather than letting a debug build abort.
+                    if ((field_hash.wrapping_add(doc)) & 1) == 1 {
+                        advance = false;
+                        target = doc.wrapping_add(1);
+                    } else {
+                        advance = true;
+                        let delta = (1 + ((field_hash.wrapping_mul(31).wrapping_add(doc)) & 0x1ff))
+                            .min(NO_MORE_DOCS.wrapping_sub(doc));
+                        target = impacts_enum.doc_id().wrapping_add(delta);
+                    }
+
+                    if target > max && target % 2 == 1 {
+                        let delta = ((field_hash.wrapping_mul(31).wrapping_add(target)) & 0x1ff)
+                            .min(NO_MORE_DOCS.wrapping_sub(target));
+                        max = target.wrapping_add(delta);
+                        impacts_enum.advance_shallow(target)?;
+                        let mut impacts = impacts_enum.get_impacts()?;
+                        check_impacts(&mut *impacts, doc)?;
+                        max_freq = i32::MAX;
+                        for impacts_level in 0..impacts.num_levels() {
+                            if impacts.doc_id_up_to(impacts_level) >= max {
+                                let per_level_impacts = impacts.get_impacts(impacts_level);
+                                max_freq = per_level_impacts.freqs[per_level_impacts.size - 1];
+                                break;
+                            }
+                        }
+                    }
+
+                    doc = if advance {
+                        impacts_enum.advance(target)?
+                    } else {
+                        impacts_enum.next_doc()?
+                    };
+
+                    if p.advance(target)? != doc {
+                        return Err(check_index_error(format!(
+                            "Impacts do not advance to the same document as postings for target {target}, postings: {}, impacts: {doc}",
+                            p.doc_id()
+                        )));
+                    }
+                    if doc == NO_MORE_DOCS {
+                        break;
+                    }
+                    if p.freq()? != impacts_enum.freq()? {
+                        return Err(check_index_error(format!(
+                            "Wrong freq, expected {}, but got {}",
+                            p.freq()?,
+                            impacts_enum.freq()?
+                        )));
+                    }
+
+                    if doc >= max {
+                        let delta = ((field_hash.wrapping_mul(31).wrapping_add(target)) & 0x1ff)
+                            .min(NO_MORE_DOCS - doc);
+                        max = doc + delta;
+                        impacts_enum.advance_shallow(doc)?;
+                        let mut impacts = impacts_enum.get_impacts()?;
+                        check_impacts(&mut *impacts, doc)?;
+                        max_freq = i32::MAX;
+                        for impacts_level in 0..impacts.num_levels() {
+                            if impacts.doc_id_up_to(impacts_level) >= max {
+                                let per_level_impacts = impacts.get_impacts(impacts_level);
+                                max_freq = per_level_impacts.freqs[per_level_impacts.size - 1];
+                                break;
+                            }
+                        }
+                    }
+
+                    if impacts_enum.freq()? > max_freq {
+                        return Err(check_index_error(format!(
+                            "Term frequency {} is greater than the max freq according to impacts {max_freq}",
+                            impacts_enum.freq()?
+                        )));
+                    }
+                }
+            }
+
+            postings = Some(p);
+            bulk_postings = Some(bulk);
+        }
+
+        if min_term.is_some() && status.term_count + status.del_term_count == 0 {
+            return Err(check_index_error(format!(
+                "field=\"{field}\": minTerm is non-null yet we saw no terms: {}",
+                min_term
+                    .as_ref()
+                    .map(|t| t.to_hex_string())
+                    .unwrap_or_default()
+            )));
+        }
+
+        // An unusual case: the fields enumeration returned a field but its
+        // `Terms` is null. This should only happen for a ghost field, i.e. one
+        // that used to have terms but whose docs were all deleted and merged
+        // away.
+        if let Some(field_terms) = fields.terms(&field)? {
+            let field_term_count = (status.del_term_count + status.term_count) - term_count_start;
+
+            // `final Object stats = fieldTerms.getStats(); ...
+            // status.blockTreeStats.put(field, stats)` (`CheckIndex.java:2198-2204`).
+            let stats = field_terms.stats()?;
+            status
+                .block_tree_stats
+                .get_or_insert_with(crate::util::java_collections::JavaHashMap::new)
+                .insert(field.clone(), stats);
+
+            let actual_sum_doc_freq = field_terms.sum_doc_freq()?;
+            if sum_doc_freq != actual_sum_doc_freq {
+                return Err(check_index_error(format!(
+                    "sumDocFreq for field {field}={actual_sum_doc_freq} != recomputed sumDocFreq={sum_doc_freq}"
+                )));
+            }
+
+            let actual_sum_total_term_freq = field_terms.sum_total_term_freq()?;
+            if sum_total_term_freq != actual_sum_total_term_freq {
+                return Err(check_index_error(format!(
+                    "sumTotalTermFreq for field {field}={actual_sum_total_term_freq} != recomputed sumTotalTermFreq={sum_total_term_freq}"
+                )));
+            }
+
+            if !has_freqs && sum_total_term_freq != sum_doc_freq {
+                return Err(check_index_error(format!(
+                    "sumTotalTermFreq for field {field} should be {sum_doc_freq}, got sumTotalTermFreq={sum_total_term_freq}"
+                )));
+            }
+
+            let v = field_terms.doc_count()?;
+            if visited_docs.cardinality() as i32 != v {
+                return Err(check_index_error(format!(
+                    "docCount for field {field}={v} != recomputed docCount={}",
+                    visited_docs.cardinality()
+                )));
+            }
+
+            if field_info.has_norms() && !is_vectors {
+                let Some(norms_producer) = norms_producer else {
+                    return Err(check_index_error(format!(
+                        "field \"{field}\" has norms, but no norms producer was supplied"
+                    )));
+                };
+                let mut norms = crate::codecs::doc_values::non_null(
+                    norms_producer.get_norms(field_info)?,
+                    field_info,
+                )?;
+                // Count of valid norm values found for the field.
+                let mut actual_count = 0i32;
+                // Cross-check terms with norms.
+                let mut doc = norms.next_doc()?;
+                while doc != NO_MORE_DOCS {
+                    // Norms may only be out of sync with terms on deleted
+                    // documents. That happens when a document fails indexing, in
+                    // which case IndexWriter marks it deleted immediately.
+                    if live_docs.is_none_or(|bits| bits.get(doc as usize)) {
+                        let norm = norms.long_value()?;
+                        if norm != 0 {
+                            actual_count += 1;
+                            if !visited_docs.get(doc as usize) {
+                                return Err(check_index_error(format!(
+                                    "Document {doc} doesn't have terms according to postings but has a norm value that is not zero: {}",
+                                    norm as u64
+                                )));
+                            }
+                        } else if visited_docs.get(doc as usize) {
+                            return Err(check_index_error(format!(
+                                "Document {doc} has terms according to postings but its norm value is 0, which may only be used on documents that have no terms"
+                            )));
+                        }
+                    }
+                    doc = norms.next_doc()?;
+                }
+                let mut expected_count = 0i32;
+                let mut doc = visited_docs.next_set_bit(0);
+                while doc != NO_MORE_DOCS {
+                    if live_docs.is_none_or(|bits| bits.get(doc as usize)) {
+                        expected_count += 1;
+                    }
+                    doc = if doc + 1 >= visited_docs.length() as i32 {
+                        NO_MORE_DOCS
+                    } else {
+                        visited_docs.next_set_bit(doc + 1)
+                    };
+                }
+                if expected_count != actual_count {
+                    return Err(check_index_error(format!(
+                        "actual norm count: {actual_count} but expected: {expected_count}"
+                    )));
+                }
+            }
+
+            // Test seeking to the last term.
+            if let Some(last_term) = &last_term {
+                if terms_enum.seek_ceil(last_term)? != SeekStatus::FOUND {
+                    return Err(check_index_error(format!(
+                        "seek to last term {} failed",
+                        last_term.to_hex_string()
+                    )));
+                }
+                if !terms_enum
+                    .term()?
+                    .ok_or_else(LuceneError::null_pointer)?
+                    .bytes_equals(last_term)
+                {
+                    return Err(check_index_error(format!(
+                        "seek to last term {} returned FOUND but seeked to the wrong term {}",
+                        last_term.to_hex_string(),
+                        terms_enum
+                            .term()?
+                            .map_or_else(|| "null".to_string(), |t| t.to_hex_string())
+                    )));
+                }
+
+                let expected_doc_freq = terms_enum.doc_freq()?;
+                let mut d = terms_enum
+                    .postings(None, POSTINGS_ENUM_NONE)?
+                    .ok_or_else(LuceneError::null_pointer)?;
+                let mut doc_freq = 0i32;
+                while d.next_doc()? != NO_MORE_DOCS {
+                    doc_freq += 1;
+                }
+                if doc_freq != expected_doc_freq {
+                    return Err(check_index_error(format!(
+                        "docFreq for last term {}={expected_doc_freq} != recomputed docFreq={doc_freq}",
+                        last_term.to_hex_string()
+                    )));
+                }
+            }
+
+            // Check the unique term count.
+            let mut term_count = -1i64;
+
+            if field_term_count > 0 {
+                term_count = field_terms.size()?;
+
+                if term_count != -1 && term_count != field_term_count {
+                    return Err(check_index_error(format!(
+                        "termCount mismatch {term_count} vs {field_term_count}"
+                    )));
+                }
+            }
+
+            // Test seeking by ord.
+            if has_ord && status.term_count - term_count_start > 0 {
+                let seek_count = 10_000i64.min(term_count) as i32;
+                if seek_count > 0 {
+                    let mut seek_terms: Vec<BytesRef> =
+                        vec![BytesRef::default(); seek_count as usize];
+
+                    // Seek by ord.
+                    for i in (0..seek_count).rev() {
+                        let ord = i as i64 * (term_count / seek_count as i64);
+                        terms_enum.seek_ord(ord)?;
+                        let actual_ord = terms_enum.ord()?;
+                        if actual_ord != ord {
+                            return Err(check_index_error(format!(
+                                "seek to ord {ord} returned ord {actual_ord}"
+                            )));
+                        }
+                        seek_terms[i as usize] = BytesRef::deep_copy_of(
+                            terms_enum.term()?.ok_or_else(LuceneError::null_pointer)?,
+                        );
+                    }
+
+                    // Seek by term.
+                    for i in (0..seek_count as usize).rev() {
+                        if terms_enum.seek_ceil(&seek_terms[i])? != SeekStatus::FOUND {
+                            return Err(check_index_error(format!(
+                                "seek to existing term {} failed",
+                                seek_terms[i].to_hex_string()
+                            )));
+                        }
+                        if !terms_enum
+                            .term()?
+                            .ok_or_else(LuceneError::null_pointer)?
+                            .bytes_equals(&seek_terms[i])
+                        {
+                            return Err(check_index_error(format!(
+                                "seek to existing term {} returned FOUND but seeked to the wrong term {}",
+                                seek_terms[i].to_hex_string(),
+                                terms_enum
+                        .term()?
+                        .map_or_else(|| "null".to_string(), |t| t.to_hex_string())
+                            )));
+                        }
+
+                        postings = terms_enum.postings(postings.take(), POSTINGS_ENUM_NONE)?;
+                        if postings.is_none() {
+                            return Err(check_index_error(format!(
+                                "null DocsEnum from to existing term {}",
+                                seek_terms[i].to_hex_string()
+                            )));
+                        }
+                    }
+                }
+            }
+
+            // Test `Terms::intersect` with an automaton that should match a good
+            // number of terms.
+            let automaton = Operations::concatenate(&[
+                Automata::make_any_binary(),
+                Automata::make_char_range('a' as i32, 'e' as i32),
+                Automata::make_any_binary(),
+            ]);
+            check_terms_intersect(terms.as_ref(), &automaton, None)?;
+
+            let start_term = BytesRef::new(Vec::new());
+            check_terms_intersect(terms.as_ref(), &automaton, Some(&start_term))?;
+
+            let automaton = Automata::make_non_empty_binary();
+            let start_term = BytesRef::new(vec![b'l']);
+            check_terms_intersect(terms.as_ref(), &automaton, Some(&start_term))?;
+
+            // A term that likely compares greater than every other term in the
+            // dictionary.
+            let start_term = BytesRef::new(vec![0xFF, 0xFF, 0xFF, 0xFF]);
+            check_terms_intersect(terms.as_ref(), &automaton, Some(&start_term))?;
+        }
+    }
+
+    let field_count = fields.size();
+
+    if field_count != -1 {
+        if field_count < 0 {
+            return Err(check_index_error(format!(
+                "invalid fieldCount: {field_count}"
+            )));
+        }
+        if field_count != computed_field_count {
+            return Err(check_index_error(format!(
+                "fieldCount mismatch {field_count} vs recomputed field count {computed_field_count}"
+            )));
+        }
+    }
+
+    if do_print {
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} terms; {} terms/docs pairs; {} tokens] [took {}]",
+                status.term_count,
+                status.tot_freq,
+                status.tot_pos,
+                took(start)
+            ),
+        );
+    }
+
+    if verbose && status.term_count > 0 {
+        if let Some(stats) = &status.block_tree_stats {
+            // `status.blockTreeStats.entrySet()`, in `HashMap` order.
+            for (field, stat) in stats.iter() {
+                msg(info_stream, &format!("      field \"{field}\":"));
+                msg(
+                    info_stream,
+                    &format!("      {}", stat.to_string().replace('\n', "\n      ")),
+                );
+            }
+        }
+    }
+
+    Ok(status)
+}
+
+/// Computes `java.lang.String.hashCode`, which `checkFields` uses to derive its
+/// pseudo-random advance targets. Reproducing it exactly keeps this port's
+/// traversal of the postings identical to Java's.
+fn java_string_hash_code(s: &str) -> i32 {
+    let mut h: i32 = 0;
+    for c in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(c as i32);
+    }
+    h
+}
+
+/// Tests the term index of one segment.
+///
+/// Equivalent to `CheckIndex.testPostings`.
+///
+/// # Errors
+///
+/// Propagates the failure when `fail_fast` is set.
+pub fn test_postings(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    verbose: bool,
+    level: i32,
+    fail_fast: bool,
+) -> Result<TermIndexStatus> {
+    let max_doc = reader.max_doc();
+
+    let outcome = record_throwable(fail_fast, || -> Result<TermIndexStatus> {
+        print(info_stream, "    test: terms, freq, prox...");
+        let fields = match reader.get_postings_reader()? {
+            Some(producer) => producer.get_merge_instance()?,
+            None => return Ok(TermIndexStatus::default()),
+        };
+        let field_infos = reader.get_field_infos();
+        let norms_producer = match reader.get_norms_reader()? {
+            Some(producer) => Some(producer.get_merge_instance()?),
+            None => None,
+        };
+        let live_docs = reader.get_live_docs();
+        check_fields(
+            fields.as_ref(),
+            live_docs.as_deref(),
+            max_doc,
+            &field_infos,
+            norms_producer.as_deref(),
+            true,
+            false,
+            info_stream,
+            verbose,
+            level,
+        )
+    });
+
+    match outcome {
+        Ok(status) => Ok(status),
+        Err(e) => {
+            if fail_fast {
+                return Err(e);
+            }
+            // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
+            msg(
+                info_stream,
+                &format!(
+                    "ERROR: {}",
+                    crate::util::concurrent::throwable_to_string(&e)
+                ),
+            );
+            print_stack_trace(info_stream, &e);
+            Ok(TermIndexStatus {
+                error: Some(e),
+                ..Default::default()
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
+
+/// Run-time configuration options for `CheckIndex` commands.
+///
+/// Equivalent to `CheckIndex.Options`.
+#[derive(Clone)]
+pub struct Options {
+    /// Whether to actually write a new `segments_N`, removing bad segments.
+    pub do_exorcise: bool,
+    /// Whether to print additional detail.
+    pub verbose: bool,
+    /// The detail level of the check. See [`Level`].
+    pub level: i32,
+    /// How many threads to check the index with; `0` means "unset".
+    pub thread_count: i32,
+    /// Only check these segments, when non-empty.
+    pub only_segments: Vec<String>,
+    /// The directory holding the index.
+    pub index_path: Option<String>,
+    /// The name of the `FSDirectory` implementation to use.
+    pub dir_impl: Option<String>,
+    /// The `PrintStream` to report results on; `None` is Java's `null`.
+    ///
+    /// Equivalent to `CheckIndex.Options.out`.
+    pub out: Option<Arc<dyn PrintStream>>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("do_exorcise", &self.do_exorcise)
+            .field("verbose", &self.verbose)
+            .field("level", &self.level)
+            .field("thread_count", &self.thread_count)
+            .field("only_segments", &self.only_segments)
+            .field("index_path", &self.index_path)
+            .field("dir_impl", &self.dir_impl)
+            .field("out", &self.out.as_ref().map(|_| "PrintStream"))
+            .finish()
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            do_exorcise: false,
+            verbose: false,
+            level: Level::DEFAULT_VALUE,
+            thread_count: 0,
+            only_segments: Vec::new(),
+            index_path: None,
+            dir_impl: None,
+            out: None,
+        }
+    }
+}
+
+impl Options {
+    /// Creates the default options.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the name of the `FSDirectory` implementation to use.
+    ///
+    /// Equivalent to `CheckIndex.Options.getDirImpl`.
+    pub fn dir_impl(&self) -> Option<&str> {
+        self.dir_impl.as_deref()
+    }
+
+    /// Returns the directory containing the index.
+    ///
+    /// Equivalent to `CheckIndex.Options.getIndexPath`.
+    pub fn index_path(&self) -> Option<&str> {
+        self.index_path.as_deref()
+    }
+
+    /// Set the `PrintStream` to use for reporting results.
+    ///
+    /// Equivalent to `CheckIndex.Options.setOut(PrintStream)`.
+    pub fn set_out(&mut self, out: Option<Arc<dyn PrintStream>>) {
+        self.out = out;
+    }
+}
+
+/// The usage text `CheckIndex` prints when no index path is given.
+///
+/// Equivalent to the message built in `CheckIndex.parseOptions`.
+pub const USAGE: &str = concat!(
+    "\nERROR: index path not specified",
+    "\nUsage: java org.apache.lucene.index.CheckIndex pathToIndex [-exorcise] [-level X] [-segment X] [-segment Y] [-threadCount X] [-dir-impl X]\n",
+    "\n",
+    "  -exorcise: actually write a new segments_N file, removing any problematic segments\n",
+    "  -level X: sets the detail level of the check. The higher the value, the more checks are done.\n",
+    "         1 - (Default) Checksum checks only.\n",
+    "         2 - All level 1 checks + logical integrity checks.\n",
+    "         3 - All level 2 checks + slow checks.\n",
+    "  -codec X: when exorcising, codec to write the new segments_N file with\n",
+    "  -verbose: print additional details\n",
+    "  -segment X: only check the specified segments.  This can be specified multiple\n",
+    "              times, to check more than one segment, e.g. '-segment _2 -segment _a'.\n",
+    "              You can't use this with the -exorcise option\n",
+    "  -threadCount X: number of threads used to check index concurrently.\n",
+    "                  When not specified, this will default to the number of CPU cores.\n",
+    "                  When '-threadCount 1' is used, index checking will be performed sequentially.\n",
+    // `FSDirectory.class.getSimpleName()` and `FSDirectory.class.getPackage().getName()`.
+    "  -dir-impl X: use a specific FSDirectory implementation. If no package is specified the org.apache.lucene.store package will be used.\n",
+    "CheckIndex only verifies file checksums as default.\n",
+    "Use -level with value of '2' or higher if you also want to check segment file contents.\n\n",
+    "**WARNING**: -exorcise *LOSES DATA*. This should only be used on an emergency basis as it will cause\n",
+    "documents (perhaps many) to be permanently removed from the index.  Always make\n",
+    "a backup copy of your index before running this!  Do not run this tool on an index\n",
+    "that is actively being written to.  You have been warned!\n",
+    "\n",
+    "Run without -exorcise, this tool will open the index, report version information\n",
+    "and report any exceptions it hits and what action it would take if -exorcise were\n",
+    "specified.  With -exorcise, this tool will remove any segments that have issues and\n",
+    "write a new segments_N file.  This means all documents contained in the affected\n",
+    "segments will be removed.\n",
+    "\n",
+    "This tool exits with exit code 1 if the index cannot be opened or has any\n",
+    "corruption, else 0.\n",
+);
+
+/// `Integer.parseInt(s)`, failing with its `NumberFormatException`
+/// (`For input string: "<s>"`).
+fn java_parse_int_or_number_format_exception(s: &str) -> Result<i32> {
+    crate::util::extra::java_parse_int(s).ok_or_else(|| {
+        LuceneError::unchecked(
+            "java.lang.NumberFormatException",
+            format!("For input string: \"{s}\""),
+        )
+    })
+}
+
+/// `Throwable.getMessage()` of the exceptions `doMain` catches: the message of
+/// an `IllegalArgumentException` or of an unchecked exception such as
+/// `NumberFormatException` (`"null"` when it has none, as `println(String)`
+/// prints a `null`), and the error's rendering otherwise.
+fn java_get_message(error: &LuceneError) -> String {
+    match error.kind() {
+        LuceneErrorKind::IllegalArgument { message, .. } => message.clone(),
+        LuceneErrorKind::Unchecked { message, .. } => {
+            message.clone().unwrap_or_else(|| "null".to_string())
+        }
+        _ => error.to_string(),
+    }
+}
+
+/// Parses command line arguments into an [`Options`].
+///
+/// Equivalent to `CheckIndex.parseOptions`.
+///
+/// # Errors
+///
+/// Returns [`LuceneErrorKind::IllegalArgument`] for any invalid argument, which is
+/// Java's `IllegalArgumentException`.
+pub fn parse_options<S: AsRef<str>>(args: &[S]) -> Result<Options> {
+    let mut opts = Options::new();
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        match arg {
+            "-level" => {
+                if i == args.len() - 1 {
+                    return Err(LuceneError::illegal_argument(
+                        "ERROR: missing value for -level option".to_string(),
+                    ));
+                }
+                i += 1;
+                // `Integer.parseInt(args[i])`, whose `NumberFormatException`
+                // (an `IllegalArgumentException`) propagates.
+                let level = java_parse_int_or_number_format_exception(args[i].as_ref())?;
+                Level::check_if_level_in_bounds(level)?;
+                opts.level = level;
+            }
+            // Deprecated. Remove in Lucene 11. The warnings go to `System.err`.
+            "-fast" => {
+                WriterPrintStream::stderr().println(
+                    "-fast is deprecated, use '-level 1' for explicitly verifying file checksums only. This is also now the default behaviour!",
+                );
+            }
+            "-slow" => {
+                WriterPrintStream::stderr()
+                    .println("-slow is deprecated, use '-level 3' instead for slow checks");
+                opts.level = Level::MIN_LEVEL_FOR_SLOW_CHECKS;
+            }
+            "-exorcise" => opts.do_exorcise = true,
+            "-crossCheckTermVectors" => {
+                WriterPrintStream::stderr()
+                    .println("-crossCheckTermVectors is deprecated, use '-level 3' instead");
+                opts.level = Level::MAX_VALUE;
+            }
+            "-verbose" => opts.verbose = true,
+            "-segment" => {
+                if i == args.len() - 1 {
+                    return Err(LuceneError::illegal_argument(
+                        "ERROR: missing name for -segment option".to_string(),
+                    ));
+                }
+                i += 1;
+                opts.only_segments.push(args[i].as_ref().to_string());
+            }
+            "-dir-impl" => {
+                if i == args.len() - 1 {
+                    return Err(LuceneError::illegal_argument(
+                        "ERROR: missing value for -dir-impl option".to_string(),
+                    ));
+                }
+                i += 1;
+                opts.dir_impl = Some(args[i].as_ref().to_string());
+            }
+            "-threadCount" => {
+                if i == args.len() - 1 {
+                    return Err(LuceneError::illegal_argument(
+                        "-threadCount requires a following number".to_string(),
+                    ));
+                }
+                i += 1;
+                // `Integer.parseInt(args[i])`.
+                let thread_count = java_parse_int_or_number_format_exception(args[i].as_ref())?;
+                if thread_count <= 0 {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "-threadCount requires a number larger than 0, but got: {thread_count}"
+                    )));
+                }
+                opts.thread_count = thread_count;
+            }
+            other => {
+                if opts.index_path.is_some() {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "ERROR: unexpected extra argument '{other}'"
+                    )));
+                }
+                opts.index_path = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+
+    if opts.index_path.is_none() {
+        return Err(LuceneError::illegal_argument(USAGE.to_string()));
+    }
+
+    if !opts.only_segments.is_empty() && opts.do_exorcise {
+        return Err(LuceneError::illegal_argument(
+            "ERROR: cannot specify both -exorcise and -segment".to_string(),
+        ));
+    }
+
+    Ok(opts)
+}
+
+/// Command-line entry point: checks an index and, with `-exorcise`, removes its
+/// corrupt segments.
+///
+/// Equivalent to `CheckIndex.doMain(String[])`, the "actual main" that Java's
+/// `main` wraps, which returns the exit code instead of terminating the process
+/// so that it can be tested. `0` means the index is clean, `1` that it could not
+/// be opened or that it is corrupt.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `doMain` is package-private and
+/// reached only through `main`; this crate is a library and has no `main`, so
+/// this is the entry point a binary wraps, and it is public.
+///
+/// # Errors
+///
+/// Propagates the failure of taking the index write lock and whatever
+/// [`CheckIndex::do_check`] raises. An invalid command line, an index path that
+/// cannot be opened, and a corrupt index are all reported as exit code `1`
+/// rather than as an error, exactly as in Java.
+pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<i32> {
+    // `System.out`.
+    let out: Arc<dyn PrintStream> = Arc::new(WriterPrintStream::stdout());
+    let stream = Some(out.as_ref() as &dyn PrintStream);
+
+    let opts = match parse_options(args) {
+        Ok(opts) => opts,
+        // `catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }`.
+        Err(error) => {
+            msg(stream, &java_get_message(&error));
+            return Ok(1);
+        }
+    };
+
+    if !asserts_on() {
+        msg(
+            stream,
+            "\nNOTE: testing will be more thorough if you run java with '-ea:org.apache.lucene...', so assertions are enabled",
+        );
+    }
+
+    // `parse_options` refuses to return options without an index path, so this
+    // is the path the user gave.
+    let index_path = opts.index_path().unwrap_or_default();
+    msg(stream, &format!("\nOpening index @ {index_path}\n"));
+
+    let path = Path::new(index_path);
+    let directory: Arc<dyn Directory> = match opts.dir_impl() {
+        None => match FSDirectory::open(path) {
+            Ok(directory) => Arc::new(directory),
+            Err(error) => {
+                msg(
+                    stream,
+                    &format!("ERROR: could not open directory \"{index_path}\"; exiting"),
+                );
+                print_stack_trace(stream, &error);
+                return Ok(1);
+            }
+        },
+        Some(dir_impl) => match CommandLineUtil::new_fs_directory(dir_impl, path) {
+            Ok(directory) => Arc::from(directory),
+            Err(error) => {
+                msg(
+                    stream,
+                    &format!("ERROR: could not open directory \"{index_path}\"; exiting"),
+                );
+                print_stack_trace(stream, &error);
+                return Ok(1);
+            }
+        },
+    };
+
+    // Java closes the directory and the checker with try-with-resources; the
+    // checker releases the write lock when it is dropped, and the directory when
+    // its last handle goes.
+    let mut checker = CheckIndex::new(directory)?;
+    // `opts.out = System.out`.
+    let mut opts = opts;
+    opts.out = Some(Arc::clone(&out));
+    let exit_code = checker.do_check(&opts)?;
+    checker.close()?;
+    Ok(exit_code)
+}
+
+// ---------------------------------------------------------------------------
+// IndexUpgrader
+// ---------------------------------------------------------------------------
+
+/// The component name `IndexUpgrader` logs under.
+const UPGRADER_LOG_PREFIX: &str = "IndexUpgrader";
+
+/// Rewrites every segment of an index in the current segment file format.
+///
+/// Equivalent to `org.apache.lucene.index.IndexUpgrader`. It installs
+/// [`UpgradeIndexMergePolicy`] over the configured policy and triggers the
+/// upgrade through a `force_merge(1)` request to [`IndexWriter`].
+///
+/// This tool keeps only the last commit in an index; for that reason, when the
+/// incoming index has more than one commit, it refuses to run unless
+/// `delete_prior_commits` is set.
+///
+/// **Warning:** this tool may reorder documents if the index was partially
+/// upgraded before execution. If your application relies on the monotonicity of
+/// doc IDs, run a full force merge instead.
+pub struct IndexUpgrader {
+    dir: Arc<dyn Directory>,
+    iwc: IndexWriterConfig,
+    delete_prior_commits: bool,
+}
+
+impl IndexUpgrader {
+    /// Parses `args` and runs the upgrade.
+    ///
+    /// Equivalent to the whole body of `IndexUpgrader.main(String[])`, which is
+    /// `parseArgs(args).upgrade()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's entry point is a
+    /// `public static void main`, which the JVM invokes for a process and which
+    /// lets an `IOException` escape to terminate it. A library crate has no
+    /// process entry point, so this is a plain function returning the failure
+    /// instead; a `[[bin]]` target wanting Lucene's command line calls it and
+    /// maps the error onto its own exit code.
+    ///
+    /// # Errors
+    ///
+    /// Propagates an invalid command line, a directory that cannot be opened,
+    /// and whatever [`IndexUpgrader::upgrade`] raises.
+    pub fn do_main<S: AsRef<str>>(args: &[S]) -> Result<()> {
+        Self::parse_args(args)?.upgrade()
+    }
+
+    /// Writes to standard error how the tool is invoked.
+    ///
+    /// Equivalent to `IndexUpgrader.printUsage()`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `printUsage` ends with
+    /// `System.exit(1)`, so it never returns. A library must not terminate its
+    /// host process, so this port only writes the text; its sole caller,
+    /// [`IndexUpgrader::parse_args`], then returns the failure that Java's exit
+    /// code stands for.
+    fn print_usage() {
+        eprintln!(
+            "Upgrades an index so all segments created with a previous Lucene version are \
+             rewritten."
+        );
+        eprintln!("Usage:");
+        eprintln!(
+            "  rucene index-upgrader [-delete-prior-commits] [-verbose] [-dir-impl X] indexDir"
+        );
+        eprintln!("This tool keeps only the last commit in an index; for this");
+        eprintln!("reason, if the incoming index has more than one commit, the tool");
+        eprintln!("refuses to run by default. Specify -delete-prior-commits to override");
+        eprintln!("this, allowing the tool to delete all but the last commit.");
+        eprintln!(
+            "Specify a FSDirectory implementation through the -dir-impl option to force its use. \
+             If no package is specified the org.apache.lucene.store package will be used."
+        );
+        eprintln!("WARNING: This tool may reorder document IDs!");
+    }
+
+    /// Parses command line arguments into a ready-to-run upgrader.
+    ///
+    /// Equivalent to `IndexUpgrader.parseArgs(String[])`.
+    ///
+    /// **Divergences from Lucene 10.5.0.**
+    ///
+    /// * Java's `parseArgs` is package-private and reached only through `main`;
+    ///   this crate is a library and has no `main`, so this is the entry point a
+    ///   binary wraps, and it is public.
+    /// * Java prints the usage text and calls `System.exit(1)` on a bad command
+    ///   line. This port prints the same text and returns
+    ///   [`LuceneErrorKind::IllegalArgument`], because a library must not terminate
+    ///   its host process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`] when an option is missing its
+    /// value, when an extra argument follows the index directory, or when no
+    /// index directory is given. Propagates the failure of opening the
+    /// directory.
+    pub fn parse_args<S: AsRef<str>>(args: &[S]) -> Result<Self> {
+        let mut path: Option<&str> = None;
+        let mut delete_prior_commits = false;
+        let mut out: Option<Arc<dyn InfoStream>> = None;
+        let mut dir_impl: Option<&str> = None;
+
+        let mut i = 0usize;
+        while i < args.len() {
+            let arg = args[i].as_ref();
+            if arg == "-delete-prior-commits" {
+                delete_prior_commits = true;
+            } else if arg == "-verbose" {
+                out = Some(Arc::new(PrintStreamInfoStream::system(Box::new(
+                    std::io::stdout(),
+                ))));
+            } else if arg == "-dir-impl" {
+                if i == args.len() - 1 {
+                    println!("ERROR: missing value for -dir-impl option");
+                    return Err(LuceneError::illegal_argument(
+                        "ERROR: missing value for -dir-impl option".to_string(),
+                    ));
+                }
+                i += 1;
+                dir_impl = Some(args[i].as_ref());
+            } else if path.is_none() {
+                path = Some(arg);
+            } else {
+                Self::print_usage();
+                return Err(LuceneError::illegal_argument(format!(
+                    "ERROR: unexpected extra argument '{arg}'"
+                )));
+            }
+            i += 1;
+        }
+
+        let Some(path) = path else {
+            Self::print_usage();
+            return Err(LuceneError::illegal_argument(
+                "ERROR: index directory not specified".to_string(),
+            ));
+        };
+
+        let path = Path::new(path);
+        let dir: Arc<dyn Directory> = match dir_impl {
+            None => Arc::new(FSDirectory::open(path)?),
+            Some(dir_impl) => Arc::from(CommandLineUtil::new_fs_directory(dir_impl, path)?),
+        };
+        Self::with_info_stream(dir, out, delete_prior_commits)
+    }
+
+    /// Creates an upgrader on `dir` that refuses indexes with multiple commit
+    /// points.
+    ///
+    /// Equivalent to `IndexUpgrader(Directory)`.
+    pub fn new(dir: Arc<dyn Directory>) -> Self {
+        Self::with_config(dir, IndexWriterConfig::new(), false)
+    }
+
+    /// Creates an upgrader on `dir` that logs to `info_stream` and may delete
+    /// commit points older than the last one.
+    ///
+    /// Equivalent to `IndexUpgrader(Directory, InfoStream, boolean)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the failure of installing `info_stream` on the config.
+    pub fn with_info_stream(
+        dir: Arc<dyn Directory>,
+        info_stream: Option<Arc<dyn InfoStream>>,
+        delete_prior_commits: bool,
+    ) -> Result<Self> {
+        let upgrader = Self::with_config(dir, IndexWriterConfig::new(), delete_prior_commits);
+        if let Some(info_stream) = info_stream {
+            upgrader.iwc.set_info_stream(info_stream)?;
+        }
+        Ok(upgrader)
+    }
+
+    /// Creates an upgrader on `dir` using `iwc`.
+    ///
+    /// Equivalent to `IndexUpgrader(Directory, IndexWriterConfig, boolean)`.
+    pub fn with_config(
+        dir: Arc<dyn Directory>,
+        iwc: IndexWriterConfig,
+        delete_prior_commits: bool,
+    ) -> Self {
+        Self {
+            dir,
+            iwc,
+            delete_prior_commits,
+        }
+    }
+
+    /// Performs the upgrade.
+    ///
+    /// Equivalent to `IndexUpgrader.upgrade()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IndexNotFound`] when `dir` holds no index, and
+    /// [`LuceneErrorKind::IllegalArgument`] when the index holds more than one
+    /// commit and the upgrader was told not to delete prior commits.
+    pub fn upgrade(self) -> Result<()> {
+        if !crate::index::directory_reader::index_exists(self.dir.as_ref())? {
+            return Err(LuceneError::from(LuceneErrorKind::IndexNotFound(
+                "no segments file found in the directory".to_string(),
+            )));
+        }
+
+        if !self.delete_prior_commits {
+            let commits = crate::index::directory_reader::list_commits(Arc::clone(&self.dir))?;
+            if commits.len() > 1 {
+                // `+ commits` (`IndexUpgrader.java:174-176`): the list as
+                // `AbstractCollection.toString` renders it.
+                let commits: Vec<String> = commits.iter().map(ToString::to_string).collect();
+                return Err(LuceneError::illegal_argument(format!(
+                    "This tool was invoked to not delete prior commit points, but the following commits were found: [{}]",
+                    commits.join(", ")
+                )));
+            }
+        }
+
+        let inner_policy = self.iwc.merge_policy();
+        self.iwc
+            .set_merge_policy(Some(Arc::new(UpgradeIndexMergePolicy::new(inner_policy))))?;
+        self.iwc
+            .set_index_deletion_policy(Some(Arc::new(KeepOnlyLastCommitDeletionPolicy)))?;
+
+        let info_stream = self.iwc.info_stream();
+        let writer = IndexWriter::new(Arc::clone(&self.dir), self.iwc)?;
+
+        let result = (|| -> Result<()> {
+            if info_stream.is_enabled(UPGRADER_LOG_PREFIX) {
+                info_stream.message(
+                    UPGRADER_LOG_PREFIX,
+                    &format!(
+                        "Upgrading all pre-{} segments of index directory to version {}...",
+                        crate::util::Version::LATEST,
+                        crate::util::Version::LATEST
+                    ),
+                );
+            }
+            writer.force_merge(1)?;
+            if info_stream.is_enabled(UPGRADER_LOG_PREFIX) {
+                info_stream.message(
+                    UPGRADER_LOG_PREFIX,
+                    &format!(
+                        "All segments upgraded to version {}",
+                        crate::util::Version::LATEST
+                    ),
+                );
+                info_stream.message(
+                    UPGRADER_LOG_PREFIX,
+                    "Enforcing commit to rewrite all index metadata...",
+                );
+            }
+            // `w.setLiveCommitData(w.getLiveCommitData())`: fake change to
+            // enforce a commit (e.g. if index has no segments), then
+            // `assert w.hasUncommittedChanges()` (`IndexUpgrader.java:201-203`).
+            writer.set_live_commit_data(writer.get_live_commit_data()?)?;
+            debug_assert!(writer.has_uncommitted_changes()?);
+            writer.commit()?;
+            if info_stream.is_enabled(UPGRADER_LOG_PREFIX) {
+                info_stream.message(UPGRADER_LOG_PREFIX, "Committed upgraded metadata to index.");
+            }
+            Ok(())
+        })();
+
+        // Java relies on try-with-resources to close the writer on both paths.
+        let close_result = writer.close();
+        result.and(close_result)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stored fields, points, vectors, index sort and soft deletes
+// ---------------------------------------------------------------------------
+
+/// Converts nanoseconds to seconds.
+///
+/// Equivalent to `CheckIndex.nsToSec(long)`.
+pub fn ns_to_sec(ns: i64) -> f64 {
+    ns as f64 / 1_000_000_000.0
+}
+
+/// Whether assertions were found to be enabled.
+///
+/// Equivalent to the private static field `CheckIndex.assertsOn`, which starts
+/// `false` and is only ever set by [`test_asserts`].
+static ASSERTS_ON: AtomicBool = AtomicBool::new(false);
+
+/// Records that assertions run, and returns `true`.
+///
+/// Equivalent to the private static `CheckIndex.testAsserts()`, which Java
+/// calls only from inside an `assert` so that the flag is set exactly when
+/// assertions are enabled. This port calls it from inside a `debug_assert!`,
+/// which is compiled out of a release build for the same reason, so the flag
+/// ends up carrying the same answer.
+fn test_asserts() -> bool {
+    ASSERTS_ON.store(true, Ordering::Relaxed);
+    true
+}
+
+/// Returns whether debug assertions are compiled in.
+///
+/// Equivalent to `CheckIndex.assertsOn()`, which probes for assertions by
+/// running `test_asserts` inside an `assert` and then reporting the flag it
+/// set. This port probes the same way, through a `debug_assert!`; the answer is
+/// therefore `true` exactly in a build with debug assertions on, which is where
+/// this crate's own `debug_assert!`s run.
+pub fn asserts_on() -> bool {
+    debug_assert!(test_asserts());
+    ASSERTS_ON.load(Ordering::Relaxed)
+}
+
+/// Checks every document's stored fields, deleted ones included.
+///
+/// Equivalent to `CheckIndex.testStoredFields(CodecReader, PrintStream, boolean)`.
+/// Deleted documents are read too: a corrupt one must be reported even when no
+/// search would ever return it.
+pub fn test_stored_fields(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<StoredFieldStatus> {
+    let start = Instant::now();
+    let mut status = StoredFieldStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: stored fields.......");
+        let live_docs = reader.get_live_docs();
+        // `reader.getFieldsReader().getMergeInstance()`
+        // (`CheckIndex.java:3301`): a `null` fields reader is the
+        // `NullPointerException` the dereference throws.
+        let Some(stored_fields) = reader.get_fields_reader()? else {
+            return Err(LuceneError::null_pointer());
+        };
+        let stored_fields = stored_fields.get_merge_instance()?;
+        for j in 0..reader.max_doc() {
+            // Deleted documents are pulled deliberately, to be sure they too
+            // are not corrupt.
+            let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
+            if (j & 0x03) == 0 {
+                stored_fields.prefetch(j)?;
+            }
+            stored_fields.document(j, &mut visitor)?;
+            let doc = visitor.document();
+            if live_docs.as_ref().is_none_or(|bits| bits.get(j as usize)) {
+                status.doc_count += 1;
+                status.tot_fields += doc.get_fields().len() as i64;
+            }
+        }
+
+        if status.doc_count != reader.num_docs() {
+            // `CheckIndex.java:3318-3321` prints `status.docCount` twice.
+            return Err(check_index_error(format!(
+                "docCount={} but saw {} undeleted docs",
+                status.doc_count, status.doc_count
+            )));
+        }
+
+        // `((float) status.totFields) / status.docCount`, a `float` division:
+        // `NaN` for an empty segment, as Java prints it.
+        let avg = f64::from(status.tot_fields as f32 / status.doc_count as f32);
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} total field count; avg {} fields per doc] [took {}]",
+                status.tot_fields,
+                crate::util::java_fmt::format_fixed(avg, 1),
+                took(start)
+            ),
+        );
+        Ok(())
+    });
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR [{error}]"));
+        print_stack_trace(info_stream, &error);
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// An [`IntersectVisitor`] that answers one fixed relation to every cell.
+///
+/// Equivalent to `CheckIndex.ConstantRelationIntersectVisitor`, which
+/// `test_points` uses to bound `estimate_point_count` from three directions.
+struct ConstantRelationIntersectVisitor {
+    relation: crate::index::point_values::Relation,
+}
+
+impl crate::index::point_values::IntersectVisitor for ConstantRelationIntersectVisitor {
+    /// `CheckIndex.ConstantRelationIntersectVisitor` is a `record`, whose
+    /// generated `toString()` is `SimpleName[component=value]`, the
+    /// `Relation` rendered by its enum constant name.
+    fn java_to_string(&self) -> String {
+        use crate::index::point_values::Relation;
+        let relation = match self.relation {
+            Relation::CellInsideQuery => "CELL_INSIDE_QUERY",
+            Relation::CellOutsideQuery => "CELL_OUTSIDE_QUERY",
+            Relation::CellCrossesQuery => "CELL_CROSSES_QUERY",
+        };
+        format!("ConstantRelationIntersectVisitor[relation={relation}]")
+    }
+    fn visit(&mut self, _doc_id: i32) -> Result<()> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn visit_with_value(&mut self, _doc_id: i32, _packed_value: &[u8]) -> Result<()> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn compare(
+        &self,
+        _min_packed_value: &[u8],
+        _max_packed_value: &[u8],
+    ) -> Result<crate::index::point_values::Relation> {
+        Ok(self.relation)
+    }
+}
+
+/// Walks the whole N-dimensional point space, checking that every point falls
+/// inside the cell that produced it.
+///
+/// Equivalent to `CheckIndex.VerifyPointsVisitor`. It reports
+/// `CELL_CROSSES_QUERY` for every cell, so the codec hands it every point
+/// individually and each one can be checked against the cell bounds and, in one
+/// dimension, against its predecessor.
+pub struct VerifyPointsVisitor {
+    field_name: String,
+    point_count_seen: i64,
+    last_doc_id: i32,
+    docs_seen: crate::util::FixedBitSet,
+    /// The bounds of the last cell `compare` was asked about.
+    ///
+    /// Java's `compare` copies them into plain arrays;
+    /// [`IntersectVisitor::compare`](crate::index::point_values::IntersectVisitor::compare)
+    /// takes `&self`, so the copies sit in cells.
+    last_min_packed_value: std::cell::RefCell<Vec<u8>>,
+    last_max_packed_value: std::cell::RefCell<Vec<u8>>,
+    last_packed_value: Vec<u8>,
+    global_min_packed_value: Option<Vec<u8>>,
+    global_max_packed_value: Option<Vec<u8>>,
+    packed_bytes_count: usize,
+    packed_index_bytes_count: usize,
+    num_data_dims: usize,
+    num_index_dims: usize,
+    bytes_per_dim: usize,
+}
+
+impl VerifyPointsVisitor {
+    /// Creates the visitor for one field, checking the statistics the reader
+    /// reports before any point is read.
+    ///
+    /// Equivalent to `VerifyPointsVisitor(String, int, PointValues)`.
+    pub fn new(
+        field_name: &str,
+        max_doc: i32,
+        values: &dyn crate::index::point_values::PointValues,
+    ) -> Result<Self> {
+        let num_data_dims = values.num_dimensions()? as usize;
+        let num_index_dims = values.num_index_dimensions()? as usize;
+        let bytes_per_dim = values.bytes_per_dimension()? as usize;
+        let packed_bytes_count = num_data_dims * bytes_per_dim;
+        let packed_index_bytes_count = num_index_dims * bytes_per_dim;
+        let global_min_packed_value = values.min_packed_value()?;
+        let global_max_packed_value = values.max_packed_value()?;
+
+        if i64::from(values.doc_count()?) > values.size()? {
+            return Err(check_index_error(format!(
+                "point values for field \"{field_name}\" claims to have size={} points and \
+                 inconsistent docCount={}",
+                values.size()?,
+                values.doc_count()?
+            )));
+        }
+        if values.doc_count()? > max_doc {
+            return Err(check_index_error(format!(
+                "point values for field \"{field_name}\" claims to have docCount={} but that's \
+                 greater than maxDoc={max_doc}",
+                values.doc_count()?
+            )));
+        }
+        match global_min_packed_value.as_ref() {
+            None => {
+                if values.size()? != 0 {
+                    return Err(check_index_error(format!(
+                        "getMinPackedValue is null points for field \"{field_name}\" yet size={}",
+                        values.size()?
+                    )));
+                }
+            }
+            Some(min) if min.len() != packed_index_bytes_count => {
+                return Err(check_index_error(format!(
+                    "getMinPackedValue for field \"{field_name}\" return length={} array, but \
+                     should be {packed_bytes_count}",
+                    min.len()
+                )));
+            }
+            Some(_) => {}
+        }
+        match global_max_packed_value.as_ref() {
+            None => {
+                if values.size()? != 0 {
+                    return Err(check_index_error(format!(
+                        "getMaxPackedValue is null points for field \"{field_name}\" yet size={}",
+                        values.size()?
+                    )));
+                }
+            }
+            Some(max) if max.len() != packed_index_bytes_count => {
+                return Err(check_index_error(format!(
+                    "getMaxPackedValue for field \"{field_name}\" return length={} array, but \
+                     should be {packed_bytes_count}",
+                    max.len()
+                )));
+            }
+            Some(_) => {}
+        }
+
+        Ok(Self {
+            field_name: field_name.to_string(),
+            point_count_seen: 0,
+            last_doc_id: -1,
+            docs_seen: crate::util::FixedBitSet::new(max_doc.max(0) as usize),
+            last_min_packed_value: std::cell::RefCell::new(vec![0u8; packed_index_bytes_count]),
+            last_max_packed_value: std::cell::RefCell::new(vec![0u8; packed_index_bytes_count]),
+            last_packed_value: vec![0u8; packed_bytes_count],
+            global_min_packed_value,
+            global_max_packed_value,
+            packed_bytes_count,
+            packed_index_bytes_count,
+            num_data_dims,
+            num_index_dims,
+            bytes_per_dim,
+        })
+    }
+
+    /// Returns how many points the traversal saw.
+    ///
+    /// Equivalent to `VerifyPointsVisitor.getPointCountSeen()`.
+    pub fn get_point_count_seen(&self) -> i64 {
+        self.point_count_seen
+    }
+
+    /// Returns how many distinct documents the traversal saw.
+    ///
+    /// Equivalent to `VerifyPointsVisitor.getDocCountSeen()`.
+    pub fn get_doc_count_seen(&self) -> i64 {
+        self.docs_seen.cardinality() as i64
+    }
+
+    /// Checks that a packed value is present and of the right width.
+    ///
+    /// Equivalent to `VerifyPointsVisitor.checkPackedValue(String, byte[], int)`.
+    fn check_packed_value(&self, desc: &str, packed_value: &[u8], doc_id: i32) -> Result<()> {
+        let expected = if doc_id < 0 {
+            self.packed_index_bytes_count
+        } else {
+            self.packed_bytes_count
+        };
+        if packed_value.len() != expected {
+            return Err(check_index_error(format!(
+                "{desc} has incorrect length={} vs expected={} for docID={doc_id} field=\"{}\"",
+                packed_value.len(),
+                self.packed_index_bytes_count,
+                self.field_name
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Renders bytes as Java's `Arrays.toString(byte[])` does: signed, comma and
+/// space separated, in brackets.
+fn java_byte_array_to_string(bytes: &[u8]) -> String {
+    let rendered: Vec<String> = bytes.iter().map(|&b| (b as i8).to_string()).collect();
+    format!("[{}]", rendered.join(", "))
+}
+
+impl crate::index::point_values::IntersectVisitor for VerifyPointsVisitor {
+    /// `CheckIndex$VerifyPointsVisitor` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.index.CheckIndex$VerifyPointsVisitor",
+        )
+    }
+    fn visit(&mut self, doc_id: i32) -> Result<()> {
+        Err(check_index_error(format!(
+            "codec called IntersectVisitor.visit without a packed value for docID={doc_id}"
+        )))
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) -> Result<()> {
+        self.check_packed_value("packed value", packed_value, doc_id)?;
+        self.point_count_seen += 1;
+        self.docs_seen.set(doc_id as usize);
+
+        {
+            let last_min_packed_value = self.last_min_packed_value.borrow();
+            let last_max_packed_value = self.last_max_packed_value.borrow();
+            for dim in 0..self.num_index_dims {
+                let offset = self.bytes_per_dim * dim;
+                let value = &packed_value[offset..offset + self.bytes_per_dim];
+                let cell_min = &last_min_packed_value[offset..offset + self.bytes_per_dim];
+                let cell_max = &last_max_packed_value[offset..offset + self.bytes_per_dim];
+                if value < cell_min || value > cell_max {
+                    return Err(check_index_error(format!(
+                        "packed points value {} for field=\"{}\", docID={doc_id} \
+                         is out-of-bounds of the last cell min={} max={} dim={dim}",
+                        java_byte_array_to_string(packed_value),
+                        self.field_name,
+                        java_byte_array_to_string(&last_min_packed_value),
+                        java_byte_array_to_string(&last_max_packed_value)
+                    )));
+                }
+            }
+        }
+
+        // In one data dimension the codec must sweep the values in order, tying
+        // by increasing doc ID. With more dimensions the leaves are sorted by
+        // the dimension of lowest cardinality instead, to compress better, so
+        // no such order holds.
+        if self.num_data_dims == 1 {
+            let value = &packed_value[..self.bytes_per_dim];
+            let previous = &self.last_packed_value[..self.bytes_per_dim];
+            match previous.cmp(value) {
+                std::cmp::Ordering::Greater => {
+                    return Err(check_index_error(format!(
+                        "packed points value {} for field=\"{}\", for docID={doc_id} \
+                         is out-of-order vs the previous document's value {}",
+                        java_byte_array_to_string(packed_value),
+                        self.field_name,
+                        java_byte_array_to_string(&self.last_packed_value)
+                    )));
+                }
+                std::cmp::Ordering::Equal => {
+                    if doc_id < self.last_doc_id {
+                        return Err(check_index_error(format!(
+                            "packed points value is the same, but docID={doc_id} is out of order \
+                             vs previous docID={}, field=\"{}\"",
+                            self.last_doc_id, self.field_name
+                        )));
+                    }
+                }
+                std::cmp::Ordering::Less => {}
+            }
+            self.last_packed_value[..self.bytes_per_dim]
+                .copy_from_slice(&packed_value[..self.bytes_per_dim]);
+            self.last_doc_id = doc_id;
+        }
+        Ok(())
+    }
+
+    /// Equivalent to `VerifyPointsVisitor.compare(byte[], byte[])`
+    /// (`CheckIndex.java:3167-3246`): records the cell's bounds for `visit`,
+    /// checks that the cell is well formed and inside the global bounds, and
+    /// claims the query crosses every cell, so that the codec hands every
+    /// point to [`visit_with_value`](crate::index::point_values::IntersectVisitor::visit_with_value).
+    fn compare(
+        &self,
+        min_packed_value: &[u8],
+        max_packed_value: &[u8],
+    ) -> Result<crate::index::point_values::Relation> {
+        self.check_packed_value("min packed value", min_packed_value, -1)?;
+        self.last_min_packed_value.borrow_mut()[..self.packed_index_bytes_count]
+            .copy_from_slice(&min_packed_value[..self.packed_index_bytes_count]);
+        self.check_packed_value("max packed value", max_packed_value, -1)?;
+        self.last_max_packed_value.borrow_mut()[..self.packed_index_bytes_count]
+            .copy_from_slice(&max_packed_value[..self.packed_index_bytes_count]);
+
+        let field_name = &self.field_name;
+        for dim in 0..self.num_index_dims {
+            let range = self.bytes_per_dim * dim..self.bytes_per_dim * (dim + 1);
+            let min = &min_packed_value[range.clone()];
+            let max = &max_packed_value[range.clone()];
+
+            if min > max {
+                return Err(check_index_error(format!(
+                    "packed points cell minPackedValue {} is out-of-bounds of the cell's \
+                     maxPackedValue {} dim={dim} field=\"{field_name}\"",
+                    java_byte_array_to_string(min_packed_value),
+                    java_byte_array_to_string(max_packed_value)
+                )));
+            }
+
+            // Make sure this cell is not outside the global min/max. Java
+            // dereferences both unconditionally: they are only absent for a
+            // field of size 0, whose tree has no cell to compare.
+            if let Some(global_min) = self.global_min_packed_value.as_deref() {
+                let global = &global_min[range.clone()];
+                if min < global {
+                    return Err(check_index_error(format!(
+                        "packed points cell minPackedValue {} is out-of-bounds of the global \
+                         minimum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(min_packed_value),
+                        java_byte_array_to_string(global_min)
+                    )));
+                }
+                if max < global {
+                    return Err(check_index_error(format!(
+                        "packed points cell maxPackedValue {} is out-of-bounds of the global \
+                         minimum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(max_packed_value),
+                        java_byte_array_to_string(global_min)
+                    )));
+                }
+            }
+            if let Some(global_max) = self.global_max_packed_value.as_deref() {
+                let global = &global_max[range];
+                if min > global {
+                    return Err(check_index_error(format!(
+                        "packed points cell minPackedValue {} is out-of-bounds of the global \
+                         maximum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(min_packed_value),
+                        java_byte_array_to_string(global_max)
+                    )));
+                }
+                if max > global {
+                    return Err(check_index_error(format!(
+                        "packed points cell maxPackedValue {} is out-of-bounds of the global \
+                         maximum {} dim={dim} field=\"{field_name}\"",
+                        java_byte_array_to_string(max_packed_value),
+                        java_byte_array_to_string(global_max)
+                    )));
+                }
+            }
+        }
+
+        // We always pretend the query shape is so complex that it crosses every
+        // cell, so that packedValue is passed for every document.
+        Ok(crate::index::point_values::Relation::CellCrossesQuery)
+    }
+}
+
+/// Checks the points index of every field that has one.
+///
+/// Equivalent to `CheckIndex.testPoints(CodecReader, PrintStream, boolean)`.
+/// Besides walking every point, it bounds `estimate_point_count` from three
+/// directions: an all-crossing query must estimate at least half the points, an
+/// all-inside query at least all of them, and an all-outside query none.
+pub fn test_points(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<PointsStatus> {
+    print(info_stream, "    test: points..............");
+    let start = Instant::now();
+    let mut status = PointsStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        let field_infos = reader.get_field_infos();
+        if !field_infos.has_point_values() {
+            // Java skips the per-field checks and still reports `OK`
+            // (`CheckIndex.java` `testPoints`).
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} fields, {} points] [took {}]",
+                    status.total_value_fields,
+                    status.total_value_points,
+                    took(start)
+                ),
+            );
+            return Ok(());
+        }
+        let Some(points_reader) = reader.get_points_reader()? else {
+            return Err(check_index_error(
+                "there are fields with points, but reader.getPointsReader() is null",
+            ));
+        };
+        for field_info in field_infos.iter() {
+            if field_info.point_dimension_count <= 0 {
+                continue;
+            }
+            let Some(values) = points_reader.get_values(&field_info.name)? else {
+                continue;
+            };
+            status.total_value_fields += 1;
+
+            let size = values.size()?;
+            let doc_count = values.doc_count()?;
+
+            let mut crossing = ConstantRelationIntersectVisitor {
+                relation: crate::index::point_values::Relation::CellCrossesQuery,
+            };
+            if values.estimate_point_count(&mut crossing)? < size / 2 {
+                return Err(check_index_error(
+                    "estimatePointCount should return >= size/2 when all cells match",
+                ));
+            }
+            let mut inside = ConstantRelationIntersectVisitor {
+                relation: crate::index::point_values::Relation::CellInsideQuery,
+            };
+            if values.estimate_point_count(&mut inside)? < size {
+                return Err(check_index_error(
+                    "estimatePointCount should return >= size when all cells fully match",
+                ));
+            }
+            let mut outside = ConstantRelationIntersectVisitor {
+                relation: crate::index::point_values::Relation::CellOutsideQuery,
+            };
+            if values.estimate_point_count(&mut outside)? != 0 {
+                return Err(check_index_error(
+                    "estimatePointCount should return 0 when no cells match",
+                ));
+            }
+
+            let mut visitor =
+                VerifyPointsVisitor::new(&field_info.name, reader.max_doc(), values.as_ref())?;
+            values.intersect(&mut visitor)?;
+
+            if visitor.get_point_count_seen() != size {
+                return Err(check_index_error(format!(
+                    "point values for field \"{}\" claims to have size={size} points, but in fact \
+                     has {}",
+                    field_info.name,
+                    visitor.get_point_count_seen()
+                )));
+            }
+            if visitor.get_doc_count_seen() != i64::from(doc_count) {
+                return Err(check_index_error(format!(
+                    "point values for field \"{}\" claims to have docCount={doc_count} but in fact \
+                     has {}",
+                    field_info.name,
+                    visitor.get_doc_count_seen()
+                )));
+            }
+            status.total_value_points += visitor.get_point_count_seen();
+        }
+
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} fields, {} points] [took {}]",
+                status.total_value_fields,
+                status.total_value_points,
+                took(start)
+            ),
+        );
+        Ok(())
+    });
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
+        msg(
+            info_stream,
+            &format!(
+                "ERROR: {}",
+                crate::util::concurrent::throwable_to_string(&error)
+            ),
+        );
+        print_stack_trace(info_stream, &error);
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Checks every KNN vector field.
+///
+/// Equivalent to `CheckIndex.testVectors(CodecReader, PrintStream, boolean)`.
+pub fn test_vectors(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<VectorValuesStatus> {
+    print(info_stream, "    test: vectors.............");
+    let start = Instant::now();
+    let mut status = VectorValuesStatus::default();
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        let field_infos = reader.get_field_infos();
+        if !field_infos.has_vector_values() {
+            // Java skips the per-field checks and still reports `OK`
+            // (`CheckIndex.java` `testVectors`).
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} fields, {} vectors] [took {}]",
+                    status.total_knn_vector_fields,
+                    status.total_vector_values,
+                    took(start)
+                ),
+            );
+            return Ok(());
+        }
+        for field_info in field_infos.iter() {
+            if field_info.vector_dimension == 0 {
+                continue;
+            }
+            let dimension = field_info.vector_dimension;
+            if dimension <= 0 {
+                return Err(check_index_error(format!(
+                    "Field \"{}\" has vector values but dimension is {dimension}",
+                    field_info.name
+                )));
+            }
+            let float_values = reader.get_float_vector_values(&field_info.name)?;
+            let byte_values = reader.get_byte_vector_values(&field_info.name)?;
+            if float_values.is_none() && byte_values.is_none() {
+                continue;
+            }
+            status.total_knn_vector_fields += 1;
+            match field_info.vector_encoding {
+                crate::index::VectorEncoding::BYTE => {
+                    let values = byte_values.ok_or_else(|| {
+                        check_index_error(format!(
+                            "Field \"{}\" declares BYTE vectors but has none",
+                            field_info.name
+                        ))
+                    })?;
+                    check_byte_vector_values(values.as_ref(), field_info, &mut status, reader)?;
+                }
+                crate::index::VectorEncoding::FLOAT32 => {
+                    let values = float_values.ok_or_else(|| {
+                        check_index_error(format!(
+                            "Field \"{}\" declares FLOAT32 vectors but has none",
+                            field_info.name
+                        ))
+                    })?;
+                    check_float_vector_values(values.as_ref(), field_info, &mut status, reader)?;
+                }
+            }
+        }
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} fields, {} vectors] [took {}]",
+                status.total_knn_vector_fields,
+                status.total_vector_values,
+                took(start)
+            ),
+        );
+        Ok(())
+    });
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
+        msg(
+            info_stream,
+            &format!(
+                "ERROR: {}",
+                crate::util::concurrent::throwable_to_string(&error)
+            ),
+        );
+        print_stack_trace(info_stream, &error);
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Returns whether the reader serving `field_name`'s vectors can answer a
+/// nearest-neighbour search.
+///
+/// A reader that stores nothing but the raw vectors — a
+/// [`FlatVectorsReader`](crate::codecs::hnsw::flat_vectors::FlatVectorsReader) —
+/// has no graph to walk and therefore cannot search; every other reader can.
+/// The reader consulted is the one the field is actually dispatched to, which
+/// for a per-field reader is its delegate for that field.
+///
+/// Equivalent to the private static
+/// `CheckIndex.vectorsReaderSupportsSearch(CodecReader, String)`. Java narrows
+/// the reader with two `instanceof` tests; both are asked of the reader itself
+/// here, through [`KnnVectorsReader::get_field_reader`] and
+/// [`KnnVectorsReader::as_flat_vectors_reader`], which record why.
+///
+/// # Errors
+///
+/// Propagates the already-closed check the codec reader performs when its
+/// vectors reader is asked for.
+fn vectors_reader_supports_search(
+    codec_reader: &dyn CodecReader,
+    field_name: &str,
+) -> Result<bool> {
+    let Some(vectors_reader) = codec_reader.get_vector_reader()? else {
+        // Java would test `null instanceof FlatVectorsReader`, which is false.
+        return Ok(true);
+    };
+    // A per-field reader hands over the delegate that actually serves the
+    // field; every other reader answers for itself, as Java's failed
+    // `instanceof` leaves it doing.
+    let reader: &dyn KnnVectorsReader = vectors_reader
+        .get_field_reader(field_name)
+        .unwrap_or(vectors_reader.as_ref());
+    Ok(reader.as_flat_vectors_reader().is_none())
+}
+
+/// Checks every float vector of one field and, from every 64th document,
+/// searches the field's graph for nearest neighbours.
+///
+/// Equivalent to `CheckIndex.checkFloatVectorValues(FloatVectorValues,
+/// FieldInfo, Status.VectorValuesStatus, CodecReader)` (`CheckIndex.java:2871-2921`).
+fn check_float_vector_values(
+    values: &dyn crate::index::vector_values::FloatVectorValues,
+    field_info: &FieldInfo,
+    status: &mut VectorValuesStatus,
+    codec_reader: &dyn CodecReader,
+) -> Result<()> {
+    let mut count = 0i32;
+    let every_ndoc = (values.size() / 64).max(1);
+    while count < values.size() {
+        // search the first maxNumSearches vectors to exercise the graph
+        if values.ord_to_doc(count) % every_ndoc == 0 {
+            let mut collector = crate::search::knn::TopKnnCollector::new(10, i64::from(i32::MAX));
+            if vectors_reader_supports_search(codec_reader, &field_info.name)? {
+                let vectors_reader = codec_reader.get_vector_reader()?.ok_or_else(|| {
+                    check_index_error(format!(
+                        "Field \"{}\" has vectors but the reader has no vectors reader",
+                        field_info.name
+                    ))
+                })?;
+                let mut accept_docs = crate::search::from_live_docs(None, codec_reader.max_doc())?;
+                vectors_reader.search(
+                    &field_info.name,
+                    &values.vector_value(count)?,
+                    &mut collector,
+                    &mut accept_docs,
+                )?;
+                let docs = crate::search::knn::KnnCollector::top_docs(&mut collector)?;
+                if docs.score_docs.is_empty() {
+                    return Err(check_index_error(format!(
+                        "Field \"{}\" failed to search k nearest neighbors",
+                        field_info.name
+                    )));
+                }
+            }
+        }
+        let value_length = values.vector_value(count)?.len() as i32;
+        if value_length != field_info.vector_dimension {
+            return Err(check_index_error(format!(
+                "Field \"{}\" has a value whose dimension={value_length} not matching the field's \
+                 dimension={}",
+                field_info.name, field_info.vector_dimension
+            )));
+        }
+        count += 1;
+    }
+    if count != values.size() {
+        return Err(check_index_error(format!(
+            "Field \"{}\" has size={} but when iterated, returns {count} docs with values",
+            field_info.name,
+            values.size()
+        )));
+    }
+    status.total_vector_values += i64::from(count);
+    Ok(())
+}
+
+/// Checks every byte vector of one field and, from every 64th document,
+/// searches the field's graph for nearest neighbours.
+///
+/// Equivalent to `CheckIndex.checkByteVectorValues(ByteVectorValues, FieldInfo,
+/// Status.VectorValuesStatus, CodecReader)` (`CheckIndex.java:2923-2972`).
+fn check_byte_vector_values(
+    values: &dyn crate::index::vector_values::ByteVectorValues,
+    field_info: &FieldInfo,
+    status: &mut VectorValuesStatus,
+    codec_reader: &dyn CodecReader,
+) -> Result<()> {
+    let mut count = 0i32;
+    let every_ndoc = (values.size() / 64).max(1);
+    let supports_search = vectors_reader_supports_search(codec_reader, &field_info.name)?;
+    while count < values.size() {
+        // search the first maxNumSearches vectors to exercise the graph
+        if supports_search && values.ord_to_doc(count) % every_ndoc == 0 {
+            let mut collector = crate::search::knn::TopKnnCollector::new(10, i64::from(i32::MAX));
+            let vectors_reader = codec_reader.get_vector_reader()?.ok_or_else(|| {
+                check_index_error(format!(
+                    "Field \"{}\" has vectors but the reader has no vectors reader",
+                    field_info.name
+                ))
+            })?;
+            let mut accept_docs = crate::search::from_live_docs(None, codec_reader.max_doc())?;
+            vectors_reader.search_byte(
+                &field_info.name,
+                &values.vector_value(count)?,
+                &mut collector,
+                &mut accept_docs,
+            )?;
+            let docs = crate::search::knn::KnnCollector::top_docs(&mut collector)?;
+            if docs.score_docs.is_empty() {
+                return Err(check_index_error(format!(
+                    "Field \"{}\" failed to search k nearest neighbors",
+                    field_info.name
+                )));
+            }
+        }
+        let value_length = values.vector_value(count)?.len() as i32;
+        if value_length != field_info.vector_dimension {
+            return Err(check_index_error(format!(
+                "Field \"{}\" has a value whose dimension={value_length} not matching the field's \
+                 dimension={}",
+                field_info.name, field_info.vector_dimension
+            )));
+        }
+        count += 1;
+    }
+    if count != values.size() {
+        return Err(check_index_error(format!(
+            "Field \"{}\" has size={} but when iterated, returns {count} docs with values",
+            field_info.name,
+            values.size()
+        )));
+    }
+    status.total_vector_values += i64::from(count);
+    Ok(())
+}
+
+/// Checks that the segment's documents really are in the order its index sort
+/// claims.
+///
+/// Equivalent to `CheckIndex.testSort(CodecReader, Sort, PrintStream, boolean)`
+/// (`CheckIndex.java:1162-1244`): every pair of consecutive documents — of
+/// consecutive parent documents in an index with blocks — is compared through
+/// one `LeafFieldComparator` per sort field, bound to the reader as a
+/// top-level leaf.
+///
+/// The comparators are asked without a scorer: Java's `copy(int, int)` and
+/// `compareBottom(int)` take none, and an index sort cannot be on the score.
+/// The port's comparators take one, so they are handed a scorable that reports
+/// a score request as an error, where Java's would dereference `null`.
+///
+/// # Errors
+///
+/// With `fail_fast`, returns the first failure; otherwise records it in the
+/// status. Building the comparators fails outside that handling, as Java's
+/// does.
+pub fn test_sort(
+    reader: &Arc<dyn CodecReader>,
+    sort: Option<&Sort>,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<IndexSortStatus> {
+    // This segment claims its documents are sorted according to the incoming
+    // sort ... let's make sure:
+    let start = Instant::now();
+    let mut status = IndexSortStatus::default();
+    let Some(sort) = sort else {
+        return Ok(status);
+    };
+    print(info_stream, "    test: index sort..........");
+
+    let fields = sort.fields();
+    let mut reverse_mul: Vec<i32> = Vec::with_capacity(fields.len());
+    let mut comparators: Vec<Box<dyn crate::search::leaf_field_comparator::LeafFieldComparator>> =
+        Vec::with_capacity(fields.len());
+
+    // `new LeafReaderContext(reader)`: the reader as a top-level leaf. Java
+    // builds the context itself and so does not `ensureOpen()`, which
+    // `getContext()` would.
+    let reader_context = Arc::clone(reader)
+        .as_index_reader()
+        .build_context(None, 0, 0, 0, 0)
+        .leaves()
+        .into_iter()
+        .next()
+        .expect("INVARIANT: a leaf reader's context has one leaf");
+    // The field comparators outlive the leaf comparators they hand out only
+    // through the state they share, so they are kept for the whole check.
+    let mut field_comparators = Vec::with_capacity(fields.len());
+    for field in fields {
+        reverse_mul.push(if field.reverse() { -1 } else { 1 });
+        let mut comparator = field.get_comparator(1, crate::search::Pruning::NONE)?;
+        comparators.push(comparator.get_leaf_comparator(&reader_context)?);
+        field_comparators.push(comparator);
+    }
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        let meta_data = reader.get_meta_data();
+        let field_infos = reader.get_field_infos();
+        if meta_data.has_blocks()
+            && field_infos.get_parent_field().is_none()
+            && meta_data.created_version_major() >= 10
+        {
+            return Err(LuceneError::illegal_state(format!(
+                "parent field is not set but the index has document blocks and was created with \
+                 version: {}",
+                meta_data.created_version_major()
+            )));
+        }
+        let mut iter: Box<dyn DocIdSetIterator> = match field_infos.get_parent_field() {
+            Some(parent_field) if meta_data.has_blocks() => {
+                match reader.get_numeric_doc_values(parent_field)? {
+                    Some(parents) => parents,
+                    // Java hands `iter` the null this returns, and the first
+                    // `nextDoc()` dereferences it (`CheckIndex.java:1199-1203`).
+                    None => return Err(LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.search.DocIdSetIterator.nextDoc()\" \
+                             because \"iter\" is null",
+                    )),
+                }
+            }
+            _ => Box::new(crate::search::doc_id_set_iterator::all(reader.max_doc())?),
+        };
+        let mut scorer = NoScorer;
+        let mut prev_doc = iter.next_doc()?;
+        loop {
+            let next_doc = iter.next_doc()?;
+            if next_doc == NO_MORE_DOCS {
+                break;
+            }
+            let mut cmp = 0;
+            for (i, comparator) in comparators.iter_mut().enumerate() {
+                // TODO: would be better if copy() didn't cause a term lookup in
+                // TermOrdVal & co, the segments are always the same here...
+                comparator.copy(0, prev_doc, &mut scorer)?;
+                comparator.set_bottom(0)?;
+                cmp = reverse_mul[i] * comparator.compare_bottom(next_doc, &mut scorer)?;
+                if cmp != 0 {
+                    break;
+                }
+            }
+            if cmp > 0 {
+                return Err(check_index_error(format!(
+                    "segment has indexSort={sort} but docID={prev_doc} sorts after docID={next_doc}"
+                )));
+            }
+            prev_doc = next_doc;
+        }
+        msg(info_stream, &format!("OK [took {}]", took(start)));
+        Ok(())
+    });
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR [{error}]"));
+        print_stack_trace(info_stream, &error);
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// The scorer [`test_sort`] hands its comparators, which Java leaves unset:
+/// a score request is the `NullPointerException` of dereferencing that
+/// `null`. Its helpful message names the comparator's own field, so it is not
+/// reproduced.
+#[derive(Debug)]
+struct NoScorer;
+
+impl crate::search::Scorable for NoScorer {
+    fn score(&mut self) -> Result<f32> {
+        Err(LuceneError::null_pointer())
+    }
+}
+
+/// Checks that the segment's recorded soft-delete count matches the documents
+/// that actually carry the soft-deletes field.
+///
+/// Equivalent to `CheckIndex.checkSoftDeletes(String, SegmentCommitInfo, SegmentReader, PrintStream, boolean)`.
+pub fn check_soft_deletes(
+    soft_deletes_field: &str,
+    expected_soft_del_count: i32,
+    reader: &dyn LeafReader,
+    info_stream: Option<&dyn PrintStream>,
+    fail_fast: bool,
+) -> Result<SoftDeletesStatus> {
+    let mut status = SoftDeletesStatus::default();
+    print(info_stream, "    test: check soft deletes.....");
+
+    // Java catches `Exception`, not `Throwable` (`CheckIndex.java:4629`): a
+    // panic standing for a `java.lang.Error` propagates.
+    let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+        let live_docs = reader.get_live_docs();
+        let mut soft_deletes = 0i32;
+        if let Some(mut iterator) =
+            crate::search::field_exists_query::FieldExistsQuery::get_doc_values_doc_id_set_iterator(
+                soft_deletes_field,
+                reader,
+            )?
+        {
+            loop {
+                let doc_id = iterator.next_doc()?;
+                if doc_id == NO_MORE_DOCS {
+                    break;
+                }
+                if live_docs
+                    .as_ref()
+                    .is_none_or(|bits| bits.get(doc_id as usize))
+                {
+                    soft_deletes += 1;
+                }
+            }
+        }
+        if soft_deletes != expected_soft_del_count {
+            return Err(check_index_error(format!(
+                "actual soft deletes: {soft_deletes} but expected: {expected_soft_del_count}"
+            )));
+        }
+        Ok(())
+    })) {
+        Ok(outcome) => outcome,
+        Err(payload) => {
+            if fail_fast || crate::util::concurrent::panic_is_java_error(&*payload) {
+                std::panic::resume_unwind(payload);
+            }
+            Err(crate::util::concurrent::panic_to_error(&*payload))
+        }
+    };
+
+    // Java prints the header and nothing after it on success
+    // (`CheckIndex.java:4619`).
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        msg(info_stream, &format!("ERROR [{error}]"));
+        print_stack_trace(info_stream, &error);
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// Checks every document's term vectors, and — at the slow level — that they
+/// agree with the inverted index.
+///
+/// Equivalent to `CheckIndex.testTermVectors(CodecReader, PrintStream, boolean, int, boolean)`.
+/// Deleted documents are read too, so a corrupt one is still reported, but they
+/// are not counted in the statistics.
+pub fn test_term_vectors(
+    reader: &dyn CodecReader,
+    info_stream: Option<&dyn PrintStream>,
+    verbose: bool,
+    level: i32,
+    fail_fast: bool,
+) -> Result<TermVectorStatus> {
+    let start = Instant::now();
+    let mut status = TermVectorStatus::default();
+    let field_infos = reader.get_field_infos();
+    let field_infos = &field_infos;
+
+    let outcome = record_throwable(fail_fast, || -> Result<()> {
+        print(info_stream, "    test: term vectors........");
+        let live_docs = reader.get_live_docs();
+
+        // The postings are only opened at the level that includes the slow
+        // cross-check against the inverted index, through their merge instance
+        // (`postingsFields.getMergeInstance()`, `CheckIndex.java:3976-3979`).
+        let postings_fields = if level >= Level::MIN_LEVEL_FOR_SLOW_CHECKS {
+            match reader.get_postings_reader()? {
+                Some(producer) => Some(producer.get_merge_instance()?),
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        let Some(vectors_reader) = reader.get_term_vectors_reader()? else {
+            msg(
+                info_stream,
+                &format!(
+                    "OK [{} total term vector count; avg 0.0 term/freq vector fields per doc] \
+                     [took {}]",
+                    status.tot_vectors,
+                    took(start)
+                ),
+            );
+            return Ok(());
+        };
+        let mut vectors_reader = vectors_reader.get_merge_instance()?;
+
+        // `PostingsEnum postings = null;` and `PostingsEnum postingsDocs = null;`
+        // (`CheckIndex.java:3966, 3969`): one of each for the whole check,
+        // handed back to every `postings(reuse, flags)` call of the slow
+        // cross-check (`:4052, 4073`).
+        let mut reuse = CrossCheckReuse::default();
+
+        for j in 0..reader.max_doc() {
+            if (j & 0x03) == 0 {
+                vectors_reader.prefetch(j)?;
+            }
+            // Deleted documents are pulled and visited deliberately — but not
+            // counted — so a corrupt one is still reported.
+            let Some(tfv) = vectors_reader.get(j)? else {
+                continue;
+            };
+
+            // First run with no deletions.
+            check_fields(
+                tfv.as_ref(),
+                None,
+                1,
+                field_infos,
+                None,
+                false,
+                true,
+                info_stream,
+                verbose,
+                level,
+            )?;
+
+            let do_stats = live_docs.as_ref().is_none_or(|bits| bits.get(j as usize));
+            if do_stats {
+                status.doc_count += 1;
+            }
+
+            for field in tfv.iterator() {
+                if do_stats {
+                    status.tot_vectors += 1;
+                }
+                let Some(field_info) = field_infos.field_info(&field) else {
+                    return Err(check_index_error(format!(
+                        "docID={j} has term vectors for field={field} which the field infos do \
+                         not declare"
+                    )));
+                };
+                if !field_info.has_term_vectors() {
+                    return Err(check_index_error(format!(
+                        "docID={j} has term vectors for field={field} but FieldInfo has \
+                         storeTermVector=false"
+                    )));
+                }
+                if level < Level::MIN_LEVEL_FOR_SLOW_CHECKS {
+                    continue;
+                }
+                cross_check_vector_field_against_postings(
+                    tfv.as_ref(),
+                    postings_fields.as_deref(),
+                    field_info,
+                    &field,
+                    j,
+                    &mut reuse,
+                )?;
+            }
+        }
+
+        // `status.docCount == 0 ? 0 : status.totVectors / (float) status.docCount`.
+        let avg = if status.doc_count == 0 {
+            0.0
+        } else {
+            f64::from(status.tot_vectors as f32 / status.doc_count as f32)
+        };
+        msg(
+            info_stream,
+            &format!(
+                "OK [{} total term vector count; avg {} term/freq vector fields per doc] \
+                 [took {}]",
+                status.tot_vectors,
+                crate::util::java_fmt::format_fixed(avg, 1),
+                took(start)
+            ),
+        );
+        Ok(())
+    });
+
+    if let Err(error) = outcome {
+        if fail_fast {
+            return Err(error);
+        }
+        // `msg(infoStream, "ERROR: " + e)`: `Throwable.toString()`.
+        msg(
+            info_stream,
+            &format!(
+                "ERROR: {}",
+                crate::util::concurrent::throwable_to_string(&error)
+            ),
+        );
+        print_stack_trace(info_stream, &error);
+        status.error = Some(error);
+    }
+    Ok(status)
+}
+
+/// The state `CheckIndex.testTermVectors` keeps across documents and fields
+/// for its slow cross-check: the two postings enums it reuses
+/// (`CheckIndex.java:3966, 3969`), and the copy of the current term this port
+/// needs (see [`cross_check_vector_field_against_postings`]).
+#[derive(Default)]
+struct CrossCheckReuse {
+    /// Java's `postings`: the term vector's own postings.
+    postings: Option<Box<dyn PostingsEnum>>,
+    /// Java's `postingsDocs`: the inverted index's postings.
+    postings_docs: Option<Box<dyn PostingsEnum>>,
+    /// The current term of the term vector's enum.
+    term: BytesRef,
+}
+
+/// Checks that one document's term vectors for one field agree with the
+/// inverted index.
+///
+/// This is the body of the `level >= MIN_LEVEL_FOR_SLOW_CHECKS` branch of
+/// `CheckIndex.testTermVectors`: every term of the vector must exist in the
+/// postings, at this document, with the same frequency, positions, offsets and
+/// payloads.
+fn cross_check_vector_field_against_postings(
+    tfv: &dyn Fields,
+    postings_fields: Option<&dyn crate::codecs::postings::FieldsProducer>,
+    field_info: &FieldInfo,
+    field: &str,
+    doc: i32,
+    reuse: &mut CrossCheckReuse,
+) -> Result<()> {
+    // `Terms terms = tfv.terms(field); TermsEnum termsEnum = terms.iterator();`
+    // (`CheckIndex.java:4028-4029`): a vector field the vectors list but whose
+    // `Terms` is `null` is the `NullPointerException` Java records as the
+    // check's error.
+    let Some(terms) = tfv.terms(field)? else {
+        return Err(LuceneError::null_pointer());
+    };
+    let Some(postings_fields) = postings_fields else {
+        return Err(check_index_error(format!(
+            "vector field={field} does not exist in postings; doc={doc}"
+        )));
+    };
+    let Some(postings_terms) = postings_fields.terms(field)? else {
+        return Err(check_index_error(format!(
+            "vector field={field} does not exist in postings; doc={doc}"
+        )));
+    };
+    let mut terms_enum = terms.iterator()?;
+    let mut postings_terms_enum = postings_terms.iterator()?;
+
+    let postings_has_freq = field_info
+        .get_index_options()
+        .subsumes(IndexOptions::DOCS_AND_FREQS);
+    let postings_has_payload = field_info.has_payloads();
+    let vectors_has_payload = terms.has_payloads();
+    let has_prox = terms.has_offsets() || terms.has_positions();
+
+    let mut seek_exact_counter = 0i32;
+
+    let CrossCheckReuse {
+        postings: postings_reuse,
+        postings_docs: postings_docs_reuse,
+        term,
+    } = reuse;
+    // The term is copied: it is still read after `postings` moves the enum's
+    // borrow on (Java keeps the enum's own `BytesRef`). PERF: into one buffer
+    // for the whole check, which a copy per term allocated.
+    while let Some(next) = terms_enum.next()? {
+        term.bytes.clone_from(&next.bytes);
+        term.offset = next.offset;
+        term.length = next.length;
+        let term = &*term;
+        // This is the term vector's own postings:
+        // `postings = termsEnum.postings(postings, PostingsEnum.ALL)`.
+        let postings = terms_enum.postings(postings_reuse.take(), POSTINGS_ENUM_ALL)?;
+        debug_assert!(postings.is_some());
+        let postings = postings_reuse.insert(postings.ok_or_else(LuceneError::null_pointer)?);
+
+        // Java alternates every other term between `seekExact(BytesRef)` and
+        // `prepareSeekExact(BytesRef)`, so that a codec's deferred-seek path is
+        // exercised as well as its direct one; a `null` supplier means the enum
+        // could tell without I/O that the term may not exist
+        // (`CheckIndex.java:4056-4061`).
+        let term_exists = {
+            let counter = seek_exact_counter;
+            seek_exact_counter += 1;
+            if counter & 0x01 == 0 {
+                postings_terms_enum.seek_exact(term)?
+            } else {
+                match postings_terms_enum.prepare_seek_exact(term)? {
+                    Some(mut term_exists_supplier) => term_exists_supplier.get()?,
+                    None => false,
+                }
+            }
+        };
+        if !term_exists {
+            return Err(check_index_error(format!(
+                "vector term={term:?} field={field} does not exist in postings; doc={doc}"
+            )));
+        }
+
+        // This is the inverted index — the "real" postings:
+        // `postingsDocs = postingsTermsEnum.postings(postingsDocs, PostingsEnum.ALL)`.
+        let postings_docs =
+            postings_terms_enum.postings(postings_docs_reuse.take(), POSTINGS_ENUM_ALL)?;
+        debug_assert!(postings_docs.is_some());
+        let postings_docs =
+            postings_docs_reuse.insert(postings_docs.ok_or_else(LuceneError::null_pointer)?);
+        let advance_doc = postings_docs.advance(doc)?;
+        if advance_doc != doc {
+            return Err(check_index_error(format!(
+                "vector term={term:?} field={field}: doc={doc} was not found in postings (got: \
+                 {advance_doc})"
+            )));
+        }
+
+        let vector_doc = postings.next_doc()?;
+        if vector_doc != 0 {
+            return Err(check_index_error(format!(
+                "vector for doc {doc} didn't return docID=0: got docID={vector_doc}"
+            )));
+        }
+
+        if !postings_has_freq {
+            continue;
+        }
+        let tf = postings.freq()?;
+        if postings_docs.freq()? != tf {
+            return Err(check_index_error(format!(
+                "vector term={term:?} field={field} doc={doc}: freq={tf} differs from postings \
+                 freq={}",
+                postings_docs.freq()?
+            )));
+        }
+        if !has_prox {
+            continue;
+        }
+        for _ in 0..tf {
+            let pos = postings.next_position()?;
+            if postings_terms.has_positions() {
+                let postings_pos = postings_docs.next_position()?;
+                if terms.has_positions() && pos != postings_pos {
+                    return Err(check_index_error(format!(
+                        "vector term={term:?} field={field} doc={doc}: pos={pos} differs from \
+                         postings pos={postings_pos}"
+                    )));
+                }
+            }
+
+            // The offsets are read whether or not they are compared, so that a
+            // codec that would raise on them is still exercised.
+            let start_offset = postings.start_offset();
+            let end_offset = postings.end_offset();
+            if start_offset != -1 && end_offset != -1 && postings_terms.has_offsets() {
+                let postings_start_offset = postings_docs.start_offset();
+                let postings_end_offset = postings_docs.end_offset();
+                if start_offset != postings_start_offset {
+                    return Err(check_index_error(format!(
+                        "vector term={term:?} field={field} doc={doc}: startOffset={start_offset} \
+                         differs from postings startOffset={postings_start_offset}"
+                    )));
+                }
+                if end_offset != postings_end_offset {
+                    return Err(check_index_error(format!(
+                        "vector term={term:?} field={field} doc={doc}: endOffset={end_offset} \
+                         differs from postings endOffset={postings_end_offset}"
+                    )));
+                }
+            }
+
+            let payload = postings.get_payload()?.map(<[u8]>::to_vec);
+            if payload.is_some() {
+                debug_assert!(vectors_has_payload);
+            }
+            if postings_has_payload && vectors_has_payload {
+                let postings_payload = postings_docs.get_payload()?.map(<[u8]>::to_vec);
+                match (&payload, &postings_payload) {
+                    (None, Some(other)) => {
+                        return Err(check_index_error(format!(
+                            "vector term={term:?} field={field} doc={doc} has no payload but \
+                             postings does: {other:?}"
+                        )));
+                    }
+                    (Some(payload), None) => {
+                        return Err(check_index_error(format!(
+                            "vector term={term:?} field={field} doc={doc} has payload={payload:?} \
+                             but postings does not."
+                        )));
+                    }
+                    (Some(payload), Some(other)) if payload != other => {
+                        return Err(check_index_error(format!(
+                            "vector term={term:?} field={field} doc={doc} has payload={payload:?} \
+                             but differs from postings payload={other:?}"
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::point_values::{
+        InMemoryPointValues, IntersectVisitor, PointValues, Relation,
+    };
+
+    /// `testTermVectors` declares `postings` and `postingsDocs` once
+    /// (`CheckIndex.java:3966, 3969`) and hands them back to every
+    /// `postings(reuse, PostingsEnum.ALL)` of its slow cross-check
+    /// (`:4052, 4073`): the cross-check of the next document reuses the two
+    /// enums the previous one left, rather than building new ones.
+    #[test]
+    fn term_vector_cross_check_reuses_its_two_postings_enums() {
+        use crate::document::{Document, Field, FieldType};
+        use crate::store::{ByteBuffersDirectory, Directory};
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let field_type = FieldType::new();
+        field_type.set_tokenized(true).unwrap();
+        field_type
+            .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+            .unwrap();
+        field_type.set_store_term_vectors(true).unwrap();
+        field_type.freeze();
+        for text in ["alpha beta beta", "beta gamma delta", "alpha delta"] {
+            let mut doc = Document::new();
+            doc.add(Field::new("body", text.to_string(), field_type.clone()).unwrap());
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let reader = SegmentReader::new(
+            infos.info(0).clone(),
+            infos.index_created_version_major(),
+            &*DEFAULT_IO_CONTEXT,
+        )
+        .unwrap();
+        let postings_fields = reader
+            .get_postings_reader()
+            .unwrap()
+            .unwrap()
+            .get_merge_instance()
+            .unwrap();
+        let vectors = reader
+            .get_term_vectors_reader()
+            .unwrap()
+            .unwrap()
+            .get_merge_instance()
+            .unwrap();
+        let field_infos = reader.get_field_infos();
+        let info = field_infos.field_info("body").unwrap();
+
+        fn address(slot: &Option<Box<dyn PostingsEnum>>) -> *const () {
+            slot.as_deref().map_or(std::ptr::null(), |postings| {
+                postings as *const dyn PostingsEnum as *const ()
+            })
+        }
+        let mut reuse = CrossCheckReuse::default();
+        let mut addresses = Vec::new();
+        for doc in 0..3 {
+            let tfv = vectors.get(doc).unwrap().unwrap();
+            cross_check_vector_field_against_postings(
+                tfv.as_ref(),
+                Some(&*postings_fields),
+                info,
+                "body",
+                doc,
+                &mut reuse,
+            )
+            .unwrap();
+            addresses.push((address(&reuse.postings), address(&reuse.postings_docs)));
+        }
+        assert!(!addresses[0].0.is_null() && !addresses[0].1.is_null());
+        assert_eq!(
+            addresses[1], addresses[0],
+            "the second document reuses both enums"
+        );
+        assert_eq!(
+            addresses[2], addresses[0],
+            "the third document reuses both enums"
+        );
+    }
+
+    /// `CheckIndex.bitsCardinality` counts the set bits of a `Bits`, 1024 at a
+    /// time and none past `length()` (`CheckIndex.java:1312-1326`) — for bits
+    /// that only answer `get` (the default `applyMask`) and for a
+    /// `FixedBitSet` (its own) alike. Every third of 2500 bits set: 834.
+    #[test]
+    fn bits_cardinality_counts_the_set_bits() {
+        #[derive(Debug)]
+        struct EveryThird;
+        impl Bits for EveryThird {
+            fn get(&self, index: usize) -> bool {
+                index.is_multiple_of(3)
+            }
+            fn length(&self) -> usize {
+                2500
+            }
+        }
+        let mut fixed = FixedBitSet::new(2500);
+        for index in (0..2500).step_by(3) {
+            fixed.set(index);
+        }
+        assert_eq!(bits_cardinality(&EveryThird).unwrap(), 834);
+        assert_eq!(bits_cardinality(&fixed).unwrap(), 834);
+    }
+
+    /// Every "took %.3f sec" message converts the elapsed nanoseconds through
+    /// `nsToSec` (`CheckIndex.java:909, 1006, 4643-4645`), so five seconds
+    /// render as `5.000 sec`.
+    #[test]
+    fn elapsed_time_is_converted_through_ns_to_sec() {
+        let start = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(5))
+            .expect("the clock reaches five seconds back");
+        let text = took(start);
+        assert!(text.starts_with("5.00") && text.ends_with(" sec"), "{text}");
+        assert_eq!(ns_to_sec(1_500_000_000), 1.5);
+    }
+
+    /// One-byte points 10, 20 and 30, on documents 0 to 2.
+    fn points() -> InMemoryPointValues {
+        InMemoryPointValues::new(
+            1,
+            1,
+            1,
+            vec![vec![(0, vec![10]), (1, vec![20]), (2, vec![30])]],
+        )
+        .unwrap()
+    }
+
+    /// `VerifyPointsVisitor.compare` checks a cell against the field's global
+    /// bounds and its own order (`CheckIndex.java:3167-3246`), and records it
+    /// for the points that follow.
+    #[test]
+    fn verify_points_visitor_checks_each_cell() {
+        let values = points();
+        let visitor = VerifyPointsVisitor::new("p", 3, &values).unwrap();
+        assert_eq!(
+            visitor.compare(&[10], &[30]).unwrap(),
+            Relation::CellCrossesQuery
+        );
+        for (min, max, expected) in [
+            (5u8, 30u8, "is out-of-bounds of the global minimum"),
+            (10, 35, "is out-of-bounds of the global maximum"),
+            (20, 10, "is out-of-bounds of the cell's maxPackedValue"),
+            // `maxPackedValue` below the global minimum (`CheckIndex.java:3204-3215`)
+            // cannot fire on its own: a cell that passes the `min > max` check
+            // and has its maximum below the global minimum has its minimum below
+            // it too, which the check before it reports.
+            // `minPackedValue` above the global maximum (`CheckIndex.java:3217-3228`)
+            (
+                32,
+                35,
+                "cell minPackedValue [32] is out-of-bounds of the global maximum",
+            ),
+        ] {
+            let error = visitor.compare(&[min], &[max]).unwrap_err().to_string();
+            assert!(error.contains(expected), "{min}..{max}: {error}");
+        }
+    }
+
+    /// `visit` reports the bytes as Java's `Arrays.toString(byte[])` does:
+    /// signed (`CheckIndex.java:3096-3130`).
+    #[test]
+    fn verify_points_visitor_reports_signed_bytes() {
+        let values =
+            InMemoryPointValues::new(1, 1, 1, vec![vec![(0, vec![200]), (1, vec![250])]]).unwrap();
+        let mut visitor = VerifyPointsVisitor::new("p", 2, &values).unwrap();
+        visitor.compare(&[200], &[210]).unwrap();
+        let error = visitor.visit_with_value(1, &[250]).unwrap_err().to_string();
+        assert!(
+            error.contains("packed points value [-6]") && error.contains("min=[-56] max=[-46]"),
+            "{error}"
+        );
+    }
+
+    /// A whole traversal passes: every point lies in the cell `compare`
+    /// recorded before it.
+    #[test]
+    fn verify_points_visitor_accepts_a_well_formed_tree() {
+        let values = points();
+        let mut visitor = VerifyPointsVisitor::new("p", 3, &values).unwrap();
+        values.intersect(&mut visitor).unwrap();
+        assert_eq!(visitor.get_point_count_seen(), 3);
+        assert_eq!(visitor.get_doc_count_seen(), 3);
+    }
+
+    /// `testSort` compares consecutive documents through the sort's leaf
+    /// comparators (`CheckIndex.java:1162-1244`): a segment out of the
+    /// declared order is reported, one in order is not.
+    #[test]
+    fn test_sort_compares_consecutive_documents() {
+        use crate::document::{Document, NumericDocValuesField};
+        use crate::index::index_writer_config::IndexWriterConfig;
+        use crate::search::{SortField, SortFieldType};
+        use crate::store::{ByteBuffersDirectory, Directory};
+
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for value in [30, 20, 10] {
+            let mut doc = Document::new();
+            doc.add(NumericDocValuesField::new("n", value));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let infos = SegmentInfos::read_latest_commit(Arc::clone(&dir)).unwrap();
+        let reader: Arc<dyn CodecReader> = Arc::new(
+            SegmentReader::new(
+                infos.info(0).clone(),
+                infos.index_created_version_major(),
+                &*DEFAULT_IO_CONTEXT,
+            )
+            .unwrap(),
+        );
+
+        let ascending = Sort::new_fields(vec![SortField::new(
+            Some("n".to_string()),
+            SortFieldType::Long,
+        )
+        .unwrap()])
+        .unwrap();
+        let status = test_sort(&reader, Some(&ascending), None, false).unwrap();
+        let error = status
+            .error
+            .expect("30, 20, 10 is not ascending")
+            .to_string();
+        assert!(error.contains("but docID=0 sorts after docID=1"), "{error}");
+
+        let descending = Sort::new_fields(vec![SortField::new_reverse(
+            Some("n".to_string()),
+            SortFieldType::Long,
+            true,
+        )
+        .unwrap()])
+        .unwrap();
+        let stream = ByteArrayPrintStream::new();
+        let status = test_sort(&reader, Some(&descending), Some(&stream), false).unwrap();
+        assert!(status.error.is_none(), "{:?}", status.error);
+        // `infoStream.print("    test: index sort..........")`, then the result on
+        // the same line (`CheckIndex.java:1172-1174`).
+        let output = stream.to_string_utf8();
+        let messages: Vec<&str> = output.lines().collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].starts_with("    test: index sort..........OK [took "),
+            "{messages:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod segment_check_pool_tests {
+    //! `CheckIndex.checkIndex(List)` (`CheckIndex.java:545-573`) checks the
+    //! segments on `Executors.newFixedThreadPool(threadCount, new
+    //! NamedThreadFactory("async-check-index"))` when the thread count is
+    //! greater than one.
+    use super::*;
+    use crate::document::{Document, Store, TextField};
+    use crate::index::merge_policy::NoMergePolicy;
+    use std::collections::{BTreeSet, HashSet};
+
+    /// An index of `segments` one-document segments.
+    fn index_with_segments(segments: usize) -> Arc<dyn Directory> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+        let config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Some(NoMergePolicy::instance()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        for i in 0..segments {
+            let mut doc = Document::new();
+            doc.add(TextField::new("body", format!("document {i}"), Store::YES).unwrap());
+            writer.add_document(&doc).unwrap();
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        dir
+    }
+
+    /// The thread every segment check ran on, checking `segments` segments
+    /// with `thread_count` threads.
+    fn segment_check_threads(segments: usize, thread_count: i32) -> Vec<Option<String>> {
+        let mut checker = CheckIndex::new(index_with_segments(segments)).unwrap();
+        checker.set_thread_count(thread_count).unwrap();
+        let status = checker.check_index().unwrap();
+        assert!(status.clean);
+        assert_eq!(status.segment_infos.len(), segments);
+        let threads = checker
+            .segment_check_threads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        checker.close().unwrap();
+        threads
+    }
+
+    /// Java oracle (`oracle/passG/PoolNamesOracle.java`, three tasks submitted
+    /// with `CompletableFuture.supplyAsync` to the fixed pool of
+    /// `NamedThreadFactory("async-check-index")`): two threads run on
+    /// `async-check-index-1-thread-1` and `-thread-2`; four threads start a
+    /// worker per task, `async-check-index-2-thread-1` to `-thread-3`.
+    #[test]
+    fn concurrent_checks_run_on_named_thread_factory_pool_threads() {
+        for (segments, thread_count, workers) in [(3usize, 2i32, 2usize), (3, 4, 3)] {
+            let threads = segment_check_threads(segments, thread_count);
+            assert_eq!(threads.len(), segments);
+            let mut pools = HashSet::new();
+            let mut numbers = BTreeSet::new();
+            for name in threads {
+                let name = name.expect("a pool thread is named");
+                let (pool, number) = name
+                    .strip_prefix("async-check-index-")
+                    .and_then(|rest| rest.split_once("-thread-"))
+                    .unwrap_or_else(|| panic!("not a NamedThreadFactory name: {name}"));
+                pools.insert(pool.parse::<usize>().unwrap());
+                numbers.insert(number.parse::<usize>().unwrap());
+            }
+            assert_eq!(pools.len(), 1, "one pool per check");
+            assert_eq!(
+                numbers.into_iter().collect::<Vec<_>>(),
+                (1..=workers).collect::<Vec<_>>(),
+                "{thread_count} threads over {segments} segments"
+            );
+        }
+    }
+
+    /// Records every line a check reports, and interrupts the reporting
+    /// thread when it reports a line starting with `interrupt_on`.
+    struct InterruptingLines {
+        lines: Mutex<Vec<String>>,
+        /// The text printed since the last line separator.
+        pending: Mutex<String>,
+        interrupt_on: Option<&'static str>,
+    }
+
+    impl PrintStream for InterruptingLines {
+        fn print(&self, s: &str) {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.push_str(s);
+            while let Some(end) = pending.find('\n') {
+                let line: String = pending.drain(..=end).collect();
+                let line = line.trim_end_matches('\n').to_string();
+                let interrupt = self
+                    .interrupt_on
+                    .is_some_and(|prefix| line.starts_with(prefix));
+                self.lines
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(line);
+                if interrupt {
+                    crate::util::InterruptHandle::current().interrupt();
+                }
+            }
+        }
+    }
+
+    /// #223 measurement: `CheckIndex` reads a segment's sort as
+    /// `info.info.getIndexSort()` and prints `    sort=` and runs `testSort`
+    /// only when it is non-null and the level is at least
+    /// `MIN_LEVEL_FOR_INTEGRITY_CHECKS` (`CheckIndex.java:974-977, 1060,
+    /// 1089-1092`). An
+    /// unsorted segment's sort is `None` in this port, so neither happens; a
+    /// segment flushed under an index sort prints it and is tested.
+    #[test]
+    fn index_sort_line_and_test_follow_the_segment_sort() {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        for sorted in [false, true] {
+            let dir: Arc<dyn Directory> = Arc::new(crate::store::ByteBuffersDirectory::new());
+            let config = IndexWriterConfig::new();
+            if sorted {
+                config
+                    .set_index_sort(
+                        crate::search::Sort::new_fields(vec![crate::search::SortField::new(
+                            Some("n".to_string()),
+                            crate::search::SortFieldType::Long,
+                        )
+                        .unwrap()])
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+            for value in [2i64, 1] {
+                let mut doc = Document::new();
+                doc.add(crate::document::NumericDocValuesField::new("n", value));
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+            writer.close().unwrap();
+
+            let stream = Arc::new(InterruptingLines {
+                lines: Mutex::new(Vec::new()),
+                pending: Mutex::new(String::new()),
+                interrupt_on: None,
+            });
+            let mut checker = CheckIndex::new(dir).unwrap();
+            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn PrintStream>);
+            // `testSort` runs at the integrity level and above
+            // (`CheckIndex.java:1060`); the default level is 0, as in Java.
+            checker
+                .set_level(Level::MIN_LEVEL_FOR_INTEGRITY_CHECKS)
+                .unwrap();
+            let status = checker.check_index().unwrap();
+            checker.close().unwrap();
+            assert!(status.clean);
+            let lines = stream
+                .lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let sort_lines: Vec<&String> = lines
+                .iter()
+                .filter(|line| line.starts_with("    sort="))
+                .collect();
+            let segment = &status.segment_infos[0];
+            if sorted {
+                assert_eq!(sort_lines, vec!["    sort=<long: \"n\">"], "{lines:#?}");
+                assert!(segment.index_sort_status.is_some());
+            } else {
+                assert!(sort_lines.is_empty(), "{lines:#?}");
+                assert!(segment.index_sort_status.is_none());
+            }
+        }
+    }
+
+    /// Runs `check_index()` with two threads over three one-document
+    /// segments on a thread of its own, interrupted on entry when
+    /// `interrupt_first`; returns the outcome — the status's `clean`, or the
+    /// panic's message — the reported lines, and whether the thread was still
+    /// interrupted afterwards. Bounded, so a hang fails the test.
+    fn check_on_a_thread(
+        interrupt_first: bool,
+        interrupt_on: Option<&'static str>,
+    ) -> (std::result::Result<bool, String>, Vec<String>, bool) {
+        let dir = index_with_segments(3);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let stream = Arc::new(InterruptingLines {
+                lines: Mutex::new(Vec::new()),
+                pending: Mutex::new(String::new()),
+                interrupt_on,
+            });
+            let mut checker = CheckIndex::new(dir).unwrap();
+            checker.set_info_stream(Arc::clone(&stream) as Arc<dyn PrintStream>);
+            checker.set_thread_count(2).unwrap();
+            if interrupt_first {
+                crate::util::InterruptHandle::current().interrupt();
+            }
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checker.check_index()))
+                    .map(|status| status.unwrap().clean)
+                    .map_err(|payload| {
+                        payload
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_default()
+                    });
+            let still_interrupted = crate::util::InterruptHandle::interrupted();
+            let lines = stream
+                .lines
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let _ = tx.send((outcome, lines, still_interrupted));
+        });
+        rx.recv_timeout(Duration::from_secs(60))
+            .expect("the check did not return")
+    }
+
+    /// `CheckIndex.checkIndex(List)` shuts the pool down in its `finally`
+    /// (`CheckIndex.java:557-571`), after `checkIndex(List, ExecutorService)`
+    /// has reported "Took … total.". A thread interrupted once every result
+    /// is in — on "No problems were detected" — reports the interrupted
+    /// `awaitTermination` after "Took", and leaves with its status cleared.
+    /// Java oracle (`oracle/passG2/CheckShutdownInterruptOracle.java`,
+    /// `check_shutdown_java.txt`): "clean=true interruptedAfter=false", the
+    /// lines ending "Took 0.070 sec total.", "ERROR: Interrupted exception
+    /// occurred when shutting down executor service",
+    /// "java.lang.InterruptedException".
+    ///
+    /// `awaitTermination` returns without looking at the interrupt status when
+    /// the idle workers have already exited, in Java as here; the workers
+    /// need the pool's lock the shutting-down thread has just released, so
+    /// that thread almost always gets there first. The check is repeated a
+    /// few times so that losing that race cannot fail the test, while a pool
+    /// shut down before "Took" never reports the interrupt at all.
+    #[test]
+    fn the_pool_is_shut_down_after_took_total_is_reported() {
+        let mut attempts = Vec::new();
+        for _ in 0..5 {
+            let (outcome, lines, still_interrupted) = check_on_a_thread(false, Some("No problems"));
+            assert_eq!(outcome, Ok(true));
+            let tail = lines[lines.len() - 3..].to_vec();
+            if tail[1..]
+                == [
+                    "ERROR: Interrupted exception occurred when shutting down executor service",
+                    "java.lang.InterruptedException",
+                ]
+            {
+                assert!(
+                    tail[0].starts_with("Took ") && tail[0].ends_with(" total."),
+                    "{lines:?}"
+                );
+                assert!(!still_interrupted);
+                return;
+            }
+            attempts.push(lines);
+        }
+        panic!("the interrupted shutdown was never reported after Took: {attempts:?}");
+    }
+
+    /// A thread interrupted while it waits for a segment's result
+    /// (`futures[i].get()`, `CheckIndex.java:855-875`) reports the segment's
+    /// buffered output, the `ERROR` line and the exception, the output a
+    /// second time, and then throws Java's `NullPointerException` out of
+    /// `processSegmentInfoStatusResult`, its interrupt status cleared. Java
+    /// oracle (`oracle/passG2/CheckInterruptAllOracle.java`,
+    /// `check_all_java.txt`): "interrupt=true threw
+    /// java.lang.NullPointerException: Cannot read field "error" because
+    /// "segmentInfoStatus" is null interruptedAfter=false", lines 4–7 "1 of
+    /// 3: name=_0 maxDoc=1", "", "ERROR: Interrupted exception occurred when
+    /// getting segment check result for segment _0",
+    /// "java.lang.InterruptedException", and, after the stack trace, "1 of 3:
+    /// name=_0 maxDoc=1" again.
+    #[test]
+    fn interrupting_the_wait_for_a_segment_result_throws_as_lucene_does() {
+        let (outcome, lines, still_interrupted) = check_on_a_thread(true, None);
+        assert_eq!(
+            outcome,
+            Err("Cannot read field \"error\" because \"segmentInfoStatus\" is null".to_string())
+        );
+        assert!(!still_interrupted);
+        assert_eq!(lines[3], "1 of 3: name=_0 maxDoc=1", "{lines:?}");
+        let error = lines
+            .iter()
+            .position(|line| {
+                line == "ERROR: Interrupted exception occurred when getting segment check result \
+                         for segment _0"
+            })
+            .unwrap_or_else(|| panic!("no interrupted line: {lines:?}"));
+        // The buffered output, ending with `println`'s blank line, comes
+        // before the ERROR line and again, as far as the check has since
+        // written it, after the exception.
+        let first = &lines[3..error];
+        assert_eq!(first.last().map(String::as_str), Some(""), "{lines:?}");
+        assert_eq!(lines[error + 1], "java.lang.InterruptedException");
+        let second = &lines[error + 2..];
+        assert!(second.starts_with(&first[..first.len() - 1]), "{lines:?}");
+        assert_eq!(second.last().map(String::as_str), Some(""), "{lines:?}");
+    }
+}
+
+#[cfg(test)]
+mod census_gap_tests {
+    use super::*;
+
+    /// G-205: every check records any throwable — a panic carrying a Java
+    /// unchecked exception included — as its error (`catch (Throwable t)` in
+    /// `testSegment` and every `test*` method), and with `failFast` rethrows
+    /// it (`IOUtils.rethrowAlways`).
+    #[test]
+    fn gap_g205_record_throwable_records_panics() {
+        let recorded = record_throwable::<()>(false, || {
+            std::panic::panic_any(
+                "java.lang.ArrayIndexOutOfBoundsException: Index 3 out of bounds for length 2"
+                    .to_string(),
+            )
+        });
+        let error = recorded.expect_err("the panic is the check's error");
+        assert!(
+            error
+                .to_string()
+                .contains("Index 3 out of bounds for length 2"),
+            "{error}"
+        );
+        let rethrown = std::panic::catch_unwind(|| {
+            let _ = record_throwable::<()>(true, || std::panic::panic_any("boom".to_string()));
+        });
+        assert!(rethrown.is_err(), "fail-fast rethrows the throwable");
+        assert_eq!(record_throwable(false, || Ok(7)).unwrap(), 7);
+    }
+
+    /// G-208 (c): a vector field the term vectors list but whose `Terms` is
+    /// `null` is the `NullPointerException` of `terms.iterator()`
+    /// (`CheckIndex.java:4028-4029`), which `testTermVectors` records.
+    #[test]
+    fn gap_g208_null_vector_terms_is_a_null_pointer() {
+        #[derive(Debug)]
+        struct ListsButHasNoTerms;
+        impl Fields for ListsButHasNoTerms {
+            fn size(&self) -> i32 {
+                1
+            }
+            fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
+                Ok(None)
+            }
+            fn iterator(&self) -> Box<dyn Iterator<Item = String> + '_> {
+                Box::new(std::iter::once("f".to_string()))
+            }
+        }
+        let info = FieldInfo::new("f", 0);
+        let error = cross_check_vector_field_against_postings(
+            &ListsButHasNoTerms,
+            None,
+            &info,
+            "f",
+            0,
+            &mut CrossCheckReuse::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod options_out_tests {
+    use super::*;
+    use crate::document::{Document, Store, StringField};
+    use crate::store::ByteBuffersDirectory;
+    use crate::util::print_stream::ByteArrayPrintStream;
+
+    fn one_doc_index() -> Arc<dyn Directory> {
+        let _ = crate::codecs::register_codec("Lucene104", crate::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(StringField::new("id", "1".to_string(), Store::YES).unwrap());
+        writer.add_document(&doc).unwrap();
+        writer.close().unwrap();
+        dir
+    }
+
+    /// #594: `doCheck(Options)` reports to `opts.out`, which
+    /// `Options.setOut(PrintStream)` sets; with `out == null` the first
+    /// `opts.out.println(...)` throws `NullPointerException`.
+    #[test]
+    fn do_check_reports_to_options_out_and_npes_without_it() {
+        let dir = one_doc_index();
+
+        let mut checker = CheckIndex::new(Arc::clone(&dir)).unwrap();
+        let error = checker.do_check(&Options::new()).unwrap_err();
+        assert!(
+            matches!(
+                error.kind,
+                LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        checker.close().unwrap();
+
+        let out = ByteArrayPrintStream::new();
+        let mut opts = Options::new();
+        opts.set_out(Some(Arc::new(out.clone())));
+        let mut checker = CheckIndex::new(dir).unwrap();
+        assert_eq!(checker.do_check(&opts).unwrap(), 0);
+        checker.close().unwrap();
+        let report = out.to_string_utf8();
+        assert!(
+            report.contains("No problems were detected with this index."),
+            "{report}"
+        );
+    }
+}

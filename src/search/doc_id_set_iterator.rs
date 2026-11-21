@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use crate::error::{LuceneError, Result};
-use crate::util::{Bits, FixedBitSet};
+use crate::error::{LuceneError, LuceneErrorKind, Result};
+use crate::util::{bit_set_of, BitSet, BitSetIterator, Bits, FixedBitSet};
 
 /// Sentinel returned by [`DocIdSetIterator`] methods when no more documents
 /// are available.
@@ -18,6 +18,8 @@ use crate::util::{Bits, FixedBitSet};
 /// Equivalent to `DocIdSetIterator.NO_MORE_DOCS` in Java Lucene.
 pub const NO_MORE_DOCS: i32 = i32::MAX;
 
+/// Port of `org.apache.lucene.search.DocIdSetIterator`.
+///
 /// Iterator over a non-decreasing set of doc IDs.
 ///
 /// The contract mirrors `org.apache.lucene.search.DocIdSetIterator`:
@@ -27,6 +29,29 @@ pub const NO_MORE_DOCS: i32 = i32::MAX;
 ///   and return the new current doc ID or [`NO_MORE_DOCS`].
 /// - Once exhausted, the iterator must not be used again.
 pub trait DocIdSetIterator {
+    /// This object's `toString()`, as the `ExitableDirectoryReader` messages
+    /// render it.
+    ///
+    /// The default is `java.lang.Object.toString()`, which applies to every
+    /// Lucene class that declares no `toString()`: see
+    /// [`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in).
+    /// It names the Rust type; an implementation porting a Lucene class
+    /// overrides it with that class's binary name or its own `toString()`.
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(std::any::type_name::<Self>())
+    }
+
+    /// Whether this iterator is the view of a two-phase iterator that
+    /// `TwoPhaseIterator.asDocIdSetIterator` returns, which is when
+    /// `TwoPhaseIterator.unwrap(DocIdSetIterator)` (`TwoPhaseIterator.java`)
+    /// returns non-null.
+    ///
+    /// Java tests the iterator's class with `instanceof`; the wrapper declares
+    /// itself here. The default answers `false`.
+    fn wraps_two_phase_iterator(&self) -> bool {
+        false
+    }
+
     /// Returns the current doc ID.
     ///
     /// Returns `-1` if the iterator has not yet been positioned, and
@@ -77,7 +102,7 @@ pub trait DocIdSetIterator {
         if doc == -1 {
             doc = self.next_doc()?;
         }
-        debug_assert!(offset <= doc);
+        debug_assert!(offset <= doc, "offset={offset} docID()={doc} upTo={up_to}");
         while doc < up_to {
             bit_set.set((doc - offset) as usize);
             doc = self.next_doc()?;
@@ -90,9 +115,40 @@ pub trait DocIdSetIterator {
     ///
     /// The returned value is greater than [`Self::doc_id`], and every doc ID in
     /// `[doc_id(), doc_id_run_end())` matches the iterator.
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc_id() != NO_MORE_DOCS);
         Ok(self.doc_id() + 1)
+    }
+
+    /// Returns this iterator as [`std::any::Any`], so that a caller can test
+    /// it for a concrete type and reach that type's members.
+    ///
+    /// This hook stands for Java's `instanceof` and cast on a
+    /// `DocIdSetIterator`, which Lucene uses to recognise a bit-set-backed
+    /// iterator: `BitSetIterator.getBitSet(DocIdSetIterator, Class)`
+    /// (`BitSetIterator.java:30-40`), `FixedBitSet.andNot(DocIdSetIterator)`
+    /// (`FixedBitSet.java:670`), `AcceptDocs.createBitSet`
+    /// (`AcceptDocs.java:95`) and `ConjunctionDISI.createConjunction`
+    /// (`ConjunctionDISI.java:116`). Rust cannot narrow a
+    /// `dyn DocIdSetIterator`, so the question is asked of the iterator itself,
+    /// in the shape of
+    /// [`PostingsEnum::as_any_mut`](crate::index::PostingsEnum::as_any_mut).
+    /// The name differs from that hook's so that a `PostingsEnum`, which is
+    /// also a `DocIdSetIterator`, has no two methods of one name.
+    ///
+    /// The default answers `None`, the `false` branch of every `instanceof`;
+    /// only the types some Lucene `instanceof` tests for override it — and a
+    /// wrapper Java does not have forwards it.
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// The mutable form of [`disi_as_any`](Self::disi_as_any), for the
+    /// callers that move a narrowed iterator: `BitSetConjunctionDISI` sets the
+    /// current doc of the `BitSetIterator`s it narrowed
+    /// (`ConjunctionDISI.java:280-282`).
+    fn disi_as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
     }
 }
 
@@ -136,7 +192,7 @@ impl DocIdSetIterator for EmptyDocIdSetIterator {
         self.range.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
 }
@@ -154,10 +210,10 @@ impl AllDocIdSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `max_doc` is negative.
+    /// Returns `LuceneErrorKind::IllegalArgument` if `max_doc` is negative.
     pub fn new(max_doc: i32) -> Result<Self> {
         if max_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "maxDoc must be >= 0, but got maxDoc={max_doc}"
             )));
         }
@@ -168,6 +224,18 @@ impl AllDocIdSetIterator {
 }
 
 impl DocIdSetIterator for AllDocIdSetIterator {
+    /// `DocIdSetIterator$RangeDocIdSetIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.DocIdSetIterator$RangeDocIdSetIterator",
+        )
+    }
+    /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.range.doc_id()
     }
@@ -184,7 +252,13 @@ impl DocIdSetIterator for AllDocIdSetIterator {
         self.range.cost()
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    /// `DocIdSetIterator.all(int)` is a `RangeDocIdSetIterator`, so its
+    /// `intoBitSet` override applies (`DocIdSetIterator.java:92-100`).
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        self.range.into_bit_set(up_to, bit_set, offset)
+    }
+
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         self.range.doc_id_run_end()
     }
 }
@@ -213,16 +287,16 @@ impl RangeDocIdSetIterator {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if `min_doc` is negative or
+    /// Returns `LuceneErrorKind::IllegalArgument` if `min_doc` is negative or
     /// `min_doc >= max_doc`.
     pub fn range(min_doc: i32, max_doc: i32) -> Result<Self> {
         if min_doc >= max_doc {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDoc must be < maxDoc but got minDoc={min_doc} maxDoc={max_doc}"
             )));
         }
         if min_doc < 0 {
-            return Err(LuceneError::IllegalArgument(format!(
+            return Err(LuceneError::illegal_argument(format!(
                 "minDoc must be >= 0 but got minDoc={min_doc}"
             )));
         }
@@ -231,6 +305,18 @@ impl RangeDocIdSetIterator {
 }
 
 impl DocIdSetIterator for RangeDocIdSetIterator {
+    /// `DocIdSetIterator$RangeDocIdSetIterator` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.search.DocIdSetIterator$RangeDocIdSetIterator",
+        )
+    }
+    /// Java tests the class of this iterator (`TestPointQueries.java:2219`).
+    fn disi_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -254,7 +340,32 @@ impl DocIdSetIterator for RangeDocIdSetIterator {
         (self.max_doc - self.min_doc) as i64
     }
 
-    fn doc_id_run_end(&self) -> Result<i32> {
+    /// Sets the whole run `[doc_id(), min(up_to, max_doc))` with one range
+    /// fill, then advances past it.
+    ///
+    /// Equivalent to `RangeDocIdSetIterator.intoBitSet(int, FixedBitSet, int)`
+    /// (`DocIdSetIterator.java:92-100`). An unpositioned iterator is first
+    /// moved to its first doc, as the trait default does.
+    fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        if self.doc == -1 {
+            self.next_doc()?;
+        }
+        debug_assert!(
+            offset <= self.doc,
+            "offset={offset} docID()={} upTo={up_to}",
+            self.doc
+        );
+        // PERF: one word-level fill instead of one `set` and one `next_doc`
+        // per document.
+        let up_to = up_to.min(self.max_doc);
+        if up_to > self.doc {
+            bit_set.set_range((self.doc - offset) as usize, (up_to - offset) as usize);
+            self.advance(up_to)?;
+        }
+        Ok(())
+    }
+
+    fn doc_id_run_end(&mut self) -> Result<i32> {
         debug_assert!(self.doc != NO_MORE_DOCS);
         Ok(self.max_doc)
     }
@@ -285,17 +396,29 @@ pub fn range(min_doc: i32, max_doc: i32) -> Result<RangeDocIdSetIterator> {
 ///
 /// Equivalent to Lucene's `IOSupplier<DocIdSetIterator>`.
 pub trait DocIdSetIteratorSupplier {
-    /// Returns a new iterator.
-    fn get(&mut self) -> Result<Box<dyn DocIdSetIterator>>;
+    /// Returns a new iterator, or `None` for Java's `null`, which
+    /// `AcceptDocs` rejects with a `NullPointerException`
+    /// (`AcceptDocs.java:201`).
+    fn get(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>>;
 }
 
 impl<F> DocIdSetIteratorSupplier for F
 where
     F: FnMut() -> Result<Box<dyn DocIdSetIterator>>,
 {
-    fn get(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
-        (self)()
+    fn get(&mut self) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        (self)().map(Some)
     }
+}
+
+/// `Objects.requireNonNull(value)`: a `NullPointerException` with a `null`
+/// message for `None`.
+fn require_non_null<T>(value: Option<T>) -> Result<T> {
+    value.ok_or(LuceneError::from(LuceneErrorKind::Unchecked {
+        class: "java.lang.NullPointerException",
+        message: None,
+        cause: None,
+    }))
 }
 
 /// Higher-level abstraction for document acceptance filtering.
@@ -303,7 +426,10 @@ where
 /// Equivalent to `org.apache.lucene.search.AcceptDocs`.
 pub trait AcceptDocs {
     /// Random access to accepted docs, or `None` if all documents are accepted.
-    fn bits(&mut self) -> Result<Option<&dyn Bits>>;
+    ///
+    /// The bits are shared, as Java's `AcceptDocs.bits()` hands out a reference
+    /// that callers may keep and wrap.
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>>;
 
     /// Sequential access to accepted docs.
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>>;
@@ -318,6 +444,11 @@ pub trait AcceptDocs {
 #[derive(Clone)]
 pub struct BitsAcceptDocs {
     bits: Option<Arc<dyn Bits>>,
+    /// `bits` narrowed to a `BitSet`, when it is one: Java's
+    /// `bits instanceof BitSet bitSet` (`AcceptDocs.java:130, 144`).
+    bit_set: Option<Arc<dyn BitSet>>,
+    /// Java's `maxDoc` field: the segment's `maxDoc`, or the cardinality of
+    /// `bits` when it is a `BitSet` (`AcceptDocs.java:130-134`).
     max_doc: i32,
 }
 
@@ -338,48 +469,71 @@ impl BitsAcceptDocs {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the provided bits have a
+    /// Returns `LuceneErrorKind::IllegalArgument` if the provided bits have a
     /// length different from `max_doc`.
     pub fn from_live_docs(bits: Option<Box<dyn Bits>>, max_doc: i32) -> Result<Self> {
         if let Some(bits) = bits.as_ref() {
             if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
+                return Err(LuceneError::illegal_argument(format!(
                     "Bits length = {} != maxDoc = {max_doc}",
                     bits.length()
                 )));
             }
         }
+        let bits: Option<Arc<dyn Bits>> = bits.map(Arc::from);
+        let bit_set = bits
+            .as_ref()
+            .and_then(|bits| Arc::clone(bits).as_shared_bit_set());
+        // `this.maxDoc = Objects.requireNonNull(bitSet).cardinality()` for a
+        // `BitSet`, `maxDoc` otherwise (`AcceptDocs.java:130-134`).
+        let max_doc = match bit_set.as_ref() {
+            Some(bit_set) => bit_set.cardinality() as i32,
+            None => max_doc,
+        };
         Ok(Self {
-            bits: bits.map(Arc::from),
+            bits,
+            bit_set,
             max_doc,
         })
     }
 
-    fn predicate(&self) -> Option<Box<dyn Fn(i32) -> bool>> {
+    fn predicate(&self) -> Option<FilterPredicate> {
         self.bits.as_ref().map(|bits| {
             let bits = Arc::clone(bits);
-            Box::new(move |doc: i32| bits.get(doc as usize)) as Box<dyn Fn(i32) -> bool>
+            Box::new(move |doc: i32| Ok(bits.get(doc as usize))) as FilterPredicate
         })
     }
 }
 
 impl AcceptDocs for BitsAcceptDocs {
-    fn bits(&mut self) -> Result<Option<&dyn Bits>> {
-        Ok(self.bits.as_ref().map(|b| b.as_ref()))
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>> {
+        Ok(self.bits.as_ref().map(Arc::clone))
     }
 
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
+        // `if (bits instanceof BitSet bitSet) return new BitSetIterator(bitSet,
+        // maxDoc);` (`AcceptDocs.java:144-146`), `maxDoc` being the
+        // cardinality here.
+        if let Some(bit_set) = self.bit_set.as_ref() {
+            return Ok(Box::new(BitSetIterator::new(
+                Arc::clone(bit_set),
+                self.max_doc as i64,
+            )?));
+        }
         let base = Box::new(AllDocIdSetIterator::new(self.max_doc)?);
         match self.predicate() {
             None => Ok(base),
-            Some(predicate) => Ok(Box::new(FilteredDocIdSetIterator::new(base, predicate))),
+            Some(predicate) => Ok(Box::new(FilteredDocIdSetIterator::new(
+                base,
+                predicate,
+                ACCEPT_DOCS_FILTERED_ITERATOR,
+            ))),
         }
     }
 
     fn cost(&mut self) -> Result<i64> {
-        // Java estimates maxDoc for the general Bits path. We use the same
-        // conservative estimate regardless of whether the bits are dense or
-        // sparse.
+        // `return maxDoc;` (`AcceptDocs.java:151-155`): the segment's maxDoc,
+        // or the cardinality of a `BitSet`.
         Ok(self.max_doc as i64)
     }
 }
@@ -392,7 +546,11 @@ pub struct IteratorAcceptDocs<S: DocIdSetIteratorSupplier> {
     supplier: S,
     live_docs: Option<Arc<dyn Bits>>,
     max_doc: i32,
-    cached_bits: Option<FixedBitSet>,
+    /// The lazily built accept bit set; `None` until `bits()` or `cost()` is
+    /// first called. Java's `acceptBitSet`.
+    accept_bit_set: Option<Arc<dyn BitSet>>,
+    /// The cardinality of `accept_bit_set` once built. Java's `cardinality`.
+    cardinality: usize,
 }
 
 impl<S: DocIdSetIteratorSupplier + std::fmt::Debug> std::fmt::Debug for IteratorAcceptDocs<S> {
@@ -401,7 +559,8 @@ impl<S: DocIdSetIteratorSupplier + std::fmt::Debug> std::fmt::Debug for Iterator
             .field("supplier", &self.supplier)
             .field("max_doc", &self.max_doc)
             .field("has_live_docs", &self.live_docs.is_some())
-            .field("cached_bits", &self.cached_bits.as_ref().map(|_| "..."))
+            .field("has_accept_bit_set", &self.accept_bit_set.is_some())
+            .field("cardinality", &self.cardinality)
             .finish()
     }
 }
@@ -413,67 +572,70 @@ impl<S: DocIdSetIteratorSupplier> IteratorAcceptDocs<S> {
     ///
     /// # Errors
     ///
-    /// Returns `LuceneError::IllegalArgument` if the provided live docs have a
-    /// length different from `max_doc`.
+    /// Returns the `NullPointerException` of `Objects.requireNonNull` when
+    /// `supplier` is `None` (`AcceptDocs.java:172`).
     pub fn from_iterator_supplier(
-        supplier: S,
+        supplier: Option<S>,
         live_docs: Option<Box<dyn Bits>>,
         max_doc: i32,
     ) -> Result<Self> {
-        if let Some(bits) = live_docs.as_ref() {
-            if bits.length() != max_doc as usize {
-                return Err(LuceneError::IllegalArgument(format!(
-                    "Bits length = {} != maxDoc = {max_doc}",
-                    bits.length()
-                )));
-            }
-        }
+        // `Objects.requireNonNull(iteratorSupplier)` (`AcceptDocs.java:172`).
+        let supplier = require_non_null(supplier)?;
+        // Java checks no live-docs length here (`AcceptDocs.java:170-175`);
+        // only `BitsAcceptDocs` compares it with `maxDoc`.
         Ok(Self {
             supplier,
             live_docs: live_docs.map(Arc::from),
             max_doc,
-            cached_bits: None,
+            accept_bit_set: None,
+            cardinality: 0,
         })
     }
 
     fn filtered_iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
-        let base = self.supplier.get()?;
-        match self.live_docs.as_ref() {
-            None => Ok(base),
-            Some(bits) => {
-                let bits = Arc::clone(bits);
-                let predicate = Box::new(move |doc: i32| bits.get(doc as usize));
-                Ok(Box::new(FilteredDocIdSetIterator::new(base, predicate)))
-            }
-        }
+        // `Objects.requireNonNull(iteratorSupplier.get())`
+        // (`AcceptDocs.java:201`).
+        let base = require_non_null(self.supplier.get()?)?;
+        Ok(get_filtered_doc_id_set_iterator(
+            base,
+            self.live_docs.as_ref().map(Arc::clone),
+        ))
     }
 
+    /// Equivalent to `DocIdSetIteratorAcceptDocs.createBitSetAcceptDocsIfNecessary()`.
     fn ensure_cached_bits(&mut self) -> Result<()> {
-        if self.cached_bits.is_none() {
-            let mut bit_set = FixedBitSet::new(self.max_doc as usize);
-            {
-                let mut iter = self.filtered_iterator()?;
-                iter.into_bit_set(self.max_doc, &mut bit_set, 0)?;
-            }
-            self.cached_bits = Some(bit_set);
+        if self.accept_bit_set.is_none() {
+            // Java passes `iterator()`, which while the bit set is absent is
+            // exactly the live-docs-filtered iterator built here.
+            let iterator = self.filtered_iterator()?;
+            let bit_set: Arc<dyn BitSet> = create_bit_set(
+                iterator,
+                self.live_docs.as_ref().map(Arc::clone),
+                self.max_doc,
+            )?;
+            self.cardinality = bit_set.cardinality();
+            self.accept_bit_set = Some(bit_set);
         }
         Ok(())
     }
 }
 
 impl<S: DocIdSetIteratorSupplier> AcceptDocs for IteratorAcceptDocs<S> {
-    fn bits(&mut self) -> Result<Option<&dyn Bits>> {
+    fn bits(&mut self) -> Result<Option<Arc<dyn Bits>>> {
         self.ensure_cached_bits()?;
-        Ok(self.cached_bits.as_ref().map(|b| b as &dyn Bits))
+        // Java returns the `BitSet` itself, which is a `Bits`.
+        Ok(self
+            .accept_bit_set
+            .as_ref()
+            .map(|bit_set| Arc::clone(bit_set) as Arc<dyn Bits>))
     }
 
     fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
-        if let Some(bits) = self.cached_bits.as_ref() {
-            let cardinality = bits.cardinality();
-            Ok(Box::new(BitSetDocIdSetIterator::new(
-                bits.clone(),
-                cardinality as i64,
-            )))
+        if let Some(bit_set) = self.accept_bit_set.as_ref() {
+            Ok(Box::new(BitSetIterator::new(
+                Arc::clone(bit_set),
+                self.cardinality as i64,
+            )?))
         } else {
             self.filtered_iterator()
         }
@@ -481,12 +643,7 @@ impl<S: DocIdSetIteratorSupplier> AcceptDocs for IteratorAcceptDocs<S> {
 
     fn cost(&mut self) -> Result<i64> {
         self.ensure_cached_bits()?;
-        let cardinality = self
-            .cached_bits
-            .as_ref()
-            .expect("INVARIANT: ensure_cached_bits always populates cached_bits")
-            .cardinality();
-        Ok(cardinality as i64)
+        Ok(self.cardinality as i64)
     }
 }
 
@@ -501,27 +658,117 @@ pub fn from_live_docs(bits: Option<Box<dyn Bits>>, max_doc: i32) -> Result<BitsA
 ///
 /// Equivalent to `AcceptDocs.fromIteratorSupplier(IOSupplier<DocIdSetIterator>, Bits, int)`.
 pub fn from_iterator_supplier<S: DocIdSetIteratorSupplier>(
-    supplier: S,
+    supplier: Option<S>,
     live_docs: Option<Box<dyn Bits>>,
     max_doc: i32,
 ) -> Result<IteratorAcceptDocs<S>> {
     IteratorAcceptDocs::from_iterator_supplier(supplier, live_docs, max_doc)
 }
 
+/// Builds the bit set of the documents `iterator` accepts, honouring
+/// `live_docs`.
+///
+/// Equivalent to the private static `AcceptDocs.createBitSet(DocIdSetIterator,
+/// Bits, int)` (`AcceptDocs.java:93-114`): when there are no deletions and
+/// the iterator is a [`BitSetIterator`](crate::util::BitSetIterator), its own
+/// bit set is handed back; otherwise a dense [`FixedBitSet`] is filled through
+/// [`BitSet::or`](crate::util::BitSet::or) when the iterator's cost reaches
+/// `max_doc >> 7` — the same threshold as `BitSet.of` — and a sparse set is
+/// built with [`bit_set_of`] otherwise.
+///
+/// # Errors
+///
+/// Propagates iteration errors, and rejects an already-positioned iterator.
+fn create_bit_set(
+    iterator: Box<dyn DocIdSetIterator>,
+    live_docs: Option<Arc<dyn Bits>>,
+    max_doc: i32,
+) -> Result<Arc<dyn BitSet>> {
+    if live_docs.is_none() {
+        if let Some(bit_set_iterator) = iterator
+            .disi_as_any()
+            .and_then(|any| any.downcast_ref::<crate::util::BitSetIterator>())
+        {
+            // If we already have a BitSet and no deletions, reuse the BitSet.
+            return Ok(Arc::clone(bit_set_iterator.get_bit_set()));
+        }
+    }
+    let threshold = i64::from(max_doc >> 7); // same as BitSet#of
+    if iterator.cost() >= threshold {
+        // take advantage of DocIdSetIterator#into_bit_set and Bits#apply_mask
+        let mut iterator = iterator;
+        let mut bit_set = FixedBitSet::new(max_doc.max(0) as usize);
+        BitSet::or(&mut bit_set, iterator.as_mut())?;
+        if let Some(live_docs) = live_docs.as_ref() {
+            live_docs.apply_mask(&mut bit_set, 0)?;
+        }
+        Ok(Arc::new(bit_set))
+    } else {
+        // create a sparse bitset
+        let mut filtered = get_filtered_doc_id_set_iterator(iterator, live_docs);
+        Ok(Arc::from(bit_set_of(filtered.as_mut(), max_doc)?))
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Internal helpers
 // -----------------------------------------------------------------------------
 
+/// The anonymous `FilteredDocIdSetIterator` of
+/// `AcceptDocs.getFilteredDocIdSetIterator` (`AcceptDocs.java:206-218`).
+const ACCEPT_DOCS_FILTERED_ITERATOR: &str = "org.apache.lucene.search.AcceptDocs$1";
+
+/// The `match(int)` body of a [`FilteredDocIdSetIterator`]: Java's
+/// `protected abstract boolean match(int doc) throws IOException`.
+pub(crate) type FilterPredicate = Box<dyn FnMut(i32) -> Result<bool>>;
+
+/// Port of `org.apache.lucene.search.FilteredDocIdSetIterator`.
+///
 /// Iterator that wraps another iterator and only returns doc IDs satisfying a
 /// predicate.
-struct FilteredDocIdSetIterator {
+pub(crate) struct FilteredDocIdSetIterator {
     inner: Box<dyn DocIdSetIterator>,
-    predicate: Box<dyn Fn(i32) -> bool>,
+    predicate: FilterPredicate,
+    /// The binary name of the anonymous Java subclass this instance stands
+    /// for: Java's class is abstract, so every instance is a subclass's.
+    java_class: &'static str,
 }
 
 impl FilteredDocIdSetIterator {
-    fn new(inner: Box<dyn DocIdSetIterator>, predicate: Box<dyn Fn(i32) -> bool>) -> Self {
-        Self { inner, predicate }
+    /// Equivalent to `FilteredDocIdSetIterator(DocIdSetIterator)`, with the
+    /// subclass's `match(int)` as `predicate` and the subclass's binary Java
+    /// name as `java_class` (what its `toString()` names).
+    pub(crate) fn new(
+        inner: Box<dyn DocIdSetIterator>,
+        predicate: FilterPredicate,
+        java_class: &'static str,
+    ) -> Self {
+        Self {
+            inner,
+            predicate,
+            java_class,
+        }
+    }
+
+    /// Returns the wrapped [`DocIdSetIterator`].
+    ///
+    /// Equivalent to `FilteredDocIdSetIterator.getDelegate()`.
+    #[allow(dead_code)]
+    fn get_delegate(&self) -> &dyn DocIdSetIterator {
+        self.inner.as_ref()
+    }
+
+    /// Validation method determining whether `doc` should be in the result set.
+    ///
+    /// Equivalent to the `protected abstract`
+    /// `FilteredDocIdSetIterator.match(int)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java leaves the method abstract and
+    /// expects a subclass to implement it. Rust has no inheritance, so this
+    /// port takes the test as the `predicate` the iterator is built with and
+    /// this method applies it, which is what every subclass body amounts to.
+    fn matches(&mut self, doc: i32) -> Result<bool> {
+        (self.predicate)(doc)
     }
 
     fn do_next(&mut self, mut doc: i32) -> Result<i32> {
@@ -529,7 +776,7 @@ impl FilteredDocIdSetIterator {
             if doc == NO_MORE_DOCS {
                 return Ok(NO_MORE_DOCS);
             }
-            if (self.predicate)(doc) {
+            if self.matches(doc)? {
                 return Ok(doc);
             }
             doc = self.inner.next_doc()?;
@@ -538,6 +785,13 @@ impl FilteredDocIdSetIterator {
 }
 
 impl DocIdSetIterator for FilteredDocIdSetIterator {
+    /// The anonymous subclass declares no `toString()`, so
+    /// `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn java_to_string(&self) -> String {
+        crate::index::index_reader::java_object_to_string_stand_in(self.java_class)
+    }
+
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -557,76 +811,6 @@ impl DocIdSetIterator for FilteredDocIdSetIterator {
     }
 }
 
-/// Iterator over the set bits of a [`FixedBitSet`].
-struct BitSetDocIdSetIterator {
-    bits: FixedBitSet,
-    doc: i32,
-    cost: i64,
-}
-
-impl BitSetDocIdSetIterator {
-    fn new(bits: FixedBitSet, cost: i64) -> Self {
-        Self {
-            bits,
-            doc: -1,
-            cost,
-        }
-    }
-}
-
-impl DocIdSetIterator for BitSetDocIdSetIterator {
-    fn doc_id(&self) -> i32 {
-        self.doc
-    }
-
-    fn next_doc(&mut self) -> Result<i32> {
-        let next = next_set_bit(&self.bits, self.doc + 1);
-        self.doc = next.unwrap_or(NO_MORE_DOCS);
-        Ok(self.doc)
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        let next = next_set_bit(&self.bits, target);
-        self.doc = next.unwrap_or(NO_MORE_DOCS);
-        Ok(self.doc)
-    }
-
-    fn cost(&self) -> i64 {
-        self.cost
-    }
-}
-
-/// Returns the index of the first set bit at or after `from_index`, or `None`
-/// if there is no such bit.
-fn next_set_bit(bits: &FixedBitSet, from_index: i32) -> Option<i32> {
-    let len = bits.length() as i32;
-    if from_index >= len {
-        return None;
-    }
-    let from_index = from_index.max(0) as usize;
-    let words = bits.get_bits();
-    let num_words = words.len();
-    let mut word_index = from_index >> 6;
-    if word_index >= num_words {
-        return None;
-    }
-    let shift = from_index & 0x3f;
-    let mut word = words[word_index] & (!0u64 << shift);
-    while word == 0 {
-        word_index += 1;
-        if word_index >= num_words {
-            return None;
-        }
-        word = words[word_index];
-    }
-    let bit_index = word.trailing_zeros() as usize;
-    let candidate = (word_index << 6) + bit_index;
-    if candidate >= bits.length() {
-        return None;
-    }
-    Some(candidate as i32)
-}
-
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -634,6 +818,32 @@ fn next_set_bit(bits: &FixedBitSet, from_index: i32) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `AcceptDocs.createBitSet` builds a dense iterator into a `FixedBitSet`
+    /// and applies the live docs with `liveDocs.applyMask(bitSet, 0)`
+    /// (`AcceptDocs.java:101-105`).
+    #[test]
+    fn create_bit_set_applies_the_live_docs_mask() {
+        #[derive(Debug)]
+        struct Even;
+        impl Bits for Even {
+            fn get(&self, index: usize) -> bool {
+                index.is_multiple_of(2)
+            }
+            fn length(&self) -> usize {
+                1024
+            }
+        }
+        let all: Vec<i32> = (0..1024).collect();
+        let bit_set = create_bit_set(
+            Box::new(VecDocIdSetIterator::new(all)),
+            Some(Arc::new(Even)),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(bit_set.cardinality(), 512);
+        assert!(bit_set.get(2) && !bit_set.get(3));
+    }
 
     /// Sparse iterator backed by a sorted list of doc IDs.
     struct VecDocIdSetIterator {
@@ -687,13 +897,14 @@ mod tests {
     }
 
     /// Bits implementation accepting only even doc IDs.
+    #[derive(Debug)]
     struct EvenBits {
         max_doc: i32,
     }
 
     impl Bits for EvenBits {
         fn get(&self, index: usize) -> bool {
-            index % 2 == 0
+            index.is_multiple_of(2)
         }
 
         fn length(&self) -> usize {
@@ -778,6 +989,74 @@ mod tests {
         assert!(!bit_set.get(9));
     }
 
+    /// A range iterator seen through the trait's default `into_bit_set`: it
+    /// forwards the moves only, so the bulk fill runs the per-document loop.
+    struct DefaultIntoBitSet(RangeDocIdSetIterator);
+
+    impl DocIdSetIterator for DefaultIntoBitSet {
+        fn doc_id(&self) -> i32 {
+            self.0.doc_id()
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.0.next_doc()
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.0.advance(target)
+        }
+        fn cost(&self) -> i64 {
+            self.0.cost()
+        }
+    }
+
+    /// `RangeDocIdSetIterator.intoBitSet` (`DocIdSetIterator.java:92-100`)
+    /// fills the run with one range set; it must leave exactly the bits and
+    /// the position the per-document default leaves, from every start
+    /// (unpositioned, inside, at the end), for every `up_to` and offset.
+    #[test]
+    fn range_into_bit_set_matches_the_per_document_default() {
+        for (min, max) in [(0, 1), (0, 70), (3, 9), (60, 200), (64, 128)] {
+            for start in [None, Some(min), Some((min + max) / 2), Some(max - 1)] {
+                for up_to in [
+                    0,
+                    min,
+                    min + 1,
+                    (min + max) / 2,
+                    max - 1,
+                    max,
+                    max + 5,
+                    NO_MORE_DOCS,
+                ] {
+                    for offset in [0, min.min(start.unwrap_or(min))] {
+                        let mut fast = range(min, max).unwrap();
+                        let mut slow = DefaultIntoBitSet(range(min, max).unwrap());
+                        if let Some(target) = start {
+                            fast.advance(target).unwrap();
+                            slow.advance(target).unwrap();
+                        }
+                        let mut fast_bits = FixedBitSet::new(256);
+                        let mut slow_bits = FixedBitSet::new(256);
+                        fast.into_bit_set(up_to, &mut fast_bits, offset).unwrap();
+                        slow.into_bit_set(up_to, &mut slow_bits, offset).unwrap();
+                        let case = format!(
+                            "range [{min}, {max}) start {start:?} upTo {up_to} offset {offset}"
+                        );
+                        assert_eq!(fast.doc_id(), slow.doc_id(), "position: {case}");
+                        for bit in 0..256 {
+                            assert_eq!(fast_bits.get(bit), slow_bits.get(bit), "bit {bit}: {case}");
+                        }
+                    }
+                }
+            }
+        }
+        // `DocIdSetIterator.all(int)` is the same class.
+        let mut all = AllDocIdSetIterator::new(100).unwrap();
+        let mut bits = FixedBitSet::new(100);
+        all.into_bit_set(40, &mut bits, 0).unwrap();
+        assert_eq!(all.doc_id(), 40);
+        assert_eq!(bits.cardinality(), 40);
+        assert!(bits.get(0) && bits.get(39) && !bits.get(40));
+    }
+
     #[test]
     fn doc_id_run_end_for_range_is_max_doc() {
         let mut it = range(2, 10).unwrap();
@@ -817,12 +1096,62 @@ mod tests {
         assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
+    /// Regression (#436): `BitsAcceptDocs` over a `BitSet` takes Java's
+    /// `BitSet` branch (`AcceptDocs.java:130-134, 143-146, 151-155`): its
+    /// `maxDoc` is the cardinality, its iterator is a `BitSetIterator` over
+    /// that bit set costing the cardinality, and its cost is the cardinality.
+    /// Bits that are not a `BitSet` keep the filtered all-docs iterator.
+    #[test]
+    fn bits_accept_docs_over_a_bit_set_iterates_a_bit_set_iterator() {
+        for sparse in [false, true] {
+            let bits: Box<dyn Bits> = if sparse {
+                let mut set = crate::util::SparseFixedBitSet::new(10).unwrap();
+                for doc in [1, 4, 9] {
+                    set.set(doc);
+                }
+                Box::new(set)
+            } else {
+                let mut set = FixedBitSet::new(10);
+                for doc in [1, 4, 9] {
+                    set.set(doc);
+                }
+                Box::new(set)
+            };
+            let mut accept = from_live_docs(Some(bits), 10).unwrap();
+            assert_eq!(accept.cost().unwrap(), 3);
+            let mut it = accept.iterator().unwrap();
+            assert_eq!(
+                it.java_to_string(),
+                crate::index::index_reader::java_object_to_string_stand_in(
+                    "org.apache.lucene.util.BitSetIterator"
+                )
+            );
+            assert!(it
+                .disi_as_any()
+                .is_some_and(|any| any.is::<BitSetIterator>()));
+            assert_eq!(it.cost(), 3);
+            for expected in [1, 4, 9] {
+                assert_eq!(it.next_doc().unwrap(), expected);
+            }
+            assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+        }
+
+        let bits: Box<dyn Bits> = Box::new(EvenBits { max_doc: 8 });
+        let mut accept = from_live_docs(Some(bits), 8).unwrap();
+        assert_eq!(accept.cost().unwrap(), 8);
+        let it = accept.iterator().unwrap();
+        assert!(!it
+            .disi_as_any()
+            .is_some_and(|any| any.is::<BitSetIterator>()));
+        assert_eq!(it.cost(), 8);
+    }
+
     #[test]
     fn accept_docs_from_iterator_supplier_builds_bits_and_cost() {
         let supplier = || -> Result<Box<dyn DocIdSetIterator>> {
             Ok(Box::new(VecDocIdSetIterator::new(vec![1, 3, 5, 7])))
         };
-        let mut accept = from_iterator_supplier(supplier, None, 10).unwrap();
+        let mut accept = from_iterator_supplier(Some(supplier), None, 10).unwrap();
         assert_eq!(accept.cost().unwrap(), 4);
 
         let bits = accept.bits().unwrap().unwrap();
@@ -846,7 +1175,7 @@ mod tests {
             Ok(Box::new(VecDocIdSetIterator::new(vec![0, 2, 4, 6, 8])))
         };
         let live: Box<dyn Bits> = Box::new(EvenBits { max_doc: 10 });
-        let mut accept = from_iterator_supplier(supplier, Some(live), 10).unwrap();
+        let mut accept = from_iterator_supplier(Some(supplier), Some(live), 10).unwrap();
         let mut it = accept.iterator().unwrap();
         for expected in [0, 2, 4, 6, 8] {
             assert_eq!(it.next_doc().unwrap(), expected);
@@ -869,12 +1198,64 @@ mod tests {
         assert!(from_live_docs(Some(bits), 8).is_err());
     }
 
+    /// Java's `DocIdSetIteratorAcceptDocs` does not compare the live-docs
+    /// length with `maxDoc` (`AcceptDocs.java:170-175`).
     #[test]
-    fn iterator_accept_docs_rejects_length_mismatch() {
+    fn iterator_accept_docs_accepts_length_mismatch() {
         let supplier = || -> Result<Box<dyn DocIdSetIterator>> {
             Ok(Box::new(VecDocIdSetIterator::new(vec![])))
         };
         let live: Box<dyn Bits> = Box::new(EvenBits { max_doc: 5 });
-        assert!(from_iterator_supplier(supplier, Some(live), 8).is_err());
+        assert!(from_iterator_supplier(Some(supplier), Some(live), 8).is_ok());
+    }
+}
+
+/// Wraps `iterator` so that it only produces documents `live_docs` accepts, or
+/// returns it unchanged when there are none.
+///
+/// Equivalent to the private static
+/// `AcceptDocs.getFilteredDocIdSetIterator(DocIdSetIterator, Bits)`.
+pub fn get_filtered_doc_id_set_iterator(
+    iterator: Box<dyn DocIdSetIterator>,
+    live_docs: Option<Arc<dyn Bits>>,
+) -> Box<dyn DocIdSetIterator> {
+    match live_docs {
+        None => iterator,
+        Some(bits) => {
+            let predicate: FilterPredicate = Box::new(move |doc: i32| Ok(bits.get(doc as usize)));
+            Box::new(FilteredDocIdSetIterator::new(
+                iterator,
+                predicate,
+                ACCEPT_DOCS_FILTERED_ITERATOR,
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_docs_reuse_tests {
+    use super::*;
+    use crate::util::{BitSetIterator, FixedBitSet};
+
+    /// rmp #297: with no deletions, `AcceptDocs.createBitSet` hands back the
+    /// bit set of a `BitSetIterator` instead of building one
+    /// (`AcceptDocs.java:95-97`).
+    #[test]
+    fn a_bit_set_iterator_lends_its_bit_set() {
+        let mut set = FixedBitSet::new(100);
+        set.set(3);
+        set.set(64);
+        let set: Arc<dyn BitSet> = Arc::new(set);
+        let shared = Arc::clone(&set);
+        let supplier = move || -> Result<Box<dyn DocIdSetIterator>> {
+            Ok(Box::new(BitSetIterator::new(Arc::clone(&shared), 2)?))
+        };
+        let mut accept = from_iterator_supplier(Some(supplier), None, 100).unwrap();
+        let bits = accept.bits().unwrap().unwrap();
+        assert_eq!(
+            Arc::as_ptr(&bits) as *const (),
+            Arc::as_ptr(&set) as *const ()
+        );
+        assert_eq!(accept.cost().unwrap(), 2);
     }
 }

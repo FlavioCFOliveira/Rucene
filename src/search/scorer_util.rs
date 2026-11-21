@@ -1,0 +1,491 @@
+//! Scorer helpers, ported from `org.apache.lucene.search.ScorerUtil` and
+//! `org.apache.lucene.search.DocAndScoreAccBuffer`.
+
+#![deny(unsafe_code)]
+
+use crate::error::{LuceneError, Result};
+use crate::index::DocAndFloatFeatureBuffer;
+use crate::search::abstract_doc_id_set_iterator::FilterDocIdSetIterator;
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
+use crate::search::scorable::Scorable;
+use crate::util::bit_sets::{DenseLiveDocs, SparseLiveDocs};
+use crate::util::{Bits, FixedBitSet, MathUtil, PriorityQueue, PriorityQueueComparator};
+use std::any::{Any, TypeId};
+use std::sync::LazyLock;
+
+/// The class of the read-only live docs a segment's pending deletes hand out.
+///
+/// Equivalent to the private `ScorerUtil.DEFAULT_ACCEPT_DOCS_CLASS`
+/// (`ScorerUtil.java:35-36`), `new FixedBitSet(1).asReadOnlyBits().getClass()`.
+/// Rust's counterpart of a `Class` compared by identity is the [`TypeId`] of
+/// the concrete type, which [`Bits::bits_as_any`] exposes.
+static DEFAULT_ACCEPT_DOCS_CLASS: LazyLock<TypeId> =
+    LazyLock::new(|| Any::type_id(&FixedBitSet::new(1).as_read_only_bits()));
+
+/// The [`Bits`] [`ScorerUtil::likely_live_docs`] returns: the accepted docs
+/// themselves, or Java's `FilterBits` wrapper around them.
+#[derive(Debug)]
+pub enum LikelyLiveDocs<'a> {
+    /// The accepted docs, returned unchanged.
+    Same(&'a dyn Bits),
+    /// The accepted docs behind a `FilterBits`.
+    Filtered(FilterBits<'a>),
+}
+
+impl<'a> LikelyLiveDocs<'a> {
+    /// The bits to hand on: Java's return value.
+    pub fn as_bits(&self) -> &dyn Bits {
+        match self {
+            Self::Same(bits) => *bits,
+            Self::Filtered(bits) => bits,
+        }
+    }
+}
+
+/// A transparent wrapper around a [`Bits`].
+///
+/// Equivalent to the private `ScorerUtil.FilterBits` (`ScorerUtil.java:108-125`),
+/// which overrides `get` and `length` only: `applyMask` takes the `Bits`
+/// default, and the wrapper is its own class to `instanceof`.
+#[derive(Debug)]
+pub struct FilterBits<'a> {
+    input: &'a dyn Bits,
+}
+
+impl Bits for FilterBits<'_> {
+    fn get(&self, index: usize) -> bool {
+        self.input.get(index)
+    }
+
+    /// Java's `get` calls `in.get(index)`, so what the wrapped bits throw
+    /// propagates through it.
+    fn try_get(&self, index: usize) -> Result<bool> {
+        self.input.try_get(index)
+    }
+
+    fn length(&self) -> usize {
+        self.input.length()
+    }
+}
+
+/// Parallel arrays storing doc IDs and their corresponding score accumulators.
+///
+/// Equivalent to the `final org.apache.lucene.search.DocAndScoreAccBuffer`.
+/// The scores are `f64` because they accumulate the contributions of several
+/// clauses, which is where the extra precision matters.
+#[derive(Debug, Default, Clone)]
+pub struct DocAndScoreAccBuffer {
+    /// Doc IDs.
+    pub docs: Vec<i32>,
+    /// Scores.
+    pub scores: Vec<f64>,
+    /// Number of valid entries in the doc ID and score arrays.
+    pub size: usize,
+}
+
+impl DocAndScoreAccBuffer {
+    /// Creates an empty buffer.
+    ///
+    /// Equivalent to `new DocAndScoreAccBuffer()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Grows both arrays so that they can store at least `min_size` entries.
+    /// Existing content may be discarded.
+    ///
+    /// Equivalent to `DocAndScoreAccBuffer.growNoCopy(int)`.
+    pub fn grow_no_copy(&mut self, min_size: usize) {
+        if self.docs.len() < min_size {
+            self.docs = vec![0; min_size];
+            self.scores = vec![0.0; min_size];
+        }
+    }
+
+    /// Grows both arrays so that they can store at least `min_size` entries,
+    /// preserving the existing content.
+    ///
+    /// Equivalent to `DocAndScoreAccBuffer.grow(int)`.
+    pub fn grow(&mut self, min_size: usize) {
+        if self.docs.len() < min_size {
+            self.docs.resize(min_size, 0);
+            self.scores.resize(self.docs.len(), 0.0);
+        }
+    }
+
+    /// Copies the content of a [`DocAndFloatFeatureBuffer`], widening the
+    /// `f32` scores to `f64`.
+    ///
+    /// Equivalent to
+    /// `DocAndScoreAccBuffer.copyFrom(DocAndFloatFeatureBuffer)`.
+    pub fn copy_from(&mut self, buffer: &DocAndFloatFeatureBuffer) {
+        self.grow_no_copy(buffer.size);
+        self.docs[..buffer.size].copy_from_slice(&buffer.docs[..buffer.size]);
+        for i in 0..buffer.size {
+            self.scores[i] = f64::from(buffer.features[i]);
+        }
+        self.size = buffer.size;
+    }
+}
+
+/// Orders costs so that the greatest is the top of the queue, which is what
+/// [`ScorerUtil::cost_with_min_should_match`] needs to keep the least costly
+/// clauses.
+#[derive(Debug, Default, Clone, Copy)]
+struct GreatestCostFirst;
+
+impl PriorityQueueComparator<i64> for GreatestCostFirst {
+    fn less_than(&self, a: &i64, b: &i64) -> bool {
+        a > b
+    }
+}
+
+/// Helpers shared by the scorer implementations.
+///
+/// Equivalent to `org.apache.lucene.search.ScorerUtil`, which is
+/// package-private in Java; it is public here because Rust has no package
+/// visibility.
+#[derive(Debug, Clone, Copy)]
+pub struct ScorerUtil;
+
+impl ScorerUtil {
+    /// Computes the cost of a disjunction that requires `min_should_match` of
+    /// its `num_scorers` clauses to match.
+    ///
+    /// Equivalent to
+    /// `ScorerUtil.costWithMinShouldMatch(LongStream, int, int)`.
+    ///
+    /// The reasoning is the following: a boolean query `c1, c2, ..., cn` with
+    /// `minShouldMatch = m` could be rewritten to
+    /// `(c1 AND (c2..cn|msm=m-1)) OR (!c1 AND (c2..cn|msm=m))`. Assuming the
+    /// clauses come in ascending cost, the cost of the first part is the cost
+    /// of `c1`, because the cost of a conjunction is the cost of its least
+    /// costly clause; the cost of the second part is the cost of finding `m`
+    /// matches among the remaining clauses. Since the whole is a disjunction,
+    /// the total cost is the sum of the two. Recursing to the end shows that
+    /// the cost is the sum of the costs of the
+    /// `num_scorers - min_should_match + 1` least costly scorers.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the [`PriorityQueue`] construction error when
+    /// `num_scorers - min_should_match + 1` is not a size the queue can hold.
+    pub fn cost_with_min_should_match(
+        costs: impl IntoIterator<Item = i64>,
+        num_scorers: usize,
+        min_should_match: usize,
+    ) -> Result<i64> {
+        // `new PriorityQueue<>(numScorers - minShouldMatch + 1)`, an `int`
+        // expression whose negative value the queue refuses
+        // (`PriorityQueue.java:86-90`).
+        let max_size = (num_scorers as i32)
+            .wrapping_sub(min_should_match as i32)
+            .wrapping_add(1);
+        let capacity = usize::try_from(max_size).map_err(|_| {
+            LuceneError::illegal_argument(format!(
+                "maxSize must be >= 0 and < {}; got: {max_size}",
+                crate::util::ArrayUtil::MAX_ARRAY_LENGTH
+            ))
+        })?;
+        let mut pq: PriorityQueue<i64, GreatestCostFirst> =
+            PriorityQueue::new(capacity, GreatestCostFirst)?;
+        for cost in costs {
+            pq.insert_with_overflow(cost);
+        }
+        Ok(pq.into_iter().sum())
+    }
+
+    /// Optimises a [`DocIdSetIterator`] for the case when it is likely
+    /// implemented over an [`ImpactsEnum`](crate::index::ImpactsEnum).
+    ///
+    /// Equivalent to `ScorerUtil.likelyImpactsEnum(DocIdSetIterator)`
+    /// (`ScorerUtil.java:69-75`): an iterator whose class is neither the
+    /// default codec's impacts enum
+    /// ([`Lucene104PostingsFormat::get_impacts_enum_impl`]) nor
+    /// [`FilterDocIdSetIterator`] is wrapped in a `FilterDocIdSetIterator`;
+    /// those two are returned unchanged.
+    ///
+    /// [`Lucene104PostingsFormat::get_impacts_enum_impl`]:
+    ///     crate::codecs::lucene104::postings_format::Lucene104PostingsFormat::get_impacts_enum_impl
+    pub fn likely_impacts_enum(it: Box<dyn DocIdSetIterator>) -> Box<dyn DocIdSetIterator> {
+        let class = it.disi_as_any().map(<dyn Any>::type_id);
+        if class != Some(
+            crate::codecs::lucene104::postings_format::Lucene104PostingsFormat::get_impacts_enum_impl(),
+        ) && class != Some(TypeId::of::<FilterDocIdSetIterator>())
+        {
+            return Box::new(FilterDocIdSetIterator::new(it));
+        }
+        it
+    }
+
+    /// Optimises a [`Scorable`] for the case when it is likely implemented by a
+    /// term scorer.
+    ///
+    /// Equivalent to `ScorerUtil.likelyTermScorer(Scorable)`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java wraps a scorable that is
+    /// neither a `TermScorer` nor a `FilterScorable` in a `FilterScorable`
+    /// (`ScorerUtil.java:82-87`), a transparent delegation kept only to make
+    /// `score()` call sites bimorphic for HotSpot. The callers here hold the
+    /// scorer by `&mut` borrow, so no owning wrapper can be returned; the
+    /// scorable is returned unchanged, which scores identically.
+    pub fn likely_term_scorer(scorable: &mut dyn Scorable) -> &mut dyn Scorable {
+        scorable
+    }
+
+    /// Optimises the [`Bits`] representing the set of accepted documents for
+    /// the case when they are likely the segment's live docs.
+    ///
+    /// Equivalent to `ScorerUtil.likelyLiveDocs(Bits)` (`ScorerUtil.java:95-106`):
+    /// accepted docs of the class [`FixedBitSet::as_read_only_bits`] returns,
+    /// or a `SparseLiveDocs` or `DenseLiveDocs`, are returned unchanged; any
+    /// other bits are wrapped in a [`FilterBits`].
+    pub fn likely_live_docs(accept_docs: Option<&dyn Bits>) -> Option<LikelyLiveDocs<'_>> {
+        let accept_docs = accept_docs?;
+        let class = accept_docs.bits_as_any().map(<dyn Any>::type_id);
+        if class == Some(*DEFAULT_ACCEPT_DOCS_CLASS)
+            || class == Some(TypeId::of::<SparseLiveDocs>())
+            || class == Some(TypeId::of::<DenseLiveDocs>())
+        {
+            Some(LikelyLiveDocs::Same(accept_docs))
+        } else {
+            Some(LikelyLiveDocs::Filtered(FilterBits { input: accept_docs }))
+        }
+    }
+
+    /// Computes a minimum required score such that
+    /// `sum_upper_bound(min_required_score + max_remaining_score, num_scorers)`
+    /// stays below `min_competitive_score`.
+    ///
+    /// Equivalent to `ScorerUtil.minRequiredScore(double, float, int)`. The
+    /// computed value may not be the greatest that meets the condition, which
+    /// means some documents may fail to be filtered out. That does not hurt
+    /// correctness: those documents are simply filtered out later, and
+    /// computing an optimal value would be unlikely to pay for itself.
+    pub fn min_required_score(
+        max_remaining_score: f64,
+        min_competitive_score: f32,
+        num_scorers: i32,
+    ) -> f64 {
+        let mut min_required_score = f64::from(min_competitive_score) - max_remaining_score;
+        // Note: we want the float ulp in order to converge faster, not the
+        // double ulp.
+        let subtraction = f64::from(float_ulp(min_competitive_score));
+        while min_required_score > 0.0
+            && MathUtil::sum_upper_bound(min_required_score + max_remaining_score, num_scorers)
+                as f32
+                >= min_competitive_score
+        {
+            min_required_score -= subtraction;
+        }
+        min_required_score
+    }
+
+    /// Filters competitive hits from the provided buffer.
+    ///
+    /// Equivalent to
+    /// `ScorerUtil.filterCompetitiveHits(DocAndScoreAccBuffer, double, float,
+    /// int)`. It removes documents that cannot possibly have a score
+    /// competitive enough to exceed the minimum competitive score, given the
+    /// maximum remaining score and the number of scorers.
+    ///
+    /// The compaction is `VectorUtil.filterByScore(buffer.docs, buffer.scores,
+    /// minRequiredScore, buffer.size)` (`ScorerUtil.java:160-162`).
+    ///
+    /// # Errors
+    ///
+    /// The `IllegalArgumentException` of `VectorUtil.filterByScore` when the
+    /// buffer's two arrays differ in length or are shorter than its size.
+    pub fn filter_competitive_hits(
+        buffer: &mut DocAndScoreAccBuffer,
+        max_remaining_score: f64,
+        min_competitive_score: f32,
+        num_scorers: i32,
+    ) -> Result<()> {
+        let min_required_score =
+            Self::min_required_score(max_remaining_score, min_competitive_score, num_scorers);
+
+        if min_required_score <= 0.0 {
+            return Ok(());
+        }
+
+        buffer.size = crate::util::vector_util::filter_by_score(
+            &mut buffer.docs,
+            &mut buffer.scores,
+            min_required_score,
+            buffer.size,
+        )?;
+        Ok(())
+    }
+
+    /// Applies the given scorable as a required clause on the buffer, removing
+    /// the documents it does not match and adding its scores to the ones held.
+    ///
+    /// Equivalent to
+    /// `ScorerUtil.applyRequiredClause(DocAndScoreAccBuffer, DocIdSetIterator,
+    /// Scorable)` (`ScorerUtil.java:177-202`). The buffer must contain doc IDs
+    /// in sorted order, with no duplicates.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's callers pass the clause's
+    /// iterator and its scorable as two arguments that are often aliases of
+    /// one object (`MaxScoreBulkScorer` passes `w.iterator, w.scorable`,
+    /// `BlockMaxConjunctionBulkScorer` a scorer's `iterator()` and the scorer
+    /// itself). Rust cannot hold two mutable references to one object, so the
+    /// clause is passed once, as a [`ScorerClause`] that hands out each view in
+    /// turn. The calls made on each view, and their order, are Java's.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while advancing or scoring.
+    pub fn apply_required_clause<C: ScorerClause + ?Sized>(
+        buffer: &mut DocAndScoreAccBuffer,
+        clause: &mut C,
+    ) -> Result<()> {
+        let mut intersection_size = 0;
+        let mut cur_doc = clause.clause_iterator().doc_id();
+        for i in 0..buffer.size {
+            let target_doc = buffer.docs[i];
+            if cur_doc < target_doc {
+                cur_doc = clause.clause_iterator().advance(target_doc)?;
+            }
+            if cur_doc == target_doc {
+                buffer.docs[intersection_size] = target_doc;
+                buffer.scores[intersection_size] =
+                    buffer.scores[i] + f64::from(clause.clause_scorable().score()?);
+                intersection_size += 1;
+            }
+        }
+        buffer.size = intersection_size;
+        Ok(())
+    }
+
+    /// Applies the given scorable as an optional clause on the buffer, adding
+    /// its scores to the ones held.
+    ///
+    /// Equivalent to
+    /// `ScorerUtil.applyOptionalClause(DocAndScoreAccBuffer, DocIdSetIterator,
+    /// Scorable)` (`ScorerUtil.java:212-230`). The buffer must contain doc IDs
+    /// in sorted order, with no duplicates. See
+    /// [`apply_required_clause`](Self::apply_required_clause) for why the
+    /// clause is one argument.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any I/O error raised while advancing or scoring.
+    pub fn apply_optional_clause<C: ScorerClause + ?Sized>(
+        buffer: &mut DocAndScoreAccBuffer,
+        clause: &mut C,
+    ) -> Result<()> {
+        let mut cur_doc = clause.clause_iterator().doc_id();
+        for i in 0..buffer.size {
+            let target_doc = buffer.docs[i];
+            if cur_doc < target_doc {
+                cur_doc = clause.clause_iterator().advance(target_doc)?;
+            }
+            if cur_doc == target_doc {
+                buffer.scores[i] += f64::from(clause.clause_scorable().score()?);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The `(DocIdSetIterator, Scorable)` pair of one clause that
+/// [`ScorerUtil::apply_required_clause`] and
+/// [`ScorerUtil::apply_optional_clause`] read, handed out one view at a time
+/// because the two may alias.
+pub trait ScorerClause {
+    /// The clause's iterator, Java's `DocIdSetIterator` argument.
+    fn clause_iterator(&mut self) -> &mut dyn DocIdSetIterator;
+    /// The clause's scorable, Java's `Scorable` argument.
+    fn clause_scorable(&mut self) -> &mut dyn Scorable;
+}
+
+impl ScorerClause for crate::search::disi_wrapper::DisiWrapper {
+    /// `w.iterator`.
+    fn clause_iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.iterator()
+    }
+
+    /// `w.scorable`.
+    fn clause_scorable(&mut self) -> &mut dyn Scorable {
+        self.scorable()
+    }
+}
+
+impl ScorerClause for dyn crate::search::scorer::Scorer + '_ {
+    /// `scorer.iterator()`.
+    fn clause_iterator(&mut self) -> &mut dyn DocIdSetIterator {
+        self.iterator()
+    }
+
+    /// The scorer itself, which is its own `Scorable`.
+    fn clause_scorable(&mut self) -> &mut dyn Scorable {
+        self
+    }
+}
+
+/// Reproduces `java.lang.Math.ulp(float)`: the size of an ulp of the argument.
+///
+/// Rust has no `f32::ulp`, and stepping the bit pattern overflows to infinity
+/// at `f32::MAX`, so the JDK's exponent arithmetic is reproduced directly.
+fn float_ulp(value: f32) -> f32 {
+    if value.is_nan() || value.is_infinite() {
+        return value.abs();
+    }
+    // Math.getExponent: the unbiased exponent, or MIN_EXPONENT - 1 for zero and
+    // subnormal values.
+    let exp = (((value.to_bits() >> 23) & 0xFF) as i32) - 127;
+    if exp == -127 {
+        // Zero or subnormal: Float.MIN_VALUE.
+        return f32::from_bits(1);
+    }
+    // SIGNIFICAND_WIDTH - 1 == 23, MIN_EXPONENT == -126.
+    let exp = exp - 23;
+    if exp >= -126 {
+        f32::from_bits(((exp + 127) as u32) << 23)
+    } else {
+        f32::from_bits(1u32 << (exp + 149))
+    }
+}
+
+#[cfg(test)]
+mod pass_e_likely_live_docs_tests {
+    use super::*;
+    use crate::util::bit_sets::SparseFixedBitSet;
+
+    /// rmp #315: `ScorerUtil.likelyLiveDocs` returns the class
+    /// `new FixedBitSet(1).asReadOnlyBits().getClass()` unchanged and wraps
+    /// any other `Bits` but the two live-docs classes in a `FilterBits`
+    /// (`ScorerUtil.java:35-36, 95-106`).
+    #[test]
+    fn likely_live_docs_keeps_the_read_only_class_and_wraps_others() {
+        assert!(ScorerUtil::likely_live_docs(None).is_none());
+
+        let mut set = FixedBitSet::new(8);
+        set.set(3);
+        let view = set.as_read_only_bits();
+        match ScorerUtil::likely_live_docs(Some(&view)).unwrap() {
+            LikelyLiveDocs::Same(bits) => {
+                assert_eq!(bits.identity(), Bits::identity(&view));
+            }
+            LikelyLiveDocs::Filtered(_) => panic!("the read-only view is the default class"),
+        }
+
+        let wrapped = ScorerUtil::likely_live_docs(Some(&set)).unwrap();
+        assert!(matches!(wrapped, LikelyLiveDocs::Filtered(_)));
+        let bits = wrapped.as_bits();
+        assert!(bits.get(3) && !bits.get(2));
+        assert_eq!(bits.length(), 8);
+        assert!(bits.bits_as_any().is_none(), "FilterBits is its own class");
+        assert_ne!(bits.identity(), Bits::identity(&set));
+
+        let mut deleted = SparseFixedBitSet::new(8).unwrap();
+        deleted.set(2);
+        let sparse = SparseLiveDocs::builder(deleted, 8).build();
+        assert!(matches!(
+            ScorerUtil::likely_live_docs(Some(&sparse)).unwrap(),
+            LikelyLiveDocs::Same(_)
+        ));
+    }
+}

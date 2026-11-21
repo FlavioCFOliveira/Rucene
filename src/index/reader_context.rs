@@ -1,0 +1,859 @@
+//! Hierarchical reader context tree ported from `org.apache.lucene.index`.
+//!
+//! This module provides [`IndexReaderContext`], [`LeafReaderContext`] and
+//! [`CompositeReaderContext`], which expose the parent/child relationships and
+//! the flattened leaf view used by search and merge code.
+
+#![deny(unsafe_code)]
+
+use std::{
+    fmt::Debug,
+    sync::{Arc, Weak},
+};
+
+use crate::index::index_reader::{CompositeReader, IndexReader};
+use crate::index::leaf_reader::LeafReader;
+
+/// A node in the hierarchical reader context tree.
+///
+/// Equivalent to `org.apache.lucene.index.IndexReaderContext`.
+pub trait IndexReaderContext: Send + Sync + Debug {
+    /// Returns the parent context, if any.
+    fn parent(&self) -> Option<Weak<dyn IndexReaderContext>>;
+
+    /// Returns `true` if this context is the top-level context.
+    fn is_top_level(&self) -> bool;
+
+    /// Returns the doc base of this reader within its parent.
+    fn doc_base_in_parent(&self) -> i32;
+
+    /// Returns the ordinal of this reader within its parent.
+    fn ord_in_parent(&self) -> i32;
+
+    /// Returns the reader represented by this context.
+    fn reader(&self) -> Arc<dyn IndexReader>;
+
+    /// Returns the leaf contexts if this is a top-level context.
+    ///
+    /// For a [`LeafReaderContext`] this returns a singleton containing itself.
+    /// For a non-top-level [`CompositeReaderContext`] this panics.
+    fn leaves(self: Arc<Self>) -> Vec<Arc<LeafReaderContext>>;
+
+    /// Returns the direct child contexts, or `None` for leaf contexts.
+    fn children(&self) -> Option<Vec<Arc<dyn IndexReaderContext>>>;
+
+    /// Returns `true` if this context represents a leaf reader.
+    fn is_leaf_context(&self) -> bool;
+
+    /// Returns this context as a leaf context, if it is one.
+    fn as_leaf(self: Arc<Self>) -> Option<Arc<LeafReaderContext>>;
+
+    /// Returns an identity value for this context.
+    ///
+    /// The returned value does not reference the wrapped reader and can safely
+    /// outlive it.
+    fn id(&self) -> usize;
+}
+
+/// Context for an atomic leaf reader.
+///
+/// Equivalent to `org.apache.lucene.index.LeafReaderContext`. A clone is
+/// another handle onto the same context, with the same
+/// [`id`](IndexReaderContext::id): Java shares the one immutable object, which
+/// a leaf comparator keeps in a field (`LongValuesSource.java:355`).
+#[derive(Debug, Clone)]
+pub struct LeafReaderContext {
+    parent: Option<Weak<dyn IndexReaderContext>>,
+    is_top_level: bool,
+    ord_in_parent: i32,
+    doc_base_in_parent: i32,
+    reader: Arc<dyn IndexReader>,
+    leaf_reader: Arc<dyn LeafReader>,
+    ord: i32,
+    doc_base: i32,
+    identity: usize,
+}
+
+impl std::fmt::Display for LeafReaderContext {
+    /// Port of `LeafReaderContext.toString()`
+    /// (`LeafReaderContext.java:71-74`). Measured against
+    /// `lucene-core-10.5.0.jar`: the first leaf of a two-segment reader renders
+    /// as `LeafReaderContext(_0(10.5.0):C3 docBase=0 ord=0)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LeafReaderContext({} docBase={} ord={})",
+            self.leaf_reader, self.doc_base, self.ord
+        )
+    }
+}
+
+impl LeafReaderContext {
+    /// Creates a leaf context.
+    ///
+    /// Both handles must point at the same reader. Java's
+    /// `LeafReaderContext.reader()` returns a `LeafReader` directly; Rust
+    /// cannot upcast `Arc<dyn LeafReader>` to `Arc<dyn IndexReader>` (the two
+    /// traits are related by a blanket impl, not by inheritance), so the
+    /// context carries one handle per view.
+    pub fn new(
+        reader: Arc<dyn IndexReader>,
+        leaf_reader: Arc<dyn LeafReader>,
+        parent: Option<Weak<dyn IndexReaderContext>>,
+        ord_in_parent: i32,
+        doc_base_in_parent: i32,
+        leaf_ord: i32,
+        leaf_doc_base: i32,
+    ) -> Self {
+        let is_top_level = parent.is_none();
+        Self {
+            parent,
+            is_top_level,
+            ord_in_parent,
+            doc_base_in_parent,
+            reader,
+            leaf_reader,
+            ord: leaf_ord,
+            doc_base: leaf_doc_base,
+            identity: new_identity(),
+        }
+    }
+
+    /// Returns this leaf's reader as a [`LeafReader`].
+    ///
+    /// Equivalent to `LeafReaderContext.reader()`, whose Java return type is
+    /// `LeafReader`; [`IndexReaderContext::reader`] keeps the erased view
+    /// required by the trait.
+    pub fn leaf_reader(&self) -> Arc<dyn LeafReader> {
+        Arc::clone(&self.leaf_reader)
+    }
+
+    /// The reader's ordinal in the top-level leaves array.
+    pub fn ord(&self) -> i32 {
+        self.ord
+    }
+
+    /// The reader's absolute doc base.
+    pub fn doc_base(&self) -> i32 {
+        self.doc_base
+    }
+}
+
+impl IndexReaderContext for LeafReaderContext {
+    fn parent(&self) -> Option<Weak<dyn IndexReaderContext>> {
+        self.parent.clone()
+    }
+
+    fn is_top_level(&self) -> bool {
+        self.is_top_level
+    }
+
+    fn doc_base_in_parent(&self) -> i32 {
+        self.doc_base_in_parent
+    }
+
+    fn ord_in_parent(&self) -> i32 {
+        self.ord_in_parent
+    }
+
+    fn reader(&self) -> Arc<dyn IndexReader> {
+        Arc::clone(&self.reader)
+    }
+
+    fn leaves(self: Arc<Self>) -> Vec<Arc<LeafReaderContext>> {
+        if !self.is_top_level {
+            panic!("This is not a top-level context.");
+        }
+        vec![self]
+    }
+
+    fn children(&self) -> Option<Vec<Arc<dyn IndexReaderContext>>> {
+        None
+    }
+
+    fn is_leaf_context(&self) -> bool {
+        true
+    }
+
+    fn as_leaf(self: Arc<Self>) -> Option<Arc<LeafReaderContext>> {
+        Some(self)
+    }
+
+    fn id(&self) -> usize {
+        self.identity
+    }
+}
+
+/// Context for a composite reader.
+///
+/// Equivalent to `org.apache.lucene.index.CompositeReaderContext`.
+#[derive(Debug)]
+pub struct CompositeReaderContext {
+    parent: Option<Weak<dyn IndexReaderContext>>,
+    is_top_level: bool,
+    ord_in_parent: i32,
+    doc_base_in_parent: i32,
+    reader: Arc<dyn IndexReader>,
+    children: Vec<Arc<dyn IndexReaderContext>>,
+    leaves: Vec<Arc<LeafReaderContext>>,
+    identity: usize,
+}
+
+impl CompositeReaderContext {
+    /// Creates a top-level composite context.
+    pub fn new_top_level(
+        reader: Arc<dyn IndexReader>,
+        children: Vec<Arc<dyn IndexReaderContext>>,
+        leaves: Vec<Arc<LeafReaderContext>>,
+    ) -> Self {
+        Self {
+            parent: None,
+            is_top_level: true,
+            ord_in_parent: 0,
+            doc_base_in_parent: 0,
+            reader,
+            children,
+            leaves,
+            identity: new_identity(),
+        }
+    }
+
+    /// Creates a non-top-level composite context.
+    pub fn new(
+        parent: Weak<dyn IndexReaderContext>,
+        reader: Arc<dyn IndexReader>,
+        ord_in_parent: i32,
+        doc_base_in_parent: i32,
+        children: Vec<Arc<dyn IndexReaderContext>>,
+    ) -> Self {
+        Self {
+            parent: Some(parent),
+            is_top_level: false,
+            ord_in_parent,
+            doc_base_in_parent,
+            reader,
+            children,
+            leaves: Vec::new(),
+            identity: new_identity(),
+        }
+    }
+
+    /// Builds a composite context tree for `reader`.
+    ///
+    /// The resulting tree mirrors the Java `CompositeReaderContext.create`
+    /// algorithm: each sub-reader recursively builds its own context, parent
+    /// weak references are wired correctly, and the top-level context carries a
+    /// flattened `leaves` list with cumulative doc bases and ordinals.
+    pub fn create(
+        reader: Arc<dyn CompositeReader>,
+        parent: Option<Weak<dyn IndexReaderContext>>,
+        ord_in_parent: i32,
+        doc_base_in_parent: i32,
+        leaf_ord: i32,
+        leaf_doc_base: i32,
+    ) -> Arc<dyn IndexReaderContext> {
+        Arc::new_cyclic(|this_weak: &Weak<CompositeReaderContext>| {
+            let this_weak_dyn: Weak<dyn IndexReaderContext> = this_weak.clone();
+            let subs = reader.get_sequential_sub_readers();
+            let mut children = Vec::with_capacity(subs.len());
+            let mut leaves = Vec::new();
+            let mut next_doc_base = 0;
+            let mut next_leaf_ord = leaf_ord;
+            let mut next_leaf_doc_base = leaf_doc_base;
+
+            for (ord, sub) in subs.iter().enumerate() {
+                let sub = Arc::clone(sub);
+                let sub_max_doc = sub.max_doc();
+                let child = sub.build_context(
+                    Some(this_weak_dyn.clone()),
+                    ord as i32,
+                    next_doc_base,
+                    next_leaf_ord,
+                    next_leaf_doc_base,
+                );
+                let child_leaves = collect_leaves(&child);
+                next_leaf_ord += child_leaves.len() as i32;
+                next_leaf_doc_base += sub_max_doc;
+                leaves.extend(child_leaves);
+                children.push(child);
+                next_doc_base += sub_max_doc;
+            }
+
+            assert_eq!(
+                next_doc_base,
+                reader.max_doc(),
+                "CompositeReader maxDoc must match sum of sub-reader maxDocs"
+            );
+
+            let reader: Arc<dyn IndexReader> = reader;
+            if let Some(parent) = parent {
+                CompositeReaderContext::new(
+                    parent,
+                    reader,
+                    ord_in_parent,
+                    doc_base_in_parent,
+                    children,
+                )
+            } else {
+                CompositeReaderContext::new_top_level(reader, children, leaves)
+            }
+        })
+    }
+}
+
+impl IndexReaderContext for CompositeReaderContext {
+    fn parent(&self) -> Option<Weak<dyn IndexReaderContext>> {
+        self.parent.clone()
+    }
+
+    fn is_top_level(&self) -> bool {
+        self.is_top_level
+    }
+
+    fn doc_base_in_parent(&self) -> i32 {
+        self.doc_base_in_parent
+    }
+
+    fn ord_in_parent(&self) -> i32 {
+        self.ord_in_parent
+    }
+
+    fn reader(&self) -> Arc<dyn IndexReader> {
+        Arc::clone(&self.reader)
+    }
+
+    fn leaves(self: Arc<Self>) -> Vec<Arc<LeafReaderContext>> {
+        if !self.is_top_level {
+            panic!("This is not a top-level context.");
+        }
+        self.leaves.iter().map(Arc::clone).collect()
+    }
+
+    fn children(&self) -> Option<Vec<Arc<dyn IndexReaderContext>>> {
+        Some(self.children.iter().map(Arc::clone).collect())
+    }
+
+    fn is_leaf_context(&self) -> bool {
+        false
+    }
+
+    fn as_leaf(self: Arc<Self>) -> Option<Arc<LeafReaderContext>> {
+        None
+    }
+
+    fn id(&self) -> usize {
+        self.identity
+    }
+}
+
+fn new_identity() -> usize {
+    // A simple counter is sufficient for the contract. The value only needs
+    // to be unique for the lifetime of the context.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    COUNTER.fetch_add(1, Ordering::SeqCst)
+}
+
+/// Collects all atomic leaf contexts reachable from `ctx`.
+fn collect_leaves(ctx: &Arc<dyn IndexReaderContext>) -> Vec<Arc<LeafReaderContext>> {
+    if ctx.is_leaf_context() {
+        return vec![ctx.clone().as_leaf().expect("leaf context")];
+    }
+    let mut leaves = Vec::new();
+    if let Some(children) = ctx.children() {
+        for child in children {
+            leaves.extend(collect_leaves(&child));
+        }
+    }
+    leaves
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{LuceneError, Result};
+    use crate::index::index_reader::{
+        build_composite_context, CacheHelper, IndexReader, IndexReaderCore,
+    };
+    use crate::index::leaf_reader::{LeafMetaData, LeafReader};
+    use crate::index::{
+        BinaryDocValues, ByteVectorValues, FieldInfos, FloatVectorValues, NumericDocValues,
+        SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+    };
+    use crate::index::{DocValuesSkipper, PointValues};
+    use crate::index::{StoredFields, TermVectors};
+    use crate::search::knn::KnnCollector;
+    use crate::search::AcceptDocs;
+    use crate::util::Bits;
+
+    #[derive(Debug)]
+    struct DummyLeafReader {
+        core: IndexReaderCore,
+        max_doc: i32,
+        num_docs: i32,
+    }
+
+    impl std::fmt::Display for DummyLeafReader {
+        /// Test double; it has no Lucene counterpart whose `toString()` could be
+        /// reproduced, so it renders under its own name. `Display` is required
+        /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+        /// for the `toString()` every Java reader inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("DummyLeafReader")
+        }
+    }
+
+    impl LeafReader for DummyLeafReader {
+        fn core(&self) -> &IndexReaderCore {
+            &self.core
+        }
+
+        fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+            unimplemented!("test stub")
+        }
+
+        fn num_docs(&self) -> i32 {
+            self.num_docs
+        }
+
+        fn max_doc(&self) -> i32 {
+            self.max_doc
+        }
+
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            unimplemented!("test stub")
+        }
+
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+
+        fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+
+        fn terms(&self, _field: &str) -> Result<Option<Arc<dyn crate::index::Terms>>> {
+            Ok(None)
+        }
+
+        fn get_numeric_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+
+        fn get_binary_doc_values(&self, _field: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            Ok(None)
+        }
+
+        fn get_sorted_doc_values(&self, _field: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+            Ok(None)
+        }
+
+        fn get_sorted_numeric_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            Ok(None)
+        }
+
+        fn get_sorted_set_doc_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            Ok(None)
+        }
+
+        fn get_norm_values(&self, _field: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+            Ok(None)
+        }
+
+        fn get_doc_values_skipper(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            Ok(None)
+        }
+
+        fn get_float_vector_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn FloatVectorValues>>> {
+            Ok(None)
+        }
+
+        fn get_byte_vector_values(
+            &self,
+            _field: &str,
+        ) -> Result<Option<Box<dyn ByteVectorValues>>> {
+            Ok(None)
+        }
+
+        fn search_nearest_vectors(
+            &self,
+            _field: &str,
+            _target: &[f32],
+            _collector: &mut dyn KnnCollector,
+            _accept_docs: &mut dyn AcceptDocs,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn search_nearest_vectors_byte(
+            &self,
+            _field: &str,
+            _target: &[u8],
+            _collector: &mut dyn KnnCollector,
+            _accept_docs: &mut dyn AcceptDocs,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_field_infos(&self) -> FieldInfos {
+            FieldInfos::empty()
+        }
+
+        fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+            None
+        }
+
+        fn get_point_values(&self, _field: &str) -> Result<Option<Box<dyn PointValues>>> {
+            Ok(None)
+        }
+
+        fn check_integrity(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_meta_data(&self) -> LeafMetaData {
+            LeafMetaData::new(10, None, None, false).unwrap()
+        }
+    }
+
+    fn leaf(max_doc: i32, num_docs: i32) -> Arc<dyn IndexReader> {
+        Arc::new(DummyLeafReader {
+            core: IndexReaderCore::new(),
+            max_doc,
+            num_docs,
+        }) as Arc<dyn IndexReader>
+    }
+
+    #[test]
+    fn leaf_context_is_top_level_singleton() {
+        let reader = leaf(5, 5);
+        let ctx = reader.get_context().unwrap();
+        assert!(ctx.is_top_level());
+        assert!(ctx.is_leaf_context());
+        let leaves = ctx.leaves();
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].doc_base(), 0);
+        assert_eq!(leaves[0].ord(), 0);
+        assert!(leaves[0].parent().is_none());
+    }
+
+    #[test]
+    fn composite_context_builds_parent_child_tree() {
+        #[derive(Debug)]
+        struct DummyCompositeReader {
+            core: IndexReaderCore,
+            subs: Vec<Arc<dyn IndexReader>>,
+            max_doc: i32,
+        }
+
+        impl std::fmt::Display for DummyCompositeReader {
+            /// Test double; it has no Lucene counterpart whose `toString()` could be
+            /// reproduced, so it renders under its own name. `Display` is required
+            /// because `LeafReader`/`IndexReader` carry it as a supertrait, standing in
+            /// for the `toString()` every Java reader inherits from `Object`.
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("DummyCompositeReader")
+            }
+        }
+
+        impl IndexReader for DummyCompositeReader {
+            fn core(&self) -> &IndexReaderCore {
+                &self.core
+            }
+
+            fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn num_docs(&self) -> i32 {
+                self.subs.iter().map(|r| r.num_docs()).sum()
+            }
+
+            fn max_doc(&self) -> i32 {
+                self.max_doc
+            }
+
+            fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn do_close(&self) -> Result<()> {
+                Ok(())
+            }
+
+            fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+                None
+            }
+
+            fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn get_doc_count(&self, _field: &str) -> Result<i32> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
+                Err(LuceneError::unsupported_operation("test stub".to_string()))
+            }
+
+            fn build_context(
+                self: Arc<Self>,
+                parent: Option<Weak<dyn IndexReaderContext>>,
+                ord_in_parent: i32,
+                doc_base_in_parent: i32,
+                leaf_ord: i32,
+                leaf_doc_base: i32,
+            ) -> Arc<dyn IndexReaderContext> {
+                build_composite_context(
+                    self as Arc<dyn CompositeReader>,
+                    parent,
+                    ord_in_parent,
+                    doc_base_in_parent,
+                    leaf_ord,
+                    leaf_doc_base,
+                )
+            }
+        }
+
+        impl CompositeReader for DummyCompositeReader {
+            fn get_sequential_sub_readers(&self) -> Vec<Arc<dyn IndexReader>> {
+                self.subs.iter().map(Arc::clone).collect()
+            }
+        }
+
+        let a = leaf(2, 2);
+        let b = leaf(3, 3);
+        let c = leaf(4, 4);
+        let composite = Arc::new(DummyCompositeReader {
+            core: IndexReaderCore::new(),
+            subs: vec![Arc::clone(&a), Arc::clone(&b), Arc::clone(&c)],
+            max_doc: 9,
+        }) as Arc<dyn CompositeReader>;
+
+        let ctx = composite.get_context().unwrap();
+        assert!(ctx.is_top_level());
+        assert!(!ctx.is_leaf_context());
+
+        let children = ctx.children().unwrap();
+        assert_eq!(children.len(), 3);
+        assert!(children[1].parent().is_some());
+
+        let leaves = ctx.leaves();
+        assert_eq!(leaves.len(), 3);
+        assert_eq!(leaves[0].doc_base(), 0);
+        assert_eq!(leaves[1].doc_base(), 2);
+        assert_eq!(leaves[2].doc_base(), 5);
+        assert_eq!(leaves[0].ord(), 0);
+        assert_eq!(leaves[1].ord(), 1);
+        assert_eq!(leaves[2].ord(), 2);
+    }
+
+    /// A composite test double whose [`IndexReader::core`] is either its own or
+    /// another reader's.
+    #[derive(Debug)]
+    struct Composite {
+        core: IndexReaderCore,
+        subs: Vec<Arc<dyn IndexReader>>,
+        shares_core_of: Option<Arc<dyn IndexReader>>,
+    }
+
+    impl std::fmt::Display for Composite {
+        /// Test double without a Lucene counterpart.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("Composite")
+        }
+    }
+
+    impl IndexReader for Composite {
+        fn core(&self) -> &IndexReaderCore {
+            match &self.shares_core_of {
+                Some(other) => other.core(),
+                None => &self.core,
+            }
+        }
+
+        fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn num_docs(&self) -> i32 {
+            self.subs.iter().map(|r| r.num_docs()).sum()
+        }
+
+        fn max_doc(&self) -> i32 {
+            self.subs.iter().map(|r| r.max_doc()).sum()
+        }
+
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+
+        fn doc_freq(&self, _term: &crate::index::Term) -> Result<i32> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn total_term_freq(&self, _term: &crate::index::Term) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn get_sum_doc_freq(&self, _field: &str) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn get_doc_count(&self, _field: &str) -> Result<i32> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn get_sum_total_term_freq(&self, _field: &str) -> Result<i64> {
+            Err(LuceneError::unsupported_operation("test stub".to_string()))
+        }
+
+        fn build_context(
+            self: Arc<Self>,
+            parent: Option<Weak<dyn IndexReaderContext>>,
+            ord_in_parent: i32,
+            doc_base_in_parent: i32,
+            leaf_ord: i32,
+            leaf_doc_base: i32,
+        ) -> Arc<dyn IndexReaderContext> {
+            build_composite_context(
+                self as Arc<dyn CompositeReader>,
+                parent,
+                ord_in_parent,
+                doc_base_in_parent,
+                leaf_ord,
+                leaf_doc_base,
+            )
+        }
+    }
+
+    impl CompositeReader for Composite {
+        fn get_sequential_sub_readers(&self) -> Vec<Arc<dyn IndexReader>> {
+            self.subs.clone()
+        }
+    }
+
+    fn composite(shares_core_of: Option<Arc<dyn IndexReader>>) -> Arc<dyn IndexReader> {
+        Arc::new(Composite {
+            core: IndexReaderCore::new(),
+            subs: vec![leaf(2, 2), leaf(3, 3), leaf(4, 4)],
+            shares_core_of,
+        })
+    }
+
+    fn ids(leaves: &[Arc<LeafReaderContext>]) -> Vec<usize> {
+        leaves.iter().map(|leaf| leaf.id()).collect()
+    }
+
+    /// `LeafReader.getContext()` answers the one `LeafReaderContext` the reader
+    /// built for itself (`LeafReader.java:51, 59-62`).
+    #[test]
+    fn leaf_reader_answers_the_same_context() {
+        let reader = leaf(5, 5);
+        let first = Arc::clone(&reader).get_context().unwrap();
+        let second = Arc::clone(&reader).get_context().unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            ids(&Arc::clone(&reader).leaves().unwrap()),
+            ids(&Arc::clone(&first).leaves())
+        );
+    }
+
+    /// `CompositeReader.getContext()` builds its `CompositeReaderContext` once
+    /// and answers it again (`CompositeReader.java:93-102`), so `leaves()` —
+    /// `getContext().leaves()` — hands out the same leaf contexts every time.
+    #[test]
+    fn composite_reader_answers_the_same_context_and_leaves() {
+        let reader = composite(None);
+        let top = Arc::clone(&reader).get_context().unwrap();
+        let again = Arc::clone(&reader).get_context().unwrap();
+        assert!(Arc::ptr_eq(&top, &again));
+        let leaves = ids(&Arc::clone(&top).leaves());
+        assert_eq!(leaves.len(), 3);
+        assert_eq!(ids(&Arc::clone(&reader).leaves().unwrap()), leaves);
+        assert_eq!(ids(&Arc::clone(&reader).leaves().unwrap()), leaves);
+        let children: Vec<usize> = top.children().unwrap().iter().map(|c| c.id()).collect();
+        let children_again: Vec<usize> = again.children().unwrap().iter().map(|c| c.id()).collect();
+        assert_eq!(children, children_again);
+    }
+
+    /// The declared divergence of [`IndexReader::get_context`]: the reader
+    /// holds its context weakly, so once nothing holds it the next call builds
+    /// a new one (Java's reader would answer the same object).
+    #[test]
+    fn context_is_rebuilt_once_nothing_holds_it() {
+        let reader = composite(None);
+        let first = Arc::clone(&reader).get_context().unwrap().id();
+        let second = Arc::clone(&reader).get_context().unwrap().id();
+        assert_ne!(first, second);
+    }
+
+    /// A reader whose core is another reader's core is answered a context of
+    /// its own, never the other reader's.
+    #[test]
+    fn a_reader_sharing_a_core_is_answered_its_own_context() {
+        let inner = composite(None);
+        let outer = composite(Some(Arc::clone(&inner)));
+        let inner_context = Arc::clone(&inner).get_context().unwrap();
+        let outer_context = Arc::clone(&outer).get_context().unwrap();
+        assert!(Arc::ptr_eq(&inner_context.reader(), &inner));
+        assert!(Arc::ptr_eq(&outer_context.reader(), &outer));
+        assert!(Arc::ptr_eq(
+            &Arc::clone(&outer).get_context().unwrap().reader(),
+            &outer
+        ));
+    }
+
+    /// `searcher.getIndexReader().leaves()` is the searcher's own leaf
+    /// contexts: `IndexSearcher(IndexReader)` takes `reader.getContext()`
+    /// (`IndexSearcher.java:207-209, 230-231`), which the reader answers again.
+    #[test]
+    fn a_searchers_reader_hands_out_the_searchers_leaves() {
+        let searcher = crate::search::IndexSearcher::new(composite(None)).unwrap();
+        let expected = ids(searcher.get_leaf_contexts());
+        assert_eq!(
+            ids(&Arc::clone(searcher.get_index_reader()).leaves().unwrap()),
+            expected
+        );
+        assert_eq!(
+            ids(&Arc::clone(searcher.get_top_reader_context()).leaves()),
+            expected
+        );
+    }
+}

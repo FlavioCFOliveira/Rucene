@@ -4,18 +4,9 @@
 //! writer produces the `.psm` (metadata), `.doc`, `.pos` and `.pay` files for
 //! the Lucene 10.4 postings format.
 //!
-//! # Current simplification
-//!
-//! The Java implementation reads per-document norms from the
-//! `NumericDocValues` passed to `startTerm` in order to build competitive
-//! `(freq, norm)` impact lists. The current Rust push API only passes that
-//! reference for the duration of `start_term`, so the writer cannot safely
-//! retain it across `start_doc` calls without either an API change or unsafe
-//! lifetime extension. As a documented simplification, norms are currently
-//! treated as the constant value `1` for impact accumulation, which matches the
-//! Java output for fields that have no norms. Fields that actually store norms
-//! will produce impact bytes that differ from Java until norm plumbing is
-//! wired through the push API.
+//! As in Java, the norms handed to `start_term` are kept for the term's
+//! documents, and each document's `(freq, norm)` pair feeds the competitive
+//! impacts written with the skip data (`Lucene104PostingsWriter.java:240-299`).
 
 #![deny(unsafe_code)]
 
@@ -27,13 +18,13 @@ use crate::codecs::lucene104::{
     postings_util::write_v_int_block,
     BLOCK_SIZE, DOC_CODEC, LEVEL1_MASK, META_CODEC, PAY_CODEC, POS_CODEC, VERSION_CURRENT,
 };
-use crate::codecs::postings::{NumericDocValues, PushPostingsWriterBase, PushPostingsWriterState};
+use crate::codecs::postings::{PushPostingsWriterBase, PushPostingsWriterState};
 use crate::codecs::state::SegmentWriteState;
 use crate::codecs::term_state::{BlockTermState, CompetitiveImpactAccumulator, Impact};
 use crate::error::{LuceneError, Result};
-use crate::index::{index_file_names::segment_file_name, FieldInfo, IndexOptions};
+use crate::index::{index_file_names::segment_file_name, FieldInfo, NumericDocValues};
 use crate::store::{DataOutput, IndexOutput};
-use crate::util::{BitUtil, FixedBitSet};
+use crate::util::{BitUtil, FixedBitSet, IOUtils};
 
 /// Maximum allowed position value (mirrors `IndexWriter.MAX_POSITION`).
 const MAX_POSITION: i32 = i32::MAX - 128;
@@ -92,13 +83,19 @@ impl DataOutput for ResettableOutput {
 // -----------------------------------------------------------------------------
 
 /// Special two-byte vint for values that fit in 15 bits.
-fn write_v_int15(out: &mut dyn DataOutput, v: i32) -> Result<()> {
+///
+/// `Lucene104PostingsWriter.writeVInt15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn write_v_int15(out: &mut dyn DataOutput, v: i32) -> Result<()> {
     debug_assert!(v >= 0);
     write_v_long15(out, v as i64)
 }
 
 /// Special two-byte vlong for values that fit in 15 bits.
-fn write_v_long15(out: &mut dyn DataOutput, v: i64) -> Result<()> {
+///
+/// `Lucene104PostingsWriter.writeVLong15`; package-private in Java, `pub` for
+/// the core tests.
+pub fn write_v_long15(out: &mut dyn DataOutput, v: i64) -> Result<()> {
     debug_assert!(v >= 0);
     if (v & !0x7FFFi64) == 0 {
         out.write_short(v as i16)?;
@@ -140,7 +137,7 @@ pub fn write_impacts(impacts: &[Impact], out: &mut dyn DataOutput) -> Result<()>
 
 /// Low-level postings writer for the Lucene 10.4 format.
 ///
-/// Implements [`PushPostingsWriterBase`] and therefore [`PostingsWriterBase`]
+/// Implements [`PushPostingsWriterBase`] and therefore [`PostingsWriterBase`](crate::codecs::PostingsWriterBase)
 /// via the blanket implementation in [`crate::codecs::postings`].
 ///
 /// Lucene Core equivalent: `org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter`.
@@ -172,6 +169,10 @@ pub struct Lucene104PostingsWriter {
 
     last_state: BlockTermState,
     field_has_norms: bool,
+    /// The norms of the current term's field, from `start_term`.
+    ///
+    /// Equivalent to `Lucene104PostingsWriter.norms`.
+    norms: Option<Box<dyn NumericDocValues>>,
 
     doc_start_fp: i64,
     pos_start_fp: i64,
@@ -197,6 +198,10 @@ pub struct Lucene104PostingsWriter {
     max_impact_num_bytes_at_level0: i32,
     max_num_impacts_at_level1: i32,
     max_impact_num_bytes_at_level1: i32,
+    /// Set once [`close`](PostingsWriterBase::close) ran: Java nulls the four
+    /// outputs in its `finally` (`Lucene104PostingsWriter.java:737`), so a
+    /// second close finds them null and does nothing.
+    closed: bool,
 }
 
 impl std::fmt::Debug for Lucene104PostingsWriter {
@@ -218,37 +223,33 @@ impl Lucene104PostingsWriter {
 
     /// Creates a postings writer with an explicit format version.
     pub fn with_version(state: &SegmentWriteState<'_>, version: i32) -> Result<Self> {
-        if version < 0 || version > VERSION_CURRENT {
-            return Err(LuceneError::IllegalArgument(format!(
-                "Lucene104PostingsWriter version out of range: {version}"
-            )));
-        }
-
+        // `Lucene104PostingsWriter.java:145-146` takes `version` unchecked.
         let segment_info = state.segment_info;
         let id = segment_info.id();
         let suffix = &state.segment_suffix;
-        let dir = state.directory;
+        let dir = &*state.directory;
         let context = state.context;
 
         let meta_name = segment_file_name(&segment_info.name, suffix, "psm");
         let doc_name = segment_file_name(&segment_info.name, suffix, "doc");
 
+        // `metaOut` is created before the `try` block, and every other output
+        // is held as soon as it is created
+        // (`Lucene104PostingsWriter.java:153-214`).
         let mut meta_out = dir.create_output(&meta_name, context)?;
-        write_index_header(meta_out.as_mut(), META_CODEC, version, &id, suffix)?;
-
-        let mut doc_out = dir.create_output(&doc_name, context)?;
-        write_index_header(doc_out.as_mut(), DOC_CODEC, version, &id, suffix)?;
-
+        let mut doc_out: Option<Box<dyn IndexOutput>> = None;
         let mut pos_out: Option<Box<dyn IndexOutput>> = None;
         let mut pay_out: Option<Box<dyn IndexOutput>> = None;
         let mut payload_bytes = Vec::new();
 
         let build_result: Result<()> = (|| {
+            let d = doc_out.insert(dir.create_output(&doc_name, context)?);
+            write_index_header(meta_out.as_mut(), META_CODEC, version, &id, suffix)?;
+            write_index_header(d.as_mut(), DOC_CODEC, version, &id, suffix)?;
             if state.field_infos.has_prox() {
                 let pos_name = segment_file_name(&segment_info.name, suffix, "pos");
-                let mut p = dir.create_output(&pos_name, context)?;
+                let p = pos_out.insert(dir.create_output(&pos_name, context)?);
                 write_index_header(p.as_mut(), POS_CODEC, version, &id, suffix)?;
-                pos_out = Some(p);
 
                 if state.field_infos.has_payloads() {
                     payload_bytes = Vec::with_capacity(128);
@@ -256,25 +257,23 @@ impl Lucene104PostingsWriter {
 
                 if state.field_infos.has_payloads() || state.field_infos.has_offsets() {
                     let pay_name = segment_file_name(&segment_info.name, suffix, "pay");
-                    let mut py = dir.create_output(&pay_name, context)?;
+                    let py = pay_out.insert(dir.create_output(&pay_name, context)?);
                     write_index_header(py.as_mut(), PAY_CODEC, version, &id, suffix)?;
-                    pay_out = Some(py);
                 }
             }
             Ok(())
         })();
 
-        if build_result.is_err() {
-            let _ = meta_out.close();
-            let _ = doc_out.close();
-            if let Some(ref mut p) = pos_out {
-                let _ = p.close();
-            }
-            if let Some(ref mut py) = pay_out {
-                let _ = py.close();
-            }
+        if let Err(error) = build_result {
+            // `IOUtils.closeWhileHandlingException(metaOut, docOut, posOut,
+            // payOut)` (`Lucene104PostingsWriter.java:209-213`).
+            IOUtils::close_while_handling_exception(
+                [Some(meta_out), doc_out, pos_out, pay_out]
+                    .map(|o| o.map(|mut o| move || o.close())),
+            )?;
+            return Err(error);
         }
-        build_result?;
+        let doc_out = doc_out.expect("INVARIANT: the try block created the doc output");
 
         Ok(Self {
             version,
@@ -299,6 +298,7 @@ impl Lucene104PostingsWriter {
             level1_output: ResettableOutput::new(),
             last_state: BlockTermState::default(),
             field_has_norms: false,
+            norms: None,
             doc_start_fp: 0,
             pos_start_fp: 0,
             pay_start_fp: 0,
@@ -321,6 +321,7 @@ impl Lucene104PostingsWriter {
             max_impact_num_bytes_at_level0: 0,
             max_num_impacts_at_level1: 0,
             max_impact_num_bytes_at_level1: 0,
+            closed: false,
         })
     }
 }
@@ -350,36 +351,12 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsWriter.setField(FieldInfo)`
+    /// (`Lucene104PostingsWriter.java:233-237`): `super.setField(fieldInfo)`,
+    /// then the per-field state of this writer.
     fn set_field(&mut self, field_info: &FieldInfo) -> Result<()> {
-        let state = self.push_state_mut();
-        state.field_info = Some(field_info.clone());
-        state.index_options = field_info.index_options;
-        state.write_freqs = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS);
-        state.write_positions = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS);
-        state.write_offsets = field_info
-            .index_options
-            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
-        state.write_payloads = field_info.has_payloads();
-        state.enum_flags = if !state.write_freqs {
-            crate::codecs::postings::POSTINGS_ENUM_NONE
-        } else if !state.write_positions {
-            crate::codecs::postings::POSTINGS_ENUM_FREQS
-        } else if !state.write_offsets {
-            if state.write_payloads {
-                crate::codecs::postings::POSTINGS_ENUM_ALL
-            } else {
-                crate::codecs::postings::POSTINGS_ENUM_POSITIONS
-            }
-        } else if !state.write_payloads {
-            crate::codecs::postings::POSTINGS_ENUM_OFFSETS
-        } else {
-            crate::codecs::postings::POSTINGS_ENUM_ALL
-        };
-
+        // `super.setField(fieldInfo)`.
+        self.push_state_mut().set_field(field_info);
         self.last_state = BlockTermState::default();
         self.field_has_norms = field_info.has_norms();
         Ok(())
@@ -389,7 +366,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(BlockTermState::default())
     }
 
-    fn start_term(&mut self, _norms: Option<&dyn NumericDocValues>) -> Result<()> {
+    fn start_term(&mut self, norms: Option<Box<dyn NumericDocValues>>) -> Result<()> {
         self.doc_start_fp = self.doc_out.file_pointer();
         if self.push_state.write_positions {
             let pos_out = self.pos_out.as_mut().expect("pos output must exist");
@@ -406,6 +383,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         self.last_doc_id = -1;
         self.level0_last_doc_id = -1;
         self.level1_last_doc_id = -1;
+        self.norms = norms;
         if self.push_state.write_freqs {
             self.level0_freq_norm_accumulator.clear();
         }
@@ -420,10 +398,14 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
 
         let doc_delta = doc_id - self.last_doc_id;
         if doc_id < 0 || doc_delta <= 0 {
-            return Err(LuceneError::CorruptIndex(format!(
-                "docs out of order ({doc_id} <= {last_doc_id})",
-                last_doc_id = self.last_doc_id
-            )));
+            // `Lucene104PostingsWriter.java:268-271`.
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "docs out of order ({doc_id} <= {last_doc_id} )",
+                    last_doc_id = self.last_doc_id
+                ),
+                self.doc_out.to_java_string(),
+            ));
         }
 
         let idx = self.doc_buffer_upto as usize;
@@ -437,8 +419,29 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         self.last_start_offset = 0;
 
         if self.push_state.write_freqs {
-            // Norms are treated as 1; see module-level note.
-            let norm = 1i64;
+            // `Lucene104PostingsWriter.java:282-299`.
+            let norm = if self.field_has_norms {
+                // `norms.advanceExact(docID)` on a `null` iterator: the JVM's
+                // `NullPointerException`.
+                let norms = self.norms.as_mut().ok_or_else(|| {
+                    LuceneError::null_pointer_with_message(
+                        "Cannot invoke \"org.apache.lucene.index.NumericDocValues.advanceExact(int)\" because \"this.norms\" is null",
+                    )
+                })?;
+                if norms.advance_exact(doc_id)? {
+                    let norm = norms.long_value()?;
+                    debug_assert!(norm != 0, "{doc_id}");
+                    norm
+                } else {
+                    // This can happen if indexing hits a problem after adding
+                    // a doc to the postings but before buffering the norm.
+                    // Such documents are written deleted and will go away on
+                    // the first merge.
+                    1
+                }
+            } else {
+                1
+            };
             self.level0_freq_norm_accumulator.add(term_doc_freq, norm);
         }
 
@@ -452,10 +455,20 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         start_offset: i32,
         end_offset: i32,
     ) -> Result<()> {
-        if !(0..=MAX_POSITION).contains(&position) {
-            return Err(LuceneError::CorruptIndex(format!(
-                "position={position} out of range [0, {MAX_POSITION}]"
-            )));
+        // `Lucene104PostingsWriter.java:306-317`.
+        if position > MAX_POSITION {
+            return Err(LuceneError::corrupt_index(
+                format!(
+                    "position={position} is too large (> IndexWriter.MAX_POSITION={MAX_POSITION})"
+                ),
+                self.doc_out.to_java_string(),
+            ));
+        }
+        if position < 0 {
+            return Err(LuceneError::corrupt_index(
+                format!("position={position} is < 0"),
+                self.doc_out.to_java_string(),
+            ));
         }
 
         let idx = self.pos_buffer_upto as usize;
@@ -482,11 +495,8 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         }
 
         if self.push_state.write_offsets {
-            if start_offset < self.last_start_offset || end_offset < start_offset {
-                return Err(LuceneError::CorruptIndex(
-                    "offsets out of order".to_string(),
-                ));
-            }
+            debug_assert!(start_offset >= self.last_start_offset);
+            debug_assert!(end_offset >= start_offset);
             self.offset_start_delta_buffer[idx] = start_offset - self.last_start_offset;
             self.offset_length_buffer[idx] = end_offset - start_offset;
             self.last_start_offset = start_offset;
@@ -539,6 +549,7 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         };
 
         if self.push_state.write_positions && self.pos_buffer_upto > 0 {
+            debug_assert!(self.pos_buffer_upto < BLOCK_SIZE);
             self.flush_tail_positions()?;
         }
 
@@ -594,7 +605,15 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
         Ok(())
     }
 
+    /// Equivalent to `Lucene104PostingsWriter.close()`
+    /// (`Lucene104PostingsWriter.java:700-739`): the outputs are nulled in the
+    /// outer `finally` (`:737`) whatever the outcome, so a second call does
+    /// nothing.
     fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         let result: Result<()> = (|| {
             write_footer(self.doc_out.as_mut())?;
             if let Some(pos_out) = self.pos_out.as_mut() {
@@ -621,19 +640,23 @@ impl PushPostingsWriterBase for Lucene104PostingsWriter {
             Ok(())
         })();
 
-        let close_result = self.meta_out.close().and_then(|_| self.doc_out.close());
-        let close_result = if let Some(pos_out) = self.pos_out.as_mut() {
-            close_result.and_then(|_| pos_out.close())
-        } else {
-            close_result
-        };
-        let close_result = if let Some(pay_out) = self.pay_out.as_mut() {
-            close_result.and_then(|_| pay_out.close())
-        } else {
-            close_result
-        };
-
-        result.and(close_result)
+        // `IOUtils.closeWhileHandlingException(metaOut, docOut, posOut,
+        // payOut)` when the footers fail, `IOUtils.close(metaOut, docOut,
+        // posOut, payOut)` otherwise (`Lucene104PostingsWriter.java:729-735`).
+        let closeables = [
+            Some(&mut self.meta_out),
+            Some(&mut self.doc_out),
+            self.pos_out.as_mut(),
+            self.pay_out.as_mut(),
+        ]
+        .map(|o| o.map(|o| move || o.close()));
+        match result {
+            Ok(()) => IOUtils::close(closeables),
+            Err(error) => {
+                IOUtils::close_while_handling_exception(closeables)?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -803,8 +826,9 @@ impl Lucene104PostingsWriter {
                 self.level0_output
                     .write_byte((-(num_bit_set_longs as i8)) as u8)?;
                 let bits = self.spare_bit_set.get_bits();
-                for &bits in bits.iter().take(num_bit_set_longs) {
-                    self.level0_output.write_long(bits as i64)?;
+                for bits in bits.iter().take(num_bit_set_longs) {
+                    self.level0_output
+                        .write_long(bits.load(std::sync::atomic::Ordering::Relaxed) as i64)?;
                 }
             }
 
@@ -884,6 +908,10 @@ impl Lucene104PostingsWriter {
                 }
             }
 
+            // There are at most 256 impacts, that require at most 2 bytes each
+            debug_assert!(num_impact_bytes <= i16::MAX as _);
+            // Like impacts plus a few vlongs, still way under the max short value
+            debug_assert!(self.scratch_output.len() + 2 <= i16::MAX as _);
             let level1_len = 2 * 2 + self.scratch_output.len() + self.level1_output.len();
             self.doc_out.write_v_long(level1_len)?;
             level1_end = self.doc_out.file_pointer() + level1_len;
@@ -911,29 +939,20 @@ mod tests {
     use crate::codecs::lucene104::{
         Lucene104PostingsFormat, DOC_CODEC, META_CODEC, PAY_CODEC, POS_CODEC,
     };
-    use crate::codecs::postings::{NormsProducer, NumericDocValues, PostingsFormat};
+    use crate::codecs::postings::PostingsFormat;
     use crate::codecs::state::SegmentWriteState;
-    use crate::index::{FieldInfo, FieldInfos, Fields, PostingsEnum, SeekStatus, Terms, TermsEnum};
+    use crate::index::{
+        FieldInfo, FieldInfos, Fields, IndexOptions, PostingsEnum, SeekStatus, Terms, TermsEnum,
+    };
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-    use crate::store::{Directory, RamDirectory};
+    use crate::store::{ByteBuffersDirectory, Directory};
     use crate::util::{AttributeSource, BytesRef};
     use base64::Engine as _;
+    use std::sync::Arc;
 
-    struct TestNorms;
-
-    impl NumericDocValues for TestNorms {
-        fn get(&self, _doc_id: i32) -> crate::error::Result<i64> {
-            Ok(1)
-        }
-    }
-
-    impl NormsProducer for TestNorms {
-        fn get_norms(
-            &self,
-            _field_info: &FieldInfo,
-        ) -> crate::error::Result<Box<dyn NumericDocValues>> {
-            Ok(Box::new(TestNorms))
-        }
+    /// A norm of one for every document, as the flush hands the writer.
+    fn test_norms(max_doc: i32) -> crate::index::indexing_chain::EmptyNormsProducer {
+        crate::index::indexing_chain::EmptyNormsProducer::new(max_doc)
     }
 
     fn test_segment_info(name: &str, max_doc: i32) -> crate::index::SegmentInfo {
@@ -941,16 +960,16 @@ mod tests {
     }
 
     fn test_write_state<'a>(
-        dir: &'a dyn Directory,
+        dir: &'a Arc<dyn Directory>,
         info: &'a crate::index::SegmentInfo,
         infos: &'a FieldInfos,
     ) -> SegmentWriteState<'a> {
         SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir,
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(dir),
             info,
             infos,
-            &crate::codecs::stub::BufferedUpdates,
+            Box::leak(Box::new(crate::codecs::stub::BufferedUpdates::default())),
             &*crate::store::DEFAULT_IO_CONTEXT,
         )
     }
@@ -968,21 +987,20 @@ mod tests {
     // Minimal stub postings/fields for the end-to-end test.
     // -------------------------------------------------------------------------
 
+    /// Per document, its `(position, payload, start_offset, end_offset)` entries.
+    type TestPositions = Vec<Vec<(i32, Option<&'static [u8]>, i32, i32)>>;
+
     #[derive(Debug, Clone)]
     struct TestPostingsEnum {
         docs: Vec<i32>,
         freqs: Vec<i32>,
-        positions: Vec<Vec<(i32, Option<&'static [u8]>, i32, i32)>>,
+        positions: TestPositions,
         doc_idx: i32,
         pos_idx: i32,
     }
 
     impl TestPostingsEnum {
-        fn new(
-            docs: Vec<i32>,
-            freqs: Vec<i32>,
-            positions: Vec<Vec<(i32, Option<&'static [u8]>, i32, i32)>>,
-        ) -> Self {
+        fn new(docs: Vec<i32>, freqs: Vec<i32>, positions: TestPositions) -> Self {
             Self {
                 docs,
                 freqs,
@@ -1020,6 +1038,15 @@ mod tests {
 
         fn cost(&self) -> i64 {
             self.docs.len() as i64
+        }
+    }
+
+    impl std::fmt::Display for TestPostingsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestPostingsEnum")
         }
     }
 
@@ -1066,21 +1093,30 @@ mod tests {
         }
     }
 
+    impl std::fmt::Display for TestTermsEnum {
+        /// Test double; it renders under its own name. `Display` is required
+        /// because `TermsEnum`/`PostingsEnum` carry it as a supertrait, standing in
+        /// for the `toString()` every Java enumeration inherits from `Object`.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("TestTermsEnum")
+        }
+    }
+
     impl TermsEnum for TestTermsEnum {
         fn attributes(&mut self) -> &mut AttributeSource {
             &mut self.atts
         }
 
-        fn term(&self) -> crate::error::Result<BytesRef> {
-            Ok(self.terms[self.idx as usize].clone())
+        fn term(&self) -> crate::error::Result<Option<&BytesRef>> {
+            Ok(Some(&self.terms[self.idx as usize]))
         }
 
         fn postings(
             &mut self,
             _reuse: Option<Box<dyn PostingsEnum>>,
             _flags: i32,
-        ) -> crate::error::Result<Box<dyn PostingsEnum>> {
-            Ok(Box::new(self.postings[self.idx as usize].clone()))
+        ) -> crate::error::Result<Option<Box<dyn PostingsEnum>>> {
+            Ok(Some(Box::new(self.postings[self.idx as usize].clone())))
         }
 
         fn seek_exact(&mut self, _text: &BytesRef) -> crate::error::Result<bool> {
@@ -1107,11 +1143,11 @@ mod tests {
             Ok(self.idx as i64)
         }
 
-        fn doc_freq(&self) -> crate::error::Result<i32> {
+        fn doc_freq(&mut self) -> crate::error::Result<i32> {
             Ok(self.postings[self.idx as usize].docs.len() as i32)
         }
 
-        fn total_term_freq(&self) -> crate::error::Result<i64> {
+        fn total_term_freq(&mut self) -> crate::error::Result<i64> {
             Ok(self.postings[self.idx as usize]
                 .freqs
                 .iter()
@@ -1123,7 +1159,7 @@ mod tests {
             &mut self,
             _flags: i32,
         ) -> crate::error::Result<Box<dyn crate::index::ImpactsEnum>> {
-            Err(crate::error::LuceneError::UnsupportedOperation(
+            Err(crate::error::LuceneError::unsupported_operation(
                 "impacts not supported".to_string(),
             ))
         }
@@ -1132,12 +1168,12 @@ mod tests {
             Ok(Box::new(BlockTermState::default()))
         }
 
-        fn next(&mut self) -> crate::error::Result<Option<BytesRef>> {
+        fn next(&mut self) -> crate::error::Result<Option<&BytesRef>> {
             self.idx += 1;
             if self.idx as usize >= self.terms.len() {
                 Ok(None)
             } else {
-                Ok(Some(self.terms[self.idx as usize].clone()))
+                Ok(Some(&self.terms[self.idx as usize]))
             }
         }
     }
@@ -1152,23 +1188,25 @@ mod tests {
             Ok(Box::new(TestTermsEnum::new(self.terms.clone())))
         }
 
-        fn size(&self) -> i64 {
-            self.terms.len() as i64
+        fn size(&self) -> Result<i64> {
+            Ok(self.terms.len() as i64)
         }
 
-        fn sum_total_term_freq(&self) -> i64 {
-            self.terms
-                .iter()
-                .map(|(_, p)| p.freqs.iter().map(|f| *f as i64).sum::<i64>())
-                .sum()
+        fn sum_total_term_freq(&self) -> Result<i64> {
+            Ok({
+                self.terms
+                    .iter()
+                    .map(|(_, p)| p.freqs.iter().map(|f| *f as i64).sum::<i64>())
+                    .sum()
+            })
         }
 
-        fn sum_doc_freq(&self) -> i64 {
-            self.terms.iter().map(|(_, p)| p.docs.len() as i64).sum()
+        fn sum_doc_freq(&self) -> Result<i64> {
+            Ok(self.terms.iter().map(|(_, p)| p.docs.len() as i64).sum())
         }
 
-        fn doc_count(&self) -> i32 {
-            self.terms.len() as i32
+        fn doc_count(&self) -> Result<i32> {
+            Ok(self.terms.len() as i32)
         }
 
         fn has_freqs(&self) -> bool {
@@ -1198,9 +1236,9 @@ mod tests {
             1
         }
 
-        fn terms(&self, field: &str) -> crate::error::Result<Option<Box<dyn Terms>>> {
+        fn terms(&self, field: &str) -> crate::error::Result<Option<Arc<dyn Terms>>> {
             if field == "body" {
-                Ok(Some(Box::new(TestTerms {
+                Ok(Some(Arc::new(TestTerms {
                     terms: self.terms.clone(),
                 })))
             } else {
@@ -1221,13 +1259,180 @@ mod tests {
             .expect("footer checksum should be valid");
     }
 
+    /// How often the postings writer read a norms producer.
+    #[derive(Debug, Default)]
+    struct NormsReads {
+        get_norms: std::sync::atomic::AtomicUsize,
+        advance_exact: std::sync::atomic::AtomicUsize,
+        long_value: std::sync::atomic::AtomicUsize,
+        scans: std::sync::atomic::AtomicUsize,
+    }
+
+    impl NormsReads {
+        fn get(counter: &std::sync::atomic::AtomicUsize) -> usize {
+            counter.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn bump(counter: &std::sync::atomic::AtomicUsize) {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Norms of seven for every document, counting every read.
+    #[derive(Debug, Clone)]
+    struct CountingNorms {
+        max_doc: i32,
+        reads: std::sync::Arc<NormsReads>,
+    }
+
+    #[derive(Debug)]
+    struct CountingNormValues {
+        max_doc: i32,
+        doc: i32,
+        reads: std::sync::Arc<NormsReads>,
+    }
+
+    impl DocIdSetIterator for CountingNormValues {
+        fn doc_id(&self) -> i32 {
+            self.doc
+        }
+
+        fn next_doc(&mut self) -> crate::error::Result<i32> {
+            self.advance(self.doc + 1)
+        }
+
+        fn advance(&mut self, target: i32) -> crate::error::Result<i32> {
+            NormsReads::bump(&self.reads.scans);
+            self.doc = if target >= self.max_doc {
+                NO_MORE_DOCS
+            } else {
+                target
+            };
+            Ok(self.doc)
+        }
+
+        fn cost(&self) -> i64 {
+            i64::from(self.max_doc)
+        }
+    }
+
+    impl crate::index::doc_values::DocValuesIterator for CountingNormValues {
+        fn advance_exact(&mut self, target: i32) -> crate::error::Result<bool> {
+            NormsReads::bump(&self.reads.advance_exact);
+            assert!(target > self.doc, "norms are read forward only");
+            self.doc = target;
+            Ok(true)
+        }
+    }
+
+    impl NumericDocValues for CountingNormValues {
+        fn long_value(&self) -> crate::error::Result<i64> {
+            NormsReads::bump(&self.reads.long_value);
+            Ok(7)
+        }
+    }
+
+    impl crate::codecs::norms::NormsProducer for CountingNorms {
+        fn get_norms(
+            &self,
+            _field: &FieldInfo,
+        ) -> crate::error::Result<Option<Box<dyn NumericDocValues>>> {
+            let values: crate::error::Result<Box<dyn NumericDocValues>> = {
+                NormsReads::bump(&self.reads.get_norms);
+                Ok(Box::new(CountingNormValues {
+                    max_doc: self.max_doc,
+                    doc: -1,
+                    reads: std::sync::Arc::clone(&self.reads),
+                }))
+            };
+            Ok(Some(values?))
+        }
+
+        fn check_integrity(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+
+        fn get_merge_instance(
+            &self,
+        ) -> crate::error::Result<Box<dyn crate::codecs::norms::NormsProducer>> {
+            Ok(Box::new(self.clone()))
+        }
+
+        fn close(&self) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The writer reads a field's norms lazily, as Java's does: one fresh
+    /// iterator per term (`PushPostingsWriterBase.java:118-124`) and one
+    /// `advanceExact` plus `longValue` per document of that term
+    /// (`Lucene104PostingsWriter.java:282-299`), never a pass over the whole
+    /// segment. Reading every norm for every term made a merge
+    /// Θ(terms × maxDoc).
+    #[test]
+    fn norms_are_read_only_for_each_terms_documents() {
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let max_doc = 1_000_000;
+        let segment_info = test_segment_info("_0", max_doc);
+        let field_infos = FieldInfos::new(vec![FieldInfo::new("body", 0).with_postings_options(
+            IndexOptions::DOCS_AND_FREQS,
+            true,
+            false,
+        )])
+        .expect("valid field infos");
+        assert!(field_infos.field_info("body").unwrap().has_norms());
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
+
+        let postings = TestFields {
+            terms: vec![
+                (
+                    BytesRef::new(b"a".to_vec()),
+                    TestPostingsEnum::new(vec![3, 70_000], vec![1, 2], vec![vec![], vec![]]),
+                ),
+                (
+                    BytesRef::new(b"b".to_vec()),
+                    TestPostingsEnum::new(vec![5, 999_998], vec![4, 1], vec![vec![], vec![]]),
+                ),
+                (
+                    BytesRef::new(b"c".to_vec()),
+                    TestPostingsEnum::new(vec![42], vec![1], vec![vec![]]),
+                ),
+            ],
+        };
+        let reads = std::sync::Arc::new(NormsReads::default());
+        let norms = CountingNorms {
+            max_doc,
+            reads: std::sync::Arc::clone(&reads),
+        };
+        let mut consumer = Lucene104PostingsFormat::new()
+            .fields_consumer(&write_state)
+            .expect("consumer builds");
+        consumer
+            .write(&postings, Some(&norms))
+            .expect("write succeeds");
+        consumer.close().expect("close succeeds");
+
+        assert_eq!(
+            NormsReads::get(&reads.get_norms),
+            3,
+            "one iterator per term"
+        );
+        assert_eq!(
+            NormsReads::get(&reads.advance_exact),
+            5,
+            "one advanceExact per document of a term"
+        );
+        assert_eq!(NormsReads::get(&reads.long_value), 5);
+        assert_eq!(NormsReads::get(&reads.scans), 0, "no pass over the segment");
+    }
+
     #[test]
     fn writes_postings_files_with_headers_and_footers() {
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let segment_info = test_segment_info("_0", 10);
         let field_infos = field_infos_with_positions();
-        let write_state = test_write_state(dir_ref, &segment_info, &field_infos);
+        let write_state = test_write_state(&dir, &segment_info, &field_infos);
 
         let format = Lucene104PostingsFormat::new();
         let mut consumer = format
@@ -1264,7 +1469,7 @@ mod tests {
             ],
         };
         consumer
-            .write(&postings, &TestNorms)
+            .write(&postings, Some(&test_norms(10)))
             .expect("write succeeds");
         consumer.close().expect("close succeeds");
 
@@ -1296,13 +1501,13 @@ mod tests {
         let len = input.length() as usize;
         let mut bytes = vec![0u8; len];
         input
-            .read_bytes(&mut bytes, 0, len)
+            .read_bytes(Some(&mut bytes), 0, len)
             .expect("read should succeed");
         bytes
     }
 
     fn write_test_fields(
-        dir: &dyn Directory,
+        dir: &Arc<dyn Directory>,
         field_infos: &FieldInfos,
         terms: Vec<(BytesRef, TestPostingsEnum)>,
     ) {
@@ -1319,7 +1524,7 @@ mod tests {
             .fields_consumer(&write_state)
             .expect("consumer builds");
         consumer
-            .write(&TestFields { terms }, &TestNorms)
+            .write(&TestFields { terms }, Some(&test_norms(max_doc)))
             .expect("write succeeds");
         consumer.close().expect("close succeeds");
     }
@@ -1355,12 +1560,12 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAMAok+gAAAAAAAAAAMeH+LI=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARAAAAAAAAADAKJPoAAAAAAAAAACdve11";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new(vec![0], vec![1], vec![vec![]]);
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"singleton".to_vec()), postings)],
         );
@@ -1377,8 +1582,8 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAACBQYFAwLAKJPoAAAAAAAAAAAELOIl";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASwAAAAAAAADAKJPoAAAAAAAAAAATV4pP";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new(
             vec![0, 2, 5, 7],
@@ -1386,7 +1591,7 @@ mod tests {
             vec![vec![], vec![], vec![], vec![]],
         );
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"multidoc".to_vec()), postings)],
         );
@@ -1405,8 +1610,8 @@ mod tests {
         const PAY_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlclBheQAAAAAAAAAAAAAAAAAAAAAAAAAAAMAok+gAAAAAAAAAAMpgXAw=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASQAAAAAAAABgAAAAAAAAAEQAAAAAAAAAwCiT6AAAAAAAAAAA872Nug==";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_positions();
         let postings = TestPostingsEnum::new(
             vec![0, 2, 3],
@@ -1422,7 +1627,7 @@ mod tests {
             ],
         );
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"positions".to_vec()), postings)],
         );
@@ -1439,12 +1644,12 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAAYAAQUAAQAAAAHAKJPoAAAAAAAAAADESAyS";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAAAAAAAAAAATgAAAAAAAADAKJPoAAAAAAAAAACZYa/u";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings = TestPostingsEnum::new((0..256).collect(), vec![1; 256], vec![vec![]; 256]);
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"block256".to_vec()), postings)],
         );
@@ -1461,13 +1666,13 @@ mod tests {
         const DOC_B64: &str = "P9dsFxpMdWNlbmUxMDRQb3N0aW5nc1dyaXRlckRvYwAAAAAAAAAAAAAAAAAAAAAAAAAAAIBAxQIDAAEAAAYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABBgABBQABAAAAAQYAAQUAAQAAAAEGAAEFAAEAAAABA8Aok+gAAAAAAAAAAA5oVTQ=";
         const PSM_B64: &str = "P9dsFxtMdWNlbmUxMDRQb3N0aW5nc1dyaXRlck1ldGEAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAQAAAAEAAAABAAAAjgEAAAAAAADAKJPoAAAAAAAAAAC2WzFp";
 
-        let dir = RamDirectory::default();
-        let dir_ref: &dyn Directory = &dir;
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        let dir_ref: &dyn Directory = &*dir;
         let field_infos = field_infos_with_freqs();
         let postings =
             TestPostingsEnum::new((0..8193).collect(), vec![1; 8193], vec![vec![]; 8193]);
         write_test_fields(
-            dir_ref,
+            &dir,
             &field_infos,
             vec![(BytesRef::new(b"level1".to_vec()), postings)],
         );
@@ -1480,12 +1685,72 @@ mod tests {
 
     #[test]
     fn write_impacts_round_trip() {
-        let mut out = crate::store::ByteArrayDataOutput::new();
+        let mut out = crate::store::VecDataOutput::new();
         let impacts = vec![Impact::new(1, 1), Impact::new(3, 2), Impact::new(5, 3)];
         write_impacts(&impacts, &mut out).unwrap();
         // The exact bytes are tested against the format expectations indirectly
         // through the end-to-end write above; here we just assert no panic and
         // non-empty output.
         assert!(!out.into_inner().is_empty());
+    }
+}
+
+/// The `IOUtils` close family at the postings writer's call sites (#308).
+#[cfg(test)]
+mod close_family_tests {
+    use super::Lucene104PostingsWriter;
+    use crate::codecs::postings::PostingsWriterBase;
+    use crate::codecs::tests::{test_segment_info, tracking_directory, write_state};
+    use crate::index::FieldInfos;
+    use crate::store::Directory;
+
+    /// `metaOut` is created before the `try` block and `docOut` inside it,
+    /// before either header is written; when `docOut` cannot be created,
+    /// `IOUtils.closeWhileHandlingException(metaOut, docOut, posOut, payOut)`
+    /// closes the empty `metaOut` (`Lucene104PostingsWriter.java:153-214`).
+    #[test]
+    fn a_failed_constructor_closes_the_meta_output_it_created() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        log.fail_open("_0.doc");
+        Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap_err();
+        assert_eq!(log.close_count("_0.psm"), 1);
+        assert_eq!(tracking.inner.file_length("_0.psm").unwrap(), 0);
+    }
+
+    /// `close()` nulls the four outputs in its outer `finally`
+    /// (`Lucene104PostingsWriter.java:737`): a second close does nothing, so
+    /// no output is closed twice and the files keep the first close's bytes.
+    #[test]
+    fn close_twice_is_a_no_op() {
+        let (dir, tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer = Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap();
+        writer.close().unwrap();
+        let lengths = ["_0.psm", "_0.doc"].map(|n| tracking.inner.file_length(n).unwrap());
+        writer.close().unwrap();
+        assert_eq!(
+            ["_0.psm", "_0.doc"].map(|n| tracking.inner.file_length(n).unwrap()),
+            lengths
+        );
+        assert_eq!(log.close_count("_0.psm"), 1);
+        assert_eq!(log.close_count("_0.doc"), 1);
+    }
+
+    /// `close()` ends with `IOUtils.close(metaOut, docOut, posOut, payOut)`
+    /// (`Lucene104PostingsWriter.java:735`): a failing `metaOut` does not keep
+    /// `docOut` open, and its failure is the one raised.
+    #[test]
+    fn close_closes_every_output_past_a_failure() {
+        let (dir, _tracking, log) = tracking_directory();
+        let info = test_segment_info("_0", 10);
+        let fis = FieldInfos::default();
+        let mut writer = Lucene104PostingsWriter::new(&write_state(&dir, &info, &fis)).unwrap();
+        log.fail_close("_0.psm");
+        let error = writer.close().unwrap_err();
+        assert!(format!("{error}").contains("_0.psm"), "{error}");
+        assert_eq!(log.close_count("_0.doc"), 1);
     }
 }

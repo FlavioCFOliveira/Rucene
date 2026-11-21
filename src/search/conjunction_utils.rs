@@ -1,0 +1,138 @@
+//! Conjunction builders, ported from
+//! `org.apache.lucene.search.ConjunctionUtils`.
+
+#![deny(unsafe_code)]
+
+use crate::error::{LuceneError, Result};
+use crate::search::conjunction_disi::{self, ConjunctionMember};
+use crate::search::doc_id_set_iterator::DocIdSetIterator;
+use crate::search::scorer::Scorer;
+use crate::search::two_phase_iterator::{ScorerIterator, TwoPhaseIterator};
+
+/// Helper methods for building conjunction iterators.
+///
+/// Equivalent to the `final class org.apache.lucene.search.ConjunctionUtils`.
+///
+/// **Divergence from Lucene 10.5.0.** Java threads two parallel lists — the
+/// iterators and the two-phase iterators — through the builders, because the
+/// approximation of a two-phase iterator can be referenced from both. Rust
+/// cannot own an approximation apart from its iterator, so the two lists become
+/// one list of [`ConjunctionMember`]s, each of which carries its own
+/// approximation. The clauses collected are the same ones.
+#[derive(Debug, Clone, Copy)]
+pub struct ConjunctionUtils;
+
+impl ConjunctionUtils {
+    /// Creates a conjunction over the provided [`Scorer`]s.
+    ///
+    /// Equivalent to `ConjunctionUtils.intersectScorers(Collection<Scorer>)`.
+    /// The returned iterator may leverage two-phase iteration, in which case it
+    /// is a [`ScorerIterator::TwoPhase`] — the shape Java's callers recover
+    /// with `TwoPhaseIterator.unwrap`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when fewer than two scorers are
+    /// supplied, or when they are not all on the same document.
+    pub fn intersect_scorers(scorers: Vec<Box<dyn Scorer>>) -> Result<ScorerIterator> {
+        let conjunction = Self::intersect_scorers_conjunction(scorers)?;
+        if conjunction.has_two_phase() {
+            Ok(ScorerIterator::TwoPhase(Box::new(conjunction)))
+        } else {
+            Ok(ScorerIterator::Simple(Box::new(conjunction)))
+        }
+    }
+
+    /// [`intersect_scorers`](Self::intersect_scorers) before its result is
+    /// erased: the [`ConjunctionDISI`](conjunction_disi::ConjunctionDISI)
+    /// `ConjunctionDISI.createConjunction` builds.
+    ///
+    /// Equivalent to `ConjunctionUtils.intersectScorers(Collection<Scorer>)`
+    /// (`ConjunctionUtils.java:34-43`) for
+    /// [`ConjunctionScorer`](crate::search::conjunction_scorer::ConjunctionScorer),
+    /// whose constructor calls it (`ConjunctionScorer.java:36`) and then keeps
+    /// reaching its clauses' scorers. Java's scorer holds them a second time in
+    /// its `scorers` and `required` fields; Rust cannot alias them, so it keeps
+    /// the unerased conjunction instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`intersect_scorers`](Self::intersect_scorers).
+    pub(crate) fn intersect_scorers_conjunction(
+        scorers: Vec<Box<dyn Scorer>>,
+    ) -> Result<conjunction_disi::ConjunctionDISI> {
+        if scorers.len() < 2 {
+            return Err(LuceneError::illegal_argument(
+                "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
+            ));
+        }
+        let mut members = Vec::with_capacity(scorers.len());
+        for scorer in scorers {
+            // `ConjunctionDISI.addScorer`, statically imported
+            // (`ConjunctionUtils.java:20,41`).
+            conjunction_disi::add_scorer(scorer, &mut members);
+        }
+        // `ConjunctionDISI.createConjunction(allIterators, twoPhaseIterators)`.
+        conjunction_disi::ConjunctionDISI::new(members)
+    }
+
+    /// Creates a conjunction over the provided [`DocIdSetIterator`]s.
+    ///
+    /// Equivalent to
+    /// `ConjunctionUtils.intersectIterators(List<? extends DocIdSetIterator>)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`intersect_scorers`](Self::intersect_scorers).
+    pub fn intersect_iterators(
+        iterators: Vec<Box<dyn DocIdSetIterator>>,
+    ) -> Result<ScorerIterator> {
+        if iterators.len() < 2 {
+            return Err(LuceneError::illegal_argument(
+                "Cannot make a ConjunctionDISI of less than 2 iterators".to_string(),
+            ));
+        }
+        let mut members = Vec::with_capacity(iterators.len());
+        for iterator in iterators {
+            Self::add_iterator(iterator, &mut members);
+        }
+        conjunction_disi::create_conjunction(members)
+    }
+
+    /// Creates a conjunction over the provided clauses.
+    ///
+    /// Equivalent to
+    /// `ConjunctionUtils.createConjunction(List<DocIdSetIterator>,
+    /// List<TwoPhaseIterator>)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`intersect_scorers`](Self::intersect_scorers).
+    pub fn create_conjunction(members: Vec<ConjunctionMember>) -> Result<ScorerIterator> {
+        conjunction_disi::create_conjunction(members)
+    }
+
+    /// Adds an iterator.
+    ///
+    /// Equivalent to `ConjunctionUtils.addIterator(DocIdSetIterator,
+    /// List<DocIdSetIterator>, List<TwoPhaseIterator>)`. Java additionally
+    /// flattens nested conjunctions and unwraps two-phase iterators hidden
+    /// behind an erased iterator; see the
+    /// [`conjunction_disi`] module for why
+    /// this port cannot.
+    pub fn add_iterator(iterator: Box<dyn DocIdSetIterator>, members: &mut Vec<ConjunctionMember>) {
+        conjunction_disi::add_iterator(iterator, members);
+    }
+
+    /// Adds a two-phase iterator.
+    ///
+    /// Equivalent to
+    /// `ConjunctionUtils.addTwoPhaseIterator(TwoPhaseIterator,
+    /// List<DocIdSetIterator>, List<TwoPhaseIterator>)`.
+    pub fn add_two_phase_iterator(
+        two_phase: Box<dyn TwoPhaseIterator>,
+        members: &mut Vec<ConjunctionMember>,
+    ) {
+        conjunction_disi::add_two_phase_iterator(two_phase, members);
+    }
+}

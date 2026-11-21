@@ -1,0 +1,408 @@
+//! `FieldReader` ported from `org.apache.lucene.codecs.lucene103.blocktree`.
+//!
+//! One field's view of the block-tree terms dictionary: the per-field statistics
+//! read from the `.tmd` file, plus the file pointers into the `.tim` and `.tip`
+//! files that a terms cursor starts from.
+
+use std::sync::{Arc, OnceLock, Weak};
+
+use crate::codecs::lucene103::trie_reader::TrieReader;
+use crate::error::{LuceneError, Result};
+use crate::index::terms::{Terms, TermsEnum};
+use crate::index::{FieldInfo, IndexOptions};
+use crate::store::SharedIndexInput;
+use crate::util::BytesRef;
+
+/// The shared state a [`FieldReader`] needs to open a cursor: the two files the
+/// dictionary lives in, and the postings reader that decodes each term's
+/// metadata.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FieldReader` holds a reference to
+/// its `Lucene103BlockTreeTermsReader` parent and reaches the shared inputs
+/// through it. Rust cannot hold that back-reference without a cycle, so the
+/// shared parts are extracted into this struct and shared by `Arc`.
+///
+/// `Lucene103BlockTreeTermsReader::close` closes the two inputs and the
+/// postings reader in place, whoever else (a merge instance, a terms enum)
+/// still shares this struct, as Java's `close()` does.
+pub struct BlockTreeShared {
+    /// The `.tim` file, holding the term blocks.
+    pub terms_in: Arc<SharedIndexInput>,
+    /// The `.tip` file, holding the term index tries.
+    pub index_in: Arc<SharedIndexInput>,
+    /// The segment this dictionary belongs to.
+    pub segment: String,
+    /// Format version of the three files.
+    pub version: i32,
+    /// The one postings reader every enum of every field decodes through.
+    ///
+    /// Java reaches it as `ste.fr.parent.postingsReader`: a single reader held
+    /// by the terms dictionary and shared by every `SegmentTermsEnum` it hands
+    /// out. `BlockTreeShared` is this port's `parent`, so it is held here, and
+    /// shared rather than cloned — a per-enum copy would duplicate the `.doc`,
+    /// `.pos` and `.pay` handles Lucene opens once.
+    pub postings_reader: Arc<dyn crate::codecs::postings::PostingsReaderBase>,
+    /// Set by `close()`, after which the reader answers as Java's does once
+    /// its `fieldMap` is cleared (`Lucene103BlockTreeTermsReader.java:281-283`):
+    /// no fields.
+    pub fields_cleared: std::sync::atomic::AtomicBool,
+}
+
+impl std::fmt::Debug for BlockTreeShared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockTreeShared")
+            .field("segment", &self.segment)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One field of the block-tree terms dictionary.
+///
+/// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.FieldReader`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's `FieldReader` keeps a reference
+/// to its parent `Lucene103BlockTreeTermsReader` (`parent`) and the `.tip`
+/// input it is handed (`indexIn`), and its terms enums reach the `.tim` input,
+/// the postings reader and the segment name through `parent`
+/// (`FieldReader.java:47-88`). The parent owns its field readers, so a back
+/// reference would be an ownership cycle in Rust; the state the field and its
+/// enums read is instead held in one [`BlockTreeShared`], which the terms
+/// reader and every field reader share through an [`Arc`]. The same inputs
+/// and the same postings reader are reached; only the path to them differs.
+#[derive(Clone)]
+pub struct FieldReader {
+    shared: Arc<BlockTreeShared>,
+    /// The field's one `FieldInfo` object, shared with the segment's `FieldInfos`
+    /// as Java's `final FieldInfo fieldInfo` reference is (`FieldReader.java:38`).
+    field_info: Arc<FieldInfo>,
+    num_terms: i64,
+    sum_total_term_freq: i64,
+    sum_doc_freq: i64,
+    doc_count: i32,
+    min_term: BytesRef,
+    /// The largest term, or `None` when it is [`Self::min_term`]: Java's
+    /// `maxTerm = minTerm` alias for a field with a single term
+    /// (`Lucene103BlockTreeTermsReader.java:181-185`).
+    // PERF: the alias, not a second copy of the term.
+    max_term: Option<BytesRef>,
+    /// Offset in the `.tip` file where this field's trie starts.
+    index_start: i64,
+    /// Offset of the trie root, relative to `index_start`.
+    root_fp: i64,
+    /// Offset in the `.tip` file where this field's trie ends.
+    index_end: i64,
+    /// The one shared copy of this reader that the [`Terms`] handles of
+    /// `Lucene103BlockTreeTermsReader::terms` and the terms enums hold, made
+    /// the first time one is needed; see [`handle`](Self::handle).
+    shared_self: OnceLock<Arc<FieldReader>>,
+    /// On the shared copy, the copy itself; empty on the field map's reader.
+    /// It lets the shared copy, which `terms()` hands out, give its enums
+    /// itself rather than a further copy.
+    self_handle: Weak<FieldReader>,
+}
+
+impl std::fmt::Debug for FieldReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldReader")
+            .field("field", &self.field_info.name)
+            .field("num_terms", &self.num_terms)
+            .field("doc_count", &self.doc_count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FieldReader {
+    /// Builds the field's view, reading its three index pointers from `meta_in`.
+    ///
+    /// Equivalent to the `FieldReader` constructor, which reads `indexStart`,
+    /// `rootFP` and `indexEnd` in that order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        shared: Arc<BlockTreeShared>,
+        field_info: Arc<FieldInfo>,
+        num_terms: i64,
+        sum_total_term_freq: i64,
+        sum_doc_freq: i64,
+        doc_count: i32,
+        min_term: BytesRef,
+        max_term: Option<BytesRef>,
+        meta_in: &mut dyn crate::store::DataInput,
+    ) -> Result<Self> {
+        // The terms reader rejects `numTerms <= 0` before it builds the field
+        // reader (`Lucene103BlockTreeTermsReader.java:163`); here Java asserts.
+        debug_assert!(num_terms > 0);
+        let index_start = meta_in.read_v_long()?;
+        let root_fp = meta_in.read_v_long()?;
+        let index_end = meta_in.read_v_long()?;
+
+        Ok(Self {
+            shared,
+            field_info,
+            num_terms,
+            sum_total_term_freq,
+            sum_doc_freq,
+            doc_count,
+            min_term,
+            max_term,
+            index_start,
+            root_fp,
+            index_end,
+            shared_self: OnceLock::new(),
+            self_handle: Weak::new(),
+        })
+    }
+
+    /// Returns the shared copy of this reader, making it on first use.
+    ///
+    /// Java's `terms(field)` returns the field map's `FieldReader` itself
+    /// (`Lucene103BlockTreeTermsReader.java:292-296`) and every terms enum
+    /// keeps a reference to it (`FieldReader.java:139-141`), so nothing is
+    /// copied. The [`Arc<dyn Terms>`](Terms) `terms()` returns and every enum
+    /// must own what they hold, so they share one copy through an [`Arc`]; it
+    /// is made the first time a handle is asked for rather than at open,
+    /// because most fields of an opened segment are never queried. Asked of
+    /// the shared copy, the handle is the copy itself.
+    pub(crate) fn handle(&self) -> Arc<FieldReader> {
+        if let Some(shared) = self.self_handle.upgrade() {
+            return shared;
+        }
+        // PERF: one copy per field for the reader's lifetime, instead of one
+        // copy (two term buffers) per `terms()` and per `iterator()`.
+        Arc::clone(self.shared_self.get_or_init(|| {
+            Arc::new_cyclic(|shared| FieldReader {
+                shared_self: OnceLock::new(),
+                self_handle: Weak::clone(shared),
+                ..self.clone()
+            })
+        }))
+    }
+
+    /// The [`Terms`] that `Lucene103BlockTreeTermsReader::terms` returns for
+    /// this field: its shared reader itself, as Java returns the field map's
+    /// `FieldReader` (`Lucene103BlockTreeTermsReader.java:292-296`).
+    // PERF: a reference count, not a box per call.
+    pub(crate) fn shared_terms(&self) -> Arc<dyn Terms> {
+        self.handle()
+    }
+
+    /// Equivalent to `FieldReader.intersect(CompiledAutomaton, BytesRef)`
+    /// (`FieldReader.java:162-178`) over the shared reader `field`.
+    fn intersect_shared(
+        field: Arc<FieldReader>,
+        compiled: &crate::util::automaton::CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        use crate::util::automaton::AutomatonType;
+        if compiled.automaton_type != AutomatonType::Normal {
+            return Err(LuceneError::illegal_argument(
+                "please use CompiledAutomaton.getTermsEnum instead".to_string(),
+            ));
+        }
+        // `compiled.getTransitionAccessor()` and `compiled.getByteRunnable()`
+        // (`FieldReader.java:176-177`): the DFA's two objects, or the query's
+        // one `NFARunAutomaton` for both, which the clone shares.
+        let view = crate::index::automaton_terms_enum::CompiledAutomatonView::new(compiled.clone())
+            // A `null` transition accessor or byte runnable, dereferenced by
+            // the enum: the JVM's `NullPointerException`.
+            .ok_or_else(LuceneError::null_pointer)?;
+        Ok(Box::new(
+            crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum::new(
+                field,
+                Box::new(view.clone()),
+                Box::new(view),
+                compiled.common_suffix_ref.clone(),
+                start_term.cloned(),
+            )?,
+        ))
+    }
+
+    /// Returns the field's metadata.
+    pub fn field_info(&self) -> &FieldInfo {
+        &self.field_info
+    }
+
+    /// The shared handle onto the field's one `FieldInfo` object.
+    pub(crate) fn field_info_shared(&self) -> &Arc<FieldInfo> {
+        &self.field_info
+    }
+
+    /// Returns the shared dictionary state.
+    pub fn shared(&self) -> &Arc<BlockTreeShared> {
+        &self.shared
+    }
+
+    /// Returns the offset in the `.tip` file where this field's trie starts.
+    pub fn index_start(&self) -> i64 {
+        self.index_start
+    }
+
+    /// Returns the offset of the trie root, relative to `index_start`.
+    pub fn root_fp(&self) -> i64 {
+        self.root_fp
+    }
+
+    /// Returns the offset in the `.tip` file where this field's trie ends.
+    pub fn index_end(&self) -> i64 {
+        self.index_end
+    }
+
+    /// Opens a fresh cursor over this field's slice of the term index.
+    ///
+    /// Every terms cursor this field hands out gets its own reader, so that two
+    /// cursors over the same field never share a position in the `.tip` file.
+    ///
+    /// Equivalent to `org.apache.lucene.codecs.lucene103.blocktree.FieldReader#newReader`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error slicing the `.tip` file, or decoding the trie
+    /// root out of it, raised.
+    pub fn new_reader(&self) -> Result<TrieReader> {
+        // Java slices the `.tip` file down to this field's region and lets
+        // `TrieReader` take the random-access view of that slice; this port's
+        // `TrieReader` takes the random-access view directly, so the two steps
+        // collapse into one call. The addressing is identical: the root sits at
+        // `root_fp` inside the field's own region.
+        let slice = self
+            .shared
+            .index_in
+            .read()
+            .random_access_slice(self.index_start, self.index_end - self.index_start)?;
+        TrieReader::new(slice, self.root_fp)
+    }
+
+    /// Returns the smallest term of the field.
+    ///
+    /// Equivalent to `FieldReader.getMin()`.
+    pub fn get_min(&self) -> &BytesRef {
+        &self.min_term
+    }
+
+    /// Returns the largest term of the field.
+    ///
+    /// Equivalent to `FieldReader.getMax()`.
+    pub fn get_max(&self) -> &BytesRef {
+        self.max_term.as_ref().unwrap_or(&self.min_term)
+    }
+}
+
+impl Terms for FieldReader {
+    fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
+        Ok(Box::new(
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.handle())?,
+        ))
+    }
+
+    /// Equivalent to `FieldReader.intersect(CompiledAutomaton, BytesRef)`
+    /// (`FieldReader.java:162-178`): an [`IntersectTermsEnum`] over the
+    /// automaton's transition accessor and byte runnable, whether it was
+    /// compiled as a DFA or as an NFA.
+    ///
+    /// [`IntersectTermsEnum`]: crate::codecs::lucene103::intersect_terms_enum::IntersectTermsEnum
+    fn intersect(
+        &self,
+        compiled: &crate::util::automaton::CompiledAutomaton,
+        start_term: Option<&BytesRef>,
+    ) -> Result<Box<dyn TermsEnum>> {
+        Self::intersect_shared(self.handle(), compiled, start_term)
+    }
+
+    fn size(&self) -> Result<i64> {
+        Ok(self.num_terms)
+    }
+
+    fn sum_total_term_freq(&self) -> Result<i64> {
+        Ok(self.sum_total_term_freq)
+    }
+
+    fn sum_doc_freq(&self) -> Result<i64> {
+        Ok(self.sum_doc_freq)
+    }
+
+    fn doc_count(&self) -> Result<i32> {
+        Ok(self.doc_count)
+    }
+
+    fn has_freqs(&self) -> bool {
+        self.field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS)
+    }
+
+    fn has_offsets(&self) -> bool {
+        self.field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)
+    }
+
+    fn has_positions(&self) -> bool {
+        self.field_info
+            .index_options
+            .subsumes(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS)
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.field_info.has_payloads()
+    }
+
+    fn min(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.min_term.clone()))
+    }
+
+    fn max(&self) -> Result<Option<BytesRef>> {
+        Ok(Some(self.get_max().clone()))
+    }
+
+    /// Walks every block of the field and reports the statistics `CheckIndex`
+    /// prints for it.
+    ///
+    /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`, the
+    /// `Stats` object itself, which `CheckIndex` keeps as an `Object`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening the cursor or reading a block raises.
+    fn stats(&self) -> Result<Box<dyn crate::index::terms::StatsObject>> {
+        Ok(Box::new(self.get_stats()?))
+    }
+
+    /// A `FieldReader`, for the casts Java tests make on a `Terms`
+    /// (`(FieldReader) reader.terms(field)`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl FieldReader {
+    /// For debugging -- used by CheckIndex too.
+    ///
+    /// Equivalent to `FieldReader.getStats()` (`FieldReader.java:110-114`):
+    /// `new SegmentTermsEnum(this, newReader()).computeBlockStats()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever opening the cursor or reading a block raises.
+    pub fn get_stats(&self) -> Result<crate::codecs::lucene103::blocktree::Stats> {
+        let mut terms_enum =
+            crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum::new(self.handle())?;
+        terms_enum.compute_block_stats()
+    }
+}
+
+impl std::fmt::Display for FieldReader {
+    /// Port of `FieldReader.toString()`, which names itself `BlockTreeTerms`
+    /// rather than after its own class.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BlockTreeTerms(seg={} terms={},postings={},positions={},docs={})",
+            self.shared.segment,
+            self.num_terms,
+            self.sum_doc_freq,
+            self.sum_total_term_freq,
+            self.doc_count
+        )
+    }
+}

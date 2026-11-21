@@ -1,0 +1,5 @@
+# lookup	result
+getName	LuceneVarGapFixedInterval
+toString	PostingsFormat(name=LuceneVarGapFixedInterval)
+forName.getClass	org.apache.lucene.tests.codecs.blockterms.LuceneVarGapFixedInterval
+forName.toString	PostingsFormat(name=LuceneVarGapFixedInterval)

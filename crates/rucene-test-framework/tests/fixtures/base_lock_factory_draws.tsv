@@ -1,0 +1,25 @@
+# seed	method	kind	value (BaseSuitesDrawsOracle, Lucene 10.5.0, JDK 25): TestLockFactorySuiteDraws, next random().nextLong() after each test and the class
+DEADBEEF	#class	next	3659173893219349666
+DEADBEEF	#counts	run=6 fail=0 assume=0	-
+DEADBEEF	testBasics	next	2365285671002844896
+DEADBEEF	testDoubleClose	next	-6702929318556237202
+DEADBEEF	testInvalidAfterClose	next	-3910706338278527230
+DEADBEEF	testObtainConcurrently	next	1790506370456414093
+DEADBEEF	testStressLocks	next	-8650396495971664314
+DEADBEEF	testValidAfterAcquire	next	-5370026531762536554
+1	#class	next	-6373982768467410141
+1	#counts	run=6 fail=0 assume=0	-
+1	testBasics	next	828667986274352811
+1	testDoubleClose	next	827429669800791159
+1	testInvalidAfterClose	next	-339863561614817263
+1	testObtainConcurrently	next	8656615916524885149
+1	testStressLocks	next	-4699498521352070997
+1	testValidAfterAcquire	next	7107287076667692864
+C0FFEE	#class	next	-8341694549161970208
+C0FFEE	#counts	run=6 fail=0 assume=0	-
+C0FFEE	testBasics	next	-4730832025654653934
+C0FFEE	testDoubleClose	next	-8483118072360304
+C0FFEE	testInvalidAfterClose	next	9135664195589702306
+C0FFEE	testObtainConcurrently	next	-7010520894391052628
+C0FFEE	testStressLocks	next	-7280592129526164287
+C0FFEE	testValidAfterAcquire	next	1125289552605973408

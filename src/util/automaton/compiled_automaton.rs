@@ -1,0 +1,703 @@
+//! Port of `org.apache.lucene.util.automaton.CompiledAutomaton`.
+
+use crate::codecs::postings::{empty_terms_enum, Terms, TermsEnum};
+use crate::error::Result;
+use crate::index::SingleTermsEnum;
+use crate::index::Term;
+use crate::search::{Query, QueryVisitor};
+use crate::util::{
+    Accountable, BytesRef, BytesRefBuilder, IntsRef, RamUsageEstimator, SizedObject, StringHelper,
+    UnicodeUtil,
+};
+
+use super::automata::Automata;
+use super::automaton::{Automaton, Transition, TransitionAccessor};
+use super::byte_run_automaton::ByteRunAutomaton;
+use super::nfa_run_automaton::NFARunAutomaton;
+use super::operations::Operations;
+use super::run_automaton::ByteRunnable;
+use super::utf32_to_utf8::UTF32ToUTF8;
+use std::sync::Arc;
+
+/// Automata are compiled into different internal forms for the most efficient
+/// execution depending upon the language they accept.
+///
+/// Equivalent to `CompiledAutomaton.AUTOMATON_TYPE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AutomatonType {
+    /// Automaton that accepts no strings.
+    None,
+    /// Automaton that accepts all possible strings.
+    All,
+    /// Automaton that accepts only a single fixed string.
+    Single,
+    /// Catch-all for any other automata.
+    Normal,
+}
+
+/// Immutable class holding compiled details for a given [`Automaton`].
+///
+/// Equivalent to `org.apache.lucene.util.automaton.CompiledAutomaton`. The automaton
+/// can be either deterministic or non-deterministic. A deterministic automaton must
+/// not have dead states but is not necessarily minimal, and is executed using
+/// [`ByteRunAutomaton`]; a non-deterministic one is executed using
+/// [`NFARunAutomaton`].
+#[derive(Clone, Debug)]
+pub struct CompiledAutomaton {
+    /// If `simplify` was true this is the "simplified" type; else this is
+    /// [`AutomatonType::Normal`].
+    pub automaton_type: AutomatonType,
+
+    /// For [`AutomatonType::Single`] this is the singleton term.
+    pub term: Option<BytesRef>,
+
+    /// Matcher for quickly determining if a byte slice is accepted; only valid for
+    /// [`AutomatonType::Normal`].
+    pub run_automaton: Option<ByteRunAutomaton>,
+
+    /// Transitions indexed by state number for traversal. The state numbering is
+    /// consistent with [`CompiledAutomaton::run_automaton`]. Only valid for
+    /// [`AutomatonType::Normal`].
+    pub automaton: Option<Automaton>,
+
+    /// Matcher run directly on an NFA; it determinizes the state on demand and
+    /// caches it. Note that this field and [`CompiledAutomaton::run_automaton`] are
+    /// never both non-`None`.
+    ///
+    /// Equivalent to `CompiledAutomaton.nfaRunAutomaton`
+    /// (`CompiledAutomaton.java:88`): one automaton, shared by every clone of
+    /// this compiled automaton and so by every enum built from it, as Java's
+    /// enums share the one instance (`CompiledAutomaton.java:486-492`); see
+    /// [`NFARunAutomaton`] for the lock that guards its cache.
+    pub nfa_run_automaton: Option<Arc<NFARunAutomaton>>,
+
+    /// Shared common suffix accepted by the automaton. Only valid for
+    /// [`AutomatonType::Normal`], and only when the automaton accepts an infinite
+    /// language. This is `None` if the common suffix has length 0.
+    pub common_suffix_ref: Option<BytesRef>,
+
+    /// Indicates if the automaton accepts a finite set of strings. Only valid for
+    /// [`AutomatonType::Normal`].
+    pub finite: bool,
+
+    /// Which state, if any, accepts all suffixes, else `-1`.
+    pub sink_state: i32,
+}
+
+impl CompiledAutomaton {
+    /// Creates this, passing `simplify = true` so that we try to simplify the
+    /// automaton.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the automaton could not be compiled.
+    pub fn from_automaton(automaton: Automaton) -> Result<Self> {
+        Self::new(automaton, false, true, false)
+    }
+
+    /// Returns the sink state, if present, else `-1`.
+    fn find_sink_state(automaton: &Automaton) -> i32 {
+        let num_states = automaton.get_num_states();
+        let mut t = Transition::new();
+        let mut found_state = -1i32;
+        for s in 0..num_states {
+            if automaton.is_accept(s) {
+                let count = automaton.init_transition(s, &mut t);
+                let mut is_sink_state = false;
+                for _ in 0..count {
+                    automaton.get_next_transition(&mut t);
+                    if t.dest == s && t.min == 0 && t.max == 0xff {
+                        is_sink_state = true;
+                        break;
+                    }
+                }
+                if is_sink_state {
+                    found_state = s;
+                    break;
+                }
+            }
+        }
+
+        found_state
+    }
+
+    /// Compiles an automaton.
+    ///
+    /// If `simplify` is true, possibly expensive operations are run to determine
+    /// whether the automaton is one of the cases in [`AutomatonType`]. Set `finite`
+    /// to true if the automaton is finite, otherwise set it to false if it is
+    /// infinite or you do not know. Set `is_binary` when the caller already built a
+    /// byte-based automaton.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if determinizing the byte automaton exceeds the work limit,
+    /// or if the singleton term cannot be decoded.
+    pub fn new(
+        mut automaton: Automaton,
+        finite: bool,
+        simplify: bool,
+        is_binary: bool,
+    ) -> Result<Self> {
+        if automaton.get_num_states() == 0 {
+            automaton = Automaton::new();
+            automaton.create_state();
+        }
+
+        // simplify requires a DFA
+        if simplify && automaton.is_deterministic() {
+            // Test whether the automaton is a "simple" form and if so, don't create a
+            // runAutomaton. Note that on a large automaton these tests could be
+            // costly:
+
+            if Operations::is_empty(&automaton) {
+                // matches nothing
+                return Ok(Self {
+                    automaton_type: AutomatonType::None,
+                    term: None,
+                    common_suffix_ref: None,
+                    run_automaton: None,
+                    automaton: None,
+                    finite: true,
+                    sink_state: -1,
+                    nfa_run_automaton: None,
+                });
+            }
+
+            // NOTE: only approximate, because the automaton may not be minimal:
+            let is_total = if is_binary {
+                Operations::is_total_range(&automaton, 0, 0xff)
+            } else {
+                Operations::is_total(&automaton)
+            };
+
+            if is_total {
+                // matches all possible strings
+                return Ok(Self {
+                    automaton_type: AutomatonType::All,
+                    term: None,
+                    common_suffix_ref: None,
+                    run_automaton: None,
+                    automaton: None,
+                    finite: false,
+                    sink_state: -1,
+                    nfa_run_automaton: None,
+                });
+            }
+
+            let singleton = Operations::get_singleton(&automaton)?;
+
+            if let Some(singleton) = singleton {
+                // matches a fixed string
+                let term = if is_binary {
+                    StringHelper::ints_ref_to_bytes_ref(&singleton)?
+                } else {
+                    Self::ints_ref_to_utf8_bytes_ref(&singleton)?
+                };
+                return Ok(Self {
+                    automaton_type: AutomatonType::Single,
+                    term: Some(term),
+                    common_suffix_ref: None,
+                    run_automaton: None,
+                    automaton: None,
+                    finite: true,
+                    sink_state: -1,
+                    nfa_run_automaton: None,
+                });
+            }
+        }
+
+        let mut binary = if is_binary {
+            // Caller already built the binary automaton themselves, e.g. PrefixQuery
+            // does this since it can be provided with a binary (not necessarily
+            // UTF-8!) term:
+            automaton.clone()
+        } else {
+            // Incoming automaton is unicode, and we must convert to UTF-8 to match
+            // what's in the index:
+            UTF32ToUTF8::new().convert(&automaton)
+        };
+
+        // compute a common suffix for infinite DFAs, this is an optimization for
+        // "leading wildcard" so don't burn cycles on it if the DFA is finite, or
+        // largeish
+        let common_suffix_ref = if finite
+            || automaton.get_num_states() + automaton.get_num_transitions_total() > 1000
+        {
+            None
+        } else {
+            let suffix = Operations::get_common_suffix_bytes_ref(&binary)?;
+            if suffix.length == 0 {
+                None
+            } else {
+                Some(suffix)
+            }
+        };
+
+        if !automaton.is_deterministic() && !binary.is_deterministic() {
+            Ok(Self {
+                automaton_type: AutomatonType::Normal,
+                term: None,
+                common_suffix_ref,
+                run_automaton: None,
+                automaton: None,
+                finite,
+                sink_state: -1,
+                nfa_run_automaton: Some(Arc::new(NFARunAutomaton::new(binary, 0xff))),
+            })
+        } else {
+            // We already had a DFA (or errored out); according to Mike, UTF32toUTF8
+            // won't "blow up".
+            binary = Operations::determinize(&binary, i32::MAX)?;
+            let run_automaton = ByteRunAutomaton::new(binary, true)?;
+
+            let automaton = run_automaton.automaton().clone();
+
+            // TODO (Lucene): this is a bit fragile because if the automaton is not
+            // minimized there could be more than one sink state, but auto-prefix will
+            // fail to run for those.
+            let sink_state = Self::find_sink_state(&automaton);
+
+            Ok(Self {
+                automaton_type: AutomatonType::Normal,
+                term: None,
+                common_suffix_ref,
+                run_automaton: Some(run_automaton),
+                automaton: Some(automaton),
+                finite,
+                sink_state,
+                nfa_run_automaton: None,
+            })
+        }
+    }
+
+    fn ints_ref_to_utf8_bytes_ref(ints: &IntsRef) -> Result<BytesRef> {
+        let s = UnicodeUtil::new_string(&ints.ints, ints.offset, ints.length)?;
+        // `new BytesRef(UnicodeUtil.newString(...))` (`CompiledAutomaton.java:215`).
+        Ok(BytesRef::from_char_sequence(&s))
+    }
+
+    fn add_tail(
+        &self,
+        mut state: i32,
+        term: &mut BytesRefBuilder,
+        mut idx: usize,
+        lead_label: i32,
+    ) -> BytesRef {
+        let automaton = self
+            .automaton
+            .as_ref()
+            .expect("INVARIANT: floor is only valid for AutomatonType::Normal");
+        let run_automaton = self
+            .run_automaton
+            .as_ref()
+            .expect("INVARIANT: floor is only valid for AutomatonType::Normal");
+        let mut transition = Transition::new();
+
+        // Find the biggest transition that's < label
+        let mut max_index = -1i32;
+        let num_transitions = automaton.init_transition(state, &mut transition);
+        for i in 0..num_transitions {
+            automaton.get_next_transition(&mut transition);
+            if transition.min < lead_label {
+                max_index = i;
+            } else {
+                // Transitions are always sorted
+                break;
+            }
+        }
+
+        debug_assert!(max_index != -1);
+        automaton.get_transition(state, max_index, &mut transition);
+
+        // Append floorLabel
+        let floor_label = if transition.max > lead_label - 1 {
+            lead_label - 1
+        } else {
+            transition.max
+        };
+        term.grow(1 + idx);
+        term.set_byte_at(idx, floor_label as u8);
+
+        state = transition.dest;
+        idx += 1;
+
+        // Push down to the last accept state
+        loop {
+            let num_transitions = automaton.get_num_transitions(state);
+            if num_transitions == 0 {
+                debug_assert!(run_automaton.is_accept(state));
+                term.set_length(idx);
+                return term.get();
+            }
+            // We are pushing "top" -- so get the last label of the last transition:
+            automaton.get_transition(state, num_transitions - 1, &mut transition);
+            term.grow(1 + idx);
+            term.set_byte_at(idx, transition.max as u8);
+            state = transition.dest;
+            idx += 1;
+        }
+    }
+
+    /// Returns a [`TermsEnum`] intersecting the provided [`Terms`] with the terms
+    /// accepted by this automaton.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terms enum could not be created.
+    pub fn get_terms_enum(&self, terms: &dyn Terms) -> Result<Box<dyn TermsEnum>> {
+        match self.automaton_type {
+            AutomatonType::None => Ok(empty_terms_enum()),
+            AutomatonType::All => terms.iterator(),
+            AutomatonType::Single => {
+                let term = self
+                    .term
+                    .as_ref()
+                    .expect("INVARIANT: SINGLE always carries a term")
+                    .clone();
+                // `new SingleTermsEnum(terms.iterator(), term)`
+                // (`CompiledAutomaton.java:354-355`): the `FilteredTermsEnum`
+                // that seeks to the term and accepts exactly it.
+                Ok(SingleTermsEnum::new(terms.iterator()?, term))
+            }
+            AutomatonType::Normal => terms.intersect(self, None),
+        }
+    }
+
+    /// Finds the largest term accepted by this automaton that is less than or equal
+    /// to the provided input term.
+    ///
+    /// The result is placed in `output`; it is fine for `output` and `input` to hold
+    /// the same bytes. Returns `None` if there is no floor term, i.e. the provided
+    /// input term is before the first term accepted by this automaton.
+    pub fn floor(&self, input: &BytesRef, output: &mut BytesRefBuilder) -> Option<BytesRef> {
+        let automaton = self.automaton.as_ref()?;
+        let run_automaton = self.run_automaton.as_ref()?;
+        let mut transition = Transition::new();
+
+        let mut state = 0i32;
+
+        // Special case the empty string:
+        if input.length == 0 {
+            return if run_automaton.is_accept(state) {
+                output.clear();
+                Some(output.get())
+            } else {
+                None
+            };
+        }
+
+        let mut stack: Vec<i32> = Vec::new();
+
+        let mut idx = 0usize;
+        loop {
+            let mut label = i32::from(input.bytes[input.offset + idx]);
+            let mut next_state = run_automaton.step(state, label);
+
+            if idx == input.length - 1 {
+                if next_state != -1 && run_automaton.is_accept(next_state) {
+                    // Input string is accepted
+                    output.grow(1 + idx);
+                    output.set_byte_at(idx, label as u8);
+                    output.set_length(input.length);
+                    return Some(output.get());
+                } else {
+                    next_state = -1;
+                }
+            }
+
+            if next_state == -1 {
+                // Pop back to a state that has a transition <= our label:
+                loop {
+                    let num_transitions = automaton.get_num_transitions(state);
+                    if num_transitions == 0 {
+                        debug_assert!(run_automaton.is_accept(state));
+                        output.set_length(idx);
+                        return Some(output.get());
+                    }
+                    automaton.get_transition(state, 0, &mut transition);
+
+                    if label - 1 < transition.min {
+                        if run_automaton.is_accept(state) {
+                            output.set_length(idx);
+                            return Some(output.get());
+                        }
+                        // pop
+                        state = stack.pop()?;
+                        idx -= 1;
+                        label = i32::from(input.bytes[input.offset + idx]);
+                    } else {
+                        break;
+                    }
+                }
+
+                return Some(self.add_tail(state, output, idx, label));
+            } else {
+                output.grow(1 + idx);
+                output.set_byte_at(idx, label as u8);
+                stack.push(state);
+                state = next_state;
+                idx += 1;
+            }
+        }
+    }
+
+    /// Gets a [`ByteRunnable`] instance; it will be different depending on whether an
+    /// NFA or a DFA was passed in, and it is not guaranteed to be non-`None`.
+    pub fn get_byte_runnable(&self) -> Option<&dyn ByteRunnable> {
+        // they can be both None but not both Some
+        debug_assert!(self.nfa_run_automaton.is_none() || self.run_automaton.is_none());
+        match &self.nfa_run_automaton {
+            None => self.run_automaton.as_ref().map(|r| r as &dyn ByteRunnable),
+            Some(nfa) => Some(&**nfa as &dyn ByteRunnable),
+        }
+    }
+
+    /// Gets a [`TransitionAccessor`] instance; it will be different depending on
+    /// whether an NFA or a DFA was passed in, and it is not guaranteed to be
+    /// non-`None`.
+    pub fn get_transition_accessor(&self) -> Option<&dyn TransitionAccessor> {
+        // they can be both None but not both Some
+        debug_assert!(self.nfa_run_automaton.is_none() || self.automaton.is_none());
+        match &self.nfa_run_automaton {
+            None => self
+                .automaton
+                .as_ref()
+                .map(|a| a as &dyn TransitionAccessor),
+            Some(nfa) => Some(&**nfa as &dyn TransitionAccessor),
+        }
+    }
+
+    /// Returns a [`ByteRunAutomaton`] describing how this automaton matches terms,
+    /// for query introspection.
+    ///
+    /// Equivalent to the `AUTOMATON_TYPE.ALL` branch of `CompiledAutomaton.visit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the "any string" automaton cannot be compiled.
+    pub fn any_string_run_automaton() -> Result<ByteRunAutomaton> {
+        ByteRunAutomaton::from_utf32(Automata::make_any_string())
+    }
+
+    /// Reports back to a [`QueryVisitor`] how this automaton matches terms.
+    ///
+    /// Equivalent to `org.apache.lucene.util.automaton.CompiledAutomaton#visit`.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's supplier hands the visitor the
+    /// very `runAutomaton` instance this object holds; the port's
+    /// `QueryVisitor::consume_terms_matching` takes a closure returning an owned
+    /// [`ByteRunAutomaton`], so the [`AutomatonType::Normal`] branch clones it.
+    /// The visitor observes the same automaton either way. The two suppliers
+    /// also cannot fail in Java, while this port's [`ByteRunAutomaton`]
+    /// constructors return a [`Result`]; neither call can actually fail — a
+    /// `Normal` automaton always has a run automaton, and the "any string"
+    /// automaton is a constant — so the impossible case yields an automaton that
+    /// accepts nothing rather than a panic.
+    pub fn visit(&self, visitor: &mut dyn QueryVisitor, parent: &dyn Query, field: &str) {
+        if visitor.accept_field(field) {
+            match self.automaton_type {
+                AutomatonType::Normal => {
+                    visitor.consume_terms_matching(parent, field, &|| {
+                        self.run_automaton
+                            .clone()
+                            .unwrap_or_else(Self::empty_run_automaton)
+                    });
+                }
+                AutomatonType::None => {}
+                AutomatonType::All => {
+                    visitor.consume_terms_matching(parent, field, &|| {
+                        Self::any_string_run_automaton()
+                            .unwrap_or_else(|_| Self::empty_run_automaton())
+                    });
+                }
+                AutomatonType::Single => {
+                    let term = match self.term.as_ref() {
+                        Some(term) => Term::new(field.to_string(), term.clone()),
+                        None => Term::empty(field.to_string()),
+                    };
+                    visitor.consume_terms(parent, std::slice::from_ref(&term));
+                }
+            }
+        }
+    }
+
+    /// The run automaton that accepts nothing, used where Java cannot fail.
+    ///
+    /// See the divergence documented on [`CompiledAutomaton::visit`].
+    fn empty_run_automaton() -> ByteRunAutomaton {
+        ByteRunAutomaton::new(Automata::make_empty(), true)
+            .expect("INVARIANT: the empty automaton is deterministic and binary")
+    }
+}
+
+impl PartialEq for CompiledAutomaton {
+    fn eq(&self, other: &Self) -> bool {
+        if self.automaton_type != other.automaton_type {
+            return false;
+        }
+        match self.automaton_type {
+            AutomatonType::Single => self.term == other.term,
+            AutomatonType::Normal => {
+                self.run_automaton == other.run_automaton
+                    && self.nfa_run_automaton == other.nfa_run_automaton
+            }
+            _ => true,
+        }
+    }
+}
+
+impl Eq for CompiledAutomaton {}
+
+impl CompiledAutomaton {
+    /// Java's `CompiledAutomaton.hashCode()` (`CompiledAutomaton.java:506-514`):
+    /// a `31 * result` chain from `1` over `runAutomaton.hashCode()`,
+    /// `nfaRunAutomaton.hashCode()`, `term.hashCode()` and `type.hashCode()`,
+    /// each `0` when `null`.
+    ///
+    /// `runAutomaton` and `term` hash as in Java (the `BytesRef` seeded from
+    /// `StringHelper.GOOD_FAST_HASH_SEED`). `NFARunAutomaton` and the
+    /// `AUTOMATON_TYPE` constant do not override `hashCode()`, so their Java
+    /// hashes are JVM identity hashes, unreproducible in Java itself; the
+    /// stable stand-ins of
+    /// [`java_identity_hash_code_stand_in`](crate::util::java_collections::java_identity_hash_code_stand_in)
+    /// replace them (consistent with [`PartialEq`], which compares the NFA
+    /// automata by value).
+    pub fn hash_code(&self) -> i32 {
+        use crate::util::java_collections::java_identity_hash_code_stand_in;
+        const PRIME: i32 = 31;
+        let mut result: i32 = 1;
+        result = PRIME.wrapping_mul(result).wrapping_add(
+            self.run_automaton
+                .as_ref()
+                .map_or(0, ByteRunAutomaton::hash_code),
+        );
+        result = PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.nfa_run_automaton.as_ref().map_or(0, |_| {
+                java_identity_hash_code_stand_in("org.apache.lucene.util.automaton.NFARunAutomaton")
+            }));
+        result = PRIME
+            .wrapping_mul(result)
+            .wrapping_add(self.term.as_ref().map_or(0, BytesRef::hash_code));
+        PRIME
+            .wrapping_mul(result)
+            .wrapping_add(java_identity_hash_code_stand_in(
+                match self.automaton_type {
+                    AutomatonType::None => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.NONE"
+                    }
+                    AutomatonType::All => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.ALL"
+                    }
+                    AutomatonType::Single => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.SINGLE"
+                    }
+                    AutomatonType::Normal => {
+                        "org.apache.lucene.util.automaton.CompiledAutomaton$AUTOMATON_TYPE.NORMAL"
+                    }
+                },
+            ))
+    }
+}
+
+impl std::hash::Hash for CompiledAutomaton {
+    /// Hashes exactly the fields [`PartialEq`] compares, so the two agree.
+    ///
+    /// **Divergence from Lucene 10.5.0.** Java's `CompiledAutomaton.hashCode()`
+    /// (`CompiledAutomaton.java:508`) is a 31-chain over
+    /// `runAutomaton.hashCode()`, `nfaRunAutomaton.hashCode()`,
+    /// `term.hashCode()` and `type.hashCode()`. Three of those four are not
+    /// reproducible: `NFARunAutomaton` does not override `hashCode()`, and
+    /// neither does the `AUTOMATON_TYPE` enum, so both answer the JVM identity
+    /// hash; and `BytesRef.hashCode()` is seeded from
+    /// `StringHelper.GOOD_FAST_HASH_SEED`, which is drawn per process. The Java
+    /// `int` therefore differs between two JVM runs over the very same
+    /// automaton, and no port can reproduce it. What *is* portable is the
+    /// contract the number serves — that equal values hash equally — so this
+    /// implementation hashes the fields `eq` inspects, in the same order.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.automaton_type.hash(state);
+        match self.automaton_type {
+            AutomatonType::Single => self.term.hash(state),
+            AutomatonType::Normal => {
+                self.run_automaton.hash(state);
+                self.nfa_run_automaton.hash(state);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl CompiledAutomaton {
+    /// Shallow size of the Java class, the fixed part of
+    /// [`CompiledAutomaton::ram_bytes_used`].
+    ///
+    /// Equivalent to the private `CompiledAutomaton.BASE_RAM_BYTES`, which Java
+    /// computes as
+    /// `RamUsageEstimator.shallowSizeOfInstance(CompiledAutomaton.class)`: an
+    /// object header, the seven references `type`, `term`, `runAutomaton`,
+    /// `automaton`, `nfaRunAutomaton`, `commonSuffixRef` and `transition`, the
+    /// `boolean finite` and the `int sinkState`. Measured against
+    /// `lucene-core-10.5.0.jar` on a JVM with compressed references, that is 48
+    /// bytes.
+    const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 7 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
+            + 4
+            + 1,
+    );
+}
+
+impl Accountable for CompiledAutomaton {
+    /// Returns an estimate of the heap this compiled automaton occupies.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.automaton.CompiledAutomaton#ramBytesUsed`
+    /// (`CompiledAutomaton.java:537-545`): the shallow size of the class plus
+    /// `commonSuffixRef`, `runAutomaton`, `nfaRunAutomaton`, `term` and
+    /// `transition`. As Java's own comment records, `automaton` is *not* charged
+    /// here — it is already accounted for through `runAutomaton.ramBytesUsed()`.
+    ///
+    /// `BytesRef` is not `Accountable` in Lucene, so
+    /// `RamUsageEstimator.sizeOfObject` charges it the
+    /// [`UNKNOWN_DEFAULT_RAM_BYTES_USED`](RamUsageEstimator::UNKNOWN_DEFAULT_RAM_BYTES_USED)
+    /// flat rate, and `null` costs nothing; both terms are reproduced here.
+    ///
+    /// Java holds a scratch `Transition transition = new Transition()` field
+    /// (`CompiledAutomaton.java:273`) and charges `Transition.BYTES_USED` for
+    /// it. This port creates that scratch on the stack where it is needed
+    /// rather than storing it, but the term is charged all the same: like every
+    /// other figure [`RamUsageEstimator`] produces, this one reports the heap
+    /// *the JVM* would use — the object header, reference and alignment
+    /// constants it is built on are the JVM's — so dropping the term would
+    /// answer a different question from the one Lucene answers.
+    fn ram_bytes_used(&self) -> i64 {
+        // `BytesRef` is a class `sizeOfObject` does not know: its shallow
+        // size is an object header, the `bytes` reference and two `int`s.
+        let bytes_ref = |r: &Option<BytesRef>| {
+            r.as_ref().map(|_| SizedObject::Unknown {
+                shallow_size: RamUsageEstimator::align_object_size(
+                    RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+                        + RamUsageEstimator::NUM_BYTES_OBJECT_REF
+                        + 8,
+                ),
+            })
+        };
+        let transition = Transition::new();
+        Self::BASE_RAM_BYTES
+            + RamUsageEstimator::size_of_object(bytes_ref(&self.common_suffix_ref))
+            + RamUsageEstimator::size_of_object(
+                self.run_automaton
+                    .as_ref()
+                    .map(|a| SizedObject::Accountable(a as &dyn Accountable)),
+            )
+            + RamUsageEstimator::size_of_object(
+                self.nfa_run_automaton
+                    .as_ref()
+                    .map(|a| SizedObject::Accountable(&**a as &dyn Accountable)),
+            )
+            + RamUsageEstimator::size_of_object(bytes_ref(&self.term))
+            + RamUsageEstimator::size_of_object(Some(SizedObject::Accountable(&transition)))
+    }
+}

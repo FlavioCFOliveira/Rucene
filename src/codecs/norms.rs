@@ -10,13 +10,15 @@
 #![deny(unsafe_code)]
 
 use std::fmt;
+use std::sync::Arc;
 
-use crate::error::Result;
+use crate::codecs::doc_values::{merge_numeric_values, NumericDocValuesSub};
+use crate::error::{LuceneError, Result};
 
 use super::postings::MergeState;
 use super::state::{SegmentReadState, SegmentWriteState};
 use super::stub::FieldInfo;
-use crate::index::doc_values::{DocValues, EmptyNumericDocValues, NumericDocValues};
+use crate::index::doc_values::NumericDocValues;
 
 // -----------------------------------------------------------------------------
 // Producer
@@ -25,9 +27,13 @@ use crate::index::doc_values::{DocValues, EmptyNumericDocValues, NumericDocValue
 /// Reads normalization values from a segment.
 ///
 /// Equivalent to `org.apache.lucene.codecs.NormsProducer`.
-pub trait NormsProducer: fmt::Debug {
+pub trait NormsProducer: Send + Sync + fmt::Debug {
     /// Returns the numeric norm values for the given field.
-    fn get_norms(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>>;
+    ///
+    /// Java's return value is nullable: `SlowCompositeCodecReaderWrapper`'s
+    /// producer answers `MultiDocValues.getNormValues`, which is `null` when no
+    /// wrapped reader has norms for the field. `None` is that `null`.
+    fn get_norms(&self, field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>>;
 
     /// Checks consistency of this producer.
     fn check_integrity(&self) -> Result<()>;
@@ -36,7 +42,7 @@ pub trait NormsProducer: fmt::Debug {
     fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>>;
 
     /// Closes this producer, releasing all resources.
-    fn close(&mut self) -> Result<()>;
+    fn close(&self) -> Result<()>;
 }
 
 // -----------------------------------------------------------------------------
@@ -52,10 +58,47 @@ pub trait NormsConsumer: fmt::Debug {
 
     /// Merges the norm fields from the readers in `merge_state`.
     ///
-    /// The default implementation is a no-op; concrete formats override it with
-    /// format-specific merge logic.
-    fn merge(&mut self, _merge_state: &MergeState) -> Result<()> {
+    /// Equivalent to `NormsConsumer.merge(MergeState)`: every producer is
+    /// integrity-checked first, and then each field that has norms is merged
+    /// through [`merge_norms_field`](Self::merge_norms_field). A format that
+    /// can do better — bulk-copying bytes, say — overrides this.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the integrity check or the per-field merge raises.
+    fn merge(&mut self, merge_state: &MergeState) -> Result<()> {
+        for norms_producer in merge_state.norms_producers.iter().flatten() {
+            // `NormsConsumer.java:69`.
+            merge_state.check_aborted()?;
+            norms_producer.check_integrity()?;
+        }
+        for merge_field_info in merge_state.merge_field_infos.iter() {
+            if merge_field_info.has_norms() {
+                self.merge_norms_field(&merge_field_info.clone(), merge_state)?;
+            }
+        }
         Ok(())
+    }
+
+    /// Merges one field's norms from every reader in `merge_state`.
+    ///
+    /// Equivalent to `NormsConsumer.mergeNormsField(FieldInfo, MergeState)`,
+    /// which calls [`add_norms_field`](Self::add_norms_field) with a producer
+    /// that merges the sub-readers and filters deleted documents on the fly.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the sub-readers or writing the field raises.
+    fn merge_norms_field(
+        &mut self,
+        merge_field_info: &FieldInfo,
+        merge_state: &MergeState,
+    ) -> Result<()> {
+        let producer = MergedNormsProducer {
+            merge_field_info: merge_field_info.clone(),
+            merge_state,
+        };
+        self.add_norms_field(merge_field_info, &producer)
     }
 
     /// Closes this consumer, releasing all resources.
@@ -84,20 +127,19 @@ pub trait NormsFormat: Send + Sync + fmt::Debug {
 // No-op implementations
 // -----------------------------------------------------------------------------
 
-/// A no-op numeric doc-values iterator that returns no documents.
-///
-/// This is an alias for [`EmptyNumericDocValues`] from the `index` module so
-/// that the norms API uses the same iterator-based [`NumericDocValues`] trait
-/// as the rest of the doc-values stack.
-pub type EmptyNormsDocValues = EmptyNumericDocValues;
-
 /// A no-op norms producer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyNormsProducer;
+pub(crate) struct EmptyNormsProducer;
 
+#[cfg(test)]
 impl NormsProducer for EmptyNormsProducer {
-    fn get_norms(&self, _field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        Ok(Box::new(DocValues::empty_numeric()))
+    fn get_norms(&self, _field: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        Ok(Some(Box::new(
+            crate::index::doc_values::DocValues::empty_numeric(),
+        )))
     }
 
     fn check_integrity(&self) -> Result<()> {
@@ -108,15 +150,19 @@ impl NormsProducer for EmptyNormsProducer {
         Ok(Box::new(self.clone()))
     }
 
-    fn close(&mut self) -> Result<()> {
+    fn close(&self) -> Result<()> {
         Ok(())
     }
 }
 
 /// A no-op norms consumer.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyNormsConsumer;
+pub(crate) struct EmptyNormsConsumer;
 
+#[cfg(test)]
 impl NormsConsumer for EmptyNormsConsumer {
     fn add_norms_field(&mut self, _field: &FieldInfo, _values: &dyn NormsProducer) -> Result<()> {
         Ok(())
@@ -128,18 +174,23 @@ impl NormsConsumer for EmptyNormsConsumer {
 }
 
 /// A no-op norms format.
+///
+/// Test-only: Lucene has no such class.
+#[cfg(test)]
 #[derive(Debug, Default, Clone)]
-pub struct EmptyNormsFormat {
+pub(crate) struct EmptyNormsFormat {
     name: String,
 }
 
+#[cfg(test)]
 impl EmptyNormsFormat {
     /// Creates a new no-op norms format with the given SPI name.
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
 }
 
+#[cfg(test)]
 impl NormsFormat for EmptyNormsFormat {
     fn name(&self) -> &str {
         &self.name
@@ -154,6 +205,80 @@ impl NormsFormat for EmptyNormsFormat {
     }
 }
 
+/// The producer `mergeNormsField` hands to `addNormsField`.
+///
+/// Equivalent to the anonymous `NormsProducer` of
+/// `NormsConsumer.mergeNormsField`, which merges every sub-reader's norms for
+/// one field and filters deleted documents on the fly.
+struct MergedNormsProducer<'a> {
+    merge_field_info: FieldInfo,
+    merge_state: &'a MergeState,
+}
+
+impl fmt::Debug for MergedNormsProducer<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MergedNormsProducer")
+            .field("field", &self.merge_field_info.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NormsProducer for MergedNormsProducer<'_> {
+    fn get_norms(&self, field_info: &FieldInfo) -> Result<Option<Box<dyn NumericDocValues>>> {
+        let values: Result<Box<dyn NumericDocValues>> = {
+            if field_info.name != self.merge_field_info.name {
+                return Err(LuceneError::illegal_argument("wrong fieldInfo".to_string()));
+            }
+
+            let mut subs = Vec::new();
+            debug_assert_eq!(
+                self.merge_state.doc_maps.len(),
+                self.merge_state.doc_values_producers.len()
+            );
+            for i in 0..self.merge_state.doc_values_producers.len() {
+                let Some(norms_producer) = self.merge_state.norms_producers[i].as_ref() else {
+                    continue;
+                };
+                let Some(reader_field_info) =
+                    self.merge_state.field_infos[i].field_info(&self.merge_field_info.name)
+                else {
+                    continue;
+                };
+                if !reader_field_info.has_norms() {
+                    continue;
+                }
+                // `if (norms != null) subs.add(...)` (`NormsConsumer.java:128-130`).
+                let Some(values) = norms_producer.get_norms(reader_field_info)? else {
+                    continue;
+                };
+                debug_assert!(values.doc_id() == -1);
+                subs.push(NumericDocValuesSub {
+                    doc_map: Arc::clone(&self.merge_state.doc_maps[i]),
+                    values,
+                    mapped_doc_id: -1,
+                });
+            }
+            merge_numeric_values(subs, self.merge_state.needs_index_sort)
+        };
+        Ok(Some(values?))
+    }
+
+    fn check_integrity(&self) -> Result<()> {
+        // The sub-producers were checked before the merge began.
+        Ok(())
+    }
+
+    fn get_merge_instance(&self) -> Result<Box<dyn NormsProducer>> {
+        Err(LuceneError::unsupported_operation(
+            "the merged norms producer has no merge instance".to_string(),
+        ))
+    }
+
+    fn close(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -163,26 +288,15 @@ mod tests {
     use super::*;
     use crate::codecs::stub::BufferedUpdates;
     use crate::index::FieldInfos;
-
-    #[test]
-    fn empty_norms_doc_values_is_exhausted() {
-        use crate::index::doc_values::DocValuesIterator;
-        use crate::search::DocIdSetIterator;
-
-        let mut norms = EmptyNormsDocValues::default();
-        assert_eq!(norms.doc_id(), -1);
-        assert_eq!(norms.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
-        assert!(!norms.advance_exact(0).unwrap());
-        assert_eq!(norms.cost(), 0);
-    }
+    use std::sync::Arc;
 
     #[test]
     fn empty_norms_producer_returns_empty_values() {
         use crate::search::DocIdSetIterator;
 
-        let mut producer = EmptyNormsProducer;
+        let producer = EmptyNormsProducer;
         let field = FieldInfo::default();
-        let mut values = producer.get_norms(&field).unwrap();
+        let mut values = producer.get_norms(&field).unwrap().unwrap();
         assert_eq!(values.next_doc().unwrap(), crate::search::NO_MORE_DOCS);
         producer.check_integrity().unwrap();
         let _merge = producer.get_merge_instance().unwrap();
@@ -203,17 +317,18 @@ mod tests {
         let format = EmptyNormsFormat::new("EmptyNorms");
         assert_eq!(format.name(), "EmptyNorms");
 
-        let dir = crate::store::RamDirectory::default();
-        let dir_ref: &dyn crate::store::Directory = &dir;
+        let dir: Arc<dyn crate::store::Directory> =
+            Arc::new(crate::store::ByteBuffersDirectory::default());
+        let dir_ref: &dyn crate::store::Directory = &*dir;
         let context = &*crate::store::DEFAULT_IO_CONTEXT;
         let field_infos = FieldInfos::default();
         let segment_info = crate::codecs::tests::test_segment_info("test", 10);
         let write_state = SegmentWriteState::new(
-            crate::util::default_info_stream(),
-            dir_ref,
+            &crate::util::NoOutputInfoStream,
+            Arc::clone(&dir),
             &segment_info,
             &field_infos,
-            &BufferedUpdates,
+            Box::leak(Box::new(BufferedUpdates::default())),
             context,
         );
         let _consumer = format.norms_consumer(&write_state).unwrap();

@@ -1,0 +1,28 @@
+# label	value: DocHelper's fields, its maps' key orders, nameValues, setupDoc, createDocument
+field	textField1:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=falsefalsefalse:NONE:0066.0069.0065.006c.0064.0020.006f.006e.0065.0020.0074.0065.0078.0074
+field	textField2:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truetruetrue:NONE:0066.0069.0065.006c.0064.0020.0066.0069.0065.006c.0064.0020.0066.0069.0065.006c.0064.0020.0074.0077.006f.0020.0074.0065.0078.0074
+field	textField3:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=true:tv=falsefalsefalse:NONE:0061.0061.0061.004e.006f.004e.006f.0072.006d.0073.0020.0061.0061.0061.004e.006f.004e.006f.0072.006d.0073.0020.0062.0062.0062.004e.006f.004e.006f.0072.006d.0073
+field	keyField:StringField:stored=true:tokenized=false:DOCS:omitNorms=true:tv=falsefalsefalse:NONE:004b.0065.0079.0077.006f.0072.0064
+field	omitNorms:Field:stored=true:tokenized=false:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=true:tv=falsefalsefalse:NONE:006f.006d.0069.0074.004e.006f.0072.006d.0073.0054.0065.0078.0074
+field	omitTermFreqAndPositions:Field:stored=true:tokenized=true:DOCS:omitNorms=false:tv=falsefalsefalse:NONE:0061.006e.0061.006c.0079.007a.0065.0064.0020.0077.0069.0074.0068.0020.006e.006f.0020.0074.0066.0020.0061.006e.0064.0020.0070.006f.0073.0069.0074.0069.006f.006e.0073
+field	unIndField:Field:stored=true:tokenized=true:NONE:omitNorms=false:tv=falsefalsefalse:NONE:0075.006e.0069.006e.0064.0065.0078.0065.0064.0020.0066.0069.0065.006c.0064.0020.0074.0065.0078.0074
+field	unStoredField1:TextField:stored=false:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=falsefalsefalse:NONE:0075.006e.0073.0074.006f.0072.0065.0064.0020.0066.0069.0065.006c.0064.0020.0074.0065.0078.0074
+field	unStoredField2:Field:stored=false:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truefalsefalse:NONE:0075.006e.0073.0074.006f.0072.0065.0064.0020.0066.0069.0065.006c.0064.0020.0074.0065.0078.0074
+field	textField1Utf8:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=falsefalsefalse:NONE:0066.0069.0065.006c.0064.0020.006f.006e.0065.0020.4e00.0074.0065.0078.0074
+field	textField2Utf8:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truetruetrue:NONE:0066.0069.0065.006c.0064.0020.0066.0069.0065.006c.0064.0020.0066.0069.0065.006c.0064.0020.4e00.0074.0077.006f.0020.0074.0065.0078.0074
+field	lazyField:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=falsefalsefalse:NONE:0054.0068.0065.0073.0065.0020.0061.0072.0065.0020.0073.006f.006d.0065.0020.0066.0069.0065.006c.0064.0020.0062.0079.0074.0065.0073
+field	lazyFieldBinary:StoredField:stored=true:tokenized=true:NONE:omitNorms=false:tv=falsefalsefalse:NONE:bin54686573652061726520736f6d652062696e617279206669656c64206279746573
+field	largeLazyField:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=falsefalsefalse:NONE:len550000
+map.all	textField1Utf8|keyField|omitNorms|omitTermFreqAndPositions|lazyField|unStoredField2|textField2|lazyFieldBinary|textField1|textField2Utf8|unStoredField1|textField3|largeLazyField|unIndField
+map.indexed	textField1Utf8|unStoredField2|keyField|omitNorms|omitTermFreqAndPositions|textField2|textField1|textField2Utf8|unStoredField1|textField3|lazyField|largeLazyField
+map.stored	textField1Utf8|keyField|omitNorms|omitTermFreqAndPositions|textField2|lazyFieldBinary|textField1|textField2Utf8|textField3|lazyField|largeLazyField|unIndField
+map.unstored	unStoredField2|unStoredField1
+map.unindexed	lazyFieldBinary|unIndField
+map.termvector	unStoredField2|textField2|textField2Utf8
+map.notermvector	textField1Utf8|keyField|omitNorms|omitTermFreqAndPositions|textField1|unStoredField1|textField3|lazyField|largeLazyField
+map.lazy	
+map.noNorms	keyField|omitNorms|textField3
+map.noTf	keyField|omitTermFreqAndPositions
+nameValues	textField1Utf8|keyField|omitNorms|omitTermFreqAndPositions|lazyField|unStoredField2|textField2|lazyFieldBinary|textField1|textField2Utf8|unStoredField1|textField3|largeLazyField|unIndField
+setupDoc	14
+createDocument	id:Field:stored=true:tokenized=false:DOCS:omitNorms=true:tv=truetruetrue:NONE:0037|indexname:Field:stored=true:tokenized=false:DOCS:omitNorms=true:tv=truetruetrue:NONE:0069.0064.0078|field1:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truetruetrue:NONE:0061.0037|field2:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truetruetrue:NONE:0061.0037.0020.0062.0037|field3:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truetruetrue:NONE:0061.0037.0020.0062.0037|field4:Field:stored=true:tokenized=true:DOCS_AND_FREQS_AND_POSITIONS:omitNorms=false:tv=truetruetrue:NONE:0061.0037.0020.0062.0037
