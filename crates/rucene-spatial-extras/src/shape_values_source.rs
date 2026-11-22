@@ -15,10 +15,40 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ShapeValuesSource.java`, of the Java
-//! package `org.apache.lucene.spatial`.
+//! The types declared in `ShapeValuesSource.java`, of the Java package
+//! `org.apache.lucene.spatial`.
 
-/// Java: `public abstract class`.
+use std::any::Any;
+use std::fmt;
+
+use rucene::error::Result;
+use rucene::index::LeafReaderContext;
+use rucene::search::segment_cacheable::SegmentCacheable;
+
+use crate::shape_values::ShapeValues;
+
+/// Equivalent to `org.apache.lucene.spatial.ShapeValuesSource` (`public
+/// abstract class ShapeValuesSource implements SegmentCacheable`): produces
+/// [`ShapeValues`] per-segment.
 ///
-/// Skeleton of `org.apache.lucene.spatial.ShapeValuesSource`; ported by rmp task #623.
-pub struct ShapeValuesSource;
+/// Java's `equals(Object)`, `hashCode()` and `toString()` are
+/// [`source_eq`](Self::source_eq), [`source_hash`](Self::source_hash) and the
+/// [`fmt::Display`] implementation.
+pub trait ShapeValuesSource: SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync + Any {
+    /// `getValues(LeafReaderContext ctx)`: get a [`ShapeValues`] instance
+    /// for the given leaf reader context.
+    ///
+    /// # Errors
+    ///
+    /// The I/O errors of reading the leaf.
+    fn get_values(&self, ctx: &LeafReaderContext) -> Result<Box<dyn ShapeValues>>;
+
+    /// `equals(Object o)`.
+    fn source_eq(&self, other: &dyn ShapeValuesSource) -> bool;
+
+    /// `hashCode()`.
+    fn source_hash(&self) -> i32;
+
+    /// This source as `Any`, for `getClass()` comparisons and casts.
+    fn as_any(&self) -> &dyn Any;
+}

@@ -1,4 +1,4 @@
-//! Skeletons of the Java package `org.locationtech.spatial4j.io`.
+//! The Java package `org.locationtech.spatial4j.io`.
 
 pub mod binary_codec;
 pub mod geo_json_reader;

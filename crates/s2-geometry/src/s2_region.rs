@@ -14,10 +14,28 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `S2Region.java`, of the Java
-//! package `com.google.common.geometry`.
+//! The types declared in `S2Region.java`, of the Java package
+//! `com.google.common.geometry`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `com.google.common.geometry.S2Region`; ported by rmp task #622.
-pub trait S2Region {}
+use crate::s2_cap::S2Cap;
+use crate::s2_cell::S2Cell;
+use crate::s2_lat_lng_rect::S2LatLngRect;
+
+/// Equivalent to `com.google.common.geometry.S2Region` (`public interface`):
+/// a two-dimensional region over the unit sphere, restricted to the methods
+/// that approximate it.
+pub trait S2Region {
+    /// `getCapBound()`: a bounding spherical cap.
+    fn get_cap_bound(&self) -> S2Cap;
+
+    /// `getRectBound()`: a bounding latitude-longitude rectangle.
+    fn get_rect_bound(&self) -> S2LatLngRect;
+
+    /// `contains(S2Cell)`: `true` only when the region surely contains the
+    /// cell.
+    fn contains_cell(&self, cell: &S2Cell) -> bool;
+
+    /// `mayIntersect(S2Cell)`: `false` only when the region surely does not
+    /// intersect the cell.
+    fn may_intersect(&self, cell: &S2Cell) -> bool;
+}

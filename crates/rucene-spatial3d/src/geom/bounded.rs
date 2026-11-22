@@ -15,10 +15,16 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Bounded.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `Bounded.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::bounds::Bounds;
+
+/// This interface describes methods that apply to all bounded shapes.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.Bounded`; ported by rmp task #618.
-pub trait Bounded {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.Bounded`.
+pub trait Bounded {
+    /// `getBounds(Bounds)`: computes the bounds of the shape into `bounds`.
+    fn get_bounds(&self, bounds: &mut dyn Bounds);
+}

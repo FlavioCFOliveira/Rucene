@@ -15,10 +15,13 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoPolygon.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoPolygon.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_area_shape::GeoAreaShape;
+
+/// `GeoPolygon` interface description.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoPolygon`; ported by rmp task #618.
-pub trait GeoPolygon {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPolygon`.
+pub trait GeoPolygon: GeoAreaShape {}

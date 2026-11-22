@@ -17,3 +17,6 @@ rucene = { path = "../.." }
 rucene-spatial3d = { path = "../rucene-spatial3d" }
 spatial4j = { path = "../spatial4j" }
 s2-geometry = { path = "../s2-geometry" }
+# The JDK `java.util.Calendar` emulation `DateRangePrefixTree` works on
+# (`rucene_queryparser::jdk::calendar`; coordinator decision, sprint 17).
+rucene-queryparser = { path = "../rucene-queryparser" }

@@ -15,10 +15,14 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoCircle.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoCircle.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_distance_shape::GeoDistanceShape;
+use super::geo_sizeable::GeoSizeable;
+
+/// Interface describing circular area with a center and radius.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoCircle`; ported by rmp task #618.
-pub trait GeoCircle {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoCircle`.
+pub trait GeoCircle: GeoDistanceShape + GeoSizeable {}

@@ -1,4 +1,4 @@
-//! Skeletons of the Java package `org.locationtech.spatial4j.shape.impl`.
+//! The Java package `org.locationtech.spatial4j.shape.impl`.
 
 pub mod b_box_calculator;
 pub mod buffered_line;

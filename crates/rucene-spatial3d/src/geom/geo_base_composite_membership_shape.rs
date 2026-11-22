@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBaseCompositeMembershipShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `abstract class` (package-private).
+//! The types declared in `GeoBaseCompositeMembershipShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use rucene::error::Result;
+
+use super::distance_style::DistanceStyle;
+use super::geo_base_composite_shape::GeoBaseCompositeShape;
+use super::geo_membership_shape::GeoMembershipShape;
+
+/// Base class to create a composite of GeoMembershipShapes.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBaseCompositeMembershipShape`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBaseCompositeMembershipShape`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour over a
+/// [`GeoBaseCompositeShape`] of membership shapes.
 pub(crate) struct GeoBaseCompositeMembershipShape;
+
+impl GeoBaseCompositeMembershipShape {
+    /// `computeOutsideDistance(DistanceStyle, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the members' distance computations.
+    pub(crate) fn compute_outside_distance_xyz<T: ?Sized + GeoMembershipShape>(
+        base: &GeoBaseCompositeShape<T>,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
+        if base.is_within_xyz(x, y, z) {
+            return Ok(0.0);
+        }
+        let mut distance = f64::INFINITY;
+        for shape in &base.shapes {
+            let normal_distance = shape.compute_outside_distance_xyz(distance_style, x, y, z)?;
+            if normal_distance < distance {
+                distance = normal_distance;
+            }
+        }
+        Ok(distance)
+    }
+}

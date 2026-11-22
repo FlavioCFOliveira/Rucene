@@ -6,8 +6,8 @@
  *    http://www.apache.org/licenses/LICENSE-2.0.txt
  ******************************************************************************/
 
-//! Skeletons of the types declared in `RectIntersectionTestHelper.java`, of the Java
-//! package `org.locationtech.spatial4j.shape`.
+//! The types declared in `RectIntersectionTestHelper.java`, of the Java package
+//! `org.locationtech.spatial4j.shape`.
 
 /// Java: `public abstract class`.
 ///

@@ -6,12 +6,6 @@
 //! out of scope (user decision, sprint 17). Each file keeps its upstream
 //! copyright and license notice.
 //!
-//! Every type of that subset is declared here as a skeleton: a declaration that
-//! stands for one Java type, without fields, methods or behaviour (an enum lists
-//! its Java constants as variants), whose doc names the sprint-17 rmp task that
-//! will port it. A type stays a skeleton until that task replaces it with its
-//! port.
-//!
 //! The module tree mirrors the Java packages below the package root
 //! `com.google.common.geometry`: the types of that package sit at the crate
 //! root. Each Java source file is one module, named in snake_case
@@ -21,10 +15,6 @@
 //! under its own name; the name of its enclosing type is prefixed only when its
 //! own name is a name of the Rust prelude or the name of another item of that
 //! module, and the Java kind is appended when the prefixed name is itself taken.
-
-// Package-private and private Java types are `pub(crate)` skeletons that nothing
-// uses yet. This allowance goes away when the module is fully ported.
-#![allow(dead_code)]
 
 pub mod mutable_integer;
 pub mod r1_interval;

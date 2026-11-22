@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.serialized`.
+//! The Java package `org.apache.lucene.spatial.serialized`.
 
 pub mod serialized_dv_strategy;

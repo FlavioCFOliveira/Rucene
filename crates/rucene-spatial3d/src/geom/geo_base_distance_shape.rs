@@ -15,10 +15,21 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBaseDistanceShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public abstract class`.
+//! The types declared in `GeoBaseDistanceShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+/// Distance shapes have capabilities of both geohashing and distance
+/// computation (which also includes point membership determination).
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBaseDistanceShape`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBaseDistanceShape`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour, which each concrete class (a struct)
+/// reaches through the `impl_*` macros of [`super`] and through these
+/// associated functions where Java calls `super`.
+/// `computeDistance`, `computeDeltaDistance` and `getDistanceBounds` are
+/// implemented by `impl_geo_base_distance_shape!` over each class's inherent
+/// `distance`, `delta_distance` (Java's default: `distance * 2.0`) and
+/// `distance_bounds`.
 pub struct GeoBaseDistanceShape;

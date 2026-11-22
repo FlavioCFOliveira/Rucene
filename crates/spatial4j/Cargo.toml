@@ -13,5 +13,11 @@ publish = false
 name = "spatial4j"
 
 # spatial4j 0.8's own dependencies (noggit, jackson-databind, jts-core) are all
-# optional in its pom; none is a dependency of this crate.
+# optional in its pom; none is a dependency of this crate. The port uses the
+# Rucene core for the JDK behaviours it reproduces (`Double.toString`,
+# `java.text` number formats, the Java exception classes).
 [dependencies]
+rucene = { path = "../.." }
+# The exact JDK 25 `Character` tables (`isLetter`, `isWhitespace`,
+# `isJavaIdentifierPart`) the WKT and legacy readers use.
+rucene-analysis-common = { path = "../rucene-analysis-common" }

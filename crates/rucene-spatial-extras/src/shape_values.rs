@@ -15,10 +15,29 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ShapeValues.java`, of the Java
-//! package `org.apache.lucene.spatial`.
+//! The types declared in `ShapeValues.java`, of the Java package
+//! `org.apache.lucene.spatial`.
 
-/// Java: `public abstract class`.
-///
-/// Skeleton of `org.apache.lucene.spatial.ShapeValues`; ported by rmp task #623.
-pub struct ShapeValues;
+use std::sync::Arc;
+
+use rucene::error::Result;
+use spatial4j::shape::shape::Shape;
+
+/// Equivalent to `org.apache.lucene.spatial.ShapeValues` (`public abstract
+/// class`): iterator over `Shape` objects for an index segment.
+pub trait ShapeValues {
+    /// `advanceExact(int doc)`: advance the iterator to the given document.
+    /// Returns `true` if there is a value for this document.
+    ///
+    /// # Errors
+    ///
+    /// The I/O errors of the underlying values.
+    fn advance_exact(&mut self, doc: i32) -> Result<bool>;
+
+    /// `value()`: the `Shape` for the current document.
+    ///
+    /// # Errors
+    ///
+    /// The I/O errors of the underlying values.
+    fn value(&mut self) -> Result<Arc<dyn Shape>>;
+}

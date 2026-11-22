@@ -15,10 +15,16 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `CellCanPrune.java`, of the Java
-//! package `org.apache.lucene.spatial.prefix.tree`.
+//! The types declared in `CellCanPrune.java`, of the Java package
+//! `org.apache.lucene.spatial.prefix.tree`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.apache.lucene.spatial.prefix.tree.CellCanPrune`; ported by rmp task #624.
-pub trait CellCanPrune {}
+use crate::prefix::tree::cell::Cell;
+
+/// Equivalent to `org.apache.lucene.spatial.prefix.tree.CellCanPrune`
+/// (`public interface CellCanPrune extends Cell`): a cell whose sub-cells
+/// can be counted, so that a fully covered cell is indexed as a leaf instead
+/// of all its children.
+pub trait CellCanPrune: Cell {
+    /// `getSubCellsSize()`: the number of sub-cells of this cell.
+    fn get_sub_cells_size(&self) -> i32;
+}

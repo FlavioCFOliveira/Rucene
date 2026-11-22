@@ -15,10 +15,18 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoAreaShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoAreaShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_area::GeoArea;
+use super::geo_membership_shape::GeoMembershipShape;
+use super::geo_shape::GeoShape;
+
+/// Shape that implements `GeoArea`.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoAreaShape`; ported by rmp task #618.
-pub trait GeoAreaShape {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoAreaShape`.
+pub trait GeoAreaShape: GeoMembershipShape + GeoArea {
+    /// `intersects(GeoShape)`: whether the shape's edges intersect `geo_shape`.
+    fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool;
+}

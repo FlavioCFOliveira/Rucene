@@ -15,10 +15,42 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SingletonCellIterator.java`, of the Java
-//! package `org.apache.lucene.spatial.prefix.tree`.
+//! The types declared in `SingletonCellIterator.java`, of the Java package
+//! `org.apache.lucene.spatial.prefix.tree`.
 
-/// Java: `class` (package-private).
-///
-/// Skeleton of `org.apache.lucene.spatial.prefix.tree.SingletonCellIterator`; ported by rmp task #624.
-pub(crate) struct SingletonCellIterator;
+use crate::prefix::tree::cell::CellRef;
+use crate::prefix::tree::cell_iterator::{CellIterator, CellIteratorBase};
+
+/// Equivalent to `org.apache.lucene.spatial.prefix.tree.SingletonCellIterator`
+/// (package-private `class SingletonCellIterator extends CellIterator`): a
+/// singleton (one-element) cell iterator.
+pub(crate) struct SingletonCellIterator {
+    base: CellIteratorBase,
+}
+
+impl SingletonCellIterator {
+    /// `SingletonCellIterator(Cell cell)`.
+    pub(crate) fn new(cell: CellRef) -> Self {
+        Self {
+            base: CellIteratorBase {
+                next_cell: Some(cell), // preload nextCell
+                this_cell: None,
+            },
+        }
+    }
+}
+
+impl CellIterator for SingletonCellIterator {
+    fn has_next(&mut self) -> bool {
+        self.base.this_cell = None;
+        self.base.next_cell.is_some()
+    }
+
+    fn next(&mut self) -> CellRef {
+        crate::cell_iterator_next!(self, base)
+    }
+
+    fn this_cell(&self) -> CellRef {
+        self.base.this_cell()
+    }
+}

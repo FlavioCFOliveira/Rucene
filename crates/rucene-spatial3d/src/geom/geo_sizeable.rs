@@ -15,10 +15,18 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoSizeable.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoSizeable.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_point::GeoPoint;
+
+/// Some shapes can compute radii of a geocircle in which they are inscribed.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoSizeable`; ported by rmp task #618.
-pub trait GeoSizeable {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoSizeable`.
+pub trait GeoSizeable {
+    /// `getRadius()`.
+    fn get_radius(&self) -> f64;
+    /// `getCenter()`.
+    fn get_center(&self) -> GeoPoint;
+}

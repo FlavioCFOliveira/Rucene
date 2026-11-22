@@ -15,10 +15,23 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Tools.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public class`.
+//! The types declared in `Tools.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+/// Static methods globally useful for 3d geometric work.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.Tools`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.Tools`.
 pub struct Tools;
+
+impl Tools {
+    /// `safeAcos(double)`: `acos` of the value clamped to `[-1, 1]`.
+    pub fn safe_acos(mut value: f64) -> f64 {
+        if value > 1.0 {
+            value = 1.0;
+        } else if value < -1.0 {
+            value = -1.0;
+        }
+        value.acos()
+    }
+}

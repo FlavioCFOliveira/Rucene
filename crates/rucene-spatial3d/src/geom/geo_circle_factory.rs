@@ -15,10 +15,61 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoCircleFactory.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public class`.
+//! The types declared in `GeoCircleFactory.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use super::geo_circle::GeoCircle;
+use super::geo_degenerate_point::GeoDegeneratePoint;
+use super::geo_exact_circle::GeoExactCircle;
+use super::geo_standard_circle::GeoStandardCircle;
+use super::planet_model::PlanetModel;
+use super::vector::Vector;
+
+/// Class which constructs a [`GeoCircle`] representing an arbitrary circle.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoCircleFactory`; ported by rmp task #620.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoCircleFactory`.
 pub struct GeoCircleFactory;
+
+impl GeoCircleFactory {
+    /// `makeGeoCircle(PlanetModel, double latitude, double longitude, double
+    /// cutoffAngle)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` from the circle constructors.
+    pub fn make_geo_circle(
+        planet_model: &Arc<PlanetModel>,
+        latitude: f64,
+        longitude: f64,
+        cutoff_angle: f64,
+    ) -> Result<Arc<dyn GeoCircle>> {
+        if cutoff_angle < Vector::MINIMUM_ANGULAR_RESOLUTION {
+            return Ok(Arc::new(GeoDegeneratePoint::new(planet_model, latitude, longitude)?));
+        }
+        Ok(Arc::new(GeoStandardCircle::new(planet_model, latitude, longitude, cutoff_angle)?))
+    }
+
+    /// `makeExactGeoCircle(PlanetModel, double latitude, double longitude,
+    /// double radius, double accuracy)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` from the circle constructors.
+    pub fn make_exact_geo_circle(
+        planet_model: &Arc<PlanetModel>,
+        latitude: f64,
+        longitude: f64,
+        radius: f64,
+        accuracy: f64,
+    ) -> Result<Arc<dyn GeoCircle>> {
+        if radius < Vector::MINIMUM_ANGULAR_RESOLUTION {
+            return Ok(Arc::new(GeoDegeneratePoint::new(planet_model, latitude, longitude)?));
+        }
+        Ok(Arc::new(GeoExactCircle::new(planet_model, latitude, longitude, radius, accuracy)?))
+    }
+}

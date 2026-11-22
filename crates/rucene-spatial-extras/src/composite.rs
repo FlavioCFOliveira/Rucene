@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.composite`.
+//! The Java package `org.apache.lucene.spatial.composite`.
 
 pub mod composite_spatial_strategy;
 pub mod composite_verify_query;

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.vector`.
+//! The Java package `org.apache.lucene.spatial.vector`.
 
 pub mod distance_value_source;
 pub mod point_vector_strategy;

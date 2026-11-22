@@ -6,10 +6,23 @@
  *    http://www.apache.org/licenses/LICENSE-2.0.txt
  ******************************************************************************/
 
-//! Skeletons of the types declared in `AbstractDistanceCalculator.java`, of the Java
+//! The types declared in `AbstractDistanceCalculator.java`, of the Java
 //! package `org.locationtech.spatial4j.distance`.
 
-/// Java: `public abstract class`.
+/// Equivalent to
+/// `org.locationtech.spatial4j.distance.AbstractDistanceCalculator` (`public
+/// abstract class AbstractDistanceCalculator implements
+/// DistanceCalculator`).
 ///
-/// Skeleton of `org.locationtech.spatial4j.distance.AbstractDistanceCalculator`; ported by rmp task #621.
+/// Its `distance(Point, Point)` and `within(...)` are the default methods of
+/// [`DistanceCalculator`](crate::distance::distance_calculator::DistanceCalculator);
+/// its `toString()`, `getClass().getSimpleName()`, is
+/// [`to_string`](Self::to_string), which each calculator's `Display` uses.
 pub struct AbstractDistanceCalculator;
+
+impl AbstractDistanceCalculator {
+    /// `toString()`: the simple class name.
+    pub fn to_string(simple_class_name: &str) -> String {
+        simple_class_name.to_string()
+    }
+}

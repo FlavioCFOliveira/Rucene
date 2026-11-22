@@ -15,10 +15,68 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoDistance.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoDistance.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use rucene::error::Result;
+
+use super::distance_style::DistanceStyle;
+use super::geo_point::GeoPoint;
+use super::membership::Membership;
+
+/// An implementer of this interface is capable of computing the described
+/// "distance" values.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoDistance`; ported by rmp task #618.
-pub trait GeoDistance {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoDistance`.
+pub trait GeoDistance: Membership {
+    /// `computeDistance(DistanceStyle, GeoPoint)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_distance(&self, distance_style: &dyn DistanceStyle, point: &GeoPoint) -> Result<f64> {
+        self.compute_distance_xyz(distance_style, point.x, point.y, point.z)
+    }
+
+    /// `computeDistance(DistanceStyle, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64>;
+
+    /// `computeDeltaDistance(DistanceStyle, GeoPoint)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_delta_distance(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        point: &GeoPoint,
+    ) -> Result<f64> {
+        self.compute_delta_distance_xyz(distance_style, point.x, point.y, point.z)
+    }
+
+    /// `computeDeltaDistance(DistanceStyle, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_delta_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
+        Ok(self.compute_distance_xyz(distance_style, x, y, z)? * 2.0)
+    }
+}

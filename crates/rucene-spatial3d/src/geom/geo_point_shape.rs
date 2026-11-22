@@ -15,10 +15,14 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoPointShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoPointShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_b_box::GeoBBox;
+use super::geo_circle::GeoCircle;
+
+/// Interface describing a `GeoPointShape` shape.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoPointShape`; ported by rmp task #618.
-pub trait GeoPointShape {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPointShape`.
+pub trait GeoPointShape: GeoCircle + GeoBBox {}

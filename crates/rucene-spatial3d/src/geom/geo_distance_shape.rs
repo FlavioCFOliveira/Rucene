@@ -15,10 +15,32 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoDistanceShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoDistanceShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use rucene::error::Result;
+
+use super::bounds::Bounds;
+use super::distance_style::DistanceStyle;
+use super::geo_area_shape::GeoAreaShape;
+use super::geo_distance::GeoDistance;
+
+/// Distance shapes have capabilities of both geohashing and distance
+/// computation (which also includes point membership determination).
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoDistanceShape`; ported by rmp task #618.
-pub trait GeoDistanceShape {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoDistanceShape`.
+pub trait GeoDistanceShape: GeoAreaShape + GeoDistance {
+    /// `getDistanceBounds(Bounds, DistanceStyle, double)`: the bounds of the
+    /// area within `distance_value`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn get_distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        distance_style: &dyn DistanceStyle,
+        distance_value: f64,
+    ) -> Result<()>;
+}

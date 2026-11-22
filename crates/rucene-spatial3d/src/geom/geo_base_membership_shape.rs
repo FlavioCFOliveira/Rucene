@@ -15,10 +15,19 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBaseMembershipShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public abstract class`.
+//! The types declared in `GeoBaseMembershipShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+/// Membership shapes have capabilities of both geohashing and membership
+/// determination.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBaseMembershipShape`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBaseMembershipShape`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour, which each concrete class (a struct)
+/// reaches through the `impl_*` macros of [`super`] and through these
+/// associated functions where Java calls `super`.
+/// `computeOutsideDistance` is implemented by `impl_geo_base_membership_shape!`
+/// over each class's inherent `outside_distance`.
 pub struct GeoBaseMembershipShape;

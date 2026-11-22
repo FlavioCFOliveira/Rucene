@@ -15,10 +15,19 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PlanetObject.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `PlanetObject.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use std::sync::Arc;
+
+use super::planet_model::PlanetModel;
+use super::serializable_object::SerializableObject;
+
+/// Relates to a planet model.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.PlanetObject`; ported by rmp task #618.
-pub trait PlanetObject {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.PlanetObject`.
+pub trait PlanetObject: SerializableObject {
+    /// `getPlanetModel()`.
+    fn get_planet_model(&self) -> &Arc<PlanetModel>;
+}

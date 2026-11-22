@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.prefix.tree`.
+//! The Java package `org.apache.lucene.spatial.prefix.tree`.
 
 pub mod cell;
 pub mod cell_can_prune;

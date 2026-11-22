@@ -12,5 +12,8 @@ publish = false
 [lib]
 name = "s2_geometry"
 
-# s2-geometry-library-java 1.0.0 depends on guava for its tests only.
+# s2-geometry-library-java 1.0.0 depends on guava for its tests only. The port
+# uses the Rucene core for the JDK behaviours it reproduces (`Double.toString`,
+# the Java exception classes).
 [dependencies]
+rucene = { path = "../.." }

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.bbox`.
+//! The Java package `org.apache.lucene.spatial.bbox`.
 
 pub mod b_box_overlap_ratio_value_source;
 pub mod b_box_similarity_value_source;

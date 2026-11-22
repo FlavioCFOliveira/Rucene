@@ -15,10 +15,17 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBaseBBox.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `abstract class` (package-private).
+//! The types declared in `GeoBaseBBox.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+/// All bounding box shapes can derive from this base class, which furnishes some common code.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBaseBBox`; ported by rmp task #618.
-pub(crate) struct GeoBaseBBox;
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBaseBBox`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour, which each concrete class (a struct)
+/// reaches through the `impl_*` macros of [`super`] and through these
+/// associated functions where Java calls `super`.
+/// It adds nothing to its superclass.
+pub struct GeoBaseBBox;

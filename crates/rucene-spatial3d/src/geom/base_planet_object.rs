@@ -15,10 +15,38 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `BasePlanetObject.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public abstract class`.
+//! The types declared in `BasePlanetObject.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::planet_model::PlanetModel;
+
+/// All Geo3D shapes can derive from this base class, which furnishes some
+/// common code.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.BasePlanetObject`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.BasePlanetObject`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour, which each concrete class (a struct)
+/// reaches through the `impl_*` macros of [`super`] and through these
+/// associated functions where Java calls `super`.
+/// The `planetModel` field is the `planet_model` field of each struct.
 pub struct BasePlanetObject;
+
+impl BasePlanetObject {
+    /// `BasePlanetObject.hashCode()`.
+    pub fn hash_code(planet_model: &PlanetModel) -> i32 {
+        use super::serializable_object::SerializableObject;
+        planet_model.java_hash_code()
+    }
+
+    /// `BasePlanetObject.equals(Object)` over the two planet models.
+    pub fn equals(planet_model: &PlanetModel, other: &PlanetModel) -> bool {
+        planet_model == other
+    }
+
+    /// `BasePlanetObject.write(OutputStream)`: unsupported.
+    pub fn write() -> rucene::error::Result<()> {
+        Err(rucene::error::LuceneError::unsupported_operation(""))
+    }
+}

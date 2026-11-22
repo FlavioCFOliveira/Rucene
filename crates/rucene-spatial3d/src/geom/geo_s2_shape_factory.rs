@@ -15,10 +15,37 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoS2ShapeFactory.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public class`.
+//! The types declared in `GeoS2ShapeFactory.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use super::geo_point::GeoPoint;
+use super::geo_polygon::GeoPolygon;
+use super::geo_s2_shape::GeoS2Shape;
+use super::planet_model::PlanetModel;
+
+/// Class which constructs a GeoPolygon representing an S2 google pixel.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoS2ShapeFactory`; ported by rmp task #619.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoS2ShapeFactory`.
 pub struct GeoS2ShapeFactory;
+
+impl GeoS2ShapeFactory {
+    /// `makeGeoS2Shape(PlanetModel, GeoPoint, GeoPoint, GeoPoint, GeoPoint)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` when a side plane cannot be built.
+    pub fn make_geo_s2_shape(
+        planet_model: &Arc<PlanetModel>,
+        point1: GeoPoint,
+        point2: GeoPoint,
+        point3: GeoPoint,
+        point4: GeoPoint,
+    ) -> Result<Arc<dyn GeoPolygon>> {
+        Ok(Arc::new(GeoS2Shape::new(planet_model, point1, point2, point3, point4)?))
+    }
+}

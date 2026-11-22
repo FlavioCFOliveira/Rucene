@@ -15,10 +15,87 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Bounds.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `Bounds.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use std::any::Any;
+
+use super::geo_point::GeoPoint;
+use super::membership::Membership;
+use super::plane::Plane;
+use super::planet_model::PlanetModel;
+
+/// An interface for accumulating bounds information.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.Bounds`; ported by rmp task #618.
-pub trait Bounds {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.Bounds`. Each method
+/// returns the bounds object, as Java's `return this`.
+pub trait Bounds: Any {
+    /// `addPlane(PlanetModel, Plane, Membership...)`.
+    fn add_plane(
+        &mut self,
+        planet_model: &PlanetModel,
+        plane: &Plane,
+        bounds: &[&dyn Membership],
+    ) -> &mut dyn Bounds;
+
+    /// `addHorizontalPlane(PlanetModel, double, Plane, Membership...)`.
+    fn add_horizontal_plane(
+        &mut self,
+        planet_model: &PlanetModel,
+        latitude: f64,
+        horizontal_plane: &Plane,
+        bounds: &[&dyn Membership],
+    ) -> &mut dyn Bounds;
+
+    /// `addVerticalPlane(PlanetModel, double, Plane, Membership...)`.
+    fn add_vertical_plane(
+        &mut self,
+        planet_model: &PlanetModel,
+        longitude: f64,
+        vertical_plane: &Plane,
+        bounds: &[&dyn Membership],
+    ) -> &mut dyn Bounds;
+
+    /// `addIntersection(PlanetModel, Plane, Plane, Membership...)`.
+    fn add_intersection(
+        &mut self,
+        planet_model: &PlanetModel,
+        plane1: &Plane,
+        plane2: &Plane,
+        bounds: &[&dyn Membership],
+    ) -> &mut dyn Bounds;
+
+    /// `addPoint(GeoPoint)`.
+    fn add_point(&mut self, point: &GeoPoint) -> &mut dyn Bounds;
+
+    /// `addXValue(GeoPoint)`.
+    fn add_x_value(&mut self, point: &GeoPoint) -> &mut dyn Bounds;
+
+    /// `addYValue(GeoPoint)`.
+    fn add_y_value(&mut self, point: &GeoPoint) -> &mut dyn Bounds;
+
+    /// `addZValue(GeoPoint)`.
+    fn add_z_value(&mut self, point: &GeoPoint) -> &mut dyn Bounds;
+
+    /// `isWide()`.
+    fn is_wide(&mut self) -> &mut dyn Bounds;
+
+    /// `noLongitudeBound()`.
+    fn no_longitude_bound(&mut self) -> &mut dyn Bounds;
+
+    /// `noTopLatitudeBound()`.
+    fn no_top_latitude_bound(&mut self) -> &mut dyn Bounds;
+
+    /// `noBottomLatitudeBound()`.
+    fn no_bottom_latitude_bound(&mut self) -> &mut dyn Bounds;
+
+    /// `noBound(PlanetModel)`.
+    fn no_bound(&mut self, planet_model: &PlanetModel) -> &mut dyn Bounds;
+
+    /// The bounds as [`Any`], for `instanceof` checks.
+    fn as_any(&self) -> &dyn Any;
+
+    /// The bounds as mutable [`Any`], for `instanceof` checks and casts.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}

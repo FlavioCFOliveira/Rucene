@@ -15,10 +15,50 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBaseBounds.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public abstract class`.
+//! The types declared in `GeoBaseBounds.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::bounds::Bounds;
+use super::membership::Membership;
+use super::planet_model::PlanetModel;
+
+/// Base extended bounds object.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBaseBounds`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBaseBounds`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour, which each concrete class (a struct)
+/// reaches through the `impl_*` macros of [`super`] and through these
+/// associated functions where Java calls `super`.
 pub struct GeoBaseBounds;
+
+impl GeoBaseBounds {
+    /// `GeoBaseBounds.getBounds(Bounds)`: records the poles within `this`.
+    pub fn get_bounds(this: &dyn Membership, planet_model: &PlanetModel, bounds: &mut dyn Bounds) {
+        if this.is_within(&planet_model.north_pole) {
+            bounds
+                .no_top_latitude_bound()
+                .no_longitude_bound()
+                .add_point(&planet_model.north_pole);
+        }
+        if this.is_within(&planet_model.south_pole) {
+            bounds
+                .no_bottom_latitude_bound()
+                .no_longitude_bound()
+                .add_point(&planet_model.south_pole);
+        }
+        if this.is_within(&planet_model.min_x_pole) {
+            bounds.add_point(&planet_model.min_x_pole);
+        }
+        if this.is_within(&planet_model.max_x_pole) {
+            bounds.add_point(&planet_model.max_x_pole);
+        }
+        if this.is_within(&planet_model.min_y_pole) {
+            bounds.add_point(&planet_model.min_y_pole);
+        }
+        if this.is_within(&planet_model.max_y_pole) {
+            bounds.add_point(&planet_model.max_y_pole);
+        }
+    }
+}

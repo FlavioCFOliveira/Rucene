@@ -15,10 +15,21 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Membership.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `Membership.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::vector::Vector;
+
+/// Implemented by objects that may be able to determine membership.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.Membership`; ported by rmp task #618.
-pub trait Membership {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.Membership`.
+pub trait Membership {
+    /// `isWithin(Vector)`.
+    fn is_within(&self, point: &Vector) -> bool {
+        self.is_within_xyz(point.x, point.y, point.z)
+    }
+
+    /// `isWithin(double, double, double)`.
+    fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool;
+}

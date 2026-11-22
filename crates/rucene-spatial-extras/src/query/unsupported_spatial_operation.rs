@@ -15,10 +15,28 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `UnsupportedSpatialOperation.java`, of the Java
+//! The types declared in `UnsupportedSpatialOperation.java`, of the Java
 //! package `org.apache.lucene.spatial.query`.
 
-/// Java: `public class`.
+use rucene::error::LuceneError;
+
+use crate::query::spatial_operation::SpatialOperation;
+
+/// Equivalent to `org.apache.lucene.spatial.query.UnsupportedSpatialOperation`
+/// (`public class UnsupportedSpatialOperation extends
+/// UnsupportedOperationException`): exception thrown when the
+/// `SpatialStrategy` cannot implement the requested operation.
 ///
-/// Skeleton of `org.apache.lucene.spatial.query.UnsupportedSpatialOperation`; ported by rmp task #623.
+/// The exception is a [`LuceneError`] of the core's
+/// `UnsupportedOperation` kind (its Java superclass), whose message is the
+/// operation's name.
+#[derive(Debug)]
 pub struct UnsupportedSpatialOperation;
+
+impl UnsupportedSpatialOperation {
+    /// `UnsupportedSpatialOperation(SpatialOperation op)`.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new(op: SpatialOperation) -> LuceneError {
+        LuceneError::unsupported_operation(op.get_name())
+    }
+}

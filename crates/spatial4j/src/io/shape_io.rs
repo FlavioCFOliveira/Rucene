@@ -6,10 +6,21 @@
  *    http://www.apache.org/licenses/LICENSE-2.0.txt
  ******************************************************************************/
 
-//! Skeletons of the types declared in `ShapeIO.java`, of the Java
-//! package `org.locationtech.spatial4j.io`.
+//! The types declared in `ShapeIO.java`, of the Java package
+//! `org.locationtech.spatial4j.io`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.locationtech.spatial4j.io.ShapeIO`; ported by rmp task #621.
-pub trait ShapeIO {}
+/// Equivalent to `org.locationtech.spatial4j.io.ShapeIO` (`public
+/// interface`): a named shape format.
+pub trait ShapeIO {
+    /// `getFormatName()`.
+    fn get_format_name(&self) -> &'static str;
+}
+
+/// `ShapeIO.WKT`.
+pub const WKT: &str = "WKT";
+/// `ShapeIO.GeoJSON`.
+pub const GEO_JSON: &str = "GeoJSON";
+/// `ShapeIO.POLY`.
+pub const POLY: &str = "POLY";
+/// `ShapeIO.LEGACY`.
+pub const LEGACY: &str = "LEGACY";

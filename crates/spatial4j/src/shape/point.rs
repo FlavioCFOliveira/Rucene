@@ -6,10 +6,30 @@
  *    http://www.apache.org/licenses/LICENSE-2.0.txt
  ******************************************************************************/
 
-//! Skeletons of the types declared in `Point.java`, of the Java
-//! package `org.locationtech.spatial4j.shape`.
+//! The types declared in `Point.java`, of the Java package
+//! `org.locationtech.spatial4j.shape`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.locationtech.spatial4j.shape.Point`; ported by rmp task #621.
-pub trait Point {}
+use crate::shape::shape::Shape;
+
+/// Equivalent to `org.locationtech.spatial4j.shape.Point` (`public interface
+/// Point extends Shape`): a point.
+pub trait Point: Shape {
+    /// `reset(double x, double y)`: changes this point in place.
+    fn reset(&self, x: f64, y: f64);
+
+    /// `getX()`.
+    fn get_x(&self) -> f64;
+
+    /// `getY()`.
+    fn get_y(&self) -> f64;
+
+    /// `getLat()`: `getY()` by default.
+    fn get_lat(&self) -> f64 {
+        self.get_y()
+    }
+
+    /// `getLon()`: `getX()` by default.
+    fn get_lon(&self) -> f64 {
+        self.get_x()
+    }
+}

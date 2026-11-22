@@ -15,10 +15,27 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBBox.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoBBox.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use super::geo_area_shape::GeoAreaShape;
+use super::geo_sizeable::GeoSizeable;
+
+/// All bounding box shapes have this interface in common.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBBox`; ported by rmp task #618.
-pub trait GeoBBox {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBBox`.
+pub trait GeoBBox: GeoAreaShape + GeoSizeable {
+    /// `expand(double)`: a bounding box expanded by `angle` radians.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` from the bounding box factory.
+    ///
+    /// Takes the shared box, as a box may return itself (`return this`).
+    fn expand(self: Arc<Self>, angle: f64) -> Result<Arc<dyn GeoBBox>>;
+}

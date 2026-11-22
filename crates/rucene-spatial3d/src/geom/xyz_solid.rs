@@ -15,10 +15,15 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `XYZSolid.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `XYZSolid.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_area::GeoArea;
+use super::planet_object::PlanetObject;
+
+/// Interface for a family of 3D rectangles, bounded on six sides by X, Y, Z
+/// limits.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.XYZSolid`; ported by rmp task #620.
-pub trait XYZSolid {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.XYZSolid`.
+pub trait XYZSolid: GeoArea + PlanetObject {}

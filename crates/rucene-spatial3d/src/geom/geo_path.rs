@@ -15,10 +15,69 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoPath.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoPath.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use rucene::error::Result;
+
+use super::distance_style::DistanceStyle;
+use super::geo_distance_shape::GeoDistanceShape;
+use super::geo_point::GeoPoint;
+
+/// Interface describing a path.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoPath`; ported by rmp task #618.
-pub trait GeoPath {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPath`.
+pub trait GeoPath: GeoDistanceShape {
+    /// `computeNearestDistance(DistanceStyle, GeoPoint)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_nearest_distance(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        point: &GeoPoint,
+    ) -> Result<f64> {
+        self.compute_nearest_distance_xyz(distance_style, point.x, point.y, point.z)
+    }
+
+    /// `computeNearestDistance(DistanceStyle, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_nearest_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64>;
+
+    /// `computePathCenterDistance(DistanceStyle, GeoPoint)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_path_center_distance(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        point: &GeoPoint,
+    ) -> Result<f64> {
+        self.compute_path_center_distance_xyz(distance_style, point.x, point.y, point.z)
+    }
+
+    /// `computePathCenterDistance(DistanceStyle, double, double, double)`.
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the distance computation.
+    fn compute_path_center_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64>;
+}

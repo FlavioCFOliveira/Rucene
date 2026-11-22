@@ -15,10 +15,15 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBounds.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoBounds.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::bounded::Bounded;
+use super::membership::Membership;
+use super::planet_object::PlanetObject;
+
+/// Generic shape that supports bounds.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBounds`; ported by rmp task #618.
-pub trait GeoBounds {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBounds`.
+pub trait GeoBounds: Bounded + Membership + PlanetObject {}

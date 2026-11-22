@@ -15,10 +15,17 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoBaseShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public abstract class`.
+//! The types declared in `GeoBaseShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+/// Base extended shape object.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoBaseShape`; ported by rmp task #618.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoBaseShape`.
+///
+/// **Divergence.** Rust has no class inheritance. The abstract class is this
+/// namespace of its shared behaviour, which each concrete class (a struct)
+/// reaches through the `impl_*` macros of [`super`] and through these
+/// associated functions where Java calls `super`.
+/// It adds nothing to [`GeoBaseBounds`](super::geo_base_bounds::GeoBaseBounds).
 pub struct GeoBaseShape;

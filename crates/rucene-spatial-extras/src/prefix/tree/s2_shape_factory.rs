@@ -15,10 +15,36 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `S2ShapeFactory.java`, of the Java
-//! package `org.apache.lucene.spatial.prefix.tree`.
+//! The types declared in `S2ShapeFactory.java`, of the Java package
+//! `org.apache.lucene.spatial.prefix.tree`.
 
-/// Java: `public interface`.
+use std::sync::Arc;
+
+use s2_geometry::s2_cell_id::S2CellId;
+use spatial4j::shape::shape::Shape;
+use spatial4j::shape::shape_factory::ShapeFactory;
+
+use crate::spatial4j::geo3d_shape_factory::Geo3dShapeFactory;
+
+/// Equivalent to `org.apache.lucene.spatial.prefix.tree.S2ShapeFactory`
+/// (`public interface S2ShapeFactory extends ShapeFactory`): shape factory
+/// for spatial contexts that support S2 geometry. It is an extension of
+/// spatial4j's `ShapeFactory`.
+pub trait S2ShapeFactory: ShapeFactory {
+    /// `getS2CellShape(S2CellId cellId)`: the shape of the S2 cell `cell_id`.
+    fn get_s2_cell_shape(&self, cell_id: S2CellId) -> Arc<dyn Shape>;
+}
+
+/// `shapeFactory instanceof S2ShapeFactory ? (S2ShapeFactory) shapeFactory :
+/// null`.
 ///
-/// Skeleton of `org.apache.lucene.spatial.prefix.tree.S2ShapeFactory`; ported by rmp task #624.
-pub trait S2ShapeFactory {}
+/// **Divergence.** Java tests the runtime class of any factory
+/// (`S2PrefixTree.java:73-76`); a Rust `dyn ShapeFactory` cannot be narrowed
+/// to another trait, so the factory is matched against the implementations
+/// Lucene ships, which is [`Geo3dShapeFactory`] only.
+pub fn as_s2_shape_factory(shape_factory: &dyn ShapeFactory) -> Option<&dyn S2ShapeFactory> {
+    shape_factory
+        .as_any()
+        .downcast_ref::<Geo3dShapeFactory>()
+        .map(|f| f as &dyn S2ShapeFactory)
+}

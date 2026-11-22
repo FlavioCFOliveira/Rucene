@@ -6,8 +6,8 @@
  *    http://www.apache.org/licenses/LICENSE-2.0.txt
  ******************************************************************************/
 
-//! Skeletons of the types declared in `TestLog.java`, of the Java
-//! package `org.locationtech.spatial4j`.
+//! The types declared in `TestLog.java`, of the Java package
+//! `org.locationtech.spatial4j`.
 
 /// Java: `public class`.
 ///

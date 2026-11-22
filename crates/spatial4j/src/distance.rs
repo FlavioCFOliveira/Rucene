@@ -1,4 +1,4 @@
-//! Skeletons of the Java package `org.locationtech.spatial4j.distance`.
+//! The Java package `org.locationtech.spatial4j.distance`.
 
 pub mod abstract_distance_calculator;
 pub mod cartesian_dist_calc;

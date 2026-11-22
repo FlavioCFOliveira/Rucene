@@ -15,10 +15,15 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoMembershipShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoMembershipShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_outside_distance::GeoOutsideDistance;
+use super::geo_shape::GeoShape;
+
+/// Membership shapes have capabilities of both geohashing and membership
+/// determination.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoMembershipShape`; ported by rmp task #618.
-pub trait GeoMembershipShape {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoMembershipShape`.
+pub trait GeoMembershipShape: GeoShape + GeoOutsideDistance {}

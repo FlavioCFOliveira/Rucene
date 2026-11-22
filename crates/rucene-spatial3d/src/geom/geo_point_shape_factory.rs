@@ -15,10 +15,31 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoPointShapeFactory.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public class`.
+//! The types declared in `GeoPointShapeFactory.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use super::geo_degenerate_point::GeoDegeneratePoint;
+use super::geo_point_shape::GeoPointShape;
+use super::planet_model::PlanetModel;
+
+/// Class which constructs a [`GeoPointShape`].
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoPointShapeFactory`; ported by rmp task #620.
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPointShapeFactory`.
 pub struct GeoPointShapeFactory;
+
+impl GeoPointShapeFactory {
+    /// `makeGeoPointShape(PlanetModel, double lat, double lon)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` when the latitude or longitude is out of
+    /// range.
+    pub fn make_geo_point_shape(planet_model: &Arc<PlanetModel>, lat: f64, lon: f64) -> Result<Arc<dyn GeoPointShape>> {
+        Ok(Arc::new(GeoDegeneratePoint::new(planet_model, lat, lon)?))
+    }
+}

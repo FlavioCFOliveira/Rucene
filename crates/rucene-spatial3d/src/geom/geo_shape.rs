@@ -15,10 +15,35 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `GeoShape.java`, of the Java
-//! package `org.apache.lucene.spatial3d.geom`.
 
-/// Java: `public interface`.
+//! The types declared in `GeoShape.java`, of the Java package
+//! `org.apache.lucene.spatial3d.geom`.
+
+use super::geo_bounds::GeoBounds;
+use super::geo_point::GeoPoint;
+use super::membership::Membership;
+use super::plane::Plane;
+
+/// Generic shape.
 ///
-/// Skeleton of `org.apache.lucene.spatial3d.geom.GeoShape`; ported by rmp task #618.
-pub trait GeoShape {}
+/// Equivalent to `org.apache.lucene.spatial3d.geom.GeoShape`.
+pub trait GeoShape: GeoBounds + AsGeoShape {
+    /// `getEdgePoints()`: a sample of points on the edge of the shape.
+    fn get_edge_points(&self) -> Vec<GeoPoint>;
+
+    /// `intersects(Plane, GeoPoint[], Membership...)`.
+    fn intersects(&self, plane: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership])
+        -> bool;
+}
+
+/// The upcast of any [`GeoShape`] to `&dyn GeoShape`, for generic code.
+pub trait AsGeoShape {
+    /// The shape as a trait object.
+    fn as_geo_shape(&self) -> &dyn GeoShape;
+}
+
+impl<T: GeoShape> AsGeoShape for T {
+    fn as_geo_shape(&self) -> &dyn GeoShape {
+        self
+    }
+}

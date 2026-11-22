@@ -15,10 +15,47 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ShapeFieldCache.java`, of the Java
-//! package `org.apache.lucene.spatial.util`.
+//! The types declared in `ShapeFieldCache.java`, of the Java package
+//! `org.apache.lucene.spatial.util`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+/// Equivalent to `org.apache.lucene.spatial.util.ShapeFieldCache` (`public
+/// class ShapeFieldCache<T extends Shape>`): bounded cache of shapes
+/// associated with docIds. Note, multiple shapes can be associated with a
+/// given docId.
 ///
-/// Skeleton of `org.apache.lucene.spatial.util.ShapeFieldCache`; ported by rmp task #623.
-pub struct ShapeFieldCache;
+/// WARNING: This class holds the data in an extremely inefficient manner as
+/// all points are in memory as objects and they are stored in many
+/// ArrayLists (one per document). So it works but doesn't scale. It will
+/// be replaced in the future.
+#[derive(Debug)]
+pub struct ShapeFieldCache<T: ?Sized> {
+    cache: Vec<Option<Vec<Arc<T>>>>,
+    /// `defaultLength`.
+    pub default_length: i32,
+}
+
+impl<T: ?Sized> ShapeFieldCache<T> {
+    /// `ShapeFieldCache(int length, int defaultLength)`.
+    pub fn new(length: i32, default_length: i32) -> Self {
+        Self {
+            cache: (0..length.max(0)).map(|_| None).collect(),
+            default_length,
+        }
+    }
+
+    /// `add(int docid, T s)`.
+    pub fn add(&mut self, docid: i32, s: Arc<T>) {
+        let default_length = self.default_length.max(0) as usize;
+        self.cache[docid as usize]
+            .get_or_insert_with(|| Vec::with_capacity(default_length))
+            .push(s);
+    }
+
+    /// `getShapes(int docid)`: `None` (Java `null`) for a document without
+    /// shapes.
+    pub fn get_shapes(&self, docid: i32) -> Option<&[Arc<T>]> {
+        self.cache[docid as usize].as_deref()
+    }
+}

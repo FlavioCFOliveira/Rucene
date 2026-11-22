@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.util`.
+//! The Java package `org.apache.lucene.spatial.util`.
 
 pub mod caching_double_value_source;
 pub mod distance_to_shape_value_source;

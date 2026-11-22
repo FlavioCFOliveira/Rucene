@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.prefix`.
+//! The Java package `org.apache.lucene.spatial.prefix`.
 
 pub mod abstract_prefix_tree_query;
 pub mod abstract_visiting_prefix_tree_query;

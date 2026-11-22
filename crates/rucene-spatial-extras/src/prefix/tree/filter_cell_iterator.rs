@@ -15,10 +15,71 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FilterCellIterator.java`, of the Java
-//! package `org.apache.lucene.spatial.prefix.tree`.
+//! The types declared in `FilterCellIterator.java`, of the Java package
+//! `org.apache.lucene.spatial.prefix.tree`.
 
-/// Java: `class` (package-private).
-///
-/// Skeleton of `org.apache.lucene.spatial.prefix.tree.FilterCellIterator`; ported by rmp task #624.
-pub(crate) struct FilterCellIterator;
+use std::sync::Arc;
+
+use spatial4j::shape::shape::Shape;
+use spatial4j::shape::spatial_relation::SpatialRelation;
+
+use crate::prefix::tree::cell::CellRef;
+use crate::prefix::tree::cell_iterator::{CellIterator, CellIteratorBase};
+
+/// Equivalent to `org.apache.lucene.spatial.prefix.tree.FilterCellIterator`
+/// (package-private `class FilterCellIterator extends CellIterator`): a
+/// filtering iterator of cells. Does not include cells that are disjoint
+/// from the shape filter, and sets the shape relation of the cells it
+/// returns (a `WITHIN` cell becomes a leaf).
+pub(crate) struct FilterCellIterator {
+    base: CellIteratorBase,
+    base_iter: Box<dyn CellIterator>,
+    shape_filter: Option<Arc<dyn Shape>>,
+}
+
+impl FilterCellIterator {
+    /// `FilterCellIterator(Iterator<Cell> baseIter, Shape shapeFilter)`.
+    pub(crate) fn new(base_iter: Box<dyn CellIterator>, shape_filter: Option<Arc<dyn Shape>>) -> Self {
+        Self {
+            base: CellIteratorBase::default(),
+            base_iter,
+            shape_filter,
+        }
+    }
+}
+
+impl CellIterator for FilterCellIterator {
+    fn has_next(&mut self) -> bool {
+        self.base.this_cell = None;
+        if self.base.next_cell.is_some() {
+            // calling hasNext twice in a row
+            return true;
+        }
+        while self.base_iter.has_next() {
+            let next_cell = self.base_iter.next();
+            self.base.next_cell = Some(Arc::clone(&next_cell));
+            match &self.shape_filter {
+                None => return true,
+                Some(shape_filter) => {
+                    let rel = next_cell.get_shape().relate(&**shape_filter);
+                    if rel.intersects() {
+                        next_cell.set_shape_rel(Some(rel));
+                        if rel == SpatialRelation::Within {
+                            next_cell.set_leaf();
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn next(&mut self) -> CellRef {
+        crate::cell_iterator_next!(self, base)
+    }
+
+    fn this_cell(&self) -> CellRef {
+        self.base.this_cell()
+    }
+}

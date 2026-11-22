@@ -1,13 +1,29 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //! This crate ports Apache Lucene 10.5.0 `lucene/spatial-extras` to Rust: the
 //! spatial strategies over spatial4j shapes (recursive and term prefix trees,
 //! including the S2 tree, bounding box, serialized doc values, point vector and
 //! composite) and the spatial4j bridge to `spatial3d`.
 //!
-//! Every type of the module is declared here as a skeleton: a declaration that
-//! stands for one Java type, without fields, methods or behaviour (an enum lists
-//! its Java constants as variants), whose doc names the sprint-17 rmp task that
-//! will port it. A type stays a skeleton until that task replaces it with its
-//! port.
+//! Every type of the module is ported faithfully; each carries an
+//! `Equivalent to` claim naming its Java type, and each unavoidable
+//! divergence is declared where it occurs, in a paragraph led by
+//! **Divergence.**
 //!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.spatial`: the types of that package sit at the crate root
@@ -21,9 +37,12 @@
 //! that module, and the Java kind is appended when the prefixed name is itself
 //! taken.
 
-// Package-private and private Java types are `pub(crate)` skeletons that nothing
-// uses yet. This allowance goes away when the module is fully ported.
+// Some Java fields are only read by assertions or by methods no other type
+// calls (e.g. `DateRangePrefixTree`'s year bounds), as in Java.
 #![allow(dead_code)]
+
+pub(crate) mod jdk;
+pub(crate) mod search_util;
 
 pub mod bbox;
 pub mod composite;

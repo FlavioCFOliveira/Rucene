@@ -1,4 +1,4 @@
-//! Skeletons of the Java package `org.locationtech.spatial4j.shape`.
+//! The Java package `org.locationtech.spatial4j.shape`.
 
 pub mod base_shape;
 pub mod circle;

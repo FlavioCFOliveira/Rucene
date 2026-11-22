@@ -2,12 +2,6 @@
 //! the surface of a sphere or ellipsoid modelled with 3D planar geometry
 //! (`geom`), and the `Geo3DPoint` field, its doc values, sorts and queries.
 //!
-//! Every type of the module is declared here as a skeleton: a declaration that
-//! stands for one Java type, without fields, methods or behaviour (an enum lists
-//! its Java constants as variants), whose doc names the sprint-17 rmp task that
-//! will port it. A type stays a skeleton until that task replaces it with its
-//! port.
-//!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.spatial3d`: the types of that package sit at the crate
 //! root and `org.apache.lucene.spatial3d.geom` is the module [`geom`]. Each Java
@@ -19,8 +13,9 @@
 //! of the Rust prelude or the name of another item of that module, and the Java
 //! kind is appended when the prefixed name is itself taken.
 
-// Package-private and private Java types are `pub(crate)` skeletons that nothing
-// uses yet. This allowance goes away when the module is fully ported.
+// Package-private and private Java types are `pub(crate)`; some of their
+// members (Java's `equals`/`toString` of private helpers, for instance) have no
+// caller inside the crate.
 #![allow(dead_code)]
 
 pub mod geo3_d_doc_values_field;

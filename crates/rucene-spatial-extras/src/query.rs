@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.spatial.query`.
+//! The Java package `org.apache.lucene.spatial.query`.
 
 pub mod spatial_args;
 pub mod spatial_args_parser;
