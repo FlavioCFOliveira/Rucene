@@ -1,0 +1,73 @@
+/*
+ * Copyright 2006 Google Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! Skeletons of the types declared in `S2EdgeUtil.java`, of the Java
+//! package `com.google.common.geometry`.
+
+/// Java: `public strictfp class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil`; ported by rmp task #622.
+pub struct S2EdgeUtil;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.EdgeCrosser`; ported by rmp task #622.
+pub struct EdgeCrosser;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.RectBounder`; ported by rmp task #622.
+pub struct RectBounder;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.XYZPruner`; ported by rmp task #622.
+pub struct XYZPruner;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.LongitudePruner`; ported by rmp task #622.
+pub struct LongitudePruner;
+
+/// Java: `public interface`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.WedgeRelation`; ported by rmp task #622.
+pub trait WedgeRelation {}
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.WedgeContains`; ported by rmp task #622.
+pub struct WedgeContains;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.WedgeIntersects`; ported by rmp task #622.
+pub struct WedgeIntersects;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.WedgeContainsOrIntersects`; ported by rmp task #622.
+pub struct WedgeContainsOrIntersects;
+
+/// Java: `public static class`.
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.WedgeContainsOrCrosses`; ported by rmp task #622.
+pub struct WedgeContainsOrCrosses;
+
+/// Java: `static class` (package-private).
+///
+/// Skeleton of `com.google.common.geometry.S2EdgeUtil.CloserResult`; ported by rmp task #622.
+pub(crate) struct CloserResult;

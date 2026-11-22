@@ -17,7 +17,11 @@ registers), since the user's decision of 2026-11-13 for sprint 12,
 `queries`, `queryparser` and `sandbox` (of which only `FuzzyLikeThisQuery.java`
 is ported; the narrowing is `port_modules_kg.py`'s `files`, recorded on the
 `Module` as `scopeFiles`, while `javaFiles` here stays the whole module's
-count). Every other module is recorded with `inScope: false` and the reason, so
+count), and, since the user's decision of 2026-11-22 for sprint 17,
+`benchmark` and its dependency modules `memory`, `facet`, `highlighter`,
+`spatial3d`, `spatial-extras` and `spatial-test-fixtures` (with the spatial4j
+0.8 and s2-geometry 1.0.0 subsets, which `port_modules_kg.py` registers).
+Every other module is recorded with `inScope: false` and the reason, so
 the exclusion is auditable instead of silent.
 
 History: until 2026-11-03 `test-framework` was recorded out of scope for the
@@ -45,9 +49,7 @@ ROLE = {
     "backward-codecs": "readers for indexes written by older Lucene majors",
     "demo": "usage examples",
     "luke": "the index inspector GUI",
-    "benchmark": "benchmarking harness",
     "benchmark-jmh": "JMH microbenchmarks",
-    "spatial-test-fixtures": "test fixtures for the spatial modules",
 }
 
 

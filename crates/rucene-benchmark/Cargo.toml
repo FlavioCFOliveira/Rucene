@@ -1,0 +1,25 @@
+[package]
+name = "rucene-benchmark"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/benchmark (byTask algorithms, quality and TREC evaluation)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_benchmark"
+
+# Lucene's `lucene/benchmark/build.gradle` also uses commons-compress, icu4j and
+# nekohtml; the Rust crates that replace them are chosen by rmp #611.
+[dependencies]
+rucene = { path = "../.." }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+rucene-facet = { path = "../rucene-facet" }
+rucene-highlighter = { path = "../rucene-highlighter" }
+rucene-queries = { path = "../rucene-queries" }
+rucene-queryparser = { path = "../rucene-queryparser" }
+rucene-spatial-extras = { path = "../rucene-spatial-extras" }
+spatial4j = { path = "../spatial4j" }

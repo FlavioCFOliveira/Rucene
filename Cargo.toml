@@ -18,6 +18,12 @@ categories = ["database-implementations", "data-structures", "algorithms"]
 # (lucene/queryparser) (sprint 13, user decision 2026-11-14),
 # `randomizedtesting` (com.carrotsearch.randomizedtesting 2.8.1, the runner of
 # Lucene's tests) and `rucene-test-framework` (lucene/test-framework).
+# Sprint 17 (user decision 2026-11-22) adds `rucene-benchmark`
+# (lucene/benchmark) and its dependency modules `rucene-memory`,
+# `rucene-facet`, `rucene-highlighter`, `rucene-spatial3d`,
+# `rucene-spatial-extras` and `rucene-spatial-test-fixtures`, and the external
+# libraries `spatial4j` (spatial4j 0.8) and `s2-geometry`
+# (s2-geometry-library-java 1.0.0), limited to the subsets Lucene uses.
 # `rucene-cli-example` is not a Lucene module: it is the command-line example
 # that drives the public `rucene` API end to end (sprint 10); `rucene-cli-base`
 # is the second one, one index per Portal BASE entity with pt-PT analysis
@@ -33,6 +39,15 @@ members = [
     "crates/rucene-test-framework",
     "crates/rucene-cli-example",
     "crates/rucene-cli-base",
+    "crates/rucene-memory",
+    "crates/rucene-facet",
+    "crates/rucene-highlighter",
+    "crates/rucene-spatial3d",
+    "crates/rucene-spatial-extras",
+    "crates/rucene-spatial-test-fixtures",
+    "crates/rucene-benchmark",
+    "crates/spatial4j",
+    "crates/s2-geometry",
 ]
 
 [features]

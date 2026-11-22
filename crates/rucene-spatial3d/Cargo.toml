@@ -1,0 +1,16 @@
+[package]
+name = "rucene-spatial3d"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/spatial3d (3D planar geometry, Geo3DPoint)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_spatial3d"
+
+[dependencies]
+rucene = { path = "../.." }

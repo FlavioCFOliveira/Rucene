@@ -10,8 +10,11 @@ The knowledge graph of the **Rucene** project (roadmap `rucene`, reached through
    `lucene/codecs`, `lucene/test-framework` and **randomizedtesting 2.8.1**
    (`randomized-runner`), the module sprint 12 adds, `lucene/analysis/common`, and
    the modules sprint 13 adds, `lucene/queries`, `lucene/queryparser` and
-   `lucene/sandbox` (only its listed source files, `Module.scopeFiles`):
-   packages, files, types, members, dependencies; for `lucene/core` also bytecode
+   `lucene/sandbox` (only its listed source files, `Module.scopeFiles`), and the
+   modules sprint 17 adds, `lucene/memory`, `lucene/facet`, `lucene/highlighter`,
+   `lucene/spatial3d`, `lucene/spatial-extras`, `lucene/spatial-test-fixtures`,
+   `lucene/benchmark`, and the listed source files of **spatial4j 0.8** and
+   **s2-geometry-library-java 1.0.0**: packages, files, types, members, dependencies; for `lucene/core` also bytecode
    calls and its test surface;
 3. **the port between them**: which Lucene type each Rust item ports and on what
    evidence, which Rust skeleton stands for a type not yet ported and which task
@@ -68,7 +71,7 @@ A software project or library being modelled. Identity: `name` (string).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"Rucene"`, `"Apache Lucene Core 10.5.0"` or `"randomizedtesting 2.8.1"`. |
+| `name` | `"Rucene"`, `"Apache Lucene Core 10.5.0"`, `"randomizedtesting 2.8.1"`, `"spatial4j 0.8"` or `"s2-geometry-library-java 1.0.0"`. |
 | `language` | Primary language: `"Rust"`, `"Java"`. |
 | `version` | Version string, e.g. `"10.5.0"`. |
 | `path` | Root path, for the local project. |
@@ -78,7 +81,9 @@ A software project or library being modelled. Identity: `name` (string).
 ### `Module`
 A crate or Maven module: the crate `rucene` and each workspace member crate under
 `crates/` (named by its Cargo package), every module of the Lucene 10.5.0 distribution
-that ships Java sources, and randomizedtesting 2.8.1's `randomized-runner`, so the
+that ships Java sources, randomizedtesting 2.8.1's `randomized-runner`, and the
+external libraries spatial4j 0.8 (`spatial4j/spatial4j`) and s2-geometry-library-java
+1.0.0 (`s2-geometry/s2-geometry-library-java`), so the
 port's denominator is explicit (`CLAUDE.md` §6.1). Identity: `name` (string). Written
 by `tools/kg/lucene_modules_kg.py` (the Lucene inventory), `tools/kg/port_modules_kg.py`
 (the port modules, from its `PORT_MODULES`) and `load_rucene_kg.py` (the crates; a
@@ -86,18 +91,18 @@ member crate the survey no longer has is pruned).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"lucene/queryparser"`, `"randomizedtesting/randomized-runner"`, … |
+| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"lucene/queryparser"`, `"randomizedtesting/randomized-runner"`, `"spatial4j/spatial4j"`, `"s2-geometry/s2-geometry-library-java"`, … |
 | `shortName` | The path under `lucene/` (`"core"`), or under the randomizedtesting repository (`"randomized-runner"`). |
 | `kind` | `"crate"`, `"maven-module"`. |
-| `path` | Root path in the source tree. |
+| `path` | Root path in the source tree (`"."` for a library whose clone is the module). |
 | `project` | The owning `Project.name`. |
 | `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree), whether or not all are in scope. |
 | `inScope` | `true` for a module the port covers, whole or in part (`scopeFiles`). |
-| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"sprint-13-ports-the-module"`, `"sprint-13-ports-listed-files"`, `"outside-the-port-modules"`. |
-| `scopeFiles` | On a port module scoped to listed source files (`scopeRule` `"sprint-13-ports-listed-files"`): those files' paths, relative to the repository root, `", "`-separated. Only they (and the module's JPMS descriptor) are surveyed, scoped and censused; no other type of the module is a `Class`. Absent on a module ported whole. |
+| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"sprint-13-ports-the-module"`, `"sprint-13-ports-listed-files"`, `"sprint-17-ports-the-module"`, `"sprint-17-ports-listed-files"`, `"outside-the-port-modules"`. |
+| `scopeFiles` | On a port module scoped to listed source files (`scopeRule` `"sprint-13-ports-listed-files"` or `"sprint-17-ports-listed-files"`): those files' paths, relative to the module's repository root, `", "`-separated. Only they (and the module's JPMS descriptor) are surveyed, scoped and censused; no other type of the module is a `Class`. Absent on a module ported whole. |
 | `role` | What the module is, in one line. |
 | `crate` / `cratePath` | On a port module: the Cargo package that ports it and its directory (`"."` for `rucene`). |
-| `jpmsName` | On a port module: its JPMS module name (randomizedtesting's is the automatic name of its jar, `randomizedtesting.runner`). |
+| `jpmsName` | On a port module: its JPMS module name (a module without a descriptor carries the automatic name of its jar: `randomizedtesting.runner`, `spatial4j`, `s2.geometry.library.java`, `lucene.spatial.test.fixtures`). |
 
 ### `Package`
 A Java package. Identity: `name` (string).
@@ -112,7 +117,9 @@ A Java package. Identity: `name` (string).
 ### `Class`
 A Java type of a port module (`lucene/core`, `lucene/codecs`, `lucene/test-framework`,
 `randomizedtesting/randomized-runner`, `lucene/analysis/common`, `lucene/queries`,
-`lucene/queryparser`, and of `lucene/sandbox` the types its `scopeFiles` declare) — class, interface, enum, record, exception or
+`lucene/queryparser`, the seven sprint-17 Lucene modules, and of `lucene/sandbox`,
+`spatial4j/spatial4j` and `s2-geometry/s2-geometry-library-java` the types their
+`scopeFiles` declare) — class, interface, enum, record, exception or
 annotation; `kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation`
 are reserved labels that no loader writes.) Identity: `qualifiedName` (string); a nested
 type is keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
@@ -153,6 +160,8 @@ port loaders named below.
 | `in` | `sprint-12-module-top-level` | A top-level type declared by a file of `lucene/analysis/common` (`src/java`). |
 | `in` | `sprint-13-module-top-level` | A top-level type declared by a file of `lucene/queries` or `lucene/queryparser` (`src/java`). |
 | `in` | `sprint-13-listed-file-top-level` | A top-level type declared by a file a port module lists in `scopeFiles` (`lucene/sandbox`). |
+| `in` | `sprint-17-module-top-level` | A top-level type declared by a file of `lucene/memory`, `lucene/facet`, `lucene/highlighter`, `lucene/spatial3d`, `lucene/spatial-extras`, `lucene/spatial-test-fixtures` or `lucene/benchmark` (`src/java`). |
+| `in` | `sprint-17-listed-file-top-level` | A top-level type declared by a file `spatial4j/spatial4j` or `s2-geometry/s2-geometry-library-java` lists in `scopeFiles`. |
 | `nested` | `nested-in-enclosing-type` | An inner type; not an independent port unit. Each carries its own measured `portState`. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying the label, such as Rucene's own Java test fixtures. |
 
@@ -992,7 +1001,8 @@ what each step reads:
 0. `port_modules_kg.py --phase modules`, `--phase structure` — the port modules'
    scope, JPMS dependencies and scope decisions, and the packages of every module beyond `lucene/core`,
    files, types and members (needs the randomizedtesting 2.8.1 clone,
-   `$RANDOMIZEDTESTING_ROOT`).
+   `$RANDOMIZEDTESTING_ROOT`, and the spatial4j 0.8 and s2-geometry 1.0.0 clones,
+   `$SPATIAL4J_ROOT` and `$S2_GEOMETRY_ROOT`).
 1. `extract_rucene_kg.py --expand` → `load_rucene_kg.py` — the crate survey (the root
    crate and every `crates/<dir>` member), and the prune of nodes it no longer
    confirms.

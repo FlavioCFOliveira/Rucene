@@ -29,6 +29,40 @@ def write(root: Path, rel: str, text: str):
     return p
 
 
+S4J, S2 = "spatial4j/spatial4j", "s2-geometry/s2-geometry-library-java"
+S17 = ("lucene/memory", "lucene/facet", "lucene/highlighter", "lucene/spatial3d",
+       "lucene/spatial-extras", "lucene/spatial-test-fixtures", "lucene/benchmark", S4J, S2)
+S17_CRATES = ("rucene-memory", "rucene-facet", "rucene-highlighter", "rucene-spatial3d",
+              "rucene-spatial-extras", "rucene-spatial-test-fixtures", "rucene-benchmark",
+              "spatial4j", "s2-geometry")
+
+
+def write_sprint17_descriptors(lucene: Path):
+    """The six sprint-17 Lucene descriptors, with the `requires` Lucene 10.5.0
+    declares (`lucene/spatial-test-fixtures` has none)."""
+    write(lucene, "lucene/memory/src/java/module-info.java",
+          "module org.apache.lucene.memory {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/facet/src/java/module-info.java",
+          "module org.apache.lucene.facet {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/highlighter/src/java/module-info.java",
+          "module org.apache.lucene.highlighter {\n requires org.apache.lucene.core;\n"
+          " requires org.apache.lucene.queries;\n requires org.apache.lucene.memory;\n}")
+    write(lucene, "lucene/spatial3d/src/java/module-info.java",
+          "module org.apache.lucene.spatial3d {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/spatial-extras/src/java/module-info.java",
+          '@SuppressWarnings({"requires-automatic"})\nmodule org.apache.lucene.spatial_extras {\n'
+          " requires spatial4j;\n requires s2.geometry.library.java;\n"
+          " requires org.apache.lucene.core;\n requires org.apache.lucene.spatial3d;\n}")
+    write(lucene, "lucene/benchmark/src/java/module-info.java",
+          '@SuppressWarnings({"requires-automatic"})\nmodule org.apache.lucene.benchmark {\n'
+          " requires java.xml;\n requires org.apache.lucene.core;\n"
+          " requires org.apache.lucene.analysis.common;\n requires org.apache.lucene.facet;\n"
+          " requires org.apache.lucene.highlighter;\n requires org.apache.lucene.queries;\n"
+          " requires org.apache.lucene.queryparser;\n requires org.apache.lucene.spatial_extras;\n"
+          " requires spatial4j;\n requires org.apache.commons.compress;\n"
+          " requires nekohtml;\n requires com.ibm.icu;\n}")
+
+
 def write_query_descriptors(lucene: Path):
     """The three sprint-13 descriptors, as Lucene 10.5.0 declares their `requires`."""
     write(lucene, "lucene/queries/src/java/module-info.java",
@@ -44,20 +78,21 @@ def write_query_descriptors(lucene: Path):
 
 # --- the module registry ----------------------------------------------------
 
-def test_the_registry_names_the_eight_modules_and_their_crates():
+def test_the_registry_names_the_seventeen_modules_and_their_crates():
     assert [m["name"] for m in pm.PORT_MODULES] == [
         "lucene/core", "lucene/codecs", "lucene/test-framework",
         "randomizedtesting/randomized-runner", "lucene/analysis/common",
-        "lucene/queries", "lucene/queryparser", "lucene/sandbox"]
+        "lucene/queries", "lucene/queryparser", "lucene/sandbox", *S17]
     assert pm.ADDED_MODULES == ("lucene/codecs", "lucene/test-framework",
                                 "randomizedtesting/randomized-runner", "lucene/analysis/common",
-                                "lucene/queries", "lucene/queryparser", "lucene/sandbox")
+                                "lucene/queries", "lucene/queryparser", "lucene/sandbox", *S17)
     assert {m["cratePath"] for m in pm.PORT_MODULES} == {
         ".", "crates/rucene-codecs", "crates/rucene-test-framework", "crates/randomizedtesting",
         "crates/rucene-analysis-common", "crates/rucene-queries", "crates/rucene-queryparser",
-        "crates/rucene-sandbox"}
-    # only lucene/sandbox is narrowed to listed files
-    assert [m["name"] for m in pm.PORT_MODULES if m.get("files")] == ["lucene/sandbox"]
+        "crates/rucene-sandbox", *(f"crates/{c}" for c in S17_CRATES)}
+    # lucene/sandbox and the two sprint-17 libraries are narrowed to listed files
+    assert [m["name"] for m in pm.PORT_MODULES if m.get("files")] == [
+        "lucene/sandbox", S4J, S2]
 
 
 def test_module_of_file_keys_on_the_declaring_tree():
@@ -116,6 +151,7 @@ def test_module_dependencies_map_jpms_names_to_port_modules(tmp_path):
           "module org.apache.lucene.analysis.common {\n requires java.xml;\n"
           " requires org.apache.lucene.core;\n}")
     write_query_descriptors(lucene)
+    write_sprint17_descriptors(lucene)
     deps = pm.module_dependencies(pm.repo_roots(lucene, rt))
     assert [(a, b) for a, b, _ in deps] == [
         ("lucene/codecs", "lucene/core"),
@@ -128,7 +164,27 @@ def test_module_dependencies_map_jpms_names_to_port_modules(tmp_path):
         ("lucene/queryparser", "lucene/queries"),
         ("lucene/queryparser", "lucene/sandbox"),
         ("lucene/sandbox", "lucene/core"),
-        ("lucene/sandbox", "lucene/queries")]
+        ("lucene/sandbox", "lucene/queries"),
+        # lucene/facet is a port module since sprint 17
+        ("lucene/sandbox", "lucene/facet"),
+        ("lucene/memory", "lucene/core"),
+        ("lucene/facet", "lucene/core"),
+        ("lucene/highlighter", "lucene/core"),
+        ("lucene/highlighter", "lucene/queries"),
+        ("lucene/highlighter", "lucene/memory"),
+        ("lucene/spatial3d", "lucene/core"),
+        ("lucene/spatial-extras", S4J),
+        ("lucene/spatial-extras", S2),
+        ("lucene/spatial-extras", "lucene/core"),
+        ("lucene/spatial-extras", "lucene/spatial3d"),
+        ("lucene/benchmark", "lucene/core"),
+        ("lucene/benchmark", "lucene/analysis/common"),
+        ("lucene/benchmark", "lucene/facet"),
+        ("lucene/benchmark", "lucene/highlighter"),
+        ("lucene/benchmark", "lucene/queries"),
+        ("lucene/benchmark", "lucene/queryparser"),
+        ("lucene/benchmark", "lucene/spatial-extras"),
+        ("lucene/benchmark", S4J)]
 
 
 def test_queries_narrow_to_one_module_and_the_model_holds_them_verbatim():
@@ -465,7 +521,7 @@ def test_sprint13_modules_are_port_modules_with_their_crates_and_rules():
     assert (pm.BY_NAME[SB]["scopeRule"], pm.BY_NAME[SB]["classRule"]) == (
         "sprint-13-ports-listed-files", "sprint-13-listed-file-top-level")
     assert pm.BY_NAME[SB]["files"] == (FLT_FILE,)
-    d = pm.DECISIONS[-1]
+    d = pm.DECISIONS[2]
     assert (d["name"], d["on"], d["modules"], d["supersedes"]) == (
         "Sprint 13 ports lucene/queries and lucene/queryparser, with sandbox "
         "FuzzyLikeThisQuery", "2026-11-14",
@@ -600,8 +656,9 @@ def test_an_unlisted_sandbox_type_never_enters_the_scope(monkeypatch):
 
 def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypatch, tmp_path):
     lucene, rt = tmp_path / "lucene", tmp_path / "rt"
+    roots = pm.repo_roots(lucene, rt, tmp_path / "s4j", tmp_path / "s2")
     for m in pm.PORT_MODULES:
-        base = lucene if m["repo"] == "lucene" else rt
+        base = roots[m["repo"]]
         write(base, f"{m['sources'][0]}/X.java", "package x;\nclass X {}\n")
         if m["descriptor"]:
             write(base, m["descriptor"], f"module {m['jpms']} {{ requires org.apache.lucene.core; }}")
@@ -616,7 +673,7 @@ def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypa
             return [[m] for d in pm.DECISIONS if pm.esc(d["name"]) in q for m in d["modules"]]
         return [[0]]
     monkeypatch.setattr(pm, "read", fake_read)
-    pm.phase_modules("r", pm.repo_roots(lucene, rt), "c" * 40, "2026-11-14")
+    pm.phase_modules("r", roots, "c" * 40, "2026-11-14")
     concerns = {(d["name"], r["m"]) for d in pm.DECISIONS for label, rows, body in writes
                 if label == "Decision CONCERNS Module" and pm.esc(d["name"]) in body
                 for r in rows}
@@ -625,7 +682,19 @@ def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypa
     assert "m.scopeFiles = row.scopeFiles" in body
     scope = {r["name"]: r["scopeFiles"] for r in rows}
     assert scope.pop(SB) == FLT_FILE
+    assert scope.pop(S4J) == ", ".join(pm.BY_NAME[S4J]["files"])
+    assert scope.pop(S2) == ", ".join(pm.BY_NAME[S2]["files"])
     assert set(scope.values()) == {None}
+    # the clone-root libraries' module directory is the clone itself
+    paths = {r["name"]: r["path"] for r in rows}
+    assert (paths[S4J], paths[S2], paths["randomizedtesting/randomized-runner"]) == (
+        ".", ".", "randomized-runner")
+    # one Project per external library, with its version
+    for project, version in ((pm.RT_PROJECT, "2.8.1"), (pm.SPATIAL4J_PROJECT, "0.8"),
+                             (pm.S2_PROJECT, "1.0.0")):
+        assert any(f"MERGE (p:Project {{name: {pm.esc(project)}}})" in q for q in statements)
+        assert any(pm.esc(project) in q and f"p.version = {pm.esc(version)}" in q
+                   for q in statements)
     assert {r["name"]: r["scopeRule"] for r in rows}["lucene/queryparser"] == \
         "sprint-13-ports-the-module"
     decision = next(q for q in statements if "Sprint 13 ports" in q and "d.evidence" in q)
@@ -701,3 +770,100 @@ def test_an_annotation_on_the_declaration_line_is_seen_by_every_extractor(tmp_pa
     _files, ctop, cnested = audit.java_census(lucene, ("lucene/queryparser/src/java",))
     assert sorted(q for q, _ in ctop) == sorted(top)
     assert sorted(n for n, _ in cnested) == ["JJCalls", "LookaheadSuccess"]
+
+
+# --- sprint 17: lucene/benchmark, its dependency modules, spatial4j and s2 ------
+
+def test_sprint17_modules_are_port_modules_with_their_crates_and_rules():
+    for name, crate in zip(S17, S17_CRATES):
+        m = pm.BY_NAME[name]
+        assert (m["crate"], m["cratePath"]) == (crate, f"crates/{crate}")
+        assert m["skeletons"] == "enforce"
+        assert name in pm.ADDED_MODULES and name in pm.SKELETON_MODULES
+    for name in S17[:7]:
+        m = pm.BY_NAME[name]
+        assert m["sources"] == (f"{name}/src/java",) and "files" not in m
+        assert (m["scopeRule"], m["classRule"]) == (
+            "sprint-17-ports-the-module", "sprint-17-module-top-level")
+    assert pm.BY_NAME["lucene/spatial-test-fixtures"]["descriptor"] is None
+    assert pm.BY_NAME["lucene/spatial-test-fixtures"]["jpms"] == "lucene.spatial.test.fixtures"
+    for name, project, jpms in ((S4J, pm.SPATIAL4J_PROJECT, "spatial4j"),
+                                (S2, pm.S2_PROJECT, "s2.geometry.library.java")):
+        m = pm.BY_NAME[name]
+        assert (m["project"], m["jpms"], m["descriptor"]) == (project, jpms, None)
+        assert (m["scopeRule"], m["classRule"]) == (
+            "sprint-17-ports-listed-files", "sprint-17-listed-file-top-level")
+    # the closures: 41 + 3 test helpers, and 15
+    s4j = pm.BY_NAME[S4J]["files"]
+    assert len(s4j) == 44 and len(set(s4j)) == 44
+    assert sum(1 for f in s4j if f.startswith("src/test/java/")) == 3
+    assert len(pm.BY_NAME[S2]["files"]) == 15
+    assert "src/main/java/org/locationtech/spatial4j/shape/impl/RectangleImpl.java" in s4j
+    assert "src/main/java/com/google/common/geometry/S2CellId.java" in pm.BY_NAME[S2]["files"]
+    assert {"org.locationtech.spatial4j", "com.google.common.geometry"} <= set(pm.JAVA_PREFIXES)
+    d = pm.DECISIONS[3]
+    assert (d["on"], d["modules"], d["supersedes"]) == ("2026-11-22", S17, None)
+    summary, rationale, alternatives = pm.decision_text(d)
+    assert "sprint-17-listed-file-top-level" in summary and "spatial4j 0.8" in summary
+    assert "2026-11-22" in rationale and "rejected" in alternatives
+
+
+def test_the_two_libraries_share_a_tree_spelling_and_their_lists_keep_them_apart():
+    a = "src/main/java/org/locationtech/spatial4j/shape/Shape.java"
+    b = "src/main/java/com/google/common/geometry/S2Cell.java"
+    helper = "src/test/java/org/locationtech/spatial4j/TestLog.java"
+    assert (pm.module_of_file(a), pm.module_of_file(b), pm.module_of_file(helper)) == (
+        S4J, S2, S4J)
+    assert not pm.file_in_scope(S2, a) and not pm.file_in_scope(S4J, b)
+    # a library file outside the closure belongs to no port module
+    assert pm.module_of_file(
+        "src/main/java/org/locationtech/spatial4j/context/jts/JtsSpatialContext.java") is None
+    assert pm.module_of_file("src/main/java/com/google/common/geometry/S2Loop.java") is None
+    assert pm.module_of_file("src/test/java/com/google/common/geometry/S2CellTest.java") is None
+
+
+def test_sprint17_crate_destinations_mirror_the_package_below_the_module_root():
+    assert pm.crate_destination(S4J, "org.locationtech.spatial4j.shape.impl") \
+        == "crates/spatial4j/src/shape/impl/"
+    assert pm.crate_destination(S2, "com.google.common.geometry") == "crates/s2-geometry/src/"
+    assert pm.crate_destination("lucene/benchmark", "org.apache.lucene.benchmark.byTask.feeds") \
+        == "crates/rucene-benchmark/src/by_task/feeds/"
+    assert pm.crate_destination("lucene/highlighter", "org.apache.lucene.search.uhighlight") \
+        == "crates/rucene-highlighter/src/uhighlight/"
+    assert pm.crate_destination("lucene/memory", "org.apache.lucene.index.memory") \
+        == "crates/rucene-memory/src/"
+    assert pm.crate_destination("lucene/spatial-test-fixtures",
+                                "org.apache.lucene.spatial3d.tests") \
+        == "crates/rucene-spatial-test-fixtures/src/"
+
+
+def test_repo_roots_reach_the_libraries_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("SPATIAL4J_ROOT", str(tmp_path / "a"))
+    monkeypatch.setenv("S2_GEOMETRY_ROOT", str(tmp_path / "b"))
+    roots = pm.repo_roots("/l", "/r")
+    assert (roots["spatial4j"], roots["s2-geometry"]) == (tmp_path / "a", tmp_path / "b")
+    roots = pm.repo_roots("/l", "/r", "/x", "/y")
+    assert (roots["spatial4j"], roots["s2-geometry"]) == (Path("/x"), Path("/y"))
+    monkeypatch.delenv("SPATIAL4J_ROOT")
+    monkeypatch.delenv("S2_GEOMETRY_ROOT")
+    roots = pm.repo_roots()
+    assert (roots["spatial4j"], roots["s2-geometry"]) == (
+        Path(pm.DEFAULT_SPATIAL4J_ROOT), Path(pm.DEFAULT_S2_ROOT))
+
+
+def test_a_library_skeleton_is_read_with_its_full_name():
+    assert pe.skeleton_in("Skeleton of `org.locationtech.spatial4j.shape.impl.RectangleImpl`; "
+                          "ported by rmp task #621.") == (
+        "org.locationtech.spatial4j.shape.impl.RectangleImpl", 621)
+    assert pe.skeleton_in("Skeleton of `com.google.common.geometry.S2CellId`; "
+                          "ported by rmp task #622.") == ("com.google.common.geometry.S2CellId", 622)
+
+
+def test_the_audit_leaves_a_file_of_the_other_library_to_its_module():
+    # the audit's graph side reads every File under `src/main/java/`; the
+    # filter it applies keeps each library's files to its own module
+    s4j = "src/main/java/org/locationtech/spatial4j/shape/Shape.java"
+    s2 = "src/main/java/com/google/common/geometry/S2Cell.java"
+    foreign = lambda path, n: pm.module_of_file(path) not in (None, n)  # noqa: E731
+    assert foreign(s2, S4J) and not foreign(s4j, S4J)
+    assert foreign(s4j, S2) and not foreign(s2, S2)

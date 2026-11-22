@@ -15,7 +15,9 @@ Workspace: alem do crate raiz (`src/`, `tests/`), levanta cada crate membro em
 `port_modules_kg.PORT_MODULES` para la de `lucene/core` (o `cratePath` de cada
 um: `crates/rucene-codecs`, `crates/randomizedtesting`,
 `crates/rucene-test-framework`, `crates/rucene-analysis-common`,
-`crates/rucene-queries`, `crates/rucene-queryparser`, `crates/rucene-sandbox`),
+`crates/rucene-queries`, `crates/rucene-queryparser`, `crates/rucene-sandbox`, e os
+crates do sprint 17, `crates/rucene-benchmark` e as suas dependencias, `crates/spatial4j`,
+`crates/s2-geometry`),
 mais qualquer outro membro com `Cargo.toml` (`crates/rucene-cli-example`). Os
 membros sao lidos de `crates/*/Cargo.toml`, por isso um crate que ainda nao
 existe (os tres do sprint 13 antes de o sprint os criar) nao contribui

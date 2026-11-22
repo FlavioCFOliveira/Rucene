@@ -32,6 +32,18 @@ LUCENE=${LUCENE_ROOT:-/tmp/lucene1050}
 RT=${RANDOMIZEDTESTING_ROOT:-/tmp/randomizedtesting281}
 [ -d "$RT/randomized-runner/src/main/java" ] || {
   echo "no randomizedtesting 2.8.1 clone at $RT (set RANDOMIZEDTESTING_ROOT)"; exit 2; }
+# spatial4j 0.8 and s2-geometry-library-java 1.0.0, the two libraries sprint 17
+# ports (`port_modules_kg.py`, which reads the same variables):
+#   git clone --depth 1 --branch spatial4j-0.8 \
+#       https://github.com/locationtech/spatial4j.git "$SPATIAL4J_ROOT"
+#   git clone --depth 1 --branch v1.0.0 \
+#       https://github.com/sgr-io/s2-geometry-library-java.git "$S2_GEOMETRY_ROOT"
+export SPATIAL4J_ROOT=${SPATIAL4J_ROOT:-/tmp/spatial4j-0.8}
+export S2_GEOMETRY_ROOT=${S2_GEOMETRY_ROOT:-/tmp/s2-geometry-1.0.0}
+[ -d "$SPATIAL4J_ROOT/src/main/java/org/locationtech/spatial4j" ] || {
+  echo "no spatial4j 0.8 clone at $SPATIAL4J_ROOT (set SPATIAL4J_ROOT)"; exit 2; }
+[ -d "$S2_GEOMETRY_ROOT/src/main/java/com/google/common/geometry" ] || {
+  echo "no s2-geometry 1.0.0 clone at $S2_GEOMETRY_ROOT (set S2_GEOMETRY_ROOT)"; exit 2; }
 LOG=$K/kg_sync_$SHORT.log
 mkdir -p "$K"
 rm -rf "$S" && mkdir -p "$S" && git archive "$FULL" | tar -x -C "$S" || exit 2

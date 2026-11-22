@@ -1,0 +1,18 @@
+[package]
+name = "rucene-highlighter"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/highlighter (highlight, vectorhighlight, uhighlight, matchhighlight)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_highlighter"
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-queries = { path = "../rucene-queries" }
+rucene-memory = { path = "../rucene-memory" }

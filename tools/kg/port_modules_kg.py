@@ -22,6 +22,16 @@ scope is ported and what is missing. The user has widened that scope twice:
   types), which `queryparser.xml.builders.FuzzyLikeThisQueryBuilder` needs, as
   the crate `rucene-sandbox`. The sandbox entry carries a source-file
   allow-list (`files`), so no other sandbox type enters the scope.
+* 2026-11-22, sprint 17 ("Port the benchmark module and its dependency
+  modules"): Lucene 10.5.0's `lucene/benchmark` and every module it depends on,
+  whole -- `lucene/memory`, `lucene/facet`, `lucene/highlighter`,
+  `lucene/spatial3d`, `lucene/spatial-extras` and `lucene/spatial-test-fixtures`
+  -- as the crates `rucene-benchmark`, `rucene-memory`, `rucene-facet`,
+  `rucene-highlighter`, `rucene-spatial3d`, `rucene-spatial-extras` and
+  `rucene-spatial-test-fixtures`; and, as randomizedtesting was, two external
+  Java libraries ported as their own crates and `Project`s, each narrowed by a
+  `files` allow-list: spatial4j 0.8 (`spatial4j`) and s2-geometry-library-java
+  1.0.0 (`s2-geometry`), the versions Lucene's `gradle/libs.versions.toml` pins.
 
 `PORT_MODULES` is the single statement of that scope. Every other KG tool that
 needs to know which module a Java file belongs to, which crate ports it, or
@@ -72,6 +82,32 @@ from kgio import esc, read, rmp, unwind  # noqa: E402
 LUCENE = "Apache Lucene Core 10.5.0"
 RT_PROJECT = "randomizedtesting 2.8.1"
 DEFAULT_LUCENE_ROOT = "/tmp/lucene1050"
+# The two external libraries sprint 17 ports (`files`-narrowed modules below).
+# spatial4j 0.8 and s2-geometry-library-java 1.0.0 are the versions Lucene
+# 10.5.0 pins (`gradle/libs.versions.toml`: `spatial4j = "0.8"`,
+# `s2-geometry = "1.0.0"`, `io.sgr:s2-geometry-library-java`). Obtain them with
+#   git clone --depth 1 --branch spatial4j-0.8 \
+#       https://github.com/locationtech/spatial4j.git <dir>         (8704d9ca)
+#   git clone --depth 1 --branch v1.0.0 \
+#       https://github.com/sgr-io/s2-geometry-library-java.git <dir> (55871d6c)
+# Both are Apache-2.0. Their roots come from the environment, else the defaults.
+SPATIAL4J_PROJECT = "spatial4j 0.8"
+S2_PROJECT = "s2-geometry-library-java 1.0.0"
+SPATIAL4J_ROOT_ENV = "SPATIAL4J_ROOT"
+DEFAULT_SPATIAL4J_ROOT = "/tmp/spatial4j-0.8"
+S2_ROOT_ENV = "S2_GEOMETRY_ROOT"
+DEFAULT_S2_ROOT = "/tmp/s2-geometry-1.0.0"
+# The external Java projects whose modules the port covers, beyond Lucene:
+# `(name, version, reference URL)`, each written as a `Project` by `--phase
+# modules`.
+EXTERNAL_PROJECTS = (
+    (RT_PROJECT, "2.8.1",
+     "https://github.com/randomizedtesting/randomizedtesting/tree/release/2.8.1"),
+    (SPATIAL4J_PROJECT, "0.8",
+     "https://github.com/locationtech/spatial4j/tree/spatial4j-0.8"),
+    (S2_PROJECT, "1.0.0",
+     "https://github.com/sgr-io/s2-geometry-library-java/tree/v1.0.0"),
+)
 # randomizedtesting 2.8.1 is the runner Lucene 10.5.0 builds its test framework
 # on (`lucene/test-framework`'s descriptor: `requires transitive
 # randomizedtesting.runner`). Obtain it with
@@ -110,6 +146,23 @@ DEFAULT_RT_ROOT = "/tmp/randomizedtesting281"
 # `skeletons` is set on a module whose types are tracked through a Rust
 # skeleton before they are ported (`SKELETON_OF`): `"report"` makes the audit
 # report the classes still lacking one, `"enforce"` fails it on any.
+# Sprint 17's modules mirror the packages below each module's own package root
+# (`org.apache.lucene.search.uhighlight` -> `crates/rucene-highlighter/src/
+# uhighlight/`, `org.apache.lucene.benchmark.byTask.feeds` ->
+# `crates/rucene-benchmark/src/by_task/feeds/`, `org.locationtech.spatial4j.
+# shape.impl` -> `crates/spatial4j/src/shape/impl/`). The two external libraries
+# are narrowed by `files` to the transitive closure, over each library's main
+# code, of the library types `lucene/spatial-extras/src/java` and
+# `lucene/benchmark/src/java` import: a file's edges are its single-type and
+# static imports, its wildcard imports filtered by the simple names it uses, the
+# types of its own package whose simple names it uses, and fully qualified names
+# in code (comments and literals blanked). spatial4j 0.8: 15 imported types, 41
+# files; s2-geometry 1.0.0: 5 imported types, 15 files. spatial4j's list also
+# holds, from `src/test/java`, the test helpers `lucene/spatial-extras/src/test`
+# imports and their closure (`TestLog`, `shape.RandomizedShapeTest`,
+# `shape.RectIntersectionTestHelper`), ported by the spatial-extras test task.
+# The two clones share the source-tree spelling `src/main/java`; the `files`
+# lists keep their modules apart (`module_of_file`).
 # `jpms` is the module's JPMS name:
 # randomizedtesting 2.8.1 ships no descriptor, so its name is the automatic one
 # the JDK derives from `randomizedtesting-runner-2.8.1.jar` (version dropped,
@@ -193,6 +246,155 @@ PORT_MODULES = (
      "skeletons": "report",
      "role": "experimental code; only FuzzyLikeThisQuery is ported (sprint 13), "
              "for the XML query parser's FuzzyLikeThisQueryBuilder"},
+    {"name": "lucene/memory", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/memory/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.index.memory",
+     "crate": "rucene-memory", "cratePath": "crates/rucene-memory",
+     "jpms": "org.apache.lucene.memory",
+     "descriptor": "lucene/memory/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "the single-document in-memory index (MemoryIndex); ported by sprint 17"},
+    {"name": "lucene/facet", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/facet/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.facet",
+     "crate": "rucene-facet", "cratePath": "crates/rucene-facet",
+     "jpms": "org.apache.lucene.facet",
+     "descriptor": "lucene/facet/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "faceted search: taxonomy and sorted-set facets, ranges, range-on-range and facet sets; ported by sprint 17"},
+    {"name": "lucene/highlighter", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/highlighter/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.search",
+     "crate": "rucene-highlighter", "cratePath": "crates/rucene-highlighter",
+     "jpms": "org.apache.lucene.highlighter",
+     "descriptor": "lucene/highlighter/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "highlighters: highlight, vectorhighlight, uhighlight and matchhighlight; ported by sprint 17"},
+    {"name": "lucene/spatial3d", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/spatial3d/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.spatial3d",
+     "crate": "rucene-spatial3d", "cratePath": "crates/rucene-spatial3d",
+     "jpms": "org.apache.lucene.spatial3d",
+     "descriptor": "lucene/spatial3d/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "3D planar geometry on the sphere/ellipsoid and its point field and queries; ported by sprint 17"},
+    {"name": "lucene/spatial-extras", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/spatial-extras/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.spatial",
+     "crate": "rucene-spatial-extras", "cratePath": "crates/rucene-spatial-extras",
+     "jpms": "org.apache.lucene.spatial_extras",
+     "descriptor": "lucene/spatial-extras/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "spatial strategies over spatial4j shapes (prefix trees, bbox, serialized, vector, composite); ported by sprint 17"},
+    {"name": "lucene/spatial-test-fixtures", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/spatial-test-fixtures/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.spatial3d.tests",
+     "crate": "rucene-spatial-test-fixtures", "cratePath": "crates/rucene-spatial-test-fixtures",
+     # No descriptor: the automatic name the JDK derives from the jar
+     # `lucene-spatial-test-fixtures-10.5.0.jar` (`gradle/globals.gradle`
+     # `archivesName`; version dropped, `-` -> `.`).
+     "jpms": "lucene.spatial.test.fixtures",
+     "descriptor": None,
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "test fixtures for the spatial modules (random spatial3d shapes); ported by sprint 17"},
+    {"name": "lucene/benchmark", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/benchmark/src/java",),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.benchmark",
+     "crate": "rucene-benchmark", "cratePath": "crates/rucene-benchmark",
+     "jpms": "org.apache.lucene.benchmark",
+     "descriptor": "lucene/benchmark/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "enforce",
+     "role": "the benchmarking harness (byTask algorithms, quality/TREC evaluation); ported by sprint 17"},
+    {"name": "spatial4j/spatial4j", "project": SPATIAL4J_PROJECT,
+     "repo": "spatial4j", "sources": ("src/main/java", "src/test/java"),
+     "files": (
+               "src/main/java/org/locationtech/spatial4j/context/SpatialContext.java",
+               "src/main/java/org/locationtech/spatial4j/context/SpatialContextFactory.java",
+               "src/main/java/org/locationtech/spatial4j/distance/AbstractDistanceCalculator.java",
+               "src/main/java/org/locationtech/spatial4j/distance/CartesianDistCalc.java",
+               "src/main/java/org/locationtech/spatial4j/distance/DistanceCalculator.java",
+               "src/main/java/org/locationtech/spatial4j/distance/DistanceUtils.java",
+               "src/main/java/org/locationtech/spatial4j/distance/GeodesicSphereDistCalc.java",
+               "src/main/java/org/locationtech/spatial4j/exception/InvalidShapeException.java",
+               "src/main/java/org/locationtech/spatial4j/io/BinaryCodec.java",
+               "src/main/java/org/locationtech/spatial4j/io/GeoJSONReader.java",
+               "src/main/java/org/locationtech/spatial4j/io/GeoJSONWriter.java",
+               "src/main/java/org/locationtech/spatial4j/io/GeohashUtils.java",
+               "src/main/java/org/locationtech/spatial4j/io/LegacyShapeReader.java",
+               "src/main/java/org/locationtech/spatial4j/io/LegacyShapeWriter.java",
+               "src/main/java/org/locationtech/spatial4j/io/OnePointsBuilder.java",
+               "src/main/java/org/locationtech/spatial4j/io/ParseUtils.java",
+               "src/main/java/org/locationtech/spatial4j/io/PolyshapeReader.java",
+               "src/main/java/org/locationtech/spatial4j/io/PolyshapeWriter.java",
+               "src/main/java/org/locationtech/spatial4j/io/ShapeIO.java",
+               "src/main/java/org/locationtech/spatial4j/io/ShapeReader.java",
+               "src/main/java/org/locationtech/spatial4j/io/ShapeWriter.java",
+               "src/main/java/org/locationtech/spatial4j/io/SupportedFormats.java",
+               "src/main/java/org/locationtech/spatial4j/io/WKTReader.java",
+               "src/main/java/org/locationtech/spatial4j/io/WKTWriter.java",
+               "src/main/java/org/locationtech/spatial4j/shape/BaseShape.java",
+               "src/main/java/org/locationtech/spatial4j/shape/Circle.java",
+               "src/main/java/org/locationtech/spatial4j/shape/Point.java",
+               "src/main/java/org/locationtech/spatial4j/shape/Rectangle.java",
+               "src/main/java/org/locationtech/spatial4j/shape/Shape.java",
+               "src/main/java/org/locationtech/spatial4j/shape/ShapeCollection.java",
+               "src/main/java/org/locationtech/spatial4j/shape/ShapeFactory.java",
+               "src/main/java/org/locationtech/spatial4j/shape/SpatialRelation.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/BBoxCalculator.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/BufferedLine.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/BufferedLineString.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/CircleImpl.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/GeoCircle.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/InfBufLine.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/PointImpl.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/RectangleImpl.java",
+               "src/main/java/org/locationtech/spatial4j/shape/impl/ShapeFactoryImpl.java",
+               "src/test/java/org/locationtech/spatial4j/TestLog.java",
+               "src/test/java/org/locationtech/spatial4j/shape/RandomizedShapeTest.java",
+               "src/test/java/org/locationtech/spatial4j/shape/RectIntersectionTestHelper.java",
+     ),
+     "prefix": "org.locationtech.spatial4j", "packageRoot": "org.locationtech.spatial4j",
+     "crate": "spatial4j", "cratePath": "crates/spatial4j",
+     "jpms": "spatial4j", "descriptor": None,
+     "scopeRule": "sprint-17-ports-listed-files",
+     "classRule": "sprint-17-listed-file-top-level",
+     "skeletons": "enforce",
+     "role": "the spatial4j 0.8 shapes, context, distance and I/O that lucene/spatial-extras "
+             "and lucene/benchmark use (their closure); ported by sprint 17"},
+    {"name": "s2-geometry/s2-geometry-library-java", "project": S2_PROJECT,
+     "repo": "s2-geometry", "sources": ("src/main/java",),
+     "files": (
+               "src/main/java/com/google/common/geometry/MutableInteger.java",
+               "src/main/java/com/google/common/geometry/R1Interval.java",
+               "src/main/java/com/google/common/geometry/R2Vector.java",
+               "src/main/java/com/google/common/geometry/S1Angle.java",
+               "src/main/java/com/google/common/geometry/S1Interval.java",
+               "src/main/java/com/google/common/geometry/S2.java",
+               "src/main/java/com/google/common/geometry/S2Cap.java",
+               "src/main/java/com/google/common/geometry/S2Cell.java",
+               "src/main/java/com/google/common/geometry/S2CellId.java",
+               "src/main/java/com/google/common/geometry/S2EdgeUtil.java",
+               "src/main/java/com/google/common/geometry/S2LatLng.java",
+               "src/main/java/com/google/common/geometry/S2LatLngRect.java",
+               "src/main/java/com/google/common/geometry/S2Point.java",
+               "src/main/java/com/google/common/geometry/S2Projections.java",
+               "src/main/java/com/google/common/geometry/S2Region.java",
+     ),
+     "prefix": "com.google.common.geometry", "packageRoot": "com.google.common.geometry",
+     "crate": "s2-geometry", "cratePath": "crates/s2-geometry",
+     "jpms": "s2.geometry.library.java", "descriptor": None,
+     "scopeRule": "sprint-17-ports-listed-files",
+     "classRule": "sprint-17-listed-file-top-level",
+     "skeletons": "enforce",
+     "role": "the S2 cell geometry that lucene/spatial-extras' S2 prefix tree uses "
+             "(its closure); ported by sprint 17"},
 )
 BY_NAME = {m["name"]: m for m in PORT_MODULES}
 # The modules beyond `lucene/core`: surveyed by `--phase structure`, given the
@@ -227,6 +429,13 @@ DECISIONS = (
              "FuzzyLikeThisQuery",
      "on": "2026-11-14",
      "modules": ("lucene/queries", "lucene/queryparser", "lucene/sandbox"),
+     "supersedes": None},
+    {"name": "Sprint 17 ports lucene/benchmark with its dependency modules, and the "
+             "spatial4j 0.8 and s2-geometry 1.0.0 subsets they use",
+     "on": "2026-11-22",
+     "modules": ("lucene/memory", "lucene/facet", "lucene/highlighter", "lucene/spatial3d",
+                 "lucene/spatial-extras", "lucene/spatial-test-fixtures", "lucene/benchmark",
+                 "spatial4j/spatial4j", "s2-geometry/s2-geometry-library-java"),
      "supersedes": None},
 )
 DECISION = DECISIONS[0]["name"]
@@ -322,11 +531,20 @@ def early_query(module=None):
     return EARLY_QUERY.replace("RETURN ", f"WHERE c.module = {esc(module)} RETURN ", 1)
 
 
-def repo_roots(lucene_root=None, rt_root=None):
-    """`{repo: Path}` for the two clones the modules live in."""
+def repo_roots(lucene_root=None, rt_root=None, spatial4j_root=None, s2_root=None):
+    """`{repo: Path}` for the clones the modules live in.
+
+    The two sprint-17 libraries take their roots from the arguments, else the
+    environment (`SPATIAL4J_ROOT`, `S2_GEOMETRY_ROOT`), else the defaults, so
+    every caller that passes only the Lucene and randomizedtesting roots reaches
+    them unchanged.
+    """
     return {"lucene": Path(lucene_root or DEFAULT_LUCENE_ROOT),
             "randomizedtesting": Path(rt_root or os.environ.get(RT_ROOT_ENV)
-                                      or DEFAULT_RT_ROOT)}
+                                      or DEFAULT_RT_ROOT),
+            "spatial4j": Path(spatial4j_root or os.environ.get(SPATIAL4J_ROOT_ENV)
+                              or DEFAULT_SPATIAL4J_ROOT),
+            "s2-geometry": Path(s2_root or os.environ.get(S2_ROOT_ENV) or DEFAULT_S2_ROOT)}
 
 
 def source_dirs(roots, modules=PORT_MODULES):
@@ -487,12 +705,12 @@ def survey_module(module, roots):
 def phase_modules(roadmap, roots, commit, date):
     print("phase: modules", file=sys.stderr)
     stamp = {"commit": commit, "date": date}
-    rmp("create", roadmap, f"MERGE (p:Project {{name: {esc(RT_PROJECT)}}})")
-    rmp("update", roadmap,
-        f"MATCH (p:Project {{name: {esc(RT_PROJECT)}}}) SET p.language = 'Java', "
-        "p.version = '2.8.1', "
-        "p.referenceUrl = 'https://github.com/randomizedtesting/randomizedtesting/tree/release/2.8.1', "
-        f"p.gitCommit = {esc(commit)}, p.gitDate = {esc(date)}")
+    for project, version, url in EXTERNAL_PROJECTS:
+        rmp("create", roadmap, f"MERGE (p:Project {{name: {esc(project)}}})")
+        rmp("update", roadmap,
+            f"MATCH (p:Project {{name: {esc(project)}}}) SET p.language = 'Java', "
+            f"p.version = {esc(version)}, p.referenceUrl = {esc(url)}, "
+            f"p.gitCommit = {esc(commit)}, p.gitDate = {esc(date)}")
     rows = []
     for m in PORT_MODULES:
         src = roots[m["repo"]] / m["sources"][0]
@@ -503,7 +721,10 @@ def phase_modules(roadmap, roots, commit, date):
             raise SystemExit(f"no sources for {m['name']} under {src}")
         rows.append({"name": m["name"], "project": m["project"],
                      "shortName": m["name"].split("/", 1)[1],
-                     "path": m["sources"][0].rsplit("/src/", 1)[0],
+                     # The module's directory in its clone: `.` when the clone
+                     # is the module (spatial4j, s2-geometry: `src/main/java`).
+                     "path": (m["sources"][0].rsplit("/src/", 1)[0]
+                              if "/src/" in m["sources"][0] else "."),
                      "javaFiles": java_files, "scopeRule": m["scopeRule"],
                      "role": m["role"], "crate": m["crate"], "cratePath": m["cratePath"],
                      "jpms": m["jpms"],
@@ -551,6 +772,48 @@ def phase_modules(roadmap, roots, commit, date):
 
 def decision_text(decision):
     """`(summary, rationale, alternatives)` of one scope `Decision`."""
+    if decision["name"] == DECISIONS[3]["name"]:
+        return (
+            "On 2026-11-22 the user decided that sprint 17 ('Port the benchmark module "
+            "and its dependency modules') ports Lucene 10.5.0's lucene/benchmark and every "
+            "module it depends on, whole and faithfully: lucene/memory, lucene/facet, "
+            "lucene/highlighter, lucene/spatial3d, lucene/spatial-extras and "
+            "lucene/spatial-test-fixtures, as the workspace crates rucene-benchmark, "
+            "rucene-memory, rucene-facet, rucene-highlighter, rucene-spatial3d, "
+            "rucene-spatial-extras and rucene-spatial-test-fixtures (crates/<crate>); and "
+            "two external Java libraries as their own crates and Projects, as "
+            "randomizedtesting 2.8.1 was: spatial4j 0.8 (crate spatial4j) and "
+            "s2-geometry-library-java 1.0.0 (crate s2-geometry), each narrowed by "
+            "Module.scopeFiles to the transitive closure, over the library's main code, of "
+            "the library types lucene/spatial-extras and lucene/benchmark main code import "
+            "(spatial4j: 41 files, plus the 3 test helpers lucene/spatial-extras' tests "
+            "import; s2: 15 files). Rust module paths mirror the Java packages below each "
+            "module's package root. The nine modules are inScope=true; the top-level types "
+            "of the seven Lucene modules are portScope='in' (portScopeRule "
+            "'sprint-17-module-top-level'), those of the listed library files portScope="
+            "'in' (portScopeRule 'sprint-17-listed-file-top-level'), nested types "
+            "portScope='nested'. All nine are tracked through Rust skeletons "
+            "(skeletons: 'enforce'). commons-compress, icu4j and nekohtml, which "
+            "lucene/benchmark also uses, are replaced by Rust crates (rmp #611), not ported.",
+            "The user's decisions for sprint 17 (rmp sprint 17 comments, 2026-11-22): the "
+            "dependency modules are ported in full, not only the parts lucene/benchmark "
+            "uses; spatial4j and s2-geometry are ported (the subset used), the other three "
+            "libraries replaced by crates. CLAUDE.md 6.1 requires the graph to answer what "
+            "of the port's scope is ported and what is missing, against an explicit "
+            "denominator, so the modules the work now covers enter the graph's scope, and "
+            "the library narrowing is stated in the graph as a file list computed from the "
+            "sources rather than implied.",
+            "Porting only the parts of the dependency modules lucene/benchmark uses, as "
+            "the sandbox precedent did (rejected by the user). Porting lucene/benchmark "
+            "alone (rejected by the user: 13 of its files would stay blocked). Porting all "
+            "five external libraries, or replacing all five by crates (both rejected by the "
+            "user). Taking spatial4j and s2-geometry whole (rejected: the user scoped them "
+            "to the subset used; types no Lucene code reaches would inflate the "
+            "denominator). Folding the library types into rucene-spatial-extras (rejected: "
+            "the crate layout mirrors the Java modules and projects). Out of scope by the "
+            "user's decision: lucene/analysis/icu (benchmark's moduleRuntimeOnly) and jts "
+            "(no import in spatial-extras' main sources).",
+        )
     if decision["name"] == DECISIONS[2]["name"]:
         return (
             "On 2026-11-14 the user decided that sprint 13 ('Port Query Modules') ports "

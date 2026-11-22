@@ -70,10 +70,13 @@ from kgio import (counters_of, item_labels, kg_target, read as kg_read,  # noqa:
 # The full name of a type of any port module (`port_modules_kg.PORT_MODULES`):
 # Lucene's `org.apache.lucene.`, randomizedtesting's
 # `com.carrotsearch.randomizedtesting.`, which sprint 9's workspace crates claim,
-# and the Snowball runtime's `org.tartarus.snowball.`, which
-# `lucene/analysis/common` declares and sprint 12's crate claims.
+# the Snowball runtime's `org.tartarus.snowball.`, which
+# `lucene/analysis/common` declares and sprint 12's crate claims, and the two
+# libraries sprint 17 ports, spatial4j's `org.locationtech.spatial4j.` and
+# s2-geometry's `com.google.common.geometry.`.
 FQN_FULL = (r"(?:org\.apache\.lucene|com\.carrotsearch\.randomizedtesting"
-            r"|org\.tartarus\.snowball)\.[A-Za-z0-9_.$]+")
+            r"|org\.tartarus\.snowball|org\.locationtech\.spatial4j"
+            r"|com\.google\.common\.geometry)\.[A-Za-z0-9_.$]+")
 NESTED_SHORT = r"[A-Z][A-Za-z0-9_]*(?:[.$][A-Z][A-Za-z0-9_]*)+"
 # The crate often quotes the Java declaration rather than just the name --
 # ``Equivalent to the `final class MultiTermQuery.TopTermsScoringBooleanQueryRewrite`.``
@@ -251,7 +254,8 @@ def claim_in(text: str):
 # or a capitalised `Outer.Inner` chain. A bare simple name in a table row is
 # still refused, so the table can never resolve a name by coincidence.
 RE_TABLE_HEADER = re.compile(
-    r"^\s*\|\s*Rucene\s*\|\s*(?:Apache Lucene Core 10\.5\.0|randomizedtesting 2\.8\.1)\s*\|\s*$")
+    r"^\s*\|\s*Rucene\s*\|\s*(?:Apache Lucene Core 10\.5\.0|randomizedtesting 2\.8\.1"
+    r"|spatial4j 0\.8|s2-geometry-library-java 1\.0\.0)\s*\|\s*$")
 RE_TABLE_ROW = re.compile(r"^\s*\|\s*\[`([^`\]]+)`\](?:\([^)]*\))?\s*\|\s*`([^`]+)`\s*\|\s*$")
 
 

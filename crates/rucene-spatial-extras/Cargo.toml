@@ -1,0 +1,19 @@
+[package]
+name = "rucene-spatial-extras"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/spatial-extras (spatial strategies over spatial4j shapes)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_spatial_extras"
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-spatial3d = { path = "../rucene-spatial3d" }
+spatial4j = { path = "../spatial4j" }
+s2-geometry = { path = "../s2-geometry" }
