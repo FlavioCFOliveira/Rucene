@@ -15,10 +15,143 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ReindexingEnrichedDirectoryTaxonomyWriter.java`, of the Java
+//! Port of `ReindexingEnrichedDirectoryTaxonomyWriter.java`, of the Java
 //! package `org.apache.lucene.facet.taxonomy.directory`.
 
-/// Java: `public class`.
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use rucene::document::Document;
+use rucene::error::Result;
+use rucene::index::index_writer_config::OpenMode;
+use rucene::index::{IndexReader, TwoPhaseCommit};
+use rucene::store::Directory;
+
+use crate::taxonomy::directory::directory_taxonomy_reader::DirectoryTaxonomyReader;
+use crate::taxonomy::directory::directory_taxonomy_writer::{
+    DirectoryTaxonomyWriter, DirectoryTaxonomyWriterOverrides,
+};
+use crate::taxonomy::facet_label::FacetLabel;
+use crate::taxonomy::taxonomy_reader::TaxonomyReader;
+use crate::taxonomy::taxonomy_writer::TaxonomyWriter;
+
+/// Java's `BiConsumer<FacetLabel, Document>`.
+pub type OrdinalDataAppender = Arc<dyn Fn(&FacetLabel, &mut Document) + Send + Sync>;
+
+/// The overrides of the subclass: `enrichOrdinalDocument` calls the current
+/// `ordinalDataAppender`.
+struct EnrichOverrides {
+    ordinal_data_appender: Arc<Mutex<Option<OrdinalDataAppender>>>,
+}
+
+impl DirectoryTaxonomyWriterOverrides for EnrichOverrides {
+    fn enrich_ordinal_document(&self, d: &mut Document, category_path: &FacetLabel) {
+        let appender = self
+            .ordinal_data_appender
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(appender) = appender {
+            appender(category_path, d);
+        }
+    }
+}
+
+/// Use this `TaxonomyWriter` to append arbitrary fields to the ordinal
+/// documents in the taxonomy. To update the custom data added to the docs,
+/// it is required to `reindexWithNewOrdinalData()`.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.directory.ReindexingEnrichedDirectoryTaxonomyWriter`; ported by rmp task #614.
-pub struct ReindexingEnrichedDirectoryTaxonomyWriter;
+/// Equivalent to
+/// `org.apache.lucene.facet.taxonomy.directory.ReindexingEnrichedDirectoryTaxonomyWriter`,
+/// a subclass of [`DirectoryTaxonomyWriter`], which it dereferences to.
+pub struct ReindexingEnrichedDirectoryTaxonomyWriter {
+    inner: DirectoryTaxonomyWriter,
+    ordinal_data_appender: Arc<Mutex<Option<OrdinalDataAppender>>>,
+    /// The monitor of `reindexWithNewOrdinalData`'s `synchronized`.
+    reindex_lock: Mutex<()>,
+}
+
+impl ReindexingEnrichedDirectoryTaxonomyWriter {
+    /// Create a taxonomy writer that will allow editing the ordinal docs
+    /// before indexing them.
+    ///
+    /// Equivalent to `ReindexingEnrichedDirectoryTaxonomyWriter(Directory,
+    /// BiConsumer)`. Java's `super(d)` runs before the field is assigned, so
+    /// the root category document added by the base constructor is enriched
+    /// by no appender; the port assigns the appender after the base
+    /// constructor for the same effect.
+    pub fn new(
+        d: Arc<dyn Directory>,
+        ordinal_data_appender: Option<OrdinalDataAppender>,
+    ) -> Result<Self> {
+        let cell = Arc::new(Mutex::new(None));
+        let inner = DirectoryTaxonomyWriter::with_overrides(
+            d,
+            OpenMode::CREATE_OR_APPEND,
+            Some(DirectoryTaxonomyWriter::default_taxonomy_writer_cache()),
+            Box::new(EnrichOverrides {
+                ordinal_data_appender: Arc::clone(&cell),
+            }),
+        )?;
+        *cell.lock().unwrap_or_else(PoisonError::into_inner) = ordinal_data_appender;
+        Ok(Self {
+            inner,
+            ordinal_data_appender: cell,
+            reindex_lock: Mutex::new(()),
+        })
+    }
+
+    /// Make a list of all labels in the taxonomy.
+    ///
+    /// Equivalent to `recordPathsInOrder(Directory)`.
+    fn record_paths_in_order(d: Arc<dyn Directory>) -> Result<Vec<FacetLabel>> {
+        let mut paths = Vec::new();
+        let taxo_reader = DirectoryTaxonomyReader::open(d)?;
+        let taxo_index_reader: Arc<dyn IndexReader> = taxo_reader.get_internal_index_reader()?;
+        for ctx in taxo_index_reader.leaves()? {
+            let leaf_reader = ctx.leaf_reader();
+            let mut ordinals: Vec<i32> = (0..leaf_reader.max_doc())
+                .map(|i| ctx.doc_base() + i)
+                .collect();
+            let labels = taxo_reader.get_bulk_path(&mut ordinals)?;
+            for label in labels {
+                paths.push(label.expect("INVARIANT: DirectoryTaxonomyReader never returns a null path"));
+            }
+        }
+        taxo_reader.close()?;
+        Ok(paths)
+    }
+
+    /// Delete the existing taxonomy index and recreate it using new ordinal
+    /// data. The ordinals themselves will be preserved.
+    ///
+    /// Equivalent to `reindexWithNewOrdinalData(BiConsumer)`.
+    pub fn reindex_with_new_ordinal_data(
+        &self,
+        ordinal_data_appender: Option<OrdinalDataAppender>,
+    ) -> Result<()> {
+        let _guard = self.reindex_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.inner.ensure_open()?;
+        *self
+            .ordinal_data_appender
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = ordinal_data_appender;
+        let d = Arc::clone(self.inner.get_directory());
+
+        let ordinal_to_path = Self::record_paths_in_order(d)?;
+        self.inner.delete_all()?;
+        for category_path in &ordinal_to_path {
+            self.inner.add_category(category_path)?;
+        }
+        self.inner.commit()?;
+        Ok(())
+    }
+}
+
+impl Deref for ReindexingEnrichedDirectoryTaxonomyWriter {
+    type Target = DirectoryTaxonomyWriter;
+
+    fn deref(&self) -> &DirectoryTaxonomyWriter {
+        &self.inner
+    }
+}

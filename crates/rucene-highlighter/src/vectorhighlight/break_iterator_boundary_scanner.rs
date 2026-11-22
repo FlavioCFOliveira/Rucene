@@ -15,10 +15,56 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `BreakIteratorBoundaryScanner.java`, of the Java
-//! package `org.apache.lucene.search.vectorhighlight`.
+//! Port of `BreakIteratorBoundaryScanner.java`, of the Java package
+//! `org.apache.lucene.search.vectorhighlight`.
 
-/// Java: `public class`.
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use rucene_analysis_common::jdk::break_iterator::BreakIterator;
+
+use crate::vectorhighlight::boundary_scanner::BoundaryScanner;
+
+/// A `BoundaryScanner` implementation that uses `BreakIterator` to find
+/// boundaries in the text.
 ///
-/// Skeleton of `org.apache.lucene.search.vectorhighlight.BreakIteratorBoundaryScanner`; ported by rmp task #616.
-pub struct BreakIteratorBoundaryScanner;
+/// Equivalent to `org.apache.lucene.search.vectorhighlight.BreakIteratorBoundaryScanner`.
+/// The iterator, which each scan resets, is behind a lock so the scanner is
+/// shared as Java shares it.
+#[derive(Debug)]
+pub struct BreakIteratorBoundaryScanner {
+    pub(crate) bi: Mutex<Box<dyn BreakIterator>>,
+}
+
+impl BreakIteratorBoundaryScanner {
+    /// Equivalent to `new BreakIteratorBoundaryScanner(BreakIterator)`.
+    pub fn new(bi: Box<dyn BreakIterator>) -> Self {
+        Self { bi: Mutex::new(bi) }
+    }
+
+    fn bi(&self) -> MutexGuard<'_, Box<dyn BreakIterator>> {
+        self.bi.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl BoundaryScanner for BreakIteratorBoundaryScanner {
+    fn find_start_offset(&self, buffer: &[u16], start: i32) -> i32 {
+        // avoid illegal start offset
+        if start > buffer.len() as i32 || start < 1 {
+            return start;
+        }
+        let mut bi = self.bi();
+        bi.set_text_units(&buffer[..start as usize]);
+        bi.last();
+        bi.previous()
+    }
+
+    fn find_end_offset(&self, buffer: &[u16], start: i32) -> i32 {
+        // avoid illegal start offset
+        if start > buffer.len() as i32 || start < 0 {
+            return start;
+        }
+        let mut bi = self.bi();
+        bi.set_text_units(&buffer[start as usize..]);
+        bi.next() + start
+    }
+}

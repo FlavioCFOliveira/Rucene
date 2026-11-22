@@ -15,10 +15,31 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PassageAdjuster.java`, of the Java
-//! package `org.apache.lucene.search.matchhighlight`.
+//! Port of `PassageAdjuster.java`, of the Java package
+//! `org.apache.lucene.search.matchhighlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+use rucene::error::Result;
+
+use crate::matchhighlight::offset_range::OffsetRange;
+use crate::matchhighlight::passage::Passage;
+
+/// Adjusts the range of one or more passages over a given value. An
+/// adjuster could shift passage boundary to the next or previous word
+/// delimiter or white space, for example.
 ///
-/// Skeleton of `org.apache.lucene.search.matchhighlight.PassageAdjuster`; ported by rmp task #617.
-pub trait PassageAdjuster {}
+/// Equivalent to `org.apache.lucene.search.matchhighlight.PassageAdjuster`.
+/// The adjuster keeps the current value behind interior mutability, as the
+/// selector that holds it is shared.
+pub trait PassageAdjuster: Debug + Send + Sync {
+    /// Equivalent to `currentValue(CharSequence)`.
+    fn current_value(&self, value: &str);
+
+    /// Equivalent to `adjust(Passage)`.
+    ///
+    /// # Errors
+    ///
+    /// What the adjuster raises.
+    fn adjust(&self, p: &Passage) -> Result<OffsetRange>;
+}

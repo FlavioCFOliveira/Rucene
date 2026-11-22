@@ -15,10 +15,54 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FacetSet.java`, of the Java
-//! package `org.apache.lucene.facet.facetset`.
+//! Port of `FacetSet.java`, of the Java package
+//! `org.apache.lucene.facet.facetset`.
 
-/// Java: `public abstract class`.
+use rucene::document::LongPoint;
+
+/// Holds a set of facet dimension values.
 ///
-/// Skeleton of `org.apache.lucene.facet.facetset.FacetSet`; ported by rmp task #615.
-pub struct FacetSet;
+/// Equivalent to `org.apache.lucene.facet.facetset.FacetSet`; its public
+/// `dims` field is [`dims`](Self::dims).
+pub trait FacetSet: Send + Sync {
+    /// The number of dimension values in this set.
+    fn dims(&self) -> i32;
+
+    /// `getClass().getName()` of the Java class, for the type checks of
+    /// `FacetSetsField`.
+    fn java_class_name(&self) -> &'static str;
+
+    /// Returns the dimension values in this facet set as comparable longs.
+    ///
+    /// Equivalent to `getComparableValues()`.
+    fn get_comparable_values(&self) -> Vec<i64>;
+
+    /// Packs the dimension values into the given `buf` and returns the
+    /// number of packed bytes.
+    ///
+    /// Equivalent to `packValues(byte[], int)`.
+    fn pack_values(&self, buf: &mut [u8], start: usize) -> usize {
+        let comparable_values = self.get_comparable_values();
+        let mut offset = start;
+        for v in &comparable_values {
+            LongPoint::encode_dimension(*v, buf, offset);
+            offset += 8;
+        }
+        comparable_values.len() * 8
+    }
+
+    /// Returns the size of the packed values in this facet set.
+    ///
+    /// Equivalent to `sizePackedBytes()`.
+    fn size_packed_bytes(&self) -> usize {
+        self.dims() as usize * 8
+    }
+}
+
+/// `validateValuesAndGetNumDims(...)` of the subclasses.
+pub(crate) fn validate_values_and_get_num_dims(len: usize) -> rucene::error::Result<i32> {
+    if len == 0 {
+        return Err(rucene::error::LuceneError::illegal_argument("values cannot be null or empty"));
+    }
+    Ok(len as i32)
+}

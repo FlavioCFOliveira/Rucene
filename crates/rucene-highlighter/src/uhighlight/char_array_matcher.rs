@@ -15,10 +15,77 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `CharArrayMatcher.java`, of the Java
-//! package `org.apache.lucene.search.uhighlight`.
+//! Port of `CharArrayMatcher.java`, of the Java package
+//! `org.apache.lucene.search.uhighlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::util::automaton::automata::Automata;
+use rucene::util::automaton::character_run_automaton::CharacterRunAutomaton;
+use rucene::util::BytesRef;
+
+/// Matches a character array.
 ///
-/// Skeleton of `org.apache.lucene.search.uhighlight.CharArrayMatcher`; ported by rmp task #617.
-pub trait CharArrayMatcher {}
+/// Equivalent to `org.apache.lucene.search.uhighlight.CharArrayMatcher`.
+/// The characters are Java `char`s: UTF-16 code units.
+pub trait CharArrayMatcher: Debug + Send + Sync {
+    /// Return `true` if the passed-in character array matches.
+    ///
+    /// Equivalent to `match(char[], int, int)`.
+    fn match_chars(&self, s: &[u16], offset: usize, length: usize) -> bool;
+
+    /// Return `true` if the passed-in CharsRef matches.
+    ///
+    /// Equivalent to `match(CharsRef)`: the whole of `chars`.
+    fn match_chars_ref(&self, chars: &[u16]) -> bool {
+        self.match_chars(chars, 0, chars.len())
+    }
+
+    /// `Object.toString()` of the matcher: its class name and an identity
+    /// hash code.
+    ///
+    /// **Divergence.** Java's identity hash code is replaced by the address
+    /// of the matcher, the port's convention for `Object.hashCode()`.
+    fn java_to_string(&self) -> String {
+        format!(
+            "{}@{:x}",
+            std::any::type_name::<Self>(),
+            (self as *const Self as *const () as usize) as u32
+        )
+    }
+}
+
+/// The method reference `CharacterRunAutomaton::run` as a
+/// `CharArrayMatcher`.
+#[derive(Debug)]
+pub(crate) struct RunAutomatonMatcher {
+    pub(crate) automaton: CharacterRunAutomaton,
+}
+
+impl CharArrayMatcher for RunAutomatonMatcher {
+    fn match_chars(&self, s: &[u16], offset: usize, length: usize) -> bool {
+        self.automaton.run_units(s, offset, length)
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "org.apache.lucene.search.uhighlight.CharArrayMatcher$$Lambda@{:x}",
+            (self as *const Self as usize) as u32
+        )
+    }
+}
+
+/// Returns a matcher that matches any of the given terms.
+///
+/// Equivalent to the static `CharArrayMatcher.fromTerms(List)`.
+///
+/// # Errors
+///
+/// What building the string-union automaton raises (an unsorted list, a
+/// term too long).
+pub fn from_terms(terms: &[BytesRef]) -> Result<Arc<dyn CharArrayMatcher>> {
+    let a = CharacterRunAutomaton::new(Automata::make_string_union(terms.iter().cloned())?)?;
+    Ok(Arc::new(RunAutomatonMatcher { automaton: a }))
+}

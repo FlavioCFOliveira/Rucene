@@ -15,15 +15,44 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ParallelTaxonomyArrays.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy`.
+//! Port of `ParallelTaxonomyArrays.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy`.
 
-/// Java: `public abstract class`.
+/// Returns 3 arrays for traversing the taxonomy: `parents`, `children` and
+/// `siblings`.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.ParallelTaxonomyArrays`; ported by rmp task #614.
-pub struct ParallelTaxonomyArrays;
+/// Equivalent to `org.apache.lucene.facet.taxonomy.ParallelTaxonomyArrays`.
+pub trait ParallelTaxonomyArrays: Send + Sync {
+    /// Returns the parents array, where `parents[i]` denotes the parent of
+    /// category ordinal `i`.
+    ///
+    /// Equivalent to `parents()`.
+    fn parents(&self) -> &dyn IntArray;
 
-/// Java: `public abstract static class`.
+    /// Returns the children array, where `children[i]` denotes a child of
+    /// category ordinal `i`.
+    ///
+    /// Equivalent to `children()`.
+    fn children(&self) -> &dyn IntArray;
+
+    /// Returns the siblings array, where `siblings[i]` denotes the sibling of
+    /// category ordinal `i`.
+    ///
+    /// Equivalent to `siblings()`.
+    fn siblings(&self) -> &dyn IntArray;
+}
+
+/// Abstraction that looks like an int[], but read-only.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.ParallelTaxonomyArrays.IntArray`; ported by rmp task #614.
-pub struct IntArray;
+/// Equivalent to `org.apache.lucene.facet.taxonomy.ParallelTaxonomyArrays.IntArray`.
+pub trait IntArray: Send + Sync {
+    /// `ia.get(i) == array[i]`.
+    ///
+    /// Equivalent to `get(int)`.
+    fn get(&self, i: i32) -> i32;
+
+    /// `ia.length() == array.length`.
+    ///
+    /// Equivalent to `length()`.
+    fn length(&self) -> i32;
+}

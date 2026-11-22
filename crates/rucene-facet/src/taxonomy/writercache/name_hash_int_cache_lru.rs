@@ -15,10 +15,49 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NameHashIntCacheLRU.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy.writercache`.
+//! Port of `NameHashIntCacheLRU.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy.writercache`.
 
-/// Java: `public class`.
+use std::ops::{Deref, DerefMut};
+
+use crate::taxonomy::writercache::name_int_cache_lru::NameIntCacheLRU;
+
+/// An LRU cache of mapping from name to int. Used to cache Ordinals of
+/// category paths. It uses as key, hash of the path instead of the path. This
+/// way the cache takes less RAM, but correctness depends on assuming no
+/// collisions.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.writercache.NameHashIntCacheLRU`; ported by rmp task #614.
-pub struct NameHashIntCacheLRU;
+/// Equivalent to `org.apache.lucene.facet.taxonomy.writercache.NameHashIntCacheLRU`,
+/// a [`NameIntCacheLRU`] whose `key(...)` overrides return
+/// `name.longHashCode()`.
+#[derive(Debug)]
+pub struct NameHashIntCacheLRU {
+    inner: NameIntCacheLRU,
+}
+
+impl NameHashIntCacheLRU {
+    /// Equivalent to `NameHashIntCacheLRU(int)`.
+    pub(crate) fn new(max_cache_size: i32) -> Self {
+        Self {
+            inner: NameIntCacheLRU::with_keys(max_cache_size, true),
+        }
+    }
+
+    pub(crate) fn into_inner(self) -> NameIntCacheLRU {
+        self.inner
+    }
+}
+
+impl Deref for NameHashIntCacheLRU {
+    type Target = NameIntCacheLRU;
+
+    fn deref(&self) -> &NameIntCacheLRU {
+        &self.inner
+    }
+}
+
+impl DerefMut for NameHashIntCacheLRU {
+    fn deref_mut(&mut self) -> &mut NameIntCacheLRU {
+        &mut self.inner
+    }
+}

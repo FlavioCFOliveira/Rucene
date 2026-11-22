@@ -15,10 +15,64 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TaxonomyMergeUtils.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy`.
+//! Port of `TaxonomyMergeUtils.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy`.
 
-/// Java: `public abstract class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::filter_directory_reader::SlowCodecReaderWrapper;
+use rucene::index::index_writer::IndexWriter;
+use rucene::index::{directory_reader, CodecReader, IndexReader, LeafReader, TwoPhaseCommit};
+use rucene::store::Directory;
+
+use crate::facets_config::FacetsConfig;
+use crate::taxonomy::directory::directory_taxonomy_writer::{DirectoryTaxonomyWriter, OrdinalMap};
+use crate::taxonomy::ordinal_mapping_leaf_reader::OrdinalMappingLeafReader;
+
+/// Utility methods for merging index and taxonomy directories.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.TaxonomyMergeUtils`; ported by rmp task #614.
+/// Equivalent to `org.apache.lucene.facet.taxonomy.TaxonomyMergeUtils`.
 pub struct TaxonomyMergeUtils;
+
+impl TaxonomyMergeUtils {
+    /// Merges the given taxonomy and index directories and commits the
+    /// changes to the given writers.
+    ///
+    /// Equivalent to `merge(Directory, Directory, OrdinalMap, IndexWriter,
+    /// DirectoryTaxonomyWriter, FacetsConfig)`.
+    pub fn merge(
+        src_index_dir: Arc<dyn Directory>,
+        src_taxo_dir: Arc<dyn Directory>,
+        map: &mut dyn OrdinalMap,
+        dest_index_writer: &IndexWriter,
+        dest_taxo_writer: &DirectoryTaxonomyWriter,
+        src_config: &FacetsConfig,
+    ) -> Result<()> {
+        // merge the taxonomies
+        dest_taxo_writer.add_taxonomy(src_taxo_dir, map)?;
+        let ordinal_map = map.get_map()?;
+        let reader = directory_reader::open(src_index_dir)?;
+        let result = (|| -> Result<()> {
+            let leaves = (Arc::clone(&reader) as Arc<dyn IndexReader>).leaves()?;
+            let mut wrapped_leaves: Vec<Arc<dyn CodecReader>> = Vec::with_capacity(leaves.len());
+            for leaf in &leaves {
+                let mapping: Arc<dyn LeafReader> = Arc::new(OrdinalMappingLeafReader::new(
+                    leaf.leaf_reader(),
+                    ordinal_map.clone(),
+                    src_config,
+                )?);
+                wrapped_leaves.push(SlowCodecReaderWrapper::wrap(mapping)?);
+            }
+            dest_index_writer.add_indexes_codec_readers(&wrapped_leaves)?;
+
+            // commit changes to taxonomy and index respectively.
+            dest_taxo_writer.commit()?;
+            dest_index_writer.commit()?;
+            Ok(())
+        })();
+        let closed = reader.close();
+        result?;
+        closed
+    }
+}

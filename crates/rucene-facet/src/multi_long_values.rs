@@ -15,10 +15,29 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `MultiLongValues.java`, of the Java
-//! package `org.apache.lucene.facet`.
+//! Port of `MultiLongValues.java`, of the Java package
+//! `org.apache.lucene.facet`.
 
-/// Java: `public abstract class`.
+use rucene::error::Result;
+
+/// Per-segment, per-document long values, which can be calculated at
+/// search-time. Documents may produce multiple values.
 ///
-/// Skeleton of `org.apache.lucene.facet.MultiLongValues`; ported by rmp task #613.
-pub struct MultiLongValues;
+/// Equivalent to `org.apache.lucene.facet.MultiLongValues`.
+pub trait MultiLongValues {
+    /// Retrieves the number of values for the current document. This must
+    /// always be greater than zero.
+    ///
+    /// Equivalent to `getValueCount()`.
+    fn get_value_count(&self) -> Result<i64>;
+
+    /// Iterates to the next value in the current document.
+    ///
+    /// Equivalent to `nextValue()`.
+    fn next_value(&mut self) -> Result<i64>;
+
+    /// Advances to exactly `doc` and returns true if `doc` has a value.
+    ///
+    /// Equivalent to `advanceExact(int)`.
+    fn advance_exact(&mut self, doc: i32) -> Result<bool>;
+}

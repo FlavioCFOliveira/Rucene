@@ -15,10 +15,64 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TermVectorOffsetStrategy.java`, of the Java
-//! package `org.apache.lucene.search.uhighlight`.
+//! Port of `TermVectorOffsetStrategy.java`, of the Java package
+//! `org.apache.lucene.search.uhighlight`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene::index::LeafReader;
+
+use crate::highlight::term_vector_leaf_reader::TermVectorLeafReader;
+use crate::uhighlight::field_offset_strategy::FieldOffsetStrategy;
+use crate::uhighlight::offsets_enum::{empty, OffsetsEnum};
+use crate::uhighlight::overlay_single_doc_terms_leaf_reader::OverlaySingleDocTermsLeafReader;
+use crate::uhighlight::uh_components::UHComponents;
+use crate::uhighlight::unified_highlighter::OffsetSource;
+
+/// Uses term vectors that contain offsets.
 ///
-/// Skeleton of `org.apache.lucene.search.uhighlight.TermVectorOffsetStrategy`; ported by rmp task #617.
-pub struct TermVectorOffsetStrategy;
+/// Equivalent to `org.apache.lucene.search.uhighlight.TermVectorOffsetStrategy`.
+#[derive(Debug)]
+pub struct TermVectorOffsetStrategy {
+    components: UHComponents,
+}
+
+impl TermVectorOffsetStrategy {
+    /// Equivalent to `new TermVectorOffsetStrategy(UHComponents)`.
+    pub fn new(components: UHComponents) -> Self {
+        Self { components }
+    }
+}
+
+impl FieldOffsetStrategy for TermVectorOffsetStrategy {
+    fn components(&self) -> Option<&UHComponents> {
+        Some(&self.components)
+    }
+
+    fn get_offset_source(&self) -> OffsetSource {
+        OffsetSource::TERM_VECTORS
+    }
+
+    fn get_offsets_enum(
+        &self,
+        reader: Option<&Arc<dyn LeafReader>>,
+        doc_id: i32,
+        _content: &str,
+    ) -> Result<Box<dyn OffsetsEnum>> {
+        let reader = reader.ok_or_else(LuceneError::null_pointer)?;
+        let Some(tv_terms) = reader.term_vectors()?.get_field(doc_id, self.get_field()?)? else {
+            return Ok(empty());
+        };
+
+        let single_doc_reader: Arc<dyn LeafReader> =
+            Arc::new(TermVectorLeafReader::new(self.get_field()?, tv_terms));
+        let overlay: Arc<dyn LeafReader> = Arc::new(OverlaySingleDocTermsLeafReader::new(
+            Arc::clone(reader),
+            single_doc_reader,
+            self.get_field()?,
+            doc_id,
+        )?);
+        self.create_offsets_enum_from_reader(&overlay, doc_id)
+    }
+}

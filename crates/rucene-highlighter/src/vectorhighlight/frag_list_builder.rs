@@ -15,10 +15,31 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FragListBuilder.java`, of the Java
-//! package `org.apache.lucene.search.vectorhighlight`.
+//! Port of `FragListBuilder.java`, of the Java package
+//! `org.apache.lucene.search.vectorhighlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+use rucene::error::Result;
+
+use crate::vectorhighlight::field_frag_list::FieldFragList;
+use crate::vectorhighlight::field_phrase_list::FieldPhraseList;
+
+/// FragListBuilder is an interface for FieldFragList builder classes. A
+/// FragListBuilder class can be plugged in to Highlighter.
 ///
-/// Skeleton of `org.apache.lucene.search.vectorhighlight.FragListBuilder`; ported by rmp task #616.
-pub trait FragListBuilder {}
+/// Equivalent to `org.apache.lucene.search.vectorhighlight.FragListBuilder`.
+pub trait FragListBuilder: Debug + Send + Sync {
+    /// create a FieldFragList.
+    ///
+    /// Equivalent to `createFieldFragList(FieldPhraseList, int)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` for a fragment size the builder rejects.
+    fn create_field_frag_list(
+        &self,
+        field_phrase_list: &FieldPhraseList,
+        frag_char_size: i32,
+    ) -> Result<Box<dyn FieldFragList>>;
+}

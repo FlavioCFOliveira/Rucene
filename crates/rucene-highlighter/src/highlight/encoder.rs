@@ -15,10 +15,16 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Encoder.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `Encoder.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+/// Encodes original text. The Encoder works with the Formatter to generate
+/// output.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.Encoder`; ported by rmp task #616.
-pub trait Encoder {}
+/// Equivalent to `org.apache.lucene.search.highlight.Encoder`.
+pub trait Encoder: Debug + Send + Sync {
+    /// Equivalent to `encodeText(String)`.
+    fn encode_text(&self, original_text: &str) -> String;
+}

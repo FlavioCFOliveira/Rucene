@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `InvalidTokenOffsetsException.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `InvalidTokenOffsetsException.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public class`.
+use std::any::Any;
+use std::sync::Arc;
+
+use rucene::error::{JavaThrowable, LuceneError, LuceneErrorKind};
+
+/// Exception thrown if TokenStream Tokens are incompatible with provided text.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.InvalidTokenOffsetsException`; ported by rmp task #616.
-pub struct InvalidTokenOffsetsException;
+/// Equivalent to `org.apache.lucene.search.highlight.InvalidTokenOffsetsException`,
+/// a checked `Exception`; it travels as a [`LuceneErrorKind::Throwable`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidTokenOffsetsException {
+    message: String,
+}
+
+impl InvalidTokenOffsetsException {
+    /// Equivalent to `new InvalidTokenOffsetsException(String)`.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// `throw new InvalidTokenOffsetsException(message)`: the exception as a
+    /// [`LuceneError`].
+    pub fn error(message: impl Into<String>) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(Self::new(message))))
+    }
+}
+
+impl JavaThrowable for InvalidTokenOffsetsException {
+    fn java_class(&self) -> &'static str {
+        "org.apache.lucene.search.highlight.InvalidTokenOffsetsException"
+    }
+
+    fn get_message(&self) -> Option<&str> {
+        Some(&self.message)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}

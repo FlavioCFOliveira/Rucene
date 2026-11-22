@@ -15,10 +15,55 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ExactFacetSetMatcher.java`, of the Java
-//! package `org.apache.lucene.facet.facetset`.
+//! Port of `ExactFacetSetMatcher.java`, of the Java package
+//! `org.apache.lucene.facet.facetset`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+
+use crate::facetset::facet_set::FacetSet;
+use crate::facetset::facet_set_matcher::{validate_matcher, FacetSetMatcher};
+
+/// A `FacetSetMatcher` which considers a set as a match only if all
+/// dimension values are equal to the given one.
 ///
-/// Skeleton of `org.apache.lucene.facet.facetset.ExactFacetSetMatcher`; ported by rmp task #615.
-pub struct ExactFacetSetMatcher;
+/// Equivalent to `org.apache.lucene.facet.facetset.ExactFacetSetMatcher`.
+#[derive(Debug, Clone)]
+pub struct ExactFacetSetMatcher {
+    label: String,
+    dims: i32,
+    values: Vec<i64>,
+}
+
+impl ExactFacetSetMatcher {
+    /// Constructs an instance to match the given facet set.
+    ///
+    /// Equivalent to `ExactFacetSetMatcher(String, FacetSet)`.
+    pub fn new(label: &str, facet_set: &dyn FacetSet) -> Result<Self> {
+        validate_matcher(facet_set.dims())?;
+        Ok(Self {
+            label: label.to_string(),
+            dims: facet_set.dims(),
+            values: facet_set.get_comparable_values(),
+        })
+    }
+}
+
+impl FacetSetMatcher for ExactFacetSetMatcher {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn dims(&self) -> i32 {
+        self.dims
+    }
+
+    fn matches(&self, dim_values: &[i64]) -> bool {
+        debug_assert!(
+            dim_values.len() as i32 == self.dims,
+            "Encoded dimensions (dims={}) is incompatible with FacetSet dimensions (dims={})",
+            dim_values.len(),
+            self.dims
+        );
+        dim_values == self.values.as_slice()
+    }
+}

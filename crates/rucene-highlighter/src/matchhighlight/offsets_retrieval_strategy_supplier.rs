@@ -15,10 +15,28 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `OffsetsRetrievalStrategySupplier.java`, of the Java
-//! package `org.apache.lucene.search.matchhighlight`.
+//! Port of `OffsetsRetrievalStrategySupplier.java`, of the Java package
+//! `org.apache.lucene.search.matchhighlight`.
 
-/// Java: `public interface`.
+use std::sync::Arc;
+
+use crate::matchhighlight::offsets_retrieval_strategy::OffsetsRetrievalStrategy;
+
+/// A per-field supplier of `OffsetsRetrievalStrategy`.
 ///
-/// Skeleton of `org.apache.lucene.search.matchhighlight.OffsetsRetrievalStrategySupplier`; ported by rmp task #617.
-pub trait OffsetsRetrievalStrategySupplier {}
+/// Equivalent to the functional interface
+/// `org.apache.lucene.search.matchhighlight.OffsetsRetrievalStrategySupplier`,
+/// a `Function<String, OffsetsRetrievalStrategy>`.
+pub trait OffsetsRetrievalStrategySupplier: Send + Sync {
+    /// Equivalent to `apply(String)`.
+    fn apply(&self, field: &str) -> Arc<dyn OffsetsRetrievalStrategy>;
+}
+
+impl<F> OffsetsRetrievalStrategySupplier for F
+where
+    F: Fn(&str) -> Arc<dyn OffsetsRetrievalStrategy> + Send + Sync,
+{
+    fn apply(&self, field: &str) -> Arc<dyn OffsetsRetrievalStrategy> {
+        self(field)
+    }
+}

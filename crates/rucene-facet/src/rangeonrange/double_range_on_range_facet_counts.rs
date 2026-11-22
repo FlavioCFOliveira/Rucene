@@ -15,10 +15,72 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DoubleRangeOnRangeFacetCounts.java`, of the Java
-//! package `org.apache.lucene.facet.rangeonrange`.
+//! Port of `DoubleRangeOnRangeFacetCounts.java`, of the Java package
+//! `org.apache.lucene.facet.rangeonrange`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::document::range_fields::{DoubleRange as DoubleRangeField, RangeQueryType};
+use rucene::error::Result;
+use rucene::search::Query;
+
+use crate::facets_collector::FacetsCollector;
+use crate::rangeonrange::double_range::DoubleRange;
+use crate::rangeonrange::range::Range;
+use crate::rangeonrange::range_on_range_facet_counts::{
+    range_on_range_facets_delegate, RangeOnRangeFacetCounts,
+};
+
+/// Represents counts for double range on range faceting.
 ///
-/// Skeleton of `org.apache.lucene.facet.rangeonrange.DoubleRangeOnRangeFacetCounts`; ported by rmp task #615.
-pub struct DoubleRangeOnRangeFacetCounts;
+/// Equivalent to `org.apache.lucene.facet.rangeonrange.DoubleRangeOnRangeFacetCounts`.
+pub struct DoubleRangeOnRangeFacetCounts {
+    base: RangeOnRangeFacetCounts,
+}
+
+impl DoubleRangeOnRangeFacetCounts {
+    /// Represents counts for double range on range faceting.
+    ///
+    /// Equivalent to `DoubleRangeOnRangeFacetCounts(String, FacetsCollector,
+    /// RangeFieldQuery.QueryType, DoubleRange...)`.
+    pub fn new(field: &str, hits: &FacetsCollector, query_type: RangeQueryType, ranges: &[DoubleRange]) -> Result<Self> {
+        Self::with_fast_match(field, hits, query_type, None, ranges)
+    }
+
+    /// Represents counts for double range on range faceting with a
+    /// fast-match query.
+    ///
+    /// Equivalent to `DoubleRangeOnRangeFacetCounts(String, FacetsCollector,
+    /// RangeFieldQuery.QueryType, Query, DoubleRange...)`.
+    pub fn with_fast_match(
+        field: &str,
+        hits: &FacetsCollector,
+        query_type: RangeQueryType,
+        fast_match_query: Option<Arc<dyn Query>>,
+        ranges: &[DoubleRange],
+    ) -> Result<Self> {
+        Ok(Self {
+            base: RangeOnRangeFacetCounts::new(
+                field,
+                hits,
+                query_type,
+                fast_match_query,
+                8,
+                Self::get_encoded_ranges(ranges)?,
+                Range::get_labels_from_ranges(ranges.iter().map(|r| &r.range)),
+            )?,
+        })
+    }
+
+    /// Equivalent to `getEncodedRanges(DoubleRange...)`.
+    fn get_encoded_ranges(ranges: &[DoubleRange]) -> Result<Vec<Vec<u8>>> {
+        let dims = ranges[0].range.dims as usize;
+        let mut result = vec![vec![0u8; 2 * 8 * dims]; ranges.len()];
+        for (i, range) in ranges.iter().enumerate() {
+            DoubleRangeField::verify_and_encode(&range.min, &range.max, &mut result[i])?;
+        }
+        Ok(result)
+    }
+}
+
+range_on_range_facets_delegate!(DoubleRangeOnRangeFacetCounts, base);

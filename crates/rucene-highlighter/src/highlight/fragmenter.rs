@@ -15,10 +15,32 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Fragmenter.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `Fragmenter.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+/// Implements the policy for breaking text into multiple fragments for
+/// consideration by the `Highlighter` class.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.Fragmenter`; ported by rmp task #616.
-pub trait Fragmenter {}
+/// Equivalent to `org.apache.lucene.search.highlight.Fragmenter`.
+pub trait Fragmenter: Debug + Send {
+    /// Initializes the Fragmenter: the attributes of interest are added to
+    /// `token_stream`, so that `is_new_fragment` reads the current token.
+    ///
+    /// Equivalent to `start(String, TokenStream)`.
+    ///
+    /// # Errors
+    ///
+    /// What `addAttribute` raises for an attribute the stream's factory
+    /// cannot create.
+    fn start(&mut self, original_text: &str, token_stream: &mut dyn TokenStream) -> Result<()>;
+
+    /// Tests if the current token starts a new fragment.
+    ///
+    /// Equivalent to `isNewFragment()`.
+    fn is_new_fragment(&mut self) -> bool;
+}

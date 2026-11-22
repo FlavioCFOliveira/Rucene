@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TaxonomyWriter.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy`.
+//! Port of `TaxonomyWriter.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+use rucene::index::TwoPhaseCommit;
+
+use crate::taxonomy::facet_label::FacetLabel;
+
+/// `TaxonomyWriter` is the interface which the faceted-search library uses to
+/// dynamically build the taxonomy at indexing time.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.TaxonomyWriter`; ported by rmp task #614.
-pub trait TaxonomyWriter {}
+/// Equivalent to `org.apache.lucene.facet.taxonomy.TaxonomyWriter`, which
+/// extends `Closeable` and `TwoPhaseCommit`; `close()` is
+/// [`close`](Self::close).
+pub trait TaxonomyWriter: TwoPhaseCommit + Send + Sync {
+    /// Adds a category to the taxonomy, returning its ordinal.
+    ///
+    /// Equivalent to `addCategory(FacetLabel)`.
+    fn add_category(&self, category_path: &FacetLabel) -> Result<i32>;
+
+    /// Returns the ordinal of the parent category of the category with the
+    /// given ordinal.
+    ///
+    /// Equivalent to `getParent(int)`.
+    fn get_parent(&self, ordinal: i32) -> Result<i32>;
+
+    /// Returns the number of categories in the taxonomy.
+    ///
+    /// Equivalent to `getSize()`.
+    fn get_size(&self) -> Result<i32>;
+
+    /// Sets the commit user data iterable.
+    ///
+    /// Equivalent to `setLiveCommitData(Iterable)`.
+    fn set_live_commit_data(&self, commit_user_data: Option<Vec<(String, String)>>) -> Result<()>;
+
+    /// Returns the commit user data iterable that was set on
+    /// [`set_live_commit_data`](Self::set_live_commit_data).
+    ///
+    /// Equivalent to `getLiveCommitData()`.
+    fn get_live_commit_data(&self) -> Result<Vec<(String, String)>>;
+
+    /// Equivalent to `Closeable.close()`.
+    fn close(&self) -> Result<()>;
+}

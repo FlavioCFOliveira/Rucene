@@ -392,7 +392,7 @@ fn java_float_format(decimal: &Decimal, negative: bool) -> String {
 /// from zero (`RoundingMode.HALF_UP`). The two disagree on values whose exact
 /// decimal expansion stops on a `5` in the first dropped position, so the digits
 /// are taken from the exact expansion and rounded here instead.
-pub(crate) fn format_fixed(value: f64, digits: usize) -> String {
+pub fn format_fixed(value: f64, digits: usize) -> String {
     if value.is_nan() {
         return "NaN".to_string();
     }
@@ -1134,6 +1134,26 @@ pub struct DecimalFormat {
     decimal_separator_always_shown: bool,
     use_exponential: bool,
     min_exponent_digits: i32,
+    /// `DecimalFormat.roundingMode`, `HALF_EVEN` by default.
+    rounding_mode: RoundingMode,
+}
+
+/// The `java.math.RoundingMode` values `DecimalFormat.setRoundingMode`
+/// accepts that this port formats with.
+///
+/// Equivalent to `java.math.RoundingMode` restricted to `HALF_EVEN` (the
+/// `DecimalFormat` default), `FLOOR` and `CEILING`; `DigitList.shouldRoundUp`
+/// (`DigitList.java`, JDK 25, read as specification) decides each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(non_camel_case_types)]
+pub enum RoundingMode {
+    /// `RoundingMode.HALF_EVEN`.
+    #[default]
+    HALF_EVEN,
+    /// `RoundingMode.FLOOR`: towards negative infinity.
+    FLOOR,
+    /// `RoundingMode.CEILING`: towards positive infinity.
+    CEILING,
 }
 
 /// `NumberFormat`'s `DOUBLE_INTEGER_DIGITS`: the most integer digits a
@@ -1174,6 +1194,7 @@ impl DecimalFormat {
             decimal_separator_always_shown: false,
             use_exponential: false,
             min_exponent_digits: 0,
+            rounding_mode: RoundingMode::HALF_EVEN,
         };
         if pattern.is_empty() {
             // No subpattern is read: the grouping keeps the defaults of the
@@ -1494,6 +1515,21 @@ impl DecimalFormat {
         &self.pattern
     }
 
+    /// Sets the `RoundingMode` used in this `DecimalFormat`.
+    ///
+    /// Equivalent to `DecimalFormat.setRoundingMode(RoundingMode)`; Java's
+    /// `null` check is carried by the type.
+    pub fn set_rounding_mode(&mut self, rounding_mode: RoundingMode) {
+        self.rounding_mode = rounding_mode;
+    }
+
+    /// Gets the `RoundingMode` used in this `DecimalFormat`.
+    ///
+    /// Equivalent to `DecimalFormat.getRoundingMode()`.
+    pub fn get_rounding_mode(&self) -> RoundingMode {
+        self.rounding_mode
+    }
+
     /// Formats `value`.
     ///
     /// Equivalent to `NumberFormat.format(double)`.
@@ -1524,10 +1560,16 @@ impl DecimalFormat {
         let max_frac = self.max_frac.min(DOUBLE_FRACTION_DIGITS);
         let min_frac = self.min_frac.min(DOUBLE_FRACTION_DIGITS);
         if self.use_exponential {
-            let digits = DigitList::new(number, max_int.saturating_add(max_frac), false);
+            let digits = DigitList::new(
+                is_negative,
+                number,
+                max_int.saturating_add(max_frac),
+                false,
+                self.rounding_mode,
+            );
             self.subformat_exponential(&mut result, &digits, max_int, min_int, min_frac);
         } else {
-            let digits = DigitList::new(number, max_frac, true);
+            let digits = DigitList::new(is_negative, number, max_frac, true, self.rounding_mode);
             self.subformat_fixed(&mut result, &digits, max_int, min_int, max_frac, min_frac);
         }
         result.push_str(suffix);
@@ -1687,6 +1729,11 @@ fn push_affix(phase: i32, prefix: &mut String, suffix: &mut String, s: &str) {
 struct DigitList {
     digits: Vec<u8>,
     decimal_at: i32,
+    /// `DigitList.roundingMode`.
+    rounding_mode: RoundingMode,
+    /// The `isNegative` `set` was called with, which `shouldRoundUp` reads
+    /// for `FLOOR` and `CEILING`.
+    is_negative: bool,
 }
 
 impl DigitList {
@@ -1696,17 +1743,27 @@ impl DigitList {
     /// `value`, with its `digitsRoundedUp()` and `decimalDigitsExact()`
     /// flags, rounded half-even to `maximum_digits` fraction digits
     /// (`fixed_point`) or significant digits.
-    fn new(value: f64, maximum_digits: i32, fixed_point: bool) -> Self {
+    fn new(
+        is_negative: bool,
+        value: f64,
+        maximum_digits: i32,
+        fixed_point: bool,
+        rounding_mode: RoundingMode,
+    ) -> Self {
         if value == 0.0 {
             return Self {
                 digits: Vec::new(),
                 decimal_at: 0,
+                rounding_mode,
+                is_negative,
             };
         }
         let converted = Converted::of(value);
         let mut list = Self {
             digits: converted.digits.clone(),
             decimal_at: converted.decimal_at,
+            rounding_mode,
+            is_negative,
         };
         if fixed_point {
             // Underflow of the printed representation: rounding something
@@ -1769,10 +1826,29 @@ impl DigitList {
     /// `RoundingMode.HALF_EVEN`: a tie on the converter's last digit is
     /// decided by whether that digit was rounded up (then down), was not exact
     /// (then up), or is exact (then to the even neighbour).
+    ///
+    /// `FLOOR` and `CEILING` round away from zero, towards the infinity of
+    /// their direction, when any dropped digit is non-zero: `CEILING` for a
+    /// positive value, `FLOOR` for a negative one.
     fn should_round_up(&self, maximum_digits: usize, converted: &Converted) -> bool {
         let count = self.digits.len();
         if maximum_digits >= count {
             return false;
+        }
+        match self.rounding_mode {
+            RoundingMode::CEILING => {
+                if self.digits[maximum_digits..].iter().any(|&d| d != b'0') {
+                    return !self.is_negative;
+                }
+                return false;
+            }
+            RoundingMode::FLOOR => {
+                if self.digits[maximum_digits..].iter().any(|&d| d != b'0') {
+                    return self.is_negative;
+                }
+                return false;
+            }
+            RoundingMode::HALF_EVEN => {}
         }
         let digit = self.digits[maximum_digits];
         if digit > b'5' {

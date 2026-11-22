@@ -15,10 +15,58 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Scorer.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `Scorer.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public interface`.
+use std::any::Any;
+use std::fmt::Debug;
+
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use crate::highlight::text_fragment::TextFragment;
+
+/// A Scorer is responsible for scoring a stream of tokens. These token scores
+/// can then be used to compute `TextFragment` scores.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.Scorer`; ported by rmp task #616.
-pub trait Scorer {}
+/// Equivalent to `org.apache.lucene.search.highlight.Scorer`.
+pub trait Scorer: Debug + Send {
+    /// Called to init the Scorer with a `TokenStream`. You can grab
+    /// references to the attributes you are interested in here and access
+    /// them from `get_token_score()`.
+    ///
+    /// Equivalent to `init(TokenStream)`. Java returns either `null`, to keep
+    /// reading `token_stream`, or a new stream to read instead; the port takes
+    /// the stream and returns the one to read: `token_stream` itself where
+    /// Java returns `null`, the new stream (which may own `token_stream`)
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the scorer's I/O and attribute errors.
+    fn init(&mut self, token_stream: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>>;
+
+    /// Called when a new fragment is started for consideration.
+    ///
+    /// Equivalent to `startFragment(TextFragment)`.
+    fn start_fragment(&mut self, new_fragment: &TextFragment);
+
+    /// Called for each token in the current fragment.
+    ///
+    /// Equivalent to `getTokenScore()`.
+    fn get_token_score(&mut self) -> f32;
+
+    /// Called when the `Highlighter` has no more tokens for the current
+    /// fragment - the Scorer returns the weighting it has derived for the
+    /// most recent fragment, typically based on the results of
+    /// `get_token_score()`.
+    ///
+    /// Equivalent to `getFragmentScore()`.
+    fn get_fragment_score(&self) -> f32;
+
+    /// This scorer as `Any`, for the `instanceof` tests Java performs on a
+    /// `Scorer` (`Highlighter` tests `instanceof QueryScorer`).
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
+}

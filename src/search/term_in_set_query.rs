@@ -253,6 +253,10 @@ impl Query for TermInSetQuery {
         true
     }
 
+    fn as_multi_term_query(&self) -> Option<&dyn crate::search::multi_term_query::MultiTermQuery> {
+        Some(self)
+    }
+
     fn to_query_string(&self, _default_field: &str) -> String {
         let mut builder = String::new();
         builder.push_str(&self.field);
@@ -322,6 +326,27 @@ impl Query for TermInSetQuery {
         // There is no need to check `field` explicitly, since it is encoded in
         // `term_data`; comparing the packed terms may be heavy, so the cached
         // hash code is checked first.
+        self.query_eq_ignoring_class(other)
+    }
+
+    /// `getClass().getName()` of `org.apache.lucene.search.TermInSetQuery`.
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.search.TermInSetQuery"
+    }
+
+    fn query_hash(&self) -> i32 {
+        // `31 * classHash() + termDataHashCode`.
+        31i32
+            .wrapping_mul(self.class_hash())
+            .wrapping_add(self.term_data_hash_code)
+    }
+}
+
+impl TermInSetQuery {
+    /// The class-independent part of `equals(Object)`: the packed terms.
+    /// A subclass (`MultiFacetQuery` in `lucene/facet`) inherits `equals`,
+    /// whose `sameClassAs` check it answers itself.
+    pub fn query_eq_ignoring_class(&self, other: &TermInSetQuery) -> bool {
         if self.term_data_hash_code != other.term_data_hash_code {
             return false;
         }
@@ -343,16 +368,10 @@ impl Query for TermInSetQuery {
         }
     }
 
-    /// `getClass().getName()` of `org.apache.lucene.search.TermInSetQuery`.
-    fn java_class_name(&self) -> &'static str {
-        "org.apache.lucene.search.TermInSetQuery"
-    }
-
-    fn query_hash(&self) -> i32 {
-        // `31 * classHash() + termDataHashCode`.
-        31i32
-            .wrapping_mul(self.class_hash())
-            .wrapping_add(self.term_data_hash_code)
+    /// `hashCode()` with the class hash a subclass's `classHash()` returns:
+    /// `31 * classHash + termDataHashCode`.
+    pub fn query_hash_with_class_hash(&self, class_hash: i32) -> i32 {
+        31i32.wrapping_mul(class_hash).wrapping_add(self.term_data_hash_code)
     }
 }
 

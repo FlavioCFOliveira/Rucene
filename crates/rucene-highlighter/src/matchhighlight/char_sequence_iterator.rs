@@ -15,10 +15,107 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `CharSequenceIterator.java`, of the Java
-//! package `org.apache.lucene.search.matchhighlight`.
+//! Port of `CharSequenceIterator.java`, of the Java package
+//! `org.apache.lucene.search.matchhighlight`.
 
-/// Java: `final class` (package-private).
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene_analysis_common::jdk::character_iterator::{CharacterIterator, DONE};
+
+/// A `CharacterIterator` over a `CharSequence`.
 ///
-/// Skeleton of `org.apache.lucene.search.matchhighlight.CharSequenceIterator`; ported by rmp task #617.
-pub(crate) struct CharSequenceIterator;
+/// Equivalent to the package-private final class
+/// `org.apache.lucene.search.matchhighlight.CharSequenceIterator`; the
+/// sequence is UTF-16 units.
+#[derive(Debug, Clone)]
+pub(crate) struct CharSequenceIterator {
+    text: Arc<[u16]>,
+
+    begin: i32,
+    end: i32,
+    pos: i32,
+}
+
+impl CharSequenceIterator {
+    pub(crate) fn new(text: Arc<[u16]>) -> Self {
+        let end = text.len() as i32;
+        Self {
+            text,
+            begin: 0,
+            end,
+            pos: 0,
+        }
+    }
+
+    fn char_at(&self, pos: i32) -> u16 {
+        self.text[pos as usize]
+    }
+}
+
+impl CharacterIterator for CharSequenceIterator {
+    fn first(&mut self) -> u16 {
+        self.pos = self.begin;
+        self.current()
+    }
+
+    fn last(&mut self) -> u16 {
+        if self.end != self.begin {
+            self.pos = self.end - 1;
+        } else {
+            self.pos = self.end;
+        }
+        self.current()
+    }
+
+    fn set_index(&mut self, p: i32) -> Result<u16> {
+        if p < self.begin || p > self.end {
+            return Err(LuceneError::illegal_argument("Invalid index"));
+        }
+        self.pos = p;
+        Ok(self.current())
+    }
+
+    fn current(&self) -> u16 {
+        if self.pos >= self.begin && self.pos < self.end {
+            self.char_at(self.pos)
+        } else {
+            DONE
+        }
+    }
+
+    fn next(&mut self) -> u16 {
+        if self.pos < self.end - 1 {
+            self.pos += 1;
+            self.char_at(self.pos)
+        } else {
+            self.pos = self.end;
+            DONE
+        }
+    }
+
+    fn previous(&mut self) -> u16 {
+        if self.pos > self.begin {
+            self.pos -= 1;
+            self.char_at(self.pos)
+        } else {
+            DONE
+        }
+    }
+
+    fn get_begin_index(&self) -> i32 {
+        self.begin
+    }
+
+    fn get_end_index(&self) -> i32 {
+        self.end
+    }
+
+    fn get_index(&self) -> i32 {
+        self.pos
+    }
+
+    fn clone_box(&self) -> Box<dyn CharacterIterator> {
+        Box::new(self.clone())
+    }
+}

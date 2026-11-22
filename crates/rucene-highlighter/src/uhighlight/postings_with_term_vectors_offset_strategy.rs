@@ -15,10 +15,61 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PostingsWithTermVectorsOffsetStrategy.java`, of the Java
+//! Port of `PostingsWithTermVectorsOffsetStrategy.java`, of the Java
 //! package `org.apache.lucene.search.uhighlight`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene::index::LeafReader;
+
+use crate::uhighlight::field_offset_strategy::FieldOffsetStrategy;
+use crate::uhighlight::offsets_enum::{empty, OffsetsEnum};
+use crate::uhighlight::term_vector_filtered_leaf_reader::TermVectorFilteredLeafReader;
+use crate::uhighlight::uh_components::UHComponents;
+use crate::uhighlight::unified_highlighter::OffsetSource;
+
+/// Like `PostingsOffsetStrategy` but also uses term vectors (only terms
+/// needed) for multi-term queries.
 ///
-/// Skeleton of `org.apache.lucene.search.uhighlight.PostingsWithTermVectorsOffsetStrategy`; ported by rmp task #617.
-pub struct PostingsWithTermVectorsOffsetStrategy;
+/// Equivalent to `org.apache.lucene.search.uhighlight.PostingsWithTermVectorsOffsetStrategy`.
+#[derive(Debug)]
+pub struct PostingsWithTermVectorsOffsetStrategy {
+    components: UHComponents,
+}
+
+impl PostingsWithTermVectorsOffsetStrategy {
+    /// Equivalent to `new PostingsWithTermVectorsOffsetStrategy(UHComponents)`.
+    pub fn new(components: UHComponents) -> Self {
+        Self { components }
+    }
+}
+
+impl FieldOffsetStrategy for PostingsWithTermVectorsOffsetStrategy {
+    fn components(&self) -> Option<&UHComponents> {
+        Some(&self.components)
+    }
+
+    fn get_offsets_enum(
+        &self,
+        leaf_reader: Option<&Arc<dyn LeafReader>>,
+        doc_id: i32,
+        _content: &str,
+    ) -> Result<Box<dyn OffsetsEnum>> {
+        let leaf_reader = leaf_reader.ok_or_else(LuceneError::null_pointer)?;
+        let Some(doc_terms) = leaf_reader.term_vectors()?.get_field(doc_id, self.get_field()?)? else {
+            return Ok(empty());
+        };
+        let leaf_reader: Arc<dyn LeafReader> = Arc::new(TermVectorFilteredLeafReader::new(
+            Arc::clone(leaf_reader),
+            doc_terms,
+            self.get_field()?,
+        )?);
+
+        self.create_offsets_enum_from_reader(&leaf_reader, doc_id)
+    }
+
+    fn get_offset_source(&self) -> OffsetSource {
+        OffsetSource::POSTINGS_WITH_TERM_VECTORS
+    }
+}

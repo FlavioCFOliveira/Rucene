@@ -15,10 +15,31 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PositionSpan.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `PositionSpan.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public class`.
+/// Utility class to store a Span.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.PositionSpan`; ported by rmp task #616.
-pub struct PositionSpan;
+/// Equivalent to `org.apache.lucene.search.highlight.PositionSpan`.
+#[derive(Debug, Clone, Copy)]
+pub struct PositionSpan {
+    pub(crate) start: i32,
+    pub(crate) end: i32,
+}
+
+impl PositionSpan {
+    /// Equivalent to `new PositionSpan(int, int)`.
+    pub fn new(start: i32, end: i32) -> Self {
+        Self { start, end }
+    }
+
+    /// Equivalent to reading the package-private field `start`.
+    pub fn start(&self) -> i32 {
+        self.start
+    }
+
+    /// Equivalent to reading the package-private field `end`.
+    pub fn end(&self) -> i32 {
+        self.end
+    }
+}

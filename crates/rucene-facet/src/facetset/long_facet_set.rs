@@ -15,10 +15,44 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `LongFacetSet.java`, of the Java
-//! package `org.apache.lucene.facet.facetset`.
+//! Port of `LongFacetSet.java`, of the Java package
+//! `org.apache.lucene.facet.facetset`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+
+use crate::facetset::facet_set::{validate_values_and_get_num_dims, FacetSet};
+
+/// A `FacetSet` which encodes long dimension values.
 ///
-/// Skeleton of `org.apache.lucene.facet.facetset.LongFacetSet`; ported by rmp task #615.
-pub struct LongFacetSet;
+/// Equivalent to `org.apache.lucene.facet.facetset.LongFacetSet`.
+#[derive(Debug, Clone)]
+pub struct LongFacetSet {
+    dims: i32,
+    /// The raw dimension values.
+    pub values: Vec<i64>,
+}
+
+impl LongFacetSet {
+    /// Constructs a new instance of a facet set which stores long dimension
+    /// values.
+    ///
+    /// Equivalent to `LongFacetSet(long...)`.
+    pub fn new(values: Vec<i64>) -> Result<Self> {
+        let dims = validate_values_and_get_num_dims(values.len())?;
+        Ok(Self { dims, values })
+    }
+}
+
+impl FacetSet for LongFacetSet {
+    fn dims(&self) -> i32 {
+        self.dims
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.facet.facetset.LongFacetSet"
+    }
+
+    fn get_comparable_values(&self) -> Vec<i64> {
+        self.values.clone()
+    }
+}

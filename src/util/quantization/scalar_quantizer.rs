@@ -3,7 +3,7 @@
 use crate::error::{LuceneError, Result};
 use crate::index::vector_values::FloatVectorValues;
 use crate::index::VectorSimilarityFunction;
-use crate::search::bayesian_score_estimator::JavaRandom;
+use crate::util::java_random::JavaRandom;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::hit_queue::HitQueue;
 use crate::search::score_doc::ScoreDoc;
@@ -193,7 +193,7 @@ impl ScalarQuantizer {
         let mut random = JavaRandom::new(42);
         let mut vectors_to_take: Vec<i32> = (0..sample_size).collect();
         for i in sample_size..num_float_vecs {
-            let j = random.next_int(i + 1);
+            let j = random.next_int_bound(i + 1);
             if j < sample_size {
                 vectors_to_take[j as usize] = i;
             }

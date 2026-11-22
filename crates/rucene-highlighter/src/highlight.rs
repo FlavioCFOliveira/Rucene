@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.search.highlight`.
+//! Port of the Java package `org.apache.lucene.search.highlight`.
 
 pub mod default_encoder;
 pub mod encoder;

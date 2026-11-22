@@ -16,3 +16,4 @@ name = "rucene_highlighter"
 rucene = { path = "../.." }
 rucene-queries = { path = "../rucene-queries" }
 rucene-memory = { path = "../rucene-memory" }
+rucene-analysis-common = { path = "../rucene-analysis-common" }

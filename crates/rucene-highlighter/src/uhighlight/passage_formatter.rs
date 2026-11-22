@@ -15,10 +15,44 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PassageFormatter.java`, of the Java
-//! package `org.apache.lucene.search.uhighlight`.
+//! Port of `PassageFormatter.java`, of the Java package
+//! `org.apache.lucene.search.uhighlight`.
 
-/// Java: `public abstract class`.
+use std::any::Any;
+use std::fmt::{Debug, Display};
+
+use rucene::error::Result;
+
+use crate::uhighlight::passage::Passage;
+
+/// The `Object` a passage formatter produces: any value with a string form
+/// (`toString()`, which `UnifiedHighlighter.highlightFields` reads), that a
+/// caller may downcast to its own type.
+pub trait FormattedPassages: Any + Debug + Display + Send + Sync {
+    /// This value as `Any`.
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: Any + Debug + Display + Send + Sync> FormattedPassages for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Creates a formatted snippet from the top passages.
 ///
-/// Skeleton of `org.apache.lucene.search.uhighlight.PassageFormatter`; ported by rmp task #617.
-pub struct PassageFormatter;
+/// Equivalent to the abstract class
+/// `org.apache.lucene.search.uhighlight.PassageFormatter`.
+pub trait PassageFormatter: Debug + Send + Sync {
+    /// Formats the top `passages` from `content` into a human-readable text
+    /// snippet.
+    ///
+    /// Equivalent to `format(Passage[], String)`: `passages` are the top
+    /// passages ranked by the scorer, sorted by start offset; `content` is
+    /// the original text.
+    ///
+    /// # Errors
+    ///
+    /// What the formatter raises.
+    fn format(&self, passages: &[Passage], content: &str) -> Result<Box<dyn FormattedPassages>>;
+}

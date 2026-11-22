@@ -15,10 +15,49 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `OffsetsRetrievalStrategy.java`, of the Java
-//! package `org.apache.lucene.search.matchhighlight`.
+//! Port of `OffsetsRetrievalStrategy.java`, of the Java package
+//! `org.apache.lucene.search.matchhighlight`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+use rucene::search::matches::MatchesIterator;
+
+use crate::matchhighlight::match_region_retriever::FieldValueProvider;
+use crate::matchhighlight::offset_range::OffsetRange;
+
+/// Determines how match offset regions are computed from `MatchesIterator`.
+/// Several possibilities exist, ranging from retrieving offsets directly
+/// from a match instance to re-evaluating the document's field and
+/// recomputing offsets from there.
 ///
-/// Skeleton of `org.apache.lucene.search.matchhighlight.OffsetsRetrievalStrategy`; ported by rmp task #617.
-pub trait OffsetsRetrievalStrategy {}
+/// Equivalent to `org.apache.lucene.search.matchhighlight.OffsetsRetrievalStrategy`.
+pub trait OffsetsRetrievalStrategy: Send + Sync {
+    /// Return value offsets (match ranges) acquired from the given
+    /// `MatchesIterator`.
+    ///
+    /// Equivalent to `get(MatchesIterator, FieldValueProvider)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors.
+    fn get(
+        &self,
+        matches_iterator: &mut dyn MatchesIterator,
+        doc: &dyn FieldValueProvider,
+    ) -> Result<Vec<OffsetRange>>;
+}
+
+/// A strategy written as a closure (Java's lambdas).
+impl<F> OffsetsRetrievalStrategy for F
+where
+    F: Fn(&mut dyn MatchesIterator, &dyn FieldValueProvider) -> Result<Vec<OffsetRange>>
+        + Send
+        + Sync,
+{
+    fn get(
+        &self,
+        matches_iterator: &mut dyn MatchesIterator,
+        doc: &dyn FieldValueProvider,
+    ) -> Result<Vec<OffsetRange>> {
+        self(matches_iterator, doc)
+    }
+}

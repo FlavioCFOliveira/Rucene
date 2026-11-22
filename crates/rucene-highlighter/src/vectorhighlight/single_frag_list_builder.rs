@@ -15,10 +15,47 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SingleFragListBuilder.java`, of the Java
-//! package `org.apache.lucene.search.vectorhighlight`.
+//! Port of `SingleFragListBuilder.java`, of the Java package
+//! `org.apache.lucene.search.vectorhighlight`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+
+use crate::vectorhighlight::field_frag_list::FieldFragList;
+use crate::vectorhighlight::field_phrase_list::FieldPhraseList;
+use crate::vectorhighlight::frag_list_builder::FragListBuilder;
+use crate::vectorhighlight::simple_field_frag_list::SimpleFieldFragList;
+
+/// An implementation class of `FragListBuilder` that generates one
+/// `WeightedFragInfo` object. Typical use case of this class is that you can
+/// get an entire field contents by using both of this class and
+/// `SimpleFragmentsBuilder`.
 ///
-/// Skeleton of `org.apache.lucene.search.vectorhighlight.SingleFragListBuilder`; ported by rmp task #616.
+/// Equivalent to `org.apache.lucene.search.vectorhighlight.SingleFragListBuilder`.
+#[derive(Debug, Clone, Default)]
 pub struct SingleFragListBuilder;
+
+impl SingleFragListBuilder {
+    /// Equivalent to `new SingleFragListBuilder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FragListBuilder for SingleFragListBuilder {
+    fn create_field_frag_list(
+        &self,
+        field_phrase_list: &FieldPhraseList,
+        frag_char_size: i32,
+    ) -> Result<Box<dyn FieldFragList>> {
+        let mut ffl = SimpleFieldFragList::new(frag_char_size);
+
+        let mut wpil = Vec::new();
+        for phrase_info in &field_phrase_list.phrase_list {
+            wpil.push(phrase_info.clone());
+        }
+        if !wpil.is_empty() {
+            ffl.add(0, i32::MAX, &wpil);
+        }
+        Ok(Box::new(ffl))
+    }
+}

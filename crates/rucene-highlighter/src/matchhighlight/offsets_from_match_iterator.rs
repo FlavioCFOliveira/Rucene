@@ -15,10 +15,76 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `OffsetsFromMatchIterator.java`, of the Java
-//! package `org.apache.lucene.search.matchhighlight`.
+//! Port of `OffsetsFromMatchIterator.java`, of the Java package
+//! `org.apache.lucene.search.matchhighlight`.
 
-/// Java: `public final class`.
+use rucene::error::{LuceneError, Result};
+use rucene::search::matches::MatchesIterator;
+
+use crate::matchhighlight::match_region_retriever::FieldValueProvider;
+use crate::matchhighlight::offset_range::OffsetRange;
+use crate::matchhighlight::offsets_from_positions::OffsetsFromPositions;
+use crate::matchhighlight::offsets_retrieval_strategy::OffsetsRetrievalStrategy;
+
+/// This strategy retrieves offsets directly from `MatchesIterator`, if
+/// they are available, otherwise it falls back to using
+/// `OffsetsFromPositions`.
 ///
-/// Skeleton of `org.apache.lucene.search.matchhighlight.OffsetsFromMatchIterator`; ported by rmp task #617.
-pub struct OffsetsFromMatchIterator;
+/// Equivalent to `org.apache.lucene.search.matchhighlight.OffsetsFromMatchIterator`.
+pub struct OffsetsFromMatchIterator {
+    field: String,
+    no_offsets_fallback: OffsetsFromPositions,
+}
+
+impl OffsetsFromMatchIterator {
+    /// Equivalent to `new OffsetsFromMatchIterator(String,
+    /// OffsetsFromPositions)`.
+    pub fn new(field: &str, no_offsets_fallback: OffsetsFromPositions) -> Self {
+        Self {
+            field: field.to_string(),
+            no_offsets_fallback,
+        }
+    }
+}
+
+impl OffsetsRetrievalStrategy for OffsetsFromMatchIterator {
+    fn get(
+        &self,
+        matches_iterator: &mut dyn MatchesIterator,
+        doc: &dyn FieldValueProvider,
+    ) -> Result<Vec<OffsetRange>> {
+        let mut position_ranges: Vec<OffsetRange> = Vec::new();
+        let mut offset_ranges: Option<Vec<OffsetRange>> = Some(Vec::new());
+        while matches_iterator.next()? {
+            let from_position = matches_iterator.start_position();
+            let to_position = matches_iterator.end_position();
+            if from_position < 0 || to_position < 0 {
+                return Err(LuceneError::from(std::io::Error::other(format!(
+                    "Matches API returned negative positions for field: {}",
+                    self.field
+                ))));
+            }
+            position_ranges.push(OffsetRange::new(from_position, to_position));
+
+            if let Some(ranges) = offset_ranges.as_mut() {
+                let from = matches_iterator.start_offset()?;
+                let to = matches_iterator.end_offset()?;
+                if from < 0 || to < 0 {
+                    // At least one offset isn't available. Fallback to just
+                    // positions.
+                    offset_ranges = None;
+                } else {
+                    ranges.push(OffsetRange::new(from, to));
+                }
+            }
+        }
+
+        // Convert positions to offsets if needed.
+        match offset_ranges {
+            None => self
+                .no_offsets_fallback
+                .convert_positions_to_offsets(position_ranges, &doc.get_values(&self.field)),
+            Some(offset_ranges) => Ok(offset_ranges),
+        }
+    }
+}

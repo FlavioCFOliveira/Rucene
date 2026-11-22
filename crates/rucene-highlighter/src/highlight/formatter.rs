@@ -15,10 +15,18 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Formatter.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `Formatter.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+use crate::highlight::token_group::TokenGroup;
+
+/// Processes terms found in the original text, typically by applying some
+/// form of mark-up to highlight terms in HTML search results pages.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.Formatter`; ported by rmp task #616.
-pub trait Formatter {}
+/// Equivalent to `org.apache.lucene.search.highlight.Formatter`.
+pub trait Formatter: Debug + Send + Sync {
+    /// Equivalent to `highlightTerm(String, TokenGroup)`.
+    fn highlight_term(&self, original_text: &str, token_group: &TokenGroup) -> String;
+}

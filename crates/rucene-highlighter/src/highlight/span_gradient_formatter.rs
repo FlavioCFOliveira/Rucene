@@ -15,10 +15,91 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SpanGradientFormatter.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `SpanGradientFormatter.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public class`.
+use std::ops::Deref;
+
+use rucene::error::Result;
+
+use crate::highlight::formatter::Formatter;
+use crate::highlight::gradient_formatter::GradientFormatter;
+use crate::highlight::token_group::TokenGroup;
+
+// guess how much extra text we'll add to the text we're highlighting to try
+// to avoid a StringBuilder resize
+const TEMPLATE: &str = "<span style=\"background: #EEEEEE; color: #000000;\">...</span>";
+const EXTRA: usize = TEMPLATE.len();
+
+/// Formats text with different color intensity depending on the score of the
+/// term using the span tag. GradientFormatter uses a bgcolor argument to the
+/// font tag which doesn't work in Mozilla, thus this class.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.SpanGradientFormatter`; ported by rmp task #616.
-pub struct SpanGradientFormatter;
+/// Equivalent to `org.apache.lucene.search.highlight.SpanGradientFormatter`,
+/// a subclass of `GradientFormatter`: the base is reached through `Deref`.
+#[derive(Debug, Clone)]
+pub struct SpanGradientFormatter {
+    base: GradientFormatter,
+}
+
+impl SpanGradientFormatter {
+    /// Equivalent to `new SpanGradientFormatter(float, String, String,
+    /// String, String)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`GradientFormatter::new`].
+    pub fn new(
+        max_score: f32,
+        min_foreground_color: Option<&str>,
+        max_foreground_color: Option<&str>,
+        min_background_color: Option<&str>,
+        max_background_color: Option<&str>,
+    ) -> Result<Self> {
+        Ok(Self {
+            base: GradientFormatter::new(
+                max_score,
+                min_foreground_color,
+                max_foreground_color,
+                min_background_color,
+                max_background_color,
+            )?,
+        })
+    }
+}
+
+impl Deref for SpanGradientFormatter {
+    type Target = GradientFormatter;
+
+    fn deref(&self) -> &GradientFormatter {
+        &self.base
+    }
+}
+
+impl Formatter for SpanGradientFormatter {
+    fn highlight_term(&self, original_text: &str, token_group: &TokenGroup) -> String {
+        let score = token_group.get_total_score();
+        if score == 0.0 {
+            return original_text.to_string();
+        }
+
+        // try to size sb correctly
+        let mut sb = String::with_capacity(original_text.len() + EXTRA);
+
+        sb.push_str("<span style=\"");
+        if self.highlight_foreground {
+            sb.push_str("color: ");
+            sb.push_str(&self.get_foreground_color_string(score));
+            sb.push_str("; ");
+        }
+        if self.highlight_background {
+            sb.push_str("background: ");
+            sb.push_str(&self.get_background_color_string(score));
+            sb.push_str("; ");
+        }
+        sb.push_str("\">");
+        sb.push_str(original_text);
+        sb.push_str("</span>");
+        sb
+    }
+}

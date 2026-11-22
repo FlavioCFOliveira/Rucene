@@ -15,10 +15,23 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `BoundaryScanner.java`, of the Java
-//! package `org.apache.lucene.search.vectorhighlight`.
+//! Port of `BoundaryScanner.java`, of the Java package
+//! `org.apache.lucene.search.vectorhighlight`.
 
-/// Java: `public interface`.
+use std::fmt::Debug;
+
+/// Finds fragment boundaries: pluggable into `BaseFragmentsBuilder`.
 ///
-/// Skeleton of `org.apache.lucene.search.vectorhighlight.BoundaryScanner`; ported by rmp task #616.
-pub trait BoundaryScanner {}
+/// Equivalent to `org.apache.lucene.search.vectorhighlight.BoundaryScanner`.
+/// The buffer is Java's `StringBuilder`, as UTF-16 code units.
+pub trait BoundaryScanner: Debug + Send + Sync {
+    /// Scan backward to find end offset.
+    ///
+    /// Equivalent to `findStartOffset(StringBuilder, int)`.
+    fn find_start_offset(&self, buffer: &[u16], start: i32) -> i32;
+
+    /// Scan forward to find start offset.
+    ///
+    /// Equivalent to `findEndOffset(StringBuilder, int)`.
+    fn find_end_offset(&self, buffer: &[u16], start: i32) -> i32;
+}

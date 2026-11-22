@@ -15,10 +15,34 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NullFragmenter.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `NullFragmenter.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public class`.
+use rucene::analysis::TokenStream;
+use rucene::error::Result;
+
+use crate::highlight::fragmenter::Fragmenter;
+
+/// `Fragmenter` implementation which does not fragment the text. This is
+/// useful for highlighting the entire content of a document or field.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.NullFragmenter`; ported by rmp task #616.
+/// Equivalent to `org.apache.lucene.search.highlight.NullFragmenter`.
+#[derive(Debug, Default, Clone)]
 pub struct NullFragmenter;
+
+impl NullFragmenter {
+    /// Equivalent to `new NullFragmenter()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Fragmenter for NullFragmenter {
+    fn start(&mut self, _s: &str, _token_stream: &mut dyn TokenStream) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_new_fragment(&mut self) -> bool {
+        false
+    }
+}

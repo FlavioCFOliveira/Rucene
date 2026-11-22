@@ -283,6 +283,10 @@ impl Query for AutomatonQuery {
         true
     }
 
+    fn as_multi_term_query(&self) -> Option<&dyn crate::search::multi_term_query::MultiTermQuery> {
+        Some(self)
+    }
+
     fn to_query_string(&self, field: &str) -> String {
         let mut buffer = String::new();
         if self.term.field() != field {

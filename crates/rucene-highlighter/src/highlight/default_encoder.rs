@@ -15,10 +15,26 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DefaultEncoder.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `DefaultEncoder.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public class`.
+use crate::highlight::encoder::Encoder;
+
+/// Simple Encoder that does not encode the text.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.DefaultEncoder`; ported by rmp task #616.
+/// Equivalent to `org.apache.lucene.search.highlight.DefaultEncoder`.
+#[derive(Debug, Default, Clone)]
 pub struct DefaultEncoder;
+
+impl DefaultEncoder {
+    /// Equivalent to `new DefaultEncoder()`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Encoder for DefaultEncoder {
+    fn encode_text(&self, original_text: &str) -> String {
+        original_text.to_string()
+    }
+}

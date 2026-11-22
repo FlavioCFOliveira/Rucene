@@ -15,10 +15,50 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `TaxonomyWriterCache.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy.writercache`.
+//! Port of `TaxonomyWriterCache.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy.writercache`.
 
-/// Java: `public interface`.
+use rucene::error::Result;
+
+use crate::taxonomy::facet_label::FacetLabel;
+
+/// `TaxonomyWriterCache` is a relatively simple interface for a cache of
+/// category-&gt;ordinal mappings, used in `TaxonomyWriter` implementations.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.writercache.TaxonomyWriterCache`; ported by rmp task #614.
-pub trait TaxonomyWriterCache {}
+/// Equivalent to `org.apache.lucene.facet.taxonomy.writercache.TaxonomyWriterCache`.
+/// Methods take `&self`: Java's implementations synchronize internally. The
+/// results are `Result`s because Java's implementation dereferences a cache
+/// that `close()` has nulled.
+pub trait TaxonomyWriterCache: Send + Sync {
+    /// Let go of whatever resources the cache is holding.
+    ///
+    /// Equivalent to `close()`.
+    fn close(&self) -> Result<()>;
+
+    /// Lookup a category in the cache, returning its ordinal, or a negative
+    /// number if the category is not in the cache.
+    ///
+    /// Equivalent to `get(FacetLabel)`.
+    fn get(&self, category_path: &FacetLabel) -> Result<i32>;
+
+    /// Add a category to the cache, with the given ordinal as the value.
+    /// Returns `true` if the cache needed to evict entries.
+    ///
+    /// Equivalent to `put(FacetLabel, int)`.
+    fn put(&self, category_path: &FacetLabel, ordinal: i32) -> Result<bool>;
+
+    /// Returns true if the cache is full.
+    ///
+    /// Equivalent to `isFull()`.
+    fn is_full(&self) -> Result<bool>;
+
+    /// Clears the content of the cache.
+    ///
+    /// Equivalent to `clear()`.
+    fn clear(&self) -> Result<()>;
+
+    /// How many labels are currently stored in the cache.
+    ///
+    /// Equivalent to `size()`.
+    fn size(&self) -> Result<i32>;
+}

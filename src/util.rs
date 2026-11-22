@@ -33,6 +33,7 @@ pub mod int_block_pool;
 pub mod io_function;
 pub mod java_collections;
 pub mod java_fmt;
+pub mod java_random;
 pub mod jvm;
 pub mod long_heap;
 pub mod math_util;

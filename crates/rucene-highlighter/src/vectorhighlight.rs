@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.search.vectorhighlight`.
+//! Port of the Java package `org.apache.lucene.search.vectorhighlight`.
 
 pub mod base_frag_list_builder;
 pub mod base_fragments_builder;

@@ -15,10 +15,51 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `LabelToOrdinal.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy.writercache`.
+//! Port of `LabelToOrdinal.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy.writercache`.
 
-/// Java: `public abstract class`.
+use crate::taxonomy::facet_label::FacetLabel;
+
+/// Abstract class for storing Label-&gt;Ordinal mappings in a taxonomy.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.writercache.LabelToOrdinal`; ported by rmp task #614.
-pub struct LabelToOrdinal;
+/// Equivalent to `org.apache.lucene.facet.taxonomy.writercache.LabelToOrdinal`;
+/// its `protected int counter` is [`counter`](Self::counter).
+pub trait LabelToOrdinal {
+    /// The protected `counter` field.
+    fn counter(&mut self) -> &mut i32;
+
+    /// Return the maximal Ordinal assigned so far.
+    ///
+    /// Equivalent to `getMaxOrdinal()`.
+    fn get_max_ordinal(&mut self) -> i32 {
+        *self.counter()
+    }
+
+    /// Returns the next unassigned ordinal. The default behavior of this
+    /// method is to simply increment a counter.
+    ///
+    /// Equivalent to `getNextOrdinal()`.
+    fn get_next_ordinal(&mut self) -> i32 {
+        let counter = self.counter();
+        let next = *counter;
+        *counter += 1;
+        next
+    }
+
+    /// Adds a new label if it is not yet in the table.
+    ///
+    /// Equivalent to `addLabel(FacetLabel, int)`.
+    fn add_label(&mut self, label: &FacetLabel, ordinal: i32);
+
+    /// Returns the ordinal assigned to the given label, or
+    /// [`INVALID_ORDINAL`] if the label cannot be found in this table.
+    ///
+    /// Equivalent to `getOrdinal(FacetLabel)`.
+    fn get_ordinal(&mut self, label: &FacetLabel) -> i32;
+}
+
+/// Returned by [`LabelToOrdinal::get_ordinal`] when the label isn't
+/// recognized.
+///
+/// Equivalent to `LabelToOrdinal.INVALID_ORDINAL`.
+pub const INVALID_ORDINAL: i32 = -2;

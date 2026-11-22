@@ -15,10 +15,23 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Consts.java`, of the Java
-//! package `org.apache.lucene.facet.taxonomy.directory`.
+//! Port of `Consts.java`, of the Java package
+//! `org.apache.lucene.facet.taxonomy.directory`.
 
-/// Java: `abstract class` (package-private).
+/// This class holds constants used by the directory taxonomy implementations.
 ///
-/// Skeleton of `org.apache.lucene.facet.taxonomy.directory.Consts`; ported by rmp task #614.
+/// Equivalent to `org.apache.lucene.facet.taxonomy.directory.Consts`.
 pub(crate) struct Consts;
+
+impl Consts {
+    /// The name of the field containing the full path of a category.
+    ///
+    /// Equivalent to `Consts.FULL`.
+    pub(crate) const FULL: &'static str = "$full_path$";
+
+    /// The name of the field containing the ordinal of the parent of a
+    /// category.
+    ///
+    /// Equivalent to `Consts.FIELD_PARENT_ORDINAL_NDV`.
+    pub(crate) const FIELD_PARENT_ORDINAL_NDV: &'static str = "$parent_ndv$";
+}

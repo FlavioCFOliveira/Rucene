@@ -117,6 +117,16 @@ pub trait Query: Debug + Send + Sync + 'static {
         false
     }
 
+    /// This query as a [`MultiTermQuery`](crate::search::multi_term_query::MultiTermQuery),
+    /// or `None` when it is not one.
+    ///
+    /// Equivalent to Java's `query instanceof MultiTermQuery` followed by the
+    /// cast `(MultiTermQuery) query`; every implementation of `MultiTermQuery`
+    /// overrides it with `Some(self)`.
+    fn as_multi_term_query(&self) -> Option<&dyn crate::search::multi_term_query::MultiTermQuery> {
+        None
+    }
+
     /// Query instance equivalence.
     ///
     /// Equivalent to `Query.equals(Object)`, which Java leaves abstract. It is

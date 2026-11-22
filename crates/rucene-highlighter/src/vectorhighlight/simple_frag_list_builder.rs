@@ -15,10 +15,65 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SimpleFragListBuilder.java`, of the Java
-//! package `org.apache.lucene.search.vectorhighlight`.
+//! Port of `SimpleFragListBuilder.java`, of the Java package
+//! `org.apache.lucene.search.vectorhighlight`.
 
-/// Java: `public class`.
+use std::ops::Deref;
+
+use rucene::error::Result;
+
+use crate::vectorhighlight::base_frag_list_builder::BaseFragListBuilder;
+use crate::vectorhighlight::field_frag_list::FieldFragList;
+use crate::vectorhighlight::field_phrase_list::FieldPhraseList;
+use crate::vectorhighlight::frag_list_builder::FragListBuilder;
+use crate::vectorhighlight::simple_field_frag_list::SimpleFieldFragList;
+
+/// A simple implementation of `FragListBuilder`.
 ///
-/// Skeleton of `org.apache.lucene.search.vectorhighlight.SimpleFragListBuilder`; ported by rmp task #616.
-pub struct SimpleFragListBuilder;
+/// Equivalent to `org.apache.lucene.search.vectorhighlight.SimpleFragListBuilder`.
+#[derive(Debug, Clone, Default)]
+pub struct SimpleFragListBuilder {
+    base: BaseFragListBuilder,
+}
+
+impl SimpleFragListBuilder {
+    /// Equivalent to `new SimpleFragListBuilder()`.
+    pub fn new() -> Self {
+        Self {
+            base: BaseFragListBuilder::new(),
+        }
+    }
+
+    /// Equivalent to `new SimpleFragListBuilder(int)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`BaseFragListBuilder::with_margin`].
+    pub fn with_margin(margin: i32) -> Result<Self> {
+        Ok(Self {
+            base: BaseFragListBuilder::with_margin(margin)?,
+        })
+    }
+}
+
+impl Deref for SimpleFragListBuilder {
+    type Target = BaseFragListBuilder;
+
+    fn deref(&self) -> &BaseFragListBuilder {
+        &self.base
+    }
+}
+
+impl FragListBuilder for SimpleFragListBuilder {
+    fn create_field_frag_list(
+        &self,
+        field_phrase_list: &FieldPhraseList,
+        frag_char_size: i32,
+    ) -> Result<Box<dyn FieldFragList>> {
+        self.base.create_field_frag_list_into(
+            field_phrase_list,
+            Box::new(SimpleFieldFragList::new(frag_char_size)),
+            frag_char_size,
+        )
+    }
+}

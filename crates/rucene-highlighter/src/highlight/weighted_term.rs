@@ -15,10 +15,47 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `WeightedTerm.java`, of the Java
-//! package `org.apache.lucene.search.highlight`.
+//! Port of `WeightedTerm.java`, of the Java package
+//! `org.apache.lucene.search.highlight`.
 
-/// Java: `public class`.
+/// Lightweight class to hold term and a weight value used for scoring this
+/// term.
 ///
-/// Skeleton of `org.apache.lucene.search.highlight.WeightedTerm`; ported by rmp task #616.
-pub struct WeightedTerm;
+/// Equivalent to `org.apache.lucene.search.highlight.WeightedTerm`. Java
+/// compares and hashes it by identity (it overrides neither `equals` nor
+/// `hashCode`); the port gives it no `PartialEq` either.
+#[derive(Debug, Clone)]
+pub struct WeightedTerm {
+    pub(crate) weight: f32, // multiplier
+    pub(crate) term: String, // stemmed form
+}
+
+impl WeightedTerm {
+    /// Equivalent to `new WeightedTerm(float, String)`.
+    pub fn new(weight: f32, term: impl Into<String>) -> Self {
+        Self {
+            weight,
+            term: term.into(),
+        }
+    }
+
+    /// Equivalent to `getTerm()`.
+    pub fn get_term(&self) -> &str {
+        &self.term
+    }
+
+    /// Equivalent to `getWeight()`.
+    pub fn get_weight(&self) -> f32 {
+        self.weight
+    }
+
+    /// Equivalent to `setTerm(String)`.
+    pub fn set_term(&mut self, term: impl Into<String>) {
+        self.term = term.into();
+    }
+
+    /// Equivalent to `setWeight(float)`.
+    pub fn set_weight(&mut self, weight: f32) {
+        self.weight = weight;
+    }
+}

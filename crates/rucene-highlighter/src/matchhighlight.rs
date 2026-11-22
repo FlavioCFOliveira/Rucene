@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.search.matchhighlight`.
+//! Port of the Java package `org.apache.lucene.search.matchhighlight`.
 
 pub mod break_iterator_shrinking_adjuster;
 pub mod char_sequence_iterator;

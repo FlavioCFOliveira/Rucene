@@ -15,10 +15,44 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Range.java`, of the Java
-//! package `org.apache.lucene.facet.rangeonrange`.
+//! Port of `Range.java`, of the Java package
+//! `org.apache.lucene.facet.rangeonrange`.
 
-/// Java: `public abstract class`.
+use rucene::error::LuceneError;
+
+/// Base class for a single labeled range.
 ///
-/// Skeleton of `org.apache.lucene.facet.rangeonrange.Range`; ported by rmp task #615.
-pub struct Range;
+/// Equivalent to `org.apache.lucene.facet.rangeonrange.Range`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Range {
+    /// Label that identifies this range.
+    pub label: String,
+    /// Number of dimensions.
+    pub dims: i32,
+}
+
+impl Range {
+    /// Sole constructor.
+    ///
+    /// Equivalent to `Range(String, int)`.
+    pub fn new(label: impl Into<String>, dims: i32) -> Self {
+        Self {
+            label: label.into(),
+            dims,
+        }
+    }
+
+    /// Invoke this for a useless range.
+    ///
+    /// Equivalent to `failNoMatch()`.
+    pub fn fail_no_match(&self) -> LuceneError {
+        LuceneError::illegal_argument(format!("range \"{}\" matches nothing", self.label))
+    }
+
+    /// Get the labels from the ranges.
+    ///
+    /// Equivalent to `getLabelsFromRanges(Range[])`.
+    pub fn get_labels_from_ranges<'a>(ranges: impl IntoIterator<Item = &'a Range>) -> Vec<String> {
+        ranges.into_iter().map(|r| r.label.clone()).collect()
+    }
+}

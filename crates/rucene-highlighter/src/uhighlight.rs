@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.search.uhighlight`.
+//! Port of the Java package `org.apache.lucene.search.uhighlight`.
 
 pub mod analysis_offset_strategy;
 pub mod char_array_matcher;

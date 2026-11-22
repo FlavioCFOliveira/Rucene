@@ -15,10 +15,48 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DoubleFacetSet.java`, of the Java
-//! package `org.apache.lucene.facet.facetset`.
+//! Port of `DoubleFacetSet.java`, of the Java package
+//! `org.apache.lucene.facet.facetset`.
 
-/// Java: `public class`.
+use rucene::error::Result;
+use rucene::util::NumericUtils;
+
+use crate::facetset::facet_set::{validate_values_and_get_num_dims, FacetSet};
+
+/// A `FacetSet` which encodes double dimension values.
 ///
-/// Skeleton of `org.apache.lucene.facet.facetset.DoubleFacetSet`; ported by rmp task #615.
-pub struct DoubleFacetSet;
+/// Equivalent to `org.apache.lucene.facet.facetset.DoubleFacetSet`.
+#[derive(Debug, Clone)]
+pub struct DoubleFacetSet {
+    dims: i32,
+    /// The raw dimension values.
+    pub values: Vec<f64>,
+}
+
+impl DoubleFacetSet {
+    /// Constructs a new instance of a facet set which stores double dimension
+    /// values.
+    ///
+    /// Equivalent to `DoubleFacetSet(double...)`.
+    pub fn new(values: Vec<f64>) -> Result<Self> {
+        let dims = validate_values_and_get_num_dims(values.len())?;
+        Ok(Self { dims, values })
+    }
+}
+
+impl FacetSet for DoubleFacetSet {
+    fn dims(&self) -> i32 {
+        self.dims
+    }
+
+    fn java_class_name(&self) -> &'static str {
+        "org.apache.lucene.facet.facetset.DoubleFacetSet"
+    }
+
+    fn get_comparable_values(&self) -> Vec<i64> {
+        self.values
+            .iter()
+            .map(|v| NumericUtils::double_to_sortable_long(*v))
+            .collect()
+    }
+}

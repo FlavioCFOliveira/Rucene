@@ -15,10 +15,63 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NoOpOffsetStrategy.java`, of the Java
-//! package `org.apache.lucene.search.uhighlight`.
+//! Port of `NoOpOffsetStrategy.java`, of the Java package
+//! `org.apache.lucene.search.uhighlight`.
 
-/// Java: `public class`.
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::LeafReader;
+use rucene::search::match_no_docs_query::MatchNoDocsQuery;
+
+use crate::uhighlight::field_offset_strategy::FieldOffsetStrategy;
+use crate::uhighlight::offsets_enum::{empty, OffsetsEnum};
+use crate::uhighlight::phrase_helper::PhraseHelper;
+use crate::uhighlight::uh_components::UHComponents;
+use crate::uhighlight::unified_highlighter::OffsetSource;
+
+/// Never returns offsets. Used when the query would highlight nothing.
 ///
-/// Skeleton of `org.apache.lucene.search.uhighlight.NoOpOffsetStrategy`; ported by rmp task #617.
-pub struct NoOpOffsetStrategy;
+/// Equivalent to `org.apache.lucene.search.uhighlight.NoOpOffsetStrategy`.
+#[derive(Debug)]
+pub struct NoOpOffsetStrategy {
+    components: UHComponents,
+}
+
+impl NoOpOffsetStrategy {
+    /// Equivalent to `NoOpOffsetStrategy.INSTANCE`.
+    pub fn instance() -> Self {
+        Self {
+            components: UHComponents::new(
+                "_ignored_",
+                Arc::new(|_| false),
+                Arc::new(MatchNoDocsQuery::instance()),
+                Some(Vec::new()),
+                PhraseHelper::none(),
+                Some(Vec::new()),
+                false,
+                HashSet::new(),
+            ),
+        }
+    }
+}
+
+impl FieldOffsetStrategy for NoOpOffsetStrategy {
+    fn components(&self) -> Option<&UHComponents> {
+        Some(&self.components)
+    }
+
+    fn get_offset_source(&self) -> OffsetSource {
+        OffsetSource::NONE_NEEDED
+    }
+
+    fn get_offsets_enum(
+        &self,
+        _reader: Option<&Arc<dyn LeafReader>>,
+        _doc_id: i32,
+        _content: &str,
+    ) -> Result<Box<dyn OffsetsEnum>> {
+        Ok(empty())
+    }
+}
