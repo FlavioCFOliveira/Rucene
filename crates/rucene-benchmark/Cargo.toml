@@ -13,7 +13,12 @@ publish = false
 name = "rucene_benchmark"
 
 # Lucene's `lucene/benchmark/build.gradle` also uses commons-compress, icu4j and
-# nekohtml; the Rust crates that replace them are chosen by rmp #611.
+# nekohtml (user decisions on rmp #611, 2026-11-22): commons-compress's GZIP and
+# BZIP2 streams (`byTask.utils.StreamUtils`) are replaced by `flate2` on the C
+# zlib backend (gzip bytes equal to the JVM's) and `bzip2` on its default
+# pure-Rust backend (declared divergence: written `.bz2` bytes differ from
+# commons-compress, decoding is equal); icu4j's root `%spellout-numbering` rule
+# and nekohtml 1.9.17 are ported, not replaced, so neither adds a dependency.
 [dependencies]
 rucene = { path = "../.." }
 rucene-analysis-common = { path = "../rucene-analysis-common" }
@@ -23,3 +28,5 @@ rucene-queries = { path = "../rucene-queries" }
 rucene-queryparser = { path = "../rucene-queryparser" }
 rucene-spatial-extras = { path = "../rucene-spatial-extras" }
 spatial4j = { path = "../spatial4j" }
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
+bzip2 = "0.6.1"
