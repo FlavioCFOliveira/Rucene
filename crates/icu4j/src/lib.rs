@@ -51,10 +51,29 @@ pub mod jdk;
 /// `com.ibm.icu.impl`.
 pub mod r#impl {
     pub mod assert;
+    /// `com.ibm.icu.impl.breakiter`.
+    pub mod breakiter {
+        pub mod burmese_break_engine;
+        pub mod bytes_dictionary_matcher;
+        pub mod chars_dictionary_matcher;
+        pub mod cjk_break_engine;
+        pub mod dictionary_break_engine;
+        pub mod dictionary_data;
+        pub mod dictionary_matcher;
+        pub mod khmer_break_engine;
+        pub mod language_break_engine;
+        pub mod lao_break_engine;
+        pub mod lstm_break_engine;
+        pub mod ml_break_engine;
+        pub mod thai_break_engine;
+        pub mod unhandled_break_engine;
+    }
     pub mod cache_base;
     pub mod cache_value;
+    pub mod character_iteration;
     pub mod character_iterator_wrapper;
     pub mod class_loader_util;
+    pub mod cs_character_iterator;
     pub mod icu_binary;
     pub mod icu_config;
     pub mod icu_data;
@@ -91,8 +110,10 @@ pub mod r#impl {
     pub mod locale_utility;
     pub mod normalizer2_impl;
     pub mod pattern_props;
+    pub mod rbbi_data_wrapper;
     pub mod replaceable_u_character_iterator;
     pub mod resource_bundle_wrapper;
+    pub mod simple_filtered_sentence_break_iterator;
     pub mod soft_cache;
     pub mod trie2;
     pub mod trie2_16;
@@ -103,6 +124,22 @@ pub mod r#impl {
     pub mod u_resource;
     pub mod url_handler;
     pub mod utility;
+    pub mod bmp_set;
+    pub mod case_map_impl;
+    pub mod character_properties_impl;
+    pub mod emoji_props;
+    pub mod norm2_all_modes;
+    pub mod rule_character_iterator;
+    pub mod sorted_set_relation;
+    pub mod string_range;
+    pub mod u_bidi_props;
+    pub mod u_case_props;
+    pub mod u_character_name;
+    pub mod u_character_name_choice;
+    pub mod u_character_property;
+    pub mod u_character_utility;
+    pub mod u_serialized_set;
+    pub mod unicode_set_string_span;
 }
 
 /// `com.ibm.icu.lang`.
@@ -110,22 +147,46 @@ pub mod lang {
     pub mod u_character;
     pub mod u_property;
     pub mod u_script;
+    pub mod char_sequences;
+    pub mod character_properties;
+    pub mod u_character_enums;
+    pub mod u_character_name_iterator;
 }
 
 /// `com.ibm.icu.text`.
 pub mod text {
+    pub mod break_iterator;
+    pub(crate) mod break_iterator_factory;
     pub mod edits;
+    pub mod filtered_break_iterator_builder;
+    pub(crate) mod rbbi_node;
+    pub(crate) mod rbbi_rule_builder;
+    pub(crate) mod rbbi_rule_parse_table;
+    pub(crate) mod rbbi_rule_scanner;
+    pub(crate) mod rbbi_set_builder;
+    pub(crate) mod rbbi_symbol_table;
+    pub(crate) mod rbbi_table_builder;
     pub mod replaceable;
     pub mod replaceable_string;
+    pub mod rule_based_break_iterator;
     pub mod string_transform;
     pub mod transform;
     pub mod u_character_iterator;
     pub mod u_forward_character_iterator;
     pub mod utf16;
+    pub mod filtered_normalizer2;
+    pub mod normalizer;
+    pub mod normalizer2;
+    pub mod symbol_table;
+    pub mod unicode_filter;
+    pub mod unicode_matcher;
+    pub mod unicode_set;
+    pub mod unicode_set_iterator;
 }
 
 /// `com.ibm.icu.util`.
 pub mod util {
+    pub mod case_insensitive_string;
     pub mod byte_array_wrapper;
     pub mod bytes_trie;
     pub mod chars_trie;
@@ -147,4 +208,7 @@ pub mod util {
     pub mod u_resource_bundle_iterator;
     pub mod u_resource_type_mismatch_exception;
     pub mod version_info;
+    pub mod freezable;
+    pub mod range_value_iterator;
+    pub mod value_iterator;
 }

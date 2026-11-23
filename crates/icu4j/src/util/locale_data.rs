@@ -10,6 +10,7 @@ use rucene::error::{LuceneError, Result};
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_resource_bundle::{self, ICUResourceBundle};
 use crate::util::u_locale::{Category, ULocale};
+use crate::text::unicode_set::UnicodeSet;
 use crate::util::u_resource_bundle::{is_missing_resource, UResourceBundle};
 use crate::util::version_info::VersionInfo;
 
@@ -35,9 +36,6 @@ const DELIMITER_TYPES: [&str; 4] = [
 /// A class for accessing miscellaneous data in the locale bundles.
 ///
 /// Equivalent to `com.ibm.icu.util.LocaleData`.
-///
-/// Not ported yet: the three `getExemplarSet` overloads, which build a
-/// `UnicodeSet` (owner: rmp task #646, block 4).
 #[derive(Debug)]
 pub struct LocaleData {
     no_substitute: bool,
@@ -147,6 +145,70 @@ impl LocaleData {
     /// `getNoSubstitute()`.
     pub fn get_no_substitute(&self) -> bool {
         self.no_substitute
+    }
+
+    /// `getExemplarSet(ULocale locale, int options)`: the standard exemplar
+    /// set of the locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of opening the locale bundle.
+    pub fn get_exemplar_set_for(locale: &ULocale, options: i32) -> Result<Option<UnicodeSet>> {
+        LocaleData::get_instance(locale)?.get_exemplar_set(options, Self::ES_STANDARD)
+    }
+
+    /// `getExemplarSet(ULocale locale, int options, int extype)`.
+    ///
+    /// # Errors
+    ///
+    /// As [`get_exemplar_set`](Self::get_exemplar_set); the errors of
+    /// opening the locale bundle.
+    pub fn get_exemplar_set_for_type(locale: &ULocale, options: i32, extype: i32) -> Result<Option<UnicodeSet>> {
+        LocaleData::get_instance(locale)?.get_exemplar_set(options, extype)
+    }
+
+    /// `getExemplarSet(int options, int extype)`: the exemplar set of a
+    /// type (`UnicodeSet` options such as `CASE` are applied); `None` when
+    /// `noSubstitute` and the data comes from root, the empty frozen set
+    /// when the data is missing or malformed.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` (wrapping the
+    /// `ArrayIndexOutOfBoundsException`) for a type outside `0..5`.
+    pub fn get_exemplar_set(&self, options: i32, extype: i32) -> Result<Option<UnicodeSet>> {
+        let exemplar_set_types: [&str; 5] = [
+            "ExemplarCharacters",
+            "AuxExemplarCharacters",
+            "ExemplarCharactersIndex",
+            "ExemplarCharactersCurrency",
+            "ExemplarCharactersPunctuation",
+        ];
+
+        if extype == Self::ES_CURRENCY {
+            // currency symbol exemplar is no longer available
+            return Ok(if self.no_substitute { None } else { Some(crate::text::unicode_set::EMPTY.clone()) });
+        }
+
+        let Some(a_key) = exemplar_set_types.get(extype as usize).filter(|_| extype >= 0) else {
+            return Err(LuceneError::illegal_argument(format!(
+                "java.lang.ArrayIndexOutOfBoundsException: Index {extype} out of bounds for length 5"
+            )));
+        };
+        let attempt = (|| -> Result<Option<UnicodeSet>> {
+            let string_bundle = UResourceBundle::Icu(self.bundle.clone()).get(a_key)?.as_icu()?.clone();
+
+            if self.no_substitute && !self.bundle.is_root() && string_bundle.is_root() {
+                return Ok(None);
+            }
+
+            let unicode_set_pattern = string_bundle.get_string()?;
+            Ok(Some(UnicodeSet::from_pattern_options(&unicode_set_pattern, crate::text::unicode_set::IGNORE_SPACE | options)?))
+        })();
+        match attempt {
+            Ok(r) => Ok(r),
+            Err(_ex) => Ok(if self.no_substitute { None } else { Some(crate::text::unicode_set::EMPTY.clone()) }),
+        }
     }
 
     /// `getDelimiter(int type)`: a quotation mark, `None` when substitution

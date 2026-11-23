@@ -30,11 +30,10 @@ static BUNDLE_CACHE: LazyLock<SoftCache<String, Arc<ResourceBundleWrapper>, Load
 /// pairs of a `.properties` resource.
 ///
 /// Equivalent to the subset of `java.util.PropertyResourceBundle` the
-/// wrapper calls: `getObject` and `getKeys` (Java's `lookup` is a
-/// `HashMap`, whose key order [`JavaHashMap`] reproduces; the keys are
-/// inserted in `String` order, where Java inserts them in the iteration
-/// order of the `Properties` it loaded, which only matters for keys of one
-/// hash bucket).
+/// wrapper calls: `getObject` and `getKeys`. Java's `lookup` is
+/// `new HashMap(properties)`, filled in the iteration order of the
+/// `Properties` it loaded (a `ConcurrentHashMap`, reproduced by
+/// [`ChmOrder`]); [`JavaHashMap`] reproduces the `HashMap`'s key order.
 #[derive(Debug)]
 pub struct PropertyResourceBundle {
     lookup: JavaHashMap<String>,
@@ -61,12 +60,14 @@ impl PropertyResourceBundle {
             Ok(t) => t.encode_utf16().collect(),
             Err(_) => bytes.iter().map(|&b| b as u16).collect(),
         };
-        let properties = rucene_queryparser::jdk::resource_bundle::load(&text)?;
-        let mut entries: Vec<(String, String)> = properties.into_iter().collect();
-        entries.sort_by(|a, b| rucene::util::java_collections::java_compare_to(&a.0, &b.0));
-        let ft = (entries.len() as f32 / 0.75f32) + 1.0f32;
+        let mut properties = ChmOrder::new();
+        for (k, v) in rucene_queryparser::jdk::resource_bundle::load_pairs(&text)? {
+            properties.put(k, v);
+        }
+        // HashMap(Map m): putMapEntries sizes the table for m.size().
+        let ft = (properties.count as f32 / 0.75f32) + 1.0f32;
         let mut lookup = JavaHashMap::with_initial_capacity(ft as i32);
-        for (k, v) in entries {
+        for (k, v) in properties.into_entries() {
             lookup.insert(k, v);
         }
         Ok(Self { lookup })
@@ -91,6 +92,130 @@ impl PropertyResourceBundle {
     /// `getKeys()`.
     pub fn get_keys(&self) -> Vec<String> {
         self.lookup.keys().cloned().collect()
+    }
+}
+
+/// The iteration order of `java.util.Properties`, whose entries live in a
+/// `new ConcurrentHashMap<>(8)` (JDK 9 and later): a single-writer model of
+/// everything that decides `ConcurrentHashMap`'s order. `spread` over
+/// `String.hashCode()`, tail insertion in a list bin and head insertion in a
+/// tree bin, `treeifyBin`'s pre-sizing below 64 bins, the resize threshold
+/// `n - (n >>> 2)`, and `transfer`'s bin split (the `lastRun` tail kept, the
+/// nodes before it prepended in reverse; tree bins split in order).
+///
+/// Adapted from the workspace's `rucene-benchmark` `jdk::properties`
+/// model of the same JDK 25 class (this crate cannot depend on that crate).
+struct ChmOrder {
+    table: Vec<ChmBin>,
+    size_ctl: usize,
+    count: usize,
+}
+
+#[derive(Clone, Default)]
+struct ChmBin {
+    nodes: Vec<(i32, String, String)>,
+    tree: bool,
+}
+
+impl ChmOrder {
+    /// `new ConcurrentHashMap<>(8)`: `sizeCtl` = `tableSizeFor((int) (1.0 + 8 / 0.75f))` = 16.
+    fn new() -> Self {
+        Self { table: Vec::new(), size_ctl: ((1.0 + 8.0 / 0.75f32 as f64) as usize).max(1).next_power_of_two(), count: 0 }
+    }
+
+    fn spread(h: i32) -> i32 {
+        (h ^ ((h as u32) >> 16) as i32) & 0x7fff_ffff
+    }
+
+    /// `putVal(key, value, false)` by a single thread.
+    fn put(&mut self, key: String, value: String) {
+        let hash = Self::spread(rucene::util::java_collections::java_string_hash_code(&key));
+        if self.table.is_empty() {
+            let n = self.size_ctl.max(1);
+            self.table = vec![ChmBin::default(); n];
+            self.size_ctl = n - (n >> 2);
+        }
+        let n = self.table.len();
+        let i = (hash as usize) & (n - 1);
+        let bin = &mut self.table[i];
+        let mut bin_count = 0usize;
+        if let Some(node) = bin.nodes.iter_mut().find(|node| node.0 == hash && node.1 == key) {
+            node.2 = value;
+            return;
+        }
+        if bin.nodes.is_empty() {
+            bin.nodes.push((hash, key, value));
+        } else if bin.tree {
+            bin.nodes.insert(0, (hash, key, value));
+            bin_count = 2;
+        } else {
+            bin_count = bin.nodes.len();
+            bin.nodes.push((hash, key, value));
+        }
+        if bin_count >= 8 {
+            // treeifyBin
+            if n < 64 {
+                let c = (n << 1) + (n << 1 >> 1) + 1;
+                let c = c.max(1).next_power_of_two();
+                while c > self.size_ctl {
+                    self.transfer();
+                }
+            } else if !self.table[i].nodes.is_empty() && !self.table[i].tree {
+                self.table[i].tree = true;
+            }
+        }
+        self.count += 1;
+        while self.count >= self.size_ctl {
+            self.transfer();
+        }
+    }
+
+    /// `transfer(tab, null)` by a single thread.
+    fn transfer(&mut self) {
+        let n = self.table.len();
+        let mut next = vec![ChmBin::default(); n << 1];
+        let old = std::mem::take(&mut self.table);
+        for (i, bin) in old.into_iter().enumerate().rev() {
+            if bin.nodes.is_empty() {
+                continue;
+            }
+            if bin.tree {
+                let (lo, hi): (Vec<_>, Vec<_>) = bin.nodes.into_iter().partition(|node| (node.0 as usize) & n == 0);
+                let lo_tree = lo.len() > 6;
+                let hi_tree = hi.len() > 6;
+                next[i] = ChmBin { nodes: lo, tree: lo_tree };
+                next[i + n] = ChmBin { nodes: hi, tree: hi_tree };
+            } else {
+                let nodes = bin.nodes;
+                let mut run_bit = (nodes[0].0 as usize) & n;
+                let mut last_run = 0;
+                for (p, node) in nodes.iter().enumerate().skip(1) {
+                    let b = (node.0 as usize) & n;
+                    if b != run_bit {
+                        run_bit = b;
+                        last_run = p;
+                    }
+                }
+                let tail = nodes[last_run..].to_vec();
+                let (mut ln, mut hn) = if run_bit == 0 { (tail, Vec::new()) } else { (Vec::new(), tail) };
+                for node in &nodes[..last_run] {
+                    if (node.0 as usize) & n == 0 {
+                        ln.insert(0, node.clone());
+                    } else {
+                        hn.insert(0, node.clone());
+                    }
+                }
+                next[i] = ChmBin { nodes: ln, tree: false };
+                next[i + n] = ChmBin { nodes: hn, tree: false };
+            }
+        }
+        self.table = next;
+        self.size_ctl = (n << 1) - (n >> 1);
+    }
+
+    /// `entrySet()` in iteration order.
+    fn into_entries(self) -> impl Iterator<Item = (String, String)> {
+        self.table.into_iter().flat_map(|bin| bin.nodes.into_iter()).map(|(_, k, v)| (k, v))
     }
 }
 

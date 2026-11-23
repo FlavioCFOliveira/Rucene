@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use rucene::analysis::java_regex::JavaPattern;
 use rucene::error::{LuceneError, Result};
-use rucene_queryparser::jdk::locale::Locale;
+use rucene_queryparser::jdk::locale::{Category as JdkCategory, Locale};
 
 use crate::r#impl::cache_base::CacheBase;
 use crate::r#impl::icu_data::ICUData;
@@ -145,7 +145,6 @@ const CANONICALIZE_MAP: &[(&str, &str)] = &[
 ];
 
 /// `LANG_DIR_STRING`.
-#[allow(dead_code)]
 const LANG_DIR_STRING: &str = "root-en-es-pt-zh-ja-ko-de-fr-it-ar+he+fa+ru-nl-pl-th-tr-";
 
 /// The shared state of a locale: its normalized ID and the lazily computed
@@ -170,8 +169,8 @@ struct Inner {
 /// `getDisplayScript*`, `getDisplayCountry*`, `getDisplayVariant*`,
 /// `getDisplayKeyword*`, `getDisplayKeywordValue*`, `getDisplayName*`),
 /// which call `LocaleDisplayNames`; the `acceptLanguage` overloads, which
-/// call `LocaleMatcher` and `LocalePriorityList`; and `isRightToLeft`,
-/// which calls `UScript.isRightToLeft` (see the rmp task #644 log).
+/// call `LocaleMatcher` and `LocalePriorityList` (see the rmp task #644
+/// log).
 #[derive(Clone)]
 pub struct ULocale(Arc<Inner>);
 
@@ -1153,6 +1152,38 @@ impl ULocale {
     /// The errors of opening the locale bundle.
     pub fn get_line_orientation(&self) -> Result<Option<String>> {
         ICUResourceTableAccess::get_table_string(ICUData::ICU_BASE_NAME, self, "layout", "lines", Some("lines"))
+    }
+
+    /// `isRightToLeft()`: whether this locale's script is written
+    /// right-to-left (the likely script when the locale has none).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the likely-subtags and property names data.
+    pub fn is_right_to_left(&self) -> Result<bool> {
+        let mut script = self.get_script();
+        if script.is_empty() {
+            // Fastpath: We know the likely scripts and their writing direction
+            // for some common languages.
+            let lang = self.get_language();
+            if !lang.is_empty() {
+                if let Some(lang_index) = LANG_DIR_STRING.find(lang.as_str()) {
+                    match LANG_DIR_STRING.as_bytes()[lang_index + lang.len()] {
+                        b'-' => return Ok(false),
+                        b'+' => return Ok(true),
+                        _ => {} // partial match of a longer code
+                    }
+                }
+            }
+            // Otherwise, find the likely script.
+            let likely = ULocale::add_likely_subtags(self)?;
+            script = likely.get_script();
+            if script.is_empty() {
+                return Ok(false);
+            }
+        }
+        let script_code = crate::lang::u_script::UScript::get_code_from_name(&script)?;
+        Ok(crate::lang::u_script::UScript::is_right_to_left(script_code))
     }
 
     /// `addLikelySubtags(ULocale loc)`: the maximized locale.
@@ -2405,28 +2436,18 @@ impl Builder {
     }
 }
 
-/// The category defaults of `java.util.Locale` (`Locale.getDefault(Category)`
-/// / `setDefault(Category, Locale)`), `None` while a category follows the
-/// default locale.
-static JDK_CATEGORY_DEFAULTS: Mutex<[Option<Locale>; 2]> = Mutex::new([None, None]);
-
 /// JDK locale helper: the mapping between `ULocale` and `java.util.Locale`.
 ///
 /// Equivalent to `ULocale.JDKLocaleHelper` (private). Java finds
 /// `Locale.Category` by reflection; JDK 25 has it, so
-/// `hasLocaleCategories` is `true`.
+/// `hasLocaleCategories` is `true`, and the category defaults are the JDK
+/// `Locale` emulation's (`Locale.getDefault(Category)` /
+/// `setDefault(Category, Locale)`).
 ///
-/// **Divergence.** `java.util.Locale` keeps a default per category, which
-/// `Locale.setDefault(Locale)` also resets (`Locale.java`); the workspace's
-/// JDK `Locale` emulation has one default and no categories, so this helper
-/// keeps the category defaults it sets itself and otherwise answers the
-/// default locale. A category default set through
-/// [`ULocale::set_default_category`] is therefore not reset by a later
-/// `Locale::set_default` (it is by [`ULocale::set_default`]). The JDK
-/// extensions of a `Locale` are read through its language tag
-/// (`toLanguageTag()` parsed by ICU's `LanguageTag`), because the emulation
-/// exposes no extension accessors; for a well-formed locale the tag carries
-/// the same extension keys and values.
+/// **Divergence.** The JDK extensions of a `Locale` are read through its
+/// language tag (`toLanguageTag()` parsed by ICU's `LanguageTag`), because
+/// the emulation exposes no extension accessors; for a well-formed locale
+/// the tag carries the same extension keys and values.
 struct JDKLocaleHelper;
 
 impl JDKLocaleHelper {
@@ -2595,11 +2616,19 @@ impl JDKLocaleHelper {
     }
 
     fn get_default(category: Category) -> Locale {
-        let d = JDK_CATEGORY_DEFAULTS.lock().unwrap_or_else(|e| e.into_inner());
-        d[category.ordinal()].clone().unwrap_or_else(Locale::get_default)
+        Locale::get_default_category(Self::jdk_category(category))
     }
 
     fn set_default(category: Category, new_locale: Locale) {
-        JDK_CATEGORY_DEFAULTS.lock().unwrap_or_else(|e| e.into_inner())[category.ordinal()] = Some(new_locale);
+        Locale::set_default_category(Self::jdk_category(category), new_locale);
+    }
+
+    /// The `Locale.Category` of the same name (`getCategory(Category)`
+    /// finds it by name through reflection).
+    fn jdk_category(category: Category) -> JdkCategory {
+        match category {
+            Category::Display => JdkCategory::Display,
+            Category::Format => JdkCategory::Format,
+        }
     }
 }

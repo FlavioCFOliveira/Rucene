@@ -85,12 +85,7 @@ pub static LINE_SEPARATOR: LazyLock<String> = LazyLock::new(|| {
 /// encodings, escaping and unescaping, hexadecimal rendering, pattern
 /// parsing helpers and rule quoting.
 ///
-/// Equivalent to `com.ibm.icu.impl.Utility`, with these exceptions, ported
-/// with the classes they call: `parsePattern(String, int, int, String,
-/// int[])`, `parseInteger`, `parseUnicodeIdentifier` and `parseNumber`
-/// (`UCharacter`, rmp task #645) and `appendToRule(StringBuffer,
-/// UnicodeMatcher, boolean, StringBuffer)` (`UnicodeMatcher`, rmp task
-/// #646).
+/// Equivalent to `com.ibm.icu.impl.Utility`.
 ///
 /// `LINE_SEPARATOR`, a public mutable static in Java that ICU never
 /// reassigns, is the read-only [`LINE_SEPARATOR`] static.
@@ -1719,5 +1714,186 @@ impl Utility {
             buf.extend_from_slice(element);
         }
         Ok(buf)
+    }
+}
+
+impl Utility {
+    /// `parsePattern(String rule, int pos, int limit, String pattern, int[]
+    /// parsedInts)`: parses a pattern string (`' '` one white space then
+    /// optional ones, `'~'` optional white space, `'#'` an integer, other
+    /// characters lowercase-insensitive literals); returns the position
+    /// after the match, or -1.
+    ///
+    /// # Panics
+    ///
+    /// `ArrayIndexOutOfBoundsException` when `parsed_ints` is too short.
+    pub fn parse_pattern(rule: &[u16], mut pos: i32, limit: i32, pattern: &[u16], parsed_ints: &mut [i32]) -> i32 {
+        // TODO Update this to handle surrogates
+        let mut p = [0i32; 1];
+        let mut int_count = 0usize; // number of integers parsed
+        for &cpat in pattern {
+            match cpat {
+                0x20 /* ' ' */ => {
+                    if pos >= limit {
+                        return -1;
+                    }
+                    let c = rule[pos as usize];
+                    pos += 1;
+                    if !PatternProps::is_white_space(c as i32) {
+                        return -1;
+                    }
+                    // FALL THROUGH to skipWhitespace
+                    pos = PatternProps::skip_white_space(rule, pos);
+                }
+                0x7E /* '~' */ => {
+                    pos = PatternProps::skip_white_space(rule, pos);
+                }
+                0x23 /* '#' */ => {
+                    p[0] = pos;
+                    parsed_ints[int_count] = Self::parse_integer(rule, &mut p, limit);
+                    int_count += 1;
+                    if p[0] == pos {
+                        // Syntax error; failed to parse integer
+                        return -1;
+                    }
+                    pos = p[0];
+                }
+                _ => {
+                    if pos >= limit {
+                        return -1;
+                    }
+                    let c = crate::lang::u_character::UCharacter::to_lower_case_cp(rule[pos as usize] as i32) as u16;
+                    pos += 1;
+                    if c != cpat {
+                        return -1;
+                    }
+                }
+            }
+        }
+        pos
+    }
+
+    /// `parseInteger(String rule, int[] pos, int limit)`: parses a decimal,
+    /// octal (leading `0`) or hex (leading `0x`) integer at `pos[0]`,
+    /// advancing it past the digits; 0 on overflow.
+    pub fn parse_integer(rule: &[u16], pos: &mut [i32], limit: i32) -> i32 {
+        let mut count = 0;
+        let mut value: i32 = 0;
+        let mut p = pos[0];
+        let mut radix = 10;
+
+        let ox: [u16; 2] = [b'0' as u16, b'x' as u16];
+        let matches_ox = p >= 0
+            && (p as usize) + 2 <= rule.len()
+            && rule[p as usize] == ox[0]
+            && (rule[p as usize + 1] == ox[1]
+                || rucene_analysis_common::jdk::character::to_upper_case_unit(rule[p as usize + 1]) == b'X' as u16
+                || rucene_analysis_common::jdk::character::to_lower_case_unit(rucene_analysis_common::jdk::character::to_upper_case_unit(rule[p as usize + 1])) == b'x' as u16);
+        if matches_ox {
+            p += 2;
+            radix = 16;
+        } else if p < limit && rule[p as usize] == b'0' as u16 {
+            p += 1;
+            count = 1;
+            radix = 8;
+        }
+
+        while p < limit {
+            let d = crate::lang::u_character::UCharacter::digit_radix(rule[p as usize] as i32, radix);
+            p += 1;
+            if d < 0 {
+                p -= 1;
+                break;
+            }
+            count += 1;
+            let v = value.wrapping_mul(radix).wrapping_add(d);
+            if v <= value {
+                // If there are too many input digits, at some point
+                // the value will go negative, e.g., if we have seen
+                // "0x8000000" already and there is another '0', when
+                // we parse the next 0 the value will go negative.
+                return 0;
+            }
+            value = v;
+        }
+        if count > 0 {
+            pos[0] = p;
+        }
+        value
+    }
+
+    /// `parseUnicodeIdentifier(String str, int[] pos)`: the Unicode
+    /// identifier at `pos[0]` (advancing it), `None` when none starts
+    /// there.
+    pub fn parse_unicode_identifier(str: &[u16], pos: &mut [i32]) -> Option<Vec<u16>> {
+        // assert(pos[0] < str.length());
+        let mut buf: Vec<u16> = Vec::new();
+        let mut p = pos[0];
+        while p < str.len() as i32 {
+            let ch = crate::jdk::code_point_at(str, p);
+            if buf.is_empty() {
+                if crate::lang::u_character::UCharacter::is_unicode_identifier_start(ch) {
+                    crate::jdk::append_code_point(&mut buf, ch).expect("a code point read from text");
+                } else {
+                    return None;
+                }
+            } else if crate::lang::u_character::UCharacter::is_unicode_identifier_part(ch) {
+                crate::jdk::append_code_point(&mut buf, ch).expect("a code point read from text");
+            } else {
+                break;
+            }
+            p += UTF16::get_char_count(ch);
+        }
+        pos[0] = p;
+        Some(buf)
+    }
+
+    /// `parseNumber(String text, int[] pos, int radix)`: parses an unsigned
+    /// number in the radix at `pos[0]` (advancing it); -1 when there is no
+    /// digit or on overflow.
+    pub fn parse_number(text: &[u16], pos: &mut [i32], radix: i32) -> i32 {
+        // assert(pos[0] >= 0);
+        // assert(radix >= 2);
+        // assert(radix <= 36);
+        let mut n: i32 = 0;
+        let mut p = pos[0];
+        while p < text.len() as i32 {
+            let ch = crate::jdk::code_point_at(text, p);
+            let d = crate::lang::u_character::UCharacter::digit_radix(ch, radix);
+            if d < 0 {
+                break;
+            }
+            n = radix.wrapping_mul(n).wrapping_add(d);
+            // ASSUME that when a 32-bit integer overflows it becomes
+            // negative.  E.g., 214748364 * 10 + 8 => negative value.
+            if n < 0 {
+                return -1;
+            }
+            p += 1;
+        }
+        if p == pos[0] {
+            return -1;
+        }
+        pos[0] = p;
+        n
+    }
+
+    /// `appendToRule(StringBuffer rule, UnicodeMatcher matcher, boolean
+    /// escapeUnprintable, StringBuffer quoteBuf)`: appends the matcher's
+    /// pattern as a literal (nothing for `None`).
+    ///
+    /// # Errors
+    ///
+    /// As [`append_to_rule`](Self::append_to_rule).
+    pub fn append_to_rule_matcher(
+        rule: &mut Vec<u16>,
+        matcher: Option<&dyn crate::text::unicode_matcher::UnicodeMatcher>,
+        escape_unprintable: bool,
+        quote_buf: &mut Vec<u16>,
+    ) -> Result<()> {
+        if let Some(matcher) = matcher {
+            Self::append_to_rule_str(rule, &matcher.to_pattern(escape_unprintable), true, escape_unprintable, quote_buf)?;
+        }
+        Ok(())
     }
 }

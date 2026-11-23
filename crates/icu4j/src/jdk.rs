@@ -1159,3 +1159,221 @@ impl ClassLoader {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// java.text.ParsePosition, java.util.BitSet, Character helpers
+// ---------------------------------------------------------------------------
+
+/// A parse position: the index parsing continues from and the index of a
+/// parse error.
+///
+/// Equivalent to `java.text.ParsePosition` (`int` indexes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsePosition {
+    index: i32,
+    error_index: i32,
+}
+
+impl ParsePosition {
+    /// `new ParsePosition(int index)`: the error index is -1.
+    pub fn new(index: i32) -> Self {
+        Self { index, error_index: -1 }
+    }
+
+    /// `getIndex()`.
+    pub fn get_index(&self) -> i32 {
+        self.index
+    }
+
+    /// `setIndex(int index)`.
+    pub fn set_index(&mut self, index: i32) {
+        self.index = index;
+    }
+
+    /// `getErrorIndex()`.
+    pub fn get_error_index(&self) -> i32 {
+        self.error_index
+    }
+
+    /// `setErrorIndex(int ei)`.
+    pub fn set_error_index(&mut self, ei: i32) {
+        self.error_index = ei;
+    }
+
+    /// `hashCode()`: `(errorIndex << 16) | index`.
+    pub fn hash_code(&self) -> i32 {
+        (self.error_index << 16) | self.index
+    }
+}
+
+impl std::fmt::Display for ParsePosition {
+    /// `toString()`: `java.text.ParsePosition[index=<i>,errorIndex=<e>]`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "java.text.ParsePosition[index={},errorIndex={}]", self.index, self.error_index)
+    }
+}
+
+/// A growable vector of bits.
+///
+/// Equivalent to the subset of `java.util.BitSet` ICU calls (`clear()`,
+/// `set(int)`, `get(int)`, `cardinality()`, `nextSetBit(int)`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    /// `new BitSet()`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `clear()`.
+    pub fn clear(&mut self) {
+        self.words.clear();
+    }
+
+    /// `set(int bitIndex)`.
+    ///
+    /// # Panics
+    ///
+    /// `IndexOutOfBoundsException("bitIndex < 0: <i>")` for a negative index.
+    pub fn set(&mut self, bit_index: i32) {
+        if bit_index < 0 {
+            index_out_of_bounds(Some(format!("bitIndex < 0: {bit_index}")));
+        }
+        let w = (bit_index >> 6) as usize;
+        if w >= self.words.len() {
+            self.words.resize(w + 1, 0);
+        }
+        self.words[w] |= 1u64 << (bit_index & 63);
+    }
+
+    /// `get(int bitIndex)`.
+    ///
+    /// # Panics
+    ///
+    /// `IndexOutOfBoundsException("bitIndex < 0: <i>")` for a negative index.
+    pub fn get(&self, bit_index: i32) -> bool {
+        if bit_index < 0 {
+            index_out_of_bounds(Some(format!("bitIndex < 0: {bit_index}")));
+        }
+        let w = (bit_index >> 6) as usize;
+        w < self.words.len() && (self.words[w] & (1u64 << (bit_index & 63))) != 0
+    }
+
+    /// `cardinality()`.
+    pub fn cardinality(&self) -> i32 {
+        self.words.iter().map(|w| w.count_ones() as i32).sum()
+    }
+
+    /// `nextSetBit(int fromIndex)`: -1 when there is none.
+    ///
+    /// # Panics
+    ///
+    /// `IndexOutOfBoundsException("fromIndex < 0: <i>")` for a negative index.
+    pub fn next_set_bit(&self, from_index: i32) -> i32 {
+        if from_index < 0 {
+            index_out_of_bounds(Some(format!("fromIndex < 0: {from_index}")));
+        }
+        let mut w = (from_index >> 6) as usize;
+        if w >= self.words.len() {
+            return -1;
+        }
+        let mut word = self.words[w] & (u64::MAX << (from_index & 63));
+        loop {
+            if word != 0 {
+                return (w as i32) * 64 + word.trailing_zeros() as i32;
+            }
+            w += 1;
+            if w == self.words.len() {
+                return -1;
+            }
+            word = self.words[w];
+        }
+    }
+}
+
+/// `Character.codePointBefore(CharSequence seq, int index)`.
+///
+/// # Panics
+///
+/// Where Java throws `IndexOutOfBoundsException`: `index` outside `1..=len`.
+pub fn code_point_before(seq: &[u16], index: i32) -> i32 {
+    if index < 1 || index as usize > seq.len() {
+        string_index_out_of_bounds(index);
+    }
+    let c2 = seq[index as usize - 1];
+    if is_low_surrogate(c2) && index >= 2 {
+        let c1 = seq[index as usize - 2];
+        if is_high_surrogate(c1) {
+            return to_code_point(c1, c2);
+        }
+    }
+    c2 as i32
+}
+
+/// `String.offsetByCodePoints(int index, int codePointOffset)`.
+///
+/// # Panics
+///
+/// `IndexOutOfBoundsException` when `index` is outside the text or the
+/// text has fewer code points than requested.
+pub fn offset_by_code_points(seq: &[u16], index: i32, code_point_offset: i32) -> i32 {
+    let length = seq.len() as i32;
+    if index < 0 || index > length {
+        index_out_of_bounds(None);
+    }
+    let mut x = index;
+    if code_point_offset >= 0 {
+        let mut i = 0;
+        while x < length && i < code_point_offset {
+            let c = seq[x as usize];
+            x += 1;
+            if is_high_surrogate(c) && x < length && is_low_surrogate(seq[x as usize]) {
+                x += 1;
+            }
+            i += 1;
+        }
+        if i < code_point_offset {
+            index_out_of_bounds(None);
+        }
+    } else {
+        let mut i = code_point_offset;
+        while x > 0 && i < 0 {
+            x -= 1;
+            let c = seq[x as usize];
+            if is_low_surrogate(c) && x > 0 && is_high_surrogate(seq[x as usize - 1]) {
+                x -= 1;
+            }
+            i += 1;
+        }
+        if i < 0 {
+            index_out_of_bounds(None);
+        }
+    }
+    x
+}
+
+/// `new RuntimeException(message)`.
+pub fn runtime_exception(message: Option<String>) -> LuceneError {
+    LuceneError::unchecked_with_message("java.lang.RuntimeException", message)
+}
+
+/// `new UnsupportedOperationException(message)`.
+pub fn unsupported_operation(message: &str) -> LuceneError {
+    LuceneError::unsupported_operation(message)
+}
+
+/// `Double.parseDouble(String s)`.
+///
+/// # Errors
+///
+/// `NumberFormatException` as the JDK throws it (`empty String`, or
+/// `For input string: "<s>"`).
+pub fn parse_double(s: &str) -> Result<f64> {
+    if s.trim_matches(|c: char| c <= '\u{20}').is_empty() {
+        return Err(LuceneError::number_format("empty String"));
+    }
+    rucene::util::java_fmt::parse_double(s).ok_or_else(|| LuceneError::number_format(format!("For input string: \"{s}\"")))
+}

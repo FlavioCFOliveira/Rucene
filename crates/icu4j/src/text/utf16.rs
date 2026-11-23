@@ -18,9 +18,7 @@ use crate::text::replaceable::Replaceable;
 /// `StringBuffer` overload where its checks or messages differ, `_chars` for
 /// the `char[]` overload, `_replaceable` for the `Replaceable` one.
 ///
-/// The nested class `UTF16.StringComparator` compares case-insensitively
-/// through `Normalizer.cmpEquivFold` and uses `Normalizer`'s comparison
-/// options; it is ported with `Normalizer` (rmp task #646).
+/// The nested class `UTF16.StringComparator` is [`StringComparator`].
 pub struct UTF16;
 
 impl UTF16 {
@@ -1582,5 +1580,187 @@ impl UTF16 {
         }
 
         vec![Self::get_lead_surrogate(ch), Self::get_trail_surrogate(ch)]
+    }
+}
+
+/// UTF16 string comparator class. Allows UTF16 string comparison to be
+/// done with the various modes: code point comparison, case-insensitive
+/// comparison.
+///
+/// Equivalent to `UTF16.StringComparator` (a `Comparator<String>`; Java's
+/// `null` arguments are `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringComparator {
+    /// Code unit comparison flag. True if code unit comparison is
+    /// required. False if code point comparison is required.
+    m_code_point_compare: i32,
+    /// Fold case comparison option.
+    m_fold_case: i32,
+    /// Flag indicator if ignore case is to be used during comparison.
+    m_ignore_case: bool,
+}
+
+impl Default for StringComparator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Code point order offset for surrogate characters.
+const CODE_POINT_COMPARE_SURROGATE_OFFSET: u16 = 0x2800;
+
+impl StringComparator {
+    /// `FOLD_CASE_DEFAULT`: option value for case folding comparison.
+    pub const FOLD_CASE_DEFAULT: i32 = 0;
+    /// `FOLD_CASE_EXCLUDE_SPECIAL_I`: option value for case folding
+    /// comparison (Turkic dotted and dotless i).
+    pub const FOLD_CASE_EXCLUDE_SPECIAL_I: i32 = 1;
+
+    /// `StringComparator()`: code unit order, case-sensitive.
+    pub fn new() -> Self {
+        Self::with_options(false, false, Self::FOLD_CASE_DEFAULT).expect("FOLD_CASE_DEFAULT is valid")
+    }
+
+    /// `StringComparator(boolean codepointcompare, boolean ignorecase, int
+    /// foldcaseoption)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("Invalid fold case option")`.
+    pub fn with_options(codepointcompare: bool, ignorecase: bool, foldcaseoption: i32) -> Result<Self> {
+        let mut c = Self { m_code_point_compare: 0, m_fold_case: 0, m_ignore_case: false };
+        c.set_code_point_compare(codepointcompare);
+        c.m_ignore_case = ignorecase;
+        if !(Self::FOLD_CASE_DEFAULT..=Self::FOLD_CASE_EXCLUDE_SPECIAL_I).contains(&foldcaseoption) {
+            return Err(LuceneError::illegal_argument("Invalid fold case option"));
+        }
+        c.m_fold_case = foldcaseoption;
+        Ok(c)
+    }
+
+    /// `setCodePointCompare(boolean flag)`.
+    pub fn set_code_point_compare(&mut self, flag: bool) {
+        if flag {
+            self.m_code_point_compare = crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER;
+        } else {
+            self.m_code_point_compare = 0;
+        }
+    }
+
+    /// `setIgnoreCase(boolean ignorecase, int foldcaseoption)`.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("Invalid fold case option")`.
+    pub fn set_ignore_case(&mut self, ignorecase: bool, foldcaseoption: i32) -> Result<()> {
+        self.m_ignore_case = ignorecase;
+        if !(Self::FOLD_CASE_DEFAULT..=Self::FOLD_CASE_EXCLUDE_SPECIAL_I).contains(&foldcaseoption) {
+            return Err(LuceneError::illegal_argument("Invalid fold case option"));
+        }
+        self.m_fold_case = foldcaseoption;
+        Ok(())
+    }
+
+    /// `getCodePointCompare()`.
+    pub fn get_code_point_compare(&self) -> bool {
+        self.m_code_point_compare == crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER
+    }
+
+    /// `getIgnoreCase()`.
+    pub fn get_ignore_case(&self) -> bool {
+        self.m_ignore_case
+    }
+
+    /// `getIgnoreCaseOption()`.
+    pub fn get_ignore_case_option(&self) -> i32 {
+        self.m_fold_case
+    }
+
+    /// `compare(String a, String b)`.
+    pub fn compare(&self, a: Option<&[u16]>, b: Option<&[u16]>) -> i32 {
+        let (a, b) = match (a, b) {
+            (Some(a), Some(b)) if std::ptr::eq(a, b) => return 0,
+            (None, None) => return 0,
+            (None, _) => return -1,
+            (_, None) => return 1,
+            (Some(a), Some(b)) => (a, b),
+        };
+        if self.m_ignore_case {
+            return self.compare_case_insensitive(a, b);
+        }
+        self.compare_case_sensitive(a, b)
+    }
+
+    /// Compares case insensitive. This is a direct port of ICU4C, to make
+    /// maintainence life easier.
+    fn compare_case_insensitive(&self, s1: &[u16], s2: &[u16]) -> i32 {
+        crate::text::normalizer::Normalizer::cmp_equiv_fold(
+            s1,
+            s2,
+            self.m_fold_case | self.m_code_point_compare | crate::text::normalizer::Normalizer::COMPARE_IGNORE_CASE,
+        )
+        .expect("without COMPARE_EQUIV no normalization data is loaded")
+    }
+
+    /// Compares case sensitive. This is a direct port of ICU4C, to make
+    /// maintainence life easier.
+    fn compare_case_sensitive(&self, s1: &[u16], s2: &[u16]) -> i32 {
+        // compare identical prefixes - they do not need to be fixed up
+        // limit1 = start1 + min(length1, length2)
+        let length1 = s1.len();
+        let length2 = s2.len();
+        let mut minlength = length1;
+        let mut result = 0;
+        if length1 < length2 {
+            result = -1;
+        } else if length1 > length2 {
+            result = 1;
+            minlength = length2;
+        }
+
+        let mut c1: u16 = 0;
+        let mut c2: u16 = 0;
+        let mut index = 0;
+        while index < minlength {
+            c1 = s1[index];
+            c2 = s2[index];
+            // check pseudo-limit
+            if c1 != c2 {
+                break;
+            }
+            index += 1;
+        }
+
+        if index == minlength {
+            return result;
+        }
+
+        let codepointcompare = self.m_code_point_compare == crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER;
+        // if both values are in or above the surrogate range, fix them up
+        if c1 as i32 >= UTF16::LEAD_SURROGATE_MIN_VALUE && c2 as i32 >= UTF16::LEAD_SURROGATE_MIN_VALUE && codepointcompare {
+            // subtract 0x2800 from BMP code points to make them smaller
+            // than supplementary ones
+            if (c1 as i32 <= UTF16::LEAD_SURROGATE_MAX_VALUE && (index + 1) != length1 && UTF16::is_trail_surrogate(s1[index + 1] as i32))
+                || (UTF16::is_trail_surrogate(c1 as i32) && index != 0 && UTF16::is_lead_surrogate(s1[index - 1] as i32))
+            {
+                // part of a surrogate pair, leave >=d800
+            } else {
+                // BMP code point - may be surrogate code point - make
+                // < d800
+                c1 = c1.wrapping_sub(CODE_POINT_COMPARE_SURROGATE_OFFSET);
+            }
+
+            if (c2 as i32 <= UTF16::LEAD_SURROGATE_MAX_VALUE && (index + 1) != length2 && UTF16::is_trail_surrogate(s2[index + 1] as i32))
+                || (UTF16::is_trail_surrogate(c2 as i32) && index != 0 && UTF16::is_lead_surrogate(s2[index - 1] as i32))
+            {
+                // part of a surrogate pair, leave >=d800
+            } else {
+                // BMP code point - may be surrogate code point - make <d800
+                c2 = c2.wrapping_sub(CODE_POINT_COMPARE_SURROGATE_OFFSET);
+            }
+        }
+
+        // now c1 and c2 are in UTF-32-compatible order
+        c1 as i32 - c2 as i32
     }
 }
