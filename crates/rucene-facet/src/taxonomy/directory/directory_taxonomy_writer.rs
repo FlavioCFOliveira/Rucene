@@ -126,7 +126,7 @@ struct DefaultOverrides;
 impl DirectoryTaxonomyWriterOverrides for DefaultOverrides {}
 
 /// The fields Java guards with the writer's monitor.
-struct WriterState {
+pub(crate) struct WriterState {
     cache_misses_until_fill: i32,
     should_fill_cache: bool,
     reader_manager: Option<ReaderManager>,
@@ -302,6 +302,51 @@ impl DirectoryTaxonomyWriter {
 
     fn state(&self) -> MutexGuard<'_, WriterState> {
         lock(&self.state)
+    }
+
+    /// Enters the writer's monitor (Java's `synchronized (this)`), for a
+    /// subclass's `synchronized` method; the `*_locked` methods are the
+    /// bodies of the `synchronized` methods it calls re-entrantly.
+    pub(crate) fn enter_monitor(&self) -> MutexGuard<'_, WriterState> {
+        self.state()
+    }
+
+    /// The body of `addCategory(FacetLabel)`; `held` is the monitor state
+    /// when the caller already holds the monitor (Java's re-entrant
+    /// `synchronized (this)`).
+    pub(crate) fn add_category_with_monitor(
+        &self,
+        category_path: &FacetLabel,
+        held: Option<&mut WriterState>,
+    ) -> Result<i32> {
+        self.ensure_open()?;
+
+        // check the cache outside the synchronized block. this results in
+        // better concurrency when categories are there.
+        let mut res = self.cache.get(category_path)?;
+        if res < 0 {
+            // the category is not in the cache - following code cannot be
+            // executed in parallel.
+            let mut own;
+            let state: &mut WriterState = match held {
+                Some(state) => state,
+                None => {
+                    own = self.state();
+                    &mut own
+                }
+            };
+            res = self.find_category(state, category_path)?;
+            if res < 0 {
+                // This is a new category, and we need to insert it into the
+                // index (and the cache). Actually, we might also need to add
+                // some of the category's ancestors before we can add the
+                // category itself (while keeping the invariant that a parent
+                // is always added to the taxonomy before its child).
+                // internalAddCategory() does all this recursively
+                res = self.internal_add_category(state, category_path)?;
+            }
+        }
+        Ok(res)
     }
 
     /// Equivalent to `initReaderManager()`.
@@ -538,7 +583,7 @@ impl DirectoryTaxonomyWriter {
     }
 
     /// Equivalent to the monitor-held body of `commit()`.
-    fn commit_locked(&self) -> Result<i64> {
+    pub(crate) fn commit_locked(&self) -> Result<i64> {
         self.ensure_open()?;
         // LUCENE-4972: if we always call setCommitData, we create empty
         // commits
@@ -748,10 +793,15 @@ impl DirectoryTaxonomyWriter {
     /// Equivalent to the package-private `deleteAll()`.
     pub(crate) fn delete_all(&self) -> Result<()> {
         let mut state = self.state();
+        self.delete_all_locked(&mut state)
+    }
+
+    /// The monitor-held body of `deleteAll()`.
+    pub(crate) fn delete_all_locked(&self, state: &mut WriterState) -> Result<()> {
         self.index_writer.delete_all()?;
         state.should_refresh_reader_manager = true;
-        self.init_reader_manager(&mut state)?; // ensure that it's initialized
-        self.refresh_reader_manager(&mut state)?;
+        self.init_reader_manager(state)?; // ensure that it's initialized
+        self.refresh_reader_manager(state)?;
         self.next_id.store(0, Ordering::SeqCst);
         state.taxo_arrays = None; // must nullify so that it's re-computed next time it's needed
 
@@ -825,27 +875,7 @@ impl TwoPhaseCommit for DirectoryTaxonomyWriter {
 
 impl TaxonomyWriter for DirectoryTaxonomyWriter {
     fn add_category(&self, category_path: &FacetLabel) -> Result<i32> {
-        self.ensure_open()?;
-
-        // check the cache outside the synchronized block. this results in
-        // better concurrency when categories are there.
-        let mut res = self.cache.get(category_path)?;
-        if res < 0 {
-            // the category is not in the cache - following code cannot be
-            // executed in parallel.
-            let mut state = self.state();
-            res = self.find_category(&mut state, category_path)?;
-            if res < 0 {
-                // This is a new category, and we need to insert it into the
-                // index (and the cache). Actually, we might also need to add
-                // some of the category's ancestors before we can add the
-                // category itself (while keeping the invariant that a parent
-                // is always added to the taxonomy before its child).
-                // internalAddCategory() does all this recursively
-                res = self.internal_add_category(&mut state, category_path)?;
-            }
-        }
-        Ok(res)
+        self.add_category_with_monitor(category_path, None)
     }
 
     fn get_parent(&self, ordinal: i32) -> Result<i32> {

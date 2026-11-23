@@ -68,7 +68,7 @@ impl ConcurrentSortedSetDocValuesFacetCounts {
         let this = Self { base, exec };
         match hits {
             None => this.count_all()?,
-            Some(hits) => this.count(hits.get_matching_docs())?,
+            Some(hits) => this.count(hits.get_matching_docs()?)?,
         }
         Ok(this)
     }

@@ -18,21 +18,57 @@
 //! Port of `BaseFragListBuilder.java`, of the Java package
 //! `org.apache.lucene.search.vectorhighlight`.
 
+use std::fmt;
+use std::sync::Arc;
+
 use rucene::error::{LuceneError, Result};
 
 use crate::vectorhighlight::field_frag_list::FieldFragList;
 use crate::vectorhighlight::field_phrase_list::{FieldPhraseList, WeightedPhraseInfo};
+
+/// The protected overridable `acceptPhrase` of `BaseFragListBuilder` a Java
+/// subclass overrides (`BaseFragListBuilder.java:110-122`). The default is
+/// the base class's body, reachable as
+/// [`BaseFragListBuilder::super_accept_phrase`].
+pub trait BaseFragListBuilderOverrides: Send + Sync {
+    /// Equivalent to an override of the protected
+    /// `acceptPhrase(WeightedPhraseInfo, int, int)`.
+    fn accept_phrase(
+        &self,
+        this: &BaseFragListBuilder,
+        info: &WeightedPhraseInfo,
+        match_length: i32,
+        frag_char_size: i32,
+    ) -> bool {
+        this.super_accept_phrase(info, match_length, frag_char_size)
+    }
+}
 
 /// A abstract implementation of `FragListBuilder`.
 ///
 /// Equivalent to the abstract class
 /// `org.apache.lucene.search.vectorhighlight.BaseFragListBuilder`: its state
 /// and the protected `createFieldFragList(FieldPhraseList, FieldFragList,
-/// int)`, which its subclasses reach through `Deref`.
-#[derive(Debug, Clone)]
+/// int)`, which its subclasses reach through `Deref`. A further subclass's
+/// override of `acceptPhrase` is a [`BaseFragListBuilderOverrides`], set
+/// with [`BaseFragListBuilder::set_overrides`] (through `DerefMut` on the
+/// concrete builders).
+#[derive(Clone)]
 pub struct BaseFragListBuilder {
     pub(crate) margin: i32,
     pub(crate) min_frag_char_size: i32,
+    /// The subclass's overrides; `None` for the base behaviour.
+    overrides: Option<Arc<dyn BaseFragListBuilderOverrides>>,
+}
+
+impl fmt::Debug for BaseFragListBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BaseFragListBuilder")
+            .field("margin", &self.margin)
+            .field("min_frag_char_size", &self.min_frag_char_size)
+            .field("overridden", &self.overrides.is_some())
+            .finish()
+    }
 }
 
 impl BaseFragListBuilder {
@@ -56,7 +92,13 @@ impl BaseFragListBuilder {
         Ok(Self {
             margin,
             min_frag_char_size: 1.max(margin.wrapping_mul(Self::MIN_FRAG_CHAR_SIZE_FACTOR)),
+            overrides: None,
         })
+    }
+
+    /// Installs a subclass's overrides (Java: constructing the subclass).
+    pub fn set_overrides(&mut self, overrides: Arc<dyn BaseFragListBuilderOverrides>) {
+        self.overrides = Some(overrides);
     }
 
     /// Equivalent to `new BaseFragListBuilder()`.
@@ -154,6 +196,14 @@ impl BaseFragListBuilder {
     /// Equivalent to the protected `acceptPhrase(WeightedPhraseInfo, int,
     /// int)`.
     pub fn accept_phrase(&self, info: &WeightedPhraseInfo, match_length: i32, frag_char_size: i32) -> bool {
+        match &self.overrides {
+            Some(o) => o.accept_phrase(self, info, match_length, frag_char_size),
+            None => self.super_accept_phrase(info, match_length, frag_char_size),
+        }
+    }
+
+    /// The base class's `acceptPhrase(WeightedPhraseInfo, int, int)`.
+    pub fn super_accept_phrase(&self, info: &WeightedPhraseInfo, match_length: i32, frag_char_size: i32) -> bool {
         info.get_terms_offsets().len() <= 1 || match_length <= frag_char_size
     }
 }

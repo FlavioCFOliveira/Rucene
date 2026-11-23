@@ -1230,7 +1230,18 @@ impl FieldInfos {
         // One `Arc` per field, shared by `by_name`, `by_number` and `values`,
         // so that the collections alias a single object exactly as Java's
         // map and arrays do.
-        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+        Self::from_shared(infos.into_iter().map(Arc::new).collect())
+    }
+
+    /// Creates a `FieldInfos` over the given shared [`FieldInfo`] objects:
+    /// `new FieldInfos(FieldInfo[])` keeps the caller's objects, so a
+    /// `FieldInfo` handle the caller holds and the one this `FieldInfos`
+    /// returns are the same object (for example the attribute map).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_shared(infos: Vec<Arc<FieldInfo>>) -> Result<Self> {
         // A `FieldName` hashes the field's name alone, which never changes;
         // the interior mutability the lint sees is the attribute map.
         #[allow(clippy::mutable_key_type)]

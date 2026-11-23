@@ -54,7 +54,13 @@ pub trait Scorer: Debug + Send {
     /// Called for each token in the current fragment.
     ///
     /// Equivalent to `getTokenScore()`.
-    fn get_token_score(&mut self) -> f32;
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions Java's implementations raise, as the
+    /// `NullPointerException` of a scorer used before `init` /
+    /// `startFragment`.
+    fn get_token_score(&mut self) -> Result<f32>;
 
     /// Called when the `Highlighter` has no more tokens for the current
     /// fragment - the Scorer returns the weighting it has derived for the

@@ -4494,6 +4494,12 @@ impl MatchAllBits {
 }
 
 impl Bits for MatchAllBits {
+    /// `Bits.MatchAllBits`/`Bits.MatchNoBits` are classes Lucene tests with
+    /// `instanceof` (spatial-extras `HeatmapFacetCounter.java:174`).
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, _index: usize) -> bool {
         true
     }
@@ -4517,6 +4523,12 @@ impl MatchNoBits {
 }
 
 impl Bits for MatchNoBits {
+    /// `Bits.MatchAllBits`/`Bits.MatchNoBits` are classes Lucene tests with
+    /// `instanceof` (spatial-extras `HeatmapFacetCounter.java:174`).
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, _index: usize) -> bool {
         false
     }

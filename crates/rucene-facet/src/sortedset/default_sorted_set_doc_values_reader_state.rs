@@ -95,7 +95,7 @@ impl DefaultSortedSetDocValuesReaderState {
             let term = dv.lookup_ord(ord as i64)?.utf8_to_string()?;
             let components = FacetsConfig::string_to_path(&term);
             let dim = &components[0];
-            if this.config.get_dim_config(dim).hierarchical {
+            if this.config.get_dim_config(dim).hierarchical() {
                 ord = this.create_one_hierarchical_facet_dim_state(&mut *dv, ord)? + 1;
             } else {
                 ord = this.create_one_flat_facet_dim_state(&mut *dv, ord)? + 1;
@@ -376,7 +376,7 @@ impl SortedSetDocValuesReaderState for DefaultSortedSetDocValuesReaderState {
     }
 
     fn get_ord_range(&self, dim: &str) -> Result<Option<OrdRange>> {
-        if self.config.get_dim_config(dim).hierarchical {
+        if self.config.get_dim_config(dim).hierarchical() {
             return Err(LuceneError::unsupported_operation(
                 "This operation is only supported for flat dimensions",
             ));
@@ -385,7 +385,7 @@ impl SortedSetDocValuesReaderState for DefaultSortedSetDocValuesReaderState {
     }
 
     fn get_dim_tree(&self, dim: &str) -> Result<Option<DimTree>> {
-        if !self.config.get_dim_config(dim).hierarchical {
+        if !self.config.get_dim_config(dim).hierarchical() {
             return Err(LuceneError::unsupported_operation(
                 "This operation is only supported for hierarchical facets",
             ));

@@ -94,7 +94,7 @@ impl RangeOnRangeFacetCounts {
             field: field.to_string(),
             tot_count: 0,
         };
-        this.count(field, hits.get_matching_docs(), &encoded_ranges, num_encoded_value_bytes, query_type)?;
+        this.count(field, hits.get_matching_docs()?, &encoded_ranges, num_encoded_value_bytes, query_type)?;
         Ok(this)
     }
 

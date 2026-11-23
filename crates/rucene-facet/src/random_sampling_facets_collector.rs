@@ -22,7 +22,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use rucene::document::NumericValue;
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::{LeafReaderContext, Term};
 use rucene::search::{
     CollectionResult, Collector, CollectorManager, IndexSearcher, LeafCollector, ScoreMode,
@@ -115,7 +115,12 @@ impl SamplingState {
     }
 
     /// Equivalent to the `getMatchingDocs()` override.
-    pub(crate) fn get_matching_docs<'a>(&'a self, matching_docs: &'a Vec<MatchingDocs>) -> &'a Vec<MatchingDocs> {
+    ///
+    /// # Errors
+    ///
+    /// Java's `RuntimeException` wrapping the `IOException` sampling a
+    /// segment raises (`RandomSamplingFacetsCollector.java:210-212`).
+    pub(crate) fn get_matching_docs<'a>(&'a self, matching_docs: &'a Vec<MatchingDocs>) -> Result<&'a Vec<MatchingDocs>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.total_hits == NOT_CALCULATED {
             state.total_hits = 0;
@@ -125,21 +130,21 @@ impl SamplingState {
         }
 
         if state.total_hits <= self.sample_size {
-            return matching_docs;
+            return Ok(matching_docs);
         }
 
         if self.sampled_docs.get().is_none() {
             state.sampling_rate = (1.0 * self.sample_size as f64) / state.total_hits as f64;
-            let sampled = Self::create_sampled_docs(&mut state, matching_docs);
+            let sampled = Self::create_sampled_docs(&mut state, matching_docs)?;
             let _ = self.sampled_docs.set(sampled);
         }
-        self.sampled_docs.get().expect("INVARIANT: set above")
+        Ok(self.sampled_docs.get().expect("INVARIANT: set above"))
     }
 
     /// Create a sampled copy of the matching documents list.
     ///
     /// Equivalent to `createSampledDocs(List)`.
-    fn create_sampled_docs(state: &mut SamplingMutable, matching_docs_list: &[MatchingDocs]) -> Vec<MatchingDocs> {
+    fn create_sampled_docs(state: &mut SamplingMutable, matching_docs_list: &[MatchingDocs]) -> Result<Vec<MatchingDocs>> {
         matching_docs_list
             .iter()
             .map(|docs| Self::create_sample(state, docs))
@@ -149,9 +154,9 @@ impl SamplingState {
     /// Create a sampled of the given hits.
     ///
     /// Equivalent to `createSample(MatchingDocs)`; Java wraps the
-    /// `IOException` in a `RuntimeException`, which here propagates as a
-    /// panic message as Java's unchecked exception unwinds.
-    fn create_sample(state: &mut SamplingMutable, docs: &MatchingDocs) -> MatchingDocs {
+    /// `IOException` in a `RuntimeException`, which propagates as the
+    /// `Err` of [`LuceneError::runtime_exception`].
+    fn create_sample(state: &mut SamplingMutable, docs: &MatchingDocs) -> Result<MatchingDocs> {
         let maxdoc = docs.context.leaf_reader().max_doc();
 
         // TODO: we could try the WAH8DocIdSet here as well, as the results will
@@ -172,11 +177,9 @@ impl SamplingState {
             limit = bin_size;
             random_index = state.random.next_int(bin_size);
         }
-        let mut it = docs
-            .bits
-            .iterator()
-            .unwrap_or_else(|e| panic!("java.lang.RuntimeException: {e}"));
-        let mut doc = it.next_doc().unwrap_or_else(|e| panic!("java.lang.RuntimeException: {e}"));
+        // try { ... } catch (IOException e) { throw new RuntimeException(e); }
+        let mut it = docs.bits.iterator().map_err(LuceneError::runtime_exception)?;
+        let mut doc = it.next_doc().map_err(LuceneError::runtime_exception)?;
         while doc != NO_MORE_DOCS {
             if counter == random_index {
                 sample_docs.set(doc as usize);
@@ -187,7 +190,7 @@ impl SamplingState {
                 limit = bin_size;
                 random_index = state.random.next_int(bin_size);
             }
-            doc = it.next_doc().unwrap_or_else(|e| panic!("java.lang.RuntimeException: {e}"));
+            doc = it.next_doc().map_err(LuceneError::runtime_exception)?;
         }
 
         if counter == 0 {
@@ -215,7 +218,7 @@ impl SamplingState {
         );
         let mut sample = MatchingDocs::new(Arc::clone(&docs.context), bits, docs.total_hits, None);
         sample.context_identity = docs.context_identity;
-        sample
+        Ok(sample)
     }
 }
 
@@ -258,7 +261,12 @@ impl RandomSamplingFacetsCollector {
     /// Returns the sampled list of the matching documents.
     ///
     /// Equivalent to `getMatchingDocs()`.
-    pub fn get_matching_docs(&self) -> &Vec<MatchingDocs> {
+    ///
+    /// # Errors
+    ///
+    /// Java's `RuntimeException` wrapping an `IOException` raised while
+    /// sampling.
+    pub fn get_matching_docs(&self) -> Result<&Vec<MatchingDocs>> {
         self.inner.get_matching_docs()
     }
 
@@ -311,7 +319,7 @@ impl RandomSamplingFacetsCollector {
             child_path[last] = label_value.label.clone();
             let full_path = FacetsConfig::path_to_string_len(&child_path, child_path.len())?;
             let max = reader.doc_freq(&Term::new(
-                dim_config.index_field_name.clone(),
+                dim_config.index_field_name(),
                 rucene::util::BytesRef::from_char_sequence(&full_path),
             ))?;
             let mut corrected_count = (number_double_value(&label_value.value) / sampling_rate) as i32;

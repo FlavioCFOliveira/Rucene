@@ -396,7 +396,7 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
 
     /// Equivalent to the protected `getScorer(String)`.
     fn get_scorer(&self, this: &UnifiedHighlighter, field: &str) -> PassageScorer {
-        this.scorer
+        this.scorer.clone()
     }
 
     /// Equivalent to the protected `getFormatter(String)`.
@@ -598,6 +598,16 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
     ) -> Result<Vec<Vec<Option<Vec<u16>>>>> {
         this.super_load_field_values(fields, doc_iter, cache_chars_threshold)
     }
+
+    /// Equivalent to the protected `newLimitedStoredFieldsVisitor(String[])`;
+    /// a subclass may return a subclass of `LimitedStoredFieldVisitor`.
+    fn new_limited_stored_fields_visitor(
+        &self,
+        this: &UnifiedHighlighter,
+        fields: &[String],
+    ) -> Box<dyn LimitedStoredFieldVisitorExt> {
+        Box::new(this.super_new_limited_stored_fields_visitor(fields))
+    }
 }
 
 /// A Highlighter that can get offsets from either postings
@@ -776,6 +786,22 @@ impl StoredFieldVisitor for LimitedStoredFieldVisitor {
     }
 }
 
+/// A `LimitedStoredFieldVisitor` or a subclass of it: the visitor the
+/// `newLimitedStoredFieldsVisitor` hook returns. A subclass overrides the
+/// `StoredFieldVisitor` methods and hands out its base state, which
+/// `loadFieldValues` drives through the package-private `init()` and
+/// `getValuesByField()` (`UnifiedHighlighter.java:1419-1484`).
+pub trait LimitedStoredFieldVisitorExt: StoredFieldVisitor + Send {
+    /// The `LimitedStoredFieldVisitor` part of the visitor.
+    fn limited(&mut self) -> &mut LimitedStoredFieldVisitor;
+}
+
+impl LimitedStoredFieldVisitorExt for LimitedStoredFieldVisitor {
+    fn limited(&mut self) -> &mut LimitedStoredFieldVisitor {
+        self
+    }
+}
+
 /// The visitor of `hasUnrecognizedQuery`.
 struct UnknownLeafVisitor<'a> {
     field_matcher: &'a FieldMatcher,
@@ -853,7 +879,7 @@ impl UnifiedHighlighter {
             passage_relevancy_over_speed: DEFAULT_ENABLE_RELEVANCY_OVER_SPEED,
             max_length: builder.max_length,
             break_iterator: Arc::clone(&builder.break_iterator),
-            scorer: builder.scorer,
+            scorer: builder.scorer.clone(),
             formatter: Arc::clone(&builder.formatter),
             max_no_highlight_passages: builder.max_no_highlight_passages,
             cache_field_val_chars_threshold: builder.cache_field_val_chars_threshold,
@@ -1160,7 +1186,7 @@ impl UnifiedHighlighter {
     pub fn get_scorer(&self, field: &str) -> PassageScorer {
         match &self.overrides {
             Some(o) => o.get_scorer(self, field),
-            None => self.scorer,
+            None => self.scorer.clone(),
         }
     }
 
@@ -2039,9 +2065,9 @@ impl UnifiedHighlighter {
             if doc_id == rucene::search::NO_MORE_DOCS {
                 break;
             }
-            visitor.init();
-            stored_fields.document_with_visitor(doc_id, &mut visitor)?;
-            let values_by_field = visitor.get_values_by_field();
+            visitor.limited().init();
+            stored_fields.document_with_visitor(doc_id, &mut *visitor)?;
+            let values_by_field = visitor.limited().get_values_by_field();
             for val in &values_by_field {
                 sum_chars += val.as_ref().map_or(0, |v| v.len() as i64);
             }
@@ -2054,7 +2080,15 @@ impl UnifiedHighlighter {
     }
 
     /// Equivalent to the protected `newLimitedStoredFieldsVisitor(String[])`.
-    pub fn new_limited_stored_fields_visitor(&self, fields: &[String]) -> LimitedStoredFieldVisitor {
+    pub fn new_limited_stored_fields_visitor(&self, fields: &[String]) -> Box<dyn LimitedStoredFieldVisitorExt> {
+        match &self.overrides {
+            Some(o) => o.new_limited_stored_fields_visitor(self, fields),
+            None => Box::new(self.super_new_limited_stored_fields_visitor(fields)),
+        }
+    }
+
+    /// The base class's `newLimitedStoredFieldsVisitor(String[])`.
+    pub fn super_new_limited_stored_fields_visitor(&self, fields: &[String]) -> LimitedStoredFieldVisitor {
         LimitedStoredFieldVisitor::new(fields.to_vec(), MULTIVAL_SEP_CHAR, self.get_max_length())
     }
 }

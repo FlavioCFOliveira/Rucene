@@ -18,7 +18,7 @@
 //! Port of `SimpleFragListBuilder.java`, of the Java package
 //! `org.apache.lucene.search.vectorhighlight`.
 
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use rucene::error::Result;
 
@@ -61,6 +61,12 @@ impl Deref for SimpleFragListBuilder {
 
     fn deref(&self) -> &BaseFragListBuilder {
         &self.base
+    }
+}
+
+impl DerefMut for SimpleFragListBuilder {
+    fn deref_mut(&mut self) -> &mut BaseFragListBuilder {
+        &mut self.base
     }
 }
 

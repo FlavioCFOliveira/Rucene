@@ -26,14 +26,42 @@ use rucene::util::bytes_ref_hash::BytesRefHash;
 
 use crate::uhighlight::passage::Passage;
 
+/// The public methods of `PassageScorer` a Java subclass overrides
+/// (`PassageScorer.java:80-133`). Each default is the base class's body,
+/// reachable as the scorer's `super_*` method.
+pub trait PassageScorerOverrides: Send + Sync {
+    /// Equivalent to an override of `weight(int, int)`.
+    fn weight(&self, this: &PassageScorer, content_length: i32, total_term_freq: i32) -> f32 {
+        this.super_weight(content_length, total_term_freq)
+    }
+
+    /// Equivalent to an override of `tf(int, int)`.
+    fn tf(&self, this: &PassageScorer, freq: i32, passage_len: i32) -> f32 {
+        this.super_tf(freq, passage_len)
+    }
+
+    /// Equivalent to an override of `norm(int)`.
+    fn norm(&self, this: &PassageScorer, passage_start: i32) -> f32 {
+        this.super_norm(passage_start)
+    }
+
+    /// Equivalent to an override of `score(Passage, int)`.
+    fn score(&self, this: &PassageScorer, passage: &Passage, content_length: i32) -> f32 {
+        this.super_score(passage, content_length)
+    }
+}
+
 /// Ranks passages found by `UnifiedHighlighter`.
 ///
 /// Each passage is scored as a miniature document within the document. The
 /// final score is computed as `norm` * ∑ (`weight` * `tf`). The default
 /// implementation is `norm` * BM25.
 ///
-/// Equivalent to `org.apache.lucene.search.uhighlight.PassageScorer`.
-#[derive(Debug, Clone, Copy)]
+/// Equivalent to `org.apache.lucene.search.uhighlight.PassageScorer`; a
+/// subclass's overrides are a [`PassageScorerOverrides`]. The scorer holds
+/// no mutable state, so a clone (which shares the overrides) behaves as the
+/// Java instance it was cloned from.
+#[derive(Clone)]
 pub struct PassageScorer {
     // TODO: this formula is completely made up. It might not provide
     // relevant snippets!
@@ -44,6 +72,19 @@ pub struct PassageScorer {
     pub(crate) b: f32,
     /// A pivot used for length normalization.
     pub(crate) pivot: f32,
+    /// The subclass's overrides; `None` for the base class.
+    overrides: Option<Arc<dyn PassageScorerOverrides>>,
+}
+
+impl std::fmt::Debug for PassageScorer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PassageScorer")
+            .field("k1", &self.k1)
+            .field("b", &self.b)
+            .field("pivot", &self.pivot)
+            .field("overridden", &self.overrides.is_some())
+            .finish()
+    }
 }
 
 impl Default for PassageScorer {
@@ -70,13 +111,37 @@ impl PassageScorer {
     ///
     /// Equivalent to `new PassageScorer(float, float, float)`.
     pub fn with_params(k1: f32, b: f32, pivot: f32) -> Self {
-        Self { k1, b, pivot }
+        Self {
+            k1,
+            b,
+            pivot,
+            overrides: None,
+        }
+    }
+
+    /// Equivalent to `new PassageScorer(float, float, float)` of a subclass
+    /// whose overrides are `overrides`.
+    pub fn with_overrides(k1: f32, b: f32, pivot: f32, overrides: Arc<dyn PassageScorerOverrides>) -> Self {
+        Self {
+            k1,
+            b,
+            pivot,
+            overrides: Some(overrides),
+        }
     }
 
     /// Computes term importance, given its in-document statistics.
     ///
     /// Equivalent to `weight(int, int)`.
     pub fn weight(&self, content_length: i32, total_term_freq: i32) -> f32 {
+        match &self.overrides {
+            Some(o) => o.weight(self, content_length, total_term_freq),
+            None => self.super_weight(content_length, total_term_freq),
+        }
+    }
+
+    /// The base class's `weight`.
+    pub fn super_weight(&self, content_length: i32, total_term_freq: i32) -> f32 {
         // approximate #docs from content length
         let num_docs = 1.0 + content_length as f32 / self.pivot;
         // numDocs not numDocs - docFreq (ala DFR), since we approximate
@@ -90,6 +155,14 @@ impl PassageScorer {
     ///
     /// Equivalent to `tf(int, int)`.
     pub fn tf(&self, freq: i32, passage_len: i32) -> f32 {
+        match &self.overrides {
+            Some(o) => o.tf(self, freq, passage_len),
+            None => self.super_tf(freq, passage_len),
+        }
+    }
+
+    /// The base class's `tf`.
+    pub fn super_tf(&self, freq: i32, passage_len: i32) -> f32 {
         let norm = self.k1 * ((1.0 - self.b) + self.b * (passage_len as f32 / self.pivot));
         freq as f32 / (freq as f32 + norm)
     }
@@ -103,11 +176,27 @@ impl PassageScorer {
     ///
     /// Equivalent to `norm(int)`.
     pub fn norm(&self, passage_start: i32) -> f32 {
+        match &self.overrides {
+            Some(o) => o.norm(self, passage_start),
+            None => self.super_norm(passage_start),
+        }
+    }
+
+    /// The base class's `norm`.
+    pub fn super_norm(&self, passage_start: i32) -> f32 {
         1.0 + 1.0 / ((self.pivot + passage_start as f32) as f64).ln() as f32
     }
 
     /// Equivalent to `score(Passage, int)`.
     pub fn score(&self, passage: &Passage, content_length: i32) -> f32 {
+        match &self.overrides {
+            Some(o) => o.score(self, passage, content_length),
+            None => self.super_score(passage, content_length),
+        }
+    }
+
+    /// The base class's `score`.
+    pub fn super_score(&self, passage: &Passage, content_length: i32) -> f32 {
         let mut score = 0f64;
         // `new BytesRefHash()`: a pool over a DirectAllocator
         let mut pool = ByteBlockPool::with_allocator(Box::new(DirectAllocator::new()));

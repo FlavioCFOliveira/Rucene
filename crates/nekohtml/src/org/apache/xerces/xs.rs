@@ -1,0 +1,30 @@
+//! The Java package `org.apache.xerces.xs` (the PSVI interfaces the SAX parser exposes).
+
+pub mod attribute_psvi;
+pub mod element_psvi;
+pub mod item_psvi;
+pub mod psvi_provider;
+pub mod short_list;
+pub mod string_list;
+pub mod xs_annotation;
+pub mod xs_attribute_declaration;
+pub mod xs_attribute_group_definition;
+pub mod xs_complex_type_definition;
+pub mod xs_element_declaration;
+pub mod xs_exception;
+pub mod xs_idc_definition;
+pub mod xs_model;
+pub mod xs_model_group;
+pub mod xs_model_group_definition;
+pub mod xs_named_map;
+pub mod xs_namespace_item;
+pub mod xs_namespace_item_list;
+pub mod xs_notation_declaration;
+pub mod xs_object;
+pub mod xs_object_list;
+pub mod xs_particle;
+pub mod xs_simple_type_definition;
+pub mod xs_term;
+pub mod xs_type_definition;
+pub mod xs_value;
+pub mod xs_wildcard;

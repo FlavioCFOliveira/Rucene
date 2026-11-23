@@ -89,8 +89,8 @@ impl DoubleRangeFacetCounts {
             base: RangeFacetCounts::new(field, Ranges::Double(ranges), fast_match_query),
         };
         match value_source {
-            Some(value_source) => this.count_source(value_source, hits.get_matching_docs())?,
-            None => this.base.count_field(field, hits.get_matching_docs())?,
+            Some(value_source) => this.count_source(value_source, hits.get_matching_docs()?)?,
+            None => this.base.count_field(field, hits.get_matching_docs()?)?,
         }
         Ok(this)
     }
@@ -113,10 +113,10 @@ impl DoubleRangeFacetCounts {
         };
         match values_source {
             Some(values_source) => match <dyn MultiDoubleValuesSource>::unwrap_singleton(&*values_source) {
-                Some(single_values) => this.count_source(single_values, hits.get_matching_docs())?,
-                None => this.count_multi_source(&*values_source, hits.get_matching_docs())?,
+                Some(single_values) => this.count_source(single_values, hits.get_matching_docs()?)?,
+                None => this.count_multi_source(&*values_source, hits.get_matching_docs()?)?,
             },
-            None => this.base.count_field(field, hits.get_matching_docs())?,
+            None => this.base.count_field(field, hits.get_matching_docs()?)?,
         }
         Ok(this)
     }

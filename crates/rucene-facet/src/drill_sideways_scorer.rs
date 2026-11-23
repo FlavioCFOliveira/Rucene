@@ -24,7 +24,7 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::LeafReaderContext;
 use rucene::search::{
     BulkScorer, CollectionResult, Collector, DocIdSetIterator, LeafCollector, Scorable, Scorer,
-    NO_MORE_DOCS,
+    ScoreCachingWrappingScorer, NO_MORE_DOCS,
 };
 use rucene::util::{BitSet, Bits, FixedBitSet};
 
@@ -282,15 +282,18 @@ impl<K: Collector> DrillSidewaysScorer<K> {
     /// `BooleanScorer`).
     ///
     /// Equivalent to `doQueryFirstScoring(Bits, LeafCollector,
-    /// DocsAndCost[])`. Java wraps the main collector in a
-    /// `ScoreCachingWrappingScorer`, which only caches the base scorer's
-    /// score per doc; the score each collector sees is the same.
+    /// DocsAndCost[])`: as Java (`DrillSidewaysScorer.java:199`), the main
+    /// collector is wrapped by `ScoreCachingWrappingScorer.wrap`, so the
+    /// base scorer is asked for each collected document's score at most once
+    /// through it; the sideways collectors get the base scorer directly.
     fn do_query_first_scoring(
         &mut self,
         accept_docs: Option<&dyn Bits>,
         collector: &mut dyn LeafCollector,
         leaves: &mut [Box<dyn LeafCollector + '_>],
     ) -> CollectionResult<()> {
+        let mut wrapped = ScoreCachingWrappingScorer::wrap(collector);
+        let collector: &mut dyn LeafCollector = &mut wrapped;
         collector.set_scorer(&mut *self.base_scorer)?;
         for leaf in leaves.iter_mut() {
             leaf.set_scorer(&mut *self.base_scorer)?;

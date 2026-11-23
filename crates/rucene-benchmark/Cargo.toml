@@ -19,9 +19,12 @@ name = "rucene_benchmark"
 # through feature unification) and `bzip2` on its default pure-Rust backend
 # (declared divergence: written `.gz` and `.bz2` bytes may differ from
 # commons-compress; decoding is equal both ways); icu4j's root `%spellout-numbering` rule
-# and nekohtml 1.9.17 are ported, not replaced, so neither adds a dependency.
+# is ported in this crate, and nekohtml 1.9.17 (with the Xerces 2.12.2 and SAX
+# types it uses) is ported as the workspace crate `nekohtml`, so neither adds a
+# third-party dependency.
 [dependencies]
 rucene = { path = "../.." }
+nekohtml = { path = "../nekohtml" }
 rucene-analysis-common = { path = "../rucene-analysis-common" }
 rucene-facet = { path = "../rucene-facet" }
 rucene-highlighter = { path = "../rucene-highlighter" }

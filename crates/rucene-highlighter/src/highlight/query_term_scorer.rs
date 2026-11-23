@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use rucene::analysis::tokenattributes::CharTermAttribute;
 use rucene::analysis::{AttributeHandle, TokenStream};
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::IndexReader;
 use rucene::search::query::Query;
 
@@ -135,33 +135,32 @@ impl Scorer for QueryTermScorer {
         self.total_score = 0.0;
     }
 
-    /// # Panics
+    /// # Errors
     ///
-    /// Before `init` and `start_fragment`, where Java throws
-    /// `NullPointerException`.
-    fn get_token_score(&mut self) -> f32 {
+    /// Java's `NullPointerException` before `init` and `start_fragment`.
+    fn get_token_score(&mut self) -> Result<f32> {
         let term_text = term_text(
             &*self
                 .term_att
                 .as_ref()
-                .expect("NullPointerException: init(TokenStream) was not called")
+                .ok_or_else(LuceneError::null_pointer)?
                 .borrow(),
         );
 
         let Some(query_term) = self.terms_to_find.get(&term_text) else {
-            return 0.0;
+            return Ok(0.0);
         };
         let weight = query_term.get_weight();
         // found a query term - is it unique in this doc?
         let unique = self
             .unique_terms_in_fragment
             .as_mut()
-            .expect("NullPointerException: startFragment(TextFragment) was not called");
+            .ok_or_else(LuceneError::null_pointer)?;
         if !unique.contains(&term_text) {
             self.total_score += weight;
             unique.insert(term_text);
         }
-        weight
+        Ok(weight)
     }
 
     fn get_fragment_score(&self) -> f32 {

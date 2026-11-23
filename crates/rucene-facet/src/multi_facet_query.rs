@@ -46,7 +46,7 @@ impl MultiFacetQuery {
     pub fn new(facets_config: &FacetsConfig, dimension: &str, paths: &[&[&str]]) -> Result<Self> {
         Ok(Self {
             inner: TermInSetQuery::new(
-                facets_config.get_dim_config(dimension).index_field_name,
+                facets_config.get_dim_config(dimension).index_field_name(),
                 to_terms(dimension, paths)?,
             )?,
         })
@@ -59,7 +59,7 @@ impl MultiFacetQuery {
     pub fn with_default_config(dimension: &str, paths: &[&[&str]]) -> Result<Self> {
         Ok(Self {
             inner: TermInSetQuery::new(
-                default_dim_config().index_field_name,
+                default_dim_config().index_field_name(),
                 to_terms(dimension, paths)?,
             )?,
         })

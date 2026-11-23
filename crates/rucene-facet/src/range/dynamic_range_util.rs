@@ -46,7 +46,7 @@ impl DynamicRangeUtil {
         top_n: i32,
         exec: &Arc<dyn Executor>,
     ) -> Result<Option<Vec<DynamicRangeInfo>>> {
-        let matching_docs_list = facets_collector.get_matching_docs();
+        let matching_docs_list = facets_collector.get_matching_docs()?;
         let total_doc: i32 = matching_docs_list.iter().map(|m| m.total_hits).sum();
         let mut values = vec![0i64; total_doc.max(0) as usize];
         let mut weights = vec![0i64; total_doc.max(0) as usize];

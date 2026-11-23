@@ -180,9 +180,14 @@ impl FacetsCollector {
     /// Equivalent to `getMatchingDocs()`.
     /// A `RandomSamplingFacetsCollector` returns its sample once more docs
     /// than its sample size were collected (its override of this method).
-    pub fn get_matching_docs(&self) -> &Vec<MatchingDocs> {
+    ///
+    /// # Errors
+    ///
+    /// For a `RandomSamplingFacetsCollector`, Java's `RuntimeException`
+    /// wrapping an `IOException` raised while sampling.
+    pub fn get_matching_docs(&self) -> Result<&Vec<MatchingDocs>> {
         match &self.sampling {
-            None => &self.matching_docs,
+            None => Ok(&self.matching_docs),
             Some(sampling) => sampling.get_matching_docs(&self.matching_docs),
         }
     }

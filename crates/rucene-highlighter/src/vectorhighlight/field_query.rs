@@ -56,13 +56,53 @@ fn linked_add(set: &mut Vec<Arc<dyn Query>>, query: Arc<dyn Query>) {
     }
 }
 
+/// The protected overridable `flatten` of `FieldQuery` a Java subclass
+/// overrides (`FieldQuery.java:104-170`). Java calls it from the
+/// constructor with virtual dispatch, so an override takes part in the
+/// construction; the default is the base class's body, reachable as
+/// [`FieldQuery::super_flatten`].
+pub trait FieldQueryOverrides: Send + Sync {
+    /// Equivalent to an override of the protected `flatten(Query,
+    /// IndexSearcher, Collection, float)`; `flat_queries` is the
+    /// `LinkedHashSet` the constructor passes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors.
+    fn flatten(
+        &self,
+        this: &FieldQuery,
+        source_query: &Arc<dyn Query>,
+        searcher: Option<&IndexSearcher>,
+        flat_queries: &mut Vec<Arc<dyn Query>>,
+        boost: f32,
+    ) -> Result<()> {
+        this.super_flatten(source_query, searcher, flat_queries, boost)
+    }
+}
+
+/// The overrides slot of a `FieldQuery` (Debug-printable).
+#[derive(Clone, Default)]
+struct FieldQueryOverridesSlot(Option<Arc<dyn FieldQueryOverrides>>);
+
+impl std::fmt::Debug for FieldQueryOverridesSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", if self.0.is_some() { "Some(..)" } else { "None" })
+    }
+}
+
 /// FieldQuery breaks down query object into terms/phrases and keeps them in
 /// a QueryPhraseMap structure.
 ///
-/// Equivalent to `org.apache.lucene.search.vectorhighlight.FieldQuery`.
+/// Equivalent to `org.apache.lucene.search.vectorhighlight.FieldQuery`; a
+/// subclass's override of `flatten` is a [`FieldQueryOverrides`], given to
+/// [`FieldQuery::with_overrides`].
 #[derive(Debug)]
 pub struct FieldQuery {
     pub(crate) field_match: bool,
+
+    /// The subclass's overrides; empty for the base class.
+    overrides: FieldQueryOverridesSlot,
 
     // fieldMatch==true,  Map<fieldName,QueryPhraseMap>
     // fieldMatch==false, Map<null,QueryPhraseMap>
@@ -89,7 +129,34 @@ impl FieldQuery {
         phrase_highlight: bool,
         field_match: bool,
     ) -> Result<Self> {
+        Self::construct(query, reader, phrase_highlight, field_match, None)
+    }
+
+    /// Equivalent to `new FieldQuery(Query, IndexReader, boolean, boolean)`
+    /// of a subclass whose `flatten` override is `overrides`.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn with_overrides(
+        query: &Arc<dyn Query>,
+        reader: Option<&Arc<dyn IndexReader>>,
+        phrase_highlight: bool,
+        field_match: bool,
+        overrides: Arc<dyn FieldQueryOverrides>,
+    ) -> Result<Self> {
+        Self::construct(query, reader, phrase_highlight, field_match, Some(overrides))
+    }
+
+    fn construct(
+        query: &Arc<dyn Query>,
+        reader: Option<&Arc<dyn IndexReader>>,
+        phrase_highlight: bool,
+        field_match: bool,
+        overrides: Option<Arc<dyn FieldQueryOverrides>>,
+    ) -> Result<Self> {
         let mut this = Self {
+            overrides: FieldQueryOverridesSlot(overrides),
             field_match,
             root_maps: HashMap::new(),
             term_set_map: HashMap::new(),
@@ -152,6 +219,26 @@ impl FieldQuery {
     ///
     /// Propagates I/O errors.
     pub fn flatten(
+        &self,
+        source_query: &Arc<dyn Query>,
+        searcher: Option<&IndexSearcher>,
+        flat_queries: &mut Vec<Arc<dyn Query>>,
+        boost: f32,
+    ) -> Result<()> {
+        match &self.overrides.0 {
+            Some(o) => o.flatten(self, source_query, searcher, flat_queries, boost),
+            None => self.super_flatten(source_query, searcher, flat_queries, boost),
+        }
+    }
+
+    /// The base class's `flatten(Query, IndexSearcher, Collection, float)`;
+    /// its recursive calls dispatch to [`flatten`](Self::flatten), as
+    /// Java's virtual calls do.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors.
+    pub fn super_flatten(
         &self,
         source_query: &Arc<dyn Query>,
         searcher: Option<&IndexSearcher>,

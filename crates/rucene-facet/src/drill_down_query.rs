@@ -160,7 +160,7 @@ impl DrillDownQuery {
     ///
     /// Equivalent to `add(String, String...)`.
     pub fn add(&mut self, dim: &str, path: &[&str]) -> Result<()> {
-        let indexed_field = self.config.get_dim_config(dim).index_field_name;
+        let indexed_field = self.config.get_dim_config(dim).index_field_name();
         self.add_query(dim, Arc::new(TermQuery::new(term(&indexed_field, dim, path)?)))
     }
 

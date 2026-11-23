@@ -1,0 +1,40 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ * 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+//! Port of `XSAttributeGroupDefinition.java`, of the Java package `org.apache.xerces.xs` (Xerces-J 2.12.2).
+
+use std::rc::Rc;
+
+use crate::org::apache::xerces::xs::xs_annotation::XSAnnotation;
+use crate::org::apache::xerces::xs::xs_object::XSObject;
+use crate::org::apache::xerces::xs::xs_object_list::XSObjectList;
+use crate::org::apache::xerces::xs::xs_wildcard::XSWildcard;
+
+/// Equivalent to `org.apache.xerces.xs.XSAttributeGroupDefinition`.
+pub trait XSAttributeGroupDefinition: XSObject {
+    /// Equivalent to `getAttributeUses()`.
+    fn get_attribute_uses(&self) -> Option<Rc<dyn XSObjectList>>;
+
+    /// Equivalent to `getAttributeWildcard()`.
+    fn get_attribute_wildcard(&self) -> Option<Rc<dyn XSWildcard>>;
+
+    /// Equivalent to `getAnnotation()`.
+    fn get_annotation(&self) -> Option<Rc<dyn XSAnnotation>>;
+
+    /// Equivalent to `getAnnotations()`.
+    fn get_annotations(&self) -> Option<Rc<dyn XSObjectList>>;
+}

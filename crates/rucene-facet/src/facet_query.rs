@@ -30,7 +30,9 @@ use crate::facets_config::{default_dim_config, DimConfig, FacetsConfig};
 ///
 /// Equivalent to `org.apache.lucene.facet.FacetQuery`, a `TermQuery`
 /// subclass: it delegates to the [`TermQuery`] it extends, and compares
-/// equal only to another `FacetQuery` (`sameClassAs`).
+/// equal only to another `FacetQuery` (`sameClassAs`). It dereferences to
+/// that `TermQuery`, so the inherited public members (`getTerm()`,
+/// `getTermStates()`) are reachable on it, as in Java.
 #[derive(Debug, Clone)]
 pub struct FacetQuery {
     inner: TermQuery,
@@ -63,10 +65,18 @@ impl FacetQuery {
     }
 }
 
+impl std::ops::Deref for FacetQuery {
+    type Target = TermQuery;
+
+    fn deref(&self) -> &TermQuery {
+        &self.inner
+    }
+}
+
 /// Equivalent to `FacetQuery.toTerm(DimConfig, String, String...)`.
 pub(crate) fn to_term(dim_config: &DimConfig, dimension: &str, path: &[&str]) -> Result<Term> {
     Ok(Term::new(
-        dim_config.index_field_name.clone(),
+        dim_config.index_field_name(),
         rucene::util::BytesRef::from_char_sequence(&FacetsConfig::path_to_string_dim(dimension, path)?),
     ))
 }

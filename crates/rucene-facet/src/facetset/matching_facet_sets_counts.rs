@@ -142,7 +142,7 @@ impl MatchingFacetSetsCounts {
             facet_set_decoder,
             tot_count: 0,
         };
-        this.tot_count = this.count(field, hits.get_matching_docs())?;
+        this.tot_count = this.count(field, hits.get_matching_docs()?)?;
         Ok(this)
     }
 

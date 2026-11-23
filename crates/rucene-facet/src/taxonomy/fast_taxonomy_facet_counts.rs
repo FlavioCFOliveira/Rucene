@@ -64,7 +64,7 @@ impl FastTaxonomyFacetCounts {
     ) -> Result<Self> {
         let base = TaxonomyFacets::new(index_field_name, taxo_reader, config, Some(fc), ValueStore::Counts)?;
         let mut this = Self { base };
-        this.count(fc.get_matching_docs())?;
+        this.count(fc.get_matching_docs()?)?;
         Ok(this)
     }
 

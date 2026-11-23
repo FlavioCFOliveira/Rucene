@@ -109,7 +109,7 @@ impl StringValueFacetCounts {
                 } else {
                     let mut total_hits = 0i32;
                     let mut total_docs = 0i32;
-                    for matching_docs in facets_collector.get_matching_docs() {
+                    for matching_docs in facets_collector.get_matching_docs()? {
                         total_hits = total_hits.wrapping_add(matching_docs.total_hits);
                         total_docs = total_docs.wrapping_add(matching_docs.context.leaf_reader().max_doc());
                     }
@@ -192,7 +192,7 @@ impl StringValueFacetCounts {
 
     /// Equivalent to `count(FacetsCollector)`.
     fn count(&mut self, facets_collector: &FacetsCollector) -> Result<()> {
-        let matching_docs = facets_collector.get_matching_docs();
+        let matching_docs = facets_collector.get_matching_docs()?;
 
         if matching_docs.is_empty() {
             return Ok(());

@@ -55,13 +55,18 @@ impl OrdinalMappingLeafReader {
     ) -> Result<Self> {
         let base = FilterLeafReader::new(input)?;
         let mut facet_fields = HashSet::new();
-        for dc in src_config.get_dim_configs().values() {
-            facet_fields.insert(dc.index_field_name.clone());
+        for dc in src_config
+            .get_dim_configs()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+        {
+            facet_fields.insert(dc.index_field_name());
         }
         // always add the default indexFieldName. This is because FacetsConfig
         // does not explicitly record dimensions that were indexed under the
         // default DimConfig, unless they have a custom DimConfig.
-        facet_fields.insert(default_dim_config().index_field_name);
+        facet_fields.insert(default_dim_config().index_field_name());
         Ok(Self {
             base,
             ordinal_map: Arc::from(ordinal_map),

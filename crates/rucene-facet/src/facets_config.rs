@@ -69,11 +69,10 @@ pub enum DrillDownTermsIndexing {
     ALL,
 }
 
-/// Holds the configuration for one dimension.
-///
-/// Equivalent to `org.apache.lucene.facet.FacetsConfig.DimConfig`.
+/// The fields of a [`DimConfig`]: the public mutable fields of Java's
+/// `FacetsConfig.DimConfig`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DimConfig {
+pub struct DimConfigFields {
     /// True if this dimension is hierarchical.
     pub hierarchical: bool,
     /// True if this dimension is multi-valued.
@@ -87,8 +86,7 @@ pub struct DimConfig {
     pub index_field_name: String,
 }
 
-impl Default for DimConfig {
-    /// Equivalent to `DimConfig()`.
+impl Default for DimConfigFields {
     fn default() -> Self {
         Self {
             hierarchical: false,
@@ -100,6 +98,34 @@ impl Default for DimConfig {
     }
 }
 
+/// Holds the configuration for one dimension.
+///
+/// Equivalent to `org.apache.lucene.facet.FacetsConfig.DimConfig`. Java's
+/// `DimConfig` is a mutable object with public fields that `FacetsConfig`
+/// hands out live (`getDimConfig`, `getDimConfigs`, `DEFAULT_DIM_CONFIG`,
+/// `FacetsConfig.java:113-231`); this is a shared handle to the same kind
+/// of object: clones share the fields, and a write through any clone is
+/// seen by every holder. `equals` is Java's identity (no override).
+#[derive(Clone, Default)]
+pub struct DimConfig {
+    inner: Arc<Mutex<DimConfigFields>>,
+}
+
+impl std::fmt::Debug for DimConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        lock(&self.inner).fmt(f)
+    }
+}
+
+impl PartialEq for DimConfig {
+    /// `Object.equals`: identity.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for DimConfig {}
+
 impl DimConfig {
     /// Default constructor.
     ///
@@ -107,27 +133,88 @@ impl DimConfig {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Read access to the fields.
+    pub fn fields(&self) -> MutexGuard<'_, DimConfigFields> {
+        lock(&self.inner)
+    }
+
+    /// Equivalent to reading the field `hierarchical`.
+    pub fn hierarchical(&self) -> bool {
+        lock(&self.inner).hierarchical
+    }
+
+    /// Equivalent to writing the field `hierarchical`.
+    pub fn set_hierarchical(&self, v: bool) {
+        lock(&self.inner).hierarchical = v;
+    }
+
+    /// Equivalent to reading the field `multiValued`.
+    pub fn multi_valued(&self) -> bool {
+        lock(&self.inner).multi_valued
+    }
+
+    /// Equivalent to writing the field `multiValued`.
+    pub fn set_multi_valued(&self, v: bool) {
+        lock(&self.inner).multi_valued = v;
+    }
+
+    /// Equivalent to reading the field `requireDimCount`.
+    pub fn require_dim_count(&self) -> bool {
+        lock(&self.inner).require_dim_count
+    }
+
+    /// Equivalent to writing the field `requireDimCount`.
+    pub fn set_require_dim_count(&self, v: bool) {
+        lock(&self.inner).require_dim_count = v;
+    }
+
+    /// Equivalent to reading the field `drillDownTermsIndexing`.
+    pub fn drill_down_terms_indexing(&self) -> DrillDownTermsIndexing {
+        lock(&self.inner).drill_down_terms_indexing
+    }
+
+    /// Equivalent to writing the field `drillDownTermsIndexing`.
+    pub fn set_drill_down_terms_indexing(&self, v: DrillDownTermsIndexing) {
+        lock(&self.inner).drill_down_terms_indexing = v;
+    }
+
+    /// Equivalent to reading the field `indexFieldName`.
+    pub fn index_field_name(&self) -> String {
+        lock(&self.inner).index_field_name.clone()
+    }
+
+    /// Equivalent to writing the field `indexFieldName`.
+    pub fn set_index_field_name(&self, v: &str) {
+        lock(&self.inner).index_field_name = v.to_string();
+    }
 }
 
-/// Default per-dimension configuration.
+static DEFAULT_DIM_CONFIG: std::sync::LazyLock<DimConfig> = std::sync::LazyLock::new(DimConfig::new);
+
+/// Default per-dimension configuration: the one shared instance, as Java's
+/// `public static final DimConfig DEFAULT_DIM_CONFIG`.
 ///
 /// Equivalent to `FacetsConfig.DEFAULT_DIM_CONFIG`.
 pub fn default_dim_config() -> DimConfig {
-    DimConfig::default()
+    DEFAULT_DIM_CONFIG.clone()
 }
+
+/// The live map `getDimConfigs()` returns (Java's `ConcurrentHashMap`
+/// field `fieldTypes`).
+pub type DimConfigs = Arc<Mutex<HashMap<String, DimConfig>>>;
 
 /// Records per-dimension configuration. By default a dimension is flat,
 /// single valued and does not require count for the dimension; use the
 /// setters in this class to change these settings for each dim.
 ///
 /// Equivalent to `org.apache.lucene.facet.FacetsConfig`. The `DimConfig`
-/// getters return a copy of the configuration: Java hands out the live
-/// object, which the `synchronized` setters mutate, so a copy taken after a
-/// setter reads the same values. A subclass overriding the protected
-/// `getDefaultDimConfig()` is [`with_default_dim_config`](Self::with_default_dim_config).
+/// getters hand out the shared [`DimConfig`] objects and the live map, as
+/// Java does. A subclass overriding the protected `getDefaultDimConfig()`
+/// is [`with_default_dim_config`](Self::with_default_dim_config).
 #[derive(Debug, Default)]
 pub struct FacetsConfig {
-    field_types: Mutex<HashMap<String, DimConfig>>,
+    field_types: DimConfigs,
     assoc_dim_types: Mutex<HashMap<String, String>>,
     default_dim_config: Option<DimConfig>,
 }
@@ -157,18 +244,19 @@ impl FacetsConfig {
     ///
     /// Equivalent to `getDefaultDimConfig()`.
     pub fn get_default_dim_config(&self) -> DimConfig {
-        self.default_dim_config
-            .clone()
-            .unwrap_or_else(default_dim_config)
+        match &self.default_dim_config {
+            Some(c) => c.clone(),
+            None => default_dim_config(),
+        }
     }
 
     /// Get the current configuration for a dimension.
     ///
     /// Equivalent to `getDimConfig(String)`.
     pub fn get_dim_config(&self, dim_name: &str) -> DimConfig {
-        let field_types = lock(&self.field_types);
-        match field_types.get(dim_name) {
-            Some(dim_config) => dim_config.clone(),
+        let dim_config = lock(&self.field_types).get(dim_name).cloned();
+        match dim_config {
+            Some(dim_config) => dim_config,
             None => self.get_default_dim_config(),
         }
     }
@@ -181,12 +269,14 @@ impl FacetsConfig {
         lock(&self.field_types).contains_key(dim_name)
     }
 
-    fn update(&self, dim_name: &str, f: impl FnOnce(&mut DimConfig)) {
-        let mut field_types = lock(&self.field_types);
-        let dim_config = field_types
+    /// The common body of the `synchronized` setters: the dimension's
+    /// config, created and registered when absent. The map lock makes the
+    /// get-or-put atomic, which is what the setters' monitor guarantees.
+    fn dim_config_for_update(&self, dim_name: &str) -> DimConfig {
+        lock(&self.field_types)
             .entry(dim_name.to_string())
-            .or_default();
-        f(dim_config);
+            .or_default()
+            .clone()
     }
 
     /// Pass `true` if this dimension is hierarchical (has depth &gt; 1
@@ -194,7 +284,7 @@ impl FacetsConfig {
     ///
     /// Equivalent to `setHierarchical(String, boolean)`.
     pub fn set_hierarchical(&self, dim_name: &str, v: bool) {
-        self.update(dim_name, |c| c.hierarchical = v);
+        self.dim_config_for_update(dim_name).set_hierarchical(v);
     }
 
     /// Pass `true` if this dimension may have more than one value per
@@ -202,7 +292,7 @@ impl FacetsConfig {
     ///
     /// Equivalent to `setMultiValued(String, boolean)`.
     pub fn set_multi_valued(&self, dim_name: &str, value: bool) {
-        self.update(dim_name, |c| c.multi_valued = value);
+        self.dim_config_for_update(dim_name).set_multi_valued(value);
     }
 
     /// Pass `true` if at search time you require accurate counts of the
@@ -210,7 +300,7 @@ impl FacetsConfig {
     ///
     /// Equivalent to `setRequireDimCount(String, boolean)`.
     pub fn set_require_dim_count(&self, dim_name: &str, value: bool) {
-        self.update(dim_name, |c| c.require_dim_count = value);
+        self.dim_config_for_update(dim_name).set_require_dim_count(value);
     }
 
     /// Specify which index field name should hold the ordinals for this
@@ -218,7 +308,7 @@ impl FacetsConfig {
     ///
     /// Equivalent to `setIndexFieldName(String, String)`.
     pub fn set_index_field_name(&self, dim_name: &str, index_field_name: &str) {
-        self.update(dim_name, |c| c.index_field_name = index_field_name.to_string());
+        self.dim_config_for_update(dim_name).set_index_field_name(index_field_name);
     }
 
     /// Specify drill down terms option on the field / dimension.
@@ -229,16 +319,15 @@ impl FacetsConfig {
         dim_name: &str,
         drill_down_terms_indexing: DrillDownTermsIndexing,
     ) {
-        self.update(dim_name, |c| {
-            c.drill_down_terms_indexing = drill_down_terms_indexing
-        });
+        self.dim_config_for_update(dim_name)
+            .set_drill_down_terms_indexing(drill_down_terms_indexing);
     }
 
-    /// Returns map of field name to `DimConfig`.
+    /// Returns map of field name to `DimConfig`: the live map, as Java.
     ///
     /// Equivalent to `getDimConfigs()`.
-    pub fn get_dim_configs(&self) -> HashMap<String, DimConfig> {
-        lock(&self.field_types).clone()
+    pub fn get_dim_configs(&self) -> DimConfigs {
+        Arc::clone(&self.field_types)
     }
 
     /// Equivalent to `checkSeen(Set, String)`.
@@ -286,10 +375,10 @@ impl FacetsConfig {
             let any = field.as_any();
             if let Some(facet_field) = any.and_then(|a| a.downcast_ref::<FacetField>()) {
                 let dim_config = self.get_dim_config(&facet_field.dim);
-                if !dim_config.multi_valued {
+                if !dim_config.multi_valued() {
                     Self::check_seen(&mut seen_dims, &facet_field.dim)?;
                 }
-                let index_field_name = dim_config.index_field_name;
+                let index_field_name = dim_config.index_field_name();
                 by_field
                     .compute_if_absent(&index_field_name, Vec::new)
                     .push(Arc::clone(field));
@@ -299,10 +388,10 @@ impl FacetsConfig {
                 any.and_then(|a| a.downcast_ref::<SortedSetDocValuesFacetField>())
             {
                 let dim_config = self.get_dim_config(&facet_field.dim);
-                if !dim_config.multi_valued {
+                if !dim_config.multi_valued() {
                     Self::check_seen(&mut seen_dims, &facet_field.dim)?;
                 }
-                let index_field_name = dim_config.index_field_name;
+                let index_field_name = dim_config.index_field_name();
                 dv_by_field
                     .compute_if_absent(&index_field_name, Vec::new)
                     .push(Arc::clone(field));
@@ -310,23 +399,23 @@ impl FacetsConfig {
 
             if let Some(facet_field) = any.and_then(|a| a.downcast_ref::<AssociationFacetField>()) {
                 let dim_config = self.get_dim_config(&facet_field.dim);
-                if !dim_config.multi_valued {
+                if !dim_config.multi_valued() {
                     Self::check_seen(&mut seen_dims, &facet_field.dim)?;
                 }
-                if dim_config.hierarchical {
+                if dim_config.hierarchical() {
                     return Err(LuceneError::illegal_argument(format!(
                         "AssociationFacetField cannot be hierarchical (dim=\"{}\")",
                         facet_field.dim
                     )));
                 }
-                if dim_config.require_dim_count {
+                if dim_config.require_dim_count() {
                     return Err(LuceneError::illegal_argument(format!(
                         "AssociationFacetField cannot requireDimCount (dim=\"{}\")",
                         facet_field.dim
                     )));
                 }
 
-                let index_field_name = dim_config.index_field_name;
+                let index_field_name = dim_config.index_field_name();
                 assoc_by_field
                     .compute_if_absent(&index_field_name, Vec::new)
                     .push(Arc::clone(field));
@@ -389,7 +478,7 @@ impl FacetsConfig {
                     .and_then(|a| a.downcast_ref::<FacetField>())
                     .expect("INVARIANT: collated as a FacetField");
                 let dim_config = self.get_dim_config(&facet_field.dim);
-                if facet_field.path.len() > 1 && !dim_config.hierarchical {
+                if facet_field.path.len() > 1 && !dim_config.hierarchical() {
                     return Err(LuceneError::illegal_argument(format!(
                         "dimension \"{}\" is not hierarchical yet has {} components",
                         facet_field.dim,
@@ -404,8 +493,8 @@ impl FacetsConfig {
 
                 ordinals.push(ordinal);
 
-                if dim_config.multi_valued
-                    && (dim_config.hierarchical || dim_config.require_dim_count)
+                if dim_config.multi_valued()
+                    && (dim_config.hierarchical() || dim_config.require_dim_count())
                 {
                     // Add all parents too:
                     let mut parent = taxo_writer.get_parent(ordinal)?;
@@ -414,7 +503,7 @@ impl FacetsConfig {
                         parent = taxo_writer.get_parent(parent)?;
                     }
 
-                    if !dim_config.require_dim_count {
+                    if !dim_config.require_dim_count() {
                         // Remove last (dimension) ord:
                         ordinals.pop();
                     }
@@ -449,7 +538,7 @@ impl FacetsConfig {
         dim_config: &DimConfig,
         facet_label: &FacetLabel,
     ) -> Result<()> {
-        if dim_config.drill_down_terms_indexing != DrillDownTermsIndexing::NONE {
+        if dim_config.drill_down_terms_indexing() != DrillDownTermsIndexing::NONE {
             // index full-path drill down term
             doc.add(StringField::new(
                 index_field_name.to_string(),
@@ -457,7 +546,7 @@ impl FacetsConfig {
                 Store::NO,
             )?);
 
-            match dim_config.drill_down_terms_indexing {
+            match dim_config.drill_down_terms_indexing() {
                 DrillDownTermsIndexing::NONE | DrillDownTermsIndexing::FULL_PATH_ONLY => {}
                 DrillDownTermsIndexing::DIMENSION_AND_FULL_PATH => {
                     doc.add(StringField::new(
@@ -503,7 +592,7 @@ impl FacetsConfig {
                     .expect("INVARIANT: collated as a SortedSetDocValuesFacetField");
                 let facet_label = FacetLabel::with_dim(&facet_field.dim, &facet_field.path)?;
                 let dim_config = self.get_dim_config(&facet_field.dim);
-                if dim_config.hierarchical {
+                if dim_config.hierarchical() {
                     for i in 0..facet_label.length {
                         let full_path = Self::path_to_string_len(&facet_label.components, i + 1)?;
                         doc.add(SortedSetDocValuesField::new(
@@ -519,7 +608,7 @@ impl FacetsConfig {
                             facet_field.path.len()
                         )));
                     }
-                    if dim_config.multi_valued && dim_config.require_dim_count {
+                    if dim_config.multi_valued() && dim_config.require_dim_count() {
                         doc.add(SortedSetDocValuesField::new(
                             index_field_name.clone(),
                             BytesRef::from_char_sequence(&facet_field.dim),

@@ -34,9 +34,62 @@ use crate::uhighlight::passage_formatter::{FormattedPassages, PassageFormatter};
 use crate::uhighlight::passage_scorer::PassageScorer;
 use crate::uhighlight::unified_highlighter::{OffsetSource, PassageSortComparator};
 
+/// The overridable methods of `FieldHighlighter` a Java subclass
+/// overrides (its public `getField`, `getOffsetSource`,
+/// `highlightFieldForDoc` and its protected `getSummaryPassagesNoHighlight`
+/// and `highlightOffsetsEnums`, `FieldHighlighter.java:64-215`). Each
+/// default is the base class's body, reachable as the highlighter's
+/// `super_*` method.
+pub trait FieldHighlighterOverrides: Send + Sync {
+    /// Equivalent to an override of `getField()`.
+    fn get_field<'a>(&self, this: &'a FieldHighlighter) -> &'a str {
+        this.super_get_field()
+    }
+
+    /// Equivalent to an override of `getOffsetSource()`.
+    fn get_offset_source(&self, this: &FieldHighlighter) -> OffsetSource {
+        this.super_get_offset_source()
+    }
+
+    /// Equivalent to an override of `highlightFieldForDoc(LeafReader, int,
+    /// String)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors.
+    fn highlight_field_for_doc(
+        &self,
+        this: &mut FieldHighlighter,
+        reader: Option<&Arc<dyn LeafReader>>,
+        doc_id: i32,
+        content: &str,
+    ) -> Result<Option<Box<dyn FormattedPassages>>> {
+        this.super_highlight_field_for_doc(reader, doc_id, content)
+    }
+
+    /// Equivalent to an override of the protected
+    /// `getSummaryPassagesNoHighlight(int)`.
+    fn get_summary_passages_no_highlight(&self, this: &mut FieldHighlighter, max_passages: i32) -> Vec<Passage> {
+        this.super_get_summary_passages_no_highlight(max_passages)
+    }
+
+    /// Equivalent to an override of the protected
+    /// `highlightOffsetsEnums(OffsetsEnum)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors.
+    fn highlight_offsets_enums(&self, this: &mut FieldHighlighter, off: &mut dyn OffsetsEnum) -> Result<Vec<Passage>> {
+        this.super_highlight_offsets_enums(off)
+    }
+}
+
 /// Internal highlighter abstraction that operates on a per field basis.
 ///
-/// Equivalent to `org.apache.lucene.search.uhighlight.FieldHighlighter`.
+/// Equivalent to `org.apache.lucene.search.uhighlight.FieldHighlighter`;
+/// a subclass's overrides are a [`FieldHighlighterOverrides`], set with
+/// [`FieldHighlighter::set_overrides`] (typically by an override of
+/// `UnifiedHighlighterOverrides::new_field_highlighter`).
 pub struct FieldHighlighter {
     /// Equivalent to the protected final field `field`.
     pub field: String,
@@ -55,6 +108,8 @@ pub struct FieldHighlighter {
     pub passage_formatter: Arc<dyn PassageFormatter>,
     /// Equivalent to the protected final field `passageSortComparator`.
     pub passage_sort_comparator: PassageSortComparator,
+    /// The subclass's overrides; `None` for the base class.
+    overrides: Option<Arc<dyn FieldHighlighterOverrides>>,
 }
 
 impl fmt::Debug for FieldHighlighter {
@@ -102,16 +157,38 @@ impl FieldHighlighter {
             max_no_highlight_passages,
             passage_formatter,
             passage_sort_comparator,
+            overrides: None,
         }
+    }
+
+    /// Installs a subclass's overrides (Java: constructing the subclass).
+    pub fn set_overrides(&mut self, overrides: Arc<dyn FieldHighlighterOverrides>) {
+        self.overrides = Some(overrides);
     }
 
     /// Equivalent to `getField()`.
     pub fn get_field(&self) -> &str {
+        match &self.overrides {
+            Some(o) => o.get_field(self),
+            None => self.super_get_field(),
+        }
+    }
+
+    /// The base class's `getField()`.
+    pub fn super_get_field(&self) -> &str {
         &self.field
     }
 
     /// Equivalent to `getOffsetSource()`.
     pub fn get_offset_source(&self) -> OffsetSource {
+        match &self.overrides {
+            Some(o) => o.get_offset_source(self),
+            None => self.super_get_offset_source(),
+        }
+    }
+
+    /// The base class's `getOffsetSource()`.
+    pub fn super_get_offset_source(&self) -> OffsetSource {
         self.field_offset_strategy.get_offset_source()
     }
 
@@ -126,6 +203,23 @@ impl FieldHighlighter {
     ///
     /// Propagates I/O errors.
     pub fn highlight_field_for_doc(
+        &mut self,
+        reader: Option<&Arc<dyn LeafReader>>,
+        doc_id: i32,
+        content: &str,
+    ) -> Result<Option<Box<dyn FormattedPassages>>> {
+        match self.overrides.clone() {
+            Some(o) => o.highlight_field_for_doc(self, reader, doc_id, content),
+            None => self.super_highlight_field_for_doc(reader, doc_id, content),
+        }
+    }
+
+    /// The base class's `highlightFieldForDoc(LeafReader, int, String)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors.
+    pub fn super_highlight_field_for_doc(
         &mut self,
         reader: Option<&Arc<dyn LeafReader>>,
         doc_id: i32,
@@ -185,6 +279,14 @@ impl FieldHighlighter {
     ///
     /// Equivalent to the protected `getSummaryPassagesNoHighlight(int)`.
     pub fn get_summary_passages_no_highlight(&mut self, max_passages: i32) -> Vec<Passage> {
+        match self.overrides.clone() {
+            Some(o) => o.get_summary_passages_no_highlight(self, max_passages),
+            None => self.super_get_summary_passages_no_highlight(max_passages),
+        }
+    }
+
+    /// The base class's `getSummaryPassagesNoHighlight(int)`.
+    pub fn super_get_summary_passages_no_highlight(&mut self, max_passages: i32) -> Vec<Passage> {
         debug_assert!(self.break_iterator.current() == self.break_iterator.first());
 
         let mut passages: Vec<Passage> = Vec::with_capacity(max_passages.clamp(0, 10) as usize);
@@ -215,6 +317,19 @@ impl FieldHighlighter {
     /// Propagates I/O errors; `IllegalArgumentException` for a field indexed
     /// without offsets.
     pub fn highlight_offsets_enums(&mut self, off: &mut dyn OffsetsEnum) -> Result<Vec<Passage>> {
+        match self.overrides.clone() {
+            Some(o) => o.highlight_offsets_enums(self, off),
+            None => self.super_highlight_offsets_enums(off),
+        }
+    }
+
+    /// The base class's `highlightOffsetsEnums(OffsetsEnum)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates I/O errors; `IllegalArgumentException` for a field indexed
+    /// without offsets.
+    pub fn super_highlight_offsets_enums(&mut self, off: &mut dyn OffsetsEnum) -> Result<Vec<Passage>> {
         let content_length = self.break_iterator.get_text().get_end_index();
 
         if !off.next_position()? {

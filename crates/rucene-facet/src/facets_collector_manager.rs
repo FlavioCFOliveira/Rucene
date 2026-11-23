@@ -64,7 +64,7 @@ impl FacetsCollectorManager {
     pub(crate) fn reduce_matching_docs(facets_collectors: &[&FacetsCollector]) -> Result<Vec<MatchingDocs>> {
         let mut matching_docs_map: Vec<MatchingDocs> = Vec::new();
         for facets_collector in facets_collectors {
-            for matching_docs in facets_collector.get_matching_docs() {
+            for matching_docs in facets_collector.get_matching_docs()? {
                 match matching_docs_map
                     .iter()
                     .position(|m| m.context_identity == matching_docs.context_identity)

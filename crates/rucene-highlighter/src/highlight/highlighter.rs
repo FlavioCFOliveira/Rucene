@@ -312,7 +312,7 @@ impl Highlighter {
                 }
             }
 
-            token_group.add_token(self.fragment_scorer.get_token_score());
+            token_group.add_token(self.fragment_scorer.get_token_score()?);
 
             next = token_stream.increment_token()?;
         }

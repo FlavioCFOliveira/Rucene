@@ -90,8 +90,9 @@ impl QueryTermExtractor {
     ///
     /// Equivalent to the static `getTerms(Query, boolean, String)`. Java
     /// collects the terms into a `HashSet` compared by identity, so every
-    /// extracted term is kept; its array order is that of the identity hash
-    /// codes, which the port replaces by the extraction order.
+    /// extracted term is kept; the array order follows the identity hash
+    /// codes, which Java leaves unspecified (they vary between runs), so the
+    /// port's extraction order is one of the orders Java can produce.
     pub fn get_terms_for_field(
         query: &dyn Query,
         prohibited: bool,

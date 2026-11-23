@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use rucene::document::Document;
 use rucene::error::Result;
 use rucene::index::index_writer_config::OpenMode;
-use rucene::index::{IndexReader, TwoPhaseCommit};
+use rucene::index::IndexReader;
 use rucene::store::Directory;
 
 use crate::taxonomy::directory::directory_taxonomy_reader::DirectoryTaxonomyReader;
@@ -33,7 +33,6 @@ use crate::taxonomy::directory::directory_taxonomy_writer::{
 };
 use crate::taxonomy::facet_label::FacetLabel;
 use crate::taxonomy::taxonomy_reader::TaxonomyReader;
-use crate::taxonomy::taxonomy_writer::TaxonomyWriter;
 
 /// Java's `BiConsumer<FacetLabel, Document>`.
 pub type OrdinalDataAppender = Arc<dyn Fn(&FacetLabel, &mut Document) + Send + Sync>;
@@ -67,8 +66,6 @@ impl DirectoryTaxonomyWriterOverrides for EnrichOverrides {
 pub struct ReindexingEnrichedDirectoryTaxonomyWriter {
     inner: DirectoryTaxonomyWriter,
     ordinal_data_appender: Arc<Mutex<Option<OrdinalDataAppender>>>,
-    /// The monitor of `reindexWithNewOrdinalData`'s `synchronized`.
-    reindex_lock: Mutex<()>,
 }
 
 impl ReindexingEnrichedDirectoryTaxonomyWriter {
@@ -97,7 +94,6 @@ impl ReindexingEnrichedDirectoryTaxonomyWriter {
         Ok(Self {
             inner,
             ordinal_data_appender: cell,
-            reindex_lock: Mutex::new(()),
         })
     }
 
@@ -125,12 +121,16 @@ impl ReindexingEnrichedDirectoryTaxonomyWriter {
     /// Delete the existing taxonomy index and recreate it using new ordinal
     /// data. The ordinals themselves will be preserved.
     ///
-    /// Equivalent to `reindexWithNewOrdinalData(BiConsumer)`.
+    /// Equivalent to `reindexWithNewOrdinalData(BiConsumer)`: `synchronized`
+    /// on the writer, so it holds the base writer's monitor for the whole
+    /// reindex and calls the monitor-held bodies of the `synchronized`
+    /// `deleteAll`, `addCategory` and `commit`, as Java's re-entrant monitor
+    /// does.
     pub fn reindex_with_new_ordinal_data(
         &self,
         ordinal_data_appender: Option<OrdinalDataAppender>,
     ) -> Result<()> {
-        let _guard = self.reindex_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.inner.enter_monitor();
         self.inner.ensure_open()?;
         *self
             .ordinal_data_appender
@@ -139,11 +139,11 @@ impl ReindexingEnrichedDirectoryTaxonomyWriter {
         let d = Arc::clone(self.inner.get_directory());
 
         let ordinal_to_path = Self::record_paths_in_order(d)?;
-        self.inner.delete_all()?;
+        self.inner.delete_all_locked(&mut state)?;
         for category_path in &ordinal_to_path {
-            self.inner.add_category(category_path)?;
+            self.inner.add_category_with_monitor(category_path, Some(&mut state))?;
         }
-        self.inner.commit()?;
+        self.inner.commit_locked()?;
         Ok(())
     }
 }

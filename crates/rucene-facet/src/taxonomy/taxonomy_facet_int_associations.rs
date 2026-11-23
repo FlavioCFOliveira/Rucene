@@ -80,7 +80,7 @@ impl TaxonomyFacetIntAssociations {
             ValueStore::Int(IntTaxonomyFacets::new(Arc::clone(&aggregation_function))),
         )?;
         let mut this = Self { base };
-        this.aggregate_values(&*aggregation_function, fc.get_matching_docs())?;
+        this.aggregate_values(&*aggregation_function, fc.get_matching_docs()?)?;
         Ok(this)
     }
 

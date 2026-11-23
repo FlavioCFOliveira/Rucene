@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rucene::analysis::tokenattributes::{CharTermAttribute, PositionIncrementAttribute};
 use rucene::analysis::{AttributeHandle, TokenStream};
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::index::IndexReader;
 use rucene::search::query::Query;
 
@@ -324,40 +324,39 @@ impl Scorer for QueryScorer {
         lock(&self.state).total_score
     }
 
-    /// # Panics
+    /// # Errors
     ///
-    /// Before `init` and `start_fragment`, where Java throws
-    /// `NullPointerException`.
-    fn get_token_score(&mut self) -> f32 {
+    /// Java's `NullPointerException` before `init` and `start_fragment`.
+    fn get_token_score(&mut self) -> Result<f32> {
         let mut state = lock(&self.state);
         let state = &mut *state;
         state.position += state
             .pos_inc_att
             .as_ref()
-            .expect("NullPointerException: init(TokenStream) was not called")
+            .ok_or_else(LuceneError::null_pointer)?
             .borrow()
             .get_position_increment();
         let term_text = term_text(
             &*state
                 .term_att
                 .as_ref()
-                .expect("NullPointerException: init(TokenStream) was not called")
+                .ok_or_else(LuceneError::null_pointer)?
                 .borrow(),
         );
 
         let Some(weighted_span_term) = state
             .field_weighted_span_terms
             .as_ref()
-            .expect("NullPointerException: fieldWeightedSpanTerms is null")
+            .ok_or_else(LuceneError::null_pointer)?
             .get(&term_text)
         else {
-            return 0.0;
+            return Ok(0.0);
         };
 
         if weighted_span_term.position_sensitive
             && !weighted_span_term.check_position(state.position)
         {
-            return 0.0;
+            return Ok(0.0);
         }
 
         let score = weighted_span_term.get_weight();
@@ -366,13 +365,13 @@ impl Scorer for QueryScorer {
         if state
             .found_terms
             .as_mut()
-            .expect("NullPointerException: startFragment(TextFragment) was not called")
+            .ok_or_else(LuceneError::null_pointer)?
             .insert(term_text)
         {
             state.total_score += score;
         }
 
-        score
+        Ok(score)
     }
 
     fn init(&mut self, token_stream: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {

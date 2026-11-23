@@ -211,7 +211,7 @@ impl AbstractSortedSetDocValueFacetCounts {
 
     /// Equivalent to `getSpecificValue(String, String...)`.
     pub(crate) fn get_specific_value(&self, dim: &str, path: &[&str]) -> Result<NumericValue> {
-        if !self.state_config.get_dim_config(dim).hierarchical && path.len() != 1 {
+        if !self.state_config.get_dim_config(dim).hierarchical() && path.len() != 1 {
             return Err(LuceneError::illegal_argument(format!(
                 "{dim} is not configured as hierarchical, path must be length=1"
             )));
@@ -274,7 +274,7 @@ impl AbstractSortedSetDocValueFacetCounts {
         for dim in self.state.get_dims() {
             let dim_config = self.state_config.get_dim_config(&dim);
             let dim_count;
-            if dim_config.hierarchical {
+            if dim_config.hierarchical() {
                 // For hierarchical dims, we directly index each level of the
                 // ancestry path (i.e., we "rollup" at indexing time), meaning
                 // we can directly access accurate dim counts without needing
@@ -291,8 +291,8 @@ impl AbstractSortedSetDocValueFacetCounts {
                     .get_ord_range(&dim)?
                     .ok_or_else(LuceneError::null_pointer)?;
                 let dim_ord = ord_range.start();
-                if dim_config.multi_valued {
-                    if dim_config.require_dim_count {
+                if dim_config.multi_valued() {
+                    if dim_config.require_dim_count() {
                         // If a dim is configured as multi-valued and requires
                         // dim counts, we index dim counts directly, so we can
                         // access accurate counts without needing to rollup
@@ -371,7 +371,7 @@ impl AbstractSortedSetDocValueFacetCounts {
     ) -> Result<Option<ChildIterationCursor>> {
         let path_ord;
         let mut child_iterator;
-        if dim_config.hierarchical {
+        if dim_config.hierarchical() {
             let dim_tree = self.state.get_dim_tree(dim)?;
             if !path.is_empty() {
                 path_ord = self.lookup_term(&BytesRef::from_char_sequence(
@@ -404,7 +404,7 @@ impl AbstractSortedSetDocValueFacetCounts {
             };
             path_ord = ord_range.start();
             child_iterator = ChildOrdIterator::Range(ord_range.iterator());
-            if dim_config.multi_valued && dim_config.require_dim_count {
+            if dim_config.multi_valued() && dim_config.require_dim_count() {
                 // If the dim is multi-valued and requires dim counts, we know
                 // we've explicitly indexed the dimension and we need to skip
                 // past it so the iterator is positioned on the first child:
@@ -495,14 +495,14 @@ impl AbstractSortedSetDocValueFacetCounts {
     ///
     /// Equivalent to `adjustPathCountIfNecessary(DimConfig, int, int)`.
     fn adjust_path_count_if_necessary(&self, dim_config: &DimConfig, path_ord: i32, computed_count: i32) -> i32 {
-        if dim_config.hierarchical {
+        if dim_config.hierarchical() {
             // For hierarchical dims, we directly index each level of the
             // ancestry path (i.e., we "rollup" at indexing time), meaning we
             // can directly access accurate dim counts without needing to
             // rollup the descendant paths:
             self.get_count(path_ord)
-        } else if dim_config.multi_valued {
-            if dim_config.require_dim_count {
+        } else if dim_config.multi_valued() {
+            if dim_config.require_dim_count() {
                 // If a dim is configured as multi-valued and requires dim
                 // counts, we index dim counts directly, so we can access
                 // accurate counts without needing to rollup children:

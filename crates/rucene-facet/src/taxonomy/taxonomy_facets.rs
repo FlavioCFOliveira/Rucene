@@ -222,11 +222,15 @@ impl TaxonomyFacets {
         values: ValueStore,
     ) -> Result<Self> {
         let arrays = taxo_reader.get_parallel_taxonomy_arrays()?;
+        let fc = match fc {
+            Some(fc) => Some(fc.get_matching_docs()?.clone()),
+            None => None,
+        };
         Ok(Self {
             index_field_name: index_field_name.to_string(),
             taxo_reader,
             config,
-            fc: fc.map(|fc| fc.get_matching_docs().clone()),
+            fc,
             arrays,
             children_loaded: AtomicBool::new(false),
             siblings_loaded: AtomicBool::new(false),
@@ -410,10 +414,10 @@ impl TaxonomyFacets {
     /// Equivalent to `verifyDim(String)`.
     pub(crate) fn verify_dim(&self, dim: &str) -> Result<DimConfig> {
         let dim_config = self.config.get_dim_config(dim);
-        if self.config.is_dim_configured(dim) && dim_config.index_field_name != self.index_field_name {
+        if self.config.is_dim_configured(dim) && dim_config.index_field_name() != self.index_field_name {
             return Err(LuceneError::illegal_argument(format!(
                 "dimension \"{}\" cannot be found in field \"{}\", since it was configured to be indexed into field \"{}\"",
-                dim, self.index_field_name, dim_config.index_field_name
+                dim, self.index_field_name, dim_config.index_field_name()
             )));
         }
         Ok(dim_config)
@@ -483,9 +487,19 @@ impl TaxonomyFacets {
         }
 
         // Rollup any necessary dims:
-        let dim_configs = self.config.get_dim_configs();
+        // a snapshot of the live map's entries (Java iterates the
+        // ConcurrentHashMap weakly consistently; each dim rolls up
+        // independently, so the order is immaterial)
+        let dim_configs: Vec<(String, crate::facets_config::DimConfig)> = self
+            .config
+            .get_dim_configs()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         for (dim, ft) in &dim_configs {
-            if ft.hierarchical && !ft.multi_valued {
+            if ft.hierarchical() && !ft.multi_valued() {
                 let dim_root_ord = self.taxo_reader.get_ordinal(&FacetLabel::new([dim.as_str()])?)?;
                 // It can be -1 if this field was declared in the config but
                 // never indexed:
@@ -650,8 +664,8 @@ impl TaxonomyFacets {
             return Ok(None);
         }
 
-        if dim_config.multi_valued {
-            if dim_config.require_dim_count {
+        if dim_config.multi_valued() {
+            if dim_config.require_dim_count() {
                 aggregated_value = self.get_aggregation_value(dim_ord);
             } else {
                 // Our sum'd value is not correct, in general:
@@ -783,8 +797,8 @@ impl TaxonomyFacets {
         }
 
         let mut aggregated_value_number = aggregated_value.get();
-        if dim_config.multi_valued {
-            if dim_config.require_dim_count {
+        if dim_config.multi_valued() {
+            if dim_config.require_dim_count() {
                 aggregated_value_number = self.get_aggregation_value(path_ord);
             } else {
                 // Our aggregated value is not correct, in general:
@@ -826,9 +840,9 @@ impl TaxonomyFacets {
     pub(crate) fn get_specific_value(&self, dim: &str, path: &[&str]) -> Result<NumericValue> {
         let dim_config = self.verify_dim(dim)?;
         if path.is_empty() {
-            if dim_config.hierarchical && !dim_config.multi_valued {
+            if dim_config.hierarchical() && !dim_config.multi_valued() {
                 // ok: rolled up at search time
-            } else if dim_config.require_dim_count && dim_config.multi_valued {
+            } else if dim_config.require_dim_count() && dim_config.multi_valued() {
                 // ok: we indexed all ords at index time
             } else {
                 return Err(LuceneError::illegal_argument(
@@ -866,7 +880,7 @@ impl TaxonomyFacets {
                 .components[0]
                 .clone();
             let dim_config = self.config.get_dim_config(&dim);
-            if dim_config.index_field_name == self.index_field_name {
+            if dim_config.index_field_name() == self.index_field_name {
                 if let Some(result) = self.get_top_children(top_n, &dim, &[])? {
                     results.push(result);
                 }
@@ -921,15 +935,15 @@ impl TaxonomyFacets {
                 .components[0]
                 .clone();
             let dim_config = self.config.get_dim_config(&dim);
-            if dim_config.index_field_name == self.index_field_name {
+            if dim_config.index_field_name() == self.index_field_name {
                 let cp = FacetLabel::new([dim.as_str()])?;
                 let dim_ord = self.taxo_reader.get_ordinal(&cp)?;
                 // if dimOrd = -1, we skip this dim, else call
                 // getTopChildrenForPath()
                 if dim_ord != -1 {
                     let dim_value: NumericValue;
-                    if dim_config.multi_valued {
-                        if dim_config.require_dim_count {
+                    if dim_config.multi_valued() {
+                        if dim_config.require_dim_count() {
                             // If the dim is configured as multi-valued and
                             // requires dim counts, we can access
                             // dim value directly from values array.

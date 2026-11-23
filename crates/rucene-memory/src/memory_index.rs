@@ -1039,6 +1039,13 @@ impl MemoryIndex {
                 info
             }
         };
+        // **Divergence.** Java mutates `info.fieldInfo` in place
+        // (`MemoryIndex.java:713-724`), so a `MemoryIndexReader` built
+        // earlier, whose `FieldInfos` holds the same object, sees the new
+        // point dimensions / doc values type. Core `FieldInfo`'s setters take
+        // `&mut self`; while a reader shares the object, `Arc::make_mut`
+        // copies it, and that reader keeps the previous values. A reader
+        // created after this call shares the updated object.
         {
             let mut guard = lock(&info);
             if field_type.point_dimension_count() != guard.field_info.get_point_dimension_count()
@@ -2023,10 +2030,12 @@ impl MemoryIndexReader {
                 let mut info = lock(info);
                 let pools = lock(&shared.pools);
                 info.prepare_doc_values_and_point_values(&pools);
-                field_infos_arr.push((*info.field_info).clone());
+                // the Info's own FieldInfo object, as Java
+                // (`fieldInfosArr[i++] = info.fieldInfo`)
+                field_infos_arr.push(Arc::clone(&info.field_info));
             }
         }
-        let field_infos = FieldInfos::new(field_infos_arr)
+        let field_infos = FieldInfos::from_shared(field_infos_arr)
             .expect("INVARIANT: the fields of a MemoryIndex have distinct names and numbers");
         Self {
             core: IndexReaderCore::new(),

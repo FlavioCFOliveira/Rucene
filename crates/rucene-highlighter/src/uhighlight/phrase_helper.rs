@@ -484,11 +484,19 @@ impl LeafReader for SingleFieldWithOffsetsFilterLeafReader {
         get_meta_data,
     );
 
+    /// **Divergence.** Java throws `UnsupportedOperationException`
+    /// (`PhraseHelper.java:309-312`),
+    /// an unchecked exception the caller receives. Core
+    /// `LeafReader::get_field_infos` returns `FieldInfos` without a
+    /// `Result` (the shape of all 35 readers and their callers, including
+    /// crates outside this one), so the exception is a panic naming the same
+    /// class; returning it as an `Err` needs that core signature changed.
+    ///
     /// # Panics
     ///
     /// Always, as Java throws `UnsupportedOperationException`.
     fn get_field_infos(&self) -> FieldInfos {
-        panic!("UnsupportedOperationException"); // TODO merge them
+        panic!("java.lang.UnsupportedOperationException"); // TODO merge them
     }
 
     /// # Errors
