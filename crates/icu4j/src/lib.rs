@@ -50,6 +50,11 @@ pub mod jdk;
 
 /// `com.ibm.icu.impl`.
 pub mod r#impl {
+    pub mod icu_currency_meta_info;
+    /// `com.ibm.icu.impl.text`.
+    pub mod text {
+        pub mod rbnf_scanner_provider_impl;
+    }
     pub mod assert;
     /// `com.ibm.icu.impl.breakiter`.
     pub mod breakiter {
@@ -188,19 +193,93 @@ pub mod r#impl {
     pub mod static_unicode_sets;
     pub mod string_segment;
     pub mod text_trie_map;
+    pub mod formatted_string_builder;
+    pub mod formatted_value_string_builder_impl;
+    pub mod plural_rules_loader;
     /// `com.ibm.icu.impl.number`.
     pub mod number {
         pub mod affix_pattern_provider;
         pub mod multiplier_producer;
+        pub mod adopting_modifier_store;
+        pub mod affix_utils;
+        pub mod constant_affix_modifier;
+        pub mod constant_multi_field_modifier;
+        pub mod currency_spacing_enabled_modifier;
+        pub mod custom_symbol_currency;
+        pub mod decimal_quantity;
+        pub mod decimal_quantity_abstract_bcd;
+        pub mod decimal_quantity_dual_storage_bcd;
+        pub mod modifier;
+        pub mod modifier_store;
+        pub mod rounding_utils;
+        pub mod simple_modifier;
+        pub mod compact_data;
+        pub mod grouper;
+        pub mod localized_number_formatter_as_format;
+        pub mod long_name_handler;
+        pub mod long_name_multiplexer;
+        pub mod macro_props;
+        pub mod micro_props;
+        pub mod micro_props_generator;
+        pub mod mixed_unit_long_name_handler;
+        pub mod multiplier_format_handler;
+        pub mod mutable_pattern_modifier;
+        pub mod padder;
+        pub mod unit_conversion_handler;
+        pub mod usage_prefs_handler;
+        pub mod currency_plural_info_affix_provider;
+        pub mod decimal_format_properties;
+        pub mod pattern_string_parser;
+        pub mod pattern_string_utils;
+        pub mod properties;
+        pub mod properties_affix_pattern_provider;
         /// `com.ibm.icu.impl.number.parse`.
         pub mod parse {
             pub mod parsing_utils;
+            pub mod affix_matcher;
+            pub mod affix_pattern_matcher;
+            pub mod affix_token_matcher_factory;
+            pub mod code_point_matcher;
+            pub mod combined_currency_matcher;
+            pub mod decimal_matcher;
+            pub mod ignorables_matcher;
+            pub mod infinity_matcher;
+            pub mod minus_sign_matcher;
+            pub mod multiplier_parse_handler;
+            pub mod nan_matcher;
+            pub mod number_parse_matcher;
+            pub mod number_parser_impl;
+            pub mod padding_matcher;
+            pub mod parsed_number;
+            pub mod percent_matcher;
+            pub mod permille_matcher;
+            pub mod plus_sign_matcher;
+            pub mod require_affix_validator;
+            pub mod require_currency_validator;
+            pub mod require_decimal_separator_validator;
+            pub mod require_number_validator;
+            pub mod scientific_matcher;
+            pub mod series_matcher;
+            pub mod symbol_matcher;
+            pub mod validation_matcher;
         }
         /// `com.ibm.icu.impl.number.range`.
         pub mod range {
             pub mod prefix_infix_suffix_length_helper;
             pub mod standard_plural_ranges;
+            pub mod range_macro_props;
         }
+    }
+    /// `com.ibm.icu.impl.units`.
+    pub mod units {
+        pub mod complex_units_converter;
+        pub mod conversion_rates;
+        pub mod measure_unit_impl;
+        pub mod single_unit_impl;
+        pub mod unit_preferences;
+        pub mod units_converter;
+        pub mod units_data;
+        pub mod units_router;
     }
 }
 
@@ -217,6 +296,13 @@ pub mod lang {
 
 /// `com.ibm.icu.text`.
 pub mod text {
+    pub(crate) mod nf_rule;
+    pub(crate) mod nf_rule_set;
+    pub(crate) mod nf_substitution;
+    pub mod plural_format;
+    pub(crate) mod rbnf_chinese_post_processor;
+    pub(crate) mod rbnf_post_processor;
+    pub mod rule_based_number_format;
     pub mod break_iterator;
     pub(crate) mod break_iterator_factory;
     pub mod edits;
@@ -293,6 +379,16 @@ pub mod text {
     pub mod simple_formatter;
     pub mod u_field_position;
     pub mod u_format;
+    pub mod currency_meta_info;
+    pub mod decimal_format_symbols;
+    pub mod list_formatter;
+    pub mod plural_rules;
+    pub mod compact_decimal_format;
+    pub mod currency_plural_info;
+    pub mod decimal_format;
+    pub mod number_format;
+    pub(crate) mod number_format_service_shim;
+    pub mod plural_rules_serial_proxy;
 }
 
 /// `com.ibm.icu.math`.
@@ -304,10 +400,34 @@ pub mod math {
 /// `com.ibm.icu.number`.
 pub mod number {
     pub mod skeleton_syntax_exception;
+    pub mod compact_notation;
+    pub mod currency_precision;
+    pub mod formatted_number;
+    pub mod fraction_precision;
+    pub mod integer_width;
+    pub mod localized_number_formatter;
+    pub mod notation;
+    pub mod number_formatter;
+    pub mod number_formatter_impl;
+    pub mod number_formatter_settings;
+    pub mod number_property_mapper;
+    pub mod number_skeleton_impl;
+    pub mod precision;
+    pub mod scale;
+    pub mod scientific_notation;
+    pub mod simple_notation;
+    pub mod unlocalized_number_formatter;
+    pub mod formatted_number_range;
+    pub mod localized_number_range_formatter;
+    pub mod number_range_formatter;
+    pub mod number_range_formatter_impl;
+    pub mod number_range_formatter_settings;
+    pub mod unlocalized_number_range_formatter;
 }
 
 /// `com.ibm.icu.util`.
 pub mod util {
+    pub(crate) mod currency_service_shim;
     pub mod case_insensitive_string;
     pub mod byte_array_wrapper;
     pub mod bytes_trie;
@@ -336,4 +456,10 @@ pub mod util {
     pub mod range_value_iterator;
     pub mod value_iterator;
     pub mod icu_input_too_long_exception;
+    pub mod currency;
+    pub mod currency_amount;
+    pub mod measure;
+    pub mod measure_unit;
+    pub mod no_unit;
+    pub mod time_unit;
 }

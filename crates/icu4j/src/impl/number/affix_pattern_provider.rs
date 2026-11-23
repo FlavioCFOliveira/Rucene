@@ -3,6 +3,8 @@
 
 //! `com.ibm.icu.impl.number.AffixPatternProvider`.
 
+use rucene::error::Result;
+
 /// `AffixPatternProvider.Flags`: the bits of the `flags` argument.
 pub struct Flags;
 
@@ -45,17 +47,32 @@ pub trait AffixPatternProvider: std::fmt::Debug + Send + Sync {
     fn has_currency_sign(&self) -> bool;
 
     /// `positiveHasPlusSign()`.
-    fn positive_has_plus_sign(&self) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the implementation (the
+    /// `IllegalArgumentException` of a malformed affix pattern).
+    fn positive_has_plus_sign(&self) -> Result<bool>;
 
     /// `hasNegativeSubpattern()`.
     fn has_negative_subpattern(&self) -> bool;
 
     /// `negativeHasMinusSign()`.
-    fn negative_has_minus_sign(&self) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the implementation (the
+    /// `IllegalArgumentException` of a malformed affix pattern).
+    fn negative_has_minus_sign(&self) -> Result<bool>;
 
     /// `containsSymbolType(int type)`: whether a pattern contains the
     /// `AffixUtils.TYPE_*` symbol `type`.
-    fn contains_symbol_type(&self, symbol_type: i32) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// The unchecked exceptions of the implementation (the
+    /// `IllegalArgumentException` of a malformed affix pattern).
+    fn contains_symbol_type(&self, symbol_type: i32) -> Result<bool>;
 
     /// `hasBody()`: whether the pattern has a number placeholder.
     fn has_body(&self) -> bool;

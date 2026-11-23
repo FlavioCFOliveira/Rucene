@@ -55,7 +55,18 @@ pub fn double_to_string(d: f64) -> String {
     if d == 0.0 {
         return if d.is_sign_negative() { "-0.0" } else { "0.0" }.to_string();
     }
-    let a = d.abs();
+    let decimal = shortest_decimal(d.abs());
+    java_float_format(&decimal, d < 0.0)
+}
+
+/// The decimal `Double.toString` renders for the positive finite non-zero
+/// `a`: the shortest decimal that rounds to `a`, with at least two
+/// significant digits, the closest to `a` (ties to the even significand).
+///
+/// JDK 25 `jdk.internal.math.DoubleToDecimal.toDecimal` computes this decimal
+/// for both `Double.toString` and `DoubleToDecimal.split`, the source of the
+/// digits `java.util.Formatter` rounds for `%f` ([`format_fixed`]).
+fn shortest_decimal(a: f64) -> Decimal {
     // `a = m × 2^q`, the binary64 decoding of the magnitude.
     let bits = a.to_bits();
     let biased = (bits >> 52) as i32;
@@ -65,7 +76,7 @@ pub fn double_to_string(d: f64) -> String {
     } else {
         (fraction | (1u64 << 52), biased - 1075)
     };
-    let decimal = giulietti_decimal(
+    giulietti_decimal(
         Decimal::render(format_args!("{a:e}")),
         biased == 0,
         || Decimal::render(format_args!("{a:.1e}")),
@@ -74,8 +85,7 @@ pub fn double_to_string(d: f64) -> String {
         // digits, so 800 fraction digits render it exactly.
         || format!("{a:.800e}"),
         |s| s.parse::<f64>().is_ok_and(|v| v.to_bits() == a.to_bits()),
-    );
-    java_float_format(&decimal, d < 0.0)
+    )
 }
 
 /// Renders an `f32` the way `java.lang.Float.toString(float)` does.
@@ -385,13 +395,19 @@ fn java_float_format(decimal: &Decimal, negative: bool) -> String {
 }
 
 /// Renders `value` the way `String.format(Locale.ROOT, "%.<digits>f", value)`
-/// does: exactly `digits` fraction digits, no grouping separators, ties rounded
-/// away from zero.
+/// does: exactly `digits` fraction digits, no grouping separators.
 ///
-/// Rust's `{:.n}` would round ties to even; Java's `Formatter` rounds them away
-/// from zero (`RoundingMode.HALF_UP`). The two disagree on values whose exact
-/// decimal expansion stops on a `5` in the first dropped position, so the digits
-/// are taken from the exact expansion and rounded here instead.
+/// Equivalent to JDK 25 `java.util.Formatter`'s `%f` conversion of a `double`
+/// (`Formatter.java`, `FormatSpecifier.print(StringBuilder, double, …)`):
+/// `FormattedFPDecimal.valueOf(|value|, digits, PLAIN)` splits the magnitude
+/// into the decimal `Double.toString` renders (`DoubleToDecimal.split`, the
+/// shortest decimal that rounds to the value) and rounds *that decimal* half
+/// up to `digits` fraction digits (`FormattedFPDecimal.round`); `addZeros`
+/// then pads the fraction to `digits` places. The exact binary expansion is
+/// never consulted: `0.15` (exactly `0.1499999999999999944…`) renders `0.2`
+/// under `%.1f`, and `1.0E23` renders `100000000000000000000000` under
+/// `%.0f`. A negative value, `-0.0` included (`Double.compare(value, 0.0) ==
+/// -1`), takes a leading `-`.
 pub fn format_fixed(value: f64, digits: usize) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -399,54 +415,89 @@ pub fn format_fixed(value: f64, digits: usize) -> String {
     if value.is_infinite() {
         return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
     }
-    // A finite `f64` has an exact decimal expansion of at most 1074 fraction
-    // digits (the smallest subnormal), so this rendering is exact, never
-    // rounded, and the rounding below is therefore a single rounding step.
-    let exact = format!("{:.*}", 1074, value.abs());
-    let (integer, fraction) = match exact.split_once('.') {
-        Some(split) => split,
-        None => (exact.as_str(), ""),
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let a = value.abs();
+    // `d = f × 10^e`, `f` held as its `n` ASCII digits; `n = 0` for zero
+    // (`FormattedFPDecimal`'s initial state, `DoubleToDecimal` never calls
+    // `set` for zero).
+    let (mut f, mut e): (Vec<u8>, i64) = if a == 0.0 {
+        (Vec::new(), 0)
+    } else {
+        let decimal = shortest_decimal(a);
+        let f = decimal.digits().to_vec();
+        let e = i64::from(decimal.exp) + 1 - f.len() as i64;
+        (f, e)
     };
 
-    let mut rendered: Vec<u8> = integer
-        .bytes()
-        .chain(fraction.bytes().take(digits))
-        .collect();
-    // Pad a fraction shorter than `digits`, which cannot happen for the exact
-    // expansion above but keeps the indexing below independent of it.
-    while rendered.len() < integer.len() + digits {
-        rendered.push(b'0');
-    }
-    let round_up = fraction
-        .as_bytes()
-        .get(digits)
-        .is_some_and(|digit| *digit >= b'5');
-    if round_up {
-        let mut carry = true;
-        for digit in rendered.iter_mut().rev() {
-            if !carry {
-                break;
-            }
-            if *digit == b'9' {
-                *digit = b'0';
+    // `FormattedFPDecimal.plain`: round to `p = n + e + prec` digits.
+    let n = f.len() as i64;
+    let pp = n + e + digits as i64;
+    if n == 0 || pp < 0 {
+        f = vec![b'0'];
+        e = 0;
+    } else if pp < n {
+        // `f' = floor((f + 10^(n-p)/2) / 10^(n-p))`: half up on the first
+        // dropped digit.
+        let p = pp as usize;
+        let round_up = f[p] >= b'5';
+        e += n - pp;
+        f.truncate(p);
+        if p == 0 {
+            if round_up {
+                f.push(b'1');
             } else {
-                *digit += 1;
-                carry = false;
+                f.push(b'0');
+                e = 0;
             }
-        }
-        if carry {
-            rendered.insert(0, b'1');
+        } else if round_up {
+            let mut carry = true;
+            for digit in f.iter_mut().rev() {
+                if *digit == b'9' {
+                    *digit = b'0';
+                } else {
+                    *digit += 1;
+                    carry = false;
+                    break;
+                }
+            }
+            if carry {
+                // `f == 10^p`: absorb one trailing zero into `e`.
+                f.insert(0, b'1');
+                f.pop();
+                e += 1;
+            }
         }
     }
 
-    let rendered = String::from_utf8(rendered).unwrap_or_default();
-    let split = rendered.len() - digits;
-    let sign = if value.is_sign_negative() { "-" } else { "" };
-    if digits == 0 {
-        format!("{sign}{rendered}")
+    // `FormattedFPDecimal.plainChars`.
+    let n = f.len() as i64;
+    let mut out = String::with_capacity(sign.len() + f.len() + digits + 2);
+    out.push_str(sign);
+    let mut fraction_len = 0usize;
+    if e >= 0 {
+        out.extend(f.iter().map(|&b| char::from(b)));
+        out.extend(std::iter::repeat_n('0', e as usize));
+    } else if n + e > 0 {
+        let int_len = (n + e) as usize;
+        out.extend(f[..int_len].iter().map(|&b| char::from(b)));
+        out.push('.');
+        out.extend(f[int_len..].iter().map(|&b| char::from(b)));
+        fraction_len = f.len() - int_len;
     } else {
-        format!("{sign}{}.{}", &rendered[..split], &rendered[split..])
+        out.push_str("0.");
+        out.extend(std::iter::repeat_n('0', (-e - n) as usize));
+        out.extend(f.iter().map(|&b| char::from(b)));
+        fraction_len = (-e) as usize;
     }
+    // `Formatter.addZeros`: pad the fraction to `digits` places, adding the
+    // point when there is none and `digits > 0`.
+    if fraction_len < digits {
+        if fraction_len == 0 && e >= 0 {
+            out.push('.');
+        }
+        out.extend(std::iter::repeat_n('0', digits - fraction_len));
+    }
+    out
 }
 
 /// Renders `value` the way `String.format(Locale.ROOT, "%,d", value)` does:

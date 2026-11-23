@@ -8,16 +8,12 @@
  */
 
 //! `com.ibm.icu.impl.SimpleFormatterImpl`.
-//!
-//! Not ported: `formatPrefixSuffix(String, Format.Field, int, int,
-//! FormattedStringBuilder)`, the one member whose parameter type
-//! (`FormattedStringBuilder`, then `NumberFormat.Field`) belongs to the
-//! number-formatting stack, outside rmp task #650's locale closure; its port
-//! awaits the decision recorded on #650.
 
 use rucene::error::{LuceneError, Result};
 
+use crate::jdk::text::FieldRef;
 use crate::jdk::{to_rust_string, units};
+use crate::r#impl::formatted_string_builder::{FieldObject, FormattedStringBuilder};
 
 /// Argument numbers must be smaller than this limit.
 /// Text segment lengths are offset by this much.
@@ -367,6 +363,57 @@ impl SimpleFormatterImpl {
             0
         } else {
             compiled_pattern[1] as i32 - ARG_NUM_LIMIT
+        }
+    }
+
+    /// Special case for using `FormattedStringBuilder` with patterns with 0
+    /// or 1 argument.
+    ///
+    /// With 1 argument, treat the current contents of the
+    /// `FormattedStringBuilder` between `start` and `end` as the argument
+    /// {0}. Insert prefix and suffix text around the argument.
+    ///
+    /// With 0 arguments, overwrite the entire contents of the
+    /// `FormattedStringBuilder` between `start` and `end`.
+    ///
+    /// Answers the number of chars inserted (negative when chars were
+    /// removed). Equivalent to `formatPrefixSuffix(String, Format.Field, int,
+    /// int, FormattedStringBuilder)`.
+    pub fn format_prefix_suffix(
+        compiled_pattern: &[u16],
+        field: Option<FieldRef>,
+        start: i32,
+        end: i32,
+        output: &mut FormattedStringBuilder,
+    ) -> i32 {
+        let arg_limit = Self::get_argument_limit(compiled_pattern);
+        let field = field.map(FieldObject::Field);
+        if arg_limit == 0 {
+            // No arguments in compiled pattern; overwrite the entire segment
+            // with our string.
+            output.splice(start, end, compiled_pattern, 2, compiled_pattern.len() as i32, field)
+        } else {
+            debug_assert!(arg_limit == 1);
+            let suffix_offset;
+            let mut length = 0;
+            if compiled_pattern[1] != 0 {
+                let prefix_length = compiled_pattern[1] as i32 - ARG_NUM_LIMIT;
+                length = output.insert_range(start, compiled_pattern, 2, 2 + prefix_length, field.clone());
+                suffix_offset = 3 + prefix_length;
+            } else {
+                suffix_offset = 2;
+            }
+            if suffix_offset < compiled_pattern.len() as i32 {
+                let suffix_length = compiled_pattern[suffix_offset as usize] as i32 - ARG_NUM_LIMIT;
+                length += output.insert_range(
+                    end + length,
+                    compiled_pattern,
+                    1 + suffix_offset,
+                    1 + suffix_offset + suffix_length,
+                    field,
+                );
+            }
+            length
         }
     }
 
