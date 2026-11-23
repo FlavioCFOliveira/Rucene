@@ -426,7 +426,7 @@ impl Metric {
 
     /// `getValue(int level)`: `StrictMath.scalb(deriv, dim * (1 - level))`.
     pub fn get_value(&self, level: i32) -> f64 {
-        scalb(self.deriv, self.dim * (1 - level))
+        scalb(self.deriv, self.dim.wrapping_mul(1i32.wrapping_sub(level)))
     }
 
     /// `getClosestLevel(double)`.

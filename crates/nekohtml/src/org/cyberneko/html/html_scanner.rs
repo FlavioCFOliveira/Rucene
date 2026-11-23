@@ -251,9 +251,17 @@ fn eof() -> Exception {
     io_exception("java.io.EOFException", None)
 }
 
-/// `e instanceof EOFException`.
+/// `e instanceof EOFException`: the Java class the I/O error carries
+/// (`LuceneError::java_simple_name` of every I/O error is `IOException`).
 fn is_eof(e: &Exception) -> bool {
-    matches!(e, Exception::Io(io) if io.java_simple_name() == "EOFException")
+    matches!(
+        e,
+        Exception::Io(io) if matches!(
+            io.kind(),
+            rucene::error::LuceneErrorKind::Io(err)
+                if rucene::store::java_nio_file::java_class_of(err) == "java.io.EOFException"
+        )
+    )
 }
 
 fn npe() -> Exception {

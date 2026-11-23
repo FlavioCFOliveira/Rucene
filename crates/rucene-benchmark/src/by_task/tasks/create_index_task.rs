@@ -215,9 +215,9 @@ impl CreateIndexTask {
         let info_stream_val = config.get_str("writer.info.stream", None)?;
         if let Some(info_stream_val) = info_stream_val {
             if info_stream_val == "SystemOut" {
-                iwc.set_info_stream_print_stream(Box::new(std::io::stdout()))?;
+                iwc.set_info_stream_print_stream(crate::jdk::system::out())?;
             } else if info_stream_val == "SystemErr" {
-                iwc.set_info_stream_print_stream(Box::new(std::io::stderr()))?;
+                iwc.set_info_stream_print_stream(crate::jdk::system::err())?;
             } else {
                 let f = File::create(&info_stream_val)?;
                 iwc.set_info_stream_print_stream(Box::new(BufWriter::new(f)))?;

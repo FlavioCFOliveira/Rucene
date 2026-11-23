@@ -29,9 +29,18 @@ mod uhighlight {
     pub mod test_default_passage_formatter;
     pub mod test_length_goal_break_iterator;
     pub mod test_splitting_break_iterator;
-    pub mod test_whole_break_iterator;
     pub mod test_unified_highlighter;
+    pub mod test_unified_highlighter_mtq;
+    pub mod test_unified_highlighter_ranking;
+    pub mod test_unified_highlighter_reanalysis;
+    pub mod test_unified_highlighter_strict_phrases;
+    pub mod test_unified_highlighter_term_intervals;
+    pub mod test_unified_highlighter_term_vec;
+    pub mod test_whole_break_iterator;
     pub mod unified_highlighter_test_base;
+    pub mod visibility {
+        pub mod test_unified_highlighter_extensibility;
+    }
 }
 
 use highlighter_support::core_support::run;
@@ -53,5 +62,16 @@ suites!(
     test_length_goal_break_iterator,
     test_splitting_break_iterator,
     test_unified_highlighter,
+    test_unified_highlighter_mtq,
+    test_unified_highlighter_ranking,
+    test_unified_highlighter_reanalysis,
+    test_unified_highlighter_strict_phrases,
+    test_unified_highlighter_term_intervals,
+    test_unified_highlighter_term_vec,
     test_whole_break_iterator,
 );
+
+#[test]
+fn test_unified_highlighter_extensibility() {
+    run(uhighlight::visibility::test_unified_highlighter_extensibility::class_def);
+}

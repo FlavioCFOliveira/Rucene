@@ -63,7 +63,24 @@ pub(crate) struct DateFormatInfo {
 }
 
 /// The reader `openNextFile` builds.
-type TrecReader = BufferedReader<InputStreamReader<Box<dyn Read + Send>>>;
+pub type TrecReader = BufferedReader<InputStreamReader<Box<dyn Read + Send>>>;
+
+/// The fields of the package-private `openNextFile()` that a Java subclass
+/// overriding it (in the same package, as Lucene's `TestTrecContentSource`
+/// does) reads and assigns: the `reader` and `iteration` fields and the
+/// inherited `forever` flag.
+pub struct OpenNextFileState<'a> {
+    /// The field `reader`.
+    pub reader: &'a mut Option<TrecReader>,
+    /// The field `iteration`.
+    pub iteration: &'a mut i32,
+    /// The inherited field `forever`.
+    pub forever: bool,
+}
+
+/// An override of the package-private `openNextFile()` (a Java subclass
+/// method), see [`TrecContentSource::with_open_next_file`].
+pub type OpenNextFileOverride = Arc<dyn Fn(&mut OpenNextFileState<'_>) -> Result<()> + Send + Sync>;
 
 /// The fields guarded by `lock`.
 #[derive(Default)]
@@ -81,6 +98,8 @@ struct Settings {
     html_parser: Option<Arc<dyn HTMLParser>>,
     exclude_docname_iteration: bool,
     trec_doc_parser: Arc<dyn TrecDocParser>,
+    /// The `openNextFile()` of a subclass, if any.
+    open_next_file_override: Option<OpenNextFileOverride>,
 }
 
 /// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.TrecContentSource`
@@ -143,8 +162,28 @@ impl TrecContentSource {
                 html_parser: None,
                 exclude_docname_iteration: false,
                 trec_doc_parser: Arc::new(TrecGov2Parser), // default
+                open_next_file_override: None,
             }),
         }
+    }
+
+    /// A `TrecContentSource` subclass that overrides the package-private
+    /// `openNextFile()` with `open_next_file` (Rust has no subclassing; the
+    /// override replaces the method body, as in Java).
+    pub fn with_open_next_file(open_next_file: OpenNextFileOverride) -> Self {
+        let source = Self::new();
+        jdk::lock(&source.settings).open_next_file_override = Some(open_next_file);
+        source
+    }
+
+    /// Assigns the package-private field `htmlParser`.
+    pub fn set_html_parser(&self, html_parser: Option<Arc<dyn HTMLParser>>) {
+        jdk::lock(&self.settings).html_parser = html_parser;
+    }
+
+    /// The package-private field `currPathType`.
+    pub fn curr_path_type(&self) -> Option<ParsePathType> {
+        jdk::lock(&self.lock).curr_path_type
     }
 
     /// `getDateFormatInfo()`.
@@ -217,6 +256,12 @@ impl TrecContentSource {
 
     /// `openNextFile()`.
     fn open_next_file(&self, l: &mut Locked) -> Result<()> {
+        let open_next_file_override = jdk::lock(&self.settings).open_next_file_override.clone();
+        if let Some(open_next_file) = open_next_file_override {
+            let mut state =
+                OpenNextFileState { reader: &mut l.reader, iteration: &mut l.iteration, forever: self.base.forever() };
+            return open_next_file(&mut state);
+        }
         self.close_locked(l);
         l.curr_path_type = None;
         loop {

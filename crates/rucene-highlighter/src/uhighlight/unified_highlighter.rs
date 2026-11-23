@@ -422,6 +422,24 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
         this.max_no_highlight_passages
     }
 
+    /// Equivalent to the public, overridable `getMaxLength()`.
+    fn get_max_length(&self, this: &UnifiedHighlighter) -> i32 {
+        this.max_length
+    }
+
+    /// Equivalent to the public, overridable `getIndexSearcher()`.
+    fn get_index_searcher<'a>(
+        &'a self,
+        this: &'a UnifiedHighlighter,
+    ) -> Option<&'a Arc<IndexSearcher>> {
+        this.searcher.as_ref()
+    }
+
+    /// Equivalent to the public, overridable `getIndexAnalyzer()`.
+    fn get_index_analyzer<'a>(&'a self, this: &'a UnifiedHighlighter) -> &'a Arc<dyn Analyzer> {
+        &this.index_analyzer
+    }
+
     /// Equivalent to the protected `getOffsetSource(String)`.
     ///
     /// # Errors
@@ -1186,6 +1204,15 @@ impl UnifiedHighlighter {
     ///
     /// Equivalent to `getMaxLength()`.
     pub fn get_max_length(&self) -> i32 {
+        match &self.overrides {
+            Some(o) => o.get_max_length(self),
+            None => self.max_length,
+        }
+    }
+
+    /// The base class's `getMaxLength()`: what an override reaches as
+    /// `super.getMaxLength()`.
+    pub fn super_get_max_length(&self) -> i32 {
         self.max_length
     }
 
@@ -1205,6 +1232,12 @@ impl UnifiedHighlighter {
         }
     }
 
+    /// The base class's `getBreakIterator(String)`: what an override
+    /// reaches as `super.getBreakIterator(field)`.
+    pub fn super_get_break_iterator(&self, _field: &str) -> Box<dyn BreakIterator> {
+        (self.break_iterator)()
+    }
+
     /// Returns the `PassageScorer` to use for ranking passages.
     ///
     /// Equivalent to the protected `getScorer(String)`.
@@ -1213,6 +1246,12 @@ impl UnifiedHighlighter {
             Some(o) => o.get_scorer(self, field),
             None => self.scorer.clone(),
         }
+    }
+
+    /// The base class's `getScorer(String)`: what an override reaches as
+    /// `super.getScorer(field)`.
+    pub fn super_get_scorer(&self, _field: &str) -> PassageScorer {
+        self.scorer.clone()
     }
 
     /// Returns the `PassageFormatter` to use for formatting passages into
@@ -1226,6 +1265,12 @@ impl UnifiedHighlighter {
         }
     }
 
+    /// The base class's `getFormatter(String)`: what an override reaches as
+    /// `super.getFormatter(field)`.
+    pub fn super_get_formatter(&self, _field: &str) -> Arc<dyn PassageFormatter> {
+        Arc::clone(&self.formatter)
+    }
+
     /// Returns the `Comparator` to use for finally sorting passages.
     ///
     /// Equivalent to the protected `getPassageSortComparator(String)`.
@@ -1234,6 +1279,12 @@ impl UnifiedHighlighter {
             Some(o) => o.get_passage_sort_comparator(self, field),
             None => Arc::clone(&self.passage_sort_comparator),
         }
+    }
+
+    /// The base class's `getPassageSortComparator(String)`: what an
+    /// override reaches as `super.getPassageSortComparator(field)`.
+    pub fn super_get_passage_sort_comparator(&self, _field: &str) -> PassageSortComparator {
+        Arc::clone(&self.passage_sort_comparator)
     }
 
     /// Returns the number of leading passages (as delineated by the
@@ -1248,6 +1299,12 @@ impl UnifiedHighlighter {
             Some(o) => o.get_max_no_highlight_passages(self, field),
             None => self.max_no_highlight_passages,
         }
+    }
+
+    /// The base class's `getMaxNoHighlightPassages(String)`: what an
+    /// override reaches as `super.getMaxNoHighlightPassages(field)`.
+    pub fn super_get_max_no_highlight_passages(&self, _field: &str) -> i32 {
+        self.max_no_highlight_passages
     }
 
     /// Limits the amount of field value pre-fetching until this threshold
@@ -1273,6 +1330,15 @@ impl UnifiedHighlighter {
     ///
     /// Equivalent to `getIndexSearcher()`.
     pub fn get_index_searcher(&self) -> Option<&Arc<IndexSearcher>> {
+        match &self.overrides {
+            Some(o) => o.get_index_searcher(self),
+            None => self.searcher.as_ref(),
+        }
+    }
+
+    /// The base class's `getIndexSearcher()`: what an override reaches as
+    /// `super.getIndexSearcher()`.
+    pub fn super_get_index_searcher(&self) -> Option<&Arc<IndexSearcher>> {
         self.searcher.as_ref()
     }
 
@@ -1280,6 +1346,15 @@ impl UnifiedHighlighter {
     ///
     /// Equivalent to `getIndexAnalyzer()`.
     pub fn get_index_analyzer(&self) -> &Arc<dyn Analyzer> {
+        match &self.overrides {
+            Some(o) => o.get_index_analyzer(self),
+            None => &self.index_analyzer,
+        }
+    }
+
+    /// The base class's `getIndexAnalyzer()`: what an override reaches as
+    /// `super.getIndexAnalyzer()`.
+    pub fn super_get_index_analyzer(&self) -> &Arc<dyn Analyzer> {
         &self.index_analyzer
     }
 

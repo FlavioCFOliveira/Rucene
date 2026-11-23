@@ -218,8 +218,13 @@ impl S2CellId {
         } else {
             0
         };
-        let si = (i.int_value() << 1) + delta - Self::MAX_SIZE;
-        let ti = (j.int_value() << 1) + delta - Self::MAX_SIZE;
+        // Java `int` arithmetic, wrapping on overflow.
+        let si = (i.int_value() << 1)
+            .wrapping_add(delta)
+            .wrapping_sub(Self::MAX_SIZE);
+        let ti = (j.int_value() << 1)
+            .wrapping_add(delta)
+            .wrapping_sub(Self::MAX_SIZE);
         Self::face_si_ti_to_xyz(face, si, ti)
     }
 
@@ -288,7 +293,11 @@ impl S2CellId {
 
     /// `childPosition(int level)`.
     pub fn child_position(&self, level: i32) -> i32 {
-        (((self.id as u64) >> (2 * (Self::MAX_LEVEL - level) + 1)) as i32) & 3
+        // Java `>>>` masks the shift distance (`& 63`).
+        let shift = 2i32
+            .wrapping_mul(Self::MAX_LEVEL.wrapping_sub(level))
+            .wrapping_add(1);
+        ((self.id as u64).wrapping_shr(shift as u32) as i32) & 3
     }
 
     /// `rangeMin()`.
@@ -507,7 +516,10 @@ impl S2CellId {
         let mut j = MutableInteger::new(0);
         let face = self.to_face_ij_orientation(&mut i, &mut j, None);
         let (i, j) = (i.int_value(), j.int_value());
-        let halfsize = 1 << (Self::MAX_LEVEL - (level + 1));
+        // Java `<<` masks the shift distance (`& 31`): `level == 30` gives
+        // `1 << -1 == Integer.MIN_VALUE`.
+        let halfsize =
+            1i32.wrapping_shl(Self::MAX_LEVEL.wrapping_sub(level.wrapping_add(1)) as u32);
         let size = halfsize << 1;
         let (ioffset, isame) = if (i & halfsize) != 0 {
             (size, (i + size) < Self::MAX_SIZE)
@@ -539,34 +551,50 @@ impl S2CellId {
         i.set_value(i.int_value() & -size);
         j.set_value(j.int_value() & -size);
         let (i, j) = (i.int_value(), j.int_value());
-        let nbr_size = 1 << (Self::MAX_LEVEL - nbr_level);
-        let mut k = -nbr_size;
+        // Java `int` shift (distance masked `& 31`) and negation, wrapping.
+        let nbr_size = 1i32.wrapping_shl(Self::MAX_LEVEL.wrapping_sub(nbr_level) as u32);
+        let mut k = nbr_size.wrapping_neg();
         loop {
             let same_face;
             if k < 0 {
-                same_face = j + k >= 0;
+                same_face = j.wrapping_add(k) >= 0;
             } else if k >= size {
-                same_face = j + k < Self::MAX_SIZE;
+                same_face = j.wrapping_add(k) < Self::MAX_SIZE;
             } else {
                 same_face = true;
                 output.push(
-                    Self::from_face_ij_same(face, i + k, j - nbr_size, j - size >= 0)
-                        .parent_at(nbr_level),
+                    Self::from_face_ij_same(
+                        face,
+                        i.wrapping_add(k),
+                        j.wrapping_sub(nbr_size),
+                        j - size >= 0,
+                    )
+                    .parent_at(nbr_level),
                 );
                 output.push(
-                    Self::from_face_ij_same(face, i + k, j + size, j + size < Self::MAX_SIZE)
-                        .parent_at(nbr_level),
+                    Self::from_face_ij_same(
+                        face,
+                        i.wrapping_add(k),
+                        j + size,
+                        j + size < Self::MAX_SIZE,
+                    )
+                    .parent_at(nbr_level),
                 );
             }
             output.push(
-                Self::from_face_ij_same(face, i - nbr_size, j + k, same_face && i - size >= 0)
-                    .parent_at(nbr_level),
+                Self::from_face_ij_same(
+                    face,
+                    i.wrapping_sub(nbr_size),
+                    j.wrapping_add(k),
+                    same_face && i - size >= 0,
+                )
+                .parent_at(nbr_level),
             );
             output.push(
                 Self::from_face_ij_same(
                     face,
                     i + size,
-                    j + k,
+                    j.wrapping_add(k),
                     same_face && i + size < Self::MAX_SIZE,
                 )
                 .parent_at(nbr_level),
@@ -574,7 +602,7 @@ impl S2CellId {
             if k >= size {
                 break;
             }
-            k += nbr_size;
+            k = k.wrapping_add(nbr_size);
         }
     }
 

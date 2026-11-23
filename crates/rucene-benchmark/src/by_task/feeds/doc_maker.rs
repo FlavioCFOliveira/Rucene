@@ -418,7 +418,7 @@ impl DocMaker {
         doc.clear();
 
         // Set ID_FIELD
-        let ft = FieldType::clone(&val_type);
+        let ft = FieldType::new_from(&*val_type);
         ft.set_stored(true)?;
         let id_field = ds.get_field(Self::ID_FIELD, &Arc::new(ft))?;
         let id = {
@@ -695,7 +695,7 @@ impl DocMaker {
         let term_vec_positions = config.get_bool("doc.term.vector.positions", false)?;
         let term_vec_offsets = config.get_bool("doc.term.vector.offsets", false)?;
 
-        let val_type = TextField::type_not_stored().clone();
+        let val_type = FieldType::new_from(TextField::type_not_stored());
         val_type.set_stored(stored)?;
         val_type.set_tokenized(tokenized)?;
         val_type.set_omit_norms(!norms)?;
@@ -704,7 +704,7 @@ impl DocMaker {
         val_type.set_store_term_vector_offsets(term_vec_offsets)?;
         val_type.freeze();
 
-        let body_val_type = TextField::type_not_stored().clone();
+        let body_val_type = FieldType::new_from(TextField::type_not_stored());
         body_val_type.set_stored(body_stored)?;
         body_val_type.set_tokenized(body_tokenized)?;
         body_val_type.set_omit_norms(!body_norms)?;

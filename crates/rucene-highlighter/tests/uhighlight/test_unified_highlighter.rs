@@ -94,12 +94,18 @@ pub fn class_def() -> Arc<Class> {
             ),
             ti::<T>("testHighlightLastWord", test_highlight_last_word),
             ti::<T>("testOneSentence", test_one_sentence),
-            ti::<T>("testMaxLengthWithMultivalue", test_max_length_with_multivalue),
+            ti::<T>(
+                "testMaxLengthWithMultivalue",
+                test_max_length_with_multivalue,
+            ),
             ti::<T>("testMultipleFields", test_multiple_fields),
             ti::<T>("testMultipleTerms", test_multiple_terms),
             ti::<T>("testMultiplePassages", test_multiple_passages),
             ti::<T>("testBuddhism", test_buddhism),
-            ti::<T>("testHighlighterDefaultFlags", test_highlighter_default_flags),
+            ti::<T>(
+                "testHighlighterDefaultFlags",
+                test_highlighter_default_flags,
+            ),
             ti::<T>("testCuriousGeorge", test_curious_george),
             ti::<T>("testCambridgeMA", test_cambridge_ma),
             ti::<T>("testPassageRanking", test_passage_ranking),
@@ -125,7 +131,10 @@ pub fn class_def() -> Arc<Class> {
             ),
             ti::<T>("testMaskedFields", test_masked_fields),
             ti::<T>("testMatchesSlopBug", test_matches_slop_bug),
-            ti::<T>("testFieldMatcherPhraseQuery", test_field_matcher_phrase_query),
+            ti::<T>(
+                "testFieldMatcherPhraseQuery",
+                test_field_matcher_phrase_query,
+            ),
             ti::<T>(
                 "testNestedBooleanQueryAccuracy",
                 test_nested_boolean_query_accuracy,
@@ -218,7 +227,10 @@ fn test_basics(t: &mut T) -> Result<()> {
     Assert::assert_equals(2, top_docs.total_hits.value());
     let snippets = highlighter.highlight("body", &query, &top_docs)?;
     Assert::assert_equals(2, snippets.len());
-    assert_snippet("Just a test <b>highlighting</b> from postings. ", &snippets[0]);
+    assert_snippet(
+        "Just a test <b>highlighting</b> from postings. ",
+        &snippets[0],
+    );
     assert_snippet("<b>Highlighting</b> the first term. ", &snippets[1]);
     ir.close()
 }
@@ -642,10 +654,14 @@ fn test_specific_doc_ids(t: &mut T) -> Result<()> {
     Assert::assert_equals(2, top_docs.total_hits.value());
     let hits = &top_docs.score_docs;
     let doc_ids = [hits[0].doc, hits[1].doc];
-    let snippets = highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[1])?;
+    let snippets =
+        highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[1])?;
     let snippets = get(&snippets, "body");
     Assert::assert_equals(2, snippets.len());
-    assert_snippet("Just a test <b>highlighting</b> from postings. ", &snippets[0]);
+    assert_snippet(
+        "Just a test <b>highlighting</b> from postings. ",
+        &snippets[0],
+    );
     assert_snippet("<b>Highlighting</b> the first term. ", &snippets[1]);
     ir.close()
 }
@@ -671,7 +687,11 @@ impl UnifiedHighlighterOverrides for CustomFieldValueSource {
         Ok(vec![vec![Some(units(&self.text))]])
     }
 
-    fn get_break_iterator(&self, _this: &UnifiedHighlighter, _field: &str) -> Box<dyn BreakIterator> {
+    fn get_break_iterator(
+        &self,
+        _this: &UnifiedHighlighter,
+        _field: &str,
+    ) -> Box<dyn BreakIterator> {
         Box::new(WholeBreakIterator::new())
     }
 }
@@ -711,10 +731,14 @@ fn test_empty_highlights(t: &mut T) -> Result<()> {
     let highlighter = random_unified_highlighter(&searcher, t.analyzer());
     let query = tq("body", "highlighting");
     let doc_ids = [0];
-    let snippets = highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
+    let snippets =
+        highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
     let snippets = get(&snippets, "body");
     Assert::assert_equals(1, snippets.len());
-    assert_snippet("test this is.  another sentence this test has.  ", &snippets[0]);
+    assert_snippet(
+        "test this is.  another sentence this test has.  ",
+        &snippets[0],
+    );
     ir.close()
 }
 
@@ -745,8 +769,11 @@ fn highlight_id_doc(t: &UHBase, ir: &Arc<dyn DirectoryReader>) -> Result<Vec<Opt
 
     let query = tq("body", "highlighting");
     let doc_ids = [doc_id];
-    let mut snippets = highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
-    Ok(snippets.remove("body").expect("NullPointerException: no body snippets"))
+    let mut snippets =
+        highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
+    Ok(snippets
+        .remove("body")
+        .expect("NullPointerException: no body snippets"))
 }
 
 /// Not empty but nothing analyzes. Ensures we address null term-vectors.
@@ -771,7 +798,8 @@ fn test_custom_empty_highlights(t: &mut T) -> Result<()> {
     let highlighter = random_uh_from_builder(uh_builder);
     let query = tq("body", "highlighting");
     let doc_ids = [0];
-    let snippets = highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
+    let snippets =
+        highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
     let snippets = get(&snippets, "body");
     Assert::assert_equals(1, snippets.len());
     assert_null_snippet(&snippets[0]);
@@ -789,7 +817,8 @@ fn test_empty_highlights_whole(t: &mut T) -> Result<()> {
         .build();
     let query = tq("body", "highlighting");
     let doc_ids = [0];
-    let snippets = highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
+    let snippets =
+        highlighter.highlight_fields_doc_ids(&["body".to_string()], &query, &doc_ids, &[2])?;
     let snippets = get(&snippets, "body");
     Assert::assert_equals(1, snippets.len());
     assert_snippet(PLANET, &snippets[0]);
@@ -804,7 +833,8 @@ fn test_field_is_missing(t: &mut T) -> Result<()> {
     let highlighter = random_unified_highlighter(&searcher, t.analyzer());
     let query = tq("bogus", "highlighting");
     let doc_ids = [0];
-    let snippets = highlighter.highlight_fields_doc_ids(&["bogus".to_string()], &query, &doc_ids, &[2])?;
+    let snippets =
+        highlighter.highlight_fields_doc_ids(&["bogus".to_string()], &query, &doc_ids, &[2])?;
     let snippets = get(&snippets, "bogus");
     Assert::assert_equals(1, snippets.len());
     assert_null_snippet(&snippets[0]);
@@ -837,7 +867,11 @@ fn test_multiple_docs(t: &mut T) -> Result<()> {
             content.push_str(" some more terms");
         }
         add(&mut doc, &t.field("body", &content)?);
-        doc.add(LuceneTestCase::new_string_field("id", &i.to_string(), Store::YES));
+        doc.add(LuceneTestCase::new_string_field(
+            "id",
+            &i.to_string(),
+            Store::YES,
+        ));
         iw.add_document(&doc)?;
 
         if random().next_int_bound(10) == 2 {
@@ -950,7 +984,11 @@ struct StringArray(Vec<String>);
 impl fmt::Display for StringArray {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Object.toString() of a String[]: its class name and identity.
-        write!(f, "[Ljava.lang.String;@{:x}", self as *const Self as usize as u32)
+        write!(
+            f,
+            "[Ljava.lang.String;@{:x}",
+            self as *const Self as usize as u32
+        )
     }
 }
 
@@ -966,7 +1004,9 @@ impl PassageFormatter for ArrayPassageFormatter {
         // array of String
         Ok(Box::new(StringArray(vec![
             "blah blah".to_string(),
-            self.default_formatter.format(passages, content)?.to_string(),
+            self.default_formatter
+                .format(passages, content)?
+                .to_string(),
         ])))
     }
 }
@@ -1135,9 +1175,10 @@ fn field_matcher_checks(
 fn test_field_matcher_term_query(t: &mut T) -> Result<()> {
     let ir = index_some_fields(t)?;
     let searcher = new_searcher(&ir);
-    let highlighter_no_field_match = UnifiedHighlighter::builder(Arc::clone(&searcher), t.analyzer())
-        .with_field_matcher(always())
-        .build();
+    let highlighter_no_field_match =
+        UnifiedHighlighter::builder(Arc::clone(&searcher), t.analyzer())
+            .with_field_matcher(always())
+            .build();
     let uh_builder = builder(&searcher, t.analyzer());
     let highlighter_field_match =
         override_field_matcher_for_tests(&random_uh_from_builder(uh_builder), None, "text");
@@ -1161,7 +1202,10 @@ fn test_field_matcher_term_query(t: &mut T) -> Result<()> {
 }
 
 fn fuzzy(field: &str, text: &str, max_edits: i32) -> Result<Arc<dyn Query>> {
-    Ok(Arc::new(FuzzyQuery::with_max_edits(term(field, text), max_edits)?))
+    Ok(Arc::new(FuzzyQuery::with_max_edits(
+        term(field, text),
+        max_edits,
+    )?))
 }
 
 fn prefix(field: &str, text: &str) -> Result<Arc<dyn Query>> {
@@ -1171,9 +1215,10 @@ fn prefix(field: &str, text: &str) -> Result<Arc<dyn Query>> {
 fn test_field_matcher_multi_term_query(t: &mut T) -> Result<()> {
     let ir = index_some_fields(t)?;
     let searcher = new_searcher(&ir);
-    let highlighter_no_field_match = UnifiedHighlighter::builder(Arc::clone(&searcher), t.analyzer())
-        .with_field_matcher(always())
-        .build();
+    let highlighter_no_field_match =
+        UnifiedHighlighter::builder(Arc::clone(&searcher), t.analyzer())
+            .with_field_matcher(always())
+            .build();
     let uh_builder = builder(&searcher, t.analyzer());
     let highlighter_field_match = override_field_matcher_for_tests(
         &random_uh_from_builder_flags(uh_builder, &[HighlightFlag::MULTI_TERM_QUERY], None),
@@ -1262,7 +1307,10 @@ fn test_masked_fields(t: &mut T) -> Result<()> {
             let added = (|| -> Result<()> {
                 let mut doc = Document::new();
                 add(&mut doc, &t.field("field", "dance with star")?);
-                add(&mut doc, &field("field_english", "dance with star", &field_type_matched)?);
+                add(
+                    &mut doc,
+                    &field("field_english", "dance with star", &field_type_matched)?,
+                );
                 add(
                     &mut doc,
                     &field("field_characters", "dance with star", &field_type_matched)?,
@@ -1371,8 +1419,8 @@ fn masked_fields_test_case(
             Vec::new()
         })
     });
-    let uh_builder = builder(searcher, Arc::clone(analyzer))
-        .with_masked_fields_func(Some(masked_fields_func));
+    let uh_builder =
+        builder(searcher, Arc::clone(analyzer)).with_masked_fields_func(Some(masked_fields_func));
     let highlighter = random_uh_from_builder_flags(
         uh_builder,
         &[HighlightFlag::PHRASES],
@@ -1416,7 +1464,13 @@ fn test_matches_slop_bug(t: &mut T) -> Result<()> {
 }
 
 /// `assertEquals(weightMatches ? with : without, snippet)`.
-fn assert_by_flags(highlighter: &UnifiedHighlighter, field: &str, with: &str, without: &str, snippet: &Option<String>) {
+fn assert_by_flags(
+    highlighter: &UnifiedHighlighter,
+    field: &str,
+    with: &str,
+    without: &str,
+    snippet: &Option<String>,
+) {
     if highlighter
         .get_flags(field)
         .contains(&HighlightFlag::WEIGHT_MATCHES)
@@ -1430,10 +1484,11 @@ fn assert_by_flags(highlighter: &UnifiedHighlighter, field: &str, with: &str, wi
 fn test_field_matcher_phrase_query(t: &mut T) -> Result<()> {
     let ir = index_some_fields(t)?;
     let searcher = new_searcher(&ir);
-    let highlighter_no_field_match = UnifiedHighlighter::builder(Arc::clone(&searcher), t.analyzer())
-        // requireFieldMatch=false
-        .with_field_matcher(always())
-        .build();
+    let highlighter_no_field_match =
+        UnifiedHighlighter::builder(Arc::clone(&searcher), t.analyzer())
+            // requireFieldMatch=false
+            .with_field_matcher(always())
+            .build();
     let uh_builder = builder(&searcher, t.analyzer());
     let mut highlighter_field_match = override_field_matcher_for_tests(
         &random_uh_from_builder_flags(
@@ -1445,11 +1500,20 @@ fn test_field_matcher_phrase_query(t: &mut T) -> Result<()> {
         "text",
     );
     let query = bq(vec![
-        (pq(0, "title", &["this", "is", "the", "title"])?, Occur::SHOULD),
-        (pq(2, "category", &["this", "is", "the", "field"])?, Occur::SHOULD),
+        (
+            pq(0, "title", &["this", "is", "the", "title"])?,
+            Occur::SHOULD,
+        ),
+        (
+            pq(2, "category", &["this", "is", "the", "field"])?,
+            Occur::SHOULD,
+        ),
         (pq(0, "text", &["this", "is"])?, Occur::SHOULD),
         (pq(0, "category", &["this", "is"])?, Occur::SHOULD),
-        (pq(1, "text", &["you", "can", "put", "text"])?, Occur::SHOULD),
+        (
+            pq(1, "text", &["you", "can", "put", "text"])?,
+            Occur::SHOULD,
+        ),
     ])?;
 
     // title
@@ -1623,7 +1687,10 @@ fn test_not_reanalyzed(t: &mut T) -> Result<()> {
     Assert::assert_equals(1, top_docs.total_hits.value());
     let snippets = highlighter.highlight("body", &query, &top_docs)?;
     Assert::assert_equals(1, snippets.len());
-    assert_snippet("Just a test <b>highlighting</b> from postings. ", &snippets[0]);
+    assert_snippet(
+        "Just a test <b>highlighting</b> from postings. ",
+        &snippets[0],
+    );
 
     ir.close()
 }

@@ -183,6 +183,11 @@ impl ContentItemsSourceBase {
         self.lock().forever
     }
 
+    /// Assigns the protected field `forever` (as a subclass may).
+    pub fn set_forever(&self, forever: bool) {
+        self.lock().forever = forever;
+    }
+
     /// `logStep`.
     pub fn log_step(&self) -> i32 {
         self.lock().log_step

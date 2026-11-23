@@ -26,5 +26,5 @@ pub mod quality;
 pub mod utils;
 
 pub mod classes;
-pub(crate) mod icu;
-pub(crate) mod jdk;
+pub mod icu;
+pub mod jdk;

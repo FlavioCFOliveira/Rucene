@@ -318,7 +318,14 @@ impl TestLengthGoalBreakIterator {
         frag_align: f32,
         max_passages: i32,
     ) -> Result<String> {
-        self.highlight_closest_to_len_sep(content, query, length_goal, frag_align, max_passages, '.')
+        self.highlight_closest_to_len_sep(
+            content,
+            query,
+            length_goal,
+            frag_align,
+            max_passages,
+            '.',
+        )
     }
 
     fn highlight_closest_to_len_sep(

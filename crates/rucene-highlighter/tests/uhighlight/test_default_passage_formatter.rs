@@ -39,7 +39,10 @@ pub fn class_def() -> Arc<Class> {
         vec![
             test("testBasic", test_basic),
             test("testOverlappingPassages", test_overlapping_passages),
-            test("testReversedStartOffsetOrder", test_reversed_start_offset_order),
+            test(
+                "testReversedStartOffsetOrder",
+                test_reversed_start_offset_order,
+            ),
         ],
     )
 }
@@ -104,7 +107,12 @@ fn test_overlapping_passages() -> Result<()> {
     passages[0].set_score(5.93812f32);
     passages[0].set_score(5.93812f32);
     passages[0].add_match(0, 3, BytesRef::from_char_sequence("yin"), 1);
-    passages[0].add_match(0, 22, BytesRef::from_char_sequence("yin yang loooooooooooong"), 1);
+    passages[0].add_match(
+        0,
+        22,
+        BytesRef::from_char_sequence("yin yang loooooooooooong"),
+        1,
+    );
     passages[0].add_match(4, 8, BytesRef::from_char_sequence("yang"), 1);
     passages[0].add_match(9, 22, BytesRef::from_char_sequence("loooooooooong"), 1);
     passages[0].add_match(24, 27, BytesRef::from_char_sequence("yin"), 1);

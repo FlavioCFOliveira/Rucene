@@ -27,8 +27,9 @@ use rucene::error::{LuceneError, Result};
 use crate::by_task::perf_run_data::PerfRunData;
 use crate::jdk;
 
-/// `DEFAULT_LOG_STEP`.
-pub(crate) const DEFAULT_LOG_STEP: i32 = 1000;
+/// `DEFAULT_LOG_STEP` (Java package-private; public for the port of
+/// `TestPerfTask`).
+pub const DEFAULT_LOG_STEP: i32 = 1000;
 
 /// `NEW_LINE`.
 pub(crate) const NEW_LINE: &str = jdk::NEW_LINE;

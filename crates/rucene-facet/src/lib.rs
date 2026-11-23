@@ -14,9 +14,6 @@
 //! item of that module, and the Java kind is appended when the prefixed name is
 //! itself taken (`DrillSideways.Result` is `DrillSidewaysResultRecord`).
 
-// Some package-private members exist for the module's tests (ported in the
-// test phase) and for Java API parity; nothing in the crate calls them.
-#![allow(dead_code)]
 
 /// Forwards the named `LeafReader` members of a `FilterLeafReader` subclass
 /// to its base, the core reader held in the named field, as the members a

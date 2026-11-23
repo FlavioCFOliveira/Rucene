@@ -376,3 +376,58 @@ pub fn string_tokens(s: &str) -> impl Iterator<Item = &str> {
 pub fn no_such_element() -> LuceneError {
     LuceneError::unchecked_with_message("java.util.NoSuchElementException", None)
 }
+
+/// `System.out` and `System.err` as the benchmark's tasks write to them
+/// (`writer.info.stream=SystemOut|SystemErr` of `CreateIndexTask`): a
+/// replaceable sink, as `System.setOut`/`System.setErr` replace the JVM's
+/// streams; `None` writes to the process's own stream.
+pub mod system {
+    use std::io::{self, Write};
+    use std::sync::{Arc, RwLock};
+
+    /// A replacement of `System.out`/`System.err`: receives every write.
+    pub type PrintSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
+    static OUT: RwLock<Option<PrintSink>> = RwLock::new(None);
+    static ERR: RwLock<Option<PrintSink>> = RwLock::new(None);
+
+    /// `System.setOut(stream)`; returns the previous sink.
+    pub fn set_out(sink: Option<PrintSink>) -> Option<PrintSink> {
+        std::mem::replace(&mut *OUT.write().unwrap_or_else(|e| e.into_inner()), sink)
+    }
+
+    /// `System.setErr(stream)`; returns the previous sink.
+    pub fn set_err(sink: Option<PrintSink>) -> Option<PrintSink> {
+        std::mem::replace(&mut *ERR.write().unwrap_or_else(|e| e.into_inner()), sink)
+    }
+
+    /// The stream `System.out` is when this is called (Java captures the
+    /// `PrintStream` object, not the field).
+    pub fn out() -> Box<dyn Write + Send> {
+        match OUT.read().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(sink) => Box::new(SinkWriter(sink)),
+            None => Box::new(io::stdout()),
+        }
+    }
+
+    /// The stream `System.err` is when this is called.
+    pub fn err() -> Box<dyn Write + Send> {
+        match ERR.read().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(sink) => Box::new(SinkWriter(sink)),
+            None => Box::new(io::stderr()),
+        }
+    }
+
+    struct SinkWriter(PrintSink);
+
+    impl Write for SinkWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            (self.0)(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+}

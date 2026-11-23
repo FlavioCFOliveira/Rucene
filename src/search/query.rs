@@ -261,8 +261,12 @@ impl QueryKey {
 }
 
 impl PartialEq for QueryKey {
+    /// Java's hashed collections match a key by identity before `equals`:
+    /// `HashMap.getNode` tests `(k = e.key) == key || key.equals(k)`, so a
+    /// query is never asked to equal itself there. The same instance (one
+    /// `Arc`) is therefore equal without calling [`Query::query_eq`].
     fn eq(&self, other: &Self) -> bool {
-        self.0.query_eq(&*other.0)
+        Arc::ptr_eq(&self.0, &other.0) || self.0.query_eq(&*other.0)
     }
 }
 

@@ -39,6 +39,8 @@ bzip2 = "0.6.1"
 quick-xml = "0.42.0"
 
 [dev-dependencies]
-# The sprint-17 Java-oracle harness (`tests/sprint17_oracle/`, rmp #628)
-# draws on `randomizedtesting`.
+# The ported Lucene tests run on lucene/test-framework (and its randomized
+# testing base); the sprint-17 Java-oracle harness (`tests/sprint17_oracle/`,
+# rmp #628) draws on `randomizedtesting`.
+rucene-test-framework = { path = "../rucene-test-framework" }
 randomizedtesting = { path = "../randomizedtesting" }

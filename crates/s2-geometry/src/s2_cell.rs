@@ -215,9 +215,17 @@ impl S2Cell {
         self.cell_id_or_npe()
             .to_face_ij_orientation(&mut i, &mut j, None);
         let cell_size = 1 << (S2CellId::MAX_LEVEL - i32::from(self.level));
-        let si = (i.int_value() & -cell_size) * 2 + cell_size - MAX_CELL_SIZE;
+        // Java `int` arithmetic: at level 0 `(i & -cellSize) * 2` can be 2^31,
+        // which wraps.
+        let si = (i.int_value() & -cell_size)
+            .wrapping_mul(2)
+            .wrapping_add(cell_size)
+            .wrapping_sub(MAX_CELL_SIZE);
         let x = S2Projections::st_to_uv((1.0 / f64::from(MAX_CELL_SIZE)) * f64::from(si));
-        let sj = (j.int_value() & -cell_size) * 2 + cell_size - MAX_CELL_SIZE;
+        let sj = (j.int_value() & -cell_size)
+            .wrapping_mul(2)
+            .wrapping_add(cell_size)
+            .wrapping_sub(MAX_CELL_SIZE);
         let y = S2Projections::st_to_uv((1.0 / f64::from(MAX_CELL_SIZE)) * f64::from(sj));
         R2Vector::new(x, y)
     }

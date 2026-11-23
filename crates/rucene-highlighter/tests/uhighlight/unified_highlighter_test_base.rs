@@ -104,7 +104,10 @@ pub fn reanalysis_type() -> Arc<FieldType> {
 
 /// `randomFieldType(random, typePossibilities...)`: an empty slice is Java's
 /// empty (or `null`) varargs.
-pub fn random_field_type(random: &dyn Random, type_possibilities: &[Arc<FieldType>]) -> Arc<FieldType> {
+pub fn random_field_type(
+    random: &dyn Random,
+    type_possibilities: &[Arc<FieldType>],
+) -> Arc<FieldType> {
     let defaults;
     let possibilities = if type_possibilities.is_empty() {
         defaults = [
@@ -230,7 +233,6 @@ pub fn base_tear_down(base: &mut UHBase) -> Result<()> {
 
 /// A `UnifiedHighlighterTestBase` subclass instance.
 pub trait UHCase: Any + Send {
-    fn base(&self) -> &UHBase;
     fn base_mut(&mut self) -> &mut UHBase;
 
     /// `setUp()`.
@@ -250,10 +252,6 @@ pub struct UHTest {
 }
 
 impl UHCase for UHTest {
-    fn base(&self) -> &UHBase {
-        &self.b
-    }
-
     fn base_mut(&mut self) -> &mut UHBase {
         &mut self.b
     }
@@ -269,7 +267,11 @@ impl std::ops::Deref for UHTest {
 
 /// The concrete class `name` (`extends UnifiedHighlighterTestBase`) built by
 /// `constructor`, with its `setUp`/`tearDown` and `methods`.
-pub fn uh_class<T: UHCase>(name: &str, constructor: Constructor, methods: Vec<Method>) -> Arc<Class> {
+pub fn uh_class<T: UHCase>(
+    name: &str,
+    constructor: Constructor,
+    methods: Vec<Method>,
+) -> Arc<Class> {
     let mut builder = Class::builder(name)
         .extends(&LuceneTestCase::class())
         .constructor(constructor)
@@ -334,7 +336,11 @@ pub fn index_order() -> Sort {
 }
 
 /// `searcher.search(query, n, Sort.INDEXORDER)`.
-pub fn search_index_order(searcher: &IndexSearcher, query: &Arc<dyn Query>, n: i32) -> Result<TopDocs> {
+pub fn search_index_order(
+    searcher: &IndexSearcher,
+    query: &Arc<dyn Query>,
+    n: i32,
+) -> Result<TopDocs> {
     Ok(searcher
         .search_with_sort(Arc::clone(query), n, &index_order())?
         .to_top_docs())
@@ -447,14 +453,28 @@ pub fn random_uh_from_builder_flags(
     mandatory_flags: &[HighlightFlag],
     require_field_match: Option<bool>,
 ) -> UnifiedHighlighter {
-    uh_builder = uh_builder.with_cache_field_val_chars_threshold(random().next_int_bound(100));
+    random_uh_mut(&mut uh_builder, mandatory_flags, require_field_match)
+}
+
+/// `randomUnifiedHighlighter(uhBuilder, mandatoryFlags, requireFieldMatch)`
+/// on a builder the test reuses afterwards: Java's `with*` setters change
+/// `uhBuilder` itself, so its later `build()`s see the drawn cache threshold
+/// and field matcher.
+pub fn random_uh_mut(
+    uh_builder: &mut Builder,
+    mandatory_flags: &[HighlightFlag],
+    require_field_match: Option<bool>,
+) -> UnifiedHighlighter {
+    *uh_builder = uh_builder
+        .clone()
+        .with_cache_field_val_chars_threshold(random().next_int_bound(100));
     if require_field_match == Some(false)
         || (require_field_match.is_none() && random().next_boolean())
     {
         let matcher: FieldMatcher = Arc::new(|_f: &str| true);
-        uh_builder = uh_builder.with_field_matcher(Some(matcher)); // requireFieldMatch==false
+        *uh_builder = uh_builder.clone().with_field_matcher(Some(matcher)); // requireFieldMatch==false
     }
-    overridden_builder_for_tests(uh_builder, mandatory_flags).build()
+    overridden_builder_for_tests(uh_builder.clone(), mandatory_flags).build()
 }
 
 /// `overrideFieldMatcherForTests(original, value, fieldName)`.

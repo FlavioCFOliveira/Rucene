@@ -120,11 +120,20 @@ struct Shared {
     file: Mutex<Option<PathBuf>>,
     keep_images: Mutex<bool>,
     forever: Mutex<bool>,
+    /// The `openInputStream()` of a subclass, if any.
+    open_input_stream_override: Option<OpenInputStreamOverride>,
 }
+
+/// An override of the protected `openInputStream()` (a Java subclass
+/// method), see [`EnwikiContentSource::with_open_input_stream`].
+pub type OpenInputStreamOverride = Arc<dyn Fn() -> Result<Box<dyn Read + Send>> + Send + Sync>;
 
 impl Shared {
     /// `openInputStream()`: open the input stream.
     fn open_input_stream(&self) -> Result<Arc<ClosableInputStream>> {
+        if let Some(open_input_stream) = &self.open_input_stream_override {
+            return Ok(ClosableInputStream::new(open_input_stream()?));
+        }
         let file = jdk::lock(&self.file).clone().ok_or_else(LuceneError::null_pointer)?;
         Ok(ClosableInputStream::new(StreamUtils::input_stream(&file)?))
     }
@@ -356,8 +365,18 @@ impl EnwikiContentSource {
                 file: Mutex::new(None),
                 keep_images: Mutex::new(true),
                 forever: Mutex::new(true),
+                open_input_stream_override: None,
             }),
         }
+    }
+
+    /// An `EnwikiContentSource` subclass that overrides the protected
+    /// `openInputStream()` with `open_input_stream` (Rust has no
+    /// subclassing; the override replaces the method body, as in Java).
+    pub fn with_open_input_stream(open_input_stream: OpenInputStreamOverride) -> Self {
+        let mut source = Self::new();
+        Arc::get_mut(&mut source.shared).expect("not shared yet").open_input_stream_override = Some(open_input_stream);
+        source
     }
 
     /// `Parser.next()`.

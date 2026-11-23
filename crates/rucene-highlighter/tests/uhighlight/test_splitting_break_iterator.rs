@@ -42,7 +42,10 @@ pub fn class_def() -> Arc<Class> {
             test("testOnlySingleSplitChar", test_only_single_split_char),
             test("testSplitThenValue", test_split_then_value),
             test("testValueThenSplit", test_value_then_split),
-            test("testValueThenSplitThenValue", test_value_then_split_then_value),
+            test(
+                "testValueThenSplitThenValue",
+                test_value_then_split_then_value,
+            ),
             test(
                 "testValueThenDoubleSplitThenValue",
                 test_value_then_double_split_then_value,
@@ -134,10 +137,7 @@ fn break_iterator(bi: &mut dyn BreakIterator, text: &str, boundaries: &str) -> R
     first_and_last(bi, text, boundaries);
 
     // Test if expected boundaries are consistent with reading them from next() in a loop:
-    Assert::assert_equals(
-        boundaries.to_string(),
-        read_boundaries_to_string(bi, text),
-    );
+    Assert::assert_equals(boundaries.to_string(), read_boundaries_to_string(bi, text));
 
     // Test following() and preceding():
     // get each index, randomized in case their is a sequencing bug:
@@ -229,7 +229,8 @@ fn previous(bi: &mut dyn BreakIterator, text: &str, boundaries: &str) {
         }
         Assert::assert_equals_msg(Some(&message), idx, bi.previous());
     }
-    Assert::assert_equals_msg(Some(&message), index_of(boundaries, 0), bi.current()); // finishes at first
+    Assert::assert_equals_msg(Some(&message), index_of(boundaries, 0), bi.current());
+    // finishes at first
 }
 
 /// Returns a string comprised of spaces and '^' only at the boundaries.
