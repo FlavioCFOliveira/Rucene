@@ -46,7 +46,6 @@ use rucene::search::query::Query;
 use rucene::search::query_visitor::term_collector;
 use rucene::search::score_mode::ScoreMode;
 use rucene::search::synonym_query::SynonymQuery;
-use rucene::search::term_query::TermQuery;
 use rucene::search::NO_MORE_DOCS;
 use rucene_memory::MemoryIndex;
 use rucene_queries::common_terms_query::CommonTermsQuery;
@@ -363,7 +362,7 @@ impl WeightedSpanTermExtractor {
         } else if let Some(iodv) = any.downcast_ref::<IndexOrDocValuesQuery>() {
             let index_query = Arc::clone(iodv.get_index_query());
             self.extract(&index_query, boost, terms)?;
-        } else if any.is::<TermQuery>() || any.is::<SynonymQuery>() {
+        } else if query.as_term_query().is_some() || any.is::<SynonymQuery>() {
             self.extract_weighted_terms(terms, query, boost)?;
         } else if let Some(span_query) = as_span_query(&**query) {
             let span_query = cast_span_query(span_query)?;

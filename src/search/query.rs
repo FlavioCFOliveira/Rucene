@@ -127,6 +127,30 @@ pub trait Query: Debug + Send + Sync + 'static {
         None
     }
 
+    /// This query as a [`TermQuery`](crate::search::TermQuery), or `None`
+    /// when it is not one.
+    ///
+    /// Equivalent to Java's `query instanceof TermQuery` followed by the cast
+    /// `(TermQuery) query`. The test matches `TermQuery` subclasses too (for
+    /// example `org.apache.lucene.facet.FacetQuery`), so `TermQuery` and every
+    /// port of a subclass override it with the `TermQuery` they are or extend.
+    fn as_term_query(&self) -> Option<&crate::search::TermQuery> {
+        None
+    }
+
+    /// This query as a
+    /// [`TermInSetQuery`](crate::search::term_in_set_query::TermInSetQuery), or
+    /// `None` when it is not one.
+    ///
+    /// Equivalent to Java's `query instanceof TermInSetQuery` followed by the
+    /// cast `(TermInSetQuery) query`. The test matches `TermInSetQuery`
+    /// subclasses too (for example `org.apache.lucene.facet.MultiFacetQuery`),
+    /// so `TermInSetQuery` and every port of a subclass override it with the
+    /// `TermInSetQuery` they are or extend.
+    fn as_term_in_set_query(&self) -> Option<&crate::search::term_in_set_query::TermInSetQuery> {
+        None
+    }
+
     /// Query instance equivalence.
     ///
     /// Equivalent to `Query.equals(Object)`, which Java leaves abstract. It is

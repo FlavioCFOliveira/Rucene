@@ -263,7 +263,7 @@ impl FieldQuery {
             for query in dmq.get_disjuncts() {
                 self.flatten(query, searcher, flat_queries, boost)?;
             }
-        } else if any.is::<TermQuery>() {
+        } else if source_query.as_term_query().is_some() {
             if boost != 1.0 {
                 source_query = Arc::new(BoostQuery::new(source_query, boost)?);
             }
@@ -478,7 +478,7 @@ impl FieldQuery {
         }
         let query: &dyn Query = held.as_deref().unwrap_or(query);
         let any = query.as_any();
-        if let Some(tq) = any.downcast_ref::<TermQuery>() {
+        if let Some(tq) = query.as_term_query() {
             Ok(tq.get_term().field_opt().map(str::to_string))
         } else if let Some(pq) = any.downcast_ref::<PhraseQuery>() {
             let terms = pq.get_terms();
@@ -540,7 +540,7 @@ impl FieldQuery {
             let key = self.get_key(&*query)?;
             let any = query.as_any();
             let term_set = self.term_set_map.entry(key).or_default();
-            if let Some(tq) = any.downcast_ref::<TermQuery>() {
+            if let Some(tq) = query.as_term_query() {
                 term_set.insert(tq.get_term().text());
             } else if let Some(pq) = any.downcast_ref::<PhraseQuery>() {
                 for term in pq.get_terms() {
@@ -552,7 +552,7 @@ impl FieldQuery {
                     return Err(class_cast(&*rewritten, "org.apache.lucene.search.BooleanQuery"));
                 };
                 for clause in mtq_terms.clauses() {
-                    let Some(tq) = clause.query().as_any().downcast_ref::<TermQuery>() else {
+                    let Some(tq) = clause.query().as_term_query() else {
                         return Err(class_cast(&**clause.query(), "org.apache.lucene.search.TermQuery"));
                     };
                     term_set.insert(tq.get_term().text());
@@ -710,7 +710,7 @@ impl QueryPhraseMap {
         }
         let current: &dyn Query = held.as_deref().unwrap_or(query);
         let any = current.as_any();
-        if let Some(tq) = any.downcast_ref::<TermQuery>() {
+        if let Some(tq) = current.as_term_query() {
             self.add_term(tq.get_term(), boost);
         } else if let Some(pq) = any.downcast_ref::<PhraseQuery>() {
             let terms = pq.get_terms();

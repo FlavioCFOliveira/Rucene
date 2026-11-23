@@ -107,6 +107,10 @@ impl Query for FacetQuery {
         self.inner.rewrite(searcher)
     }
 
+    fn as_term_query(&self) -> Option<&TermQuery> {
+        Some(&self.inner)
+    }
+
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
             && other

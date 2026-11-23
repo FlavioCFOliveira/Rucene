@@ -82,6 +82,10 @@ impl TermQuery {
 }
 
 impl Query for TermQuery {
+    fn as_term_query(&self) -> Option<&TermQuery> {
+        Some(self)
+    }
+
     fn to_query_string(&self, field: &str) -> String {
         let mut buffer = String::new();
         // `if (!term.field().equals(field))`: a `null` term field throws.

@@ -32,7 +32,9 @@ use crate::facets_config::{default_dim_config, FacetsConfig};
 ///
 /// Equivalent to `org.apache.lucene.facet.MultiFacetQuery`, a
 /// `TermInSetQuery` subclass: it delegates to the [`TermInSetQuery`] it
-/// extends and compares equal only to another `MultiFacetQuery`.
+/// extends and compares equal only to another `MultiFacetQuery`. It
+/// dereferences to that `TermInSetQuery`, so the inherited public members are
+/// reachable on it, as in Java.
 #[derive(Debug, Clone)]
 pub struct MultiFacetQuery {
     inner: TermInSetQuery,
@@ -67,6 +69,14 @@ impl MultiFacetQuery {
 
     /// The `TermInSetQuery` this query extends.
     pub fn term_in_set_query(&self) -> &TermInSetQuery {
+        &self.inner
+    }
+}
+
+impl std::ops::Deref for MultiFacetQuery {
+    type Target = TermInSetQuery;
+
+    fn deref(&self) -> &TermInSetQuery {
         &self.inner
     }
 }
@@ -114,6 +124,10 @@ impl Query for MultiFacetQuery {
 
     fn as_multi_term_query(&self) -> Option<&dyn rucene::search::multi_term_query::MultiTermQuery> {
         self.inner.as_multi_term_query()
+    }
+
+    fn as_term_in_set_query(&self) -> Option<&TermInSetQuery> {
+        Some(&self.inner)
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {

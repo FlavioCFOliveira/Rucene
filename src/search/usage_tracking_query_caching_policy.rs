@@ -15,8 +15,6 @@ use crate::search::point_in_set_query::PointInSetQuery;
 use crate::search::point_range_query::PointRangeQuery;
 use crate::search::query::Query;
 use crate::search::query_cache::QueryCachingPolicy;
-use crate::search::term_in_set_query::TermInSetQuery;
-use crate::search::term_query::TermQuery;
 use crate::util::FrequencyTrackingRingBuffer;
 
 /// The hash code used as a sentinel in the ring buffer.
@@ -55,7 +53,7 @@ pub fn is_costly(query: &dyn Query) -> bool {
         || query
             .as_any()
             .is::<crate::search::MultiTermQueryConstantScoreWrapper>()
-        || query.as_any().is::<TermInSetQuery>()
+        || query.as_term_in_set_query().is_some()
         || is_point_query(query)
 }
 
@@ -66,7 +64,7 @@ pub fn is_costly(query: &dyn Query) -> bool {
 fn should_never_cache(query: &dyn Query) -> bool {
     // We do not bother caching term queries, since they are already plenty
     // fast.
-    if query.as_any().is::<TermQuery>() {
+    if query.as_term_query().is_some() {
         return true;
     }
 

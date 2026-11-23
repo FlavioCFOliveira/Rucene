@@ -257,6 +257,10 @@ impl Query for TermInSetQuery {
         Some(self)
     }
 
+    fn as_term_in_set_query(&self) -> Option<&TermInSetQuery> {
+        Some(self)
+    }
+
     fn to_query_string(&self, _default_field: &str) -> String {
         let mut builder = String::new();
         builder.push_str(&self.field);
