@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use rucene::error::Result;
 use rucene::util::java_collections::java_identity_hash_code_stand_in;
+use rucene::util::java_math;
 use rucene_analysis_common::jdk::character_iterator::{CharacterIterator, DONE};
 
 use crate::jdk::{to_rust_string, units};
@@ -393,27 +394,23 @@ impl LSTMBreakEngine {
 
     /// `sigmoid(float[] result, int start, int length)`.
     ///
-    /// **Divergence (proposed, rmp #647 report).** Java's `Math.exp` may be
-    /// a HotSpot intrinsic; the workspace has no `java.lang.Math.exp` port,
-    /// so the port uses Rust's `f64::exp` (within 1 ulp). Unreachable with
-    /// the ICU 77.1 data, which has no LSTM model.
+    /// `Math.exp` is [`java_math::exp`] (fdlibm, the JDK 25 result).
     fn sigmoid(result: &mut [f32], start: usize, length: usize) {
         debug_assert!(start < result.len());
         debug_assert!(start + length <= result.len());
         for r in result.iter_mut().skip(start).take(length) {
-            *r = (1.0 / (1.0 + (-(*r as f64)).exp())) as f32;
+            *r = (1.0 / (1.0 + java_math::exp(-(*r as f64)))) as f32;
         }
     }
 
     /// `tanh(float[] result, int start, int length)`.
     ///
-    /// **Divergence (proposed, rmp #647 report).** Java's `Math.tanh`; the
-    /// port uses Rust's `f64::tanh`, as for [`sigmoid`](Self::sigmoid).
+    /// `Math.tanh` is [`java_math::tanh`] (fdlibm, the JDK 25 result).
     fn tanh(result: &mut [f32], start: usize, length: usize) {
         debug_assert!(start < result.len());
         debug_assert!(start + length <= result.len());
         for r in result.iter_mut().skip(start).take(length) {
-            *r = (*r as f64).tanh() as f32;
+            *r = java_math::tanh(*r as f64) as f32;
         }
     }
 

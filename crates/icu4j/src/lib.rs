@@ -182,6 +182,34 @@ pub mod text {
     pub mod unicode_matcher;
     pub mod unicode_set;
     pub mod unicode_set_iterator;
+    pub(crate) mod any_transliterator;
+    pub(crate) mod break_transliterator;
+    pub(crate) mod case_fold_transliterator;
+    pub(crate) mod compound_transliterator;
+    pub(crate) mod escape_transliterator;
+    pub(crate) mod function_replacer;
+    pub(crate) mod lowercase_transliterator;
+    pub(crate) mod name_unicode_transliterator;
+    pub(crate) mod normalization_transliterator;
+    pub(crate) mod null_transliterator;
+    pub(crate) mod quantifier;
+    pub(crate) mod remove_transliterator;
+    pub(crate) mod replaceable_context_iterator;
+    pub mod rule_based_transliterator;
+    pub(crate) mod source_target_utility;
+    pub(crate) mod string_matcher;
+    pub(crate) mod string_replacer;
+    pub(crate) mod titlecase_transliterator;
+    pub(crate) mod transliteration_rule;
+    pub(crate) mod transliteration_rule_set;
+    pub mod transliterator;
+    pub(crate) mod transliterator_id_parser;
+    pub(crate) mod transliterator_parser;
+    pub(crate) mod transliterator_registry;
+    pub(crate) mod unescape_transliterator;
+    pub(crate) mod unicode_name_transliterator;
+    pub(crate) mod unicode_replacer;
+    pub(crate) mod uppercase_transliterator;
 }
 
 /// `com.ibm.icu.util`.
