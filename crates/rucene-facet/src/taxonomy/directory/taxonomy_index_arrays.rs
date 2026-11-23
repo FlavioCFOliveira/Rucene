@@ -32,13 +32,17 @@ use crate::taxonomy::taxonomy_reader::INVALID_ORDINAL;
 
 const CHUNK_SIZE_BITS: u32 = 13;
 /// Equivalent to `TaxonomyIndexArrays.CHUNK_SIZE`.
-pub(crate) const CHUNK_SIZE: usize = 1 << CHUNK_SIZE_BITS;
+/// `CHUNK_SIZE` (package-private in Java; public here so the ported
+/// `TestTaxonomyIndexArrays` can reach it, as Java's same-package test does).
+pub const CHUNK_SIZE: usize = 1 << CHUNK_SIZE_BITS;
 const CHUNK_MASK: usize = CHUNK_SIZE - 1;
 
 /// One chunk of a [`ChunkedIntArray`]: Java's `int[]`, which several arrays
 /// may share by reference and write through; atomics make the shared writes
 /// expressible.
-type Chunk = Arc<[AtomicI32]>;
+/// One chunk of a [`ChunkedIntArray`] (Java's `int[]`, shared between
+/// arrays by reference).
+pub type Chunk = Arc<[AtomicI32]>;
 
 fn new_chunk(len: usize) -> Chunk {
     (0..len).map(|_| AtomicI32::new(0)).collect()
@@ -47,8 +51,9 @@ fn new_chunk(len: usize) -> Chunk {
 /// Equivalent to
 /// `org.apache.lucene.facet.taxonomy.directory.TaxonomyIndexArrays.ChunkedIntArray`.
 #[derive(Debug)]
-pub(crate) struct ChunkedIntArray {
-    pub(crate) values: Vec<Chunk>,
+pub struct ChunkedIntArray {
+    /// `values` (package-private in Java).
+    pub values: Vec<Chunk>,
 }
 
 impl ChunkedIntArray {
@@ -81,7 +86,7 @@ impl IntArray for ChunkedIntArray {
 /// The lazily computed `children`/`siblings` pair Java guards with a
 /// `volatile` flag and `synchronized` is a [`OnceLock`].
 #[derive(Debug)]
-pub(crate) struct TaxonomyIndexArrays {
+pub struct TaxonomyIndexArrays {
     parents: ChunkedIntArray,
     children_siblings: OnceLock<(ChunkedIntArray, ChunkedIntArray)>,
 }
@@ -123,6 +128,46 @@ fn finish(array: Vec<Option<Chunk>>) -> Vec<Chunk> {
 }
 
 impl TaxonomyIndexArrays {
+    /// `TaxonomyIndexArrays(int[][] parents)` (package-private in Java;
+    /// public here for the ported same-package test).
+    pub fn from_int_arrays(parents: &[&[i32]]) -> Self {
+        Self::from_parents(
+            parents
+                .iter()
+                .map(|chunk| chunk.iter().map(|&v| AtomicI32::new(v)).collect())
+                .collect(),
+        )
+    }
+
+    /// `parents()` with its covariant Java return type `ChunkedIntArray`.
+    pub fn parents_array(&self) -> &ChunkedIntArray {
+        &self.parents
+    }
+
+    /// `children()` with its covariant Java return type `ChunkedIntArray`.
+    pub fn children_array(&self) -> &ChunkedIntArray {
+        if self.children_siblings.get().is_none() {
+            self.init_children_siblings(None);
+        }
+        &self
+            .children_siblings
+            .get()
+            .expect("INVARIANT: initialized above")
+            .0
+    }
+
+    /// `siblings()` with its covariant Java return type `ChunkedIntArray`.
+    pub fn siblings_array(&self) -> &ChunkedIntArray {
+        if self.children_siblings.get().is_none() {
+            self.init_children_siblings(None);
+        }
+        &self
+            .children_siblings
+            .get()
+            .expect("INVARIANT: initialized above")
+            .1
+    }
+
     /// Equivalent to `TaxonomyIndexArrays(int[][])`.
     fn from_parents(parents: Vec<Chunk>) -> Self {
         Self {
@@ -132,7 +177,7 @@ impl TaxonomyIndexArrays {
     }
 
     /// Equivalent to `TaxonomyIndexArrays(IndexReader)`.
-    pub(crate) fn new(reader: &Arc<dyn IndexReader>) -> Result<Self> {
+    pub fn new(reader: &Arc<dyn IndexReader>) -> Result<Self> {
         let mut parent_array = allocate_chunked_array(reader.max_doc() as usize, 0);
         debug_assert!(!parent_array.is_empty());
         let first_len = parent_array[0].as_ref().map_or(0, |c| c.len());
@@ -149,7 +194,7 @@ impl TaxonomyIndexArrays {
     }
 
     /// Equivalent to `TaxonomyIndexArrays(IndexReader, TaxonomyIndexArrays)`.
-    pub(crate) fn with_copy_from(
+    pub fn with_copy_from(
         reader: &Arc<dyn IndexReader>,
         copy_from: &TaxonomyIndexArrays,
     ) -> Result<Self> {
@@ -247,7 +292,7 @@ impl TaxonomyIndexArrays {
     /// if the underlying array had to grow, or this instance otherwise.
     ///
     /// Equivalent to `add(int, int)`.
-    pub(crate) fn add(self: &Arc<Self>, ordinal: i32, parent_ordinal: i32) -> Arc<Self> {
+    pub fn add(self: &Arc<Self>, ordinal: i32, parent_ordinal: i32) -> Arc<Self> {
         if ordinal >= self.parents.length() {
             let mut new_parents = allocate_chunked_array(
                 ArrayUtil::oversize(ordinal as usize + 1, 4),

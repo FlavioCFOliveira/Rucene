@@ -43,7 +43,7 @@ use rucene_benchmark::by_task::utils::algorithm::Algorithm;
 use rucene_benchmark::by_task::utils::config::Config;
 use rucene_benchmark::icu::RuleBasedNumberFormat;
 use rucene_benchmark::jdk::properties::Properties;
-use sprint17_oracle::{escape, Module, WorkDir};
+use sprint17_oracle::{escape, escape_utf16, Module, WorkDir};
 
 const SEED: i64 = 0x0633_0001;
 
@@ -149,8 +149,8 @@ fn benchmark_html_parser_oracle() {
         };
         out.push_str(&format!(
             "TITLE {}\nBODY {}\n",
-            escape(&p.title),
-            escape(&p.body)
+            escape_utf16(&p.title),
+            escape_utf16(&p.body)
         ));
         let mut meta: Vec<(String, String)> = p
             .meta_tags
@@ -209,14 +209,19 @@ fn opt(s: Option<&str>) -> String {
     s.map_or_else(|| "null".to_string(), escape)
 }
 
+/// `escape` of a nullable Java String held as UTF-16 code units.
+fn opt16(s: Option<&[u16]>) -> String {
+    s.map_or_else(|| "null".to_string(), escape_utf16)
+}
+
 fn dump_doc_data(dd: &DocData, out: &mut String) {
     out.push_str(&format!(
         "DOC name={} title={} date={} id={}\nBODY {}\n",
         opt(dd.get_name()),
-        opt(dd.get_title()),
+        opt16(dd.get_title()),
         opt(dd.get_date()),
         dd.get_id(),
-        opt(dd.get_body())
+        opt16(dd.get_body())
     ));
     if let Some(props) = dd.get_props() {
         let mut sorted: Vec<(String, String)> = props

@@ -844,8 +844,7 @@ pub fn add_multi_term_clauses<P: QueryParserBaseOps + ?Sized>(
     if let Some(bq) = boolean {
         all_nested_term_queries = true;
         for clause in bq.clauses() {
-            if clause.query().as_term_query().is_none()
-            {
+            if clause.query().as_term_query().is_none() {
                 all_nested_term_queries = false;
                 break;
             }

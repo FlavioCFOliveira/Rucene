@@ -375,7 +375,9 @@ impl TermInSetQuery {
     /// `hashCode()` with the class hash a subclass's `classHash()` returns:
     /// `31 * classHash + termDataHashCode`.
     pub fn query_hash_with_class_hash(&self, class_hash: i32) -> i32 {
-        31i32.wrapping_mul(class_hash).wrapping_add(self.term_data_hash_code)
+        31i32
+            .wrapping_mul(class_hash)
+            .wrapping_add(self.term_data_hash_code)
     }
 }
 

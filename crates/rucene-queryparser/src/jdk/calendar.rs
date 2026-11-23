@@ -1826,7 +1826,8 @@ impl Calendar {
                     }
                 } else {
                     // Handle cutover year.
-                    let jan1 = if self.gregorian_cutover_year == self.gregorian_cutover_year_julian {
+                    let jan1 = if self.gregorian_cutover_year == self.gregorian_cutover_year_julian
+                    {
                         if gc.cutover_calendar_is_julian() {
                             julian_fixed_date(normalized_year, 1, 1)
                         } else {

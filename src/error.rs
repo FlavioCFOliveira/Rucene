@@ -635,7 +635,9 @@ impl LuceneError {
     pub fn is_unsupported_operation_exception(&self) -> bool {
         match &self.kind {
             LuceneErrorKind::UnsupportedOperation { .. } => true,
-            LuceneErrorKind::Unchecked { class, .. } => *class == "java.lang.UnsupportedOperationException",
+            LuceneErrorKind::Unchecked { class, .. } => {
+                *class == "java.lang.UnsupportedOperationException"
+            }
             LuceneErrorKind::Throwable(t) => t.is_unsupported_operation_exception(),
             _ => false,
         }

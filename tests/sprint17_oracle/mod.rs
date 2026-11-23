@@ -518,8 +518,15 @@ pub fn java_errors(stderr: &str) -> String {
 /// `escape` of the Java programs: printable ASCII except the backslash as
 /// is, every other UTF-16 unit as `\uXXXX`.
 pub fn escape(s: &str) -> String {
+    let units: Vec<u16> = s.encode_utf16().collect();
+    escape_utf16(&units)
+}
+
+/// `escape` of a Java String held as UTF-16 code units (an unpaired
+/// surrogate is printed as its `\uXXXX` code unit, as Java prints it).
+pub fn escape_utf16(s: &[u16]) -> String {
     let mut out = String::new();
-    for unit in s.encode_utf16() {
+    for &unit in s {
         if (0x20..=0x7e).contains(&unit) && unit != u16::from(b'\\') {
             out.push(char::from(unit as u8));
         } else {

@@ -45,8 +45,8 @@ fn stringable_enwiki_source(docs: String) -> EnwikiContentSource {
 
 fn assert_doc_data(dd: &DocData, exp_name: &str, exp_title: &str, exp_body: &str, exp_date: &str) {
     Assert::assert_equals_nullable(Some(exp_name), dd.get_name());
-    Assert::assert_equals_nullable(Some(exp_title), dd.get_title());
-    Assert::assert_equals_nullable(Some(exp_body), dd.get_body());
+    Assert::assert_equals_nullable(Some(exp_title), dd.get_title_string().as_deref());
+    Assert::assert_equals_nullable(Some(exp_body), dd.get_body_string().as_deref());
     Assert::assert_equals_nullable(Some(exp_date), dd.get_date());
 }
 

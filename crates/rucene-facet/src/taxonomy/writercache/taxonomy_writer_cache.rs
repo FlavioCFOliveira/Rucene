@@ -30,6 +30,13 @@ use crate::taxonomy::facet_label::FacetLabel;
 /// results are `Result`s because Java's implementation dereferences a cache
 /// that `close()` has nulled.
 pub trait TaxonomyWriterCache: Send + Sync {
+    /// The cache as `Any`, for Java's `instanceof` checks on a cache
+    /// (`getCache() instanceof LruTaxonomyWriterCache`); `None` for a cache
+    /// that does not expose its concrete type.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Let go of whatever resources the cache is holding.
     ///
     /// Equivalent to `close()`.

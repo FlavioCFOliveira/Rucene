@@ -83,8 +83,8 @@ fn assert_doc_data(
     exp_date: Option<i64>,
 ) -> Result<()> {
     Assert::assert_equals_nullable(Some(exp_name), dd.get_name());
-    Assert::assert_equals_nullable(exp_title, dd.get_title());
-    Assert::assert_true(dd.get_body().is_some_and(|b| b.contains(exp_body)));
+    Assert::assert_equals_nullable(exp_title, dd.get_title_string().as_deref());
+    Assert::assert_true(dd.get_body_string().is_some_and(|b| b.contains(exp_body)));
     let date = match dd.get_date() {
         Some(d) => Some(DateTools::string_to_time(d)?),
         None => None,

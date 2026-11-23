@@ -27,7 +27,7 @@ use rucene::index::{DocValues, LeafReaderContext, SortedNumericDocValues};
 use rucene::search::double_values::DoubleValues;
 use rucene::search::double_values_source::DoubleValuesSource;
 use rucene::search::segment_cacheable::SegmentCacheable;
-use rucene::util::java_collections::{java_identity_hash_code_stand_in, java_string_hash_code};
+use rucene::util::java_collections::java_string_hash_code;
 use rucene::util::NumericUtils;
 
 use crate::label_and_value::objects_hash;
@@ -38,6 +38,16 @@ use crate::multi_long_values_source::MultiLongValuesSource;
 /// Java's `LongToDoubleFunction`, compared by identity as Java compares
 /// lambdas.
 pub type LongToDoubleFunction = Arc<dyn Fn(i64) -> f64 + Send + Sync>;
+
+/// `decoder.hashCode()`: Java's identity hash of the lambda object. Distinct
+/// decoder objects (`Long::valueOf` and `v -> -1 * v`) have distinct identity
+/// hashes in Java, which `Objects.hash(field, decoder)` relies on, so the
+/// identity of the shared `Arc` (its address, stable while the object lives)
+/// stands in for it rather than a constant.
+fn decoder_identity_hash_code(decoder: &LongToDoubleFunction) -> i32 {
+    let addr = Arc::as_ptr(decoder) as *const () as usize as u64;
+    (addr ^ (addr >> 32)) as i32
+}
 
 /// Base class for producing `MultiDoubleValues`.
 ///
@@ -280,7 +290,7 @@ impl MultiDoubleValuesSource for FieldMultiValuedSource {
     fn source_hash(&self) -> i32 {
         objects_hash(&[
             java_string_hash_code(&self.field),
-            java_identity_hash_code_stand_in("java.util.function.LongToDoubleFunction"),
+            decoder_identity_hash_code(&self.decoder),
         ])
     }
 

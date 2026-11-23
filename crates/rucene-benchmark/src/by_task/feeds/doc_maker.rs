@@ -551,17 +551,19 @@ impl DocMaker {
         doc.add_shared(time_sec_field.indexable());
 
         // Set TITLE_FIELD
-        let title = doc_data.get_title().unwrap_or("").to_string();
+        // The field holds the Java String; Lucene indexes it as
+        // `UnicodeUtil.UTF16toUTF8` of it.
+        let title = doc_data.get_title_string().unwrap_or_default();
         let title_field = ds.get_field(Self::TITLE_FIELD, &val_type)?;
         title_field.set_string_value(title)?;
         doc.add_shared(title_field.indexable());
 
         if let Some(body) = doc_data.get_body().filter(|b| !b.is_empty()) {
-            let body: Vec<u16> = body.encode_utf16().collect();
-            let bdy;
+            let body: Vec<u16> = body.to_vec();
+            let bdy: &[u16];
             if size <= 0 || size as usize >= body.len() {
-                bdy = String::from_utf16_lossy(&body); // use all
-                doc_data.set_body(Some(String::new())); // nothing left
+                bdy = &body; // use all
+                doc_data.set_body_utf16(Some(Vec::new())); // nothing left
             } else {
                 // attempt not to break words - if whitespace found within next 20 chars...
                 let mut n = size - 1;
@@ -574,18 +576,17 @@ impl DocMaker {
                     }
                     n += 1;
                 }
-                bdy = String::from_utf16_lossy(&body[..size as usize]); // use part
-                doc_data.set_body(Some(String::from_utf16_lossy(&body[size as usize..])));
-                // some left
+                bdy = &body[..size as usize]; // use part
+                doc_data.set_body_utf16(Some(body[size as usize..].to_vec())); // some left
             }
             let body_field = ds.get_field(Self::BODY_FIELD, &body_val_type)?;
-            body_field.set_string_value(bdy.clone())?;
+            body_field.set_string_value(jdk::utf16_to_string(bdy))?;
             doc.add_shared(body_field.indexable());
 
             if store_bytes {
                 let stored = Arc::new(StringField::type_stored().clone());
                 let bytes_field = ds.get_field(Self::BYTES_FIELD, &stored)?;
-                bytes_field.set_bytes_value(bdy.as_bytes())?;
+                bytes_field.set_bytes_value(&jdk::string_get_bytes_utf8(bdy))?;
                 doc.add_shared(bytes_field.indexable());
             }
         }
@@ -709,19 +710,19 @@ impl DocMaker {
                 Some(d) => d.get_body(),
                 None => ds.doc_data.get_body(),
             };
-            if body.is_some_and(|b| jdk::utf16_len(b) >= size as usize) {
+            if body.is_some_and(|b| b.len() >= size as usize) {
                 break;
             }
-            let dd2_body = body.map(str::to_string);
+            let dd2_body = body.map(<[u16]>::to_vec);
             let mut next = DocData::new();
             source.get_next_doc_data(&mut next)?;
             cnt = 0;
-            let joined = format!(
-                "{}{}",
-                dd2_body.as_deref().unwrap_or("null"),
-                next.get_body().unwrap_or("null")
-            );
-            next.set_body(Some(joined));
+            // `dd2.getBody() + dd.getBody()`: Java string concatenation, a
+            // `null` operand appending "null".
+            const NULL: [u16; 4] = [b'n' as u16, b'u' as u16, b'l' as u16, b'l' as u16];
+            let mut joined = dd2_body.unwrap_or_else(|| NULL.to_vec());
+            joined.extend_from_slice(next.get_body().unwrap_or(&NULL));
+            next.set_body_utf16(Some(joined));
             dd = Some(next);
         }
         let doc = match dd.as_mut() {
@@ -734,8 +735,8 @@ impl DocMaker {
             }
         };
         let remaining_empty = match &dd {
-            Some(d) => d.get_body().is_none_or(str::is_empty),
-            None => ds.doc_data.get_body().is_none_or(str::is_empty),
+            Some(d) => d.get_body().is_none_or(<[u16]>::is_empty),
+            None => ds.doc_data.get_body().is_none_or(<[u16]>::is_empty),
         };
         if remaining_empty {
             self.reset_leftovers();

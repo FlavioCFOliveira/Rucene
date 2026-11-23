@@ -57,6 +57,44 @@ pub fn java_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c <= ' ')
 }
 
+/// `String.trim()` of a Java String held as UTF-16 code units: removes the
+/// leading and trailing code units `<= ' '`.
+pub fn java_trim_utf16(s: &[u16]) -> &[u16] {
+    let start = s.iter().position(|&c| c > 0x20).unwrap_or(s.len());
+    let end = s.iter().rposition(|&c| c > 0x20).map_or(start, |i| i + 1);
+    &s[start..end]
+}
+
+/// The UTF-8 text Lucene indexes for a Java String held as UTF-16 code
+/// units: `UnicodeUtil.UTF16toUTF8`, which writes U+FFFD for every unpaired
+/// surrogate (core [`UnicodeUtil::utf16_to_utf8`](rucene::util::unicode_util::UnicodeUtil::utf16_to_utf8)).
+pub fn utf16_to_string(s: &[u16]) -> String {
+    use rucene::util::unicode_util::{UnicodeUtil, MAX_UTF8_BYTES_PER_CHAR};
+    let mut out = vec![0u8; s.len() * MAX_UTF8_BYTES_PER_CHAR];
+    let n = UnicodeUtil::utf16_to_utf8(s, 0, s.len(), &mut out);
+    out.truncate(n);
+    // `utf16_to_utf8` only writes well-formed UTF-8 (unpaired surrogates
+    // become U+FFFD), so the conversion cannot fail.
+    String::from_utf8(out).expect("UnicodeUtil.UTF16toUTF8 writes well-formed UTF-8")
+}
+
+/// `String.getBytes(StandardCharsets.UTF_8)` of a Java String held as UTF-16
+/// code units: a valid surrogate pair becomes its 4-byte sequence, an
+/// unpaired surrogate becomes `'?'` (JDK 25 `String.encodeUTF8_UTF16`).
+pub fn string_get_bytes_utf8(s: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for c in char::decode_utf16(s.iter().copied()) {
+        match c {
+            Ok(c) => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+            Err(_) => out.push(b'?'),
+        }
+    }
+    out
+}
+
 /// `Integer.parseInt(s)`.
 ///
 /// # Errors

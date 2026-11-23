@@ -88,6 +88,10 @@ fn closed() -> LuceneError {
 }
 
 impl TaxonomyWriterCache for LruTaxonomyWriterCache {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn is_full(&self) -> Result<bool> {
         let guard = self.lock();
         let cache = guard.as_ref().ok_or_else(closed)?;

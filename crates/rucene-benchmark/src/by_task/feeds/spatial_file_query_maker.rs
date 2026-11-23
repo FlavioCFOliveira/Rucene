@@ -171,7 +171,7 @@ impl AbstractQueryMaker for SpatialFileQueryMaker {
                 match SpatialDocMaker::make_shape_from_string(
                     &*strategy,
                     doc_data.get_name(),
-                    doc_data.get_body(),
+                    doc_data.get_body_string().as_deref(),
                 ) {
                     Some(shape) => {
                         let shape = shape_converter.convert(shape)?;

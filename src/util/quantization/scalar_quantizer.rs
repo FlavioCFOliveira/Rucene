@@ -3,10 +3,10 @@
 use crate::error::{LuceneError, Result};
 use crate::index::vector_values::FloatVectorValues;
 use crate::index::VectorSimilarityFunction;
-use crate::util::java_random::JavaRandom;
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::hit_queue::HitQueue;
 use crate::search::score_doc::ScoreDoc;
+use crate::util::java_random::JavaRandom;
 use crate::util::quantization::ScalarQuantizedVectorSimilarity;
 use crate::util::selector::{intro_select, PivotOps};
 use crate::util::vector_util;

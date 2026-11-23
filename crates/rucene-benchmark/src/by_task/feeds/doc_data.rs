@@ -21,15 +21,22 @@
 use rucene::document::{DateTools, Resolution};
 use rucene_queryparser::jdk::date::Date;
 
+use crate::jdk;
 use crate::jdk::properties::Properties;
 
 /// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.DocData`: output
 /// of parsing (e.g. HTML parsing) of an input document.
+///
+/// `body` and `title` are Java Strings held as UTF-16 code units, so an
+/// unpaired surrogate a source produces (e.g. `DemoHTMLParser` on `&#xD800;`)
+/// is kept as Java keeps it; it becomes U+FFFD only where Java converts the
+/// String to UTF-8 (`UnicodeUtil.UTF16toUTF8` when the field is indexed, see
+/// [`jdk::utf16_to_string`]).
 #[derive(Clone, Debug, Default)]
 pub struct DocData {
     name: Option<String>,
-    body: Option<String>,
-    title: Option<String>,
+    body: Option<Vec<u16>>,
+    title: Option<Vec<u16>>,
     date: Option<String>,
     id: i32,
     props: Option<Properties>,
@@ -51,9 +58,15 @@ impl DocData {
         self.id = -1;
     }
 
-    /// `getBody()`.
-    pub fn get_body(&self) -> Option<&str> {
+    /// `getBody()`: the Java String as UTF-16 code units.
+    pub fn get_body(&self) -> Option<&[u16]> {
         self.body.as_deref()
+    }
+
+    /// `getBody()` converted to UTF-8 by `UnicodeUtil.UTF16toUTF8` (an
+    /// unpaired surrogate becomes U+FFFD), for consumers that take Rust text.
+    pub fn get_body_string(&self) -> Option<String> {
+        self.body.as_deref().map(jdk::utf16_to_string)
     }
 
     /// `getDate()`: the date. If the setter with a `Date` was called, then
@@ -79,13 +92,24 @@ impl DocData {
         self.props.as_ref()
     }
 
-    /// `getTitle()`.
-    pub fn get_title(&self) -> Option<&str> {
+    /// `getTitle()`: the Java String as UTF-16 code units.
+    pub fn get_title(&self) -> Option<&[u16]> {
         self.title.as_deref()
     }
 
-    /// `setBody(String)`.
+    /// `getTitle()` converted to UTF-8 by `UnicodeUtil.UTF16toUTF8` (an
+    /// unpaired surrogate becomes U+FFFD), for consumers that take Rust text.
+    pub fn get_title_string(&self) -> Option<String> {
+        self.title.as_deref().map(jdk::utf16_to_string)
+    }
+
+    /// `setBody(String)` with Rust text.
     pub fn set_body(&mut self, body: Option<String>) {
+        self.body = body.map(|b| b.encode_utf16().collect());
+    }
+
+    /// `setBody(String)` with a Java String held as UTF-16 code units.
+    pub fn set_body_utf16(&mut self, body: Option<Vec<u16>>) {
         self.body = body;
     }
 
@@ -120,8 +144,13 @@ impl DocData {
         self.props = props;
     }
 
-    /// `setTitle(String)`.
+    /// `setTitle(String)` with Rust text.
     pub fn set_title(&mut self, title: Option<String>) {
+        self.title = title.map(|t| t.encode_utf16().collect());
+    }
+
+    /// `setTitle(String)` with a Java String held as UTF-16 code units.
+    pub fn set_title_utf16(&mut self, title: Option<Vec<u16>>) {
         self.title = title;
     }
 }

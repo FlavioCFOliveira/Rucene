@@ -262,10 +262,11 @@ impl EntityResolver for Handler {
 pub struct Parser {
     /// `metaTags`.
     pub meta_tags: Properties,
-    /// `title`.
-    pub title: String,
-    /// `body`.
-    pub body: String,
+    /// `title`: a Java String, held as UTF-16 code units (an unpaired
+    /// surrogate from a numeric character reference is kept, as in Java).
+    pub title: Vec<u16>,
+    /// `body`: a Java String, held as UTF-16 code units.
+    pub body: Vec<u16>,
 }
 
 // `JResult` carries nekohtml's Java exception by value (see `nekohtml`).
@@ -307,9 +308,9 @@ impl Parser {
         parser.parse(source)?;
 
         // the javacc-based parser trimmed title (which should be done for HTML in all cases):
-        let title = jdk::java_trim(&String::from_utf16_lossy(&handler.title.borrow())).to_string();
+        let title = jdk::java_trim_utf16(&handler.title.borrow()).to_vec();
         // assign body text
-        let body = String::from_utf16_lossy(&handler.body.borrow());
+        let body = handler.body.borrow().clone();
         let meta_tags = handler.meta_tags.borrow().clone();
         Ok(Parser {
             meta_tags,
@@ -362,8 +363,8 @@ impl DemoHTMLParser {
 
         doc_data.clear();
         doc_data.set_name(name.map(str::to_string));
-        doc_data.set_body(Some(p.body));
-        doc_data.set_title(Some(p.title));
+        doc_data.set_body_utf16(Some(p.body));
+        doc_data.set_title_utf16(Some(p.title));
         doc_data.set_props(Some(props));
         doc_data.set_date_from(date.as_ref());
         Ok(())

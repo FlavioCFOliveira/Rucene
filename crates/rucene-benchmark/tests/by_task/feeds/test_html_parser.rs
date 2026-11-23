@@ -32,6 +32,13 @@ fn parser(text: &str) -> Result<Parser> {
     Parser::from_reader(text).map_err(|e| rucene_benchmark::jdk::exception(format!("{e:?}")))
 }
 
+/// The Java String `p.title` / `p.body` (UTF-16 code units) as Rust text
+/// for `assertEquals`; an unpaired surrogate yields its code units' debug
+/// form, so it can never equal an expected text.
+fn jstr(units: &[u16]) -> String {
+    String::from_utf16(units).unwrap_or_else(|_| format!("{units:?}"))
+}
+
 /// `TestHtmlParser`.
 pub fn class_def() -> Arc<Class> {
     class(
@@ -55,19 +62,19 @@ pub fn class_def() -> Arc<Class> {
 
 fn test_unicode() -> Result<()> {
     let p = parser("<html><body>汉语</body></html>")?;
-    Assert::assert_equals("汉语", p.body.as_str());
+    Assert::assert_equals("汉语", jstr(&p.body).as_str());
     Ok(())
 }
 
 fn test_entities() -> Result<()> {
     let p = parser("<html><body>&#x6C49;&#x8BED;&yen;</body></html>")?;
-    Assert::assert_equals("汉语¥", p.body.as_str());
+    Assert::assert_equals("汉语¥", jstr(&p.body).as_str());
     Ok(())
 }
 
 fn test_comments() -> Result<()> {
     let p = parser("<html><body>foo<!-- bar --><! baz --></body></html>")?;
-    Assert::assert_equals("foo", p.body.as_str());
+    Assert::assert_equals("foo", jstr(&p.body).as_str());
     Ok(())
 }
 
@@ -75,7 +82,7 @@ fn test_script() -> Result<()> {
     let text = String::from("<html><body><script type=\"text/javascript\">")
         + "document.write(\"test\")</script>foo</body></html>";
     let p = parser(&text)?;
-    Assert::assert_equals("foo", p.body.as_str());
+    Assert::assert_equals("foo", jstr(&p.body).as_str());
     Ok(())
 }
 
@@ -84,7 +91,7 @@ fn test_style() -> Result<()> {
         + "body{background-color:blue;}</style>"
         + "</head><body>foo</body></html>";
     let p = parser(&text)?;
-    Assert::assert_equals("foo", p.body.as_str());
+    Assert::assert_equals("foo", jstr(&p.body).as_str());
     Ok(())
 }
 
@@ -94,7 +101,7 @@ fn test_doctype() -> Result<()> {
         + "\"http://www.w3.org/TR/html4/loose.dtd\">"
         + "<html><body>foo</body></html>";
     let p = parser(&text)?;
-    Assert::assert_equals("foo", p.body.as_str());
+    Assert::assert_equals("foo", jstr(&p.body).as_str());
     Ok(())
 }
 
@@ -120,7 +127,7 @@ fn test_meta() -> Result<()> {
 
 fn test_title() -> Result<()> {
     let p = parser("<html><head><TITLE>foo</TITLE><head><body>bar</body></html>")?;
-    Assert::assert_equals("foo", p.title.as_str());
+    Assert::assert_equals("foo", jstr(&p.title).as_str());
     Ok(())
 }
 
@@ -133,8 +140,8 @@ fn test_turkish() -> Result<()> {
             + "<IMG SRC=\"../images/head.jpg\" WIDTH=570 HEIGHT=47 BORDER=0 ALT=\"ş\">"
             + "<a title=\"(ııı)\"></body></html>";
         let p = parser(&text)?;
-        Assert::assert_equals("ııı", p.title.as_str());
-        Assert::assert_equals("[ş]", p.body.as_str());
+        Assert::assert_equals("ııı", jstr(&p.title).as_str());
+        Assert::assert_equals("[ş]", jstr(&p.body).as_str());
         Ok(())
     })();
     locale::set_default(saved);
@@ -156,21 +163,24 @@ fn test_sample_trec_doc() -> Result<()> {
         + "</body>\r\n"
         + "\r\n";
     let p = parser(&text)?;
-    Assert::assert_equals("TEST-000 title", p.title.as_str());
-    Assert::assert_equals("TEST-000 text", rucene_benchmark::jdk::java_trim(&p.body));
+    Assert::assert_equals("TEST-000 title", jstr(&p.title).as_str());
+    Assert::assert_equals(
+        "TEST-000 text",
+        rucene_benchmark::jdk::java_trim(&jstr(&p.body)),
+    );
     Ok(())
 }
 
 fn test_no_html() -> Result<()> {
     let p = parser("hallo")?;
-    Assert::assert_equals("", p.title.as_str());
-    Assert::assert_equals("hallo", p.body.as_str());
+    Assert::assert_equals("", jstr(&p.title).as_str());
+    Assert::assert_equals("hallo", jstr(&p.body).as_str());
     Ok(())
 }
 
 fn test_ivalid() -> Result<()> {
     let p = parser("<title>foo</title>bar")?;
-    Assert::assert_equals("foo", p.title.as_str());
-    Assert::assert_equals("bar", p.body.as_str());
+    Assert::assert_equals("foo", jstr(&p.title).as_str());
+    Assert::assert_equals("bar", jstr(&p.body).as_str());
     Ok(())
 }
