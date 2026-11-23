@@ -100,7 +100,8 @@ pub struct CharSequenceValues {
 /// and `rangeEnd` dispatch on the width, as Java's overrides do) and the
 /// typed wrappers [`Trie2_16`](crate::r#impl::trie2_16::Trie2_16) and
 /// [`Trie2_32`](crate::r#impl::trie2_32::Trie2_32). The builder subclass
-/// `Trie2Writable` is outside the scope of this crate.
+/// `Trie2Writable` (`impl/trie2_writable.rs`) fills the fields of an
+/// unfilled `Trie2_16`/`Trie2_32` when it freezes.
 ///
 /// **Divergence.** Java's range iterators return one mutable `Range` object
 /// and its `CharSequenceIterator` one mutable `CharSequenceValues` object,
@@ -194,6 +195,28 @@ pub const UNEWTRIE2_INDEX_1_LENGTH: i32 = 0x110000 >> UTRIE2_SHIFT_1;
 pub const UNEWTRIE2_MAX_DATA_LENGTH: i32 = 0x110000 + 0x40 + 0x40 + 0x400;
 
 impl Trie2 {
+    /// The fields of a freshly constructed `Trie2` subclass instance
+    /// (`Trie2_16()`/`Trie2_32()`, package-private): every field holds
+    /// Java's default value until `Trie2Writable.freeze` fills it.
+    pub(crate) fn new_unfilled(width: ValueWidth) -> Trie2 {
+        Trie2 {
+            width,
+            header: UTrie2Header::default(),
+            index: Vec::new(),
+            data16: 0,
+            data32: None,
+            index_length: 0,
+            data_length: 0,
+            index2_null_offset: 0,
+            initial_value: 0,
+            error_value: 0,
+            high_start: 0,
+            high_value_index: 0,
+            data_null_offset: 0,
+            f_hash: AtomicI32::new(0),
+        }
+    }
+
     /// `createFromSerialized(ByteBuffer bytes)`: a `Trie2_16` or `Trie2_32`
     /// from its serialized form at the buffer's position, which moves past
     /// it; the buffer's byte order is restored.

@@ -564,23 +564,22 @@ pub const VISIBLE: bool = true;
 pub const INVISIBLE: bool = false;
 
 /// `LocaleKeyFactory.getDisplayName(String id, ULocale locale)`: the id
-/// itself for a `null` locale.
-///
-/// Not ported yet for a non-null locale: Java returns `new
-/// ULocale(id).getDisplayName(locale)`, which needs `LocaleDisplayNames`
-/// (outside the ported closure; see the rmp task #644 log). The port
-/// throws `UnsupportedOperationException` naming the missing member there.
+/// itself for a `null` locale, else `new ULocale(id).getDisplayName(locale)`.
 ///
 /// # Errors
 ///
-/// `UnsupportedOperationException` for a non-null locale.
+/// The errors of `new ULocale` and of the display-name lookup.
 pub fn locale_key_factory_display_name(id: &str, locale: Option<&ULocale>) -> Result<Option<String>> {
-    match locale {
-        None => Ok(Some(id.to_string())),
-        Some(_) => Err(LuceneError::unsupported_operation(
-            "ULocale.getDisplayName(ULocale) is not ported (LocaleDisplayNames)",
-        )),
-    }
+    // assume if the user called this on us, we must have handled some fallback of this id
+    //          if (isSupportedID(id)) {
+    let locale = match locale {
+        None => return Ok(Some(id.to_string())),
+        Some(l) => l,
+    };
+    let loc = ULocale::new(id)?;
+    loc.get_display_name_in(locale)
+    //              }
+    //          return null;
 }
 
 /// A `LocaleKeyFactory` that just returns a single object for a kind and

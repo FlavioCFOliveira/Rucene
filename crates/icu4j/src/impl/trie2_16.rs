@@ -30,6 +30,18 @@ impl Deref for Trie2_16 {
 }
 
 impl Trie2_16 {
+    /// `Trie2_16()` (package-private, "Internal constructor, not for general
+    /// use"): an unfilled trie, which `Trie2Writable.freeze` fills.
+    pub(crate) fn new() -> Trie2_16 {
+        Trie2_16(Trie2::new_unfilled(ValueWidth::Bits16))
+    }
+
+    /// The base-class fields, for `Trie2Writable.freeze` (Java writes the
+    /// package-private fields of the `Trie2` directly).
+    pub(crate) fn trie_mut(&mut self) -> &mut Trie2 {
+        &mut self.0
+    }
+
     /// `createFromSerialized(ByteBuffer bytes)`: `Trie2.createFromSerialized`
     /// cast to `Trie2_16`.
     ///

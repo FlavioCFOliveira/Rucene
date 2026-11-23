@@ -106,7 +106,7 @@ icu_exception_class!(
 
 impl ICUException {
     /// Whether `error` is an `ICUException` or one of its subclasses
-    /// (`ICUCloneNotSupportedException`).
+    /// (`ICUCloneNotSupportedException`, `ICUInputTooLongException`).
     pub fn is_instance(error: &LuceneError) -> bool {
         match error.kind() {
             LuceneErrorKind::Throwable(t) => {
@@ -114,6 +114,7 @@ impl ICUException {
                 t.as_any().is::<ICUException>()
                     || t.as_any()
                         .is::<crate::util::icu_clone_not_supported_exception::ICUCloneNotSupportedException>()
+                    || t.as_any().is::<crate::util::icu_input_too_long_exception::ICUInputTooLongException>()
             }
             _ => false,
         }

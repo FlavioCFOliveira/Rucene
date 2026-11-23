@@ -5,9 +5,8 @@
 
 use rucene::error::{LuceneError, Result};
 
-use crate::jdk::ByteBuffer;
 use crate::r#impl::trie2::{
-    Range, Trie2, ValueMapper, UNEWTRIE2_INDEX_1_LENGTH, UNEWTRIE2_INDEX_GAP_LENGTH, UNEWTRIE2_INDEX_GAP_OFFSET,
+    Range, Trie2, UTrie2Header, ValueMapper, ValueWidth, UNEWTRIE2_INDEX_1_LENGTH, UNEWTRIE2_INDEX_GAP_LENGTH, UNEWTRIE2_INDEX_GAP_OFFSET,
     UNEWTRIE2_MAX_DATA_LENGTH, UNEWTRIE2_MAX_INDEX_2_LENGTH, UTRIE2_BAD_UTF8_DATA_OFFSET, UTRIE2_CP_PER_INDEX_1_ENTRY,
     UTRIE2_DATA_BLOCK_LENGTH, UTRIE2_DATA_GRANULARITY, UTRIE2_DATA_MASK, UTRIE2_DATA_START_OFFSET, UTRIE2_INDEX_1_OFFSET,
     UTRIE2_INDEX_2_BLOCK_LENGTH, UTRIE2_INDEX_2_BMP_LENGTH, UTRIE2_INDEX_2_MASK, UTRIE2_INDEX_2_OFFSET,
@@ -31,25 +30,6 @@ const UTRIE2_MAX_DATA_LENGTH: i32 = 0xffff << UTRIE2_INDEX_SHIFT;
 /// The identity value mapper (`Trie2.defaultValueMapper`).
 fn identity(v: i32) -> i32 {
     v
-}
-
-/// The value width of a frozen trie (Java's `Trie2.ValueWidth`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Width {
-    Bits16,
-    Bits32,
-}
-
-/// The fields `freeze()` writes into the frozen `Trie2`.
-struct Frozen {
-    options: i32,
-    index: Vec<u16>,
-    index_length: i32,
-    data_length: i32,
-    index2_null_offset: i32,
-    data_null_offset: i32,
-    high_start: i32,
-    data32: Option<Vec<i32>>,
 }
 
 /// A Trie2Writable is a modifiable, or build-time Trie2. Functions for
@@ -980,61 +960,34 @@ impl Trie2Writable {
     ///
     /// `UnsupportedOperationException` when the data is too large.
     pub fn to_trie2_16(&mut self) -> Result<Trie2_16> {
-        let frozen = self.freeze(Width::Bits16)?;
-        Trie2_16::create_from_serialized(&mut Self::serialize_frozen(&frozen))
+        let mut frozen_trie = Trie2_16::new();
+        self.freeze(frozen_trie.trie_mut(), ValueWidth::Bits16)?;
+        Ok(frozen_trie)
     }
 
     /// Produce an optimized, read-only Trie2_32 from this writable Trie.
     ///
     /// Equivalent to `toTrie2_32()`.
     ///
-    /// **Divergence.** Java fills the fields of a `new Trie2_32()` directly
-    /// (`Trie2Writable.java:958-962`, `freeze`); the fields of the frozen
-    /// trie types are private to their modules here, so the port computes
-    /// the same fields (`freeze`), writes them in the trie's serialized
-    /// form and reads them back with `Trie2_32.createFromSerialized`,
-    /// which yields a trie with the same index, data, limits and values.
-    ///
     /// # Errors
     ///
     /// `UnsupportedOperationException` when the data is too large.
     pub fn to_trie2_32(&mut self) -> Result<Trie2_32> {
-        let frozen = self.freeze(Width::Bits32)?;
-        Trie2_32::create_from_serialized(&mut Self::serialize_frozen(&frozen))
+        let mut frozen_trie = Trie2_32::new();
+        self.freeze(frozen_trie.trie_mut(), ValueWidth::Bits32)?;
+        Ok(frozen_trie)
     }
 
-    /// The serialized form of the frozen fields (`Trie2.serializeHeader`,
-    /// the index, and for 32-bit data the data words), big-endian.
-    fn serialize_frozen(f: &Frozen) -> ByteBuffer {
-        let mut out: Vec<u8> = Vec::with_capacity(16 + f.index.len() * 2 + f.data32.as_ref().map_or(0, |d| d.len() * 4));
-        let put_short = |out: &mut Vec<u8>, v: i32| out.extend_from_slice(&(v as u16).to_be_bytes());
-        out.extend_from_slice(&0x54726932i32.to_be_bytes());
-        put_short(&mut out, f.options);
-        put_short(&mut out, f.index_length);
-        put_short(&mut out, f.data_length >> UTRIE2_INDEX_SHIFT);
-        put_short(&mut out, f.index2_null_offset);
-        put_short(&mut out, f.data_null_offset);
-        put_short(&mut out, f.high_start >> UTRIE2_SHIFT_1);
-        for &u in &f.index {
-            out.extend_from_slice(&u.to_be_bytes());
-        }
-        if let Some(d) = &f.data32 {
-            for &v in d {
-                out.extend_from_slice(&v.to_be_bytes());
-            }
-        }
-        ByteBuffer::wrap(out)
-    }
-
-    /// Produce an optimized, read-only Trie2 from this writable Trie.
-    fn freeze(&mut self, value_bits: Width) -> Result<Frozen> {
+    /// Compact the data and then populate an optimized read-only Trie.
+    fn freeze(&mut self, dest: &mut Trie2, value_bits: ValueWidth) -> Result<()> {
         // compact if necessary
         if !self.is_compacted {
             self.compact_trie()?;
         }
 
         let all_indexes_length = if self.high_start <= 0x10000 { UTRIE2_INDEX_1_OFFSET } else { self.index2_length };
-        let data_move = if value_bits == Width::Bits16 { all_indexes_length } else { 0 };
+        // >0 if the data is moved to the end of the index array
+        let data_move = if value_bits == ValueWidth::Bits16 { all_indexes_length } else { 0 };
 
         // are indexLength and dataLength within limits?
         if all_indexes_length > UTRIE2_MAX_INDEX_LENGTH /* for unshifted indexLength */
@@ -1048,26 +1001,43 @@ impl Trie2Writable {
 
         // calculate the sizes of, and allocate, the index and data arrays
         let mut index_length = all_indexes_length;
-        let mut data32 = None;
-        if value_bits == Width::Bits16 {
+        if value_bits == ValueWidth::Bits16 {
             index_length += self.data_length;
         } else {
-            data32 = Some(vec![0i32; self.data_length as usize]);
+            dest.data32 = Some(vec![0i32; self.data_length as usize]);
         }
-        let mut index = vec![0u16; index_length as usize];
+        dest.index = vec![0u16; index_length as usize];
 
-        let index2_null_offset =
-            if self.high_start <= 0x10000 { 0xffff } else { UTRIE2_INDEX_2_OFFSET + self.index2_null_offset };
-        let data_null_offset = data_move + self.data_null_offset;
+        dest.index_length = all_indexes_length;
+        dest.data_length = self.data_length;
+        if self.high_start <= 0x10000 {
+            dest.index2_null_offset = 0xffff;
+        } else {
+            dest.index2_null_offset = UTRIE2_INDEX_2_OFFSET + self.index2_null_offset;
+        }
+        dest.initial_value = self.initial_value;
+        dest.error_value = self.error_value;
+        dest.high_start = self.high_start;
+        dest.high_value_index = data_move + self.data_length - UTRIE2_DATA_GRANULARITY;
+        dest.data_null_offset = data_move + self.data_null_offset;
 
         // Create a header and set the its fields.
         //   (This is only used in the event that we serialize the Trie, but is
         //    convenient to do here.)
-        let options = if value_bits == Width::Bits16 { 0 } else { 1 };
+        dest.header = UTrie2Header {
+            signature: 0x54726932, /* "Tri2" */
+            options: if value_bits == ValueWidth::Bits16 { 0 } else { 1 },
+            index_length: dest.index_length,
+            shifted_data_length: dest.data_length >> UTRIE2_INDEX_SHIFT,
+            index2_null_offset: dest.index2_null_offset,
+            data_null_offset: dest.data_null_offset,
+            shifted_high_start: dest.high_start >> UTRIE2_SHIFT_1,
+        };
 
+        // write the index-2 array values shifted right by UTRIE2_INDEX_SHIFT, after adding dataMove
         let mut dest_idx = 0usize;
         for i in 0..UTRIE2_INDEX_2_BMP_LENGTH {
-            index[dest_idx] = ((self.index2[i as usize] + data_move) >> UTRIE2_INDEX_SHIFT) as u16;
+            dest.index[dest_idx] = ((self.index2[i as usize] + data_move) >> UTRIE2_INDEX_SHIFT) as u16;
             dest_idx += 1;
         }
 
@@ -1075,13 +1045,13 @@ impl Trie2Writable {
         let mut i = 0;
         while i < (0xc2 - 0xc0) {
             // C0..C1
-            index[dest_idx] = (data_move + UTRIE2_BAD_UTF8_DATA_OFFSET) as u16;
+            dest.index[dest_idx] = (data_move + UTRIE2_BAD_UTF8_DATA_OFFSET) as u16;
             dest_idx += 1;
             i += 1;
         }
         while i < (0xe0 - 0xc0) {
             // C2..DF
-            index[dest_idx] = (data_move + self.index2[(i << (6 - UTRIE2_SHIFT_2)) as usize]) as u16;
+            dest.index[dest_idx] = (data_move + self.index2[(i << (6 - UTRIE2_SHIFT_2)) as usize]) as u16;
             dest_idx += 1;
             i += 1;
         }
@@ -1092,43 +1062,39 @@ impl Trie2Writable {
 
             // write 16-bit index-1 values for supplementary code points
             for i in 0..index1_length {
-                index[dest_idx] = (UTRIE2_INDEX_2_OFFSET + self.index1[(i + UTRIE2_OMITTED_BMP_INDEX_1_LENGTH) as usize]) as u16;
+                dest.index[dest_idx] =
+                    (UTRIE2_INDEX_2_OFFSET + self.index1[(i + UTRIE2_OMITTED_BMP_INDEX_1_LENGTH) as usize]) as u16;
                 dest_idx += 1;
             }
 
             // write the index-2 array values for supplementary code points,
             // shifted right by UTRIE2_INDEX_SHIFT, after adding dataMove
             for i in 0..self.index2_length - index2_offset {
-                index[dest_idx] = ((data_move + self.index2[(index2_offset + i) as usize]) >> UTRIE2_INDEX_SHIFT) as u16;
+                dest.index[dest_idx] =
+                    ((data_move + self.index2[(index2_offset + i) as usize]) >> UTRIE2_INDEX_SHIFT) as u16;
                 dest_idx += 1;
             }
         }
 
-        // write 16-bit data values
+        // write the 16/32-bit data array
         match value_bits {
-            Width::Bits16 => {
+            ValueWidth::Bits16 => {
+                // write 16-bit data values
                 debug_assert!(dest_idx as i32 == data_move);
+                dest.data16 = dest_idx as i32;
                 for i in 0..self.data_length {
-                    index[dest_idx] = self.data[i as usize] as u16;
+                    dest.index[dest_idx] = self.data[i as usize] as u16;
                     dest_idx += 1;
                 }
             }
-            Width::Bits32 => {
-                let d = data32.as_mut().expect("allocated");
+            ValueWidth::Bits32 => {
+                // write 32-bit data values
+                let d = dest.data32.as_mut().expect("allocated above for 32-bit data");
                 d.copy_from_slice(&self.data[..self.data_length as usize]);
             }
         }
         // The writable, but compressed, Trie2 stays around unless the caller drops its references to it.
-        Ok(Frozen {
-            options,
-            index,
-            index_length: all_indexes_length,
-            data_length: self.data_length,
-            index2_null_offset,
-            data_null_offset,
-            high_start: self.high_start,
-            data32,
-        })
+        Ok(())
     }
 
     /// `equals(Object other)` (inherited from `Trie2`, final): the same

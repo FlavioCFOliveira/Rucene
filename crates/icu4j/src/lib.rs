@@ -76,7 +76,10 @@ pub mod r#impl {
     pub mod cs_character_iterator;
     pub mod icu_binary;
     pub mod icu_config;
+    pub mod icu_currency_display_info_provider;
     pub mod icu_data;
+    pub mod icu_lang_data_tables;
+    pub mod icu_region_data_tables;
     pub mod icu_debug;
     pub mod icu_locale_service;
     pub mod icu_notifier;
@@ -96,6 +99,7 @@ pub mod r#impl {
         pub mod key_type_data;
         pub mod language_tag;
         pub mod likely_subtags;
+        pub mod locale_distance;
         pub mod locale_extensions;
         pub mod locale_object_cache;
         pub mod locale_syntax_exception;
@@ -105,6 +109,10 @@ pub mod r#impl {
         pub mod unicode_locale_extension;
     }
     pub mod locale_fallback_data;
+    pub mod currency_data;
+    pub mod locale_display_names_impl;
+    pub mod simple_formatter_impl;
+    pub mod standard_plural;
     pub mod locale_id_parser;
     pub mod locale_ids;
     pub mod locale_utility;
@@ -243,6 +251,10 @@ pub mod text {
     pub(crate) mod unicode_replacer;
     pub(crate) mod uppercase_transliterator;
     pub mod canonical_iterator;
+    pub mod case_map;
+    pub mod currency_display_names;
+    pub mod display_context;
+    pub mod locale_display_names;
     pub mod collation_element_iterator;
     pub mod collation_key;
     pub mod collator;
@@ -265,6 +277,8 @@ pub mod util {
     pub mod icu_unchecked_io_exception;
     pub mod illformed_locale_exception;
     pub mod locale_data;
+    pub mod locale_matcher;
+    pub mod locale_priority_list;
     pub mod mutable_code_point_trie;
     pub mod output;
     pub mod output_int;

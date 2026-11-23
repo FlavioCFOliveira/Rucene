@@ -33,7 +33,10 @@ use crate::r#impl::locale::unicode_locale_extension::UnicodeLocaleExtension;
 use crate::r#impl::locale_id_parser::{KeywordMap, LocaleIDParser};
 use crate::r#impl::locale_ids::LocaleIDs;
 use crate::r#impl::soft_cache::SoftCache;
+use crate::text::locale_display_names::{self, DialectHandling};
 use crate::util::illformed_locale_exception::IllformedLocaleException;
+use crate::util::locale_matcher::LocaleMatcher;
+use crate::util::locale_priority_list::LocalePriorityList;
 use crate::util::u_resource_bundle::UResourceBundle;
 
 /// `nameCache`: normalized names by locale ID.
@@ -165,12 +168,9 @@ struct Inner {
 /// (`Arc`); Java's `transient volatile` caches of the JDK locale, the base
 /// locale and the extensions are set once.
 ///
-/// Not ported yet: the display-name members (`getDisplayLanguage*`,
-/// `getDisplayScript*`, `getDisplayCountry*`, `getDisplayVariant*`,
-/// `getDisplayKeyword*`, `getDisplayKeywordValue*`, `getDisplayName*`),
-/// which call `LocaleDisplayNames`; the `acceptLanguage` overloads, which
-/// call `LocaleMatcher` and `LocalePriorityList` (see the rmp task #644
-/// log).
+/// Display names (`getDisplay*`) are Rust strings, `None` for Java's
+/// `null`, as the [`LocaleDisplayNames`](crate::text::locale_display_names::LocaleDisplayNames)
+/// results they return.
 #[derive(Clone)]
 pub struct ULocale(Arc<Inner>);
 
@@ -1706,6 +1706,532 @@ impl ULocale {
             }
         };
         self.0.extensions.get_or_init(|| computed).clone()
+    }
+}
+
+// display names
+
+/// The display locale of the no-argument `getDisplay*` methods:
+/// `getDefault(Category.DISPLAY)`.
+fn default_display_locale() -> ULocale {
+    ULocale::get_default_category(Category::Display)
+}
+
+/// `String.trim()` over a Rust string: without the leading and trailing
+/// characters `<= ' '`.
+fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
+impl ULocale {
+    /// `getDisplayLanguage()`: this locale's language localized for display
+    /// in the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_language(&self) -> Result<Option<String>> {
+        Self::get_display_language_internal(self, &default_display_locale(), false)
+    }
+
+    /// `getDisplayLanguage(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_language_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_language_internal(self, display_locale, false)
+    }
+
+    /// `getDisplayLanguage(String localeID, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_language_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_language_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?, false)
+    }
+
+    /// `getDisplayLanguage(String localeID, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_language_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_language_internal(&ULocale::new(locale_id)?, display_locale, false)
+    }
+
+    /// `getDisplayLanguageWithDialect()`: the language with dialect (base
+    /// name) localized for the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_language_with_dialect(&self) -> Result<Option<String>> {
+        Self::get_display_language_internal(self, &default_display_locale(), true)
+    }
+
+    /// `getDisplayLanguageWithDialect(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_language_with_dialect_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_language_internal(self, display_locale, true)
+    }
+
+    /// `getDisplayLanguageWithDialect(String localeID, String
+    /// displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_language_with_dialect_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_language_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?, true)
+    }
+
+    /// `getDisplayLanguageWithDialect(String localeID, ULocale
+    /// displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_language_with_dialect_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_language_internal(&ULocale::new(locale_id)?, display_locale, true)
+    }
+
+    fn get_display_language_internal(locale: &ULocale, display_locale: &ULocale, use_dialect: bool) -> Result<Option<String>> {
+        let lang = if use_dialect { locale.get_base_name() } else { locale.get_language() };
+        locale_display_names::get_instance(display_locale).language_display_name(&lang)
+    }
+
+    /// `getDisplayScript()`: this locale's script localized for display in
+    /// the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_script(&self) -> Result<Option<String>> {
+        Self::get_display_script_internal(self, &default_display_locale())
+    }
+
+    /// `getDisplayScriptInContext()` (internal, deprecated).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_script_in_context(&self) -> Result<Option<String>> {
+        Self::get_display_script_in_context_internal(self, &default_display_locale())
+    }
+
+    /// `getDisplayScript(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_script_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_script_internal(self, display_locale)
+    }
+
+    /// `getDisplayScriptInContext(ULocale displayLocale)` (internal,
+    /// deprecated).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_script_in_context_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_script_in_context_internal(self, display_locale)
+    }
+
+    /// `getDisplayScript(String localeID, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_script_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_script_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayScriptInContext(String localeID, String displayLocaleID)`
+    /// (internal, deprecated).
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_script_in_context_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_script_in_context_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayScript(String localeID, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_script_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_script_internal(&ULocale::new(locale_id)?, display_locale)
+    }
+
+    /// `getDisplayScriptInContext(String localeID, ULocale displayLocale)`
+    /// (internal, deprecated).
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_script_in_context_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_script_in_context_internal(&ULocale::new(locale_id)?, display_locale)
+    }
+
+    // displayLocaleID is canonical, localeID need not be since parsing will fix this.
+    fn get_display_script_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale).script_display_name(&locale.get_script())
+    }
+
+    fn get_display_script_in_context_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale).script_display_name_in_context(&locale.get_script())
+    }
+
+    /// `getDisplayCountry()`: this locale's country localized for display
+    /// in the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_country(&self) -> Result<Option<String>> {
+        Self::get_display_country_internal(self, &default_display_locale())
+    }
+
+    /// `getDisplayCountry(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_country_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_country_internal(self, display_locale)
+    }
+
+    /// `getDisplayCountry(String localeID, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_country_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_country_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayCountry(String localeID, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_country_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_country_internal(&ULocale::new(locale_id)?, display_locale)
+    }
+
+    // displayLocaleID is canonical, localeID need not be since parsing will fix this.
+    fn get_display_country_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale).region_display_name(&locale.get_country())
+    }
+
+    /// `getDisplayVariant()`: this locale's variant localized for display
+    /// in the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_variant(&self) -> Result<Option<String>> {
+        Self::get_display_variant_internal(self, &default_display_locale())
+    }
+
+    /// `getDisplayVariant(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_variant_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_variant_internal(self, display_locale)
+    }
+
+    /// `getDisplayVariant(String localeID, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_variant_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_variant_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayVariant(String localeID, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_variant_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_variant_internal(&ULocale::new(locale_id)?, display_locale)
+    }
+
+    fn get_display_variant_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale).variant_display_name(&locale.get_variant())
+    }
+
+    /// `getDisplayKeyword(String keyword)`: a keyword localized for display
+    /// in the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_keyword(keyword: &str) -> Result<Option<String>> {
+        Self::get_display_keyword_internal(keyword, &default_display_locale())
+    }
+
+    /// `getDisplayKeyword(String keyword, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_keyword_of(keyword: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_keyword_internal(keyword, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayKeyword(String keyword, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_keyword_in(keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_keyword_internal(keyword, display_locale)
+    }
+
+    fn get_display_keyword_internal(keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale).key_display_name(keyword)
+    }
+
+    /// `getDisplayKeywordValue(String keyword)`: the value of a keyword of
+    /// this locale localized for display in the default `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_keyword_value(&self, keyword: &str) -> Result<Option<String>> {
+        Self::get_display_keyword_value_internal(self, keyword, &default_display_locale())
+    }
+
+    /// `getDisplayKeywordValue(String keyword, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_keyword_value_in(&self, keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_keyword_value_internal(self, keyword, display_locale)
+    }
+
+    /// `getDisplayKeywordValue(String localeID, String keyword, String
+    /// displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_keyword_value_of(locale_id: &str, keyword: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_keyword_value_internal(&ULocale::new(locale_id)?, keyword, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayKeywordValue(String localeID, String keyword, ULocale
+    /// displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_keyword_value_of_in(locale_id: &str, keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_keyword_value_internal(&ULocale::new(locale_id)?, keyword, display_locale)
+    }
+
+    // displayLocaleID is canonical, localeID need not be since parsing will fix this.
+    fn get_display_keyword_value_internal(locale: &ULocale, keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        let keyword = AsciiUtil::to_lower_string(java_trim(keyword));
+        let value = locale.get_keyword_value(&keyword);
+        locale_display_names::get_instance(display_locale).key_value_display_name(&keyword, value.as_deref())
+    }
+
+    /// `getDisplayName()`: this locale localized for display in the default
+    /// `DISPLAY` locale.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_name(&self) -> Result<Option<String>> {
+        Self::get_display_name_internal(self, &default_display_locale())
+    }
+
+    /// `getDisplayName(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_name_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_name_internal(self, display_locale)
+    }
+
+    /// `getDisplayName(String localeID, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_name_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_name_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayName(String localeID, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_name_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_name_internal(&ULocale::new(locale_id)?, display_locale)
+    }
+
+    fn get_display_name_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale).locale_display_name(locale)
+    }
+
+    /// `getDisplayNameWithDialect()`: this locale localized for display in
+    /// the default `DISPLAY` locale, using dialect names.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_name_with_dialect(&self) -> Result<Option<String>> {
+        Self::get_display_name_with_dialect_internal(self, &default_display_locale())
+    }
+
+    /// `getDisplayNameWithDialect(ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the display-name lookup.
+    pub fn get_display_name_with_dialect_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_name_with_dialect_internal(self, display_locale)
+    }
+
+    /// `getDisplayNameWithDialect(String localeID, String displayLocaleID)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_name_with_dialect_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
+        Self::get_display_name_with_dialect_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    }
+
+    /// `getDisplayNameWithDialect(String localeID, ULocale displayLocale)`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `new ULocale` and of the display-name lookup.
+    pub fn get_display_name_with_dialect_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+        Self::get_display_name_with_dialect_internal(&ULocale::new(locale_id)?, display_locale)
+    }
+
+    fn get_display_name_with_dialect_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+        locale_display_names::get_instance_dialect(display_locale, DialectHandling::DialectNames).locale_display_name(locale)
+    }
+
+    /// `acceptLanguage(String acceptLanguageList, ULocale[]
+    /// availableLocales, boolean[] fallback)`: the best match of an HTTP
+    /// `Accept-Language` list among the available locales, `None` if none
+    /// (or if the list cannot be parsed, Java's `catch
+    /// (IllegalArgumentException e)`). `fallback[0]`, when given, is set to
+    /// whether the match is a fallback (not the desired locale itself).
+    ///
+    /// # Errors
+    ///
+    /// The errors of the matcher (data loading, likely subtags).
+    pub fn accept_language(
+        accept_language_list: &str,
+        available_locales: &[ULocale],
+        fallback: Option<&mut [bool]>,
+    ) -> Result<Option<ULocale>> {
+        let mut fallback = fallback;
+        if let Some(f) = fallback.as_deref_mut() {
+            f[0] = true;
+        }
+        let desired = match LocalePriorityList::add_accept_language(accept_language_list) {
+            Ok(mut b) => b.build(),
+            Err(e) if e.is_illegal_argument_exception() => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let mut builder = LocaleMatcher::builder();
+        for locale in available_locales {
+            builder.add_supported_u_locale(locale.clone());
+        }
+        let matcher = builder.build()?;
+        let result = matcher.get_best_match_result_iter(desired.get_u_locales())?;
+        if result.get_desired_index() >= 0 {
+            if let Some(f) = fallback {
+                if result.get_desired_u_locale()? == result.get_supported_u_locale() {
+                    f[0] = false;
+                }
+            }
+            return Ok(result.get_supported_u_locale());
+        }
+        Ok(None)
+    }
+
+    /// `acceptLanguage(ULocale[] acceptLanguageList, ULocale[]
+    /// availableLocales, boolean[] fallback)`: the best match of a list of
+    /// desired locales in preference order.
+    ///
+    /// # Errors
+    ///
+    /// The errors of the matcher (data loading, likely subtags).
+    pub fn accept_language_locales(
+        accept_language_list: &[ULocale],
+        available_locales: &[ULocale],
+        fallback: Option<&mut [bool]>,
+    ) -> Result<Option<ULocale>> {
+        let mut fallback = fallback;
+        if let Some(f) = fallback.as_deref_mut() {
+            f[0] = true;
+        }
+        let mut builder = LocaleMatcher::builder();
+        for locale in available_locales {
+            builder.add_supported_u_locale(locale.clone());
+        }
+        let matcher = builder.build()?;
+        let result = if accept_language_list.len() == 1 {
+            matcher.get_best_match_result(&accept_language_list[0])?
+        } else {
+            matcher.get_best_match_result_iter(accept_language_list.iter().cloned())?
+        };
+        if result.get_desired_index() >= 0 {
+            if let Some(f) = fallback {
+                if result.get_desired_u_locale()? == result.get_supported_u_locale() {
+                    f[0] = false;
+                }
+            }
+            return Ok(result.get_supported_u_locale());
+        }
+        Ok(None)
+    }
+
+    /// `acceptLanguage(String acceptLanguageList, boolean[] fallback)`:
+    /// against `getAvailableLocales()`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `getAvailableLocales` and of the matcher.
+    pub fn accept_language_available(accept_language_list: &str, fallback: Option<&mut [bool]>) -> Result<Option<ULocale>> {
+        Self::accept_language(accept_language_list, &ULocale::get_available_locales()?, fallback)
+    }
+
+    /// `acceptLanguage(ULocale[] acceptLanguageList, boolean[] fallback)`:
+    /// against `getAvailableLocales()`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of `getAvailableLocales` and of the matcher.
+    pub fn accept_language_locales_available(
+        accept_language_list: &[ULocale],
+        fallback: Option<&mut [bool]>,
+    ) -> Result<Option<ULocale>> {
+        Self::accept_language_locales(accept_language_list, &ULocale::get_available_locales()?, fallback)
     }
 }
 
