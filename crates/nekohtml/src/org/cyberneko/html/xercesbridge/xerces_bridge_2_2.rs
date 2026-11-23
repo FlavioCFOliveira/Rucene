@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -71,7 +71,11 @@ pub trait XercesBridge22Methods {
     }
 
     /// Equivalent to `XMLDocumentFilter_setDocumentSource(...)`.
-    fn set_document_source_2_2(&self, filter: &dyn XMLDocumentFilter, last_source: Option<Rc<dyn XMLDocumentSource>>) {
+    fn set_document_source_2_2(
+        &self,
+        filter: &dyn XMLDocumentFilter,
+        last_source: Option<Rc<dyn XMLDocumentSource>>,
+    ) {
         filter.set_document_source(last_source);
     }
 }
@@ -104,7 +108,11 @@ impl XercesBridge for XercesBridge22 {
     ) {
     }
 
-    fn xml_document_filter_set_document_source(&self, filter: &dyn XMLDocumentFilter, last_source: Option<Rc<dyn XMLDocumentSource>>) {
+    fn xml_document_filter_set_document_source(
+        &self,
+        filter: &dyn XMLDocumentFilter,
+        last_source: Option<Rc<dyn XMLDocumentSource>>,
+    ) {
         self.set_document_source_2_2(filter, last_source);
     }
 }

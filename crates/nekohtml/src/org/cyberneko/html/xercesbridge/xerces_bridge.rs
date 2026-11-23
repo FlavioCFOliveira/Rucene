@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -45,7 +45,13 @@ use crate::org::cyberneko::html::xercesbridge::xerces_bridge_2_3::XercesBridge23
 pub trait XercesBridge {
     /// Equivalent to `NamespaceContext_declarePrefix(NamespaceContext,
     /// String, String)`.
-    fn namespace_context_declare_prefix(&self, _namespace_context: &dyn NamespaceContext, _ns: &str, _avalue: Option<&str>) {}
+    fn namespace_context_declare_prefix(
+        &self,
+        _namespace_context: &dyn NamespaceContext,
+        _ns: &str,
+        _avalue: Option<&str>,
+    ) {
+    }
 
     /// Gets the Xerces version used.
     ///

@@ -55,7 +55,13 @@ impl LongRange {
     /// Create a LongRange.
     ///
     /// Equivalent to `LongRange(String, long, boolean, long, boolean)`.
-    pub fn new(label: &str, mut min_in: i64, min_inclusive: bool, mut max_in: i64, max_inclusive: bool) -> Result<Self> {
+    pub fn new(
+        label: &str,
+        mut min_in: i64,
+        min_inclusive: bool,
+        mut max_in: i64,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         let range = Range::new(label);
 
         if !min_inclusive {
@@ -110,7 +116,11 @@ impl LongRange {
     /// `LongValuesSource` value falls in this range.
     ///
     /// Equivalent to `getQuery(Query, LongValuesSource)`.
-    pub fn get_query(&self, fast_match_query: Option<Arc<dyn Query>>, value_source: Arc<dyn LongValuesSource>) -> Arc<dyn Query> {
+    pub fn get_query(
+        &self,
+        fast_match_query: Option<Arc<dyn Query>>,
+        value_source: Arc<dyn LongValuesSource>,
+    ) -> Arc<dyn Query> {
         Arc::new(ValueSourceQuery {
             source: Arc::new(LongSingleSource {
                 range: self.clone(),
@@ -145,7 +155,11 @@ impl LongRange {
 impl fmt::Display for LongRange {
     /// Equivalent to `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "LongRange({}: {} to {})", self.range.label, self.min, self.max)
+        write!(
+            f,
+            "LongRange({}: {} to {})",
+            self.range.label, self.min, self.max
+        )
     }
 }
 

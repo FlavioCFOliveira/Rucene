@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -157,7 +157,9 @@ pub struct HTMLConfiguration {
 
 impl std::fmt::Debug for HTMLConfiguration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HTMLConfiguration").field("base", &self.base).finish_non_exhaustive()
+        f.debug_struct("HTMLConfiguration")
+            .field("base", &self.base)
+            .finish_non_exhaustive()
     }
 }
 
@@ -185,7 +187,9 @@ impl HTMLConfiguration {
             document_handler: RefCell::new(None),
             dtd_handler: RefCell::new(None),
             dtd_content_model_handler: RefCell::new(None),
-            error_handler: RefCell::new(Some(Rc::new(DefaultErrorHandler::new()) as Rc<dyn XMLErrorHandler>)),
+            error_handler: RefCell::new(Some(
+                Rc::new(DefaultErrorHandler::new()) as Rc<dyn XMLErrorHandler>
+            )),
             entity_resolver: RefCell::new(None),
             locale: RefCell::new(Locale::get_default()),
             close_stream: Cell::new(false),
@@ -199,7 +203,9 @@ impl HTMLConfiguration {
                 error_messages: RefCell::new(None),
             }),
         });
-        config.init().expect("INVARIANT: the configuration recognizes its own features and properties");
+        config
+            .init()
+            .expect("INVARIANT: the configuration recognizes its own features and properties");
         config
     }
 
@@ -237,7 +243,8 @@ impl HTMLConfiguration {
             // NOTE: These features should not be required but it causes a
             //       problem if they're not there. This will be fixed in
             //       subsequent releases of Xerces.
-            let recognized_features = strings(&["http://apache.org/xml/features/scanner/notify-builtin-refs"]);
+            let recognized_features =
+                strings(&["http://apache.org/xml/features/scanner/notify-builtin-refs"]);
             self.add_recognized_features(Some(&recognized_features));
         }
 
@@ -262,7 +269,8 @@ impl HTMLConfiguration {
         self.add_recognized_properties(Some(&recognized_properties));
         self.set_property(NAMES_ELEMS, Some(string_object("upper")))?;
         self.set_property(NAMES_ATTRS, Some(string_object("lower")))?;
-        let reporter: Rc<dyn HTMLErrorReporter> = Rc::clone(&self.error_reporter) as Rc<dyn HTMLErrorReporter>;
+        let reporter: Rc<dyn HTMLErrorReporter> =
+            Rc::clone(&self.error_reporter) as Rc<dyn HTMLErrorReporter>;
         self.set_property(ERROR_REPORTER, Some(interface_object(reporter)))?;
 
         // HACK: Xerces 2.0.0
@@ -330,7 +338,9 @@ impl HTMLConfiguration {
     /// The `XMLConfigurationException`s of the defaults set.
     pub fn add_component(&self, component: Rc<dyn HTMLComponent>) -> JResult<()> {
         // add component to list
-        self.html_components.borrow_mut().push(Rc::clone(&component));
+        self.html_components
+            .borrow_mut()
+            .push(Rc::clone(&component));
 
         // add recognized features and set default states
         let features = component.get_recognized_features();
@@ -367,9 +377,12 @@ impl HTMLConfiguration {
         }
 
         // configure pipeline
-        let mut last_source: Rc<dyn XMLDocumentSource> = Rc::clone(&self.document_scanner) as Rc<dyn XMLDocumentSource>;
+        let mut last_source: Rc<dyn XMLDocumentSource> =
+            Rc::clone(&self.document_scanner) as Rc<dyn XMLDocumentSource>;
         if self.get_feature(NAMESPACES)? {
-            last_source.set_document_handler(Some(Rc::clone(&self.namespace_binder) as Rc<dyn XMLDocumentHandler>));
+            last_source.set_document_handler(Some(
+                Rc::clone(&self.namespace_binder) as Rc<dyn XMLDocumentHandler>
+            ));
             XMLDocumentHandler::set_document_source(
                 &*self.namespace_binder,
                 Some(Rc::clone(&self.tag_balancer) as Rc<dyn XMLDocumentSource>),
@@ -377,7 +390,9 @@ impl HTMLConfiguration {
             last_source = Rc::clone(&self.namespace_binder) as Rc<dyn XMLDocumentSource>;
         }
         if self.get_feature(BALANCE_TAGS)? {
-            last_source.set_document_handler(Some(Rc::clone(&self.tag_balancer) as Rc<dyn XMLDocumentHandler>));
+            last_source.set_document_handler(Some(
+                Rc::clone(&self.tag_balancer) as Rc<dyn XMLDocumentHandler>
+            ));
             XMLDocumentHandler::set_document_source(
                 &*self.tag_balancer,
                 Some(Rc::clone(&self.document_scanner) as Rc<dyn XMLDocumentSource>),
@@ -387,7 +402,10 @@ impl HTMLConfiguration {
         let filters = self.get_property(FILTERS)?;
         if let Some(filters) = filters.and_then(|f| f.downcast::<Filters>().ok()) {
             for filter in filters.iter() {
-                xerces_bridge::get_instance().xml_document_filter_set_document_source(&**filter, Some(Rc::clone(&last_source)));
+                xerces_bridge::get_instance().xml_document_filter_set_document_source(
+                    &**filter,
+                    Some(Rc::clone(&last_source)),
+                );
                 last_source.set_document_handler(Some(Rc::clone(filter).as_document_handler()));
                 last_source = Rc::clone(filter).as_document_source();
             }
@@ -532,8 +550,10 @@ impl XMLPullParserConfiguration for HTMLConfiguration {
     /// Sets the input source for the document to parse.
     fn set_input_source(&self, input_source: &XMLInputSource) -> JResult<()> {
         self.reset()?;
-        self.close_stream
-            .set(input_source.get_byte_stream().is_none() && input_source.get_character_stream().is_none());
+        self.close_stream.set(
+            input_source.get_byte_stream().is_none()
+                && input_source.get_character_stream().is_none(),
+        );
         self.document_scanner.set_input_source(input_source)
     }
 
@@ -588,7 +608,10 @@ const ERROR_MESSAGES: &str = "org/cyberneko/html/res/ErrorMessages";
 fn register_error_messages() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
-        ResourceBundle::register_properties(ERROR_MESSAGES, include_bytes!("res/ErrorMessages.properties"));
+        ResourceBundle::register_properties(
+            ERROR_MESSAGES,
+            include_bytes!("res/ErrorMessages.properties"),
+        );
         ResourceBundle::register_properties(
             "org/cyberneko/html/res/ErrorMessages_ja",
             include_bytes!("res/ErrorMessages_ja.properties"),
@@ -652,15 +675,16 @@ impl HTMLErrorReporter for ErrorReporter {
                 register_error_messages();
                 // MissingResourceException is an unchecked exception that
                 // Java does not catch here; the bundle is always present
-                *self.error_messages.borrow_mut() = ResourceBundle::get_bundle(ERROR_MESSAGES, &locale).ok();
+                *self.error_messages.borrow_mut() =
+                    ResourceBundle::get_bundle(ERROR_MESSAGES, &locale).ok();
             }
             let bundle = self.error_messages.borrow().clone();
             if let Some(bundle) = bundle {
                 // MissingResourceException: ignore and return a simple
                 // format
                 if let Ok(value) = bundle.get_string(Some(key)) {
-                    if let Ok(message) =
-                        MessageFormat::new(&value, &Locale::get_default()).and_then(|f| f.format(args))
+                    if let Ok(message) = MessageFormat::new(&value, &Locale::get_default())
+                        .and_then(|f| f.format(args))
                     {
                         return message;
                     }

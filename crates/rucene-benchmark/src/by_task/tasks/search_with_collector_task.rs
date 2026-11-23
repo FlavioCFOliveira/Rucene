@@ -50,8 +50,14 @@ impl SearchWithCollectorTask {
     /// The exception of the `PerfTask` constructor or of the query maker.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchWithCollectorTask")?;
-        let read = ReadTaskBase::new(true, || query_maker_of::<SearchWithCollectorTask>(&run_data))?;
-        Ok(SearchWithCollectorTask { base, read, cln_name: Mutex::new(None) })
+        let read = ReadTaskBase::new(true, || {
+            query_maker_of::<SearchWithCollectorTask>(&run_data)
+        })?;
+        Ok(SearchWithCollectorTask {
+            base,
+            read,
+            cln_name: Mutex::new(None),
+        })
     }
 }
 
@@ -69,7 +75,10 @@ impl PerfTask for SearchWithCollectorTask {
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "SearchWithCollectorTask" | "SearchTask" | "ReadTask")
+        matches!(
+            simple_class_name,
+            "SearchWithCollectorTask" | "SearchTask" | "ReadTask"
+        )
     }
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
@@ -104,9 +113,13 @@ impl ReadTask for SearchWithCollectorTask {
     }
 
     fn create_collector_manager(&self) -> Result<Box<dyn AnyCollectorManager>> {
-        let cln_name = jdk::lock(&self.cln_name).clone().ok_or_else(LuceneError::null_pointer)?;
+        let cln_name = jdk::lock(&self.cln_name)
+            .clone()
+            .ok_or_else(LuceneError::null_pointer)?;
         if cln_name.eq_ignore_ascii_case("topScoreDoc") {
-            Ok(Box::new(ErasedCollectorManager(TopScoreDocCollectorManager::new(self.num_hits(), None, i32::MAX)?)))
+            Ok(Box::new(ErasedCollectorManager(
+                TopScoreDocCollectorManager::new(self.num_hits(), None, i32::MAX)?,
+            )))
         } else if !cln_name.is_empty() {
             classes::collector_manager_for_name(&cln_name)
         } else {

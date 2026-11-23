@@ -48,7 +48,11 @@ impl SimpleQQParser {
     /// the name-value pairs of quality query to use for creating the query,
     /// `index_field` the corresponding index field.
     pub fn new(qq_names: Vec<String>, index_field: &str) -> Self {
-        SimpleQQParser { qq_names, index_field: index_field.to_string(), query_parser: ThreadLocal::new() }
+        SimpleQQParser {
+            qq_names,
+            index_field: index_field.to_string(),
+            query_parser: ThreadLocal::new(),
+        }
     }
 
     /// `SimpleQQParser(String qqName, String indexField)`.
@@ -62,7 +66,10 @@ impl QualityQueryParser for SimpleQQParser {
         let qp = match self.query_parser.get() {
             Some(qp) => qp,
             None => {
-                let qp = QueryParser::new(Some(&self.index_field), Some(Arc::new(StandardAnalyzer::new())))?;
+                let qp = QueryParser::new(
+                    Some(&self.index_field),
+                    Some(Arc::new(StandardAnalyzer::new())),
+                )?;
                 self.query_parser.set(Some(qp)).expect("just set")
             }
         };
@@ -71,7 +78,10 @@ impl QualityQueryParser for SimpleQQParser {
         for name in &self.qq_names {
             // `QueryParserBase.escape(null)` throws NullPointerException.
             let value = qq.get_value(name).ok_or_else(LuceneError::null_pointer)?;
-            bq.add(query_parser_base::parse(&mut *qp, &query_parser_base::escape(value))?, Occur::SHOULD)?;
+            bq.add(
+                query_parser_base::parse(&mut *qp, &query_parser_base::escape(value))?,
+                Occur::SHOULD,
+            )?;
         }
         Ok(Arc::new(bq.build()))
     }

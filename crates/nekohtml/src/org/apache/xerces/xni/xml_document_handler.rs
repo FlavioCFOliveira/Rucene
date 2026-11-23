@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -67,11 +67,26 @@ pub trait XMLDocumentHandler {
     fn comment(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `processingInstruction(String, XMLString,
     /// Augmentations)`.
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augs: Option<&dyn Augmentations>) -> JResult<()>;
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `startElement(QName, XMLAttributes, Augmentations)`.
-    fn start_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()>;
+    fn start_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `emptyElement(QName, XMLAttributes, Augmentations)`.
-    fn empty_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()>;
+    fn empty_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `startGeneralEntity(String, XMLResourceIdentifier,
     /// String, Augmentations)`.
     fn start_general_entity(
@@ -82,13 +97,22 @@ pub trait XMLDocumentHandler {
         augs: Option<&dyn Augmentations>,
     ) -> JResult<()>;
     /// Equivalent to `textDecl(String, String, Augmentations)`.
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()>;
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `endGeneralEntity(String, Augmentations)`.
     fn end_general_entity(&self, name: &str, augs: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `characters(XMLString, Augmentations)`.
     fn characters(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `ignorableWhitespace(XMLString, Augmentations)`.
-    fn ignorable_whitespace(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()>;
+    fn ignorable_whitespace(
+        &self,
+        text: &XMLString,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `endElement(QName, Augmentations)`.
     fn end_element(&self, element: &mut QName, augs: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `startCDATA(Augmentations)`.

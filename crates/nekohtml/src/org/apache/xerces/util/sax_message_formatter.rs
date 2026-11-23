@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -39,7 +39,10 @@ const BUNDLE: &str = "org.apache.xerces.impl.msg.SAXMessages";
 fn register() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
-        ResourceBundle::register_properties(BUNDLE, include_bytes!("../impl/msg/SAXMessages.properties"));
+        ResourceBundle::register_properties(
+            BUNDLE,
+            include_bytes!("../impl/msg/SAXMessages.properties"),
+        );
     });
 }
 
@@ -52,7 +55,11 @@ impl SAXMessageFormatter {
     /// # Errors
     ///
     /// `MissingResourceException` for an unknown key.
-    pub fn format_message(locale: Option<&Locale>, key: &str, arguments: Option<&[JavaObject]>) -> JResult<String> {
+    pub fn format_message(
+        locale: Option<&Locale>,
+        key: &str,
+        arguments: Option<&[JavaObject]>,
+    ) -> JResult<String> {
         register();
         let default_locale;
         let locale = match locale {
@@ -62,7 +69,8 @@ impl SAXMessageFormatter {
                 &default_locale
             }
         };
-        let resource_bundle = ResourceBundle::get_bundle(BUNDLE, locale).map_err(Exception::from)?;
+        let resource_bundle =
+            ResourceBundle::get_bundle(BUNDLE, locale).map_err(Exception::from)?;
         let msg = match resource_bundle.get_string(Some(key)) {
             Ok(mut msg) => {
                 if let Some(arguments) = arguments {
@@ -71,17 +79,27 @@ impl SAXMessageFormatter {
                     match formatted {
                         Ok(m) => msg = m,
                         Err(_) => {
-                            msg = resource_bundle.get_string(Some("FormatFailed")).map_err(Exception::from)?;
+                            msg = resource_bundle
+                                .get_string(Some("FormatFailed"))
+                                .map_err(Exception::from)?;
                             msg.push(' ');
-                            msg.push_str(&resource_bundle.get_string(Some(key)).map_err(Exception::from)?);
+                            msg.push_str(
+                                &resource_bundle
+                                    .get_string(Some(key))
+                                    .map_err(Exception::from)?,
+                            );
                         }
                     }
                 }
                 msg
             }
             Err(_) => {
-                let msg = resource_bundle.get_string(Some("BadMessageKey")).map_err(Exception::from)?;
-                return Err(Exception::runtime(MissingResourceException::new(msg, key, key).error()));
+                let msg = resource_bundle
+                    .get_string(Some("BadMessageKey"))
+                    .map_err(Exception::from)?;
+                return Err(Exception::runtime(
+                    MissingResourceException::new(msg, key, key).error(),
+                ));
             }
         };
         Ok(msg)

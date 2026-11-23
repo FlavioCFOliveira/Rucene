@@ -101,7 +101,9 @@ struct DefaultShapeConverter {
 impl ShapeConverter for DefaultShapeConverter {
     fn convert(&self, shape: Arc<dyn Shape>) -> Result<Arc<dyn Shape>> {
         let mut shape = shape;
-        let point = shape.as_point().map(|p| (p.get_x(), p.get_y(), shape.hash_code()));
+        let point = shape
+            .as_point()
+            .map(|p| (p.get_x(), p.get_y(), shape.hash_code()));
         if let Some((x, y, hash)) = point {
             if self.radius_degrees != 0.0 || self.plus_minus != 0.0 {
                 let mut radius = self.radius_degrees;
@@ -110,7 +112,10 @@ impl ShapeConverter for DefaultShapeConverter {
                     radius += random.next_double() * 2.0 * self.plus_minus - self.plus_minus;
                     radius = radius.abs(); // can happen if configured plusMinus > radiusDegrees
                 }
-                shape = self.spatial_strategy.get_spatial_context().make_circle(x, y, radius)?;
+                shape = self
+                    .spatial_strategy
+                    .get_spatial_context()
+                    .make_circle(x, y, radius)?;
             }
         }
         if self.bbox {
@@ -134,7 +139,11 @@ impl ShapeConverter for DefaultShapeConverter {
 pub struct SpatialDocMaker {
     inner: DocMaker,
     /// `(strategy, shapeConverter)`.
-    state: Mutex<(Option<Arc<dyn SpatialStrategy>>, Option<Arc<dyn ShapeConverter>>)>,
+    #[allow(clippy::type_complexity)]
+    state: Mutex<(
+        Option<Arc<dyn SpatialStrategy>>,
+        Option<Arc<dyn ShapeConverter>>,
+    )>,
 }
 
 impl Default for SpatialDocMaker {
@@ -149,7 +158,10 @@ impl SpatialDocMaker {
 
     /// `new SpatialDocMaker()`.
     pub fn new() -> Self {
-        SpatialDocMaker { inner: DocMaker::new(), state: Mutex::new((None, None)) }
+        SpatialDocMaker {
+            inner: DocMaker::new(),
+            state: Mutex::new((None, None)),
+        }
     }
 
     /// `getSpatialStrategy(int roundNumber)`: looks up the SpatialStrategy
@@ -162,9 +174,14 @@ impl SpatialDocMaker {
     /// `IllegalStateException("Strategy should have been init'ed by
     /// SpatialDocMaker by now")`.
     pub fn get_spatial_strategy(round_number: i32) -> Result<Arc<dyn SpatialStrategy>> {
-        jdk::lock(&SPATIAL_STRATEGY_CACHE).get(&round_number).cloned().ok_or_else(|| {
-            LuceneError::illegal_state("Strategy should have been init'ed by SpatialDocMaker by now")
-        })
+        jdk::lock(&SPATIAL_STRATEGY_CACHE)
+            .get(&round_number)
+            .cloned()
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "Strategy should have been init'ed by SpatialDocMaker by now",
+                )
+            })
     }
 
     /// `makeSpatialStrategy(Config config)`: builds a SpatialStrategy from
@@ -175,7 +192,9 @@ impl SpatialDocMaker {
     /// The exception of the factories.
     pub fn make_spatial_strategy(&self, config: &Arc<Config>) -> Result<Arc<dyn SpatialStrategy>> {
         // A Map view of Config that prefixes keys with "spatial."
-        let config_map: Arc<dyn StringMap> = Arc::new(SpatialConfigMap { config: Arc::clone(config) });
+        let config_map: Arc<dyn StringMap> = Arc::new(SpatialConfigMap {
+            config: Arc::clone(config),
+        });
 
         let ctx = SpatialContextFactory::make_spatial_context(&config_map)?;
 
@@ -195,12 +214,16 @@ impl SpatialDocMaker {
         ctx: Arc<SpatialContext>,
     ) -> Result<Arc<dyn SpatialStrategy>> {
         // TODO once strategies have factories, we could use them here.
-        let strategy_name = config.get_str("spatial.strategy", Some("rpt"))?.unwrap_or_default();
+        let strategy_name = config
+            .get_str("spatial.strategy", Some("rpt"))?
+            .unwrap_or_default();
         match strategy_name.as_str() {
             "rpt" => Ok(self.make_rpt_strategy(Self::SPATIAL_FIELD, config, config_map, ctx)?),
             "composite" => self.make_composite_strategy(config, config_map, ctx),
             // TODO add more as-needed
-            _ => Err(LuceneError::illegal_state(format!("Unknown spatial.strategy: {strategy_name}"))),
+            _ => Err(LuceneError::illegal_state(format!(
+                "Unknown spatial.strategy: {strategy_name}"
+            ))),
         }
     }
 
@@ -269,11 +292,22 @@ impl SpatialDocMaker {
         config_map: &Arc<dyn StringMap>,
         ctx: Arc<SpatialContext>,
     ) -> Result<Arc<dyn SpatialStrategy>> {
-        let rpt: Arc<dyn RecursivePrefixTreeStrategyOps> =
-            self.make_rpt_strategy(&format!("{}_rpt", Self::SPATIAL_FIELD), config, config_map, Arc::clone(&ctx))?;
-        let sdv = self.make_serialized_dv_strategy(&format!("{}_sdv", Self::SPATIAL_FIELD), config, config_map, ctx)?;
+        let rpt: Arc<dyn RecursivePrefixTreeStrategyOps> = self.make_rpt_strategy(
+            &format!("{}_rpt", Self::SPATIAL_FIELD),
+            config,
+            config_map,
+            Arc::clone(&ctx),
+        )?;
+        let sdv = self.make_serialized_dv_strategy(
+            &format!("{}_sdv", Self::SPATIAL_FIELD),
+            config,
+            config_map,
+            ctx,
+        )?;
         let strategy = CompositeSpatialStrategy::new(Self::SPATIAL_FIELD, rpt, sdv)?;
-        strategy.set_optimize_predicates(config.get_bool("query.spatial.composite.optimizePredicates", true)?);
+        strategy.set_optimize_predicates(
+            config.get_bool("query.spatial.composite.optimizePredicates", true)?,
+        );
         Ok(Arc::new(strategy))
     }
 
@@ -290,22 +324,41 @@ impl SpatialDocMaker {
         config_key_prefix: &str,
     ) -> Result<Arc<dyn ShapeConverter>> {
         // by default does no conversion
-        let radius_degrees = config.get_double(&format!("{config_key_prefix}radiusDegrees"), 0.0)?;
-        let plus_minus = config.get_double(&format!("{config_key_prefix}radiusDegreesRandPlusMinus"), 0.0)?;
+        let radius_degrees =
+            config.get_double(&format!("{config_key_prefix}radiusDegrees"), 0.0)?;
+        let plus_minus = config.get_double(
+            &format!("{config_key_prefix}radiusDegreesRandPlusMinus"),
+            0.0,
+        )?;
         let bbox = config.get_bool(&format!("{config_key_prefix}bbox"), false)?;
-        Ok(Arc::new(DefaultShapeConverter { spatial_strategy, radius_degrees, plus_minus, bbox }))
+        Ok(Arc::new(DefaultShapeConverter {
+            spatial_strategy,
+            radius_degrees,
+            plus_minus,
+            bbox,
+        }))
     }
 
     /// `makeShapeFromString(SpatialStrategy strategy, String name, String
     /// shapeStr)`: the WKT shape, or `None` (printing why) when it does not
     /// parse.
-    pub fn make_shape_from_string(strategy: &dyn SpatialStrategy, name: Option<&str>, shape_str: Option<&str>) -> Option<Arc<dyn Shape>> {
+    pub fn make_shape_from_string(
+        strategy: &dyn SpatialStrategy,
+        name: Option<&str>,
+        shape_str: Option<&str>,
+    ) -> Option<Arc<dyn Shape>> {
         if let Some(shape_str) = shape_str.filter(|s| !s.is_empty()) {
-            match strategy.get_spatial_context().read_shape_from_wkt(shape_str) {
+            match strategy
+                .get_spatial_context()
+                .read_shape_from_wkt(shape_str)
+            {
                 Ok(shape) => return Some(shape),
                 Err(e) => {
                     // InvalidShapeException TODO
-                    eprintln!("Shape {} wasn't parseable: {e}  (skipping it)", name.unwrap_or("null"));
+                    eprintln!(
+                        "Shape {} wasn't parseable: {e}  (skipping it)",
+                        name.unwrap_or("null")
+                    );
                     return None;
                 }
             }
@@ -328,7 +381,8 @@ impl DocMakerClass for SpatialDocMaker {
             let strategy = self.make_spatial_strategy(&config)?;
             jdk::lock(&SPATIAL_STRATEGY_CACHE).insert(round, Arc::clone(&strategy));
             // TODO remove previous round config?
-            let shape_converter = Self::make_shape_converter(Arc::clone(&strategy), &config, "doc.spatial.")?;
+            let shape_converter =
+                Self::make_shape_converter(Arc::clone(&strategy), &config, "doc.spatial.")?;
             println!("Spatial Strategy: {strategy}");
             *jdk::lock(&self.state) = (Some(strategy), Some(shape_converter));
         }
@@ -340,7 +394,10 @@ impl DocMakerClass for SpatialDocMaker {
         let mut doc = self.inner.make_document()?;
 
         // Set SPATIAL_FIELD from body
-        let name = jdk::lock(&doc_state).doc_data.get_name().map(str::to_string);
+        let name = jdk::lock(&doc_state)
+            .doc_data
+            .get_name()
+            .map(str::to_string);
         //   makeDocument() resets docState.getBody() so we can't look there; look in Document
         let shape_str = doc
             .get_field(DocMaker::BODY_FIELD)
@@ -348,8 +405,12 @@ impl DocMakerClass for SpatialDocMaker {
             .string_value();
         let (strategy, shape_converter) = jdk::lock(&self.state).clone();
         let strategy = strategy.ok_or_else(LuceneError::null_pointer)?;
-        if let Some(shape) = Self::make_shape_from_string(&*strategy, name.as_deref(), shape_str.as_deref()) {
-            let shape = shape_converter.ok_or_else(LuceneError::null_pointer)?.convert(shape)?;
+        if let Some(shape) =
+            Self::make_shape_from_string(&*strategy, name.as_deref(), shape_str.as_deref())
+        {
+            let shape = shape_converter
+                .ok_or_else(LuceneError::null_pointer)?
+                .convert(shape)?;
             // index
             for f in strategy.create_indexable_fields(&shape)? {
                 doc.add_shared(f);
@@ -360,7 +421,10 @@ impl DocMakerClass for SpatialDocMaker {
 
     fn make_document_of_size(&self, _size: i32) -> Result<Document> {
         // TODO consider abusing the 'size' notion to number of shapes per document
-        Err(LuceneError::unchecked_with_message("java.lang.UnsupportedOperationException", None))
+        Err(LuceneError::unchecked_with_message(
+            "java.lang.UnsupportedOperationException",
+            None,
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {

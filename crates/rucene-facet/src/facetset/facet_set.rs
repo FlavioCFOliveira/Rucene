@@ -62,7 +62,9 @@ pub trait FacetSet: Send + Sync {
 /// `validateValuesAndGetNumDims(...)` of the subclasses.
 pub(crate) fn validate_values_and_get_num_dims(len: usize) -> rucene::error::Result<i32> {
     if len == 0 {
-        return Err(rucene::error::LuceneError::illegal_argument("values cannot be null or empty"));
+        return Err(rucene::error::LuceneError::illegal_argument(
+            "values cannot be null or empty",
+        ));
     }
     Ok(len as i32)
 }

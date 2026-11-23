@@ -54,7 +54,9 @@ impl RangeFacetSetMatcher {
     /// Equivalent to `getDims(DimRange...)`.
     fn get_dims(dim_ranges: &[DimRange]) -> Result<i32> {
         if dim_ranges.is_empty() {
-            return Err(LuceneError::illegal_argument("dimRanges cannot be null or empty"));
+            return Err(LuceneError::illegal_argument(
+                "dimRanges cannot be null or empty",
+            ));
         }
         Ok(dim_ranges.len() as i32)
     }

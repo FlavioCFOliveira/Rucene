@@ -100,7 +100,10 @@ impl NewCollationAnalyzerTask {
     /// # Errors
     ///
     /// `ClassNotFoundException` for the ICU implementation.
-    pub(crate) fn create_analyzer(locale: &Locale, impl_: Implementation) -> Result<Arc<dyn Analyzer>> {
+    pub(crate) fn create_analyzer(
+        locale: &Locale,
+        impl_: Implementation,
+    ) -> Result<Arc<dyn Analyzer>> {
         match impl_ {
             Implementation::Jdk => {
                 let collator = RuleBasedCollator::get_instance(locale);
@@ -125,14 +128,21 @@ impl PerfTask for NewCollationAnalyzerTask {
         let impl_ = *jdk::lock(&self.impl_);
         let result = (|| -> Result<()> {
             let Some(locale) = self.base.get_run_data().get_locale() else {
-                return Err(jdk::runtime_exception("Locale must be set with the NewLocale task!"));
+                return Err(jdk::runtime_exception(
+                    "Locale must be set with the NewLocale task!",
+                ));
             };
             let analyzer = Self::create_analyzer(&locale, impl_)?;
             self.base.get_run_data().set_analyzer(Some(analyzer));
             println!("Changed Analyzer to: {}({locale})", impl_.class_name());
             Ok(())
         })();
-        result.map_err(|e| jdk::runtime_exception_with_cause(format!("Error creating Analyzer: impl={}", impl_.name()), e))?;
+        result.map_err(|e| {
+            jdk::runtime_exception_with_cause(
+                format!("Error creating Analyzer: impl={}", impl_.name()),
+                e,
+            )
+        })?;
         Ok(1)
     }
 
@@ -140,7 +150,12 @@ impl PerfTask for NewCollationAnalyzerTask {
         perf_task::set_params(self, params)?;
         for param in params.split(',').filter(|s| !s.is_empty()) {
             let mut expr = param.split(':').filter(|s| !s.is_empty());
-            let no_such = || rucene::error::LuceneError::unchecked_with_message("java.util.NoSuchElementException", None);
+            let no_such = || {
+                rucene::error::LuceneError::unchecked_with_message(
+                    "java.util.NoSuchElementException",
+                    None,
+                )
+            };
             let key = expr.next().ok_or_else(no_such)?;
             let value = expr.next().ok_or_else(no_such)?;
             // for now we only support the "impl" parameter.

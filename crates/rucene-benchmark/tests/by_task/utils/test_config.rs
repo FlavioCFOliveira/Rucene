@@ -31,7 +31,10 @@ use crate::benchmark_support::core_support::{class, test};
 pub fn class_def() -> Arc<Class> {
     class(
         "org.apache.lucene.benchmark.byTask.utils.TestConfig",
-        vec![test("testAbsolutePathNamesWindows", test_absolute_path_names_windows)],
+        vec![test(
+            "testAbsolutePathNamesWindows",
+            test_absolute_path_names_windows,
+        )],
     )
 }
 
@@ -40,7 +43,13 @@ fn test_absolute_path_names_windows() -> Result<()> {
     props.set_property("work.dir1", "c:\\temp");
     props.set_property("work.dir2", "c:/temp");
     let conf = Config::from_properties(props);
-    Assert::assert_equals("c:\\temp", conf.get_str("work.dir1", Some(""))?.as_deref().unwrap());
-    Assert::assert_equals("c:/temp", conf.get_str("work.dir2", Some(""))?.as_deref().unwrap());
+    Assert::assert_equals(
+        "c:\\temp",
+        conf.get_str("work.dir1", Some(""))?.as_deref().unwrap(),
+    );
+    Assert::assert_equals(
+        "c:/temp",
+        conf.get_str("work.dir2", Some(""))?.as_deref().unwrap(),
+    );
     Ok(())
 }

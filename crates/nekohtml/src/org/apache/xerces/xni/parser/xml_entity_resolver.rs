@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -28,7 +28,10 @@ use crate::org::apache::xerces::xni::xml_resource_identifier::XMLResourceIdentif
 /// Equivalent to `org.apache.xerces.xni.parser.XMLEntityResolver`.
 pub trait XMLEntityResolver {
     /// Equivalent to `resolveEntity(XMLResourceIdentifier)`.
-    fn resolve_entity(&self, resource_identifier: &dyn XMLResourceIdentifier) -> JResult<Option<XMLInputSource>>;
+    fn resolve_entity(
+        &self,
+        resource_identifier: &dyn XMLResourceIdentifier,
+    ) -> JResult<Option<XMLInputSource>>;
 
     /// This resolver as `Any`, for `instanceof` tests.
     fn as_any(&self) -> &dyn Any;

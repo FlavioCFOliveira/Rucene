@@ -50,7 +50,10 @@ impl OpenReaderTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(OpenReaderTask { base: PerfTaskBase::new(run_data, "OpenReaderTask")?, commit_user_data: Mutex::new(None) })
+        Ok(OpenReaderTask {
+            base: PerfTaskBase::new(run_data, "OpenReaderTask")?,
+            commit_user_data: Mutex::new(None),
+        })
     }
 
     /// `findIndexCommit(Directory dir, String userData)`.
@@ -59,7 +62,10 @@ impl OpenReaderTask {
     ///
     /// `IOException("index does not contain commit with userData: " +
     /// userData)`, or the exception of listing the commits.
-    pub fn find_index_commit(dir: Arc<dyn Directory>, user_data: &str) -> Result<Arc<dyn IndexCommit>> {
+    pub fn find_index_commit(
+        dir: Arc<dyn Directory>,
+        user_data: &str,
+    ) -> Result<Arc<dyn IndexCommit>> {
         let commits = directory_reader::list_commits(dir)?;
         for ic in commits {
             let map = ic.get_user_data()?;
@@ -67,7 +73,9 @@ impl OpenReaderTask {
                 return Ok(ic);
             }
         }
-        Err(jdk::io_exception(format!("index does not contain commit with userData: {user_data}")))
+        Err(jdk::io_exception(format!(
+            "index does not contain commit with userData: {user_data}"
+        )))
     }
 }
 
@@ -83,10 +91,14 @@ impl PerfTask for OpenReaderTask {
 
     fn do_logic(&self) -> Result<i32> {
         let run_data = self.base.get_run_data();
-        let dir = run_data.get_directory().ok_or_else(LuceneError::null_pointer)?;
+        let dir = run_data
+            .get_directory()
+            .ok_or_else(LuceneError::null_pointer)?;
         let commit_user_data = jdk::lock(&self.commit_user_data).clone();
         let r = match commit_user_data {
-            Some(user_data) => directory_reader::open_with_commit(&*Self::find_index_commit(dir, &user_data)?)?,
+            Some(user_data) => {
+                directory_reader::open_with_commit(&*Self::find_index_commit(dir, &user_data)?)?
+            }
             None => directory_reader::open(dir)?,
         };
         run_data.set_index_reader(Some(Arc::clone(&r)))?;

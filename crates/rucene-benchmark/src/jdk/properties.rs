@@ -102,7 +102,11 @@ impl Properties {
     }
 
     /// `getProperty(key, defaultValue)`.
-    pub fn get_property_or<'a>(&'a self, key: &str, default_value: Option<&'a str>) -> Option<&'a str> {
+    pub fn get_property_or<'a>(
+        &'a self,
+        key: &str,
+        default_value: Option<&'a str>,
+    ) -> Option<&'a str> {
         self.get_property(key).or(default_value)
     }
 
@@ -112,7 +116,11 @@ impl Properties {
     }
 
     /// `setProperty(key, value)` (`put`): the previous value, if any.
-    pub fn set_property(&mut self, key: impl Into<String>, value: impl Into<String>) -> Option<String> {
+    pub fn set_property(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Option<String> {
         let key = key.into();
         let value = value.into();
         let hash = spread(java_string_hash_code(&key));
@@ -129,14 +137,22 @@ impl Properties {
         if bin.nodes.is_empty() {
             bin.nodes.push(Node { hash, key, value });
         } else if bin.tree {
-            if let Some(node) = bin.nodes.iter_mut().find(|node| node.hash == hash && node.key == key) {
+            if let Some(node) = bin
+                .nodes
+                .iter_mut()
+                .find(|node| node.hash == hash && node.key == key)
+            {
                 return Some(std::mem::replace(&mut node.value, value));
             }
             // putTreeVal: `first = x = new TreeNode(h, k, v, f, xp)`.
             bin.nodes.insert(0, Node { hash, key, value });
             bin_count = 2;
         } else {
-            if let Some(node) = bin.nodes.iter_mut().find(|node| node.hash == hash && node.key == key) {
+            if let Some(node) = bin
+                .nodes
+                .iter_mut()
+                .find(|node| node.hash == hash && node.key == key)
+            {
                 return Some(std::mem::replace(&mut node.value, value));
             }
             bin_count = bin.nodes.len();
@@ -198,10 +214,24 @@ impl Properties {
                         hi.push(node.clone());
                     }
                 }
-                let lo_tree = if lo.len() <= UNTREEIFY_THRESHOLD { false } else { !hi.is_empty() || bin.tree };
-                let hi_tree = if hi.len() <= UNTREEIFY_THRESHOLD { false } else { !lo.is_empty() || bin.tree };
-                next[i] = Bin { nodes: lo, tree: lo_tree };
-                next[i + n] = Bin { nodes: hi, tree: hi_tree };
+                let lo_tree = if lo.len() <= UNTREEIFY_THRESHOLD {
+                    false
+                } else {
+                    !hi.is_empty() || bin.tree
+                };
+                let hi_tree = if hi.len() <= UNTREEIFY_THRESHOLD {
+                    false
+                } else {
+                    !lo.is_empty() || bin.tree
+                };
+                next[i] = Bin {
+                    nodes: lo,
+                    tree: lo_tree,
+                };
+                next[i + n] = Bin {
+                    nodes: hi,
+                    tree: hi_tree,
+                };
             } else {
                 let nodes = bin.nodes;
                 let mut run_bit = (nodes[0].hash as usize) & n;
@@ -214,7 +244,11 @@ impl Properties {
                     }
                 }
                 let tail: Vec<Node> = nodes[last_run..].to_vec();
-                let (mut ln, mut hn) = if run_bit == 0 { (tail, Vec::new()) } else { (Vec::new(), tail) };
+                let (mut ln, mut hn) = if run_bit == 0 {
+                    (tail, Vec::new())
+                } else {
+                    (Vec::new(), tail)
+                };
                 for node in &nodes[..last_run] {
                     if (node.hash as usize) & n == 0 {
                         ln.insert(0, node.clone());
@@ -222,8 +256,14 @@ impl Properties {
                         hn.insert(0, node.clone());
                     }
                 }
-                next[i] = Bin { nodes: ln, tree: false };
-                next[i + n] = Bin { nodes: hn, tree: false };
+                next[i] = Bin {
+                    nodes: ln,
+                    tree: false,
+                };
+                next[i + n] = Bin {
+                    nodes: hn,
+                    tree: false,
+                };
             }
         }
         self.table = next;

@@ -61,7 +61,8 @@ impl SearcherAndTaxonomy {
 
 impl fmt::Debug for SearcherAndTaxonomy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SearcherAndTaxonomy").finish_non_exhaustive()
+        f.debug_struct("SearcherAndTaxonomy")
+            .finish_non_exhaustive()
     }
 }
 
@@ -102,13 +103,20 @@ struct TaxonomyRefreshSource {
 
 impl RefreshSource<SearcherAndTaxonomy> for TaxonomyRefreshSource {
     /// Equivalent to `refreshIfNeeded(SearcherAndTaxonomy)`.
-    fn refresh_if_needed(&self, reference: &Arc<SearcherAndTaxonomy>) -> Result<Option<Arc<SearcherAndTaxonomy>>> {
+    fn refresh_if_needed(
+        &self,
+        reference: &Arc<SearcherAndTaxonomy>,
+    ) -> Result<Option<Arc<SearcherAndTaxonomy>>> {
         // Must re-open searcher first, otherwise we may get a new reader that
         // references ords not yet known to the taxonomy reader:
         let dr = Arc::clone(reference.searcher.reader());
-        let refresh_commit = self.refresh_commit_supplier.get_searcher_refresh_commit(&dr)?;
+        let refresh_commit = self
+            .refresh_commit_supplier
+            .get_searcher_refresh_commit(&dr)?;
         let new_reader = match refresh_commit {
-            Some(commit) => directory_reader::open_if_changed_with_commit(Arc::clone(&dr), &*commit)?,
+            Some(commit) => {
+                directory_reader::open_if_changed_with_commit(Arc::clone(&dr), &*commit)?
+            }
             None => directory_reader::open_if_changed(Arc::clone(&dr))?,
         };
         let Some(new_reader) = new_reader else {
@@ -182,7 +190,13 @@ impl SearcherTaxonomyManager {
         searcher_factory: Option<Arc<dyn SearcherFactory>>,
         taxo_writer: Arc<DirectoryTaxonomyWriter>,
     ) -> Result<Self> {
-        Self::from_writers_with_commit_supplier(writer, apply_all_deletes, searcher_factory, taxo_writer, None)
+        Self::from_writers_with_commit_supplier(
+            writer,
+            apply_all_deletes,
+            searcher_factory,
+            taxo_writer,
+            None,
+        )
     }
 
     /// Expert: creates near-real-time searcher and taxonomy reader from the
@@ -293,15 +307,21 @@ impl SearcherTaxonomyManager {
     /// Returns the generation of the commit the current searcher reads.
     ///
     /// Equivalent to the package-private `getSearcherCommitGeneration()`.
-    pub(crate) fn get_searcher_commit_generation(&self) -> Result<i64> {
+    // Public for the port of `TestSearcherTaxonomyManager` (Java package-private).
+    pub fn get_searcher_commit_generation(&self) -> Result<i64> {
         let sat = self.manager.acquire()?;
-        let gen = sat.searcher.reader().index_commit().map(|c| c.get_generation());
+        let gen = sat
+            .searcher
+            .reader()
+            .index_commit()
+            .map(|c| c.get_generation());
         self.manager.release(sat)?;
         gen
     }
 
     /// Equivalent to the package-private `isSearcherCurrent()`.
-    pub(crate) fn is_searcher_current(&self) -> Result<bool> {
+    // Public for the port of `TestSearcherTaxonomyManager` (Java package-private).
+    pub fn is_searcher_current(&self) -> Result<bool> {
         let sat = self.manager.acquire()?;
         let current = sat.searcher.reader().is_current();
         self.manager.release(sat)?;
@@ -309,7 +329,8 @@ impl SearcherTaxonomyManager {
     }
 
     /// Equivalent to the package-private `isTaxonomyCurrent()`.
-    pub(crate) fn is_taxonomy_current(&self) -> Result<bool> {
+    // Public for the port of `TestSearcherTaxonomyManager` (Java package-private).
+    pub fn is_taxonomy_current(&self) -> Result<bool> {
         let sat = self.manager.acquire()?;
         let current = sat
             .taxonomy_reader

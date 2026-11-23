@@ -44,7 +44,9 @@ impl RepSumByNameRoundTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(RepSumByNameRoundTask { base: PerfTaskBase::new(run_data, "RepSumByNameRoundTask")? })
+        Ok(RepSumByNameRoundTask {
+            base: PerfTaskBase::new(run_data, "RepSumByNameRoundTask")?,
+        })
     }
 
     /// `reportSumByNameRound(List<TaskStats> taskStats)`: report statistics
@@ -62,7 +64,12 @@ impl RepSumByNameRoundTask {
             |s| format!("{}.{}", s.get_round(), s.get_task().get_name()), // group by round
         )?;
         // now generate report from secondary list p2
-        Ok(ReportTask::gen_partial_report(self.base.get_run_data(), reported, &p2, task_stats.len() as i32))
+        Ok(ReportTask::gen_partial_report(
+            self.base.get_run_data(),
+            reported,
+            &p2,
+            task_stats.len() as i32,
+        ))
     }
 }
 
@@ -70,7 +77,9 @@ impl PerfTask for RepSumByNameRoundTask {
     report_task::report_task_perf_methods!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(RepSumByNameRoundTask { base: self.base.clone_base() }))
+        Ok(Arc::new(RepSumByNameRoundTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

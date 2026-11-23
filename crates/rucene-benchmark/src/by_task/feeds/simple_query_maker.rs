@@ -55,20 +55,31 @@ impl SimpleQueryMaker {
     /// # Errors
     ///
     /// If cannot prepare the queries.
-    pub(crate) fn prepare_simple_queries(base: &AbstractQueryMakerBase) -> Result<Vec<Arc<dyn Query>>> {
-        let config = base.config().ok_or_else(rucene::error::LuceneError::null_pointer)?;
+    pub(crate) fn prepare_simple_queries(
+        base: &AbstractQueryMakerBase,
+    ) -> Result<Vec<Arc<dyn Query>>> {
+        let config = base
+            .config()
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         // analyzer (default is standard analyzer)
         let anlzr = NewAnalyzerTask::create_analyzer(
             &config
-                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .get_str(
+                    "analyzer",
+                    Some("org.apache.lucene.analysis.standard.StandardAnalyzer"),
+                )?
                 .unwrap_or_default(),
         )?;
 
         let mut qp = QueryParser::new(Some(DocMaker::BODY_FIELD), Some(anlzr))?;
         let mut qq: Vec<Arc<dyn Query>> = Vec::new();
-        let q1: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text(DocMaker::ID_FIELD, "doc2")));
+        let q1: Arc<dyn Query> =
+            Arc::new(TermQuery::new(Term::from_text(DocMaker::ID_FIELD, "doc2")));
         qq.push(Arc::clone(&q1));
-        let q2: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text(DocMaker::BODY_FIELD, "simple")));
+        let q2: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text(
+            DocMaker::BODY_FIELD,
+            "simple",
+        )));
         qq.push(Arc::clone(&q2));
         let mut bq = BooleanQueryBuilder::new();
         bq.add(q1, Occur::MUST)?;

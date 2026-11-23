@@ -111,7 +111,9 @@ impl ReindexingEnrichedDirectoryTaxonomyWriter {
                 .collect();
             let labels = taxo_reader.get_bulk_path(&mut ordinals)?;
             for label in labels {
-                paths.push(label.expect("INVARIANT: DirectoryTaxonomyReader never returns a null path"));
+                paths.push(
+                    label.expect("INVARIANT: DirectoryTaxonomyReader never returns a null path"),
+                );
             }
         }
         taxo_reader.close()?;
@@ -141,7 +143,8 @@ impl ReindexingEnrichedDirectoryTaxonomyWriter {
         let ordinal_to_path = Self::record_paths_in_order(d)?;
         self.inner.delete_all_locked(&mut state)?;
         for category_path in &ordinal_to_path {
-            self.inner.add_category_with_monitor(category_path, Some(&mut state))?;
+            self.inner
+                .add_category_with_monitor(category_path, Some(&mut state))?;
         }
         self.inner.commit_locked()?;
         Ok(())

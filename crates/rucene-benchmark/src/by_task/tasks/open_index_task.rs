@@ -52,7 +52,8 @@ impl OpenIndexTask {
     /// `DEFAULT_MERGE_PFACTOR`.
     pub const DEFAULT_MERGE_PFACTOR: i32 = DEFAULT_MERGE_FACTOR;
     /// `DEFAULT_RAM_FLUSH_MB`: `(int) IndexWriterConfig.DEFAULT_RAM_BUFFER_SIZE_MB`.
-    pub const DEFAULT_RAM_FLUSH_MB: f64 = LiveIndexWriterConfig::DEFAULT_RAM_BUFFER_SIZE_MB as i32 as f64;
+    pub const DEFAULT_RAM_FLUSH_MB: f64 =
+        LiveIndexWriterConfig::DEFAULT_RAM_BUFFER_SIZE_MB as i32 as f64;
 
     /// `OpenIndexTask(PerfRunData runData)`.
     ///
@@ -60,7 +61,10 @@ impl OpenIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(OpenIndexTask { base: PerfTaskBase::new(run_data, "OpenIndexTask")?, commit_user_data: Mutex::new(None) })
+        Ok(OpenIndexTask {
+            base: PerfTaskBase::new(run_data, "OpenIndexTask")?,
+            commit_user_data: Mutex::new(None),
+        })
     }
 }
 
@@ -80,7 +84,9 @@ impl PerfTask for OpenIndexTask {
         let commit_user_data = jdk::lock(&self.commit_user_data).clone();
         let ic = match commit_user_data {
             Some(user_data) => Some(OpenReaderTask::find_index_commit(
-                run_data.get_directory().ok_or_else(LuceneError::null_pointer)?,
+                run_data
+                    .get_directory()
+                    .ok_or_else(LuceneError::null_pointer)?,
                 &user_data,
             )?),
             None => None,

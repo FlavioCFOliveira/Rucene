@@ -137,7 +137,9 @@ pub trait AbstractQueryMaker: Send + Sync + Any {
     /// None in the base class.
     fn make_query(&self) -> Result<Arc<dyn Query>> {
         let n = self.aqm_base().next_qnum();
-        Ok(Arc::clone(&self.aqm_base().queries().expect("setConfig was called")[n]))
+        Ok(Arc::clone(
+            &self.aqm_base().queries().expect("setConfig was called")[n],
+        ))
     }
 
     /// `makeQuery(int size)`.
@@ -160,7 +162,10 @@ pub trait AbstractQueryMaker: Send + Sync + Any {
 /// # Errors
 ///
 /// The exception of `prepareQueries()`.
-pub fn set_config_base<T: AbstractQueryMaker + ?Sized>(maker: &T, config: Arc<Config>) -> Result<()> {
+pub fn set_config_base<T: AbstractQueryMaker + ?Sized>(
+    maker: &T,
+    config: Arc<Config>,
+) -> Result<()> {
     jdk::lock(&maker.aqm_base().state).config = Some(config);
     let queries = maker.prepare_queries()?;
     jdk::lock(&maker.aqm_base().state).queries = Some(queries);

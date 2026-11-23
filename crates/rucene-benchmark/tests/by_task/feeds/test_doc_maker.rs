@@ -25,7 +25,9 @@ use randomizedtesting::junit::Assert;
 use rucene::document::Document;
 use rucene::error::Result;
 use rucene::index::directory_reader;
-use rucene_benchmark::by_task::feeds::content_items_source::{ContentItemsSource, ContentItemsSourceBase};
+use rucene_benchmark::by_task::feeds::content_items_source::{
+    ContentItemsSource, ContentItemsSourceBase,
+};
 use rucene_benchmark::by_task::feeds::content_source::ContentSource;
 use rucene_benchmark::by_task::feeds::doc_data::DocData;
 use rucene_benchmark::by_task::feeds::doc_maker::{DocMaker, DocMakerClass};
@@ -45,7 +47,8 @@ use crate::benchmark_support::search_support::{ftest, tq};
 use crate::benchmark_support::{benchmark_class, get_work_dir, run_data_of};
 
 /// The binary name of `OneDocSource`.
-pub const ONE_DOC_SOURCE: &str = "org.apache.lucene.benchmark.byTask.feeds.TestDocMaker$OneDocSource";
+pub const ONE_DOC_SOURCE: &str =
+    "org.apache.lucene.benchmark.byTask.feeds.TestDocMaker$OneDocSource";
 
 /// `public static final class OneDocSource extends ContentSource`.
 #[derive(Default)]
@@ -108,9 +111,16 @@ pub fn class_def() -> Arc<Class> {
     )
 }
 
-fn do_test_index_properties(set_index_props: bool, index_props_val: bool, num_expected_results: i64) -> Result<()> {
+fn do_test_index_properties(
+    set_index_props: bool,
+    index_props_val: bool,
+    num_expected_results: i64,
+) -> Result<()> {
     let mut props = Properties::new();
-    props.set_property("analyzer", "org.apache.lucene.analysis.core.WhitespaceAnalyzer");
+    props.set_property(
+        "analyzer",
+        "org.apache.lucene.analysis.core.WhitespaceAnalyzer",
+    );
     props.set_property("content.source", ONE_DOC_SOURCE);
     props.set_property("directory", "ByteBuffersDirectory");
     if set_index_props {
@@ -139,7 +149,10 @@ fn create_test_norms_document(
     body_norms_val: bool,
 ) -> Result<Document> {
     let mut props = Properties::new();
-    props.set_property("analyzer", "org.apache.lucene.analysis.core.WhitespaceAnalyzer");
+    props.set_property(
+        "analyzer",
+        "org.apache.lucene.analysis.core.WhitespaceAnalyzer",
+    );
     props.set_property("directory", "ByteBuffersDirectory");
     if set_norms_prop {
         props.set_property("doc.tokenized.norms", norms_prop_val.to_string());
@@ -161,7 +174,10 @@ fn test_index_properties(_f: &mut DocMakerTest) -> Result<()> {
 }
 
 fn omit_norms(doc: &Document, name: &str) -> bool {
-    doc.get_field(name).expect("field").field_type().omit_norms()
+    doc.get_field(name)
+        .expect("field")
+        .field_type()
+        .omit_norms()
 }
 
 /// Tests doc.tokenized.norms and doc.body.tokenized.norms properties.
@@ -190,10 +206,17 @@ fn test_norms(_f: &mut DocMakerTest) -> Result<()> {
 
 fn test_doc_maker_leak(_f: &mut DocMakerTest) -> Result<()> {
     let f = get_work_dir().join("docMakerLeak.txt");
-    let line = format!("one title\t{}\tsome content{}", LuceneTestCase::random().next_long(), rucene_benchmark::jdk::NEW_LINE);
+    let line = format!(
+        "one title\t{}\tsome content{}",
+        LuceneTestCase::random().next_long(),
+        rucene_benchmark::jdk::NEW_LINE
+    );
     std::fs::write(&f, line)?;
     let mut props = Properties::new();
-    props.set_property("docs.file", std::path::absolute(&f)?.to_string_lossy().into_owned());
+    props.set_property(
+        "docs.file",
+        std::path::absolute(&f)?.to_string_lossy().into_owned(),
+    );
     props.set_property("content.source.forever", "false");
     let config = Arc::new(Config::from_properties(props));
     let source: Arc<dyn ContentSource> = Arc::new(LineDocSource::new());

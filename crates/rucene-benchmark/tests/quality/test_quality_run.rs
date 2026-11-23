@@ -46,7 +46,8 @@ use rucene_test_framework::util::LuceneTestCase;
 
 use crate::benchmark_support::search_support::{ftest, set_up};
 use crate::benchmark_support::{
-    benchmark_class, copy_to_work_dir, exec_benchmark, get_work_dir_nio, get_work_dir_resource_path, resource_bytes,
+    benchmark_class, copy_to_work_dir, exec_benchmark, get_work_dir_nio,
+    get_work_dir_resource_path, resource_bytes,
 };
 
 /// The instance of `TestQualityRun`.
@@ -71,8 +72,12 @@ fn setup(_f: &mut QualityRunTest) -> Result<()> {
 
 /// `new BufferedReader(new InputStreamReader(getClass().getResourceAsStream(name), UTF_8))`.
 fn resource_reader(name: &str) -> Result<BufferedReader<InputStreamReader<Box<dyn Read + Send>>>> {
-    let stream: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(resource_bytes("quality", name)));
-    Ok(BufferedReader::new(InputStreamReader::with_charset(stream, Charset::for_name("UTF-8")?)))
+    let stream: Box<dyn Read + Send> =
+        Box::new(std::io::Cursor::new(resource_bytes("quality", name)));
+    Ok(BufferedReader::new(InputStreamReader::with_charset(
+        stream,
+        Charset::for_name("UTF-8")?,
+    )))
 }
 
 fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
@@ -82,7 +87,13 @@ fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
     let max_results = 1000;
     let doc_name_field = "doctitle"; // orig docID is in the linedoc format title
 
-    let logger = if *VERBOSE { Some(Arc::new(PrintWriter::with_auto_flush(Box::new(std::io::stdout())))) } else { None };
+    let logger = if *VERBOSE {
+        Some(Arc::new(PrintWriter::with_auto_flush(Box::new(
+            std::io::stdout(),
+        ))))
+    } else {
+        None
+    };
 
     // prepare topics
     let q_reader = TrecTopicsReader::new();
@@ -96,14 +107,25 @@ fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
 
     let dir = LuceneTestCase::new_fs_directory(&get_work_dir_nio().resolve_str("index"));
     let reader = directory_reader::open(dir.as_directory())?;
-    let searcher = Arc::new(IndexSearcher::new(Arc::clone(&reader) as Arc<dyn IndexReader>)?);
+    let searcher = Arc::new(IndexSearcher::new(
+        Arc::clone(&reader) as Arc<dyn IndexReader>
+    )?);
 
-    let qq_parser: Arc<dyn QualityQueryParser> = Arc::new(SimpleQQParser::with_name("title", "body"));
+    let qq_parser: Arc<dyn QualityQueryParser> =
+        Arc::new(SimpleQQParser::with_name("title", "body"));
     let mut qrun = QualityBenchmark::new(qqs, qq_parser, searcher, doc_name_field);
-    let submit_log = if *VERBOSE { Some(SubmissionReport::new(logger.clone(), "TestRun")?) } else { None };
+    let submit_log = if *VERBOSE {
+        Some(SubmissionReport::new(logger.clone(), "TestRun")?)
+    } else {
+        None
+    };
     qrun.set_max_results(max_results);
     let stats: Vec<QualityStats> = qrun
-        .execute(Some(&judge as &dyn Judge), submit_log.as_ref(), logger.as_deref())?
+        .execute(
+            Some(&judge as &dyn Judge),
+            submit_log.as_ref(),
+            logger.as_deref(),
+        )?
         .into_iter()
         .map(|s| s.expect("stats"))
         .collect();
@@ -117,11 +139,22 @@ fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
     for (i, s) in stats.iter().enumerate() {
         match i % 8 {
             0 => {
-                Assert::assert_true_msg(&format!("avg-p should be hurt: {}", s.get_avp()), 1.0 > s.get_avp());
-                Assert::assert_true_msg(&format!("recall should be hurt: {}", s.get_recall()), 1.0 > s.get_recall());
+                Assert::assert_true_msg(
+                    &format!("avg-p should be hurt: {}", s.get_avp()),
+                    1.0 > s.get_avp(),
+                );
+                Assert::assert_true_msg(
+                    &format!("recall should be hurt: {}", s.get_recall()),
+                    1.0 > s.get_recall(),
+                );
                 for j in 1..=QualityStats::MAX_POINTS {
                     let p = s.get_precision_at(j)?;
-                    crate::benchmark_support::assert_equals_delta_msg(&format!("p_at_{j} should be perfect: {p}"), 1.0, p, 1E-2);
+                    crate::benchmark_support::assert_equals_delta_msg(
+                        &format!("p_at_{j} should be perfect: {p}"),
+                        1.0,
+                        p,
+                        1E-2,
+                    );
                 }
             }
             1 => {
@@ -138,15 +171,26 @@ fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
                 }
             }
             2 => {
-                Assert::assert_true_msg(&format!("avg-p should be hurt: {}", s.get_avp()), 1.0 > s.get_avp());
-                Assert::assert_true_msg(&format!("recall should be hurt: {}", s.get_recall()), 1.0 > s.get_recall());
+                Assert::assert_true_msg(
+                    &format!("avg-p should be hurt: {}", s.get_avp()),
+                    1.0 > s.get_avp(),
+                );
+                Assert::assert_true_msg(
+                    &format!("recall should be hurt: {}", s.get_recall()),
+                    1.0 > s.get_recall(),
+                );
                 for j in 1..=QualityStats::MAX_POINTS {
                     let p = s.get_precision_at(j)?;
                     Assert::assert_true_msg(&format!("p_at_{j} should be hurt: {p}"), 1.0 > p);
                 }
             }
             _ => {
-                crate::benchmark_support::assert_equals_delta_msg(&format!("avg-p should be perfect: {}", s.get_avp()), 1.0, s.get_avp(), 1E-2);
+                crate::benchmark_support::assert_equals_delta_msg(
+                    &format!("avg-p should be perfect: {}", s.get_avp()),
+                    1.0,
+                    s.get_avp(),
+                    1E-2,
+                );
                 crate::benchmark_support::assert_equals_delta_msg(
                     &format!("recall should be perfect: {}", s.get_recall()),
                     1.0,
@@ -155,7 +199,12 @@ fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
                 );
                 for j in 1..=QualityStats::MAX_POINTS {
                     let p = s.get_precision_at(j)?;
-                    crate::benchmark_support::assert_equals_delta_msg(&format!("p_at_{j} should be perfect: {p}"), 1.0, p, 1E-2);
+                    crate::benchmark_support::assert_equals_delta_msg(
+                        &format!("p_at_{j} should be perfect: {p}"),
+                        1.0,
+                        p,
+                        1E-2,
+                    );
                 }
             }
         }
@@ -166,8 +215,14 @@ fn test_trec_quality(_f: &mut QualityRunTest) -> Result<()> {
         avg.log(Some("Average statistis:"), 1, logger, Some("  "))?;
     }
 
-    Assert::assert_true_msg(&format!("mean avg-p should be hurt: {}", avg.get_avp()), 1.0 > avg.get_avp());
-    Assert::assert_true_msg(&format!("avg recall should be hurt: {}", avg.get_recall()), 1.0 > avg.get_recall());
+    Assert::assert_true_msg(
+        &format!("mean avg-p should be hurt: {}", avg.get_avp()),
+        1.0 > avg.get_avp(),
+    );
+    Assert::assert_true_msg(
+        &format!("avg recall should be hurt: {}", avg.get_recall()),
+        1.0 > avg.get_recall(),
+    );
     for j in 1..=QualityStats::MAX_POINTS {
         let p = avg.get_precision_at(j)?;
         Assert::assert_true_msg(&format!("avg p_at_{j} should be hurt: {p}"), 1.0 > p);
@@ -187,18 +242,36 @@ fn test_trec_topics_reader(_f: &mut QualityRunTest) -> Result<()> {
 
     let qq = &qqs[0];
     Assert::assert_equals_nullable(Some("statement months  total 1987"), qq.get_value("title"));
-    Assert::assert_equals_nullable(Some("Topic 0 Description Line 1 Topic 0 Description Line 2"), qq.get_value("description"));
-    Assert::assert_equals_nullable(Some("Topic 0 Narrative Line 1 Topic 0 Narrative Line 2"), qq.get_value("narrative"));
+    Assert::assert_equals_nullable(
+        Some("Topic 0 Description Line 1 Topic 0 Description Line 2"),
+        qq.get_value("description"),
+    );
+    Assert::assert_equals_nullable(
+        Some("Topic 0 Narrative Line 1 Topic 0 Narrative Line 2"),
+        qq.get_value("narrative"),
+    );
 
     let qq = &qqs[1];
     Assert::assert_equals_nullable(Some("agreed 15  against five"), qq.get_value("title"));
-    Assert::assert_equals_nullable(Some("Topic 1 Description Line 1 Topic 1 Description Line 2"), qq.get_value("description"));
-    Assert::assert_equals_nullable(Some("Topic 1 Narrative Line 1 Topic 1 Narrative Line 2"), qq.get_value("narrative"));
+    Assert::assert_equals_nullable(
+        Some("Topic 1 Description Line 1 Topic 1 Description Line 2"),
+        qq.get_value("description"),
+    );
+    Assert::assert_equals_nullable(
+        Some("Topic 1 Narrative Line 1 Topic 1 Narrative Line 2"),
+        qq.get_value("narrative"),
+    );
 
     let qq = &qqs[19];
     Assert::assert_equals_nullable(Some("20 while  common week"), qq.get_value("title"));
-    Assert::assert_equals_nullable(Some("Topic 19 Description Line 1 Topic 19 Description Line 2"), qq.get_value("description"));
-    Assert::assert_equals_nullable(Some("Topic 19 Narrative Line 1 Topic 19 Narrative Line 2"), qq.get_value("narrative"));
+    Assert::assert_equals_nullable(
+        Some("Topic 19 Description Line 1 Topic 19 Description Line 2"),
+        qq.get_value("description"),
+    );
+    Assert::assert_equals_nullable(
+        Some("Topic 19 Narrative Line 1 Topic 19 Narrative Line 2"),
+        qq.get_value("narrative"),
+    );
     Ok(())
 }
 
@@ -208,7 +281,10 @@ fn create_reuters_index() -> Result<()> {
         "# ----- properties ".to_string(),
         "content.source=org.apache.lucene.benchmark.byTask.feeds.LineDocSource".to_string(),
         "analyzer=org.apache.lucene.analysis.classic.ClassicAnalyzer".to_string(),
-        format!("docs.file={}", get_work_dir_resource_path("reuters.578.lines.txt.bz2")),
+        format!(
+            "docs.file={}",
+            get_work_dir_resource_path("reuters.578.lines.txt.bz2")
+        ),
         "content.source.log.step=2500".to_string(),
         "doc.term.vector=false".to_string(),
         "content.source.forever=false".to_string(),

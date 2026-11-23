@@ -190,15 +190,19 @@ where
     fn query_hash(&self) -> i32 {
         let prime = 31i32;
         let mut result = self.class_hash();
-        result = prime.wrapping_mul(result).wrapping_add(self.base_query.query_hash());
+        result = prime
+            .wrapping_mul(result)
+            .wrapping_add(self.base_query.query_hash());
         let mut array_hash = 1i32;
         for q in &self.drill_down_queries {
             array_hash = array_hash.wrapping_mul(31).wrapping_add(q.query_hash());
         }
         result = prime.wrapping_mul(result).wrapping_add(array_hash);
-        result = prime.wrapping_mul(result).wrapping_add(java_identity_hash_code_stand_in(
-            "java.util.List<CollectorManager>",
-        ));
+        result = prime
+            .wrapping_mul(result)
+            .wrapping_add(java_identity_hash_code_stand_in(
+                "java.util.List<CollectorManager>",
+            ));
         result
     }
 
@@ -257,11 +261,15 @@ where
         self.base_weight.explain(context, doc)
     }
 
-    fn scorer_supplier(&self, context: &LeafReaderContext) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let base_scorer_supplier = self.base_weight.scorer_supplier(context)?;
 
         let drill_down_count = self.drill_downs.len();
-        let mut sideways_collectors: Vec<CollectorSlot<M::Collector>> = Vec::with_capacity(drill_down_count);
+        let mut sideways_collectors: Vec<CollectorSlot<M::Collector>> =
+            Vec::with_capacity(drill_down_count);
 
         let mut dims: Vec<DocsAndCost<M::Collector>> = Vec::with_capacity(drill_down_count);
 
@@ -299,7 +307,10 @@ where
             // Java obtained each dimension's leaf collector in this method;
             // it finishes them here.
             for dim in &dims {
-                let mut collector = dim.collector().lock().unwrap_or_else(PoisonError::into_inner);
+                let mut collector = dim
+                    .collector()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 let mut leaf = collector
                     .get_leaf_collector(context)
                     .map_err(|e| e.into_lucene_error())?;

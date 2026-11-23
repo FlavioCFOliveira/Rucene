@@ -67,7 +67,10 @@ impl ReutersContentSource {
     fn get_date_format_info(&self) -> Result<Arc<Mutex<DateFormatInfo>>> {
         match self.date_format.get() {
             Some(dfi) => Ok(dfi),
-            None => Ok(self.date_format.set(Some(DateFormatInfo::new()?)).expect("just set")),
+            None => Ok(self
+                .date_format
+                .set(Some(DateFormatInfo::new()?))
+                .expect("just set")),
         }
     }
 
@@ -75,7 +78,10 @@ impl ReutersContentSource {
     fn doc_count_arr_init(&self) -> Result<()> {
         let mut s = jdk::lock(&self.state);
         if !self.doc_count_arr_created.load(Ordering::SeqCst) {
-            let config = self.base.get_config().ok_or_else(LuceneError::null_pointer)?;
+            let config = self
+                .base
+                .get_config()
+                .ok_or_else(LuceneError::null_pointer)?;
             s.doc_count_arr = vec![0; config.get_num_threads().max(0) as usize];
             self.doc_count_arr_created.store(true, Ordering::SeqCst);
         }
@@ -105,18 +111,28 @@ impl ContentItemsSource for ReutersContentSource {
 
     fn set_config(&self, config: Arc<Config>) -> Result<()> {
         self.base.set_config(Arc::clone(&config))?;
-        let work_dir = PathBuf::from(config.get_str("work.dir", Some("work"))?.unwrap_or_default());
-        let d = config.get_str("docs.dir", Some("reuters-out"))?.unwrap_or_default();
+        let work_dir = PathBuf::from(
+            config
+                .get_str("work.dir", Some("work"))?
+                .unwrap_or_default(),
+        );
+        let d = config
+            .get_str("docs.dir", Some("reuters-out"))?
+            .unwrap_or_default();
         let mut data_dir = PathBuf::from(&d);
         if !data_dir.is_absolute() {
             data_dir = work_dir.join(&d);
         }
         let mut s = jdk::lock(&self.state);
         s.input_files.clear();
-        ContentItemsSourceBase::collect_files(&data_dir, &mut s.input_files).map_err(jdk::runtime_exception_from)?;
+        ContentItemsSourceBase::collect_files(&data_dir, &mut s.input_files)
+            .map_err(jdk::runtime_exception_from)?;
         if s.input_files.is_empty() {
             let absolute = std::path::absolute(&data_dir).unwrap_or_else(|_| data_dir.clone());
-            return Err(jdk::runtime_exception(format!("No txt files in dataDir: {}", absolute.display())));
+            return Err(jdk::runtime_exception(format!(
+                "No txt files in dataDir: {}",
+                absolute.display()
+            )));
         }
         s.data_dir = Some(data_dir);
         Ok(())
@@ -145,7 +161,9 @@ impl ContentSource for ReutersContentSource {
                 if begin > thread_index_size {
                     return Err(LuceneError::unchecked(
                         "java.lang.StringIndexOutOfBoundsException",
-                        format!("begin {begin}, end {thread_index_size}, length {thread_index_size}"),
+                        format!(
+                            "begin {begin}, end {thread_index_size}, length {thread_index_size}"
+                        ),
                     ));
                 }
                 thread_index = jdk::parse_int(&thread_name[begin..thread_index_size])? as usize;

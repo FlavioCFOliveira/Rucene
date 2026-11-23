@@ -12,7 +12,12 @@ use crate::java::JResult;
 /// Equivalent to `org.xml.sax.DTDHandler`.
 pub trait DTDHandler {
     /// Equivalent to `notationDecl(String, String, String)`.
-    fn notation_decl(&self, name: &str, public_id: Option<&str>, system_id: Option<&str>) -> JResult<()>;
+    fn notation_decl(
+        &self,
+        name: &str,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+    ) -> JResult<()>;
     /// Equivalent to `unparsedEntityDecl(String, String, String, String)`.
     fn unparsed_entity_decl(
         &self,

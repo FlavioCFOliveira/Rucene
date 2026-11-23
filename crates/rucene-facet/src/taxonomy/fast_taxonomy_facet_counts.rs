@@ -62,7 +62,13 @@ impl FastTaxonomyFacetCounts {
         config: Arc<FacetsConfig>,
         fc: &FacetsCollector,
     ) -> Result<Self> {
-        let base = TaxonomyFacets::new(index_field_name, taxo_reader, config, Some(fc), ValueStore::Counts)?;
+        let base = TaxonomyFacets::new(
+            index_field_name,
+            taxo_reader,
+            config,
+            Some(fc),
+            ValueStore::Counts,
+        )?;
         let mut this = Self { base };
         this.count(fc.get_matching_docs()?)?;
         Ok(this)
@@ -80,7 +86,13 @@ impl FastTaxonomyFacetCounts {
         taxo_reader: Arc<dyn TaxonomyReader>,
         config: Arc<FacetsConfig>,
     ) -> Result<Self> {
-        let base = TaxonomyFacets::new(index_field_name, taxo_reader, config, None, ValueStore::Counts)?;
+        let base = TaxonomyFacets::new(
+            index_field_name,
+            taxo_reader,
+            config,
+            None,
+            ValueStore::Counts,
+        )?;
         let mut this = Self { base };
         this.count_all(reader)?;
         Ok(this)
@@ -153,7 +165,11 @@ impl FastTaxonomyFacetCounts {
             };
             self.base.initialize_value_counters()?;
             debug_assert!(self.base.counts.is_some());
-            let counts = self.base.counts.as_mut().expect("INVARIANT: dense when counting all");
+            let counts = self
+                .base
+                .counts
+                .as_mut()
+                .expect("INVARIANT: dense when counting all");
 
             let live_docs = leaf_reader.get_live_docs();
 

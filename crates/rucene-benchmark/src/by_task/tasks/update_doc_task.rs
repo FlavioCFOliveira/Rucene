@@ -80,7 +80,11 @@ impl PerfTask for UpdateDocTask {
     fn setup(&self) -> Result<()> {
         let doc_maker = self.base.get_run_data().get_doc_maker();
         let doc_size = self.doc_size.load(Ordering::SeqCst);
-        let doc = if doc_size > 0 { doc_maker.make_document_of_size(doc_size)? } else { doc_maker.make_document()? };
+        let doc = if doc_size > 0 {
+            doc_maker.make_document_of_size(doc_size)?
+        } else {
+            doc_maker.make_document()?
+        };
         *jdk::lock(&self.doc) = Some(doc);
         Ok(())
     }
@@ -94,9 +98,15 @@ impl PerfTask for UpdateDocTask {
         let doc = jdk::lock(&self.doc);
         let d = doc.as_ref().ok_or_else(LuceneError::null_pointer)?;
         let Some(doc_id) = d.get(DocMaker::ID_FIELD) else {
-            return Err(LuceneError::illegal_state("document must define the docid field"));
+            return Err(LuceneError::illegal_state(
+                "document must define the docid field",
+            ));
         };
-        let iw = self.base.get_run_data().get_index_writer().ok_or_else(LuceneError::null_pointer)?;
+        let iw = self
+            .base
+            .get_run_data()
+            .get_index_writer()
+            .ok_or_else(LuceneError::null_pointer)?;
         iw.update_document(Term::from_text(DocMaker::ID_FIELD, &doc_id), Some(d))?;
         Ok(1)
     }
@@ -108,7 +118,8 @@ impl PerfTask for UpdateDocTask {
     /// Set the params (docSize only): docSize, or 0 for no limit.
     fn set_params(&self, params: &str) -> Result<()> {
         perf_task::set_params(self, params)?;
-        self.doc_size.store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
+        self.doc_size
+            .store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
         Ok(())
     }
 

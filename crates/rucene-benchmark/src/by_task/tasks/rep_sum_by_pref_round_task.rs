@@ -47,7 +47,10 @@ impl RepSumByPrefRoundTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(RepSumByPrefRoundTask { base: PerfTaskBase::new(run_data, "RepSumByPrefRoundTask")?, prefix: Mutex::new(None) })
+        Ok(RepSumByPrefRoundTask {
+            base: PerfTaskBase::new(run_data, "RepSumByPrefRoundTask")?,
+            prefix: Mutex::new(None),
+        })
     }
 
     fn prefix(&self) -> Option<String> {
@@ -74,7 +77,12 @@ impl RepSumByPrefRoundTask {
             |s| s.get_task().get_name(),
         )?;
         // now generate report from secondary list p2
-        Ok(ReportTask::gen_partial_report(self.base.get_run_data(), reported, &p2, task_stats.len() as i32))
+        Ok(ReportTask::gen_partial_report(
+            self.base.get_run_data(),
+            reported,
+            &p2,
+            task_stats.len() as i32,
+        ))
     }
 
     /// `reportSumByPrefixRound(List<TaskStats> taskStats)`.
@@ -92,7 +100,12 @@ impl RepSumByPrefRoundTask {
             |s| format!("{}.{}", s.get_round(), s.get_task().get_name()), // group by round
         )?;
         // now generate report from secondary list p2
-        Ok(ReportTask::gen_partial_report(self.base.get_run_data(), reported, &p2, task_stats.len() as i32))
+        Ok(ReportTask::gen_partial_report(
+            self.base.get_run_data(),
+            reported,
+            &p2,
+            task_stats.len() as i32,
+        ))
     }
 }
 
@@ -100,7 +113,10 @@ impl PerfTask for RepSumByPrefRoundTask {
     report_task::report_task_perf_methods!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(RepSumByPrefRoundTask { base: self.base.clone_base(), prefix: Mutex::new(self.prefix()) }))
+        Ok(Arc::new(RepSumByPrefRoundTask {
+            base: self.base.clone_base(),
+            prefix: Mutex::new(self.prefix()),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -124,10 +140,17 @@ impl PerfTask for RepSumByPrefRoundTask {
     }
 
     fn task_to_string(&self) -> String {
-        format!("{} {}", perf_task::task_to_string(self), self.prefix().as_deref().unwrap_or("null"))
+        format!(
+            "{} {}",
+            perf_task::task_to_string(self),
+            self.prefix().as_deref().unwrap_or("null")
+        )
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "RepSumByPrefRoundTask" | "RepSumByPrefTask" | "ReportTask")
+        matches!(
+            simple_class_name,
+            "RepSumByPrefRoundTask" | "RepSumByPrefTask" | "ReportTask"
+        )
     }
 }

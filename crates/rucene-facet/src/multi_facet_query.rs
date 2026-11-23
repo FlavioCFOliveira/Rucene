@@ -85,9 +85,9 @@ impl std::ops::Deref for MultiFacetQuery {
 pub(crate) fn to_terms(dimension: &str, paths: &[&[&str]]) -> Result<Vec<BytesRef>> {
     let mut terms = Vec::with_capacity(paths.len());
     for path in paths {
-        terms.push(BytesRef::from_char_sequence(&FacetsConfig::path_to_string_dim(
-            dimension, path,
-        )?));
+        terms.push(BytesRef::from_char_sequence(
+            &FacetsConfig::path_to_string_dim(dimension, path)?,
+        ));
     }
     Ok(terms)
 }

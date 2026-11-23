@@ -36,7 +36,9 @@ struct MyPerfTask {
 
 impl MyPerfTask {
     fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(MyPerfTask { base: PerfTaskBase::new(run_data, "MyPerfTask")? })
+        Ok(MyPerfTask {
+            base: PerfTaskBase::new(run_data, "MyPerfTask")?,
+        })
     }
 
     /// `getLogStep()`.
@@ -51,7 +53,9 @@ impl PerfTask for MyPerfTask {
     }
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(MyPerfTask { base: self.base.clone_base() }))
+        Ok(Arc::new(MyPerfTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -99,7 +103,12 @@ fn do_log_step_test(
     task_log_step_val: i32,
     exp_log_step_value: i32,
 ) -> Result<()> {
-    let run_data = create_perf_run_data(set_log_step, log_step_val, set_task_log_step, task_log_step_val)?;
+    let run_data = create_perf_run_data(
+        set_log_step,
+        log_step_val,
+        set_task_log_step,
+        task_log_step_val,
+    )?;
     let mpt = MyPerfTask::new(run_data)?;
     Assert::assert_equals(exp_log_step_value, mpt.get_log_step());
     Ok(())

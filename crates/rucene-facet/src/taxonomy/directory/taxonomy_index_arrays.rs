@@ -274,11 +274,7 @@ impl TaxonomyIndexArrays {
 }
 
 /// Equivalent to `initParents(int[][], IndexReader, int)`.
-fn init_parents(
-    parents_array: &[Chunk],
-    reader: &Arc<dyn IndexReader>,
-    first: i32,
-) -> Result<()> {
+fn init_parents(parents_array: &[Chunk], reader: &Arc<dyn IndexReader>, first: i32) -> Result<()> {
     if reader.max_doc() == first {
         return Ok(());
     }
@@ -326,14 +322,22 @@ impl ParallelTaxonomyArrays for TaxonomyIndexArrays {
         if self.children_siblings.get().is_none() {
             self.init_children_siblings(None);
         }
-        &self.children_siblings.get().expect("INVARIANT: initialized above").0
+        &self
+            .children_siblings
+            .get()
+            .expect("INVARIANT: initialized above")
+            .0
     }
 
     fn siblings(&self) -> &dyn IntArray {
         if self.children_siblings.get().is_none() {
             self.init_children_siblings(None);
         }
-        &self.children_siblings.get().expect("INVARIANT: initialized above").1
+        &self
+            .children_siblings
+            .get()
+            .expect("INVARIANT: initialized above")
+            .1
     }
 }
 

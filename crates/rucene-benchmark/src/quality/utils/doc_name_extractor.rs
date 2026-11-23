@@ -58,7 +58,9 @@ impl DocNameExtractor {
     /// `DocNameExtractor(String docNameField)`: `doc_name_field` is the name
     /// of the stored field containing the doc name.
     pub fn new(doc_name_field: &str) -> Self {
-        DocNameExtractor { doc_name_field: doc_name_field.to_string() }
+        DocNameExtractor {
+            doc_name_field: doc_name_field.to_string(),
+        }
     }
 
     /// `docName(StoredFields storedFields, int docid)`: extract the name of
@@ -68,7 +70,10 @@ impl DocNameExtractor {
     ///
     /// If cannot extract the doc name from the index.
     pub fn doc_name(&self, stored_fields: &dyn StoredFields, docid: i32) -> Result<Option<String>> {
-        let mut visitor = NameVisitor { doc_name_field: &self.doc_name_field, name: Vec::new() };
+        let mut visitor = NameVisitor {
+            doc_name_field: &self.doc_name_field,
+            name: Vec::new(),
+        };
         stored_fields.document_with_visitor(docid, &mut visitor)?;
         Ok(visitor.name.into_iter().next())
     }

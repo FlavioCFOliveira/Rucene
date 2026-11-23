@@ -36,7 +36,9 @@ pub const CLASS_NAME: &str = "org.apache.lucene.benchmark.byTask.tasks.alt.AltTe
 impl AltTestTask {
     /// `AltTestTask(PerfRunData runData)`.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(AltTestTask { base: PerfTaskBase::new(run_data, "AltTestTask")? })
+        Ok(AltTestTask {
+            base: PerfTaskBase::new(run_data, "AltTestTask")?,
+        })
     }
 
     /// Puts the class on the "classpath" (`Class.forName` finds it).
@@ -54,7 +56,9 @@ impl PerfTask for AltTestTask {
     }
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(AltTestTask { base: self.base.clone_base() }))
+        Ok(Arc::new(AltTestTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

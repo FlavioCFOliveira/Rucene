@@ -85,7 +85,10 @@ impl PerfTask for ReadTokensTask {
     }
 
     fn get_log_message(&self, recs_count: i32) -> String {
-        format!("read {recs_count} docs; {} tokens", self.total_token_count.load(Ordering::SeqCst))
+        format!(
+            "read {recs_count} docs; {} tokens",
+            self.total_token_count.load(Ordering::SeqCst)
+        )
     }
 
     fn tear_down(&self) -> Result<()> {
@@ -95,11 +98,16 @@ impl PerfTask for ReadTokensTask {
 
     fn do_logic(&self) -> Result<i32> {
         let doc = jdk::lock(&self.doc);
-        let fields = doc.as_ref().ok_or_else(LuceneError::null_pointer)?.get_fields();
+        let fields = doc
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)?
+            .get_fields();
         let analyzer = self.base.get_run_data().get_analyzer();
         let mut token_count = 0;
         for field in fields {
-            if field.field_type().index_options() == IndexOptions::NONE || !field.field_type().tokenized() {
+            if field.field_type().index_options() == IndexOptions::NONE
+                || !field.field_type().tokenized()
+            {
                 continue;
             }
 
@@ -119,7 +127,8 @@ impl PerfTask for ReadTokensTask {
             stream.end()?;
             stream.close()?;
         }
-        self.total_token_count.fetch_add(token_count, Ordering::SeqCst);
+        self.total_token_count
+            .fetch_add(token_count, Ordering::SeqCst);
         Ok(token_count)
     }
 

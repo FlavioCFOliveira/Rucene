@@ -37,8 +37,19 @@ use crate::label_and_value::LabelAndValue;
 use crate::multi_long_values_source::MultiLongValuesSource;
 
 /// `FacetResult` built by this class: no path, the total count.
-fn result(field: &str, tot_count: i32, label_values: Vec<LabelAndValue>, child_count: i32) -> FacetResult {
-    FacetResult::new(field, Vec::new(), NumericValue::Int(tot_count), label_values, child_count)
+fn result(
+    field: &str,
+    tot_count: i32,
+    label_values: Vec<LabelAndValue>,
+    child_count: i32,
+) -> FacetResult {
+    FacetResult::new(
+        field,
+        Vec::new(),
+        NumericValue::Int(tot_count),
+        label_values,
+        child_count,
+    )
 }
 
 /// `Facets` implementation that computes counts for all unique long values,
@@ -128,7 +139,9 @@ impl LongValueFacetCounts {
         match values_source {
             Some(values_source) => {
                 match <dyn MultiLongValuesSource>::unwrap_singleton(&*values_source) {
-                    Some(single_values) => this.count_source(single_values, hits.get_matching_docs()?)?,
+                    Some(single_values) => {
+                        this.count_source(single_values, hits.get_matching_docs()?)?
+                    }
                     None => this.count_multi_source(&*values_source, hits.get_matching_docs()?)?,
                 }
             }
@@ -174,10 +187,12 @@ impl LongValueFacetCounts {
         let mut this = Self::empty(field);
         this.initialize_counters();
         match values_source {
-            Some(values_source) => match <dyn MultiLongValuesSource>::unwrap_singleton(&*values_source) {
-                Some(single_valued) => this.count_all_source(reader, single_valued)?,
-                None => this.count_all_multi_source(reader, &*values_source)?,
-            },
+            Some(values_source) => {
+                match <dyn MultiLongValuesSource>::unwrap_singleton(&*values_source) {
+                    Some(single_valued) => this.count_all_source(reader, single_valued)?,
+                    None => this.count_all_multi_source(reader, &*values_source)?,
+                }
+            }
             None => this.count_all_field(reader, field)?,
         }
         Ok(this)
@@ -198,7 +213,11 @@ impl LongValueFacetCounts {
     /// `LongValuesSource`.
     ///
     /// Equivalent to `count(LongValuesSource, List)`.
-    fn count_source(&mut self, value_source: Arc<dyn LongValuesSource>, matching_docs: &[MatchingDocs]) -> Result<()> {
+    fn count_source(
+        &mut self,
+        value_source: Arc<dyn LongValuesSource>,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         for hits in matching_docs {
             if hits.total_hits == 0 {
                 continue;
@@ -245,7 +264,11 @@ impl LongValueFacetCounts {
     /// Counts directly from a `MultiLongValuesSource`.
     ///
     /// Equivalent to `count(MultiLongValuesSource, List)`.
-    fn count_multi_source(&mut self, values_source: &dyn MultiLongValuesSource, matching_docs: &[MatchingDocs]) -> Result<()> {
+    fn count_multi_source(
+        &mut self,
+        values_source: &dyn MultiLongValuesSource,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         for hits in matching_docs {
             if hits.total_hits == 0 {
                 continue;
@@ -281,7 +304,8 @@ impl LongValueFacetCounts {
             let mut bits = hits.bits.iterator()?;
             match unwrap_singleton_numeric(multi_values)? {
                 NumericValuesView::Single(mut single_values) => loop {
-                    if Intersect2::new(&mut *bits, &mut *single_values).next_doc()? == NO_MORE_DOCS {
+                    if Intersect2::new(&mut *bits, &mut *single_values).next_doc()? == NO_MORE_DOCS
+                    {
                         break;
                     }
                     let value = single_values.long_value()?;
@@ -303,7 +327,11 @@ impl LongValueFacetCounts {
     /// Count everything in the provided `LongValuesSource`.
     ///
     /// Equivalent to `countAll(IndexReader, LongValuesSource)`.
-    fn count_all_source(&mut self, reader: &Arc<dyn IndexReader>, value_source: Arc<dyn LongValuesSource>) -> Result<()> {
+    fn count_all_source(
+        &mut self,
+        reader: &Arc<dyn IndexReader>,
+        value_source: Arc<dyn LongValuesSource>,
+    ) -> Result<()> {
         for context in Arc::clone(reader).leaves()? {
             let mut fv = Arc::clone(&value_source).get_values(&context, None)?;
             let max_doc = context.leaf_reader().max_doc();
@@ -323,7 +351,11 @@ impl LongValueFacetCounts {
     /// Count everything in the provided `MultiLongValuesSource`.
     ///
     /// Equivalent to `countAll(IndexReader, MultiLongValuesSource)`.
-    fn count_all_multi_source(&mut self, reader: &Arc<dyn IndexReader>, value_source: &dyn MultiLongValuesSource) -> Result<()> {
+    fn count_all_multi_source(
+        &mut self,
+        reader: &Arc<dyn IndexReader>,
+        value_source: &dyn MultiLongValuesSource,
+    ) -> Result<()> {
         for context in Arc::clone(reader).leaves()? {
             let mut multi_values = value_source.get_values(&context)?;
             let max_doc = context.leaf_reader().max_doc();
@@ -412,7 +444,12 @@ impl LongValueFacetCounts {
             }
         }
         let upto = entries.len();
-        debug_assert!(upto == hash.size() as usize, "upto={} hashCounts.size={}", upto, hash.size());
+        debug_assert!(
+            upto == hash.size() as usize,
+            "upto={} hashCounts.size={}",
+            upto,
+            hash.size()
+        );
 
         // `InPlaceMergeSorter` by value: stable.
         entries.sort_by_key(|e| e.1);
@@ -423,7 +460,10 @@ impl LongValueFacetCounts {
                 counts_added = true;
                 Self::append_counts(counts, &mut label_values);
             }
-            label_values.push(LabelAndValue::new(value.to_string(), NumericValue::Int(count)));
+            label_values.push(LabelAndValue::new(
+                value.to_string(),
+                NumericValue::Int(count),
+            ));
         }
 
         if !counts_added {
@@ -482,16 +522,29 @@ impl Facets for LongValueFacetCounts {
             for c in hash.iter() {
                 let count = c.value;
                 if count != 0 {
-                    label_values.push(LabelAndValue::new(c.key.to_string(), NumericValue::Int(c.value)));
+                    label_values.push(LabelAndValue::new(
+                        c.key.to_string(),
+                        NumericValue::Int(c.value),
+                    ));
                 }
             }
         }
 
         let child_count = label_values.len() as i32;
-        Ok(Some(result(&self.field, self.tot_count, label_values, child_count)))
+        Ok(Some(result(
+            &self.field,
+            self.tot_count,
+            label_values,
+            child_count,
+        )))
     }
 
-    fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
         self.validate_dim_and_path_for_get_children(dim, path)?;
 
@@ -505,7 +558,8 @@ impl Facets for LongValueFacetCounts {
         let hash = self.hash_counts.as_ref().expect("INVARIANT: initialized");
 
         let size = (top_n as i64).min(counts.len() as i64 + hash.size() as i64);
-        let mut pq: PriorityQueue<Entry, EntryLessThan> = PriorityQueue::new(size as usize, EntryLessThan)?;
+        let mut pq: PriorityQueue<Entry, EntryLessThan> =
+            PriorityQueue::new(size as usize, EntryLessThan)?;
 
         let mut child_count = 0i32;
         let mut e: Option<Entry> = None;
@@ -520,7 +574,7 @@ impl Facets for LongValueFacetCounts {
         }
 
         if hash.size() != 0 {
-            child_count += hash.size() as i32;
+            child_count += hash.size();
             for c in hash.iter() {
                 let count = c.value;
                 if count != 0 {

@@ -81,7 +81,11 @@ impl PrintTaxonomyStats {
     /// Recursively prints stats for all ordinals.
     ///
     /// Equivalent to `printStats(TaxonomyReader, PrintStream, boolean)`.
-    pub fn print_stats(r: &dyn TaxonomyReader, out: &dyn PrintStream, print_tree: bool) -> Result<()> {
+    pub fn print_stats(
+        r: &dyn TaxonomyReader,
+        out: &dyn PrintStream,
+        print_tree: bool,
+    ) -> Result<()> {
         out.println(&format!("{} total categories.", r.get_size()?));
         let mut it = r.get_children(ROOT_ORDINAL)?;
         loop {

@@ -50,7 +50,12 @@ impl LineFileOut {
     /// The `IOException` of creating the file.
     pub fn open(file: &Path) -> Result<Self> {
         let out = StreamUtils::output_stream(file)?;
-        Ok(LineFileOut { out: Arc::new(Mutex::new(Some(BufWriter::with_capacity(StreamUtils::BUFFER_SIZE, out)))) })
+        Ok(LineFileOut {
+            out: Arc::new(Mutex::new(Some(BufWriter::with_capacity(
+                StreamUtils::BUFFER_SIZE,
+                out,
+            )))),
+        })
     }
 
     /// `println(String)`.
@@ -104,7 +109,10 @@ impl WriteLineDocBase {
         // init fields
         let f2r = config.get_str("line.fields", None)?;
         let fields_to_write: Vec<String> = match f2r {
-            None => WriteLineDocTask::DEFAULT_FIELDS.iter().map(|s| s.to_string()).collect(),
+            None => WriteLineDocTask::DEFAULT_FIELDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             Some(f2r) => {
                 if f2r.contains(WriteLineDocTask::SEP) {
                     return Err(LuceneError::illegal_argument(format!(
@@ -119,7 +127,10 @@ impl WriteLineDocBase {
         // init sufficient fields
         let mut sufficient_fields = vec![false; fields_to_write.len()];
         let suff = config
-            .get_str("sufficient.fields", Some(&WriteLineDocTask::default_sufficient_fields()))?
+            .get_str(
+                "sufficient.fields",
+                Some(&WriteLineDocTask::default_sufficient_fields()),
+            )?
             .unwrap_or_default();
         let check_sufficient_fields = if suff == "," {
             false
@@ -218,7 +229,11 @@ impl WriteLineDocBase {
     /// The exception of the doc maker.
     pub fn do_logic(&self, select: impl FnOnce(&Document) -> LineFileOut) -> Result<i32> {
         let doc_size = self.doc_size.load(Ordering::SeqCst);
-        let doc = if doc_size > 0 { self.doc_maker.make_document_of_size(doc_size)? } else { self.doc_maker.make_document()? };
+        let doc = if doc_size > 0 {
+            self.doc_maker.make_document_of_size(doc_size)?
+        } else {
+            self.doc_maker.make_document()?
+        };
         if let Some(line) = self.line_of(&doc)? {
             // lineFileOut is a PrintWriter, which synchronizes internally in println.
             select(&doc).println(&line);
@@ -237,7 +252,8 @@ impl WriteLineDocBase {
     ///
     /// `NumberFormatException`.
     pub fn set_params(&self, params: &str) -> Result<()> {
-        self.doc_size.store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
+        self.doc_size
+            .store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -280,7 +296,11 @@ impl WriteLineDocTask {
     /// `SEP`.
     pub const SEP: char = '\t';
     /// `DEFAULT_FIELDS`: fields to be written by default.
-    pub const DEFAULT_FIELDS: [&'static str; 3] = [DocMaker::TITLE_FIELD, DocMaker::DATE_FIELD, DocMaker::BODY_FIELD];
+    pub const DEFAULT_FIELDS: [&'static str; 3] = [
+        DocMaker::TITLE_FIELD,
+        DocMaker::DATE_FIELD,
+        DocMaker::BODY_FIELD,
+    ];
 
     /// `DEFAULT_SUFFICIENT_FIELDS`: default fields which at least one of them
     /// is required to not skip the doc.
@@ -305,7 +325,10 @@ impl PerfTask for WriteLineDocTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(WriteLineDocTask { base: self.base.clone_base(), line: self.line.clone_base() }))
+        Ok(Arc::new(WriteLineDocTask {
+            base: self.base.clone_base(),
+            line: self.line.clone_base(),
+        }))
     }
 
     fn get_log_message(&self, recs_count: i32) -> String {

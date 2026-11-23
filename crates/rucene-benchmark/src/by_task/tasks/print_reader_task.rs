@@ -43,7 +43,10 @@ impl PrintReaderTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(PrintReaderTask { base: PerfTaskBase::new(run_data, "PrintReaderTask")?, user_data: Mutex::new(None) })
+        Ok(PrintReaderTask {
+            base: PerfTaskBase::new(run_data, "PrintReaderTask")?,
+            user_data: Mutex::new(None),
+        })
     }
 }
 
@@ -68,11 +71,17 @@ impl PerfTask for PrintReaderTask {
     }
 
     fn do_logic(&self) -> Result<i32> {
-        let dir = self.base.get_run_data().get_directory().ok_or_else(LuceneError::null_pointer)?;
+        let dir = self
+            .base
+            .get_run_data()
+            .get_directory()
+            .ok_or_else(LuceneError::null_pointer)?;
         let user_data = jdk::lock(&self.user_data).clone();
         let r = match user_data {
             None => directory_reader::open(dir)?,
-            Some(user_data) => directory_reader::open_with_commit(&*OpenReaderTask::find_index_commit(dir, &user_data)?)?,
+            Some(user_data) => directory_reader::open_with_commit(
+                &*OpenReaderTask::find_index_commit(dir, &user_data)?,
+            )?,
         };
         println!("--> numDocs:{} dels:{}", r.num_docs(), r.num_deleted_docs());
         r.close()?;

@@ -22,7 +22,9 @@ use rucene::error::{LuceneError, Result};
 
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::trec_content_source::TrecContentSource;
-use crate::by_task::feeds::trec_doc_parser::{extract, index_of, substring, ParsePathType, TrecDocParser};
+use crate::by_task::feeds::trec_doc_parser::{
+    extract, index_of, substring, ParsePathType, TrecDocParser,
+};
 use crate::jdk;
 
 /// `DATE`.
@@ -61,7 +63,9 @@ impl TrecDocParser for TrecGov2Parser {
             start = h2 + jdk::utf16_len(TERMINATING_DOCHDR) as i64;
         }
         let html = substring(doc_buf, start, doc_buf.len() as i64)?;
-        let parser = trec_src.get_html_parser().ok_or_else(LuceneError::null_pointer)?;
+        let parser = trec_src
+            .get_html_parser()
+            .ok_or_else(LuceneError::null_pointer)?;
         parser.parse(doc_data, Some(name), date.as_ref(), &html, Some(trec_src))
     }
 }

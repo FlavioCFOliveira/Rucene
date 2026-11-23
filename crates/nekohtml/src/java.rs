@@ -391,7 +391,10 @@ impl<V> JavaHashtable<V> {
 
     /// The entries in the enumeration order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
-        self.table.iter().rev().flat_map(|c| c.iter().map(|e| (&e.0, &e.1)))
+        self.table
+            .iter()
+            .rev()
+            .flat_map(|c| c.iter().map(|e| (&e.0, &e.1)))
     }
 
     /// `size()`.

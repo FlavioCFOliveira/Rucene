@@ -46,7 +46,9 @@ impl Trec1MQReader {
     /// `Trec1MQReader(String name)`: `name` is the name of name-value pair to
     /// set for all queries.
     pub fn new(name: &str) -> Self {
-        Trec1MQReader { name: name.to_string() }
+        Trec1MQReader {
+            name: name.to_string(),
+        }
     }
 
     /// `readQueries(BufferedReader reader)`: read quality queries from trec
@@ -56,7 +58,10 @@ impl Trec1MQReader {
     ///
     /// If cannot read the queries; `StringIndexOutOfBoundsException` for a
     /// line without `:`.
-    pub fn read_queries<S: ReadChars>(&self, mut reader: BufferedReader<S>) -> Result<Vec<QualityQuery>> {
+    pub fn read_queries<S: ReadChars>(
+        &self,
+        mut reader: BufferedReader<S>,
+    ) -> Result<Vec<QualityQuery>> {
         let mut res = Vec::new();
         let result = (|| -> Result<()> {
             while let Some(line) = jdk::read_line(&mut reader)? {

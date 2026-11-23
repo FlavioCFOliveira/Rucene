@@ -49,7 +49,10 @@ impl ConcurrentSortedSetDocValuesFacetCounts {
     ///
     /// Equivalent to `ConcurrentSortedSetDocValuesFacetCounts(SortedSetDocValuesReaderState,
     /// ExecutorService)`.
-    pub fn new(state: Arc<dyn SortedSetDocValuesReaderState>, exec: Arc<dyn Executor>) -> Result<Self> {
+    pub fn new(
+        state: Arc<dyn SortedSetDocValuesReaderState>,
+        exec: Arc<dyn Executor>,
+    ) -> Result<Self> {
         Self::with_hits(state, None, exec)
     }
 
@@ -86,7 +89,9 @@ impl ConcurrentSortedSetDocValuesFacetCounts {
                 task.call()?;
                 Ok(Box::new(()) as rucene::search::task_executor::TaskValue)
             }))
-            .map_err(|e| LuceneError::unchecked("java.util.concurrent.RejectedExecutionException", e.message))
+            .map_err(|e| {
+                LuceneError::unchecked("java.util.concurrent.RejectedExecutionException", e.message)
+            })
     }
 
     /// Equivalent to `count(List)`.
@@ -221,7 +226,11 @@ impl CountOneSegment {
 
             let num_seg_ords = value_count as i32;
 
-            if self.hits.as_ref().is_some_and(|h| h.total_hits < num_seg_ords / 10) {
+            if self
+                .hits
+                .as_ref()
+                .is_some_and(|h| h.total_hits < num_seg_ords / 10)
+            {
                 // Remap every ord to global ord as we iterate:
                 match &mut view {
                     SortedValuesView::Single(single_values) => loop {

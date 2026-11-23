@@ -22,7 +22,9 @@ use rucene::error::Result;
 
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::trec_content_source::TrecContentSource;
-use crate::by_task::feeds::trec_doc_parser::{extract, index_of, strip_tags, strip_tags_buf, ParsePathType, TrecDocParser};
+use crate::by_task::feeds::trec_doc_parser::{
+    extract, index_of, strip_tags, strip_tags_buf, ParsePathType, TrecDocParser,
+};
 use crate::jdk;
 
 /// `TEXT`.
@@ -58,14 +60,16 @@ impl TrecDocParser for TrecFR94Parser {
         _path_type: Option<ParsePathType>,
     ) -> Result<()> {
         let mut mark = 0; // that much is skipped
-        // optionally skip some of the text, set date (no title?)
+                          // optionally skip some of the text, set date (no title?)
         let mut date = None;
         let h1 = index_of(doc_buf, TEXT, 0);
         if h1 >= 0 {
             let h2 = index_of(doc_buf, TEXT_END, h1);
             mark = h1 + TEXT_LENGTH;
             // date...
-            if let Some(date_str) = extract(doc_buf, DATE, DATE_END, h2, Some(&DATE_NOISE_PREFIXES))? {
+            if let Some(date_str) =
+                extract(doc_buf, DATE, DATE_END, h2, Some(&DATE_NOISE_PREFIXES))?
+            {
                 let date_str = strip_tags(&date_str, 0)?;
                 date = trec_src.parse_date(jdk::java_trim(&date_str))?;
             }

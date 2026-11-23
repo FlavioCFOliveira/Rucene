@@ -33,21 +33,31 @@ use rucene_benchmark::by_task::utils::stream_utils::Type;
 use rucene_benchmark::jdk::properties::Properties;
 
 use crate::benchmark_support::search_support::ftest;
-use crate::benchmark_support::{benchmark_class, get_work_dir, java_split, read_lines, run_data_of, FnDocMaker};
+use crate::benchmark_support::{
+    benchmark_class, get_work_dir, java_split, read_lines, run_data_of, FnDocMaker,
+};
 
 const PREFIX: &str = "org.apache.lucene.benchmark.byTask.tasks.TestWriteLineDocTask$";
 
 fn doc(fields: &[(&str, &str)]) -> Result<Document> {
     let mut doc = Document::new();
     for (name, value) in fields {
-        doc.add(StringField::new(name.to_string(), value.to_string(), Store::NO)?);
+        doc.add(StringField::new(
+            name.to_string(),
+            value.to_string(),
+            Store::NO,
+        )?);
     }
     Ok(doc)
 }
 
 /// `WriteLineDocMaker`.
 fn write_line_doc_maker() -> Result<Document> {
-    doc(&[(DocMaker::BODY_FIELD, "body"), (DocMaker::TITLE_FIELD, "title"), (DocMaker::DATE_FIELD, "date")])
+    doc(&[
+        (DocMaker::BODY_FIELD, "body"),
+        (DocMaker::TITLE_FIELD, "title"),
+        (DocMaker::DATE_FIELD, "date"),
+    ])
 }
 
 /// `NewLinesDocMaker`.
@@ -61,12 +71,18 @@ fn new_lines_doc_maker() -> Result<Document> {
 
 /// `NoBodyDocMaker`.
 fn no_body_doc_maker() -> Result<Document> {
-    doc(&[(DocMaker::TITLE_FIELD, "title"), (DocMaker::DATE_FIELD, "date")])
+    doc(&[
+        (DocMaker::TITLE_FIELD, "title"),
+        (DocMaker::DATE_FIELD, "date"),
+    ])
 }
 
 /// `NoTitleDocMaker`.
 fn no_title_doc_maker() -> Result<Document> {
-    doc(&[(DocMaker::BODY_FIELD, "body"), (DocMaker::DATE_FIELD, "date")])
+    doc(&[
+        (DocMaker::BODY_FIELD, "body"),
+        (DocMaker::DATE_FIELD, "date"),
+    ])
 }
 
 /// `JustDateDocMaker` and `LegalJustDateDocMaker`.
@@ -124,10 +140,17 @@ pub fn class_def() -> Arc<Class> {
     )
 }
 
-fn create_perf_run_data(file: &Path, allow_empty_docs: bool, doc_maker_name: &str) -> Result<Arc<PerfRunData>> {
+fn create_perf_run_data(
+    file: &Path,
+    allow_empty_docs: bool,
+    doc_maker_name: &str,
+) -> Result<Arc<PerfRunData>> {
     let mut props = Properties::new();
     props.set_property("doc.maker", doc_maker_name);
-    props.set_property("line.file.out", std::path::absolute(file)?.to_string_lossy().into_owned());
+    props.set_property(
+        "line.file.out",
+        std::path::absolute(file)?.to_string_lossy().into_owned(),
+    );
     props.set_property("directory", "ByteBuffersDirectory"); // no accidental FS dir.
     if allow_empty_docs {
         props.set_property("sufficient.fields", ",");
@@ -139,7 +162,13 @@ fn create_perf_run_data(file: &Path, allow_empty_docs: bool, doc_maker_name: &st
     run_data_of(props)
 }
 
-fn do_read_test(file: &Path, file_type: Type, exp_title: &str, exp_date: &str, exp_body: Option<&str>) -> Result<()> {
+fn do_read_test(
+    file: &Path,
+    file_type: Type,
+    exp_title: &str,
+    exp_date: &str,
+    exp_body: Option<&str>,
+) -> Result<()> {
     let raw = std::fs::File::open(file)?;
     let input: Box<dyn Read> = match file_type {
         Type::Bzip2 => Box::new(bzip2::read::BzDecoder::new(raw)),
@@ -167,7 +196,8 @@ fn do_read_test(file: &Path, file_type: Type, exp_title: &str, exp_date: &str, e
 pub fn assert_header_line(line: Option<&str>) {
     Assert::assert_true_msg(
         "First line should be a header line",
-        line.expect("NullPointerException").starts_with(WriteLineDocTask::FIELDS_HEADER_INDICATOR),
+        line.expect("NullPointerException")
+            .starts_with(WriteLineDocTask::FIELDS_HEADER_INDICATOR),
     );
 }
 
@@ -201,7 +231,13 @@ fn test_regular_file(_f: &mut WriteLineDocTaskTest) -> Result<()> {
 fn test_chars_replace(_f: &mut WriteLineDocTaskTest) -> Result<()> {
     let file = get_work_dir().join("one-line");
     write_one(&file, false, "NewLinesDocMaker")?;
-    do_read_test(&file, Type::Plain, "title text", "date text", Some("body text two"))
+    do_read_test(
+        &file,
+        Type::Plain,
+        "title text",
+        "date text",
+        Some("body text two"),
+    )
 }
 
 fn test_empty_body(_f: &mut WriteLineDocTaskTest) -> Result<()> {
@@ -251,11 +287,15 @@ fn test_multi_threaded(_f: &mut WriteLineDocTaskTest) -> Result<()> {
     let mut threads = Vec::new();
     for i in 0..10 {
         let wldt = Arc::clone(&wldt);
-        threads.push(std::thread::Builder::new().name(format!("t{i}")).spawn(move || {
-            if let Err(e) = wldt.do_logic() {
-                panic!("RuntimeException: {e}");
-            }
-        })?);
+        threads.push(
+            std::thread::Builder::new()
+                .name(format!("t{i}"))
+                .spawn(move || {
+                    if let Err(e) = wldt.do_logic() {
+                        panic!("RuntimeException: {e}");
+                    }
+                })?,
+        );
     }
     let n = threads.len();
     for t in threads {

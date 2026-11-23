@@ -23,7 +23,8 @@ use std::sync::Arc;
 
 use rucene::analysis::factories::{CharFilterFactory, TokenFilterFactory, TokenizerFactory};
 use rucene::analysis::{
-    Analyzer, AnalyzerState, CharReader, GlobalReuseStrategy, SharedTokenStream, TokenStream, TokenStreamComponents,
+    Analyzer, AnalyzerState, CharReader, GlobalReuseStrategy, SharedTokenStream, TokenStream,
+    TokenStreamComponents,
 };
 use rucene::error::{LuceneError, Result};
 use rucene::index::index_reader::java_object_to_string;
@@ -109,13 +110,22 @@ impl fmt::Display for AnalyzerFactory {
             sb.push_str(", ");
         }
         for char_filter_factory in &self.char_filter_factories {
-            sb.push_str(&java_object_to_string(char_filter_factory.java_class_name(), &**char_filter_factory));
+            sb.push_str(&java_object_to_string(
+                char_filter_factory.java_class_name(),
+                &**char_filter_factory,
+            ));
             sb.push_str(", ");
         }
-        sb.push_str(&java_object_to_string(self.tokenizer_factory.java_class_name(), &*self.tokenizer_factory));
+        sb.push_str(&java_object_to_string(
+            self.tokenizer_factory.java_class_name(),
+            &*self.tokenizer_factory,
+        ));
         for token_filter_factory in &self.token_filter_factories {
             sb.push_str(", ");
-            sb.push_str(&java_object_to_string(token_filter_factory.java_class_name(), &**token_filter_factory));
+            sb.push_str(&java_object_to_string(
+                token_filter_factory.java_class_name(),
+                &**token_filter_factory,
+            ));
         }
         sb.push(')');
         f.write_str(&sb)
@@ -137,7 +147,10 @@ struct FactoryAnalyzer {
 /// Java's unchecked rethrow of a factory's exception from a hook that
 /// declares none.
 fn throw(error: &LuceneError) -> ! {
-    rucene::store::java_nio_file::throw_unchecked(error.java_simple_name(), Some(&error.to_string()))
+    rucene::store::java_nio_file::throw_unchecked(
+        error.java_simple_name(),
+        Some(&error.to_string()),
+    )
 }
 
 impl Analyzer for FactoryAnalyzer {
@@ -149,11 +162,17 @@ impl Analyzer for FactoryAnalyzer {
         "org.apache.lucene.benchmark.byTask.utils.AnalyzerFactory$1"
     }
 
-    fn init_reader(&self, _field_name: Option<&str>, reader: Box<dyn CharReader>) -> Box<dyn CharReader> {
+    fn init_reader(
+        &self,
+        _field_name: Option<&str>,
+        reader: Box<dyn CharReader>,
+    ) -> Box<dyn CharReader> {
         let mut reader = reader;
         if !self.char_filter_factories.is_empty() {
             for char_filter_factory in &self.char_filter_factories {
-                reader = char_filter_factory.create(reader).unwrap_or_else(|e| throw(&e));
+                reader = char_filter_factory
+                    .create(reader)
+                    .unwrap_or_else(|e| throw(&e));
             }
         }
         reader
@@ -162,12 +181,15 @@ impl Analyzer for FactoryAnalyzer {
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(self.tokenizer_factory.create()?));
         let tokenizer_for_source = Arc::clone(&tokenizer);
-        let source = Box::new(move |reader: Box<dyn CharReader>| tokenizer_for_source.borrow_mut().set_reader(reader));
+        let source = Box::new(move |reader: Box<dyn CharReader>| {
+            tokenizer_for_source.borrow_mut().set_reader(reader)
+        });
         let mut token_stream: Box<dyn TokenStream> = Box::new(SharedTokenStream::new(tokenizer));
         for filter_factory in &self.token_filter_factories {
             token_stream = filter_factory.create(token_stream)?;
         }
-        let sink: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(ChainStream(token_stream)));
+        let sink: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(ChainStream(token_stream)));
         Ok(TokenStreamComponents::new(source, sink))
     }
 

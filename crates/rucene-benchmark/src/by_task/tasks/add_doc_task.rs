@@ -39,7 +39,10 @@ pub struct AddDocState {
 impl AddDocState {
     /// `docSize = 0`, `doc = null`.
     pub fn new() -> Self {
-        AddDocState { doc_size: AtomicI32::new(0), doc: Mutex::new(None) }
+        AddDocState {
+            doc_size: AtomicI32::new(0),
+            doc: Mutex::new(None),
+        }
     }
 
     /// `super.clone()`: the clone shares the document object.
@@ -51,7 +54,10 @@ impl AddDocState {
             }
             copy
         });
-        AddDocState { doc_size: AtomicI32::new(self.doc_size.load(Ordering::SeqCst)), doc: Mutex::new(doc) }
+        AddDocState {
+            doc_size: AtomicI32::new(self.doc_size.load(Ordering::SeqCst)),
+            doc: Mutex::new(doc),
+        }
     }
 
     /// `AddDocTask.setup()`.
@@ -62,7 +68,11 @@ impl AddDocState {
     pub fn setup(&self, run_data: &PerfRunData) -> Result<()> {
         let doc_maker = run_data.get_doc_maker();
         let doc_size = self.doc_size.load(Ordering::SeqCst);
-        let doc = if doc_size > 0 { doc_maker.make_document_of_size(doc_size)? } else { doc_maker.make_document()? };
+        let doc = if doc_size > 0 {
+            doc_maker.make_document_of_size(doc_size)?
+        } else {
+            doc_maker.make_document()?
+        };
         *jdk::lock(&self.doc) = Some(doc);
         Ok(())
     }
@@ -73,7 +83,9 @@ impl AddDocState {
     ///
     /// The exception of `addDocument`.
     pub fn do_logic(&self, run_data: &PerfRunData) -> Result<i32> {
-        let writer = run_data.get_index_writer().ok_or_else(LuceneError::null_pointer)?;
+        let writer = run_data
+            .get_index_writer()
+            .ok_or_else(LuceneError::null_pointer)?;
         let doc = jdk::lock(&self.doc);
         writer.add_document(doc.as_ref())?;
         Ok(1)
@@ -85,7 +97,8 @@ impl AddDocState {
     ///
     /// `NumberFormatException`.
     pub fn set_params(&self, params: &str) -> Result<()> {
-        self.doc_size.store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
+        self.doc_size
+            .store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -121,7 +134,10 @@ impl AddDocTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(AddDocTask { base: PerfTaskBase::new(run_data, "AddDocTask")?, add: AddDocState::new() })
+        Ok(AddDocTask {
+            base: PerfTaskBase::new(run_data, "AddDocTask")?,
+            add: AddDocState::new(),
+        })
     }
 }
 
@@ -129,7 +145,10 @@ impl PerfTask for AddDocTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(AddDocTask { base: self.base.clone_base(), add: self.add.clone_state() }))
+        Ok(Arc::new(AddDocTask {
+            base: self.base.clone_base(),
+            add: self.add.clone_state(),
+        }))
     }
 
     fn setup(&self) -> Result<()> {

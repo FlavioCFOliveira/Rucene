@@ -70,11 +70,17 @@ pub(crate) enum QueryItem {
 
 /// The span queries `getPrebuiltQueries` of the Reuters and Enwiki makers
 /// share; `wildcard` is the last query.
-pub(crate) fn span_prebuilt_queries(field: &str, wildcard: Arc<dyn Query>) -> Result<Vec<Arc<dyn Query>>> {
+pub(crate) fn span_prebuilt_queries(
+    field: &str,
+    wildcard: Arc<dyn Query>,
+) -> Result<Vec<Arc<dyn Query>>> {
     let term = |text: &str| Term::from_text(field.to_string(), text);
     // be wary of unanalyzed text
     Ok(vec![
-        Arc::new(SpanFirstQuery::new(Arc::new(SpanTermQuery::new(term("ford"))), 5)),
+        Arc::new(SpanFirstQuery::new(
+            Arc::new(SpanTermQuery::new(term("ford"))),
+            5,
+        )),
         Arc::new(SpanNearQuery::new(
             vec![
                 Arc::new(SpanTermQuery::new(term("night"))) as Arc<dyn SpanQuery>,
@@ -85,7 +91,10 @@ pub(crate) fn span_prebuilt_queries(field: &str, wildcard: Arc<dyn Query>) -> Re
         )?),
         Arc::new(SpanNearQuery::new(
             vec![
-                Arc::new(SpanFirstQuery::new(Arc::new(SpanTermQuery::new(term("ford"))), 10)) as Arc<dyn SpanQuery>,
+                Arc::new(SpanFirstQuery::new(
+                    Arc::new(SpanTermQuery::new(term("ford"))),
+                    10,
+                )) as Arc<dyn SpanQuery>,
                 Arc::new(SpanTermQuery::new(term("credit"))),
             ],
             10,
@@ -102,7 +111,10 @@ pub(crate) fn span_prebuilt_queries(field: &str, wildcard: Arc<dyn Query>) -> Re
 /// # Errors
 ///
 /// The exception of building the parser.
-pub(crate) fn create_queries(qs: Vec<QueryItem>, a: Arc<dyn Analyzer>) -> Result<Vec<Arc<dyn Query>>> {
+pub(crate) fn create_queries(
+    qs: Vec<QueryItem>,
+    a: Arc<dyn Analyzer>,
+) -> Result<Vec<Arc<dyn Query>>> {
     let mut qp = QueryParser::new(Some(DocMaker::BODY_FIELD), Some(a))?;
     let mut queries: Vec<Arc<dyn Query>> = Vec::new();
     for query in qs {
@@ -135,7 +147,13 @@ impl ReutersQueryMaker {
 
     /// `getPrebuiltQueries(String field)`.
     fn get_prebuilt_queries(field: &str) -> Result<Vec<Arc<dyn Query>>> {
-        span_prebuilt_queries(field, Arc::new(WildcardQuery::new(Term::from_text(field.to_string(), "fo*"))?))
+        span_prebuilt_queries(
+            field,
+            Arc::new(WildcardQuery::new(Term::from_text(
+                field.to_string(),
+                "fo*",
+            ))?),
+        )
     }
 }
 
@@ -149,16 +167,29 @@ impl AbstractQueryMaker for ReutersQueryMaker {
     }
 
     fn prepare_queries(&self) -> Result<Vec<Arc<dyn Query>>> {
-        let config = self.base.config().ok_or_else(rucene::error::LuceneError::null_pointer)?;
+        let config = self
+            .base
+            .config()
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         // analyzer (default is standard analyzer)
         let anlzr = NewAnalyzerTask::create_analyzer(
             &config
-                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .get_str(
+                    "analyzer",
+                    Some("org.apache.lucene.analysis.standard.StandardAnalyzer"),
+                )?
                 .unwrap_or_default(),
         )?;
 
-        let mut query_list: Vec<QueryItem> = STANDARD_QUERIES.iter().map(|s| QueryItem::Text(s.to_string())).collect();
-        query_list.extend(Self::get_prebuilt_queries(DocMaker::BODY_FIELD)?.into_iter().map(QueryItem::Query));
+        let mut query_list: Vec<QueryItem> = STANDARD_QUERIES
+            .iter()
+            .map(|s| QueryItem::Text(s.to_string()))
+            .collect();
+        query_list.extend(
+            Self::get_prebuilt_queries(DocMaker::BODY_FIELD)?
+                .into_iter()
+                .map(QueryItem::Query),
+        );
         create_queries(query_list, anlzr)
     }
 }

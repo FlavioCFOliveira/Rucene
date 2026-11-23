@@ -52,8 +52,16 @@ pub fn class_def() -> Arc<Class> {
     benchmark_class::<AddIndexesTaskTest>(
         "org.apache.lucene.benchmark.byTask.tasks.TestAddIndexesTask",
         vec![
-            static_hook("beforeClassAddIndexesTaskTest", BeforeClass, before_class_add_indexes_task_test),
-            static_hook("afterClassAddIndexesTaskTest", AfterClass, after_class_add_indexes_task_test),
+            static_hook(
+                "beforeClassAddIndexesTaskTest",
+                BeforeClass,
+                before_class_add_indexes_task_test,
+            ),
+            static_hook(
+                "afterClassAddIndexesTaskTest",
+                AfterClass,
+                after_class_add_indexes_task_test,
+            ),
             ftest("testAddIndexesDefault", test_add_indexes_default),
             ftest("testAddIndexesDir", test_add_indexes_dir),
             ftest("testAddIndexesReader", test_add_indexes_reader),
@@ -66,7 +74,10 @@ fn before_class_add_indexes_task_test() -> Result<()> {
     let input_dir = test_dir.resolve_str("input");
     let tmp_dir = LuceneTestCase::new_fs_directory(&input_dir);
     let result = (|| -> Result<()> {
-        let writer = IndexWriter::new(tmp_dir.as_directory(), IndexWriterConfig::with_analyzer(None))?;
+        let writer = IndexWriter::new(
+            tmp_dir.as_directory(),
+            IndexWriterConfig::with_analyzer(None),
+        )?;
         for _ in 0..10 {
             writer.add_document(&Document::new())?;
         }
@@ -91,7 +102,9 @@ fn create_perf_run_data() -> Result<Arc<PerfRunData>> {
     props.set_property("directory", "ByteBuffersDirectory");
     props.set_property(
         AddIndexesTask::ADDINDEXES_INPUT_DIR,
-        std::path::absolute(&input_dir)?.to_string_lossy().into_owned(),
+        std::path::absolute(&input_dir)?
+            .to_string_lossy()
+            .into_owned(),
     );
     run_data_of(props)
 }
@@ -99,14 +112,14 @@ fn create_perf_run_data() -> Result<Arc<PerfRunData>> {
 fn assert_index(run_data: &PerfRunData) -> Result<()> {
     let task_dir = run_data.get_directory().expect("directory");
     // assertSame(ByteBuffersDirectory.class, taskDir.getClass())
-    Assert::assert_true(task_dir.as_any().is_some_and(|a| a.is::<ByteBuffersDirectory>()));
+    Assert::assert_true(
+        task_dir
+            .as_any()
+            .is_some_and(|a| a.is::<ByteBuffersDirectory>()),
+    );
     let r = directory_reader::open(task_dir)?;
-    let result = (|| -> Result<()> {
-        Assert::assert_equals(10, r.num_docs());
-        Ok(())
-    })();
-    r.close()?;
-    result
+    Assert::assert_equals(10, r.num_docs());
+    r.close()
 }
 
 fn run(params: Option<&str>) -> Result<()> {

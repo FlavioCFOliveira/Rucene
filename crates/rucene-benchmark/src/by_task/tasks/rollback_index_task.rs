@@ -41,7 +41,9 @@ impl RollbackIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(RollbackIndexTask { base: PerfTaskBase::new(run_data, "RollbackIndexTask")? })
+        Ok(RollbackIndexTask {
+            base: PerfTaskBase::new(run_data, "RollbackIndexTask")?,
+        })
     }
 }
 
@@ -49,7 +51,9 @@ impl PerfTask for RollbackIndexTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(RollbackIndexTask { base: self.base.clone_base() }))
+        Ok(Arc::new(RollbackIndexTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

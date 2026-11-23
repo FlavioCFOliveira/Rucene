@@ -65,7 +65,11 @@ impl DefaultSortedSetDocValuesReaderState {
     ///
     /// Equivalent to `DefaultSortedSetDocValuesReaderState(IndexReader,
     /// String, FacetsConfig)`.
-    pub fn with_field(reader: Arc<dyn IndexReader>, field: &str, config: Arc<FacetsConfig>) -> Result<Self> {
+    pub fn with_field(
+        reader: Arc<dyn IndexReader>,
+        field: &str,
+        config: Arc<FacetsConfig>,
+    ) -> Result<Self> {
         let mut this = Self {
             field: field.to_string(),
             value_count: 0,
@@ -245,7 +249,10 @@ impl DefaultSortedSetDocValuesReaderState {
 
 impl Accountable for DefaultSortedSetDocValuesReaderState {
     fn ram_bytes_used(&self) -> i64 {
-        let cached = self.cached_ord_map.lock().unwrap_or_else(PoisonError::into_inner);
+        let cached = self
+            .cached_ord_map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         match cached.get(&self.field) {
             None => 0,
             Some(map) => map.ram_bytes_used(),
@@ -253,7 +260,10 @@ impl Accountable for DefaultSortedSetDocValuesReaderState {
     }
 
     fn child_resources(&self) -> Vec<Box<dyn Accountable + '_>> {
-        let cached = self.cached_ord_map.lock().unwrap_or_else(PoisonError::into_inner);
+        let cached = self
+            .cached_ord_map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let entries: Vec<(String, i64)> = cached
             .iter()
             .map(|(k, v)| (k.clone(), v.ram_bytes_used()))
@@ -290,13 +300,18 @@ impl SortedSetDocValuesReaderState for DefaultSortedSetDocValuesReaderState {
         // factor it out to share?
         let map;
         {
-            let mut cached = self.cached_ord_map.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut cached = self
+                .cached_ord_map
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             match cached.get(&self.field) {
                 Some(m) => map = Arc::clone(m),
                 None => {
                     // uncached, or not a multi dv
-                    let Some((dv, mapping)) =
-                        MultiDocValues::get_sorted_set_values_and_mapping(&self.reader, &self.field)?
+                    let Some((dv, mapping)) = MultiDocValues::get_sorted_set_values_and_mapping(
+                        &self.reader,
+                        &self.field,
+                    )?
                     else {
                         return Ok(None);
                     };
@@ -326,17 +341,23 @@ impl SortedSetDocValuesReaderState for DefaultSortedSetDocValuesReaderState {
                     return Ok(None);
                 }
             }
-            let v: Box<dyn SortedSetDocValues> = match reader.get_sorted_set_doc_values(&self.field)? {
-                Some(v) => v,
-                None => Box::new(rucene::index::DocValues::empty_sorted_set()),
-            };
+            let v: Box<dyn SortedSetDocValues> =
+                match reader.get_sorted_set_doc_values(&self.field)? {
+                    Some(v) => v,
+                    None => Box::new(rucene::index::DocValues::empty_sorted_set()),
+                };
             cost += rucene::search::DocIdSetIterator::cost(&*v);
             values.push(v);
             starts[i] = context.doc_base();
         }
         starts[size] = self.reader.max_doc();
         Ok(Some((
-            Box::new(MultiSortedSetDocValues::new(values, starts, Arc::clone(&map), cost)),
+            Box::new(MultiSortedSetDocValues::new(
+                values,
+                starts,
+                Arc::clone(&map),
+                cost,
+            )),
             Some(map),
         )))
     }

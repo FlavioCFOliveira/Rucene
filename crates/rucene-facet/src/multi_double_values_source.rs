@@ -42,7 +42,9 @@ pub type LongToDoubleFunction = Arc<dyn Fn(i64) -> f64 + Send + Sync>;
 /// Base class for producing `MultiDoubleValues`.
 ///
 /// Equivalent to `org.apache.lucene.facet.MultiDoubleValuesSource`.
-pub trait MultiDoubleValuesSource: SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync {
+pub trait MultiDoubleValuesSource:
+    SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync
+{
     /// Returns a `MultiDoubleValues` instance for the passed-in
     /// `LeafReaderContext`.
     ///
@@ -67,7 +69,8 @@ pub trait MultiDoubleValuesSource: SegmentCacheable + fmt::Display + fmt::Debug 
 // The method references of the `from*Field` factories are non-capturing, so
 // the JVM hands out one instance per call site; one static each keeps that
 // identity.
-static DOUBLE_DECODER: LazyLock<LongToDoubleFunction> = LazyLock::new(|| Arc::new(|v| f64::from_bits(v as u64)));
+static DOUBLE_DECODER: LazyLock<LongToDoubleFunction> =
+    LazyLock::new(|| Arc::new(|v| f64::from_bits(v as u64)));
 static FLOAT_DECODER: LazyLock<LongToDoubleFunction> =
     LazyLock::new(|| Arc::new(|v| f32::from_bits(v as i32 as u32) as f64));
 static LONG_DECODER: LazyLock<LongToDoubleFunction> = LazyLock::new(|| Arc::new(|v| v as f64));
@@ -77,7 +80,10 @@ impl dyn MultiDoubleValuesSource {
     /// field.
     ///
     /// Equivalent to `fromField(String, LongToDoubleFunction)`.
-    pub fn from_field(field: &str, decoder: LongToDoubleFunction) -> Arc<dyn MultiDoubleValuesSource> {
+    pub fn from_field(
+        field: &str,
+        decoder: LongToDoubleFunction,
+    ) -> Arc<dyn MultiDoubleValuesSource> {
         Arc::new(FieldMultiValuedSource {
             field: field.to_string(),
             decoder,
@@ -116,15 +122,21 @@ impl dyn MultiDoubleValuesSource {
     /// `DoubleValuesSource`.
     ///
     /// Equivalent to `fromSingleValued(DoubleValuesSource)`.
-    pub fn from_single_valued(single_valued: Arc<dyn DoubleValuesSource>) -> Arc<dyn MultiDoubleValuesSource> {
-        Arc::new(SingleValuedAsMultiValued { input: single_valued })
+    pub fn from_single_valued(
+        single_valued: Arc<dyn DoubleValuesSource>,
+    ) -> Arc<dyn MultiDoubleValuesSource> {
+        Arc::new(SingleValuedAsMultiValued {
+            input: single_valued,
+        })
     }
 
     /// Returns a single-valued view of the `MultiDoubleValuesSource` if it
     /// was previously wrapped with `from_single_valued`, or `None`.
     ///
     /// Equivalent to `unwrapSingleton(MultiDoubleValuesSource)`.
-    pub fn unwrap_singleton(input: &dyn MultiDoubleValuesSource) -> Option<Arc<dyn DoubleValuesSource>> {
+    pub fn unwrap_singleton(
+        input: &dyn MultiDoubleValuesSource,
+    ) -> Option<Arc<dyn DoubleValuesSource>> {
         input.single_valued()
     }
 }
@@ -133,7 +145,9 @@ impl dyn MultiDoubleValuesSource {
 /// longs.
 ///
 /// Equivalent to `toMultiLongValuesSource()`.
-pub fn to_multi_long_values_source(source: Arc<dyn MultiDoubleValuesSource>) -> Arc<dyn MultiLongValuesSource> {
+pub fn to_multi_long_values_source(
+    source: Arc<dyn MultiDoubleValuesSource>,
+) -> Arc<dyn MultiLongValuesSource> {
     Arc::new(LongDoubleValuesSource { input: source })
 }
 
@@ -164,7 +178,9 @@ impl MultiLongValues for SortableLongs {
     }
 
     fn next_value(&mut self) -> Result<i64> {
-        Ok(NumericUtils::double_to_sortable_long(self.double_values.next_value()?))
+        Ok(NumericUtils::double_to_sortable_long(
+            self.double_values.next_value()?,
+        ))
     }
 
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
@@ -272,7 +288,9 @@ impl MultiDoubleValuesSource for FieldMultiValuedSource {
         other
             .as_any()
             .downcast_ref::<FieldMultiValuedSource>()
-            .is_some_and(|that| self.field == that.field && Arc::ptr_eq(&self.decoder, &that.decoder))
+            .is_some_and(|that| {
+                self.field == that.field && Arc::ptr_eq(&self.decoder, &that.decoder)
+            })
     }
 
     fn as_any(&self) -> &dyn Any {

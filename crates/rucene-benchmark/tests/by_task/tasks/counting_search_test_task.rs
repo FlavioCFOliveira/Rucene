@@ -40,7 +40,12 @@ pub struct Counters {
     pub prev_last_nanos: i64,
 }
 
-static COUNTERS: Mutex<Counters> = Mutex::new(Counters { num_searches: 0, start_nanos: 0, last_nanos: 0, prev_last_nanos: 0 });
+static COUNTERS: Mutex<Counters> = Mutex::new(Counters {
+    num_searches: 0,
+    start_nanos: 0,
+    last_nanos: 0,
+    prev_last_nanos: 0,
+});
 
 /// The static fields.
 pub fn counters() -> Counters {
@@ -49,7 +54,10 @@ pub fn counters() -> Counters {
 
 /// `CountingSearchTestTask.numSearches = 0`.
 pub fn reset_num_searches() {
-    COUNTERS.lock().unwrap_or_else(|e| e.into_inner()).num_searches = 0;
+    COUNTERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .num_searches = 0;
 }
 
 /// `System.nanoTime()`.
@@ -77,7 +85,9 @@ impl CountingSearchTestTask {
     pub fn register() {
         classes::register_task_class(
             CLASS_NAME,
-            Arc::new(|run_data| Ok(Arc::new(CountingSearchTestTask::new(run_data)?) as Arc<dyn PerfTask>)),
+            Arc::new(|run_data| {
+                Ok(Arc::new(CountingSearchTestTask::new(run_data)?) as Arc<dyn PerfTask>)
+            }),
         );
     }
 
@@ -111,7 +121,10 @@ impl PerfTask for CountingSearchTestTask {
     }
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(CountingSearchTestTask { base: self.base.clone_base(), read: self.read.clone_base() }))
+        Ok(Arc::new(CountingSearchTestTask {
+            base: self.base.clone_base(),
+            read: self.read.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -125,7 +138,10 @@ impl PerfTask for CountingSearchTestTask {
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "CountingSearchTestTask" | "SearchTask" | "ReadTask")
+        matches!(
+            simple_class_name,
+            "CountingSearchTestTask" | "SearchTask" | "ReadTask"
+        )
     }
 }
 

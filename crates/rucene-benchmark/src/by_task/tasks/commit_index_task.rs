@@ -43,7 +43,10 @@ impl CommitIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CommitIndexTask { base: PerfTaskBase::new(run_data, "CommitIndexTask")?, commit_user_data: Mutex::new(None) })
+        Ok(CommitIndexTask {
+            base: PerfTaskBase::new(run_data, "CommitIndexTask")?,
+            commit_user_data: Mutex::new(None),
+        })
     }
 }
 
@@ -63,7 +66,10 @@ impl PerfTask for CommitIndexTask {
 
     fn set_params(&self, params: &str) -> Result<()> {
         perf_task::set_params(self, params)?;
-        *jdk::lock(&self.commit_user_data) = Some(vec![(OpenReaderTask::USER_DATA.to_string(), params.to_string())]);
+        *jdk::lock(&self.commit_user_data) = Some(vec![(
+            OpenReaderTask::USER_DATA.to_string(),
+            params.to_string(),
+        )]);
         Ok(())
     }
 

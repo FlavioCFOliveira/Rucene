@@ -45,7 +45,13 @@ impl LongRange {
     /// Represents a single dimensional long range for RangeOnRange faceting.
     ///
     /// Equivalent to `LongRange(String, long, boolean, long, boolean)`.
-    pub fn new(label: &str, mut min_in: i64, min_inclusive: bool, mut max_in: i64, max_inclusive: bool) -> Result<Self> {
+    pub fn new(
+        label: &str,
+        mut min_in: i64,
+        min_inclusive: bool,
+        mut max_in: i64,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         let range = Range::new(label, 1);
 
         if !min_inclusive {
@@ -103,7 +109,10 @@ impl LongRange {
 
     /// Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        let array_hash = |a: &[i64]| a.iter().fold(1i32, |h, v| h.wrapping_mul(31).wrapping_add(long_hash(*v)));
+        let array_hash = |a: &[i64]| {
+            a.iter()
+                .fold(1i32, |h, v| h.wrapping_mul(31).wrapping_add(long_hash(*v)))
+        };
         objects_hash(&[
             java_string_hash_code(&self.range.label),
             array_hash(&self.min),

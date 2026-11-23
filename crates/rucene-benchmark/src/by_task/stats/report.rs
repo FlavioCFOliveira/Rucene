@@ -31,7 +31,12 @@ pub struct Report {
 impl Report {
     /// `Report(String text, int size, int reported, int outOf)`.
     pub fn new(text: String, size: i32, reported: i32, out_of: i32) -> Self {
-        Report { text, size, out_of, reported }
+        Report {
+            text,
+            size,
+            out_of,
+            reported,
+        }
     }
 
     /// `getOutOf()`: total number of stats points when this report was

@@ -100,9 +100,7 @@ impl DirectoryTaxonomyReader {
         category_cache: Option<CategoryCache>,
         taxo_arrays: Option<Arc<TaxonomyIndexArrays>>,
     ) -> Result<Self> {
-        let taxo_epoch = taxo_writer
-            .as_ref()
-            .map_or(-1, |w| w.get_taxonomy_epoch());
+        let taxo_epoch = taxo_writer.as_ref().map_or(-1, |w| w.get_taxonomy_epoch());
 
         // use the same instance of the cache, note the protective code in
         // getOrdinal and getPath
@@ -145,9 +143,7 @@ impl DirectoryTaxonomyReader {
             // construction with the cache's setMaxSize() method
             caches: Mutex::new(ReaderCaches {
                 ordinal_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(DEFAULT_CACHE_VALUE)))),
-                category_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(
-                    DEFAULT_CACHE_VALUE,
-                )))),
+                category_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(DEFAULT_CACHE_VALUE)))),
                 taxo_arrays: None,
             }),
         })
@@ -169,9 +165,7 @@ impl DirectoryTaxonomyReader {
             // construction with the cache's setMaxSize() method
             caches: Mutex::new(ReaderCaches {
                 ordinal_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(DEFAULT_CACHE_VALUE)))),
-                category_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(
-                    DEFAULT_CACHE_VALUE,
-                )))),
+                category_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(DEFAULT_CACHE_VALUE)))),
                 taxo_arrays: None,
             }),
         })
@@ -216,7 +210,11 @@ impl DirectoryTaxonomyReader {
                     .get_user_data()?
                     .get(INDEX_EPOCH)
                     .cloned();
-                let t2 = r2.index_commit()?.get_user_data()?.get(INDEX_EPOCH).cloned();
+                let t2 = r2
+                    .index_commit()?
+                    .get_user_data()?
+                    .get(INDEX_EPOCH)
+                    .cloned();
                 match t1 {
                     None => {
                         if t2.is_some() {
@@ -236,13 +234,8 @@ impl DirectoryTaxonomyReader {
             } else {
                 // NRT, compare current taxoWriter.epoch() vs the one that was
                 // given at construction
-                if self.taxo_epoch
-                    != self
-                        .taxo_writer
-                        .as_ref()
-                        .expect("INVARIANT: checked")
-                        .get_taxonomy_epoch()
-                {
+                let taxo_writer = self.taxo_writer.as_ref();
+                if taxo_writer.is_some_and(|w| self.taxo_epoch != w.get_taxonomy_epoch()) {
                     recreated = true;
                 }
             }
@@ -520,7 +513,8 @@ impl TaxonomyReader for DirectoryTaxonomyReader {
         // always resolved.
 
         // sort the terms to get sequential access to the terms
-        let mut missing: Vec<(usize, BytesRef)> = Vec::with_capacity(indexes_missing_from_cache.len());
+        let mut missing: Vec<(usize, BytesRef)> =
+            Vec::with_capacity(indexes_missing_from_cache.len());
         for &i in &indexes_missing_from_cache {
             let cp = &category_paths[i];
             missing.push((

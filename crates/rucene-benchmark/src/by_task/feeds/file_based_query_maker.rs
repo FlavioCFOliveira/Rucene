@@ -96,7 +96,10 @@ impl AbstractQueryMaker for FileBasedQueryMaker {
         let config = self.base.config().ok_or_else(LuceneError::null_pointer)?;
         let anlzr = NewAnalyzerTask::create_analyzer(
             &config
-                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .get_str(
+                    "analyzer",
+                    Some("org.apache.lucene.analysis.standard.StandardAnalyzer"),
+                )?
                 .unwrap_or_default(),
         )?;
         let default_field = config

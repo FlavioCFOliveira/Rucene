@@ -46,7 +46,13 @@ impl DoubleRange {
     /// Represents a double range for RangeOnRange faceting.
     ///
     /// Equivalent to `DoubleRange(String, double, boolean, double, boolean)`.
-    pub fn new(label: &str, mut min_in: f64, min_inclusive: bool, mut max_in: f64, max_inclusive: bool) -> Result<Self> {
+    pub fn new(
+        label: &str,
+        mut min_in: f64,
+        min_inclusive: bool,
+        mut max_in: f64,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         let range = Range::new(label, 1);
 
         if min_in.is_nan() {
@@ -102,8 +108,11 @@ impl DoubleRange {
 
     /// Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        let array_hash =
-            |a: &[f64]| a.iter().fold(1i32, |h, v| h.wrapping_mul(31).wrapping_add(java_double_hash_code(*v)));
+        let array_hash = |a: &[f64]| {
+            a.iter().fold(1i32, |h, v| {
+                h.wrapping_mul(31).wrapping_add(java_double_hash_code(*v))
+            })
+        };
         objects_hash(&[
             java_string_hash_code(&self.range.label),
             array_hash(&self.min),
@@ -117,7 +126,13 @@ impl PartialEq for DoubleRange {
     /// Equivalent to `equals(Object)`: `Arrays.equals(double[], double[])`
     /// compares `Double.doubleToLongBits`.
     fn eq(&self, other: &Self) -> bool {
-        let bits = |v: &f64| if v.is_nan() { 0x7ff8_0000_0000_0000u64 } else { v.to_bits() };
+        let bits = |v: &f64| {
+            if v.is_nan() {
+                0x7ff8_0000_0000_0000u64
+            } else {
+                v.to_bits()
+            }
+        };
         self.min.iter().map(bits).eq(other.min.iter().map(bits))
             && self.max.iter().map(bits).eq(other.max.iter().map(bits))
             && self.range.label == other.range.label

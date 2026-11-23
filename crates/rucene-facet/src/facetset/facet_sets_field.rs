@@ -41,7 +41,9 @@ impl FacetSetsField {
     /// Equivalent to `create(String, FacetSet...)`.
     pub fn create(name: &str, facet_sets: &[&dyn FacetSet]) -> Result<Self> {
         if facet_sets.is_empty() {
-            return Err(LuceneError::illegal_argument("FacetSets cannot be null or empty!"));
+            return Err(LuceneError::illegal_argument(
+                "FacetSets cannot be null or empty!",
+            ));
         }
 
         Ok(Self {

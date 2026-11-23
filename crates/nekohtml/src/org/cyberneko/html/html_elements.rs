@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -279,169 +279,284 @@ pub const CONTAINER: i32 = 0x08;
 pub const SPECIAL: i32 = 0x10;
 
 /// `ELEMENTS_ARRAY`: the elements by the first letter of their name.
+// `a['A' - 'A']` is kept as Java writes the index.
+#[allow(clippy::eq_op, clippy::identity_op)]
 fn elements_array() -> Vec<Vec<Element>> {
     let e = Element::with_parents_and_bounds;
     let mut a: Vec<Vec<Element>> = (0..26).map(|_| Vec::new()).collect();
     a[(b'A' - b'A') as usize] = vec![
-            e(A, "A", INLINE, Some(&[BODY]), -1, Some(&[A])),
-            e(ABBR, "ABBR", INLINE, Some(&[BODY]), -1, None),
-            e(ACRONYM, "ACRONYM", INLINE, Some(&[BODY]), -1, None),
-            e(ADDRESS, "ADDRESS", BLOCK, Some(&[BODY]), -1, None),
-            e(APPLET, "APPLET", 0, Some(&[BODY]), -1, None),
-            e(AREA, "AREA", EMPTY, Some(&[MAP]), -1, None),
+        e(A, "A", INLINE, Some(&[BODY]), -1, Some(&[A])),
+        e(ABBR, "ABBR", INLINE, Some(&[BODY]), -1, None),
+        e(ACRONYM, "ACRONYM", INLINE, Some(&[BODY]), -1, None),
+        e(ADDRESS, "ADDRESS", BLOCK, Some(&[BODY]), -1, None),
+        e(APPLET, "APPLET", 0, Some(&[BODY]), -1, None),
+        e(AREA, "AREA", EMPTY, Some(&[MAP]), -1, None),
     ];
     a[(b'B' - b'A') as usize] = vec![
-            e(B, "B", INLINE, Some(&[BODY]), -1, None),
-            e(BASE, "BASE", EMPTY, Some(&[HEAD]), -1, None),
-            e(BASEFONT, "BASEFONT", 0, Some(&[HEAD]), -1, None),
-            e(BDO, "BDO", INLINE, Some(&[BODY]), -1, None),
-            e(BGSOUND, "BGSOUND", EMPTY, Some(&[HEAD]), -1, None),
-            e(BIG, "BIG", INLINE, Some(&[BODY]), -1, None),
-            e(BLINK, "BLINK", INLINE, Some(&[BODY]), -1, None),
-            e(BLOCKQUOTE, "BLOCKQUOTE", BLOCK, Some(&[BODY]), -1, Some(&[P])),
-            e(BODY, "BODY", CONTAINER, Some(&[HTML]), -1, Some(&[HEAD])),
-            e(BR, "BR", EMPTY, Some(&[BODY]), -1, None),
-            e(BUTTON, "BUTTON", INLINE | BLOCK, Some(&[BODY]), -1, None),
+        e(B, "B", INLINE, Some(&[BODY]), -1, None),
+        e(BASE, "BASE", EMPTY, Some(&[HEAD]), -1, None),
+        e(BASEFONT, "BASEFONT", 0, Some(&[HEAD]), -1, None),
+        e(BDO, "BDO", INLINE, Some(&[BODY]), -1, None),
+        e(BGSOUND, "BGSOUND", EMPTY, Some(&[HEAD]), -1, None),
+        e(BIG, "BIG", INLINE, Some(&[BODY]), -1, None),
+        e(BLINK, "BLINK", INLINE, Some(&[BODY]), -1, None),
+        e(
+            BLOCKQUOTE,
+            "BLOCKQUOTE",
+            BLOCK,
+            Some(&[BODY]),
+            -1,
+            Some(&[P]),
+        ),
+        e(BODY, "BODY", CONTAINER, Some(&[HTML]), -1, Some(&[HEAD])),
+        e(BR, "BR", EMPTY, Some(&[BODY]), -1, None),
+        e(BUTTON, "BUTTON", INLINE | BLOCK, Some(&[BODY]), -1, None),
     ];
     a[(b'C' - b'A') as usize] = vec![
-            e(CAPTION, "CAPTION", INLINE, Some(&[TABLE]), -1, None),
-            e(CENTER, "CENTER", 0, Some(&[BODY]), -1, None),
-            e(CITE, "CITE", INLINE, Some(&[BODY]), -1, None),
-            e(CODE, "CODE", INLINE, Some(&[BODY]), -1, None),
-            e(COL, "COL", EMPTY, Some(&[TABLE]), -1, None),
-            e(COLGROUP, "COLGROUP", 0, Some(&[TABLE]), -1, Some(&[COL, COLGROUP])),
-            e(COMMENT, "COMMENT", SPECIAL, Some(&[HTML]), -1, None),
+        e(CAPTION, "CAPTION", INLINE, Some(&[TABLE]), -1, None),
+        e(CENTER, "CENTER", 0, Some(&[BODY]), -1, None),
+        e(CITE, "CITE", INLINE, Some(&[BODY]), -1, None),
+        e(CODE, "CODE", INLINE, Some(&[BODY]), -1, None),
+        e(COL, "COL", EMPTY, Some(&[TABLE]), -1, None),
+        e(
+            COLGROUP,
+            "COLGROUP",
+            0,
+            Some(&[TABLE]),
+            -1,
+            Some(&[COL, COLGROUP]),
+        ),
+        e(COMMENT, "COMMENT", SPECIAL, Some(&[HTML]), -1, None),
     ];
     a[(b'D' - b'A') as usize] = vec![
-            e(DEL, "DEL", 0, Some(&[BODY]), -1, None),
-            e(DFN, "DFN", INLINE, Some(&[BODY]), -1, None),
-            e(DIR, "DIR", 0, Some(&[BODY]), -1, None),
-            e(DIV, "DIV", BLOCK, Some(&[BODY]), -1, Some(&[P])),
-            e(DD, "DD", 0, Some(&[DL]), -1, Some(&[DT, DD])),
-            e(DL, "DL", BLOCK, Some(&[BODY]), -1, None),
-            e(DT, "DT", 0, Some(&[DL]), -1, Some(&[DT, DD])),
+        e(DEL, "DEL", 0, Some(&[BODY]), -1, None),
+        e(DFN, "DFN", INLINE, Some(&[BODY]), -1, None),
+        e(DIR, "DIR", 0, Some(&[BODY]), -1, None),
+        e(DIV, "DIV", BLOCK, Some(&[BODY]), -1, Some(&[P])),
+        e(DD, "DD", 0, Some(&[DL]), -1, Some(&[DT, DD])),
+        e(DL, "DL", BLOCK, Some(&[BODY]), -1, None),
+        e(DT, "DT", 0, Some(&[DL]), -1, Some(&[DT, DD])),
     ];
     a[(b'E' - b'A') as usize] = vec![
-            e(EM, "EM", INLINE, Some(&[BODY]), -1, None),
-            e(EMBED, "EMBED", 0, Some(&[BODY]), -1, None),
+        e(EM, "EM", INLINE, Some(&[BODY]), -1, None),
+        e(EMBED, "EMBED", 0, Some(&[BODY]), -1, None),
     ];
     a[(b'F' - b'A') as usize] = vec![
-            e(FIELDSET, "FIELDSET", 0, Some(&[BODY]), -1, None),
-            e(FONT, "FONT", CONTAINER, Some(&[BODY]), -1, None),
-            e(FORM, "FORM", CONTAINER, Some(&[BODY, TD, DIV]), -1, Some(&[BUTTON, P])),
-            e(FRAME, "FRAME", EMPTY, Some(&[FRAMESET]), -1, None),
-            e(FRAMESET, "FRAMESET", 0, Some(&[HTML]), -1, None),
+        e(FIELDSET, "FIELDSET", 0, Some(&[BODY]), -1, None),
+        e(FONT, "FONT", CONTAINER, Some(&[BODY]), -1, None),
+        e(
+            FORM,
+            "FORM",
+            CONTAINER,
+            Some(&[BODY, TD, DIV]),
+            -1,
+            Some(&[BUTTON, P]),
+        ),
+        e(FRAME, "FRAME", EMPTY, Some(&[FRAMESET]), -1, None),
+        e(FRAMESET, "FRAMESET", 0, Some(&[HTML]), -1, None),
     ];
     a[(b'H' - b'A') as usize] = vec![
-            e(H1, "H1", BLOCK, Some(&[BODY, A]), -1, Some(&[H1, H2, H3, H4, H5, H6, P])),
-            e(H2, "H2", BLOCK, Some(&[BODY, A]), -1, Some(&[H1, H2, H3, H4, H5, H6, P])),
-            e(H3, "H3", BLOCK, Some(&[BODY, A]), -1, Some(&[H1, H2, H3, H4, H5, H6, P])),
-            e(H4, "H4", BLOCK, Some(&[BODY, A]), -1, Some(&[H1, H2, H3, H4, H5, H6, P])),
-            e(H5, "H5", BLOCK, Some(&[BODY, A]), -1, Some(&[H1, H2, H3, H4, H5, H6, P])),
-            e(H6, "H6", BLOCK, Some(&[BODY, A]), -1, Some(&[H1, H2, H3, H4, H5, H6, P])),
-            e(HEAD, "HEAD", 0, Some(&[HTML]), -1, None),
-            e(HR, "HR", EMPTY, Some(&[BODY]), -1, Some(&[P])),
-            e(HTML, "HTML", 0, None, -1, None),
+        e(
+            H1,
+            "H1",
+            BLOCK,
+            Some(&[BODY, A]),
+            -1,
+            Some(&[H1, H2, H3, H4, H5, H6, P]),
+        ),
+        e(
+            H2,
+            "H2",
+            BLOCK,
+            Some(&[BODY, A]),
+            -1,
+            Some(&[H1, H2, H3, H4, H5, H6, P]),
+        ),
+        e(
+            H3,
+            "H3",
+            BLOCK,
+            Some(&[BODY, A]),
+            -1,
+            Some(&[H1, H2, H3, H4, H5, H6, P]),
+        ),
+        e(
+            H4,
+            "H4",
+            BLOCK,
+            Some(&[BODY, A]),
+            -1,
+            Some(&[H1, H2, H3, H4, H5, H6, P]),
+        ),
+        e(
+            H5,
+            "H5",
+            BLOCK,
+            Some(&[BODY, A]),
+            -1,
+            Some(&[H1, H2, H3, H4, H5, H6, P]),
+        ),
+        e(
+            H6,
+            "H6",
+            BLOCK,
+            Some(&[BODY, A]),
+            -1,
+            Some(&[H1, H2, H3, H4, H5, H6, P]),
+        ),
+        e(HEAD, "HEAD", 0, Some(&[HTML]), -1, None),
+        e(HR, "HR", EMPTY, Some(&[BODY]), -1, Some(&[P])),
+        e(HTML, "HTML", 0, None, -1, None),
     ];
     a[(b'I' - b'A') as usize] = vec![
-            e(I, "I", INLINE, Some(&[BODY]), -1, None),
-            e(IFRAME, "IFRAME", BLOCK, Some(&[BODY]), -1, None),
-            e(ILAYER, "ILAYER", BLOCK, Some(&[BODY]), -1, None),
-            e(IMG, "IMG", EMPTY, Some(&[BODY]), -1, None),
-            e(INPUT, "INPUT", EMPTY, Some(&[BODY]), -1, None),
-            e(INS, "INS", INLINE, Some(&[BODY]), -1, None),
-            e(ISINDEX, "ISINDEX", 0, Some(&[HEAD]), -1, None),
+        e(I, "I", INLINE, Some(&[BODY]), -1, None),
+        e(IFRAME, "IFRAME", BLOCK, Some(&[BODY]), -1, None),
+        e(ILAYER, "ILAYER", BLOCK, Some(&[BODY]), -1, None),
+        e(IMG, "IMG", EMPTY, Some(&[BODY]), -1, None),
+        e(INPUT, "INPUT", EMPTY, Some(&[BODY]), -1, None),
+        e(INS, "INS", INLINE, Some(&[BODY]), -1, None),
+        e(ISINDEX, "ISINDEX", 0, Some(&[HEAD]), -1, None),
     ];
     a[(b'K' - b'A') as usize] = vec![
-            e(KBD, "KBD", INLINE, Some(&[BODY]), -1, None),
-            e(KEYGEN, "KEYGEN", 0, Some(&[BODY]), -1, None),
+        e(KBD, "KBD", INLINE, Some(&[BODY]), -1, None),
+        e(KEYGEN, "KEYGEN", 0, Some(&[BODY]), -1, None),
     ];
     a[(b'L' - b'A') as usize] = vec![
-            e(LABEL, "LABEL", 0, Some(&[BODY]), -1, None),
-            e(LAYER, "LAYER", BLOCK, Some(&[BODY]), -1, None),
-            e(LEGEND, "LEGEND", INLINE, Some(&[FIELDSET]), -1, None),
-            e(LI, "LI", 0, Some(&[BODY, UL, OL]), -1, Some(&[LI])),
-            e(LINK, "LINK", EMPTY, Some(&[HEAD]), -1, None),
-            e(LISTING, "LISTING", 0, Some(&[BODY]), -1, None),
+        e(LABEL, "LABEL", 0, Some(&[BODY]), -1, None),
+        e(LAYER, "LAYER", BLOCK, Some(&[BODY]), -1, None),
+        e(LEGEND, "LEGEND", INLINE, Some(&[FIELDSET]), -1, None),
+        e(LI, "LI", 0, Some(&[BODY, UL, OL]), -1, Some(&[LI])),
+        e(LINK, "LINK", EMPTY, Some(&[HEAD]), -1, None),
+        e(LISTING, "LISTING", 0, Some(&[BODY]), -1, None),
     ];
     a[(b'M' - b'A') as usize] = vec![
-            e(MAP, "MAP", INLINE, Some(&[BODY]), -1, None),
-            e(MARQUEE, "MARQUEE", 0, Some(&[BODY]), -1, None),
-            e(MENU, "MENU", 0, Some(&[BODY]), -1, None),
-            e(META, "META", EMPTY, Some(&[HEAD]), -1, Some(&[STYLE, TITLE])),
-            e(MULTICOL, "MULTICOL", 0, Some(&[BODY]), -1, None),
+        e(MAP, "MAP", INLINE, Some(&[BODY]), -1, None),
+        e(MARQUEE, "MARQUEE", 0, Some(&[BODY]), -1, None),
+        e(MENU, "MENU", 0, Some(&[BODY]), -1, None),
+        e(
+            META,
+            "META",
+            EMPTY,
+            Some(&[HEAD]),
+            -1,
+            Some(&[STYLE, TITLE]),
+        ),
+        e(MULTICOL, "MULTICOL", 0, Some(&[BODY]), -1, None),
     ];
     a[(b'N' - b'A') as usize] = vec![
-            e(NEXTID, "NEXTID", EMPTY, Some(&[BODY]), -1, None),
-            e(NOBR, "NOBR", INLINE, Some(&[BODY]), -1, None),
-            e(NOEMBED, "NOEMBED", 0, Some(&[BODY]), -1, None),
-            e(NOFRAMES, "NOFRAMES", 0, None, -1, None),
-            e(NOLAYER, "NOLAYER", 0, Some(&[BODY]), -1, None),
-            e(NOSCRIPT, "NOSCRIPT", 0, Some(&[BODY]), -1, None),
+        e(NEXTID, "NEXTID", EMPTY, Some(&[BODY]), -1, None),
+        e(NOBR, "NOBR", INLINE, Some(&[BODY]), -1, None),
+        e(NOEMBED, "NOEMBED", 0, Some(&[BODY]), -1, None),
+        e(NOFRAMES, "NOFRAMES", 0, None, -1, None),
+        e(NOLAYER, "NOLAYER", 0, Some(&[BODY]), -1, None),
+        e(NOSCRIPT, "NOSCRIPT", 0, Some(&[BODY]), -1, None),
     ];
     a[(b'O' - b'A') as usize] = vec![
-            e(OBJECT, "OBJECT", 0, Some(&[BODY]), -1, None),
-            e(OL, "OL", BLOCK, Some(&[BODY]), -1, None),
-            e(OPTGROUP, "OPTGROUP", 0, Some(&[SELECT]), -1, Some(&[OPTION])),
-            e(OPTION, "OPTION", 0, Some(&[SELECT]), -1, Some(&[OPTION])),
+        e(OBJECT, "OBJECT", 0, Some(&[BODY]), -1, None),
+        e(OL, "OL", BLOCK, Some(&[BODY]), -1, None),
+        e(
+            OPTGROUP,
+            "OPTGROUP",
+            0,
+            Some(&[SELECT]),
+            -1,
+            Some(&[OPTION]),
+        ),
+        e(OPTION, "OPTION", 0, Some(&[SELECT]), -1, Some(&[OPTION])),
     ];
     a[(b'P' - b'A') as usize] = vec![
-            e(P, "P", CONTAINER, Some(&[BODY]), -1, Some(&[P])),
-            e(PARAM, "PARAM", EMPTY, Some(&[OBJECT, APPLET]), -1, None),
-            e(PLAINTEXT, "PLAINTEXT", SPECIAL, Some(&[BODY]), -1, None),
-            e(PRE, "PRE", 0, Some(&[BODY]), -1, None),
+        e(P, "P", CONTAINER, Some(&[BODY]), -1, Some(&[P])),
+        e(PARAM, "PARAM", EMPTY, Some(&[OBJECT, APPLET]), -1, None),
+        e(PLAINTEXT, "PLAINTEXT", SPECIAL, Some(&[BODY]), -1, None),
+        e(PRE, "PRE", 0, Some(&[BODY]), -1, None),
     ];
-    a[(b'Q' - b'A') as usize] = vec![
-            e(Q, "Q", INLINE, Some(&[BODY]), -1, None),
-    ];
+    a[(b'Q' - b'A') as usize] = vec![e(Q, "Q", INLINE, Some(&[BODY]), -1, None)];
     a[(b'R' - b'A') as usize] = vec![
-            e(RB, "RB", INLINE, Some(&[RUBY]), -1, Some(&[RB])),
-            e(RBC, "RBC", 0, Some(&[RUBY]), -1, None),
-            e(RP, "RP", INLINE, Some(&[RUBY]), -1, Some(&[RB])),
-            e(RT, "RT", INLINE, Some(&[RUBY]), -1, Some(&[RB, RP])),
-            e(RTC, "RTC", 0, Some(&[RUBY]), -1, Some(&[RBC])),
-            e(RUBY, "RUBY", 0, Some(&[BODY]), -1, Some(&[RUBY])),
+        e(RB, "RB", INLINE, Some(&[RUBY]), -1, Some(&[RB])),
+        e(RBC, "RBC", 0, Some(&[RUBY]), -1, None),
+        e(RP, "RP", INLINE, Some(&[RUBY]), -1, Some(&[RB])),
+        e(RT, "RT", INLINE, Some(&[RUBY]), -1, Some(&[RB, RP])),
+        e(RTC, "RTC", 0, Some(&[RUBY]), -1, Some(&[RBC])),
+        e(RUBY, "RUBY", 0, Some(&[BODY]), -1, Some(&[RUBY])),
     ];
     a[(b'S' - b'A') as usize] = vec![
-            e(S, "S", 0, Some(&[BODY]), -1, None),
-            e(SAMP, "SAMP", INLINE, Some(&[BODY]), -1, None),
-            e(SCRIPT, "SCRIPT", SPECIAL, Some(&[HEAD, BODY]), -1, None),
-            e(SELECT, "SELECT", CONTAINER, Some(&[BODY]), -1, Some(&[SELECT])),
-            e(SMALL, "SMALL", INLINE, Some(&[BODY]), -1, None),
-            e(SOUND, "SOUND", EMPTY, Some(&[HEAD]), -1, None),
-            e(SPACER, "SPACER", EMPTY, Some(&[BODY]), -1, None),
-            e(SPAN, "SPAN", CONTAINER, Some(&[BODY]), -1, None),
-            e(STRIKE, "STRIKE", INLINE, Some(&[BODY]), -1, None),
-            e(STRONG, "STRONG", INLINE, Some(&[BODY]), -1, None),
-            e(STYLE, "STYLE", SPECIAL, Some(&[HEAD, BODY]), -1, Some(&[STYLE, TITLE, META])),
-            e(SUB, "SUB", INLINE, Some(&[BODY]), -1, None),
-            e(SUP, "SUP", INLINE, Some(&[BODY]), -1, None),
+        e(S, "S", 0, Some(&[BODY]), -1, None),
+        e(SAMP, "SAMP", INLINE, Some(&[BODY]), -1, None),
+        e(SCRIPT, "SCRIPT", SPECIAL, Some(&[HEAD, BODY]), -1, None),
+        e(
+            SELECT,
+            "SELECT",
+            CONTAINER,
+            Some(&[BODY]),
+            -1,
+            Some(&[SELECT]),
+        ),
+        e(SMALL, "SMALL", INLINE, Some(&[BODY]), -1, None),
+        e(SOUND, "SOUND", EMPTY, Some(&[HEAD]), -1, None),
+        e(SPACER, "SPACER", EMPTY, Some(&[BODY]), -1, None),
+        e(SPAN, "SPAN", CONTAINER, Some(&[BODY]), -1, None),
+        e(STRIKE, "STRIKE", INLINE, Some(&[BODY]), -1, None),
+        e(STRONG, "STRONG", INLINE, Some(&[BODY]), -1, None),
+        e(
+            STYLE,
+            "STYLE",
+            SPECIAL,
+            Some(&[HEAD, BODY]),
+            -1,
+            Some(&[STYLE, TITLE, META]),
+        ),
+        e(SUB, "SUB", INLINE, Some(&[BODY]), -1, None),
+        e(SUP, "SUP", INLINE, Some(&[BODY]), -1, None),
     ];
     a[(b'T' - b'A') as usize] = vec![
-            e(TABLE, "TABLE", BLOCK|CONTAINER, Some(&[BODY]), -1, None),
-            e(TBODY, "TBODY", 0, Some(&[TABLE]), -1, Some(&[THEAD, TBODY, TFOOT, TD, TH, TR, COLGROUP])),
-            e(TD, "TD", CONTAINER, Some(&[TR]), TABLE, Some(&[TD, TH])),
-            e(TEXTAREA, "TEXTAREA", SPECIAL, Some(&[BODY]), -1, None),
-            e(TFOOT, "TFOOT", 0, Some(&[TABLE]), -1, Some(&[THEAD, TBODY, TFOOT, TD, TH, TR])),
-            e(TH, "TH", CONTAINER, Some(&[TR]), TABLE, Some(&[TD, TH])),
-            e(THEAD, "THEAD", 0, Some(&[TABLE]), -1, Some(&[THEAD, TBODY, TFOOT, TD, TH, TR, COLGROUP])),
-            e(TITLE, "TITLE", SPECIAL, Some(&[HEAD, BODY]), -1, None),
-            e(TR, "TR", BLOCK, Some(&[TBODY, THEAD, TFOOT]), TABLE, Some(&[TD, TH, TR, COLGROUP])),
-            e(TT, "TT", INLINE, Some(&[BODY]), -1, None),
+        e(TABLE, "TABLE", BLOCK | CONTAINER, Some(&[BODY]), -1, None),
+        e(
+            TBODY,
+            "TBODY",
+            0,
+            Some(&[TABLE]),
+            -1,
+            Some(&[THEAD, TBODY, TFOOT, TD, TH, TR, COLGROUP]),
+        ),
+        e(TD, "TD", CONTAINER, Some(&[TR]), TABLE, Some(&[TD, TH])),
+        e(TEXTAREA, "TEXTAREA", SPECIAL, Some(&[BODY]), -1, None),
+        e(
+            TFOOT,
+            "TFOOT",
+            0,
+            Some(&[TABLE]),
+            -1,
+            Some(&[THEAD, TBODY, TFOOT, TD, TH, TR]),
+        ),
+        e(TH, "TH", CONTAINER, Some(&[TR]), TABLE, Some(&[TD, TH])),
+        e(
+            THEAD,
+            "THEAD",
+            0,
+            Some(&[TABLE]),
+            -1,
+            Some(&[THEAD, TBODY, TFOOT, TD, TH, TR, COLGROUP]),
+        ),
+        e(TITLE, "TITLE", SPECIAL, Some(&[HEAD, BODY]), -1, None),
+        e(
+            TR,
+            "TR",
+            BLOCK,
+            Some(&[TBODY, THEAD, TFOOT]),
+            TABLE,
+            Some(&[TD, TH, TR, COLGROUP]),
+        ),
+        e(TT, "TT", INLINE, Some(&[BODY]), -1, None),
     ];
     a[(b'U' - b'A') as usize] = vec![
-            e(U, "U", INLINE, Some(&[BODY]), -1, None),
-            e(UL, "UL", BLOCK, Some(&[BODY]), -1, None),
+        e(U, "U", INLINE, Some(&[BODY]), -1, None),
+        e(UL, "UL", BLOCK, Some(&[BODY]), -1, None),
     ];
-    a[(b'V' - b'A') as usize] = vec![
-            e(VAR, "VAR", INLINE, Some(&[BODY]), -1, None),
-    ];
-    a[(b'W' - b'A') as usize] = vec![
-            e(WBR, "WBR", EMPTY, Some(&[BODY]), -1, None),
-    ];
+    a[(b'V' - b'A') as usize] = vec![e(VAR, "VAR", INLINE, Some(&[BODY]), -1, None)];
+    a[(b'W' - b'A') as usize] = vec![e(WBR, "WBR", EMPTY, Some(&[BODY]), -1, None)];
     a[(b'X' - b'A') as usize] = vec![
-            e(XML, "XML", 0, Some(&[BODY]), -1, None),
-            e(XMP, "XMP", SPECIAL, Some(&[BODY]), -1, None),
+        e(XML, "XML", 0, Some(&[BODY]), -1, None),
+        e(XMP, "XMP", SPECIAL, Some(&[BODY]), -1, None),
     ];
     a
 }
@@ -458,8 +573,13 @@ struct Tables {
 }
 
 static TABLES: LazyLock<Tables> = LazyLock::new(|| {
-    let no_such_element: &'static Element =
-        Box::leak(Box::new(Element::with_parents(UNKNOWN, "", CONTAINER, Some(&[BODY, HEAD]), None)));
+    let no_such_element: &'static Element = Box::leak(Box::new(Element::with_parents(
+        UNKNOWN,
+        "",
+        CONTAINER,
+        Some(&[BODY, HEAD]),
+        None,
+    )));
     let elements_array: Vec<Vec<&'static Element>> = elements_array()
         .into_iter()
         .map(|v| v.into_iter().map(|e| &*Box::leak(Box::new(e))).collect())
@@ -653,8 +773,7 @@ impl Element {
     pub fn to_java_string(&self) -> String {
         format!(
             "org.cyberneko.html.HTMLElements$Element@{:x}(name={})",
-            self as *const Element as usize as u32,
-            self.name
+            self as *const Element as usize as u32, self.name
         )
     }
 
@@ -665,7 +784,9 @@ impl Element {
     pub fn is_parent(&self, element: &Element) -> bool {
         match self.parent_codes {
             None => false,
-            Some(codes) => codes.iter().any(|&c| element.code == get_element_by_code(c).code),
+            Some(codes) => codes
+                .iter()
+                .any(|&c| element.code == get_element_by_code(c).code),
         }
     }
 }

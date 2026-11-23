@@ -42,7 +42,9 @@ impl CloseReaderTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CloseReaderTask { base: PerfTaskBase::new(run_data, "CloseReaderTask")? })
+        Ok(CloseReaderTask {
+            base: PerfTaskBase::new(run_data, "CloseReaderTask")?,
+        })
     }
 }
 
@@ -50,7 +52,9 @@ impl PerfTask for CloseReaderTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(CloseReaderTask { base: self.base.clone_base() }))
+        Ok(Arc::new(CloseReaderTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -59,7 +63,10 @@ impl PerfTask for CloseReaderTask {
         run_data.set_index_reader(None)?;
         let reader = reader.ok_or_else(LuceneError::null_pointer)?;
         if reader.get_ref_count() != 1 {
-            println!("WARNING: CloseReader: reference count is currently {}", reader.get_ref_count());
+            println!(
+                "WARNING: CloseReader: reference count is currently {}",
+                reader.get_ref_count()
+            );
         }
         reader.dec_ref()?;
         Ok(1)

@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -68,7 +68,10 @@ impl LostText {
     pub(crate) fn refeed(&mut self, tag_balancer: &dyn XMLDocumentHandler) -> JResult<()> {
         let entries = std::mem::take(&mut self.entries);
         for entry in &entries {
-            tag_balancer.characters(&entry.text, entry.augs.as_ref().map(|a| a as &dyn Augmentations))?;
+            tag_balancer.characters(
+                &entry.text,
+                entry.augs.as_ref().map(|a| a as &dyn Augmentations),
+            )?;
         }
         // not needed anymore once it has been used -> clear to free memory
         Ok(())

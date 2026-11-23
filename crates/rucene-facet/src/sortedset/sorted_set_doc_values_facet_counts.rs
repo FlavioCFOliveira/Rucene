@@ -45,8 +45,13 @@ pub struct SortedSetDocValuesFacetCounts {
 pub(crate) const READER_MISMATCH: &str = "the SortedSetDocValuesReaderState provided to this class does not match the reader being searched; you must create a new SortedSetDocValuesReaderState every time you open a new IndexReader";
 
 /// `ReaderUtil.getTopLevelContext(hits.context()).reader() != reader`.
-pub(crate) fn check_top_level_reader(hits: &MatchingDocs, state: &dyn SortedSetDocValuesReaderState) -> Result<()> {
-    let top = reader_util::get_top_level_context(Arc::clone(&hits.context) as Arc<dyn IndexReaderContext>);
+pub(crate) fn check_top_level_reader(
+    hits: &MatchingDocs,
+    state: &dyn SortedSetDocValuesReaderState,
+) -> Result<()> {
+    let top = reader_util::get_top_level_context(
+        Arc::clone(&hits.context) as Arc<dyn IndexReaderContext>
+    );
     if !std::ptr::addr_eq(Arc::as_ptr(&top.reader()), Arc::as_ptr(state.get_reader())) {
         return Err(LuceneError::illegal_state(READER_MISMATCH));
     }
@@ -66,7 +71,10 @@ impl SortedSetDocValuesFacetCounts {
     ///
     /// Equivalent to `SortedSetDocValuesFacetCounts(SortedSetDocValuesReaderState,
     /// FacetsCollector)`.
-    pub fn with_hits(state: Arc<dyn SortedSetDocValuesReaderState>, hits: Option<&FacetsCollector>) -> Result<Self> {
+    pub fn with_hits(
+        state: Arc<dyn SortedSetDocValuesReaderState>,
+        hits: Option<&FacetsCollector>,
+    ) -> Result<Self> {
         let base = AbstractSortedSetDocValueFacetCounts::new(state, CountStore::Plain(None))?;
         let mut this = Self { base };
         match hits {
@@ -308,7 +316,13 @@ impl SortedSetDocValuesFacetCounts {
             check_top_level_reader(hits, &*state)?;
 
             let reader = hits.context.leaf_reader();
-            self.count_one_segment(ordinal_map.as_ref(), &*reader, hits.context.ord(), Some(hits), None)?;
+            self.count_one_segment(
+                ordinal_map.as_ref(),
+                &*reader,
+                hits.context.ord(),
+                Some(hits),
+                None,
+            )?;
         }
         Ok(())
     }
@@ -323,7 +337,9 @@ impl SortedSetDocValuesFacetCounts {
             let leaf_reader = context.leaf_reader();
             let live_docs = leaf_reader.get_live_docs();
             match live_docs {
-                None => self.count_one_segment_nhld(ordinal_map.as_ref(), &*leaf_reader, context.ord())?,
+                None => {
+                    self.count_one_segment_nhld(ordinal_map.as_ref(), &*leaf_reader, context.ord())?
+                }
                 Some(live_docs) => self.count_one_segment(
                     ordinal_map.as_ref(),
                     &*leaf_reader,

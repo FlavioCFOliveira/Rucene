@@ -43,7 +43,10 @@ pub struct CommitIndexTaskTest;
 pub fn class_def() -> Arc<Class> {
     benchmark_class::<CommitIndexTaskTest>(
         "org.apache.lucene.benchmark.byTask.tasks.TestCommitIndexTask",
-        vec![ftest("testNoParams", test_no_params), ftest("testCommitData", test_commit_data)],
+        vec![
+            ftest("testNoParams", test_no_params),
+            ftest("testCommitData", test_commit_data),
+        ],
     )
 }
 
@@ -72,7 +75,10 @@ fn test_commit_data(_f: &mut CommitIndexTaskTest) -> Result<()> {
     let infos = SegmentInfos::read_latest_commit(run_data.get_directory().expect("directory"))?;
     Assert::assert_equals_nullable(
         Some("params"),
-        infos.user_data().get(OpenReaderTask::USER_DATA).map(String::as_str),
+        infos
+            .user_data()
+            .get(OpenReaderTask::USER_DATA)
+            .map(String::as_str),
     );
     CloseIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     Ok(())

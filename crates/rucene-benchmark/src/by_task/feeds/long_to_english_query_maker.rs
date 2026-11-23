@@ -75,7 +75,10 @@ impl LongToEnglishQueryMaker {
 
 impl QueryMaker for LongToEnglishQueryMaker {
     fn make_query_of_size(&self, _size: i32) -> Result<Arc<dyn Query>> {
-        Err(LuceneError::unchecked_with_message("java.lang.UnsupportedOperationException", None))
+        Err(LuceneError::unchecked_with_message(
+            "java.lang.UnsupportedOperationException",
+            None,
+        ))
     }
 
     fn make_query(&self) -> Result<Arc<dyn Query>> {
@@ -88,7 +91,10 @@ impl QueryMaker for LongToEnglishQueryMaker {
     fn set_config(&self, config: Arc<Config>) -> Result<()> {
         let anlzr = NewAnalyzerTask::create_analyzer(
             &config
-                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .get_str(
+                    "analyzer",
+                    Some("org.apache.lucene.analysis.standard.StandardAnalyzer"),
+                )?
                 .unwrap_or_default(),
         )?;
         *jdk::lock(&self.parser) = Some(QueryParser::new(Some(DocMaker::BODY_FIELD), Some(anlzr))?);
@@ -101,7 +107,11 @@ impl QueryMaker for LongToEnglishQueryMaker {
     }
 
     fn print_queries(&self) -> String {
-        format!("LongToEnglish: [{} TO {}]", i64::MIN, *jdk::lock(&self.counter))
+        format!(
+            "LongToEnglish: [{} TO {}]",
+            i64::MIN,
+            *jdk::lock(&self.counter)
+        )
     }
 
     fn as_any(&self) -> &dyn Any {

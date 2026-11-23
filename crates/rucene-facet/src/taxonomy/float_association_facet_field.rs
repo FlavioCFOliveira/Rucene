@@ -63,7 +63,11 @@ impl FloatAssociationFacetField {
 ///
 /// Equivalent to `FloatAssociationFacetField.floatToBytesRef(float)`.
 pub fn float_to_bytes_ref(v: f32) -> BytesRef {
-    let bits = if v.is_nan() { 0x7fc0_0000 } else { v.to_bits() as i32 };
+    let bits = if v.is_nan() {
+        0x7fc0_0000
+    } else {
+        v.to_bits() as i32
+    };
     int_to_bytes_ref(bits)
 }
 

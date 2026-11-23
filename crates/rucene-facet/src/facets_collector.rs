@@ -228,7 +228,10 @@ impl LeafCollector for FacetsCollector {
             .grow(1)
             .add(doc);
         if self.keep_scores {
-            let scores = self.scores.as_mut().expect("INVARIANT: allocated with keepScores");
+            let scores = self
+                .scores
+                .as_mut()
+                .expect("INVARIANT: allocated with keepScores");
             if doc as usize >= scores.len() {
                 scores.resize(ArrayUtil::oversize(doc as usize + 1, 4), 0.0);
             }

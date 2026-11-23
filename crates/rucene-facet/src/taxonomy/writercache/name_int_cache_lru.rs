@@ -108,7 +108,8 @@ impl NameIntCacheLRU {
     }
 
     /// Equivalent to `key(FacetLabel, int)`.
-    pub(crate) fn key_prefix(&self, name: &FacetLabel, prefix_len: usize) -> CacheKey {
+    // Public for the port of the facet tests (Java package-private).
+    pub fn key_prefix(&self, name: &FacetLabel, prefix_len: usize) -> CacheKey {
         if self.hashed {
             CacheKey::Hash(name.subpath(prefix_len).long_hash_code())
         } else {
@@ -127,7 +128,8 @@ impl NameIntCacheLRU {
     }
 
     /// Equivalent to `put(FacetLabel, int, Integer)`.
-    pub(crate) fn put_prefix(&mut self, name: &FacetLabel, prefix_len: usize, val: i32) -> bool {
+    // Public for the port of the facet tests (Java package-private).
+    pub fn put_prefix(&mut self, name: &FacetLabel, prefix_len: usize, val: i32) -> bool {
         let key = self.key_prefix(name, prefix_len);
         self.cache.put(key, val);
         self.is_cache_full()
@@ -144,7 +146,8 @@ impl NameIntCacheLRU {
     }
 
     /// Equivalent to `stats()`.
-    pub(crate) fn stats(&self) -> String {
+    // Public for the port of the facet tests (Java package-private).
+    pub fn stats(&self) -> String {
         format!("#miss={} #hit={}", self.n_misses, self.n_hits)
     }
 

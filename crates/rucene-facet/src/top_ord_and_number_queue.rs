@@ -92,7 +92,10 @@ impl TopOrdAndNumberQueue {
     }
 
     /// Equivalent to `PriorityQueue.insertWithOverflow(T)`.
-    pub fn insert_with_overflow(&mut self, element: Box<dyn OrdAndValue>) -> Option<Box<dyn OrdAndValue>> {
+    pub fn insert_with_overflow(
+        &mut self,
+        element: Box<dyn OrdAndValue>,
+    ) -> Option<Box<dyn OrdAndValue>> {
         self.queue.insert_with_overflow(element)
     }
 

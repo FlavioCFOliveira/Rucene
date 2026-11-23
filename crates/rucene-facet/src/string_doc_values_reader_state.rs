@@ -59,8 +59,14 @@ impl StringDocValuesReaderState {
         for context in &leaves {
             doc_values.push(DocValues::get_sorted_set(&*context.leaf_reader(), field)?);
         }
-        let owner = reader.get_reader_cache_helper().map(|h| h.get_key().clone());
-        Ok(Some(OrdinalMap::build_sorted_set(owner, doc_values, PackedInts::DEFAULT)?))
+        let owner = reader
+            .get_reader_cache_helper()
+            .map(|h| h.get_key().clone());
+        Ok(Some(OrdinalMap::build_sorted_set(
+            owner,
+            doc_values,
+            PackedInts::DEFAULT,
+        )?))
     }
 }
 

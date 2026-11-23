@@ -38,12 +38,16 @@ pub struct SearchTravState {
 impl SearchTravState {
     /// `traversalSize = Integer.MAX_VALUE`.
     pub fn new() -> Self {
-        SearchTravState { traversal_size: AtomicI32::new(i32::MAX) }
+        SearchTravState {
+            traversal_size: AtomicI32::new(i32::MAX),
+        }
     }
 
     /// `super.clone()`.
     pub fn clone_state(&self) -> Self {
-        SearchTravState { traversal_size: AtomicI32::new(self.traversal_size.load(Ordering::SeqCst)) }
+        SearchTravState {
+            traversal_size: AtomicI32::new(self.traversal_size.load(Ordering::SeqCst)),
+        }
     }
 
     /// `SearchTravTask.setParams(String params)` after `super.setParams`:
@@ -53,7 +57,8 @@ impl SearchTravState {
     ///
     /// `NumberFormatException`.
     pub fn set_params(&self, params: &str) -> Result<()> {
-        self.traversal_size.store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
+        self.traversal_size
+            .store(jdk::parse_float(params)? as i32, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -90,7 +95,11 @@ impl SearchTravTask {
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchTravTask")?;
         let read = ReadTaskBase::new(true, || query_maker_of::<SearchTravTask>(&run_data))?;
-        Ok(SearchTravTask { base, read, trav: SearchTravState::new() })
+        Ok(SearchTravTask {
+            base,
+            read,
+            trav: SearchTravState::new(),
+        })
     }
 }
 

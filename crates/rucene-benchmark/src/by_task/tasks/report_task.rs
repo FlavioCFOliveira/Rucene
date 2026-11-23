@@ -59,8 +59,14 @@ impl ReportTask {
     /// `TOTMEM`.
     pub const TOTMEM: &'static str = "    avgTotalMem";
     /// `COLS`.
-    pub const COLS: [&'static str; 6] =
-        [Self::RUNCNT, Self::RECCNT, Self::RECSEC, Self::ELAPSED, Self::USEDMEM, Self::TOTMEM];
+    pub const COLS: [&'static str; 6] = [
+        Self::RUNCNT,
+        Self::RECCNT,
+        Self::RECSEC,
+        Self::ELAPSED,
+        Self::USEDMEM,
+        Self::TOTMEM,
+    ];
 
     /// `tableTitle(String longestOp)`: compute a title line for a report
     /// table; `longest_op` is the longest op name in the table.
@@ -97,16 +103,47 @@ impl ReportTask {
         let task = stat.get_task();
         let mut sb = String::new();
         sb.push_str(&Format::format_str(&task.get_name(), longest_op));
-        let round = if stat.get_round() >= 0 { stat.get_round().to_string() } else { "-".to_string() };
+        let round = if stat.get_round() >= 0 {
+            stat.get_round().to_string()
+        } else {
+            "-".to_string()
+        };
         sb.push_str(&Format::format_padd_left(&round, Self::ROUND));
-        sb.push_str(&run_data.get_config().get_cols_values_for_vals_by_round(stat.get_round()));
+        sb.push_str(
+            &run_data
+                .get_config()
+                .get_cols_values_for_vals_by_round(stat.get_round()),
+        );
         sb.push_str(&Format::format_int(stat.get_num_runs(), Self::RUNCNT));
-        sb.push_str(&Format::format_int(stat.get_count() / stat.get_num_runs(), Self::RECCNT));
-        let elapsed = if stat.get_elapsed() > 0 { stat.get_elapsed() } else { 1 }; // assume at least 1ms
-        sb.push_str(&Format::format_float(2, (f64::from(stat.get_count()) * 1000.0 / elapsed as f64) as f32, Self::RECSEC));
-        sb.push_str(&Format::format_float(2, stat.get_elapsed() as f32 / 1000.0, Self::ELAPSED));
-        sb.push_str(&Format::format_float(0, stat.get_max_used_mem() as f32 / stat.get_num_runs() as f32, Self::USEDMEM));
-        sb.push_str(&Format::format_float(0, stat.get_max_tot_mem() as f32 / stat.get_num_runs() as f32, Self::TOTMEM));
+        sb.push_str(&Format::format_int(
+            stat.get_count() / stat.get_num_runs(),
+            Self::RECCNT,
+        ));
+        let elapsed = if stat.get_elapsed() > 0 {
+            stat.get_elapsed()
+        } else {
+            1
+        }; // assume at least 1ms
+        sb.push_str(&Format::format_float(
+            2,
+            (f64::from(stat.get_count()) * 1000.0 / elapsed as f64) as f32,
+            Self::RECSEC,
+        ));
+        sb.push_str(&Format::format_float(
+            2,
+            stat.get_elapsed() as f32 / 1000.0,
+            Self::ELAPSED,
+        ));
+        sb.push_str(&Format::format_float(
+            0,
+            stat.get_max_used_mem() as f32 / stat.get_num_runs() as f32,
+            Self::USEDMEM,
+        ));
+        sb.push_str(&Format::format_float(
+            0,
+            stat.get_max_tot_mem() as f32 / stat.get_num_runs() as f32,
+            Self::TOTMEM,
+        ));
         sb
     }
 
@@ -147,7 +184,11 @@ impl ReportTask {
                 }
             }
         }
-        let reptxt = if reported == 0 { "No Matching Entries Were Found!".to_string() } else { sb };
+        let reptxt = if reported == 0 {
+            "No Matching Entries Were Found!".to_string()
+        } else {
+            sb
+        };
         Report::new(reptxt, part_of_tasks.len() as i32, reported, total_size)
     }
 

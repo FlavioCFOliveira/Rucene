@@ -29,7 +29,9 @@ use rucene::index::index_deletion_policy::{IndexDeletionPolicy, NoDeletionPolicy
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
 use rucene::index::merge_policy::{LogMergePolicy, MergePolicy, NoMergePolicy};
-use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, NoMergeScheduler, AUTO_DETECT_MERGES_AND_THREADS};
+use rucene::index::merge_scheduler::{
+    ConcurrentMergeScheduler, NoMergeScheduler, AUTO_DETECT_MERGES_AND_THREADS,
+};
 
 use crate::by_task::perf_run_data::PerfRunData;
 use crate::by_task::tasks::open_index_task::OpenIndexTask;
@@ -73,7 +75,9 @@ impl CreateIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CreateIndexTask { base: PerfTaskBase::new(run_data, "CreateIndexTask")? })
+        Ok(CreateIndexTask {
+            base: PerfTaskBase::new(run_data, "CreateIndexTask")?,
+        })
     }
 
     /// `getIndexDeletionPolicy(Config config)`.
@@ -84,7 +88,10 @@ impl CreateIndexTask {
     /// IndexDeletionPolicy", e)`.
     pub fn get_index_deletion_policy(config: &Config) -> Result<Arc<dyn IndexDeletionPolicy>> {
         let deletion_policy_name = config
-            .get_str("deletion.policy", Some("org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy"))?
+            .get_str(
+                "deletion.policy",
+                Some("org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy"),
+            )?
             .unwrap_or_default();
         if deletion_policy_name == "org.apache.lucene.index.NoDeletionPolicy" {
             Ok(NoDeletionPolicy::instance())
@@ -119,17 +126,24 @@ impl CreateIndexTask {
         }
 
         let merge_scheduler = config
-            .get_str("merge.scheduler", Some("org.apache.lucene.index.ConcurrentMergeScheduler"))?
+            .get_str(
+                "merge.scheduler",
+                Some("org.apache.lucene.index.ConcurrentMergeScheduler"),
+            )?
             .unwrap_or_default();
         if merge_scheduler == "org.apache.lucene.index.NoMergeScheduler" {
             iw_conf.set_merge_scheduler(Some(NoMergeScheduler::instance()))?;
         } else if merge_scheduler == "org.apache.lucene.index.ConcurrentMergeScheduler" {
             let cms = Arc::new(ConcurrentMergeScheduler::new());
             iw_conf.set_merge_scheduler(Some(Arc::clone(&cms) as _))?;
-            let max_thread_count =
-                config.get_int("concurrent.merge.scheduler.max.thread.count", AUTO_DETECT_MERGES_AND_THREADS)?;
-            let max_merge_count =
-                config.get_int("concurrent.merge.scheduler.max.merge.count", AUTO_DETECT_MERGES_AND_THREADS)?;
+            let max_thread_count = config.get_int(
+                "concurrent.merge.scheduler.max.thread.count",
+                AUTO_DETECT_MERGES_AND_THREADS,
+            )?;
+            let max_merge_count = config.get_int(
+                "concurrent.merge.scheduler.max.merge.count",
+                AUTO_DETECT_MERGES_AND_THREADS,
+            )?;
             cms.set_max_merges_and_threads(max_merge_count, max_thread_count)?;
         } else {
             let scheduler = classes::merge_scheduler_for_name(&merge_scheduler).map_err(|e| {
@@ -144,7 +158,10 @@ impl CreateIndexTask {
         let default_codec = config.get_str("default.codec", None)?;
         if let Some(default_codec) = &default_codec {
             let codec = classes::codec_for_name(default_codec).map_err(|e| {
-                jdk::runtime_exception_with_cause(format!("Couldn't instantiate Codec: {default_codec}"), e)
+                jdk::runtime_exception_with_cause(
+                    format!("Couldn't instantiate Codec: {default_codec}"),
+                    e,
+                )
             })?;
             iw_conf.set_codec(codec)?;
         }
@@ -152,21 +169,29 @@ impl CreateIndexTask {
         let postings_format = config.get_str("codec.postingsFormat", None)?;
         if let (None, Some(postings_format)) = (&default_codec, postings_format) {
             let chosen = (|| -> Result<Arc<dyn rucene::codecs::Codec>> {
-                let postings_format_chosen = rucene::codecs::postings::postings_lookup(&postings_format)?;
-                let default = rucene::codecs::get_default().ok_or_else(rucene::error::LuceneError::null_pointer)?;
+                let postings_format_chosen =
+                    rucene::codecs::postings::postings_lookup(&postings_format)?;
+                let default = rucene::codecs::get_default()
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
                 Ok(Arc::new(
                     FilterCodec::new(default.name().to_string(), Arc::clone(&default))
                         .with_postings_format(SharedPostingsFormat(postings_format_chosen)),
                 ))
             })()
             .map_err(|e| {
-                jdk::runtime_exception_with_cause(format!("Couldn't instantiate Postings Format: {postings_format}"), e)
+                jdk::runtime_exception_with_cause(
+                    format!("Couldn't instantiate Postings Format: {postings_format}"),
+                    e,
+                )
             })?;
             iw_conf.set_codec(chosen)?;
         }
 
         let merge_policy = config
-            .get_str("merge.policy", Some("org.apache.lucene.index.LogByteSizeMergePolicy"))?
+            .get_str(
+                "merge.policy",
+                Some("org.apache.lucene.index.LogByteSizeMergePolicy"),
+            )?
             .unwrap_or_default();
         let is_compound = config.get_bool("compound", true)?;
         iw_conf.set_use_compound_file(is_compound)?;
@@ -180,10 +205,17 @@ impl CreateIndexTask {
                 )
             })?;
             iw_conf.set_merge_policy(Some(policy))?;
-            iw_conf.merge_policy().set_no_cfs_ratio(if is_compound { 1.0 } else { 0.0 })?;
+            iw_conf
+                .merge_policy()
+                .set_no_cfs_ratio(if is_compound { 1.0 } else { 0.0 })?;
             let policy = iw_conf.merge_policy();
-            if let Some(log_merge_policy) = policy.as_any().and_then(|a| a.downcast_ref::<LogMergePolicy>()) {
-                log_merge_policy.set_merge_factor(config.get_int("merge.factor", OpenIndexTask::DEFAULT_MERGE_PFACTOR)?)?;
+            if let Some(log_merge_policy) = policy
+                .as_any()
+                .and_then(|a| a.downcast_ref::<LogMergePolicy>())
+            {
+                log_merge_policy.set_merge_factor(
+                    config.get_int("merge.factor", OpenIndexTask::DEFAULT_MERGE_PFACTOR)?,
+                )?;
             }
         }
         let ram_buffer = config.get_double("ram.flush.mb", OpenIndexTask::DEFAULT_RAM_FLUSH_MB)?;
@@ -223,7 +255,9 @@ impl CreateIndexTask {
                 iwc.set_info_stream_print_stream(Box::new(BufWriter::new(f)))?;
             }
         }
-        let directory = run_data.get_directory().ok_or_else(rucene::error::LuceneError::null_pointer)?;
+        let directory = run_data
+            .get_directory()
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         IndexWriter::new(directory, iwc)
     }
 }
@@ -265,13 +299,20 @@ impl PerfTask for CreateIndexTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(CreateIndexTask { base: self.base.clone_base() }))
+        Ok(Arc::new(CreateIndexTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
         let run_data = self.base.get_run_data();
         let config = Arc::clone(run_data.get_config());
-        run_data.set_index_writer(Some(Self::configure_writer(&config, run_data, OpenMode::CREATE, None)?));
+        run_data.set_index_writer(Some(Self::configure_writer(
+            &config,
+            run_data,
+            OpenMode::CREATE,
+            None,
+        )?));
         Ok(1)
     }
 

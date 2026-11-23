@@ -44,7 +44,9 @@ impl RepSumByNameTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(RepSumByNameTask { base: PerfTaskBase::new(run_data, "RepSumByNameTask")? })
+        Ok(RepSumByNameTask {
+            base: PerfTaskBase::new(run_data, "RepSumByNameTask")?,
+        })
     }
 
     /// `reportSumByName(List<TaskStats> taskStats)`: report statistics as a
@@ -55,9 +57,15 @@ impl RepSumByNameTask {
     /// The `IllegalStateException` of aggregating.
     pub fn report_sum_by_name(&self, task_stats: &[TaskStats]) -> Result<Report> {
         // aggregate by task name
-        let (reported, p2) = ReportTask::aggregate(task_stats, |_| Ok(true), |s| s.get_task().get_name())?;
+        let (reported, p2) =
+            ReportTask::aggregate(task_stats, |_| Ok(true), |s| s.get_task().get_name())?;
         // now generate report from secondary list p2
-        Ok(ReportTask::gen_partial_report(self.base.get_run_data(), reported, &p2, task_stats.len() as i32))
+        Ok(ReportTask::gen_partial_report(
+            self.base.get_run_data(),
+            reported,
+            &p2,
+            task_stats.len() as i32,
+        ))
     }
 }
 
@@ -65,7 +73,9 @@ impl PerfTask for RepSumByNameTask {
     report_task::report_task_perf_methods!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(RepSumByNameTask { base: self.base.clone_base() }))
+        Ok(Arc::new(RepSumByNameTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

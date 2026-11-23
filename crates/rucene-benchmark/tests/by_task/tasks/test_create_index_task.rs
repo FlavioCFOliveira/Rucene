@@ -42,7 +42,10 @@ pub fn class_def() -> Arc<Class> {
     benchmark_class::<CreateIndexTaskTest>(
         "org.apache.lucene.benchmark.byTask.tasks.TestCreateIndexTask",
         vec![
-            ftest("testInfoStream_SystemOutErr", test_info_stream_system_out_err),
+            ftest(
+                "testInfoStream_SystemOutErr",
+                test_info_stream_system_out_err,
+            ),
             ftest("testInfoStream_File", test_info_stream_file),
             ftest("testNoMergePolicy", test_no_merge_policy),
             ftest("testNoMergeScheduler", test_no_merge_scheduler),
@@ -66,7 +69,8 @@ fn create_perf_run_data(info_stream_value: Option<&str>) -> Result<Arc<PerfRunDa
 fn baos() -> (Arc<Mutex<Vec<u8>>>, system::PrintSink) {
     let buf = Arc::new(Mutex::new(Vec::new()));
     let sink_buf = Arc::clone(&buf);
-    let sink: system::PrintSink = Arc::new(move |b: &[u8]| sink_buf.lock().unwrap().extend_from_slice(b));
+    let sink: system::PrintSink =
+        Arc::new(move |b: &[u8]| sink_buf.lock().unwrap().extend_from_slice(b));
     (buf, sink)
 }
 
@@ -100,7 +104,9 @@ fn test_info_stream_system_out_err(_f: &mut CreateIndexTaskTest) -> Result<()> {
 
 fn test_info_stream_file(_f: &mut CreateIndexTaskTest) -> Result<()> {
     let out_file = get_work_dir().join("infoStreamTest");
-    let path = std::path::absolute(&out_file)?.to_string_lossy().into_owned();
+    let path = std::path::absolute(&out_file)?
+        .to_string_lossy()
+        .into_owned();
     let run_data = create_perf_run_data(Some(&path))?;
     CreateIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     CloseIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
@@ -110,7 +116,9 @@ fn test_info_stream_file(_f: &mut CreateIndexTaskTest) -> Result<()> {
 
 fn test_no_merge_policy(_f: &mut CreateIndexTaskTest) -> Result<()> {
     let run_data = create_perf_run_data(None)?;
-    run_data.get_config().set("merge.policy", "org.apache.lucene.index.NoMergePolicy")?;
+    run_data
+        .get_config()
+        .set("merge.policy", "org.apache.lucene.index.NoMergePolicy")?;
     CreateIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     CloseIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     Ok(())
@@ -118,7 +126,10 @@ fn test_no_merge_policy(_f: &mut CreateIndexTaskTest) -> Result<()> {
 
 fn test_no_merge_scheduler(_f: &mut CreateIndexTaskTest) -> Result<()> {
     let run_data = create_perf_run_data(None)?;
-    run_data.get_config().set("merge.scheduler", "org.apache.lucene.index.NoMergeScheduler")?;
+    run_data.get_config().set(
+        "merge.scheduler",
+        "org.apache.lucene.index.NoMergeScheduler",
+    )?;
     CreateIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     CloseIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     Ok(())
@@ -126,7 +137,10 @@ fn test_no_merge_scheduler(_f: &mut CreateIndexTaskTest) -> Result<()> {
 
 fn test_no_deletion_policy(_f: &mut CreateIndexTaskTest) -> Result<()> {
     let run_data = create_perf_run_data(None)?;
-    run_data.get_config().set("deletion.policy", "org.apache.lucene.index.NoDeletionPolicy")?;
+    run_data.get_config().set(
+        "deletion.policy",
+        "org.apache.lucene.index.NoDeletionPolicy",
+    )?;
     CreateIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     CloseIndexTask::new(Arc::clone(&run_data))?.do_logic()?;
     Ok(())

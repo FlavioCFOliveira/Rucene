@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -50,7 +50,12 @@ impl XercesBridge23 {
 impl XercesBridge22Methods for XercesBridge23 {}
 
 impl XercesBridge for XercesBridge23 {
-    fn namespace_context_declare_prefix(&self, namespace_context: &dyn NamespaceContext, ns: &str, avalue: Option<&str>) {
+    fn namespace_context_declare_prefix(
+        &self,
+        namespace_context: &dyn NamespaceContext,
+        ns: &str,
+        avalue: Option<&str>,
+    ) {
         namespace_context.declare_prefix(ns, avalue);
     }
 
@@ -79,7 +84,11 @@ impl XercesBridge for XercesBridge23 {
     ) {
     }
 
-    fn xml_document_filter_set_document_source(&self, filter: &dyn XMLDocumentFilter, last_source: Option<Rc<dyn XMLDocumentSource>>) {
+    fn xml_document_filter_set_document_source(
+        &self,
+        filter: &dyn XMLDocumentFilter,
+        last_source: Option<Rc<dyn XMLDocumentSource>>,
+    ) {
         self.set_document_source_2_2(filter, last_source);
     }
 }

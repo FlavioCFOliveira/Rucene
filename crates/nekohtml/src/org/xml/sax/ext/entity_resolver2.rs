@@ -17,7 +17,11 @@ use crate::org::xml::sax::input_source::InputSource;
 /// [`EntityResolver::as_entity_resolver2`].
 pub trait EntityResolver2: EntityResolver {
     /// Equivalent to `getExternalSubset(String, String)`.
-    fn get_external_subset(&self, name: &str, base_uri: Option<&str>) -> JResult<Option<InputSource>>;
+    fn get_external_subset(
+        &self,
+        name: &str,
+        base_uri: Option<&str>,
+    ) -> JResult<Option<InputSource>>;
     /// Equivalent to `resolveEntity(String, String, String, String)`.
     fn resolve_entity2(
         &self,

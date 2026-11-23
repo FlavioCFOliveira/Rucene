@@ -12,7 +12,12 @@ use crate::java::JResult;
 /// Equivalent to `org.xml.sax.ext.LexicalHandler`.
 pub trait LexicalHandler {
     /// Equivalent to `startDTD(String, String, String)`.
-    fn start_dtd(&self, name: &str, public_id: Option<&str>, system_id: Option<&str>) -> JResult<()>;
+    fn start_dtd(
+        &self,
+        name: &str,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+    ) -> JResult<()>;
     /// Equivalent to `endDTD()`.
     fn end_dtd(&self) -> JResult<()>;
     /// Equivalent to `startEntity(String)`.

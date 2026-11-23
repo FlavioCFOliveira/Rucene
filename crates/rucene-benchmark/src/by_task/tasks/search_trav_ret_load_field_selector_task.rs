@@ -62,7 +62,9 @@ impl SearchTravRetLoadFieldSelectorTask {
     /// The exception of the `PerfTask` constructor or of the query maker.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchTravRetLoadFieldSelectorTask")?;
-        let read = ReadTaskBase::new(true, || query_maker_of::<SearchTravRetLoadFieldSelectorTask>(&run_data))?;
+        let read = ReadTaskBase::new(true, || {
+            query_maker_of::<SearchTravRetLoadFieldSelectorTask>(&run_data)
+        })?;
         Ok(SearchTravRetLoadFieldSelectorTask {
             base,
             read,
@@ -86,7 +88,11 @@ impl PerfTask for SearchTravRetLoadFieldSelectorTask {
 
     fn set_params(&self, params: &str) -> Result<()> {
         self.base.store_params(params); // cannot just call super.setParams(), b/c its params differ.
-        let fields: HashSet<String> = params.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
+        let fields: HashSet<String> = params
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
         *jdk::lock(&self.fields_to_load) = Some(fields);
         Ok(())
     }

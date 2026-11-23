@@ -22,7 +22,9 @@ use rucene::error::Result;
 
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::trec_content_source::TrecContentSource;
-use crate::by_task::feeds::trec_doc_parser::{extract, index_of, strip_tags_buf, ParsePathType, TrecDocParser};
+use crate::by_task::feeds::trec_doc_parser::{
+    extract, index_of, strip_tags_buf, ParsePathType, TrecDocParser,
+};
 
 /// `HEADER`.
 const HEADER: &str = "<HEADER>";
@@ -55,7 +57,7 @@ impl TrecDocParser for TrecFBISParser {
         _path_type: Option<ParsePathType>,
     ) -> Result<()> {
         let mut mark = 0; // that much is skipped
-        // optionally skip some of the text, set date, title
+                          // optionally skip some of the text, set date, title
         let mut date = None;
         let mut title = None;
         let h1 = index_of(doc_buf, HEADER, 0);

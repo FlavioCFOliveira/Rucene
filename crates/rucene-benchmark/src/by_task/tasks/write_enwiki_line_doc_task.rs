@@ -52,9 +52,14 @@ impl WriteEnwikiLineDocTask {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "WriteEnwikiLineDocTask")?;
         let line = WriteLineDocBase::new(&run_data)?;
         line.write_header(&line.line_file_out());
-        let category_line_file_out = LineFileOut::open(&Self::categories_line_file(Path::new(&line.fname)))?;
+        let category_line_file_out =
+            LineFileOut::open(&Self::categories_line_file(Path::new(&line.fname)))?;
         line.write_header(&category_line_file_out);
-        Ok(WriteEnwikiLineDocTask { base, line, category_line_file_out })
+        Ok(WriteEnwikiLineDocTask {
+            base,
+            line,
+            category_line_file_out,
+        })
     }
 
     /// `categoriesLineFile(Path f)`: compose categories line file out of
@@ -64,7 +69,9 @@ impl WriteEnwikiLineDocTask {
         let dir = absolute.parent().map(Path::to_path_buf).unwrap_or_default();
         let categories_name = format!(
             "categories-{}",
-            f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            f.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         );
         dir.join(categories_name)
     }
@@ -117,6 +124,9 @@ impl PerfTask for WriteEnwikiLineDocTask {
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "WriteEnwikiLineDocTask" | "WriteLineDocTask")
+        matches!(
+            simple_class_name,
+            "WriteEnwikiLineDocTask" | "WriteLineDocTask"
+        )
     }
 }

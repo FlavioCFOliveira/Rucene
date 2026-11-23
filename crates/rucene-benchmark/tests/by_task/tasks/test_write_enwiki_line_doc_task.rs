@@ -34,7 +34,9 @@ use rucene_benchmark::jdk::properties::Properties;
 
 use super::test_write_line_doc_task::assert_header_line;
 use crate::benchmark_support::search_support::ftest;
-use crate::benchmark_support::{benchmark_class, get_work_dir, java_split, read_lines, run_data_of, FnDocMaker};
+use crate::benchmark_support::{
+    benchmark_class, get_work_dir, java_split, read_lines, run_data_of, FnDocMaker,
+};
 
 const WRITE_LINE_CATEGORY_DOC_MAKER: &str =
     "org.apache.lucene.benchmark.byTask.tasks.TestWriteEnwikiLineDocTask$WriteLineCategoryDocMaker";
@@ -49,13 +51,26 @@ fn register_write_line_category_doc_maker() {
             Arc::new(FnDocMaker::new(move || {
                 let is_category = (flip.fetch_add(1, Ordering::SeqCst) + 1) % 2 == 0;
                 let mut doc = Document::new();
-                doc.add(StringField::new(DocMaker::BODY_FIELD, "body text".to_string(), Store::NO)?);
                 doc.add(StringField::new(
-                    DocMaker::TITLE_FIELD,
-                    if is_category { "Category:title text" } else { "title text" }.to_string(),
+                    DocMaker::BODY_FIELD,
+                    "body text".to_string(),
                     Store::NO,
                 )?);
-                doc.add(StringField::new(DocMaker::DATE_FIELD, "date text".to_string(), Store::NO)?);
+                doc.add(StringField::new(
+                    DocMaker::TITLE_FIELD,
+                    if is_category {
+                        "Category:title text"
+                    } else {
+                        "title text"
+                    }
+                    .to_string(),
+                    Store::NO,
+                )?);
+                doc.add(StringField::new(
+                    DocMaker::DATE_FIELD,
+                    "date text".to_string(),
+                    Store::NO,
+                )?);
                 Ok(doc)
             })) as Arc<dyn rucene_benchmark::by_task::feeds::doc_maker::DocMakerClass>
         }),
@@ -78,18 +93,38 @@ pub fn class_def() -> Arc<Class> {
 fn create_perf_run_data(file: &Path, doc_maker_name: &str) -> Result<Arc<PerfRunData>> {
     let mut props = Properties::new();
     props.set_property("doc.maker", doc_maker_name);
-    props.set_property("line.file.out", std::path::absolute(file)?.to_string_lossy().into_owned());
+    props.set_property(
+        "line.file.out",
+        std::path::absolute(file)?.to_string_lossy().into_owned(),
+    );
     props.set_property("directory", "ByteBuffersDirectory"); // no accidental FS dir.
     run_data_of(props)
 }
 
-fn do_read_test(file: &Path, exp_title: &str, exp_date: &str, exp_body: Option<&str>) -> Result<()> {
+fn do_read_test(
+    file: &Path,
+    exp_title: &str,
+    exp_date: &str,
+    exp_body: Option<&str>,
+) -> Result<()> {
     do_read_test_n(2, file, exp_title, exp_date, exp_body)?;
     let categories_file = WriteEnwikiLineDocTask::categories_line_file(file);
-    do_read_test_n(2, &categories_file, &format!("Category:{exp_title}"), exp_date, exp_body)
+    do_read_test_n(
+        2,
+        &categories_file,
+        &format!("Category:{exp_title}"),
+        exp_date,
+        exp_body,
+    )
 }
 
-fn do_read_test_n(n: usize, file: &Path, exp_title: &str, exp_date: &str, exp_body: Option<&str>) -> Result<()> {
+fn do_read_test_n(
+    n: usize,
+    file: &Path,
+    exp_title: &str,
+    exp_date: &str,
+    exp_body: Option<&str>,
+) -> Result<()> {
     let lines = read_lines(std::fs::File::open(file)?)?;
     let mut it = lines.iter();
     assert_header_line(it.next().map(String::as_str));

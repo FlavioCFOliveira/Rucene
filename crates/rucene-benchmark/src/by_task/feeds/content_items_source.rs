@@ -219,7 +219,10 @@ impl ContentItemsSourceBase {
         let col = "                  ";
         let mut sb = String::new();
         let newline = NEW_LINE;
-        sb.push_str(&format!("------------> {simple_name} statistics ({}): {newline}", s.print_num));
+        sb.push_str(&format!(
+            "------------> {simple_name} statistics ({}): {newline}",
+            s.print_num
+        ));
         let nut = s.total_item_count;
         if nut > s.last_printed_num_unique_texts {
             print = true;
@@ -307,7 +310,8 @@ pub trait ContentItemsSource: Send + Sync + Any {
 
     /// `printStatistics(String itemsName)`.
     fn print_statistics(&self, items_name: &str) {
-        self.items_base().print_statistics(self.java_simple_name(), items_name);
+        self.items_base()
+            .print_statistics(self.java_simple_name(), items_name);
     }
 
     /// `getBytesCount()`.

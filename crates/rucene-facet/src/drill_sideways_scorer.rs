@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use rucene::error::{LuceneError, Result};
 use rucene::index::LeafReaderContext;
 use rucene::search::{
-    BulkScorer, CollectionResult, Collector, DocIdSetIterator, LeafCollector, Scorable, Scorer,
-    ScoreCachingWrappingScorer, NO_MORE_DOCS,
+    BulkScorer, CollectionResult, Collector, DocIdSetIterator, LeafCollector, Scorable,
+    ScoreCachingWrappingScorer, Scorer, NO_MORE_DOCS,
 };
 use rucene::util::{BitSet, Bits, FixedBitSet};
 
@@ -571,7 +571,10 @@ impl<K: Collector> DrillSidewaysScorer<K> {
                 let mut doc_id = dc.approximation_doc_id();
                 while doc_id < next_chunk_start {
                     let slot = (doc_id & MASK) as usize;
-                    if doc_ids[slot] == doc_id && counts[slot] >= dim && dc.matches_or_no_two_phase()? {
+                    if doc_ids[slot] == doc_id
+                        && counts[slot] >= dim
+                        && dc.matches_or_no_two_phase()?
+                    {
                         // TODO: single-valued dims will always be true below;
                         // we could somehow specialize
                         if missing_dims[slot] >= dim {
@@ -695,7 +698,10 @@ impl<K: Collector> DrillSidewaysScorer<K> {
                     let slot = (doc_id & MASK) as usize;
 
                     // also means that the doc is not deleted
-                    if doc_ids[slot] == doc_id && counts[slot] >= dim && dc.matches_or_no_two_phase()? {
+                    if doc_ids[slot] == doc_id
+                        && counts[slot] >= dim
+                        && dc.matches_or_no_two_phase()?
+                    {
                         // This doc is still in the running...
                         // TODO: single-valued dims will always be true below;
                         // we could somehow specialize
@@ -756,7 +762,8 @@ impl<K: Collector> BulkScorer for DrillSidewaysScorer<K> {
         }
 
         // The dimensions' leaf collectors (see `DocsAndCost`).
-        let slots: Vec<CollectorSlot<K>> = self.dims.iter().map(|d| Arc::clone(&d.collector)).collect();
+        let slots: Vec<CollectorSlot<K>> =
+            self.dims.iter().map(|d| Arc::clone(&d.collector)).collect();
         let mut guards: Vec<MutexGuard<'_, K>> = slots.iter().map(|s| lock(s)).collect();
         let context = Arc::clone(&self.context);
         let mut leaves: Vec<Box<dyn LeafCollector + '_>> = Vec::with_capacity(guards.len());

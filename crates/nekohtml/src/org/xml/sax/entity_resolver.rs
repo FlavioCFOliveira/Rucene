@@ -17,7 +17,11 @@ use crate::org::xml::sax::input_source::InputSource;
 pub trait EntityResolver: Any {
     /// Equivalent to `resolveEntity(String, String)`; `Ok(None)` is Java's
     /// `null` (use the system identifier).
-    fn resolve_entity(&self, public_id: Option<&str>, system_id: Option<&str>) -> JResult<Option<InputSource>>;
+    fn resolve_entity(
+        &self,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+    ) -> JResult<Option<InputSource>>;
 
     /// `this instanceof EntityResolver2 ? (EntityResolver2) this : null`.
     fn as_entity_resolver2(&self) -> Option<&dyn EntityResolver2> {

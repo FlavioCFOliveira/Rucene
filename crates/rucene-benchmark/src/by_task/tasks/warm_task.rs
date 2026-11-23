@@ -58,7 +58,10 @@ impl PerfTask for WarmTask {
     read_task::read_task_perf_methods!("WarmTask");
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(WarmTask { base: self.base.clone_base(), read: self.read.clone_base() }))
+        Ok(Arc::new(WarmTask {
+            base: self.base.clone_base(),
+            read: self.read.clone_base(),
+        }))
     }
 }
 

@@ -28,9 +28,7 @@ use rucene::search::top_field_docs::TopFieldDocs;
 use rucene::search::top_score_doc_collector_manager::TopScoreDocCollectorManager;
 use rucene::search::total_hit_count_collector::TotalHitCountCollectorManager;
 use rucene::search::total_hits::{TotalHits, TotalHitsRelation};
-use rucene::search::{
-    CollectorManager, FieldDoc, IndexSearcher, Query, ScoreDoc, Sort, TopDocs,
-};
+use rucene::search::{CollectorManager, FieldDoc, IndexSearcher, Query, ScoreDoc, Sort, TopDocs};
 use rucene::util::doc_id_set::DocIdSetBuilder;
 
 use crate::facets_collector::{FacetsCollector, MatchingDocs, SharedDocIdSet};
@@ -61,7 +59,9 @@ impl FacetsCollectorManager {
 
     /// Equivalent to `reduceMatchingDocs(Collection)`: the matching docs of
     /// the same context (by identity) are merged.
-    pub(crate) fn reduce_matching_docs(facets_collectors: &[&FacetsCollector]) -> Result<Vec<MatchingDocs>> {
+    pub(crate) fn reduce_matching_docs(
+        facets_collectors: &[&FacetsCollector],
+    ) -> Result<Vec<MatchingDocs>> {
         let mut matching_docs_map: Vec<MatchingDocs> = Vec::new();
         for facets_collector in facets_collectors {
             for matching_docs in facets_collector.get_matching_docs()? {
@@ -168,15 +168,7 @@ impl FacetsCollectorManager {
         n: i32,
         fcm: &FacetsCollectorManager,
     ) -> Result<FacetsResult> {
-        Self::do_search(
-            searcher,
-            after.map(After::Score),
-            q,
-            n,
-            None,
-            false,
-            fcm,
-        )
+        Self::do_search(searcher, after.map(After::Score), q, n, None, false, fcm)
     }
 
     /// Equivalent to `searchAfter(IndexSearcher, ScoreDoc, Query, int, Sort,
@@ -301,11 +293,16 @@ impl FacetsCollectorManager {
                     Some(Box::new(*fcm)),
                 ])?;
             }
-            let mut result = searcher.search_with_manager(Arc::clone(&q), &multi_collector_manager)?;
+            let mut result =
+                searcher.search_with_manager(Arc::clone(&q), &multi_collector_manager)?;
             let fc = result.pop().expect("INVARIANT: two managers");
             let docs = result.pop().expect("INVARIANT: two managers");
             let mut docs = if sort.is_some() {
-                FacetsTopDocs::TopFieldDocs(*docs.downcast::<TopFieldDocs>().expect("INVARIANT: top field docs"))
+                FacetsTopDocs::TopFieldDocs(
+                    *docs
+                        .downcast::<TopFieldDocs>()
+                        .expect("INVARIANT: top field docs"),
+                )
             } else {
                 FacetsTopDocs::TopDocs(*docs.downcast::<TopDocs>().expect("INVARIANT: top docs"))
             };
@@ -351,14 +348,18 @@ pub enum FacetsTopDocs {
 
 impl FacetsTopDocs {
     /// `TopFieldCollector.populateScores(topDocs.scoreDocs, searcher, q)`.
-    pub(crate) fn populate_scores(&mut self, searcher: &IndexSearcher, q: Arc<dyn Query>) -> Result<()> {
+    pub(crate) fn populate_scores(
+        &mut self,
+        searcher: &IndexSearcher,
+        q: Arc<dyn Query>,
+    ) -> Result<()> {
         match self {
             FacetsTopDocs::TopDocs(top_docs) => {
                 TopFieldCollector::populate_scores(&mut top_docs.score_docs, searcher, q)
             }
             FacetsTopDocs::TopFieldDocs(top_docs) => {
                 let mut score_docs: Vec<ScoreDoc> =
-                    top_docs.score_docs.iter().map(|d| d.score_doc.clone()).collect();
+                    top_docs.score_docs.iter().map(|d| d.score_doc).collect();
                 TopFieldCollector::populate_scores(&mut score_docs, searcher, q)?;
                 for (field_doc, score_doc) in top_docs.score_docs.iter_mut().zip(score_docs) {
                     field_doc.score_doc = score_doc;
@@ -411,11 +412,16 @@ pub(crate) struct ReducedFacetsCollector;
 
 impl ReducedFacetsCollector {
     /// Equivalent to `ReducedFacetsCollector(Collection, boolean)`.
-    pub(crate) fn create(facets_collectors: &[&FacetsCollector], keep_scores: bool) -> Result<FacetsCollector> {
+    pub(crate) fn create(
+        facets_collectors: &[&FacetsCollector],
+        keep_scores: bool,
+    ) -> Result<FacetsCollector> {
         let mut collector = FacetsCollector::with_keep_scores(keep_scores);
         collector
             .get_matching_docs_mut()
-            .extend(FacetsCollectorManager::reduce_matching_docs(facets_collectors)?);
+            .extend(FacetsCollectorManager::reduce_matching_docs(
+                facets_collectors,
+            )?);
         Ok(collector)
     }
 }
@@ -433,9 +439,14 @@ impl CollectorManager for FacetsCollectorManager {
             return Ok(FacetsCollector::new());
         }
         if collectors.len() == 1 {
-            return Ok(collectors.into_iter().next().expect("INVARIANT: one collector"));
+            return Ok(collectors
+                .into_iter()
+                .next()
+                .expect("INVARIANT: one collector"));
         }
-        debug_assert!(collectors.iter().all(|fc| fc.get_keep_scores() == self.keep_scores));
+        debug_assert!(collectors
+            .iter()
+            .all(|fc| fc.get_keep_scores() == self.keep_scores));
         let refs: Vec<&FacetsCollector> = collectors.iter().collect();
         ReducedFacetsCollector::create(&refs, self.keep_scores)
     }

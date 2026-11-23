@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -22,7 +22,9 @@ use std::rc::{Rc, Weak};
 use rucene::error::LuceneError;
 use rucene_queryparser::jdk::object::JavaObject;
 
-use crate::java::{is_java_whitespace, object_as_interface, object_as_str, Exception, JResult, Object};
+use crate::java::{
+    is_java_whitespace, object_as_interface, object_as_str, Exception, JResult, Object,
+};
 use crate::org::apache::xerces::util::xml_attributes_impl::XMLAttributesImpl;
 use crate::org::apache::xerces::xni::augmentations::Augmentations;
 use crate::org::apache::xerces::xni::namespace_context::NamespaceContext;
@@ -56,11 +58,14 @@ pub const AUGMENTATIONS: &str = "http://cyberneko.org/html/features/augmentation
 /// Report errors.
 pub const REPORT_ERRORS: &str = "http://cyberneko.org/html/features/report-errors";
 /// Document fragment balancing only (deprecated).
-pub const DOCUMENT_FRAGMENT_DEPRECATED: &str = "http://cyberneko.org/html/features/document-fragment";
+pub const DOCUMENT_FRAGMENT_DEPRECATED: &str =
+    "http://cyberneko.org/html/features/document-fragment";
 /// Document fragment balancing only.
-pub const DOCUMENT_FRAGMENT: &str = "http://cyberneko.org/html/features/balance-tags/document-fragment";
+pub const DOCUMENT_FRAGMENT: &str =
+    "http://cyberneko.org/html/features/balance-tags/document-fragment";
 /// Ignore outside content.
-pub const IGNORE_OUTSIDE_CONTENT: &str = "http://cyberneko.org/html/features/balance-tags/ignore-outside-content";
+pub const IGNORE_OUTSIDE_CONTENT: &str =
+    "http://cyberneko.org/html/features/balance-tags/ignore-outside-content";
 
 /// Recognized features.
 const RECOGNIZED_FEATURES: [&str; 6] = [
@@ -73,7 +78,8 @@ const RECOGNIZED_FEATURES: [&str; 6] = [
 ];
 
 /// Recognized features defaults.
-const RECOGNIZED_FEATURES_DEFAULTS: [Option<bool>; 6] = [None, None, None, None, Some(false), Some(false)];
+const RECOGNIZED_FEATURES_DEFAULTS: [Option<bool>; 6] =
+    [None, None, None, None, Some(false), Some(false)];
 
 // properties
 
@@ -86,10 +92,16 @@ pub const ERROR_REPORTER: &str = "http://cyberneko.org/html/properties/error-rep
 /// For feature "http://cyberneko.org/html/features/balance-tags/document-fragment",
 /// an array of qualified names of the elements in which the fragment is
 /// parsed (a `QName[]`, here an `Rc<Vec<QName>>` object).
-pub const FRAGMENT_CONTEXT_STACK: &str = "http://cyberneko.org/html/properties/balance-tags/fragment-context-stack";
+pub const FRAGMENT_CONTEXT_STACK: &str =
+    "http://cyberneko.org/html/properties/balance-tags/fragment-context-stack";
 
 /// Recognized properties.
-const RECOGNIZED_PROPERTIES: [&str; 4] = [NAMES_ELEMS, NAMES_ATTRS, ERROR_REPORTER, FRAGMENT_CONTEXT_STACK];
+const RECOGNIZED_PROPERTIES: [&str; 4] = [
+    NAMES_ELEMS,
+    NAMES_ATTRS,
+    ERROR_REPORTER,
+    FRAGMENT_CONTEXT_STACK,
+];
 
 // modify HTML names
 
@@ -148,7 +160,11 @@ impl Info {
     /// Creates an element information object (the attributes are copied).
     ///
     /// Equivalent to `new Info(Element, QName, XMLAttributes)`.
-    pub fn with_attributes(element: &'static Element, qname: &QName, attributes: Option<&dyn XMLAttributes>) -> Self {
+    pub fn with_attributes(
+        element: &'static Element,
+        qname: &QName,
+        attributes: Option<&dyn XMLAttributes>,
+    ) -> Self {
         let mut copy = None;
         if let Some(attributes) = attributes {
             let length = attributes.get_length();
@@ -161,7 +177,11 @@ impl Info {
                     let value = attributes.get_value(i);
                     let non_normalized_value = attributes.get_non_normalized_value(i);
                     let specified = attributes.is_specified(i);
-                    newattrs.add_attribute(&aqname, type_.as_deref().unwrap_or(""), value.as_deref());
+                    newattrs.add_attribute(
+                        &aqname,
+                        type_.as_deref().unwrap_or(""),
+                        value.as_deref(),
+                    );
                     newattrs.set_non_normalized_value(i, non_normalized_value.as_deref());
                     newattrs.set_specified(i, specified);
                 }
@@ -350,7 +370,10 @@ pub struct HTMLTagBalancer {
 impl std::fmt::Debug for HTMLTagBalancer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HTMLTagBalancer")
-            .field("element_stack", &self.element_stack.borrow().to_java_string())
+            .field(
+                "element_stack",
+                &self.element_stack.borrow().to_java_string(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -423,13 +446,21 @@ impl HTMLTagBalancer {
     ///
     /// Equivalent to the package-private `setTagBalancingListener(
     /// HTMLTagBalancingListener)`.
-    pub(crate) fn set_tag_balancing_listener(&self, tag_balancing_listener: Option<Rc<dyn HTMLTagBalancingListener>>) {
+    pub(crate) fn set_tag_balancing_listener(
+        &self,
+        tag_balancing_listener: Option<Rc<dyn HTMLTagBalancingListener>>,
+    ) {
         *self.tag_balancing_listener.borrow_mut() = tag_balancing_listener;
     }
 
     /// Notifies the tagBalancingListener (if any) of an ignored start
     /// element.
-    fn notify_discarded_start_element(&self, elem: &QName, attrs: Option<&dyn XMLAttributes>, augs: Option<&dyn Augmentations>) {
+    fn notify_discarded_start_element(
+        &self,
+        elem: &QName,
+        attrs: Option<&dyn XMLAttributes>,
+        augs: Option<&dyn Augmentations>,
+    ) {
         let l_handler = self.tag_balancing_listener.borrow().clone();
         if let Some(l) = l_handler {
             match attrs {
@@ -450,11 +481,15 @@ impl HTMLTagBalancer {
 
     fn consume_buffered_end_elements(&self) -> JResult<()> {
         // shallow clone
-        let to_consume: Vec<ElementEntry> = std::mem::take(&mut *self.end_elements_buffer.borrow_mut());
+        let to_consume: Vec<ElementEntry> =
+            std::mem::take(&mut *self.end_elements_buffer.borrow_mut());
         for entry in &to_consume {
             self.forced_end_element.set(true);
             let mut name = entry.name.clone();
-            self.end_element_impl(&mut name, entry.augs.as_ref().map(|a| a as &dyn Augmentations))?;
+            self.end_element_impl(
+                &mut name,
+                entry.augs.as_ref().map(|a| a as &dyn Augmentations),
+            )?;
         }
         self.end_elements_buffer.borrow_mut().clear();
         Ok(())
@@ -476,7 +511,12 @@ impl HTMLTagBalancer {
     ///
     /// Returns `true` if creation could be done (TABLE's creation for
     /// instance can't be forced).
-    fn force_start_element(&self, elem: &mut QName, attrs: Option<&mut dyn XMLAttributes>, augs: Option<&dyn Augmentations>) -> JResult<bool> {
+    fn force_start_element(
+        &self,
+        elem: &mut QName,
+        attrs: Option<&mut dyn XMLAttributes>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<bool> {
         self.forced_start_element.set(true);
         self.start_element_impl(elem, attrs, augs)?;
 
@@ -512,7 +552,7 @@ impl HTMLTagBalancer {
 
         // check for end of document
         if self.seen_root_element_end.get() {
-            self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+            self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
             return Ok(());
         }
 
@@ -522,13 +562,15 @@ impl HTMLTagBalancer {
 
         // the creation of some elements like TABLE or SELECT can't be
         // forced. Any others?
-        if is_forced_creation && (element_code == html_elements::TABLE || element_code == html_elements::SELECT) {
+        if is_forced_creation
+            && (element_code == html_elements::TABLE || element_code == html_elements::SELECT)
+        {
             return Ok(()); // don't accept creation
         }
 
         // ignore multiple html, head, body elements
         if self.seen_root_element.get() && element_code == html_elements::HTML {
-            self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+            self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
             return Ok(());
         }
         if self.seen_frameset_element.get()
@@ -536,12 +578,12 @@ impl HTMLTagBalancer {
             && element_code != html_elements::FRAMESET
             && element_code != html_elements::NOFRAMES
         {
-            self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+            self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
             return Ok(());
         }
         if element_code == html_elements::HEAD {
             if self.seen_head_element.get() {
-                self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+                self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
                 return Ok(());
             }
             self.seen_head_element.set(true);
@@ -563,13 +605,13 @@ impl HTMLTagBalancer {
             self.consume_buffered_end_elements()?; // </head> (if any) has been buffered
 
             if self.seen_body_element.get() {
-                self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+                self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
                 return Ok(());
             }
             self.seen_body_element.set(true);
         } else if element_code == html_elements::FORM {
             if self.opened_form.get() {
-                self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+                self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
                 return Ok(());
             }
             self.opened_form.set(true);
@@ -581,7 +623,8 @@ impl HTMLTagBalancer {
         if let Some(parents) = element.parent() {
             let prefered_parent = parents[0];
             if self.document_fragment.get()
-                && (prefered_parent.code == html_elements::HEAD || prefered_parent.code == html_elements::BODY)
+                && (prefered_parent.code == html_elements::HEAD
+                    || prefered_parent.code == html_elements::BODY)
             {
                 // nothing, don't force HEAD or BODY creation for a document
                 // fragment
@@ -594,10 +637,11 @@ impl HTMLTagBalancer {
                     )?;
                 }
                 let mut qname = QName::with_values(None, Some(&pname), Some(&pname), None);
-                let parent_created = self.force_start_element(&mut qname, None, self.synthesized_augs())?;
+                let parent_created =
+                    self.force_start_element(&mut qname, None, self.synthesized_augs())?;
                 if !parent_created {
                     if !is_forced_creation {
-                        self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+                        self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
                     }
                     return Ok(());
                 }
@@ -615,10 +659,11 @@ impl HTMLTagBalancer {
                             Some(&[Self::arg(&elem.rawname), JavaObject::String(pname.clone())]),
                         )?;
                     }
-                    let parent_created = self.force_start_element(&mut qname, None, self.synthesized_augs())?;
+                    let parent_created =
+                        self.force_start_element(&mut qname, None, self.synthesized_augs())?;
                     if !parent_created {
                         if !is_forced_creation {
-                            self.notify_discarded_start_element(elem, attrs.as_deref().map(|a| &*a), augs);
+                            self.notify_discarded_start_element(elem, attrs.as_deref(), augs);
                         }
                         return Ok(());
                     }
@@ -709,11 +754,16 @@ impl HTMLTagBalancer {
                 }
                 *self.empty_attrs.borrow_mut() = Some(empty);
             } else if let Some(h) = self.handler() {
-                h.empty_element(elem, attrs.as_deref_mut().expect("INVARIANT: checked above"), augs)?;
+                h.empty_element(
+                    elem,
+                    attrs.as_deref_mut().expect("INVARIANT: checked above"),
+                    augs,
+                )?;
             }
         } else {
             let inline = element.is_inline();
-            let info = Info::with_attributes(element, elem, if inline { attrs.as_deref().map(|a| &*a) } else { None });
+            let info =
+                Info::with_attributes(element, elem, if inline { attrs.as_deref() } else { None });
             self.element_stack.borrow_mut().push(Rc::new(info));
             if attrs.is_none() {
                 let mut empty = self.empty_attributes();
@@ -722,7 +772,12 @@ impl HTMLTagBalancer {
                 }
                 *self.empty_attrs.borrow_mut() = Some(empty);
             } else if self.handler().is_some() {
-                self.call_start_element(elem, attrs.as_deref_mut().expect("INVARIANT: checked above"), augs)?;
+                #[allow(clippy::needless_option_as_deref)]
+                self.call_start_element(
+                    elem,
+                    attrs.as_deref_mut().expect("INVARIANT: checked above"),
+                    augs,
+                )?;
             }
         }
 
@@ -771,7 +826,8 @@ impl HTMLTagBalancer {
             }
 
             if whitespace
-                && (self.element_stack.borrow().top < 2 || self.end_elements_buffer.borrow().len() == 1)
+                && (self.element_stack.borrow().top < 2
+                    || self.end_elements_buffer.borrow().len() == 1)
             {
                 // ignore spaces directly within <html>
                 return Ok(());
@@ -782,11 +838,16 @@ impl HTMLTagBalancer {
             //       And here's some text.
             else if !whitespace {
                 let info = self.element_stack.borrow().peek();
-                if info.element.code == html_elements::HEAD || info.element.code == html_elements::HTML {
+                if info.element.code == html_elements::HEAD
+                    || info.element.code == html_elements::HTML
+                {
                     let hname = modify_name("head", self.names_elems.get());
                     let bname = modify_name("body", self.names_elems.get());
                     if self.report_errors.get() {
-                        self.report_warning("HTML2009", Some(&[JavaObject::String(hname), JavaObject::String(bname)]))?;
+                        self.report_warning(
+                            "HTML2009",
+                            Some(&[JavaObject::String(hname), JavaObject::String(bname)]),
+                        )?;
                     }
                     self.force_start_body()?;
                 }
@@ -801,7 +862,11 @@ impl HTMLTagBalancer {
     }
 
     /// End element.
-    fn end_element_impl(&self, element: &mut QName, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn end_element_impl(
+        &self,
+        element: &mut QName,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         let forced_end_element = self.forced_end_element.get();
         // is there anything to do?
         if self.seen_root_element_end.get() {
@@ -813,12 +878,19 @@ impl HTMLTagBalancer {
         let elem = self.get_element(element);
 
         // if we consider outside content, just buffer the elements
-        if !self.ignore_outside_content.get() && (elem.code == html_elements::BODY || elem.code == html_elements::HTML) {
-            self.end_elements_buffer.borrow_mut().push(ElementEntry::new(element, augs));
+        if !self.ignore_outside_content.get()
+            && (elem.code == html_elements::BODY || elem.code == html_elements::HTML)
+        {
+            self.end_elements_buffer
+                .borrow_mut()
+                .push(ElementEntry::new(element, augs));
             return Ok(());
         }
 
-        if self.seen_frameset_element.get() && elem.code != html_elements::FRAME && elem.code != html_elements::FRAMESET {
+        if self.seen_frameset_element.get()
+            && elem.code != html_elements::FRAME
+            && elem.code != html_elements::FRAMESET
+        {
             self.notify_discarded_end_element(element, augs);
             return Ok(());
         }
@@ -838,7 +910,9 @@ impl HTMLTagBalancer {
         } else if elem.code == html_elements::HEAD && !forced_end_element {
             // consume </head> first when <body> is reached to retrieve
             // content lost between </head> and <body>
-            self.end_elements_buffer.borrow_mut().push(ElementEntry::new(element, augs));
+            self.end_elements_buffer
+                .borrow_mut()
+                .push(ElementEntry::new(element, augs));
             return Ok(());
         }
 
@@ -877,13 +951,26 @@ impl HTMLTagBalancer {
         for i in 0..depth {
             let info = self.element_stack.borrow_mut().pop();
             if self.report_errors.get() && i < depth - 1 {
-                let ename = element.rawname.as_deref().map(|r| modify_name(r, self.names_elems.get()));
-                self.report_warning("HTML2007", Some(&[Self::arg(&ename), Self::arg(&info.qname.rawname)]))?;
+                let ename = element
+                    .rawname
+                    .as_deref()
+                    .map(|r| modify_name(r, self.names_elems.get()));
+                self.report_warning(
+                    "HTML2007",
+                    Some(&[Self::arg(&ename), Self::arg(&info.qname.rawname)]),
+                )?;
             }
             if self.handler().is_some() {
                 // PATCH: Marc-Andr Morissette
                 let mut q = info.qname.clone();
-                self.call_end_element(&mut q, if i < depth - 1 { self.synthesized_augs() } else { augs })?;
+                self.call_end_element(
+                    &mut q,
+                    if i < depth - 1 {
+                        self.synthesized_augs()
+                    } else {
+                        augs
+                    },
+                )?;
             }
         }
 
@@ -928,14 +1015,25 @@ impl HTMLTagBalancer {
     ///
     /// Equivalent to the protected `callStartElement(QName, XMLAttributes,
     /// Augmentations)`.
-    fn call_start_element(&self, element: &mut QName, attrs: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
-        self.handler().ok_or_else(npe)?.start_element(element, attrs, augs)
+    fn call_start_element(
+        &self,
+        element: &mut QName,
+        attrs: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        self.handler()
+            .ok_or_else(npe)?
+            .start_element(element, attrs, augs)
     }
 
     /// Call document handler end element.
     ///
     /// Equivalent to the protected `callEndElement(QName, Augmentations)`.
-    fn call_end_element(&self, element: &mut QName, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn call_end_element(
+        &self,
+        element: &mut QName,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.handler().ok_or_else(npe)?.end_element(element, augs)
     }
 
@@ -1018,14 +1116,20 @@ impl HTMLTagBalancer {
     /// Start prefix mapping (XNI 2.0).
     ///
     /// Equivalent to `startPrefixMapping(String, String, Augmentations)`.
-    pub fn start_prefix_mapping(&self, prefix: &str, uri: Option<&str>, augs: Option<&dyn Augmentations>) {
+    pub fn start_prefix_mapping(
+        &self,
+        prefix: &str,
+        uri: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) {
         // check for end of document
         if self.seen_root_element_end.get() {
             return;
         }
         // call handler
         if let Some(h) = self.handler() {
-            xerces_bridge::get_instance().xml_document_handler_start_prefix_mapping(&*h, prefix, uri, augs);
+            xerces_bridge::get_instance()
+                .xml_document_handler_start_prefix_mapping(&*h, prefix, uri, augs);
         }
     }
 
@@ -1039,7 +1143,8 @@ impl HTMLTagBalancer {
         }
         // call handler
         if let Some(h) = self.handler() {
-            xerces_bridge::get_instance().xml_document_handler_end_prefix_mapping(&*h, prefix, augs);
+            xerces_bridge::get_instance()
+                .xml_document_handler_end_prefix_mapping(&*h, prefix, augs);
         }
     }
 
@@ -1050,7 +1155,12 @@ impl HTMLTagBalancer {
     /// # Errors
     ///
     /// What the next handler throws.
-    pub fn start_document_no_context(&self, locator: Option<Rc<dyn XMLLocator>>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    pub fn start_document_no_context(
+        &self,
+        locator: Option<Rc<dyn XMLLocator>>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         XMLDocumentHandler::start_document(self, locator, encoding, None, augs)
     }
 }
@@ -1094,7 +1204,12 @@ impl XMLComponent for HTMLTagBalancer {
     }
 
     fn get_recognized_properties(&self) -> Option<Vec<String>> {
-        Some(RECOGNIZED_PROPERTIES.iter().map(|s| s.to_string()).collect())
+        Some(
+            RECOGNIZED_PROPERTIES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
     }
 
     /// Resets the component.
@@ -1103,9 +1218,12 @@ impl XMLComponent for HTMLTagBalancer {
         self.namespaces.set(manager.get_feature(NAMESPACES)?);
         self.augmentations.set(manager.get_feature(AUGMENTATIONS)?);
         self.report_errors.set(manager.get_feature(REPORT_ERRORS)?);
-        self.document_fragment
-            .set(manager.get_feature(DOCUMENT_FRAGMENT)? || manager.get_feature(DOCUMENT_FRAGMENT_DEPRECATED)?);
-        self.ignore_outside_content.set(manager.get_feature(IGNORE_OUTSIDE_CONTENT)?);
+        self.document_fragment.set(
+            manager.get_feature(DOCUMENT_FRAGMENT)?
+                || manager.get_feature(DOCUMENT_FRAGMENT_DEPRECATED)?,
+        );
+        self.ignore_outside_content
+            .set(manager.get_feature(IGNORE_OUTSIDE_CONTENT)?);
         self.allow_selfclosing_iframe
             .set(manager.get_feature(html_scanner::ALLOW_SELFCLOSING_IFRAME)?);
         self.allow_selfclosing_tags
@@ -1118,17 +1236,23 @@ impl XMLComponent for HTMLTagBalancer {
                 .map(str::to_string)
                 .unwrap_or_else(|| "null".to_string())
         };
-        self.names_elems.set(get_names_value(&value_of(manager.get_property(NAMES_ELEMS)?)));
-        self.names_attrs.set(get_names_value(&value_of(manager.get_property(NAMES_ATTRS)?)));
+        self.names_elems.set(get_names_value(&value_of(
+            manager.get_property(NAMES_ELEMS)?,
+        )));
+        self.names_attrs.set(get_names_value(&value_of(
+            manager.get_property(NAMES_ATTRS)?,
+        )));
         let reporter = manager.get_property(ERROR_REPORTER)?;
         *self.error_reporter.borrow_mut() = match &reporter {
             None => None,
-            Some(o) => Some(object_as_interface::<dyn HTMLErrorReporter>(o).ok_or_else(|| {
-                Exception::runtime(LuceneError::unchecked(
-                    "java.lang.ClassCastException",
-                    "org.cyberneko.html.HTMLErrorReporter",
-                ))
-            })?),
+            Some(o) => Some(
+                object_as_interface::<dyn HTMLErrorReporter>(o).ok_or_else(|| {
+                    Exception::runtime(LuceneError::unchecked(
+                        "java.lang.ClassCastException",
+                        "org.cyberneko.html.HTMLErrorReporter",
+                    ))
+                })?,
+            ),
         };
         let stack = manager.get_property(FRAGMENT_CONTEXT_STACK)?;
         *self.fragment_context_stack.borrow_mut() = match &stack {
@@ -1216,7 +1340,9 @@ impl XMLDocumentHandler for HTMLTagBalancer {
             self.fragment_context_stack_size.set(stack.len());
             for name in stack.iter() {
                 let elt = html_elements::get_element(name.localpart.as_deref().unwrap_or(""));
-                self.element_stack.borrow_mut().push(Rc::new(Info::new(elt, name)));
+                self.element_stack
+                    .borrow_mut()
+                    .push(Rc::new(Info::new(elt, name)));
             }
         } else {
             self.fragment_context_stack_size.set(0);
@@ -1231,13 +1357,20 @@ impl XMLDocumentHandler for HTMLTagBalancer {
 
         // pass on event
         if let Some(h) = self.handler() {
-            xerces_bridge::get_instance().xml_document_handler_start_document(&*h, locator, encoding, nscontext, augs)?;
+            xerces_bridge::get_instance()
+                .xml_document_handler_start_document(&*h, locator, encoding, nscontext, augs)?;
         }
         Ok(())
     }
 
     /// XML declaration.
-    fn xml_decl(&self, version: Option<&str>, encoding: Option<&str>, standalone: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn xml_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        standalone: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         if !self.seen_anything.get() {
             if let Some(h) = self.handler() {
                 h.xml_decl(version, encoding, standalone, augs)?;
@@ -1282,7 +1415,12 @@ impl XMLDocumentHandler for HTMLTagBalancer {
     }
 
     /// Processing instruction.
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.seen_anything.set(true);
         self.consume_early_text_if_needed()?;
         if let Some(h) = self.handler() {
@@ -1292,12 +1430,22 @@ impl XMLDocumentHandler for HTMLTagBalancer {
     }
 
     /// Start element.
-    fn start_element(&self, elem: &mut QName, attrs: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_element(
+        &self,
+        elem: &mut QName,
+        attrs: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.start_element_impl(elem, Some(attrs), augs)
     }
 
     /// Empty element.
-    fn empty_element(&self, element: &mut QName, attrs: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn empty_element(
+        &self,
+        element: &mut QName,
+        attrs: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.start_element_impl(element, Some(attrs), augs)?;
         // browser ignore the closing indication for non empty tags like
         // <form .../> but not for unknown element
@@ -1332,7 +1480,9 @@ impl XMLDocumentHandler for HTMLTagBalancer {
             let mut insert_body = !self.seen_root_element.get();
             if !insert_body {
                 let info = self.element_stack.borrow().peek();
-                if info.element.code == html_elements::HEAD || info.element.code == html_elements::HTML {
+                if info.element.code == html_elements::HEAD
+                    || info.element.code == html_elements::HTML
+                {
                     let hname = modify_name("head", self.names_elems.get());
                     let bname = modify_name("body", self.names_elems.get());
                     if self.report_errors.get() {
@@ -1363,7 +1513,12 @@ impl XMLDocumentHandler for HTMLTagBalancer {
     }
 
     /// Text declaration.
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.seen_anything.set(true);
 
         // check for end of document
@@ -1430,7 +1585,11 @@ impl XMLDocumentHandler for HTMLTagBalancer {
     }
 
     /// Ignorable whitespace.
-    fn ignorable_whitespace(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignorable_whitespace(
+        &self,
+        text: &XMLString,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.characters_impl(text, augs)
     }
 
@@ -1467,7 +1626,8 @@ impl XMLDocumentHandler for HTMLTagBalancer {
         }
         // pop all remaining elements
         else {
-            let length = self.element_stack.borrow().top as isize - self.fragment_context_stack_size.get() as isize;
+            let length = self.element_stack.borrow().top as isize
+                - self.fragment_context_stack_size.get() as isize;
             for _ in 0..length.max(0) {
                 let info = self.element_stack.borrow_mut().pop();
                 if self.report_errors.get() {
@@ -1494,7 +1654,10 @@ impl XMLDocumentHandler for HTMLTagBalancer {
 
     /// Returns the document source.
     fn get_document_source(&self) -> Option<Rc<dyn XMLDocumentSource>> {
-        self.document_source.borrow().as_ref().and_then(Weak::upgrade)
+        self.document_source
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
 }
 

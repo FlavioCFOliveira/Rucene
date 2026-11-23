@@ -38,6 +38,11 @@
 //! as Xerces catches and converts them by class; other unchecked exceptions
 //! are kept as a [`rucene::error::LuceneError`].
 
+// `Exception` carries the Java throwable (`SAXException`, `XNIException`, ...)
+// by value, as every Java method that throws returns it; boxing it would
+// change every `JResult` signature of the port.
+#![allow(clippy::result_large_err)]
+
 #[macro_use]
 mod macros {
     /// Concatenates `&'static str` constants at compile time.

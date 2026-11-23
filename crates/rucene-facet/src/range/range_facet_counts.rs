@@ -106,7 +106,11 @@ impl RangeFacetCounts {
     /// Create `RangeFacetCounts`.
     ///
     /// Equivalent to `RangeFacetCounts(String, Range[], Query)`.
-    pub(crate) fn new(field: &str, ranges: Ranges, fast_match_query: Option<Arc<dyn Query>>) -> Self {
+    pub(crate) fn new(
+        field: &str,
+        ranges: Ranges,
+        fast_match_query: Option<Arc<dyn Query>>,
+    ) -> Self {
         Self {
             filter: FacetCountsWithFilterQuery::new(fast_match_query),
             ranges,
@@ -165,7 +169,11 @@ impl RangeFacetCounts {
     /// Counts from the provided field.
     ///
     /// Equivalent to `count(String, List)`.
-    pub(crate) fn count_field(&mut self, field: &str, matching_docs: &[MatchingDocs]) -> Result<()> {
+    pub(crate) fn count_field(
+        &mut self,
+        field: &str,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         // load doc values for all segments up front and keep track of whether
         // or not we found any that were actually multi-valued. this allows us
         // to optimize the case where all segments contain single-values.
@@ -177,7 +185,8 @@ impl RangeFacetCounts {
             }
 
             let multi_values = DocValues::get_sorted_numeric(&*hits.context.leaf_reader(), field)?;
-            let vals = multi_valued_doc_vals.get_or_insert_with(|| (0..matching_docs.len()).map(|_| None).collect());
+            let vals = multi_valued_doc_vals
+                .get_or_insert_with(|| (0..matching_docs.len()).map(|_| None).collect());
             let view = unwrap_singleton_numeric(multi_values)?;
             if !found_multi_valued && matches!(view, NumericValuesView::Multi(_)) {
                 found_multi_valued = true;
@@ -213,7 +222,9 @@ impl RangeFacetCounts {
                 self.tot_count += hits.total_hits;
                 let mut doc = it.next_doc()?;
                 while doc != NO_MORE_DOCS {
-                    let single_values = single_values.as_mut().ok_or_else(LuceneError::null_pointer)?;
+                    let single_values = single_values
+                        .as_mut()
+                        .ok_or_else(LuceneError::null_pointer)?;
                     if single_values.advance_exact(doc)? {
                         let v = self.map_doc_value(single_values.long_value()?);
                         counter.add_single_valued(v);
@@ -282,7 +293,10 @@ impl RangeFacetCounts {
         let mut label_values = Vec::with_capacity(self.ranges.len());
         for i in 0..self.ranges.len() {
             let count = self.counts.as_ref().map_or(0, |c| c[i]);
-            label_values.push(LabelAndValue::new(self.ranges.label(i), NumericValue::Int(count)));
+            label_values.push(LabelAndValue::new(
+                self.ranges.label(i),
+                NumericValue::Int(count),
+            ));
         }
         let child_count = label_values.len() as i32;
         Ok(Some(FacetResult::new(
@@ -295,18 +309,30 @@ impl RangeFacetCounts {
     }
 
     /// Equivalent to `getTopChildren(int, String, String...)`.
-    pub(crate) fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    pub(crate) fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
         self.validate_dim_and_path_for_get_children(dim, path)?;
 
         let path_vec: Vec<String> = path.iter().map(|p| p.to_string()).collect();
         let Some(counts) = &self.counts else {
             debug_assert!(self.tot_count == 0);
-            return Ok(Some(FacetResult::new(dim, path_vec, NumericValue::Int(self.tot_count), Vec::new(), 0)));
+            return Ok(Some(FacetResult::new(
+                dim,
+                path_vec,
+                NumericValue::Int(self.tot_count),
+                Vec::new(),
+                0,
+            )));
         };
 
         let size = top_n.min(counts.len() as i32);
-        let mut pq: PriorityQueue<Entry, EntryLessThan> = PriorityQueue::new(size.max(0) as usize, EntryLessThan)?;
+        let mut pq: PriorityQueue<Entry, EntryLessThan> =
+            PriorityQueue::new(size.max(0) as usize, EntryLessThan)?;
 
         let mut child_count = 0;
         let mut e: Option<Entry> = None;
@@ -323,7 +349,10 @@ impl RangeFacetCounts {
         let mut results: Vec<Option<LabelAndValue>> = (0..pq.size()).map(|_| None).collect();
         while pq.size() != 0 {
             let entry = pq.pop().expect("INVARIANT: size > 0");
-            results[pq.size()] = Some(LabelAndValue::new(entry.label, NumericValue::Int(entry.count)));
+            results[pq.size()] = Some(LabelAndValue::new(
+                entry.label,
+                NumericValue::Int(entry.count),
+            ));
         }
         Ok(Some(FacetResult::new(
             dim,
@@ -343,7 +372,10 @@ impl RangeFacetCounts {
     /// Equivalent to `getAllDims(int)`.
     pub(crate) fn get_all_dims(&self, top_n: i32) -> Result<Vec<FacetResult>> {
         validate_top_n(top_n)?;
-        Ok(self.get_top_children(top_n, &self.field, &[])?.into_iter().collect())
+        Ok(self
+            .get_top_children(top_n, &self.field, &[])?
+            .into_iter()
+            .collect())
     }
 
     /// Equivalent to `validateDimAndPathForGetChildren(String, String...)`.
@@ -364,7 +396,7 @@ impl RangeFacetCounts {
 impl fmt::Display for RangeFacetCounts {
     /// Equivalent to `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RangeFacetCounts totCount={}:\n", self.tot_count)?;
+        writeln!(f, "RangeFacetCounts totCount={}:", self.tot_count)?;
         for i in 0..self.ranges.len() {
             writeln!(
                 f,

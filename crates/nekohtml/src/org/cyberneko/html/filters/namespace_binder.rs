@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2004-2008 Andy Clark
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -167,7 +167,12 @@ impl NamespaceBinder {
                 for i in 0..dcount {
                     let prefix = self.namespace_context.get_declared_prefix_at(i);
                     let uri = self.namespace_context.get_uri(&prefix);
-                    xerces_bridge::get_instance().xml_document_handler_start_prefix_mapping(&*h, &prefix, uri.as_deref(), augs);
+                    xerces_bridge::get_instance().xml_document_handler_start_prefix_mapping(
+                        &*h,
+                        &prefix,
+                        uri.as_deref(),
+                        augs,
+                    );
                 }
             }
         }
@@ -179,7 +184,8 @@ impl NamespaceBinder {
             if dcount > 0 {
                 for i in (0..dcount).rev() {
                     let prefix = self.namespace_context.get_declared_prefix_at(i);
-                    xerces_bridge::get_instance().xml_document_handler_end_prefix_mapping(&*h, &prefix, augs);
+                    xerces_bridge::get_instance()
+                        .xml_document_handler_end_prefix_mapping(&*h, &prefix, augs);
                 }
             }
         }
@@ -203,7 +209,11 @@ impl NamespaceBinder {
                 if aname_upper.starts_with("XMLNS:") || aname_upper == "XMLNS" {
                     let units: Vec<u16> = aname.encode_utf16().collect();
                     let anamelen = units.len();
-                    let mut aprefix = if anamelen > 5 { Some(String::from_utf16_lossy(&units[..5])) } else { None };
+                    let mut aprefix = if anamelen > 5 {
+                        Some(String::from_utf16_lossy(&units[..5]))
+                    } else {
+                        None
+                    };
                     let mut alocal = if anamelen > 5 {
                         String::from_utf16_lossy(&units[6..])
                     } else {
@@ -211,7 +221,10 @@ impl NamespaceBinder {
                     };
                     let avalue = attrs.get_value(i).unwrap_or_default();
                     if anamelen > 5 {
-                        aprefix = Some(modify_name(aprefix.as_deref().unwrap_or(""), NAMES_LOWERCASE));
+                        aprefix = Some(modify_name(
+                            aprefix.as_deref().unwrap_or(""),
+                            NAMES_LOWERCASE,
+                        ));
                         alocal = modify_name(&alocal, self.names_elems.get());
                         aname = format!("{}:{}", aprefix.as_deref().unwrap_or(""), alocal);
                     } else {
@@ -222,18 +235,29 @@ impl NamespaceBinder {
                     attrs.set_name(i, &q);
 
                     // declare prefix
-                    let prefix = if alocal != aname { alocal.clone() } else { String::new() };
-                    let mut uri = if !avalue.is_empty() { Some(avalue.clone()) } else { None };
+                    let prefix = if alocal != aname {
+                        alocal.clone()
+                    } else {
+                        String::new()
+                    };
+                    let mut uri = if !avalue.is_empty() {
+                        Some(avalue.clone())
+                    } else {
+                        None
+                    };
                     if self.override_namespaces.get()
                         && Some(prefix.as_str()) == element.prefix.as_deref()
-                        && element
-                            .localpart
-                            .as_deref()
-                            .is_some_and(|l| !std::ptr::eq(html_elements::get_element_or(l, html_elements::no_such_element()), html_elements::no_such_element()))
+                        && element.localpart.as_deref().is_some_and(|l| {
+                            !std::ptr::eq(
+                                html_elements::get_element_or(l, html_elements::no_such_element()),
+                                html_elements::no_such_element(),
+                            )
+                        })
                     {
                         uri = Some(self.namespaces_uri.borrow().clone());
                     }
-                    self.namespace_context.declare_prefix(&prefix, uri.as_deref());
+                    self.namespace_context
+                        .declare_prefix(&prefix, uri.as_deref());
                 }
             }
         }
@@ -266,7 +290,11 @@ impl NamespaceBinder {
             {
                 let xmlns = format!(
                     "xmlns{}",
-                    element.prefix.as_ref().map(|p| format!(":{p}")).unwrap_or_default()
+                    element
+                        .prefix
+                        .as_ref()
+                        .map(|p| format!(":{p}"))
+                        .unwrap_or_default()
                 );
                 {
                     let mut q = self.qname.borrow_mut();
@@ -338,7 +366,12 @@ impl XMLComponent for NamespaceBinder {
     fn get_recognized_properties(&self) -> Option<Vec<String>> {
         merge(
             self.base.get_recognized_properties(),
-            Some(RECOGNIZED_PROPERTIES.iter().map(|s| s.to_string()).collect()),
+            Some(
+                RECOGNIZED_PROPERTIES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
         )
     }
 
@@ -346,7 +379,11 @@ impl XMLComponent for NamespaceBinder {
     fn get_property_default(&self, property_id: &str) -> Option<Object> {
         for (i, p) in RECOGNIZED_PROPERTIES.iter().enumerate() {
             if *p == property_id {
-                return if i == 2 { Some(string_object(XHTML_1_0_URI)) } else { None };
+                return if i == 2 {
+                    Some(string_object(XHTML_1_0_URI))
+                } else {
+                    None
+                };
             }
         }
         self.base.get_property_default(property_id)
@@ -358,8 +395,10 @@ impl XMLComponent for NamespaceBinder {
 
         // features
         self.namespaces.set(manager.get_feature(NAMESPACES)?);
-        self.override_namespaces.set(manager.get_feature(OVERRIDE_NAMESPACES)?);
-        self.insert_namespaces.set(manager.get_feature(INSERT_NAMESPACES)?);
+        self.override_namespaces
+            .set(manager.get_feature(OVERRIDE_NAMESPACES)?);
+        self.insert_namespaces
+            .set(manager.get_feature(INSERT_NAMESPACES)?);
 
         // properties
         let value_of = |o: Option<Object>| -> String {
@@ -368,8 +407,12 @@ impl XMLComponent for NamespaceBinder {
                 .map(str::to_string)
                 .unwrap_or_else(|| "null".to_string())
         };
-        self.names_elems.set(get_names_value(&value_of(manager.get_property(NAMES_ELEMS)?)));
-        self.names_attrs.set(get_names_value(&value_of(manager.get_property(NAMES_ATTRS)?)));
+        self.names_elems.set(get_names_value(&value_of(
+            manager.get_property(NAMES_ELEMS)?,
+        )));
+        self.names_attrs.set(get_names_value(&value_of(
+            manager.get_property(NAMES_ATTRS)?,
+        )));
         *self.namespaces_uri.borrow_mut() = value_of(manager.get_property(NAMESPACES_URI)?);
 
         // initialize state
@@ -409,15 +452,28 @@ impl XMLDocumentHandler for NamespaceBinder {
     ) -> JResult<()> {
         // perform default handling
         // NOTE: using own namespace context
-        let nc: Rc<dyn NamespaceContext> = Rc::clone(&self.namespace_context) as Rc<dyn NamespaceContext>;
+        let nc: Rc<dyn NamespaceContext> =
+            Rc::clone(&self.namespace_context) as Rc<dyn NamespaceContext>;
         self.base.start_document(locator, encoding, Some(nc), augs)
     }
 
-    fn xml_decl(&self, version: Option<&str>, encoding: Option<&str>, standalone: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn xml_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        standalone: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.base.xml_decl(version, encoding, standalone, augs)
     }
 
-    fn doctype_decl(&self, root: Option<&str>, public_id: Option<&str>, system_id: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn doctype_decl(
+        &self,
+        root: Option<&str>,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.base.doctype_decl(root, public_id, system_id, augs)
     }
 
@@ -425,12 +481,22 @@ impl XMLDocumentHandler for NamespaceBinder {
         self.base.comment(text, augs)
     }
 
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.base.processing_instruction(target, data, augs)
     }
 
     /// Start element.
-    fn start_element(&self, element: &mut QName, attrs: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_element(
+        &self,
+        element: &mut QName,
+        attrs: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         // bind namespaces, if needed
         if self.namespaces.get() {
             self.namespace_context.push_context();
@@ -443,7 +509,12 @@ impl XMLDocumentHandler for NamespaceBinder {
     }
 
     /// Empty element.
-    fn empty_element(&self, element: &mut QName, attrs: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn empty_element(
+        &self,
+        element: &mut QName,
+        attrs: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         // bind namespaces, if needed
         if self.namespaces.get() {
             self.namespace_context.push_context();
@@ -472,7 +543,12 @@ impl XMLDocumentHandler for NamespaceBinder {
         self.base.start_general_entity(name, id, encoding, augs)
     }
 
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.base.text_decl(version, encoding, augs)
     }
 
@@ -484,7 +560,11 @@ impl XMLDocumentHandler for NamespaceBinder {
         self.base.characters(text, augs)
     }
 
-    fn ignorable_whitespace(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignorable_whitespace(
+        &self,
+        text: &XMLString,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.base.ignorable_whitespace(text, augs)
     }
 
@@ -647,7 +727,8 @@ impl NamespaceContext for NamespaceSupport {
         let top = s.top;
         let at = s.levels[top];
         s.entries.truncate(at);
-        s.entries.push((prefix.to_string(), uri.map(str::to_string)));
+        s.entries
+            .push((prefix.to_string(), uri.map(str::to_string)));
         s.levels[top] += 1;
         true
     }
@@ -668,6 +749,8 @@ impl NamespaceContext for NamespaceSupport {
         None
     }
 
+    // The loop keeps Java's indexed `for (int i = fLevels[1]; ...)`.
+    #[allow(clippy::needless_range_loop)]
     fn get_all_prefixes(&self) -> Vec<String> {
         let s = self.state.borrow();
         let mut prefixes: Vec<String> = Vec::new();

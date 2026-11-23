@@ -57,7 +57,8 @@ impl DynamicRangeUtil {
         let mut tasks: Vec<Arc<Mutex<SegmentOutput>>> = Vec::new();
         for matching_docs in matching_docs_list {
             if matching_docs.total_hits > 0 {
-                let segment_output = Arc::new(Mutex::new(SegmentOutput::new(matching_docs.total_hits)));
+                let segment_output =
+                    Arc::new(Mutex::new(SegmentOutput::new(matching_docs.total_hits)));
                 let task = SegmentTask::new(
                     matching_docs.clone(),
                     Arc::clone(&field_value_source),
@@ -70,7 +71,12 @@ impl DynamicRangeUtil {
                         task.call()?;
                         Ok(Box::new(()) as TaskValue)
                     }))
-                    .map_err(|e| LuceneError::unchecked("java.util.concurrent.RejectedExecutionException", e.message))?,
+                    .map_err(|e| {
+                        LuceneError::unchecked(
+                            "java.util.concurrent.RejectedExecutionException",
+                            e.message,
+                        )
+                    })?,
                 );
             }
         }
@@ -206,9 +212,14 @@ impl SegmentTask {
     /// Equivalent to `call()`.
     fn call(&self) -> Result<()> {
         let mut matching_parent_docs_itr = self.matching_docs.bits.iterator()?;
-        let mut field_value = Arc::clone(&self.field_value_source).get_values(&self.matching_docs.context, None)?;
-        let mut weight_value = Arc::clone(&self.weight_value_source).get_values(&self.matching_docs.context, None)?;
-        let mut segment_output = self.segment_output.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut field_value =
+            Arc::clone(&self.field_value_source).get_values(&self.matching_docs.context, None)?;
+        let mut weight_value =
+            Arc::clone(&self.weight_value_source).get_values(&self.matching_docs.context, None)?;
+        let mut segment_output = self
+            .segment_output
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut doc = matching_parent_docs_itr.next_doc()?;
         while doc != NO_MORE_DOCS {
             // If this doc doesn't have a weight, we skip it.

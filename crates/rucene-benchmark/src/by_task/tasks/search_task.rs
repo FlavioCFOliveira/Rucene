@@ -54,7 +54,10 @@ impl PerfTask for SearchTask {
     read_task::read_task_perf_methods!("SearchTask");
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(SearchTask { base: self.base.clone_base(), read: self.read.clone_base() }))
+        Ok(Arc::new(SearchTask {
+            base: self.base.clone_base(),
+            read: self.read.clone_base(),
+        }))
     }
 }
 

@@ -42,7 +42,9 @@ impl ResetSystemSoftTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(ResetSystemSoftTask { base: PerfTaskBase::new(run_data, "ResetSystemSoftTask")? })
+        Ok(ResetSystemSoftTask {
+            base: PerfTaskBase::new(run_data, "ResetSystemSoftTask")?,
+        })
     }
 }
 
@@ -50,7 +52,9 @@ impl PerfTask for ResetSystemSoftTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(ResetSystemSoftTask { base: self.base.clone_base() }))
+        Ok(Arc::new(ResetSystemSoftTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

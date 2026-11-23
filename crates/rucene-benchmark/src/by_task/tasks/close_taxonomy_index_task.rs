@@ -40,7 +40,9 @@ impl CloseTaxonomyIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CloseTaxonomyIndexTask { base: PerfTaskBase::new(run_data, "CloseTaxonomyIndexTask")? })
+        Ok(CloseTaxonomyIndexTask {
+            base: PerfTaskBase::new(run_data, "CloseTaxonomyIndexTask")?,
+        })
     }
 }
 
@@ -48,7 +50,9 @@ impl PerfTask for CloseTaxonomyIndexTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(CloseTaxonomyIndexTask { base: self.base.clone_base() }))
+        Ok(Arc::new(CloseTaxonomyIndexTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

@@ -145,7 +145,9 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
     ) -> Result<Arc<dyn Weight>> {
         let fast_match_weight = match &self.fast_match_query {
             None => None,
-            Some(q) => Some(searcher.create_weight(Arc::clone(q), ScoreMode::COMPLETE_NO_SCORES, 1.0)?),
+            Some(q) => {
+                Some(searcher.create_weight(Arc::clone(q), ScoreMode::COMPLETE_NO_SCORES, 1.0)?)
+            }
         };
         Ok(Arc::new(ConstantScoreWeight::new(
             Arc::new(self.clone()),
@@ -160,14 +162,17 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
 
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
-            && other.as_any().downcast_ref::<RangeFilterQuery<S>>().is_some_and(|o| {
-                let fmq_eq = match (&self.fast_match_query, &o.fast_match_query) {
-                    (None, None) => true,
-                    (Some(a), Some(b)) => a.query_eq(&**b),
-                    _ => false,
-                };
-                self.source.source_eq(&o.source) && fmq_eq
-            })
+            && other
+                .as_any()
+                .downcast_ref::<RangeFilterQuery<S>>()
+                .is_some_and(|o| {
+                    let fmq_eq = match (&self.fast_match_query, &o.fast_match_query) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => a.query_eq(&**b),
+                        _ => false,
+                    };
+                    self.source.source_eq(&o.source) && fmq_eq
+                })
     }
 
     fn query_hash(&self) -> i32 {
@@ -217,7 +222,8 @@ impl<S: RangeFilterSource> ConstantScoreWeightImpl for RangeFilterWeight<S> {
             approximation,
             matcher,
         };
-        let scorer = ConstantScoreScorer::from_two_phase(score, self.score_mode, Box::new(two_phase));
+        let scorer =
+            ConstantScoreScorer::from_two_phase(score, self.score_mode, Box::new(two_phase));
         Ok(Some(Box::new(DefaultScorerSupplier::new(Box::new(scorer)))))
     }
 

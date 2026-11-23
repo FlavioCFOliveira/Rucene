@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -28,7 +28,12 @@ use crate::org::apache::xerces::xni::qname::QName;
 /// Equivalent to `org.apache.xerces.xni.XMLAttributes`.
 pub trait XMLAttributes {
     /// Equivalent to `addAttribute(QName, String, String)`.
-    fn add_attribute(&mut self, attr_name: &QName, attr_type: &str, attr_value: Option<&str>) -> i32;
+    fn add_attribute(
+        &mut self,
+        attr_name: &QName,
+        attr_type: &str,
+        attr_value: Option<&str>,
+    ) -> i32;
     /// Equivalent to `removeAllAttributes()`.
     fn remove_all_attributes(&mut self);
     /// Equivalent to `removeAttributeAt(int)`.
@@ -78,7 +83,11 @@ pub trait XMLAttributes {
     /// Equivalent to `getAugmentations(int)`.
     fn get_augmentations(&self, attribute_index: i32) -> Option<Rc<dyn Augmentations>>;
     /// Equivalent to `getAugmentations(String, String)`.
-    fn get_augmentations_ns(&self, uri: Option<&str>, local_part: &str) -> Option<Rc<dyn Augmentations>>;
+    fn get_augmentations_ns(
+        &self,
+        uri: Option<&str>,
+        local_part: &str,
+    ) -> Option<Rc<dyn Augmentations>>;
     /// Equivalent to `getAugmentations(String)`.
     fn get_augmentations_by_qname(&self, qname: &str) -> Option<Rc<dyn Augmentations>>;
     /// Equivalent to `setAugmentations(int, Augmentations)`.

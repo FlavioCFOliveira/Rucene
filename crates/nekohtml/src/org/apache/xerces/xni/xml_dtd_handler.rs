@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -32,7 +32,11 @@ use crate::org::apache::xerces::xni::xml_string::XMLString;
 /// Equivalent to `org.apache.xerces.xni.XMLDTDHandler`.
 pub trait XMLDTDHandler {
     /// Equivalent to `startDTD(XMLLocator, Augmentations)`.
-    fn start_dtd(&self, locator: Option<Rc<dyn XMLLocator>>, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn start_dtd(
+        &self,
+        locator: Option<Rc<dyn XMLLocator>>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `startParameterEntity(String, XMLResourceIdentifier,
     /// String, Augmentations)`.
     fn start_parameter_entity(
@@ -43,9 +47,18 @@ pub trait XMLDTDHandler {
         augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()>;
     /// Equivalent to `textDecl(String, String, Augmentations)`.
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `endParameterEntity(String, Augmentations)`.
-    fn end_parameter_entity(&self, name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn end_parameter_entity(
+        &self,
+        name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `startExternalSubset(XMLResourceIdentifier,
     /// Augmentations)`.
     fn start_external_subset(
@@ -59,11 +72,25 @@ pub trait XMLDTDHandler {
     fn comment(&self, text: &XMLString, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `processingInstruction(String, XMLString,
     /// Augmentations)`.
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `elementDecl(String, String, Augmentations)`.
-    fn element_decl(&self, name: &str, content_model: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn element_decl(
+        &self,
+        name: &str,
+        content_model: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `startAttlist(String, Augmentations)`.
-    fn start_attlist(&self, element_name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn start_attlist(
+        &self,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `attributeDecl(String, String, String, String[],
     /// String, XMLString, XMLString, Augmentations)`.
     #[allow(clippy::too_many_arguments)]
@@ -115,9 +142,17 @@ pub trait XMLDTDHandler {
         augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()>;
     /// Equivalent to `startConditional(short, Augmentations)`.
-    fn start_conditional(&self, type_: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn start_conditional(
+        &self,
+        type_: i16,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `ignoredCharacters(XMLString, Augmentations)`.
-    fn ignored_characters(&self, text: &XMLString, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn ignored_characters(
+        &self,
+        text: &XMLString,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `endConditional(Augmentations)`.
     fn end_conditional(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `endDTD(Augmentations)`.

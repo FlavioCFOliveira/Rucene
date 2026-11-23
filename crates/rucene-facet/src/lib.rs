@@ -14,7 +14,6 @@
 //! item of that module, and the Java kind is appended when the prefixed name is
 //! itself taken (`DrillSideways.Result` is `DrillSidewaysResultRecord`).
 
-
 /// Forwards the named `LeafReader` members of a `FilterLeafReader` subclass
 /// to its base, the core reader held in the named field, as the members a
 /// Java subclass inherits from its base class do. Copied from the test
@@ -215,8 +214,6 @@ macro_rules! forward_leaf_reader {
         }
     };
 }
-
-
 
 pub mod drill_down_query;
 pub mod drill_sideways;

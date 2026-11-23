@@ -25,5 +25,7 @@ pub mod long_range;
 pub mod long_range_counter;
 pub mod long_range_facet_counts;
 pub mod overlapping_long_range_counter;
+// Java's package `range` holds the class `Range`.
+#[allow(clippy::module_inception)]
 pub mod range;
 pub mod range_facet_counts;

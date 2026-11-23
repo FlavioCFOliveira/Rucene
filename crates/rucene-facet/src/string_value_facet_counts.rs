@@ -24,7 +24,9 @@ use rucene::document::NumericValue;
 use rucene::error::{LuceneError, Result};
 use rucene::index::multi_doc_values::MultiSortedSetDocValues;
 use rucene::index::multi_reader::reader_util;
-use rucene::index::{DocValues, IndexReader, IndexReaderContext, LeafReaderContext, OrdinalMap, SortedSetDocValues};
+use rucene::index::{
+    DocValues, IndexReader, IndexReaderContext, LeafReaderContext, OrdinalMap, SortedSetDocValues,
+};
 use rucene::internal::hppc::IntIntHashMap;
 use rucene::search::NO_MORE_DOCS;
 use rucene::util::{Bits, BytesRef};
@@ -74,7 +76,10 @@ impl StringValueFacetCounts {
     ///
     /// Equivalent to `StringValueFacetCounts(StringDocValuesReaderState,
     /// FacetsCollector)`.
-    pub fn with_hits(state: &StringDocValuesReaderState, facets_collector: Option<&FacetsCollector>) -> Result<Self> {
+    pub fn with_hits(
+        state: &StringDocValuesReaderState,
+        facets_collector: Option<&FacetsCollector>,
+    ) -> Result<Self> {
         let reader = Arc::clone(&state.reader);
         let field = state.field.clone();
         let ordinal_map = state.ordinal_map.clone();
@@ -111,7 +116,8 @@ impl StringValueFacetCounts {
                     let mut total_docs = 0i32;
                     for matching_docs in facets_collector.get_matching_docs()? {
                         total_hits = total_hits.wrapping_add(matching_docs.total_hits);
-                        total_docs = total_docs.wrapping_add(matching_docs.context.leaf_reader().max_doc());
+                        total_docs =
+                            total_docs.wrapping_add(matching_docs.context.leaf_reader().max_doc());
                     }
 
                     // No counting needed if there are no hits:
@@ -148,7 +154,10 @@ impl StringValueFacetCounts {
     }
 
     fn lookup_ord(&self, ord: i32) -> Result<String> {
-        let mut dv = self.doc_values.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut dv = self
+            .doc_values
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         dv.lookup_ord(ord as i64)?.utf8_to_string()
     }
 
@@ -255,7 +264,9 @@ impl StringValueFacetCounts {
             let values = DocValues::get_sorted_set(&*leaf_reader, &self.field)?;
             match leaf_reader.get_live_docs() {
                 None => self.count_one_segment_nhld(values, context.ord())?,
-                Some(live_docs) => self.count_one_segment(values, context.ord(), None, Some(&*live_docs))?,
+                Some(live_docs) => {
+                    self.count_one_segment(values, context.ord(), None, Some(&*live_docs))?
+                }
             }
         } else {
             // Since we have more than one segment, we should have a non-null
@@ -268,7 +279,9 @@ impl StringValueFacetCounts {
                 let values = DocValues::get_sorted_set(&*leaf_reader, &self.field)?;
                 match leaf_reader.get_live_docs() {
                     None => self.count_one_segment_nhld(values, context.ord())?,
-                    Some(live_docs) => self.count_one_segment(values, context.ord(), None, Some(&*live_docs))?,
+                    Some(live_docs) => {
+                        self.count_one_segment(values, context.ord(), None, Some(&*live_docs))?
+                    }
                 }
             }
         }
@@ -414,7 +427,11 @@ impl StringValueFacetCounts {
     }
 
     /// Equivalent to `countOneSegmentNHLD(SortedSetDocValues, int)`.
-    fn count_one_segment_nhld(&mut self, multi_values: Box<dyn SortedSetDocValues>, segment_ord: i32) -> Result<()> {
+    fn count_one_segment_nhld(
+        &mut self,
+        multi_values: Box<dyn SortedSetDocValues>,
+        segment_ord: i32,
+    ) -> Result<()> {
         // It's slightly more efficient to work against SortedDocValues if the
         // field is actually single-valued (see: LUCENE-5309)
         let segment_cardinality = multi_values.get_value_count()? as i32;
@@ -505,7 +522,8 @@ impl StringValueFacetCounts {
         // the top-level reader passed to the
         // SortedSetDocValuesReaderState, else cryptic
         // AIOOBE can happen:
-        let top = reader_util::get_top_level_context(Arc::clone(context) as Arc<dyn IndexReaderContext>);
+        let top =
+            reader_util::get_top_level_context(Arc::clone(context) as Arc<dyn IndexReaderContext>);
         if !std::ptr::addr_eq(Arc::as_ptr(&top.reader()), Arc::as_ptr(&self.reader)) {
             return Err(LuceneError::illegal_state(READER_MISMATCH));
         }
@@ -558,7 +576,12 @@ impl Facets for StringValueFacetCounts {
         )))
     }
 
-    fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
         self.validate_dim_and_path_for_get_children(dim, path)?;
 
@@ -601,15 +624,23 @@ impl Facets for StringValueFacetCounts {
         }
 
         let result_count = q.as_ref().map_or(0, |q| q.size());
-        let mut label_values: Vec<Option<LabelAndValue>> = (0..result_count).map(|_| None).collect();
+        let mut label_values: Vec<Option<LabelAndValue>> =
+            (0..result_count).map(|_| None).collect();
         for i in (0..result_count).rev() {
-            let ord_and_value = q.as_mut().expect("INVARIANT: non-empty").pop().expect("INVARIANT: size");
+            let ord_and_value = q
+                .as_mut()
+                .expect("INVARIANT: non-empty")
+                .pop()
+                .expect("INVARIANT: size");
             let ord_and_value = ord_and_value
                 .as_any()
                 .downcast_ref::<OrdAndInt>()
                 .expect("ClassCastException: not an OrdAndInt");
             let term = self.lookup_ord(ord_and_value.ord)?;
-            label_values[i] = Some(LabelAndValue::new(term, NumericValue::Int(ord_and_value.value)));
+            label_values[i] = Some(LabelAndValue::new(
+                term,
+                NumericValue::Int(ord_and_value.value),
+            ));
         }
 
         Ok(Some(FacetResult::new(
@@ -632,7 +663,10 @@ impl Facets for StringValueFacetCounts {
             return Err(LuceneError::illegal_argument("path must be length=1"));
         }
         let ord = {
-            let mut dv = self.doc_values.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut dv = self
+                .doc_values
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             dv.lookup_term(&BytesRef::from_char_sequence(path[0]))? as i32
         };
         if ord < 0 {
@@ -651,6 +685,9 @@ impl Facets for StringValueFacetCounts {
 
     fn get_all_dims(&self, top_n: i32) -> Result<Vec<FacetResult>> {
         validate_top_n(top_n)?;
-        Ok(self.get_top_children(top_n, &self.field, &[])?.into_iter().collect())
+        Ok(self
+            .get_top_children(top_n, &self.field, &[])?
+            .into_iter()
+            .collect())
     }
 }

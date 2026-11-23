@@ -97,7 +97,13 @@ impl DoubleRange {
     /// Create a DoubleRange.
     ///
     /// Equivalent to `DoubleRange(String, double, boolean, double, boolean)`.
-    pub fn new(label: &str, mut min_in: f64, min_inclusive: bool, mut max_in: f64, max_inclusive: bool) -> Result<Self> {
+    pub fn new(
+        label: &str,
+        mut min_in: f64,
+        min_inclusive: bool,
+        mut max_in: f64,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         let range = Range::new(label);
 
         // TODO: if DoubleDocValuesField used
@@ -143,7 +149,8 @@ impl DoubleRange {
     }
 
     /// Equivalent to the package-private `toLongRange()`.
-    pub(crate) fn to_long_range(&self) -> Result<LongRange> {
+    // Public for the port of the facet tests (Java package-private).
+    pub fn to_long_range(&self) -> Result<LongRange> {
         LongRange::new(
             &self.range.label,
             NumericUtils::double_to_sortable_long(self.min),

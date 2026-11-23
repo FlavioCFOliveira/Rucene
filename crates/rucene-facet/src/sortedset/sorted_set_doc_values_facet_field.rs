@@ -81,7 +81,11 @@ impl fmt::Display for SortedSetDocValuesFacetField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let path = FacetsConfig::path_to_string_len(&self.path, self.path.len())
             .map_err(|_| fmt::Error)?;
-        write!(f, "SortedSetDocValuesFacetField(dim={} path={})", self.dim, path)
+        write!(
+            f,
+            "SortedSetDocValuesFacetField(dim={} path={})",
+            self.dim, path
+        )
     }
 }
 

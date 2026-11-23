@@ -74,7 +74,11 @@ pub trait DrillSidewaysOverrides: Send + Sync {
         drill_sideways_collectors: Option<&[FacetsCollector]>,
         drill_sideways_dims: Option<&[String]>,
     ) -> Result<Option<Arc<dyn Facets>>> {
-        drill_sideways.default_build_facets_result(drill_downs, drill_sideways_collectors, drill_sideways_dims)
+        drill_sideways.default_build_facets_result(
+            drill_downs,
+            drill_sideways_collectors,
+            drill_sideways_dims,
+        )
     }
 
     /// Override this and return true if your collector (e.g.,
@@ -190,7 +194,8 @@ where
     /// Equivalent to `call()`.
     fn call(self) -> Result<M::Output> {
         let query = self.query.ok_or_else(LuceneError::null_pointer)?;
-        self.searcher.search_with_manager(query, &*self.collector_manager)
+        self.searcher
+            .search_with_manager(query, &*self.collector_manager)
     }
 }
 
@@ -199,7 +204,11 @@ impl DrillSideways {
     ///
     /// Equivalent to `DrillSideways(IndexSearcher, FacetsConfig,
     /// TaxonomyReader)`.
-    pub fn new(searcher: Arc<IndexSearcher>, config: Arc<FacetsConfig>, taxo_reader: Arc<dyn TaxonomyReader>) -> Self {
+    pub fn new(
+        searcher: Arc<IndexSearcher>,
+        config: Arc<FacetsConfig>,
+        taxo_reader: Arc<dyn TaxonomyReader>,
+    ) -> Self {
         Self::with_all(searcher, config, Some(taxo_reader), None, None)
     }
 
@@ -245,7 +254,14 @@ impl DrillSideways {
         state: Option<Arc<dyn SortedSetDocValuesReaderState>>,
         executor: Option<Arc<dyn Executor>>,
     ) -> Self {
-        Self::with_overrides(searcher, config, taxo_reader, state, executor, Arc::new(DefaultOverrides))
+        Self::with_overrides(
+            searcher,
+            config,
+            taxo_reader,
+            state,
+            executor,
+            Arc::new(DefaultOverrides),
+        )
     }
 
     /// The constructor of a subclass that overrides the protected methods
@@ -269,6 +285,8 @@ impl DrillSideways {
     }
 
     /// The base class's `buildFacetsResult`.
+    // The facet counts hold non-`Send` readers, shared as Java shares them.
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn default_build_facets_result(
         &self,
         drill_downs: Option<&FacetsCollector>,
@@ -323,7 +341,10 @@ impl DrillSideways {
             Ok(drill_down_facets)
         } else {
             // `new HashMap<>()` of the dims: the dims are distinct.
-            Ok(Some(Arc::new(MultiFacets::with_default(drill_sideways_facets, drill_down_facets))))
+            Ok(Some(Arc::new(MultiFacets::with_default(
+                drill_sideways_facets,
+                drill_down_facets,
+            ))))
         }
     }
 
@@ -352,7 +373,8 @@ impl DrillSideways {
                     limit = 1; // the collector does not alow numHits = 0
                 }
                 let f_top_n = top_n.min(limit);
-                let collector_manager = TopFieldCollectorManager::new(sort.clone(), f_top_n, after, i32::MAX)?;
+                let collector_manager =
+                    TopFieldCollectorManager::new(sort.clone(), f_top_n, after, i32::MAX)?;
                 let query = Arc::new(query);
                 let r = self.search_with_hit_manager(&query, collector_manager)?;
 
@@ -389,7 +411,12 @@ impl DrillSideways {
     /// counts.
     ///
     /// Equivalent to `search(ScoreDoc, DrillDownQuery, int)`.
-    pub fn search_after(&self, after: Option<ScoreDoc>, query: DrillDownQuery, top_n: i32) -> Result<DrillSidewaysResult> {
+    pub fn search_after(
+        &self,
+        after: Option<ScoreDoc>,
+        query: DrillDownQuery,
+        top_n: i32,
+    ) -> Result<DrillSidewaysResult> {
         let mut limit = self.searcher.get_index_reader().max_doc();
         if limit == 0 {
             limit = 1; // the collector does not alow numHits = 0
@@ -422,7 +449,10 @@ impl DrillSideways {
         queries: &[Arc<dyn Query>],
         excluded_dimension: &str,
     ) -> Result<Option<DrillDownQuery>> {
-        let mut ddl = DrillDownQuery::with_base_query(Arc::clone(&self.config), query.get_base_query().cloned());
+        let mut ddl = DrillDownQuery::with_base_query(
+            Arc::clone(&self.config),
+            query.get_base_query().cloned(),
+        );
         for (dim, pos) in query.get_dims() {
             if dim != excluded_dimension {
                 ddl.add_query(dim, Arc::clone(&queries[*pos as usize]))?;
@@ -449,18 +479,23 @@ impl DrillSideways {
         H::Collector: Send + 'static,
         H::Output: Send + 'static,
     {
-        let drill_down_facets_collector_manager = self.overrides.create_drill_down_facets_collector_manager();
+        let drill_down_facets_collector_manager =
+            self.overrides.create_drill_down_facets_collector_manager();
 
         let num_dims = query.get_dims().len();
-        let drill_sideways_collector_managers: Option<Vec<FacetsCollectorManager>> = if num_dims != 0 {
-            Some(
-                (0..num_dims)
-                    .map(|_| self.overrides.create_drill_sideways_facets_collector_manager())
-                    .collect(),
-            )
-        } else {
-            None
-        };
+        let drill_sideways_collector_managers: Option<Vec<FacetsCollectorManager>> =
+            if num_dims != 0 {
+                Some(
+                    (0..num_dims)
+                        .map(|_| {
+                            self.overrides
+                                .create_drill_sideways_facets_collector_manager()
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
 
         let facets_collector_result: Option<FacetsCollector>;
         let hit_collector_result: H::Output;
@@ -473,10 +508,18 @@ impl DrillSideways {
                     Box::new(fcm) as Box<dyn SendErasedManager>,
                     Box::new(hit_collector_manager),
                 ]);
-                let result = self.run(query, main_collector_manager, drill_sideways_collector_managers)?;
+                let result = self.run(
+                    query,
+                    main_collector_manager,
+                    drill_sideways_collector_managers,
+                )?;
                 let mut drill_down_result = result.drill_down_result;
-                let hit = drill_down_result.pop().ok_or_else(LuceneError::null_pointer)?;
-                let fc = drill_down_result.pop().ok_or_else(LuceneError::null_pointer)?;
+                let hit = drill_down_result
+                    .pop()
+                    .ok_or_else(LuceneError::null_pointer)?;
+                let fc = drill_down_result
+                    .pop()
+                    .ok_or_else(LuceneError::null_pointer)?;
                 facets_collector_result = Some(
                     *fc.downcast::<FacetsCollector>()
                         .map_err(|_| LuceneError::illegal_state("ClassCastException"))?,
@@ -487,7 +530,11 @@ impl DrillSideways {
                 drill_sideways_results = result.drill_sideways_results;
             }
             None => {
-                let result = self.run(query, hit_collector_manager, drill_sideways_collector_managers)?;
+                let result = self.run(
+                    query,
+                    hit_collector_manager,
+                    drill_sideways_collector_managers,
+                )?;
                 facets_collector_result = None;
                 hit_collector_result = result.drill_down_result;
                 drill_sideways_results = result.drill_sideways_results;
@@ -538,9 +585,17 @@ impl DrillSideways {
         M::Output: Send + 'static,
     {
         if self.executor.is_some() {
-            self.search_concurrently(query, drill_down_collector_manager, drill_sideways_collector_managers)
+            self.search_concurrently(
+                query,
+                drill_down_collector_manager,
+                drill_sideways_collector_managers,
+            )
         } else {
-            self.search_sequentially(query, drill_down_collector_manager, drill_sideways_collector_managers)
+            self.search_sequentially(
+                query,
+                drill_down_collector_manager,
+                drill_sideways_collector_managers,
+            )
         }
     }
 
@@ -584,9 +639,17 @@ impl DrillSideways {
             }
         }
         if self.executor.is_some() {
-            self.search_concurrently(query, drill_down_collector_manager, drill_sideways_collector_managers)
+            self.search_concurrently(
+                query,
+                drill_down_collector_manager,
+                drill_sideways_collector_managers,
+            )
         } else {
-            self.search_sequentially(query, drill_down_collector_manager, drill_sideways_collector_managers)
+            self.search_sequentially(
+                query,
+                drill_down_collector_manager,
+                drill_sideways_collector_managers,
+            )
         }
     }
 
@@ -610,9 +673,10 @@ impl DrillSideways {
             // There are no drill-down dims, so there is no drill-sideways to
             // compute:
             return Ok(DrillSidewaysResultRecord {
-                drill_down_result: self
-                    .searcher
-                    .search_with_manager(Arc::clone(query) as Arc<dyn Query>, &drill_down_collector_manager)?,
+                drill_down_result: self.searcher.search_with_manager(
+                    Arc::clone(query) as Arc<dyn Query>,
+                    &drill_down_collector_manager,
+                )?,
                 drill_sideways_results: None,
             });
         }
@@ -639,13 +703,21 @@ impl DrillSideways {
             .searcher
             .search_with_manager(Arc::new(dsq), &drill_down_collector_manager)?;
 
-        let managed = std::mem::take(&mut *managed.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let managed = std::mem::take(
+            &mut *managed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         let num_slices = managed.len();
-        let mut per_dim: Vec<Vec<M::Collector>> = (0..drill_down_dims.len()).map(|_| Vec::with_capacity(num_slices)).collect();
+        let mut per_dim: Vec<Vec<M::Collector>> = (0..drill_down_dims.len())
+            .map(|_| Vec::with_capacity(num_slices))
+            .collect();
         for slice in managed {
             for (dim, slot) in slice.into_iter().enumerate() {
                 let collector = Arc::try_unwrap(slot)
-                    .map_err(|_| LuceneError::illegal_state("a sideways collector is still in use"))?
+                    .map_err(|_| {
+                        LuceneError::illegal_state("a sideways collector is still in use")
+                    })?
                     .into_inner()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 per_dim[dim].push(collector);
@@ -679,7 +751,10 @@ impl DrillSideways {
         M::Collector: Send + 'static,
         M::Output: Send + 'static,
     {
-        let executor = self.executor.as_ref().ok_or_else(LuceneError::null_pointer)?;
+        let executor = self
+            .executor
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)?;
         let drill_down_dims = query.get_dims();
         let drill_down_callable_collector = CallableCollector {
             searcher: Arc::clone(&self.searcher),
@@ -708,11 +783,14 @@ impl DrillSideways {
                 Ok(Box::new(drill_down_callable_collector.call()?) as TaskValue)
             }))
             .map_err(rejected)?;
-        let mut drill_sideways_futures = Vec::with_capacity(drill_sideways_callable_collectors.len());
+        let mut drill_sideways_futures =
+            Vec::with_capacity(drill_sideways_callable_collectors.len());
         for callable in drill_sideways_callable_collectors {
             drill_sideways_futures.push(
                 executor
-                    .submit(Box::new(move || Ok(Box::new(callable.call()?) as TaskValue)))
+                    .submit(Box::new(
+                        move || Ok(Box::new(callable.call()?) as TaskValue),
+                    ))
                     .map_err(rejected)?,
             );
         }
@@ -761,7 +839,10 @@ where
     fn reduce_any(&self, collectors: Vec<Box<dyn Any + Send>>) -> Result<Box<dyn Any + Send>> {
         let typed: Vec<M::Collector> = collectors
             .into_iter()
-            .map(|c| *c.downcast::<M::Collector>().expect("INVARIANT: collectors of this manager"))
+            .map(|c| {
+                *c.downcast::<M::Collector>()
+                    .expect("INVARIANT: collectors of this manager")
+            })
             .collect();
         Ok(Box::new(CollectorManager::reduce(self, typed)?))
     }
@@ -793,7 +874,9 @@ impl CollectorManager for SendMultiCollectorManager {
             collectors.push(manager.new_any()?);
         }
         if collectors.len() == 1 {
-            Ok(MultiCollectorHandle::Single(collectors.pop().expect("INVARIANT: one")))
+            Ok(MultiCollectorHandle::Single(
+                collectors.pop().expect("INVARIANT: one"),
+            ))
         } else {
             Ok(MultiCollectorHandle::Multi(MultiCollector::new(collectors)))
         }

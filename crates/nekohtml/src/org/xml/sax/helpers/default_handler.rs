@@ -35,13 +35,22 @@ impl DefaultHandler {
 }
 
 impl EntityResolver for DefaultHandler {
-    fn resolve_entity(&self, _public_id: Option<&str>, _system_id: Option<&str>) -> JResult<Option<InputSource>> {
+    fn resolve_entity(
+        &self,
+        _public_id: Option<&str>,
+        _system_id: Option<&str>,
+    ) -> JResult<Option<InputSource>> {
         Ok(None)
     }
 }
 
 impl DTDHandler for DefaultHandler {
-    fn notation_decl(&self, _name: &str, _public_id: Option<&str>, _system_id: Option<&str>) -> JResult<()> {
+    fn notation_decl(
+        &self,
+        _name: &str,
+        _public_id: Option<&str>,
+        _system_id: Option<&str>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -75,7 +84,13 @@ impl ContentHandler for DefaultHandler {
         Ok(())
     }
 
-    fn start_element(&self, _uri: &str, _local_name: &str, _qname: &str, _attributes: &dyn Attributes) -> JResult<()> {
+    fn start_element(
+        &self,
+        _uri: &str,
+        _local_name: &str,
+        _qname: &str,
+        _attributes: &dyn Attributes,
+    ) -> JResult<()> {
         Ok(())
     }
 

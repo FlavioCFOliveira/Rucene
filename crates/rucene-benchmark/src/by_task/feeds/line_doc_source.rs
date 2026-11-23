@@ -261,21 +261,41 @@ impl LineDocSource {
             s.reader = Some(reader);
             Ok(())
         })();
-        result.map_err(|e| if e.is_io_exception() { jdk::runtime_exception_from(e) } else { e })
+        result.map_err(|e| {
+            if e.is_io_exception() {
+                jdk::runtime_exception_from(e)
+            } else {
+                e
+            }
+        })
     }
 
     /// `createDocDataLineReader(String line)`.
-    fn create_doc_data_line_reader(&self, s: &mut State, line: &str) -> Result<Arc<dyn LineParser>> {
-        let head_indicator = format!("{}{}", WriteLineDocTask::FIELDS_HEADER_INDICATOR, WriteLineDocTask::SEP);
+    fn create_doc_data_line_reader(
+        &self,
+        s: &mut State,
+        line: &str,
+    ) -> Result<Arc<dyn LineParser>> {
+        let head_indicator = format!(
+            "{}{}",
+            WriteLineDocTask::FIELDS_HEADER_INDICATOR,
+            WriteLineDocTask::SEP
+        );
         let header: Vec<String> = if let Some(rest) = line.strip_prefix(&head_indicator) {
             s.skip_header_line = true; // mark to skip the header line when input file is reopened
             jdk::split(rest, &WriteLineDocTask::SEP.to_string())
         } else {
-            WriteLineDocTask::DEFAULT_FIELDS.iter().map(|s| s.to_string()).collect()
+            WriteLineDocTask::DEFAULT_FIELDS
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         };
 
         // if a specific DocDataLineReader was configured, must respect it
-        let config = self.base.get_config().ok_or_else(LuceneError::null_pointer)?;
+        let config = self
+            .base
+            .get_config()
+            .ok_or_else(LuceneError::null_pointer)?;
         if let Some(class_name) = config.get_str("line.parser", None)? {
             return classes::line_parser_for_name(&class_name, Some(header)).map_err(|e| {
                 jdk::runtime_exception_with_cause(format!("Failed to instantiate {class_name}"), e)
@@ -283,7 +303,11 @@ impl LineDocSource {
         }
 
         // if this the simple case,
-        if header.iter().map(String::as_str).eq(WriteLineDocTask::DEFAULT_FIELDS) {
+        if header
+            .iter()
+            .map(String::as_str)
+            .eq(WriteLineDocTask::DEFAULT_FIELDS)
+        {
             return Ok(Arc::new(SimpleLineParser::new(Some(header))));
         }
         Ok(Arc::new(HeaderLineParser::new(Some(header))?))
@@ -359,7 +383,11 @@ impl ContentSource for LineDocSource {
                 // increment IDS only once...
                 let my_id = s.read_count;
                 s.read_count += 1;
-                break (line, my_id, Arc::clone(s.doc_data_line_reader.as_ref().expect("set above")));
+                break (
+                    line,
+                    my_id,
+                    Arc::clone(s.doc_data_line_reader.as_ref().expect("set above")),
+                );
             }
         };
 
@@ -371,4 +399,5 @@ impl ContentSource for LineDocSource {
 }
 
 /// A constructor of a `LineParser`: `getConstructor(String[].class)`.
-pub type LineParserConstructor = Arc<dyn Fn(Option<Vec<String>>) -> Result<Arc<dyn LineParser>> + Send + Sync>;
+pub type LineParserConstructor =
+    Arc<dyn Fn(Option<Vec<String>>) -> Result<Arc<dyn LineParser>> + Send + Sync>;

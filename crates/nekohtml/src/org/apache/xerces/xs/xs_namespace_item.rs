@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -45,19 +45,27 @@ pub trait XSNamespaceItem {
     fn get_element_declaration(&self, name: Option<&str>) -> Option<Rc<dyn XSElementDeclaration>>;
 
     /// Equivalent to `getAttributeDeclaration(String)`.
-    fn get_attribute_declaration(&self, name: Option<&str>) -> Option<Rc<dyn XSAttributeDeclaration>>;
+    fn get_attribute_declaration(
+        &self,
+        name: Option<&str>,
+    ) -> Option<Rc<dyn XSAttributeDeclaration>>;
 
     /// Equivalent to `getTypeDefinition(String)`.
     fn get_type_definition(&self, name: Option<&str>) -> Option<Rc<dyn XSTypeDefinition>>;
 
     /// Equivalent to `getAttributeGroup(String)`.
-    fn get_attribute_group(&self, name: Option<&str>) -> Option<Rc<dyn XSAttributeGroupDefinition>>;
+    fn get_attribute_group(&self, name: Option<&str>)
+        -> Option<Rc<dyn XSAttributeGroupDefinition>>;
 
     /// Equivalent to `getModelGroupDefinition(String)`.
-    fn get_model_group_definition(&self, name: Option<&str>) -> Option<Rc<dyn XSModelGroupDefinition>>;
+    fn get_model_group_definition(
+        &self,
+        name: Option<&str>,
+    ) -> Option<Rc<dyn XSModelGroupDefinition>>;
 
     /// Equivalent to `getNotationDeclaration(String)`.
-    fn get_notation_declaration(&self, name: Option<&str>) -> Option<Rc<dyn XSNotationDeclaration>>;
+    fn get_notation_declaration(&self, name: Option<&str>)
+        -> Option<Rc<dyn XSNotationDeclaration>>;
 
     /// Equivalent to `getIDCDefinition(String)`.
     fn get_idc_definition(&self, name: Option<&str>) -> Option<Rc<dyn XSIDCDefinition>>;

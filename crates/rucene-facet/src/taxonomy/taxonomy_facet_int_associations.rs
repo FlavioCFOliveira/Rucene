@@ -98,7 +98,8 @@ impl TaxonomyFacetIntAssociations {
             }
             self.base.initialize_value_counters()?;
 
-            let mut dv = DocValues::get_binary(&*hits.context.leaf_reader(), &self.base.index_field_name)?;
+            let mut dv =
+                DocValues::get_binary(&*hits.context.leaf_reader(), &self.base.index_field_name)?;
             let mut bits_it = hits.bits.iterator()?;
             loop {
                 let doc = Intersect2::new(&mut *bits_it, &mut *dv).next_doc()?;
@@ -110,9 +111,11 @@ impl TaxonomyFacetIntAssociations {
                 let end = bytes_ref.offset + bytes_ref.length;
                 let mut offset = bytes_ref.offset;
                 while offset < end {
-                    let ord = i32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"));
+                    let ord =
+                        i32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"));
                     offset += 4;
-                    let value = i32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"));
+                    let value =
+                        i32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"));
                     offset += 4;
                     // TODO: Can we optimize the null check in setValue? See
                     // LUCENE-10373.

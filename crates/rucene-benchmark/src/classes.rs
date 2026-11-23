@@ -68,7 +68,10 @@ fn class_cast(name: &str) -> LuceneError {
 
 /// `(TaskSequence) task` for a task known to be a sequence.
 pub(crate) fn downcast_sequence(task: &Arc<dyn PerfTask>) -> Arc<TaskSequence> {
-    task.as_any().downcast_ref::<TaskSequence>().expect("checked by the caller").as_arc()
+    task.as_any()
+        .downcast_ref::<TaskSequence>()
+        .expect("checked by the caller")
+        .as_arc()
 }
 
 /// A constructor of a task: `getConstructor(PerfRunData.class)`.
@@ -82,7 +85,8 @@ pub type FacetSourceConstructor = Arc<dyn Fn() -> Arc<dyn FacetSource> + Send + 
 /// A public no-argument constructor of a `QueryMaker`.
 pub type QueryMakerConstructor = Arc<dyn Fn() -> Arc<dyn QueryMaker> + Send + Sync>;
 /// A public no-argument constructor of a `CollectorManager`.
-pub type CollectorManagerConstructor = Arc<dyn Fn() -> Result<Box<dyn AnyCollectorManager>> + Send + Sync>;
+pub type CollectorManagerConstructor =
+    Arc<dyn Fn() -> Result<Box<dyn AnyCollectorManager>> + Send + Sync>;
 
 /// One table.
 struct Table<F> {
@@ -91,19 +95,36 @@ struct Table<F> {
 
 impl<F: Clone> Table<F> {
     fn new(entries: Vec<(&str, F)>) -> Self {
-        Table { entries: RwLock::new(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()) }
+        Table {
+            entries: RwLock::new(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            ),
+        }
     }
 
     fn get(&self, name: &str) -> Option<F> {
-        self.entries.read().unwrap_or_else(|e| e.into_inner()).get(name).cloned()
+        self.entries
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
     }
 
     fn contains(&self, name: &str) -> bool {
-        self.entries.read().unwrap_or_else(|e| e.into_inner()).contains_key(name)
+        self.entries
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(name)
     }
 
     fn register(&self, name: &str, f: F) {
-        self.entries.write().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), f);
+        self.entries
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), f);
     }
 }
 
@@ -111,8 +132,9 @@ macro_rules! task_entry {
     ($ty:ty, $name:literal) => {
         (
             concat!("org.apache.lucene.benchmark.byTask.tasks.", $name),
-            Arc::new(|run_data: Arc<PerfRunData>| -> Result<Arc<dyn PerfTask>> { Ok(Arc::new(<$ty>::new(run_data)?)) })
-                as TaskConstructor,
+            Arc::new(|run_data: Arc<PerfRunData>| -> Result<Arc<dyn PerfTask>> {
+                Ok(Arc::new(<$ty>::new(run_data)?))
+            }) as TaskConstructor,
         )
     };
 }
@@ -123,52 +145,109 @@ static TASKS: LazyLock<Table<TaskConstructor>> = LazyLock::new(|| {
         task_entry!(add_doc_task::AddDocTask, "AddDocTask"),
         task_entry!(add_faceted_doc_task::AddFacetedDocTask, "AddFacetedDocTask"),
         task_entry!(add_indexes_task::AddIndexesTask, "AddIndexesTask"),
-        task_entry!(analyzer_factory_task::AnalyzerFactoryTask, "AnalyzerFactoryTask"),
+        task_entry!(
+            analyzer_factory_task::AnalyzerFactoryTask,
+            "AnalyzerFactoryTask"
+        ),
         task_entry!(clear_stats_task::ClearStatsTask, "ClearStatsTask"),
         task_entry!(close_index_task::CloseIndexTask, "CloseIndexTask"),
         task_entry!(close_reader_task::CloseReaderTask, "CloseReaderTask"),
-        task_entry!(close_taxonomy_index_task::CloseTaxonomyIndexTask, "CloseTaxonomyIndexTask"),
-        task_entry!(close_taxonomy_reader_task::CloseTaxonomyReaderTask, "CloseTaxonomyReaderTask"),
+        task_entry!(
+            close_taxonomy_index_task::CloseTaxonomyIndexTask,
+            "CloseTaxonomyIndexTask"
+        ),
+        task_entry!(
+            close_taxonomy_reader_task::CloseTaxonomyReaderTask,
+            "CloseTaxonomyReaderTask"
+        ),
         task_entry!(commit_index_task::CommitIndexTask, "CommitIndexTask"),
-        task_entry!(commit_taxonomy_index_task::CommitTaxonomyIndexTask, "CommitTaxonomyIndexTask"),
-        task_entry!(consume_content_source_task::ConsumeContentSourceTask, "ConsumeContentSourceTask"),
+        task_entry!(
+            commit_taxonomy_index_task::CommitTaxonomyIndexTask,
+            "CommitTaxonomyIndexTask"
+        ),
+        task_entry!(
+            consume_content_source_task::ConsumeContentSourceTask,
+            "ConsumeContentSourceTask"
+        ),
         task_entry!(create_index_task::CreateIndexTask, "CreateIndexTask"),
-        task_entry!(create_taxonomy_index_task::CreateTaxonomyIndexTask, "CreateTaxonomyIndexTask"),
+        task_entry!(
+            create_taxonomy_index_task::CreateTaxonomyIndexTask,
+            "CreateTaxonomyIndexTask"
+        ),
         task_entry!(flush_index_task::FlushIndexTask, "FlushIndexTask"),
         task_entry!(force_merge_task::ForceMergeTask, "ForceMergeTask"),
-        task_entry!(near_realtime_reader_task::NearRealtimeReaderTask, "NearRealtimeReaderTask"),
+        task_entry!(
+            near_realtime_reader_task::NearRealtimeReaderTask,
+            "NearRealtimeReaderTask"
+        ),
         task_entry!(new_analyzer_task::NewAnalyzerTask, "NewAnalyzerTask"),
-        task_entry!(new_collation_analyzer_task::NewCollationAnalyzerTask, "NewCollationAnalyzerTask"),
+        task_entry!(
+            new_collation_analyzer_task::NewCollationAnalyzerTask,
+            "NewCollationAnalyzerTask"
+        ),
         task_entry!(new_locale_task::NewLocaleTask, "NewLocaleTask"),
         task_entry!(new_round_task::NewRoundTask, "NewRoundTask"),
         task_entry!(open_index_task::OpenIndexTask, "OpenIndexTask"),
         task_entry!(open_reader_task::OpenReaderTask, "OpenReaderTask"),
-        task_entry!(open_taxonomy_index_task::OpenTaxonomyIndexTask, "OpenTaxonomyIndexTask"),
-        task_entry!(open_taxonomy_reader_task::OpenTaxonomyReaderTask, "OpenTaxonomyReaderTask"),
+        task_entry!(
+            open_taxonomy_index_task::OpenTaxonomyIndexTask,
+            "OpenTaxonomyIndexTask"
+        ),
+        task_entry!(
+            open_taxonomy_reader_task::OpenTaxonomyReaderTask,
+            "OpenTaxonomyReaderTask"
+        ),
         task_entry!(print_reader_task::PrintReaderTask, "PrintReaderTask"),
         task_entry!(read_tokens_task::ReadTokensTask, "ReadTokensTask"),
         task_entry!(reopen_reader_task::ReopenReaderTask, "ReopenReaderTask"),
         task_entry!(rep_all_task::RepAllTask, "RepAllTask"),
-        task_entry!(rep_select_by_pref_task::RepSelectByPrefTask, "RepSelectByPrefTask"),
-        task_entry!(rep_sum_by_name_round_task::RepSumByNameRoundTask, "RepSumByNameRoundTask"),
+        task_entry!(
+            rep_select_by_pref_task::RepSelectByPrefTask,
+            "RepSelectByPrefTask"
+        ),
+        task_entry!(
+            rep_sum_by_name_round_task::RepSumByNameRoundTask,
+            "RepSumByNameRoundTask"
+        ),
         task_entry!(rep_sum_by_name_task::RepSumByNameTask, "RepSumByNameTask"),
-        task_entry!(rep_sum_by_pref_round_task::RepSumByPrefRoundTask, "RepSumByPrefRoundTask"),
+        task_entry!(
+            rep_sum_by_pref_round_task::RepSumByPrefRoundTask,
+            "RepSumByPrefRoundTask"
+        ),
         task_entry!(rep_sum_by_pref_task::RepSumByPrefTask, "RepSumByPrefTask"),
         task_entry!(reset_inputs_task::ResetInputsTask, "ResetInputsTask"),
-        task_entry!(reset_system_erase_task::ResetSystemEraseTask, "ResetSystemEraseTask"),
-        task_entry!(reset_system_soft_task::ResetSystemSoftTask, "ResetSystemSoftTask"),
+        task_entry!(
+            reset_system_erase_task::ResetSystemEraseTask,
+            "ResetSystemEraseTask"
+        ),
+        task_entry!(
+            reset_system_soft_task::ResetSystemSoftTask,
+            "ResetSystemSoftTask"
+        ),
         task_entry!(rollback_index_task::RollbackIndexTask, "RollbackIndexTask"),
         task_entry!(search_task::SearchTask, "SearchTask"),
-        task_entry!(search_trav_ret_highlight_task::SearchTravRetHighlightTask, "SearchTravRetHighlightTask"),
+        task_entry!(
+            search_trav_ret_highlight_task::SearchTravRetHighlightTask,
+            "SearchTravRetHighlightTask"
+        ),
         task_entry!(search_trav_ret_task::SearchTravRetTask, "SearchTravRetTask"),
         task_entry!(search_trav_task::SearchTravTask, "SearchTravTask"),
-        task_entry!(search_with_collector_task::SearchWithCollectorTask, "SearchWithCollectorTask"),
-        task_entry!(search_with_sort_task::SearchWithSortTask, "SearchWithSortTask"),
+        task_entry!(
+            search_with_collector_task::SearchWithCollectorTask,
+            "SearchWithCollectorTask"
+        ),
+        task_entry!(
+            search_with_sort_task::SearchWithSortTask,
+            "SearchWithSortTask"
+        ),
         task_entry!(set_prop_task::SetPropTask, "SetPropTask"),
         task_entry!(update_doc_task::UpdateDocTask, "UpdateDocTask"),
         task_entry!(wait_task::WaitTask, "WaitTask"),
         task_entry!(warm_task::WarmTask, "WarmTask"),
-        task_entry!(write_enwiki_line_doc_task::WriteEnwikiLineDocTask, "WriteEnwikiLineDocTask"),
+        task_entry!(
+            write_enwiki_line_doc_task::WriteEnwikiLineDocTask,
+            "WriteEnwikiLineDocTask"
+        ),
         task_entry!(write_line_doc_task::WriteLineDocTask, "WriteLineDocTask"),
         (
             "org.apache.lucene.benchmark.byTask.tasks.TaskSequence",
@@ -189,7 +268,8 @@ macro_rules! content_source_entry {
     ($ty:ty, $name:literal) => {
         (
             concat!("org.apache.lucene.benchmark.byTask.feeds.", $name),
-            Arc::new(|| Arc::new(<$ty>::new()) as Arc<dyn ContentSource>) as ContentSourceConstructor,
+            Arc::new(|| Arc::new(<$ty>::new()) as Arc<dyn ContentSource>)
+                as ContentSourceConstructor,
         )
     };
 }
@@ -198,12 +278,24 @@ static CONTENT_SOURCES: LazyLock<Table<ContentSourceConstructor>> = LazyLock::ne
     use crate::by_task::feeds::*;
     Table::new(vec![
         content_source_entry!(dir_content_source::DirContentSource, "DirContentSource"),
-        content_source_entry!(enwiki_content_source::EnwikiContentSource, "EnwikiContentSource"),
+        content_source_entry!(
+            enwiki_content_source::EnwikiContentSource,
+            "EnwikiContentSource"
+        ),
         content_source_entry!(line_doc_source::LineDocSource, "LineDocSource"),
-        content_source_entry!(long_to_english_content_source::LongToEnglishContentSource, "LongToEnglishContentSource"),
-        content_source_entry!(reuters_content_source::ReutersContentSource, "ReutersContentSource"),
+        content_source_entry!(
+            long_to_english_content_source::LongToEnglishContentSource,
+            "LongToEnglishContentSource"
+        ),
+        content_source_entry!(
+            reuters_content_source::ReutersContentSource,
+            "ReutersContentSource"
+        ),
         content_source_entry!(single_doc_source::SingleDocSource, "SingleDocSource"),
-        content_source_entry!(sortable_single_doc_source::SortableSingleDocSource, "SortableSingleDocSource"),
+        content_source_entry!(
+            sortable_single_doc_source::SortableSingleDocSource,
+            "SortableSingleDocSource"
+        ),
         content_source_entry!(trec_content_source::TrecContentSource, "TrecContentSource"),
     ])
 });
@@ -217,7 +309,8 @@ static DOC_MAKERS: LazyLock<Table<DocMakerConstructor>> = LazyLock::new(|| {
         ),
         (
             "org.apache.lucene.benchmark.byTask.feeds.SpatialDocMaker",
-            Arc::new(|| Arc::new(SpatialDocMaker::new()) as Arc<dyn DocMakerClass>) as DocMakerConstructor,
+            Arc::new(|| Arc::new(SpatialDocMaker::new()) as Arc<dyn DocMakerClass>)
+                as DocMakerConstructor,
         ),
     ])
 });
@@ -225,7 +318,8 @@ static DOC_MAKERS: LazyLock<Table<DocMakerConstructor>> = LazyLock::new(|| {
 static FACET_SOURCES: LazyLock<Table<FacetSourceConstructor>> = LazyLock::new(|| {
     Table::new(vec![(
         "org.apache.lucene.benchmark.byTask.feeds.RandomFacetSource",
-        Arc::new(|| Arc::new(RandomFacetSource::new()) as Arc<dyn FacetSource>) as FacetSourceConstructor,
+        Arc::new(|| Arc::new(RandomFacetSource::new()) as Arc<dyn FacetSource>)
+            as FacetSourceConstructor,
     )])
 });
 
@@ -242,16 +336,29 @@ static QUERY_MAKERS: LazyLock<Table<QueryMakerConstructor>> = LazyLock::new(|| {
     use crate::by_task::feeds::*;
     Table::new(vec![
         query_maker_entry!(enwiki_query_maker::EnwikiQueryMaker, "EnwikiQueryMaker"),
-        query_maker_entry!(file_based_query_maker::FileBasedQueryMaker, "FileBasedQueryMaker"),
-        query_maker_entry!(long_to_english_query_maker::LongToEnglishQueryMaker, "LongToEnglishQueryMaker"),
+        query_maker_entry!(
+            file_based_query_maker::FileBasedQueryMaker,
+            "FileBasedQueryMaker"
+        ),
+        query_maker_entry!(
+            long_to_english_query_maker::LongToEnglishQueryMaker,
+            "LongToEnglishQueryMaker"
+        ),
         query_maker_entry!(reuters_query_maker::ReutersQueryMaker, "ReutersQueryMaker"),
         query_maker_entry!(simple_query_maker::SimpleQueryMaker, "SimpleQueryMaker"),
-        query_maker_entry!(simple_sloppy_phrase_query_maker::SimpleSloppyPhraseQueryMaker, "SimpleSloppyPhraseQueryMaker"),
-        query_maker_entry!(spatial_file_query_maker::SpatialFileQueryMaker, "SpatialFileQueryMaker"),
+        query_maker_entry!(
+            simple_sloppy_phrase_query_maker::SimpleSloppyPhraseQueryMaker,
+            "SimpleSloppyPhraseQueryMaker"
+        ),
+        query_maker_entry!(
+            spatial_file_query_maker::SpatialFileQueryMaker,
+            "SpatialFileQueryMaker"
+        ),
     ])
 });
 
-static COLLECTOR_MANAGERS: LazyLock<Table<CollectorManagerConstructor>> = LazyLock::new(|| Table::new(vec![]));
+static COLLECTOR_MANAGERS: LazyLock<Table<CollectorManagerConstructor>> =
+    LazyLock::new(|| Table::new(vec![]));
 
 /// Whether any table knows `name`.
 fn known(name: &str) -> bool {
@@ -303,7 +410,10 @@ pub fn task_for_name(name: &str, run_data: &Arc<PerfRunData>) -> Option<Result<A
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
 pub fn content_source_for_name(name: &str) -> Result<Arc<dyn ContentSource>> {
-    CONTENT_SOURCES.get(name).map(|c| c()).ok_or_else(|| missing(name))
+    CONTENT_SOURCES
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(DocMaker.class).getConstructor().newInstance()`.
@@ -312,7 +422,10 @@ pub fn content_source_for_name(name: &str) -> Result<Arc<dyn ContentSource>> {
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
 pub fn doc_maker_for_name(name: &str) -> Result<Arc<dyn DocMakerClass>> {
-    DOC_MAKERS.get(name).map(|c| c()).ok_or_else(|| missing(name))
+    DOC_MAKERS
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(FacetSource.class).getConstructor().newInstance()`.
@@ -321,7 +434,10 @@ pub fn doc_maker_for_name(name: &str) -> Result<Arc<dyn DocMakerClass>> {
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
 pub fn facet_source_for_name(name: &str) -> Result<Arc<dyn FacetSource>> {
-    FACET_SOURCES.get(name).map(|c| c()).ok_or_else(|| missing(name))
+    FACET_SOURCES
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(QueryMaker.class)`.
@@ -343,7 +459,10 @@ pub fn check_query_maker_class(name: &str) -> Result<()> {
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
 pub fn query_maker_for_name(name: &str) -> Result<Arc<dyn QueryMaker>> {
-    QUERY_MAKERS.get(name).map(|c| c()).ok_or_else(|| missing(name))
+    QUERY_MAKERS
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(CollectorManager.class).getConstructor().newInstance()`.
@@ -365,7 +484,9 @@ pub fn collector_manager_for_name(name: &str) -> Result<Box<dyn AnyCollectorMana
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
 pub fn analyzer_for_name(name: &str) -> Result<Arc<dyn Analyzer>> {
-    let registry = rucene_analysis_common::spi::analyzer_classes().read().unwrap_or_else(|e| e.into_inner());
+    let registry = rucene_analysis_common::spi::analyzer_classes()
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     match registry.find_class(name) {
         Ok(factory) => Ok(factory()),
         Err(_) => Err(missing(name)),
@@ -403,18 +524,22 @@ pub fn register_collector_manager_class(name: &str, constructor: CollectorManage
 }
 
 /// A public no-argument constructor of an `IndexDeletionPolicy`.
-pub type DeletionPolicyConstructor =
-    Arc<dyn Fn() -> Arc<dyn rucene::index::index_deletion_policy::IndexDeletionPolicy> + Send + Sync>;
+pub type DeletionPolicyConstructor = Arc<
+    dyn Fn() -> Arc<dyn rucene::index::index_deletion_policy::IndexDeletionPolicy> + Send + Sync,
+>;
 /// A public no-argument constructor of a `MergeScheduler`.
 pub type MergeSchedulerConstructor =
     Arc<dyn Fn() -> Arc<dyn rucene::index::merge_scheduler::MergeScheduler> + Send + Sync>;
 /// A public no-argument constructor of a `MergePolicy`.
-pub type MergePolicyConstructor = Arc<dyn Fn() -> Arc<dyn rucene::index::merge_policy::MergePolicy> + Send + Sync>;
+pub type MergePolicyConstructor =
+    Arc<dyn Fn() -> Arc<dyn rucene::index::merge_policy::MergePolicy> + Send + Sync>;
 /// A public no-argument constructor of a `Codec`.
 pub type CodecConstructor = Arc<dyn Fn() -> Result<Arc<dyn rucene::codecs::Codec>> + Send + Sync>;
 
 static DELETION_POLICIES: LazyLock<Table<DeletionPolicyConstructor>> = LazyLock::new(|| {
-    use rucene::index::index_deletion_policy::{IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy};
+    use rucene::index::index_deletion_policy::{
+        IndexDeletionPolicy, KeepOnlyLastCommitDeletionPolicy,
+    };
     Table::new(vec![(
         "org.apache.lucene.index.KeepOnlyLastCommitDeletionPolicy",
         Arc::new(|| Arc::new(KeepOnlyLastCommitDeletionPolicy) as Arc<dyn IndexDeletionPolicy>)
@@ -423,15 +548,19 @@ static DELETION_POLICIES: LazyLock<Table<DeletionPolicyConstructor>> = LazyLock:
 });
 
 static MERGE_SCHEDULERS: LazyLock<Table<MergeSchedulerConstructor>> = LazyLock::new(|| {
-    use rucene::index::merge_scheduler::{ConcurrentMergeScheduler, MergeScheduler, SerialMergeScheduler};
+    use rucene::index::merge_scheduler::{
+        ConcurrentMergeScheduler, MergeScheduler, SerialMergeScheduler,
+    };
     Table::new(vec![
         (
             "org.apache.lucene.index.ConcurrentMergeScheduler",
-            Arc::new(|| Arc::new(ConcurrentMergeScheduler::new()) as Arc<dyn MergeScheduler>) as MergeSchedulerConstructor,
+            Arc::new(|| Arc::new(ConcurrentMergeScheduler::new()) as Arc<dyn MergeScheduler>)
+                as MergeSchedulerConstructor,
         ),
         (
             "org.apache.lucene.index.SerialMergeScheduler",
-            Arc::new(|| Arc::new(SerialMergeScheduler::new()) as Arc<dyn MergeScheduler>) as MergeSchedulerConstructor,
+            Arc::new(|| Arc::new(SerialMergeScheduler::new()) as Arc<dyn MergeScheduler>)
+                as MergeSchedulerConstructor,
         ),
     ])
 });
@@ -441,15 +570,18 @@ static MERGE_POLICIES: LazyLock<Table<MergePolicyConstructor>> = LazyLock::new(|
     Table::new(vec![
         (
             "org.apache.lucene.index.LogByteSizeMergePolicy",
-            Arc::new(|| Arc::new(LogMergePolicy::by_byte_size()) as Arc<dyn MergePolicy>) as MergePolicyConstructor,
+            Arc::new(|| Arc::new(LogMergePolicy::by_byte_size()) as Arc<dyn MergePolicy>)
+                as MergePolicyConstructor,
         ),
         (
             "org.apache.lucene.index.LogDocMergePolicy",
-            Arc::new(|| Arc::new(LogMergePolicy::by_doc_count()) as Arc<dyn MergePolicy>) as MergePolicyConstructor,
+            Arc::new(|| Arc::new(LogMergePolicy::by_doc_count()) as Arc<dyn MergePolicy>)
+                as MergePolicyConstructor,
         ),
         (
             "org.apache.lucene.index.TieredMergePolicy",
-            Arc::new(|| Arc::new(TieredMergePolicy::new()) as Arc<dyn MergePolicy>) as MergePolicyConstructor,
+            Arc::new(|| Arc::new(TieredMergePolicy::new()) as Arc<dyn MergePolicy>)
+                as MergePolicyConstructor,
         ),
     ])
 });
@@ -469,7 +601,10 @@ static CODECS: LazyLock<Table<CodecConstructor>> = LazyLock::new(|| {
 pub fn deletion_policy_for_name(
     name: &str,
 ) -> Result<Arc<dyn rucene::index::index_deletion_policy::IndexDeletionPolicy>> {
-    DELETION_POLICIES.get(name).map(|c| c()).ok_or_else(|| missing(name))
+    DELETION_POLICIES
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(MergeScheduler.class).getConstructor().newInstance()`.
@@ -477,8 +612,13 @@ pub fn deletion_policy_for_name(
 /// # Errors
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
-pub fn merge_scheduler_for_name(name: &str) -> Result<Arc<dyn rucene::index::merge_scheduler::MergeScheduler>> {
-    MERGE_SCHEDULERS.get(name).map(|c| c()).ok_or_else(|| missing(name))
+pub fn merge_scheduler_for_name(
+    name: &str,
+) -> Result<Arc<dyn rucene::index::merge_scheduler::MergeScheduler>> {
+    MERGE_SCHEDULERS
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(MergePolicy.class).getConstructor().newInstance()`.
@@ -486,8 +626,13 @@ pub fn merge_scheduler_for_name(name: &str) -> Result<Arc<dyn rucene::index::mer
 /// # Errors
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
-pub fn merge_policy_for_name(name: &str) -> Result<Arc<dyn rucene::index::merge_policy::MergePolicy>> {
-    MERGE_POLICIES.get(name).map(|c| c()).ok_or_else(|| missing(name))
+pub fn merge_policy_for_name(
+    name: &str,
+) -> Result<Arc<dyn rucene::index::merge_policy::MergePolicy>> {
+    MERGE_POLICIES
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(Codec.class).getConstructor().newInstance()`.
@@ -542,24 +687,31 @@ pub fn ensure_analysis_classpath() -> Result<()> {
     outcome.clone().map_err(LuceneError::illegal_state)
 }
 
-static LINE_PARSERS: LazyLock<Table<crate::by_task::feeds::line_doc_source::LineParserConstructor>> = LazyLock::new(|| {
+static LINE_PARSERS: LazyLock<
+    Table<crate::by_task::feeds::line_doc_source::LineParserConstructor>,
+> = LazyLock::new(|| {
     use crate::by_task::feeds::geonames_line_parser::GeonamesLineParser;
-    use crate::by_task::feeds::line_doc_source::{HeaderLineParser, LineParser, LineParserConstructor, SimpleLineParser};
+    use crate::by_task::feeds::line_doc_source::{
+        HeaderLineParser, LineParser, LineParserConstructor, SimpleLineParser,
+    };
     Table::new(vec![
         (
             "org.apache.lucene.benchmark.byTask.feeds.LineDocSource$SimpleLineParser",
-            Arc::new(|h: Option<Vec<String>>| Ok(Arc::new(SimpleLineParser::new(h)) as Arc<dyn LineParser>))
-                as LineParserConstructor,
+            Arc::new(|h: Option<Vec<String>>| {
+                Ok(Arc::new(SimpleLineParser::new(h)) as Arc<dyn LineParser>)
+            }) as LineParserConstructor,
         ),
         (
             "org.apache.lucene.benchmark.byTask.feeds.LineDocSource$HeaderLineParser",
-            Arc::new(|h: Option<Vec<String>>| Ok(Arc::new(HeaderLineParser::new(h)?) as Arc<dyn LineParser>))
-                as LineParserConstructor,
+            Arc::new(|h: Option<Vec<String>>| {
+                Ok(Arc::new(HeaderLineParser::new(h)?) as Arc<dyn LineParser>)
+            }) as LineParserConstructor,
         ),
         (
             "org.apache.lucene.benchmark.byTask.feeds.GeonamesLineParser",
-            Arc::new(|h: Option<Vec<String>>| Ok(Arc::new(GeonamesLineParser::new(h)) as Arc<dyn LineParser>))
-                as LineParserConstructor,
+            Arc::new(|h: Option<Vec<String>>| {
+                Ok(Arc::new(GeonamesLineParser::new(h)) as Arc<dyn LineParser>)
+            }) as LineParserConstructor,
         ),
     ])
 });
@@ -581,7 +733,10 @@ pub fn line_parser_for_name(
 }
 
 /// Puts a `LineParser` class on the "classpath".
-pub fn register_line_parser_class(name: &str, constructor: crate::by_task::feeds::line_doc_source::LineParserConstructor) {
+pub fn register_line_parser_class(
+    name: &str,
+    constructor: crate::by_task::feeds::line_doc_source::LineParserConstructor,
+) {
     LINE_PARSERS.register(name, constructor);
 }
 
@@ -589,7 +744,8 @@ pub fn register_line_parser_class(name: &str, constructor: crate::by_task::feeds
 pub type TrecDocParserConstructor =
     Arc<dyn Fn() -> Arc<dyn crate::by_task::feeds::trec_doc_parser::TrecDocParser> + Send + Sync>;
 /// A public no-argument constructor of an `HTMLParser`.
-pub type HtmlParserConstructor = Arc<dyn Fn() -> Arc<dyn crate::by_task::feeds::html_parser::HTMLParser> + Send + Sync>;
+pub type HtmlParserConstructor =
+    Arc<dyn Fn() -> Arc<dyn crate::by_task::feeds::html_parser::HTMLParser> + Send + Sync>;
 
 static TREC_DOC_PARSERS: LazyLock<Table<TrecDocParserConstructor>> = LazyLock::new(|| {
     use crate::by_task::feeds::trec_doc_parser::TrecDocParser;
@@ -598,7 +754,8 @@ static TREC_DOC_PARSERS: LazyLock<Table<TrecDocParserConstructor>> = LazyLock::n
         ($ty:ty, $name:literal) => {
             (
                 concat!("org.apache.lucene.benchmark.byTask.feeds.", $name),
-                Arc::new(|| Arc::new(<$ty>::default()) as Arc<dyn TrecDocParser>) as TrecDocParserConstructor,
+                Arc::new(|| Arc::new(<$ty>::default()) as Arc<dyn TrecDocParser>)
+                    as TrecDocParserConstructor,
             )
         };
     }
@@ -617,7 +774,8 @@ static HTML_PARSERS: LazyLock<Table<HtmlParserConstructor>> = LazyLock::new(|| {
     use crate::by_task::feeds::html_parser::HTMLParser;
     Table::new(vec![(
         "org.apache.lucene.benchmark.byTask.feeds.DemoHTMLParser",
-        Arc::new(|| Arc::new(DemoHTMLParser::new()) as Arc<dyn HTMLParser>) as HtmlParserConstructor,
+        Arc::new(|| Arc::new(DemoHTMLParser::new()) as Arc<dyn HTMLParser>)
+            as HtmlParserConstructor,
     )])
 });
 
@@ -626,8 +784,13 @@ static HTML_PARSERS: LazyLock<Table<HtmlParserConstructor>> = LazyLock::new(|| {
 /// # Errors
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
-pub fn trec_doc_parser_for_name(name: &str) -> Result<Arc<dyn crate::by_task::feeds::trec_doc_parser::TrecDocParser>> {
-    TREC_DOC_PARSERS.get(name).map(|c| c()).ok_or_else(|| missing(name))
+pub fn trec_doc_parser_for_name(
+    name: &str,
+) -> Result<Arc<dyn crate::by_task::feeds::trec_doc_parser::TrecDocParser>> {
+    TREC_DOC_PARSERS
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// `Class.forName(name).asSubclass(HTMLParser.class).getConstructor().newInstance()`.
@@ -635,8 +798,13 @@ pub fn trec_doc_parser_for_name(name: &str) -> Result<Arc<dyn crate::by_task::fe
 /// # Errors
 ///
 /// `ClassNotFoundException` or `ClassCastException`.
-pub fn html_parser_for_name(name: &str) -> Result<Arc<dyn crate::by_task::feeds::html_parser::HTMLParser>> {
-    HTML_PARSERS.get(name).map(|c| c()).ok_or_else(|| missing(name))
+pub fn html_parser_for_name(
+    name: &str,
+) -> Result<Arc<dyn crate::by_task::feeds::html_parser::HTMLParser>> {
+    HTML_PARSERS
+        .get(name)
+        .map(|c| c())
+        .ok_or_else(|| missing(name))
 }
 
 /// Puts a `TrecDocParser` class on the "classpath".

@@ -23,9 +23,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::factories::{
-    available_char_filters, available_token_filters, available_tokenizers, char_filter_lookup_class,
-    token_filter_lookup_class, tokenizer_lookup_class, AnalysisFactoryClass, AnalysisSPILoader, CharFilterFactory,
-    TokenFilterFactory, TokenizerFactory,
+    available_char_filters, available_token_filters, available_tokenizers,
+    char_filter_lookup_class, token_filter_lookup_class, tokenizer_lookup_class,
+    AnalysisFactoryClass, AnalysisSPILoader, CharFilterFactory, TokenFilterFactory,
+    TokenizerFactory,
 };
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::util::Version;
@@ -35,8 +36,8 @@ use crate::by_task::perf_run_data::PerfRunData;
 use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
 use crate::by_task::utils::analyzer_factory::AnalyzerFactory;
 use crate::classes;
-use crate::jdk::stream_tokenizer::{StreamTokenizer, TT_EOF, TT_NUMBER, TT_WORD};
 use crate::jdk;
+use crate::jdk::stream_tokenizer::{StreamTokenizer, TT_EOF, TT_NUMBER, TT_WORD};
 
 /// `LUCENE_ANALYSIS_PACKAGE_PREFIX`.
 const LUCENE_ANALYSIS_PACKAGE_PREFIX: &str = "org.apache.lucene.analysis.";
@@ -83,16 +84,6 @@ pub enum ExpectedType {
     Tokenizer,
     /// `TokenFilterFactory.class`.
     TokenFilter,
-}
-
-impl ExpectedType {
-    fn class_name(self) -> &'static str {
-        match self {
-            ExpectedType::CharFilter => "org.apache.lucene.analysis.CharFilterFactory",
-            ExpectedType::Tokenizer => "org.apache.lucene.analysis.TokenizerFactory",
-            ExpectedType::TokenFilter => "org.apache.lucene.analysis.TokenFilterFactory",
-        }
-    }
 }
 
 /// `ANALYSIS_COMPONENT_SUFFIX_PATTERN.matcher(className).replaceFirst("")`:
@@ -194,7 +185,10 @@ impl AnalyzerFactoryTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(AnalyzerFactoryTask { base: PerfTaskBase::new(run_data, "AnalyzerFactoryTask")?, state: Mutex::new(State::default()) })
+        Ok(AnalyzerFactoryTask {
+            base: PerfTaskBase::new(run_data, "AnalyzerFactoryTask")?,
+            state: Mutex::new(State::default()),
+        })
     }
 
     /// `lineno(StreamTokenizer stok)`: the current line in the algorithm
@@ -216,7 +210,12 @@ impl AnalyzerFactoryTask {
     }
 
     /// `setParams` without the final catch clauses.
-    fn parse_params(&self, params: &str, stok: &mut StreamTokenizer, state: &mut State) -> Result<()> {
+    fn parse_params(
+        &self,
+        params: &str,
+        stok: &mut StreamTokenizer,
+        state: &mut State,
+    ) -> Result<()> {
         let mut expected_arg_type = ArgType::AnalyzerArg;
         while stok.next_token() != TT_EOF {
             match stok.ttype {
@@ -246,7 +245,11 @@ impl AnalyzerFactoryTask {
                         stok.next_token();
                         let mut arg_value = stok.sval.clone();
                         match stok.ttype {
-                            t if t == TT_NUMBER || t == '"' as i32 || t == '\'' as i32 || t == TT_WORD => {
+                            t if t == TT_NUMBER
+                                || t == '"' as i32
+                                || t == '\'' as i32
+                                || t == TT_WORD =>
+                            {
                                 if t == TT_NUMBER {
                                     // Drop the ".0" from numbers, for integer arguments
                                     arg_value = Some(number_arg(stok.nval));
@@ -275,7 +278,9 @@ impl AnalyzerFactoryTask {
                                 }
                             }
                             TT_EOF => {
-                                return Err(jdk::runtime_exception(format!("Unexpected EOF: {stok}")));
+                                return Err(jdk::runtime_exception(format!(
+                                    "Unexpected EOF: {stok}"
+                                )));
                             }
                             _ => {
                                 return Err(jdk::runtime_exception(format!(
@@ -300,10 +305,15 @@ impl AnalyzerFactoryTask {
                             stok.next_token();
                             let mut int_arg_value = stok.nval as i32;
                             match stok.ttype {
-                                t if t == '"' as i32 || t == '\'' as i32 || t == TT_WORD || t == TT_NUMBER => {
+                                t if t == '"' as i32
+                                    || t == '\'' as i32
+                                    || t == TT_WORD
+                                    || t == TT_NUMBER =>
+                                {
                                     if t != TT_NUMBER {
                                         let sval = stok.sval.clone();
-                                        let trimmed = jdk::java_trim(sval.as_deref().unwrap_or("")).to_string();
+                                        let trimmed = jdk::java_trim(sval.as_deref().unwrap_or(""))
+                                            .to_string();
                                         int_arg_value = jdk::parse_int(&trimmed).map_err(|e| {
                                             jdk::runtime_exception_with_cause(
                                                 format!(
@@ -323,7 +333,9 @@ impl AnalyzerFactoryTask {
                                     }
                                 }
                                 TT_EOF => {
-                                    return Err(jdk::runtime_exception(format!("Unexpected EOF: {stok}")));
+                                    return Err(jdk::runtime_exception(format!(
+                                        "Unexpected EOF: {stok}"
+                                    )));
                                 }
                                 _ => {
                                     return Err(jdk::runtime_exception(format!(
@@ -335,11 +347,16 @@ impl AnalyzerFactoryTask {
                             continue;
                         }
                         match self.lookup_analysis_class(&arg_name, ExpectedType::CharFilter) {
-                            Ok(clazz) => self.create_analysis_pipeline_component(stok, clazz, state)?,
+                            Ok(clazz) => {
+                                self.create_analysis_pipeline_component(stok, clazz, state)?
+                            }
                             Err(e) if e.is_illegal_argument_exception() => {
-                                match self.lookup_analysis_class(&arg_name, ExpectedType::Tokenizer) {
+                                match self.lookup_analysis_class(&arg_name, ExpectedType::Tokenizer)
+                                {
                                     Ok(clazz) => {
-                                        self.create_analysis_pipeline_component(stok, clazz, state)?;
+                                        self.create_analysis_pipeline_component(
+                                            stok, clazz, state,
+                                        )?;
                                         expected_arg_type = ArgType::Tokenfilter;
                                     }
                                     Err(e2) if e2.is_illegal_argument_exception() => {
@@ -361,7 +378,9 @@ impl AnalyzerFactoryTask {
                     } else {
                         // expectedArgType = ArgType.TOKENFILTER
                         let class_name = stok.sval.clone().unwrap_or_default();
-                        let clazz = match self.lookup_analysis_class(&class_name, ExpectedType::TokenFilter) {
+                        let clazz = match self
+                            .lookup_analysis_class(&class_name, ExpectedType::TokenFilter)
+                        {
                             Ok(clazz) => clazz,
                             Err(e) if e.is_illegal_argument_exception() => {
                                 return Err(jdk::runtime_exception_with_cause(
@@ -399,10 +418,16 @@ impl AnalyzerFactoryTask {
         clazz: AnalysisClass,
         state: &mut State,
     ) -> Result<()> {
-        self.create_component_inner(stok, &clazz, state).map_err(|e| self.wrap_line(stok, e))
+        self.create_component_inner(stok, &clazz, state)
+            .map_err(|e| self.wrap_line(stok, e))
     }
 
-    fn create_component_inner(&self, stok: &mut StreamTokenizer, clazz: &AnalysisClass, state: &mut State) -> Result<()> {
+    fn create_component_inner(
+        &self,
+        stok: &mut StreamTokenizer,
+        clazz: &AnalysisClass,
+        state: &mut State,
+    ) -> Result<()> {
         let mut arg_map: HashMap<String, String> = HashMap::new();
         let mut parenthetical = false;
         while stok.next_token() != TT_EOF {
@@ -454,7 +479,11 @@ impl AnalyzerFactoryTask {
                     stok.next_token();
                     let mut arg_value = stok.sval.clone();
                     match stok.ttype {
-                        t if t == TT_NUMBER || t == '"' as i32 || t == '\'' as i32 || t == TT_WORD => {
+                        t if t == TT_NUMBER
+                            || t == '"' as i32
+                            || t == '\'' as i32
+                            || t == TT_WORD =>
+                        {
                             if t == TT_NUMBER {
                                 // Drop the ".0" from numbers, for integer arguments
                                 arg_value = Some(number_arg(stok.nval));
@@ -479,12 +508,21 @@ impl AnalyzerFactoryTask {
             }
         }
         if !arg_map.contains_key("luceneMatchVersion") {
-            arg_map.insert("luceneMatchVersion".to_string(), Version::LATEST.to_string());
+            arg_map.insert(
+                "luceneMatchVersion".to_string(),
+                Version::LATEST.to_string(),
+            );
         }
-        let new_instance = |e: LuceneError| jdk::runtime_exception_with_cause(format!("Line #{}: ", self.lineno(stok)), e);
+        let new_instance = |e: LuceneError| {
+            jdk::runtime_exception_with_cause(format!("Line #{}: ", self.lineno(stok)), e)
+        };
         let base_dir = || -> Result<PathBuf> {
             let mut base_dir = PathBuf::from(
-                self.base.get_run_data().get_config().get_str("work.dir", Some("work"))?.unwrap_or_default(),
+                self.base
+                    .get_run_data()
+                    .get_config()
+                    .get_str("work.dir", Some("work"))?
+                    .unwrap_or_default(),
             );
             if !base_dir.is_dir() {
                 base_dir = PathBuf::from(".");
@@ -499,25 +537,31 @@ impl AnalyzerFactoryTask {
         };
         match clazz {
             AnalysisClass::CharFilter(c) => {
-                let mut instance =
-                    AnalysisSPILoader::new_factory_class_instance(c, &mut arg_map).map_err(new_instance)?;
-                if let Some(aware) = Arc::get_mut(&mut instance).and_then(|i| i.as_resource_loader_aware()) {
+                let mut instance = AnalysisSPILoader::new_factory_class_instance(c, &mut arg_map)
+                    .map_err(new_instance)?;
+                if let Some(aware) =
+                    Arc::get_mut(&mut instance).and_then(|i| i.as_resource_loader_aware())
+                {
                     aware.inform(&loader()?)?;
                 }
                 state.char_filter_factories.push(instance);
             }
             AnalysisClass::Tokenizer(c) => {
-                let mut instance =
-                    AnalysisSPILoader::new_factory_class_instance(c, &mut arg_map).map_err(new_instance)?;
-                if let Some(aware) = Arc::get_mut(&mut instance).and_then(|i| i.as_resource_loader_aware()) {
+                let mut instance = AnalysisSPILoader::new_factory_class_instance(c, &mut arg_map)
+                    .map_err(new_instance)?;
+                if let Some(aware) =
+                    Arc::get_mut(&mut instance).and_then(|i| i.as_resource_loader_aware())
+                {
                     aware.inform(&loader()?)?;
                 }
                 state.tokenizer_factory = Some(instance);
             }
             AnalysisClass::TokenFilter(c) => {
-                let mut instance =
-                    AnalysisSPILoader::new_factory_class_instance(c, &mut arg_map).map_err(new_instance)?;
-                if let Some(aware) = Arc::get_mut(&mut instance).and_then(|i| i.as_resource_loader_aware()) {
+                let mut instance = AnalysisSPILoader::new_factory_class_instance(c, &mut arg_map)
+                    .map_err(new_instance)?;
+                if let Some(aware) =
+                    Arc::get_mut(&mut instance).and_then(|i| i.as_resource_loader_aware())
+                {
                     aware.inform(&loader()?)?;
                 }
                 state.token_filter_factories.push(instance);
@@ -545,7 +589,11 @@ impl AnalyzerFactoryTask {
     /// `ClassNotFoundException` if the FQN lookups fail;
     /// `ClassCastException` for a class of another expected type; the SPI's
     /// `IllegalArgumentException` for an unknown short name.
-    pub fn lookup_analysis_class(&self, class_name: &str, expected_type: ExpectedType) -> Result<AnalysisClass> {
+    pub fn lookup_analysis_class(
+        &self,
+        class_name: &str,
+        expected_type: ExpectedType,
+    ) -> Result<AnalysisClass> {
         classes::ensure_analysis_classpath()?;
         if class_name.contains('.') {
             // First, try className == FQN
@@ -576,8 +624,12 @@ impl AnalyzerFactoryTask {
         // No dot - use analysis SPI lookup
         let analysis_component_name = strip_component_suffix(class_name);
         match expected_type {
-            ExpectedType::CharFilter => char_filter_lookup_class(&analysis_component_name).map(AnalysisClass::CharFilter),
-            ExpectedType::Tokenizer => tokenizer_lookup_class(&analysis_component_name).map(AnalysisClass::Tokenizer),
+            ExpectedType::CharFilter => {
+                char_filter_lookup_class(&analysis_component_name).map(AnalysisClass::CharFilter)
+            }
+            ExpectedType::Tokenizer => {
+                tokenizer_lookup_class(&analysis_component_name).map(AnalysisClass::Tokenizer)
+            }
             ExpectedType::TokenFilter => {
                 token_filter_lookup_class(&analysis_component_name).map(AnalysisClass::TokenFilter)
             }
@@ -588,9 +640,13 @@ impl AnalyzerFactoryTask {
 /// `Class.forName(name).asSubclass(expectedType)` over the analysis factory
 /// classes the SPI loaders know.
 fn class_for_name(name: &str, expected_type: ExpectedType) -> Result<AnalysisClass> {
-    let found = [ExpectedType::CharFilter, ExpectedType::Tokenizer, ExpectedType::TokenFilter]
-        .into_iter()
-        .find_map(|ty| find_by_binary_name(name, ty).map(|c| (ty, c)));
+    let found = [
+        ExpectedType::CharFilter,
+        ExpectedType::Tokenizer,
+        ExpectedType::TokenFilter,
+    ]
+    .into_iter()
+    .find_map(|ty| find_by_binary_name(name, ty).map(|c| (ty, c)));
     match found {
         None => Err(classes::class_not_found(name)),
         Some((ty, c)) if ty == expected_type => Ok(c),
@@ -599,10 +655,6 @@ fn class_for_name(name: &str, expected_type: ExpectedType) -> Result<AnalysisCla
             format!("class {name}"),
         )),
     }
-    .map_err(|e| {
-        let _ = expected_type.class_name();
-        e
-    })
 }
 
 /// The factory class of type `ty` whose binary name is `name`.
@@ -630,7 +682,10 @@ impl PerfTask for AnalyzerFactoryTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(AnalyzerFactoryTask { base: self.base.clone_base(), state: Mutex::new(jdk::lock(&self.state).clone()) }))
+        Ok(Arc::new(AnalyzerFactoryTask {
+            base: self.base.clone_base(),
+            state: Mutex::new(jdk::lock(&self.state).clone()),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -668,8 +723,14 @@ impl PerfTask for AnalyzerFactoryTask {
         );
         analyzer_factory.set_position_increment_gap(state.position_increment_gap);
         analyzer_factory.set_offset_gap(state.offset_gap);
-        let factory_name = state.factory_name.clone().unwrap_or_else(|| "null".to_string());
-        self.base.get_run_data().get_analyzer_factories().insert(factory_name, Arc::new(analyzer_factory));
+        let factory_name = state
+            .factory_name
+            .clone()
+            .unwrap_or_else(|| "null".to_string());
+        self.base
+            .get_run_data()
+            .get_analyzer_factories()
+            .insert(factory_name, Arc::new(analyzer_factory));
         Ok(())
     }
 

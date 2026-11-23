@@ -69,7 +69,11 @@ static WORKDIR_NIO: Mutex<Option<rucene::store::java_nio_file::Path>> = Mutex::n
 /// `getWorkDir()` as the test framework's `Path` (`newFSDirectory`
 /// argument).
 pub fn get_work_dir_nio() -> rucene::store::java_nio_file::Path {
-    WORKDIR_NIO.lock().unwrap_or_else(|e| e.into_inner()).clone().expect("beforeClassBenchmarkTestCase ran")
+    WORKDIR_NIO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .expect("beforeClassBenchmarkTestCase ran")
 }
 
 /// `beforeClassBenchmarkTestCase()`.
@@ -94,7 +98,9 @@ fn benchmark_test_case_class() -> Arc<Class> {
     static CLASS: LazyLock<Arc<Class>> = LazyLock::new(|| {
         Class::builder("org.apache.lucene.benchmark.BenchmarkTestCase")
             .extends(&LuceneTestCase::class())
-            .annotate(SuppressSysoutChecks { bug_url: "very noisy".to_string() })
+            .annotate(SuppressSysoutChecks {
+                bug_url: "very noisy".to_string(),
+            })
             .method(static_hook(
                 "beforeClassBenchmarkTestCase",
                 BeforeClass,
@@ -260,8 +266,13 @@ pub struct FnDocMaker {
 
 impl FnDocMaker {
     /// A `DocMaker` whose `makeDocument()` is `make`.
-    pub fn new(make: impl Fn() -> Result<rucene::document::Document> + Send + Sync + 'static) -> Self {
-        FnDocMaker { dm: rucene_benchmark::by_task::feeds::doc_maker::DocMaker::new(), make: Box::new(make) }
+    pub fn new(
+        make: impl Fn() -> Result<rucene::document::Document> + Send + Sync + 'static,
+    ) -> Self {
+        FnDocMaker {
+            dm: rucene_benchmark::by_task::feeds::doc_maker::DocMaker::new(),
+            make: Box::new(make),
+        }
     }
 
     /// Puts the class `name` on the "classpath".
@@ -269,7 +280,8 @@ impl FnDocMaker {
         rucene_benchmark::classes::register_doc_maker_class(
             name,
             Arc::new(move || {
-                Arc::new(FnDocMaker::new(make)) as Arc<dyn rucene_benchmark::by_task::feeds::doc_maker::DocMakerClass>
+                Arc::new(FnDocMaker::new(make))
+                    as Arc<dyn rucene_benchmark::by_task::feeds::doc_maker::DocMakerClass>
             }),
         );
     }
@@ -307,5 +319,10 @@ pub fn assert_equals_msg<T: PartialEq + std::fmt::Display>(message: &str, expect
 
 /// `assertEquals(message, expected, actual, delta)` of doubles.
 pub fn assert_equals_delta_msg(message: &str, expected: f64, actual: f64, delta: f64) {
-    randomizedtesting::junit::Assert::assert_equals_double_msg(Some(message), expected, actual, delta)
+    randomizedtesting::junit::Assert::assert_equals_double_msg(
+        Some(message),
+        expected,
+        actual,
+        delta,
+    )
 }

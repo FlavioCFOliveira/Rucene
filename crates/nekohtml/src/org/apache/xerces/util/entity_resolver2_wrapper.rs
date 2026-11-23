@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -80,7 +80,8 @@ impl EntityResolver2Wrapper {
 
     /// Creates an XMLInputSource from a SAX InputSource.
     fn create_xml_input_source(source: &InputSource, base_uri: Option<&str>) -> XMLInputSource {
-        let mut xml_input_source = XMLInputSource::new(source.get_public_id(), source.get_system_id(), base_uri);
+        let mut xml_input_source =
+            XMLInputSource::new(source.get_public_id(), source.get_system_id(), base_uri);
         xml_input_source.set_byte_stream(source.get_byte_stream());
         xml_input_source.set_character_stream(source.get_character_stream());
         xml_input_source.set_encoding(source.get_encoding());
@@ -99,7 +100,10 @@ impl EntityResolver2Wrapper {
 }
 
 impl ExternalSubsetResolver for EntityResolver2Wrapper {
-    fn get_external_subset(&self, grammar_description: &dyn XMLDTDDescription) -> JResult<Option<XMLInputSource>> {
+    fn get_external_subset(
+        &self,
+        grammar_description: &dyn XMLDTDDescription,
+    ) -> JResult<Option<XMLInputSource>> {
         if let Some(resolver) = self.get_entity_resolver() {
             if let Some(resolver2) = resolver.as_entity_resolver2() {
                 let name = grammar_description.get_root_name();
@@ -107,7 +111,9 @@ impl ExternalSubsetResolver for EntityResolver2Wrapper {
                 let input_source = resolver2
                     .get_external_subset(name.as_deref().unwrap_or(""), base_uri.as_deref())
                     .map_err(Self::wrap)?;
-                return Ok(input_source.map(|s| Self::create_xml_input_source(&s, base_uri.as_deref())));
+                return Ok(
+                    input_source.map(|s| Self::create_xml_input_source(&s, base_uri.as_deref()))
+                );
             }
         }
         Ok(None)
@@ -119,7 +125,10 @@ impl XMLEntityResolver for EntityResolver2Wrapper {
         self
     }
 
-    fn resolve_entity(&self, resource_identifier: &dyn XMLResourceIdentifier) -> JResult<Option<XMLInputSource>> {
+    fn resolve_entity(
+        &self,
+        resource_identifier: &dyn XMLResourceIdentifier,
+    ) -> JResult<Option<XMLInputSource>> {
         if let Some(resolver) = self.get_entity_resolver() {
             if let Some(resolver2) = resolver.as_entity_resolver2() {
                 let pub_id = resource_identifier.get_public_id();
@@ -128,7 +137,9 @@ impl XMLEntityResolver for EntityResolver2Wrapper {
                 let name = if resource_identifier.is_dtd_description() {
                     Some("[dtd]".to_string())
                 } else {
-                    resource_identifier.as_entity_description().and_then(|d| d.get_entity_name())
+                    resource_identifier
+                        .as_entity_description()
+                        .and_then(|d| d.get_entity_name())
                 };
 
                 // When both pubId and sysId are null, the user's entity
@@ -140,9 +151,16 @@ impl XMLEntityResolver for EntityResolver2Wrapper {
 
                 // Resolve using EntityResolver2
                 let input_source = resolver2
-                    .resolve_entity2(name.as_deref(), pub_id.as_deref(), base_uri.as_deref(), sys_id.as_deref())
+                    .resolve_entity2(
+                        name.as_deref(),
+                        pub_id.as_deref(),
+                        base_uri.as_deref(),
+                        sys_id.as_deref(),
+                    )
                     .map_err(Self::wrap)?;
-                return Ok(input_source.map(|s| Self::create_xml_input_source(&s, base_uri.as_deref())));
+                return Ok(
+                    input_source.map(|s| Self::create_xml_input_source(&s, base_uri.as_deref()))
+                );
             }
         }
         Ok(None)

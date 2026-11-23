@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -28,7 +28,12 @@ use crate::org::apache::xerces::xni::xml_attributes::XMLAttributes;
 /// `XMLDocumentHandler::as_tag_balancing_listener`.
 pub trait HTMLTagBalancingListener {
     /// Notifies that the start element has been ignored.
-    fn ignored_start_element(&self, elem: &QName, attrs: &dyn XMLAttributes, augs: Option<&dyn Augmentations>);
+    fn ignored_start_element(
+        &self,
+        elem: &QName,
+        attrs: &dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    );
     /// Notifies that the end element has been ignored.
     fn ignored_end_element(&self, element: &QName, augs: Option<&dyn Augmentations>);
 }

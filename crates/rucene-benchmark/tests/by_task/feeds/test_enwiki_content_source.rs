@@ -111,7 +111,13 @@ fn test_one_document() -> Result<()> {
     let source = create_content_source(docs, false)?;
     let mut dd = DocData::new();
     source.get_next_doc_data(&mut dd)?;
-    assert_doc_data(&dd, "1", "Title1", "Some text 1 here", "14-SEP-2011 11:35:09.000");
+    assert_doc_data(
+        &dd,
+        "1",
+        "Title1",
+        "Some text 1 here",
+        "14-SEP-2011 11:35:09.000",
+    );
     assert_no_more_data_exception(&source);
     Ok(())
 }
@@ -134,10 +140,22 @@ fn test_two_documents() -> Result<()> {
     let source = create_content_source(docs, false)?;
     let mut dd1 = DocData::new();
     source.get_next_doc_data(&mut dd1)?;
-    assert_doc_data(&dd1, "1", "Title1", "Some text 1 here", "14-SEP-2011 11:35:09.000");
+    assert_doc_data(
+        &dd1,
+        "1",
+        "Title1",
+        "Some text 1 here",
+        "14-SEP-2011 11:35:09.000",
+    );
     let mut dd2 = DocData::new();
     source.get_next_doc_data(&mut dd2)?;
-    assert_doc_data(&dd2, "2", "Title2", "Some text 2 here", "14-SEP-2022 22:35:09.000");
+    assert_doc_data(
+        &dd2,
+        "2",
+        "Title2",
+        "Some text 2 here",
+        "14-SEP-2022 22:35:09.000",
+    );
     assert_no_more_data_exception(&source);
     Ok(())
 }
@@ -148,10 +166,22 @@ fn test_forever() -> Result<()> {
     for _ in 0..3 {
         let mut dd1 = DocData::new();
         source.get_next_doc_data(&mut dd1)?;
-        assert_doc_data(&dd1, "1", "Title1", "Some text 1 here", "14-SEP-2011 11:35:09.000");
+        assert_doc_data(
+            &dd1,
+            "1",
+            "Title1",
+            "Some text 1 here",
+            "14-SEP-2011 11:35:09.000",
+        );
         let mut dd2 = DocData::new();
         source.get_next_doc_data(&mut dd2)?;
-        assert_doc_data(&dd2, "2", "Title2", "Some text 2 here", "14-SEP-2022 22:35:09.000");
+        assert_doc_data(
+            &dd2,
+            "2",
+            "Title2",
+            "Some text 2 here",
+            "14-SEP-2022 22:35:09.000",
+        );
     }
     source.close()?;
     Ok(())

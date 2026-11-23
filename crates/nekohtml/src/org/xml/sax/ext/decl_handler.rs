@@ -26,5 +26,10 @@ pub trait DeclHandler {
     /// Equivalent to `internalEntityDecl(String, String)`.
     fn internal_entity_decl(&self, name: &str, value: &str) -> JResult<()>;
     /// Equivalent to `externalEntityDecl(String, String, String)`.
-    fn external_entity_decl(&self, name: &str, public_id: Option<&str>, system_id: Option<&str>) -> JResult<()>;
+    fn external_entity_decl(
+        &self,
+        name: &str,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+    ) -> JResult<()>;
 }

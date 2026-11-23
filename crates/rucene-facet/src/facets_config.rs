@@ -190,7 +190,8 @@ impl DimConfig {
     }
 }
 
-static DEFAULT_DIM_CONFIG: std::sync::LazyLock<DimConfig> = std::sync::LazyLock::new(DimConfig::new);
+static DEFAULT_DIM_CONFIG: std::sync::LazyLock<DimConfig> =
+    std::sync::LazyLock::new(DimConfig::new);
 
 /// Default per-dimension configuration: the one shared instance, as Java's
 /// `public static final DimConfig DEFAULT_DIM_CONFIG`.
@@ -300,7 +301,8 @@ impl FacetsConfig {
     ///
     /// Equivalent to `setRequireDimCount(String, boolean)`.
     pub fn set_require_dim_count(&self, dim_name: &str, value: bool) {
-        self.dim_config_for_update(dim_name).set_require_dim_count(value);
+        self.dim_config_for_update(dim_name)
+            .set_require_dim_count(value);
     }
 
     /// Specify which index field name should hold the ordinals for this
@@ -308,7 +310,8 @@ impl FacetsConfig {
     ///
     /// Equivalent to `setIndexFieldName(String, String)`.
     pub fn set_index_field_name(&self, dim_name: &str, index_field_name: &str) {
-        self.dim_config_for_update(dim_name).set_index_field_name(index_field_name);
+        self.dim_config_for_update(dim_name)
+            .set_index_field_name(index_field_name);
     }
 
     /// Specify drill down terms option on the field / dimension.

@@ -30,8 +30,8 @@ use crate::by_task::feeds::doc_maker::{DocMaker, DocMakerClass};
 use crate::by_task::feeds::enwiki_content_source::EnwikiContentSource;
 use crate::by_task::feeds::no_more_data_exception::NoMoreDataException;
 use crate::by_task::utils::config::Config;
-use crate::jdk::properties::Properties;
 use crate::jdk;
+use crate::jdk::properties::Properties;
 
 /// `BASE`.
 pub(crate) const BASE: i32 = 10;
@@ -54,12 +54,18 @@ impl ExtractWikipedia {
     pub fn new(doc_maker: Arc<dyn DocMakerClass>, output_dir: &Path) -> Result<Self> {
         println!("Deleting all files in {}", output_dir.display());
         IOUtils::rm([output_dir])?;
-        Ok(ExtractWikipedia { output_dir: output_dir.to_path_buf(), count: 0, doc_maker })
+        Ok(ExtractWikipedia {
+            output_dir: output_dir.to_path_buf(),
+            count: 0,
+            doc_maker,
+        })
     }
 
     /// `directory(int count, Path directory)`.
     pub fn directory(&self, count: i32, directory: Option<&Path>) -> PathBuf {
-        let directory = directory.map(Path::to_path_buf).unwrap_or_else(|| self.output_dir.clone());
+        let directory = directory
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.output_dir.clone());
         let mut base = BASE;
         while base <= count {
             base = base.wrapping_mul(BASE);
@@ -77,7 +83,13 @@ impl ExtractWikipedia {
     /// # Errors
     ///
     /// The `IOException` of writing the file.
-    pub fn create(&mut self, id: Option<&str>, title: Option<&str>, time: Option<&str>, body: Option<&str>) -> Result<()> {
+    pub fn create(
+        &mut self,
+        id: Option<&str>,
+        title: Option<&str>,
+        time: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<()> {
         let d = self.directory(self.count, None);
         self.count += 1;
         std::fs::create_dir_all(&d)?;
@@ -166,7 +178,10 @@ impl ExtractWikipedia {
         doc_maker.set_config(Arc::clone(&config), source)?;
         DocMakerClass::reset_inputs(&*doc_maker)?;
         if wikipedia.exists() {
-            println!("Extracting Wikipedia to: {} using EnwikiContentSource", output_dir.display());
+            println!(
+                "Extracting Wikipedia to: {} using EnwikiContentSource",
+                output_dir.display()
+            );
             std::fs::create_dir_all(&output_dir)?;
             let mut extractor = ExtractWikipedia::new(doc_maker, &output_dir)?;
             extractor.extract()?;
@@ -181,7 +196,9 @@ impl ExtractWikipedia {
         eprintln!(
             "Usage: java -cp <...> org.apache.lucene.benchmark.utils.ExtractWikipedia --input|-i <Path to Wikipedia XML file> [--output|-o <Output Path>] [--discardImageOnlyDocs|-d]"
         );
-        eprintln!("--discardImageOnlyDocs tells the extractor to skip Wiki docs that contain only images");
+        eprintln!(
+            "--discardImageOnlyDocs tells the extractor to skip Wiki docs that contain only images"
+        );
     }
 }
 

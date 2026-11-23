@@ -59,7 +59,9 @@ impl QueryDriver {
             eprintln!(
                 "querySpec: string composed of fields to use in query consisting of T=title,D=description,N=narrative:"
             );
-            eprintln!("\texample: TD (query on Title + Description). The default is T (title only)");
+            eprintln!(
+                "\texample: TD (query on Title + Description). The default is T (title only)"
+            );
             std::process::exit(1);
         }
 
@@ -67,10 +69,16 @@ impl QueryDriver {
         let qrels_file = PathBuf::from(&args[1]);
         let submission_file = PathBuf::from(&args[2]);
         let submit_log = SubmissionReport::new(
-            Some(Arc::new(PrintWriter::new(Box::new(BufWriter::new(File::create(&submission_file)?))))),
+            Some(Arc::new(PrintWriter::new(Box::new(BufWriter::new(
+                File::create(&submission_file)?,
+            ))))),
             "lucene",
         )?;
-        let field_spec = if args.len() == 5 { args[4].as_str() } else { "T" }; // default to Title-only if not specified.
+        let field_spec = if args.len() == 5 {
+            args[4].as_str()
+        } else {
+            "T"
+        }; // default to Title-only if not specified.
 
         // --- Use try-with-resources for FSDirectory and IndexReader ---
         let dir: Arc<dyn Directory> = Arc::new(FSDirectory::open(PathBuf::from(&args[3]))?);
@@ -111,7 +119,10 @@ impl QueryDriver {
             }
 
             // set the parsing of quality queries into Lucene queries.
-            let qq_parser = Arc::new(SimpleQQParser::new(field_set.iter().cloned().collect(), "body"));
+            let qq_parser = Arc::new(SimpleQQParser::new(
+                field_set.iter().cloned().collect(),
+                "body",
+            ));
 
             // run the benchmark
             let mut qrun = QualityBenchmark::new(qqs, qq_parser, searcher, doc_name_field);

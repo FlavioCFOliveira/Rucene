@@ -43,7 +43,12 @@ impl LongRangeOnRangeFacetCounts {
     ///
     /// Equivalent to `LongRangeOnRangeFacetCounts(String, FacetsCollector,
     /// RangeFieldQuery.QueryType, LongRange...)`.
-    pub fn new(field: &str, hits: &FacetsCollector, query_type: RangeQueryType, ranges: &[LongRange]) -> Result<Self> {
+    pub fn new(
+        field: &str,
+        hits: &FacetsCollector,
+        query_type: RangeQueryType,
+        ranges: &[LongRange],
+    ) -> Result<Self> {
         Self::with_fast_match(field, hits, query_type, None, ranges)
     }
 

@@ -31,9 +31,9 @@ use rucene::index::index_writer::IndexWriter;
 use rucene::search::index_searcher::IndexSearcher;
 use rucene::store::{ByteBuffersDirectory, Directory, FSDirectory};
 use rucene::util::IOUtils;
+use rucene_analysis_common::jdk::locale::Locale;
 use rucene_facet::taxonomy::taxonomy_reader::TaxonomyReader;
 use rucene_facet::taxonomy::taxonomy_writer::TaxonomyWriter;
-use rucene_analysis_common::jdk::locale::Locale;
 
 use crate::by_task::feeds::content_source::ContentSource;
 use crate::by_task::feeds::doc_maker::DocMakerClass;
@@ -144,32 +144,47 @@ impl PerfRunData {
         // analyzer (default is standard analyzer)
         let analyzer = NewAnalyzerTask::create_analyzer(
             &config
-                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .get_str(
+                    "analyzer",
+                    Some("org.apache.lucene.analysis.standard.StandardAnalyzer"),
+                )?
                 .unwrap_or_default(),
         )?;
         // content source
         let source_class = config
-            .get_str("content.source", Some("org.apache.lucene.benchmark.byTask.feeds.SingleDocSource"))?
+            .get_str(
+                "content.source",
+                Some("org.apache.lucene.benchmark.byTask.feeds.SingleDocSource"),
+            )?
             .unwrap_or_default();
         let content_source = classes::content_source_for_name(&source_class)?;
         content_source.set_config(Arc::clone(&config))?;
         // doc maker
         let doc_maker = classes::doc_maker_for_name(
             &config
-                .get_str("doc.maker", Some("org.apache.lucene.benchmark.byTask.feeds.DocMaker"))?
+                .get_str(
+                    "doc.maker",
+                    Some("org.apache.lucene.benchmark.byTask.feeds.DocMaker"),
+                )?
                 .unwrap_or_default(),
         )?;
         doc_maker.set_config(Arc::clone(&config), Arc::clone(&content_source))?;
         // facet source
         let facet_source = classes::facet_source_for_name(
             &config
-                .get_str("facet.source", Some("org.apache.lucene.benchmark.byTask.feeds.RandomFacetSource"))?
+                .get_str(
+                    "facet.source",
+                    Some("org.apache.lucene.benchmark.byTask.feeds.RandomFacetSource"),
+                )?
                 .unwrap_or_default(),
         )?;
         facet_source.set_config(Arc::clone(&config))?;
         // query makers
         let qmkr_class = config
-            .get_str("query.maker", Some("org.apache.lucene.benchmark.byTask.feeds.SimpleQueryMaker"))?
+            .get_str(
+                "query.maker",
+                Some("org.apache.lucene.benchmark.byTask.feeds.SimpleQueryMaker"),
+            )?
             .unwrap_or_default();
         classes::check_query_maker_class(&qmkr_class)?;
         let run_data = Arc::new(PerfRunData {
@@ -180,7 +195,10 @@ impl PerfRunData {
             facet_source,
             qmkr_class,
             config: Arc::clone(&config),
-            state: Mutex::new(State { analyzer: Some(analyzer), ..State::default() }),
+            state: Mutex::new(State {
+                analyzer: Some(analyzer),
+                ..State::default()
+            }),
         });
         // index stuff
         run_data.reinit(false)?;
@@ -188,7 +206,10 @@ impl PerfRunData {
         if jdk::parse_boolean(config.get_str("log.queries", Some("false"))?.as_deref()) {
             println!("------------> queries:");
             let search_task = SearchTask::new(Arc::clone(&run_data))?;
-            println!("{}", run_data.get_query_maker(&search_task)?.print_queries());
+            println!(
+                "{}",
+                run_data.get_query_maker(&search_task)?.print_queries()
+            );
         }
         Ok(run_data)
     }
@@ -248,7 +269,11 @@ impl PerfRunData {
         // cleanup index
         let (writer, reader, directory) = {
             let mut s = self.lock();
-            (s.index_writer.take(), s.index_reader.take(), s.directory.take())
+            (
+                s.index_writer.take(),
+                s.index_reader.take(),
+                s.directory.take(),
+            )
         };
         IOUtils::close(vec![
             writer.map(|w| Box::new(move || w.close()) as Box<dyn FnOnce() -> Result<()>>),
@@ -258,7 +283,11 @@ impl PerfRunData {
 
         let (taxo_writer, taxo_reader, taxo_dir) = {
             let mut s = self.lock();
-            (s.taxonomy_writer.take(), s.taxonomy_reader.take(), s.taxonomy_dir.take())
+            (
+                s.taxonomy_writer.take(),
+                s.taxonomy_reader.take(),
+                s.taxonomy_dir.take(),
+            )
         };
         IOUtils::close(vec![
             taxo_writer.map(|w| Box::new(move || w.close()) as Box<dyn FnOnce() -> Result<()>>),
@@ -288,10 +317,22 @@ impl PerfRunData {
 
     /// `createDirectory(boolean eraseIndex, String dirName, String
     /// dirParam)`.
-    fn create_directory(&self, erase_index: bool, dir_name: &str, dir_param: &str) -> Result<Arc<dyn Directory>> {
-        let dir_impl = self.config.get_str(dir_param, Some(DEFAULT_DIRECTORY))?.unwrap_or_default();
+    fn create_directory(
+        &self,
+        erase_index: bool,
+        dir_name: &str,
+        dir_param: &str,
+    ) -> Result<Arc<dyn Directory>> {
+        let dir_impl = self
+            .config
+            .get_str(dir_param, Some(DEFAULT_DIRECTORY))?
+            .unwrap_or_default();
         if dir_impl == "FSDirectory" {
-            let work_dir = PathBuf::from(self.config.get_str("work.dir", Some("work"))?.unwrap_or_default());
+            let work_dir = PathBuf::from(
+                self.config
+                    .get_str("work.dir", Some("work"))?
+                    .unwrap_or_default(),
+            );
             let index_dir = work_dir.join(dir_name);
             if erase_index && index_dir.exists() {
                 IOUtils::rm([&index_dir])?;
@@ -307,9 +348,9 @@ impl PerfRunData {
         if dir_impl == "ByteBuffersDirectory" {
             return Ok(Arc::new(ByteBuffersDirectory::new()));
         }
-        Err(rucene::error::LuceneError::from(std::io::Error::other(format!(
-            "Directory type not supported: {dir_impl}"
-        ))))
+        Err(rucene::error::LuceneError::from(std::io::Error::other(
+            format!("Directory type not supported: {dir_impl}"),
+        )))
     }
 
     /// `getPerfObject(String key)`: an object that was previously set by
@@ -537,7 +578,12 @@ impl PerfRunData {
         self.content_source.reset_inputs()?;
         self.doc_maker.reset_inputs()?;
         self.facet_source.reset_inputs()?;
-        let makers: Vec<Arc<dyn QueryMaker>> = self.lock().read_task_query_maker.values().cloned().collect();
+        let makers: Vec<Arc<dyn QueryMaker>> = self
+            .lock()
+            .read_task_query_maker
+            .values()
+            .cloned()
+            .collect();
         for query_maker in makers {
             query_maker.reset_inputs().map_err(|e| {
                 if e.is_io_exception() {
@@ -575,9 +621,12 @@ impl PerfRunData {
         if let Some(qm) = s.read_task_query_maker.get(&read_task_class) {
             return Ok(Arc::clone(qm));
         }
-        let qm = classes::query_maker_for_name(&self.qmkr_class).map_err(jdk::runtime_exception_from)?;
-        qm.set_config(Arc::clone(&self.config)).map_err(jdk::runtime_exception_from)?;
-        s.read_task_query_maker.insert(read_task_class, Arc::clone(&qm));
+        let qm =
+            classes::query_maker_for_name(&self.qmkr_class).map_err(jdk::runtime_exception_from)?;
+        qm.set_config(Arc::clone(&self.config))
+            .map_err(jdk::runtime_exception_from)?;
+        s.read_task_query_maker
+            .insert(read_task_class, Arc::clone(&qm));
         Ok(qm)
     }
 

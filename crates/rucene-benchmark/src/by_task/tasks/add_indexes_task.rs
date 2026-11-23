@@ -78,20 +78,32 @@ impl PerfTask for AddIndexesTask {
     }
 
     fn setup(&self) -> Result<()> {
-        let input_dir_prop = self.base.get_run_data().get_config().get_str(Self::ADDINDEXES_INPUT_DIR, None)?;
+        let input_dir_prop = self
+            .base
+            .get_run_data()
+            .get_config()
+            .get_str(Self::ADDINDEXES_INPUT_DIR, None)?;
         let Some(input_dir_prop) = input_dir_prop else {
             return Err(LuceneError::illegal_argument(format!(
                 "config parameter {} not specified in configuration",
                 Self::ADDINDEXES_INPUT_DIR
             )));
         };
-        *jdk::lock(&self.input_dir) = Some(Arc::new(FSDirectory::open(std::path::PathBuf::from(input_dir_prop))?));
+        *jdk::lock(&self.input_dir) = Some(Arc::new(FSDirectory::open(std::path::PathBuf::from(
+            input_dir_prop,
+        ))?));
         Ok(())
     }
 
     fn do_logic(&self) -> Result<i32> {
-        let writer = self.base.get_run_data().get_index_writer().ok_or_else(LuceneError::null_pointer)?;
-        let input_dir = jdk::lock(&self.input_dir).clone().ok_or_else(LuceneError::null_pointer)?;
+        let writer = self
+            .base
+            .get_run_data()
+            .get_index_writer()
+            .ok_or_else(LuceneError::null_pointer)?;
+        let input_dir = jdk::lock(&self.input_dir)
+            .clone()
+            .ok_or_else(LuceneError::null_pointer)?;
         if self.use_add_indexes_dir.load(Ordering::SeqCst) {
             writer.add_indexes_dirs(&[input_dir])?;
         } else {
@@ -117,7 +129,8 @@ impl PerfTask for AddIndexesTask {
     /// `IndexWriter.addIndexes(CodecReader...)`. Defaults to `true`.
     fn set_params(&self, params: &str) -> Result<()> {
         perf_task::set_params(self, params)?;
-        self.use_add_indexes_dir.store(jdk::parse_boolean(Some(params)), Ordering::SeqCst);
+        self.use_add_indexes_dir
+            .store(jdk::parse_boolean(Some(params)), Ordering::SeqCst);
         Ok(())
     }
 

@@ -38,7 +38,9 @@ impl CommitTaxonomyIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CommitTaxonomyIndexTask { base: PerfTaskBase::new(run_data, "CommitTaxonomyIndexTask")? })
+        Ok(CommitTaxonomyIndexTask {
+            base: PerfTaskBase::new(run_data, "CommitTaxonomyIndexTask")?,
+        })
     }
 }
 
@@ -46,7 +48,9 @@ impl PerfTask for CommitTaxonomyIndexTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(CommitTaxonomyIndexTask { base: self.base.clone_base() }))
+        Ok(Arc::new(CommitTaxonomyIndexTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -55,7 +59,11 @@ impl PerfTask for CommitTaxonomyIndexTask {
             Some(taxonomy_writer) => {
                 taxonomy_writer.commit()?;
             }
-            None => return Err(LuceneError::illegal_state("TaxonomyWriter is not currently open")),
+            None => {
+                return Err(LuceneError::illegal_state(
+                    "TaxonomyWriter is not currently open",
+                ))
+            }
         }
         Ok(1)
     }

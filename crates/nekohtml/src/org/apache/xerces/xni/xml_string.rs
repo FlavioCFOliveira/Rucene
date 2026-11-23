@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -96,7 +96,10 @@ impl XMLString {
     /// When `ch` is `None` or the range is out of bounds, as Java's array
     /// access throws.
     pub fn chars(&self) -> &[u16] {
-        let ch = self.ch.as_deref().expect("java.lang.NullPointerException: XMLString.ch");
+        let ch = self
+            .ch
+            .as_deref()
+            .expect("java.lang.NullPointerException: XMLString.ch");
         &ch[self.offset as usize..(self.offset + self.length.max(0)) as usize]
     }
 

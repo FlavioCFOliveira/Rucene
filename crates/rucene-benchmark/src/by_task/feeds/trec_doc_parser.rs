@@ -50,8 +50,13 @@ pub enum ParsePathType {
 
 impl ParsePathType {
     /// `values()`.
-    pub const VALUES: [ParsePathType; 5] =
-        [ParsePathType::Gov2, ParsePathType::Fbis, ParsePathType::Ft, ParsePathType::Fr94, ParsePathType::Latimes];
+    pub const VALUES: [ParsePathType; 5] = [
+        ParsePathType::Gov2,
+        ParsePathType::Fbis,
+        ParsePathType::Ft,
+        ParsePathType::Fr94,
+        ParsePathType::Latimes,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -113,7 +118,9 @@ pub fn path_type_2_parser(path_type: ParsePathType) -> Arc<dyn TrecDocParser> {
 
 /// `pathName2Type.get(name)`.
 fn path_name_2_type(name: &str) -> Option<ParsePathType> {
-    ParsePathType::VALUES.into_iter().find(|p| p.name().to_uppercase() == name)
+    ParsePathType::VALUES
+        .into_iter()
+        .find(|p| p.name().to_uppercase() == name)
 }
 
 /// `pathType(Path f)`: compute the path type of a file by inspecting name
@@ -122,7 +129,9 @@ pub fn path_type(f: &Path) -> ParsePathType {
     let mut path_length = 0;
     let mut f = Some(f);
     while let Some(p) = f {
-        let Some(file_name) = p.file_name() else { break };
+        let Some(file_name) = p.file_name() else {
+            break;
+        };
         path_length += 1;
         if path_length >= MAX_PATH_LENGTH {
             break;
@@ -148,7 +157,9 @@ pub fn index_of(buf: &[u16], s: &str, from: i64) -> i64 {
     if pat.len() > buf.len() {
         return -1;
     }
-    (from..=buf.len() - pat.len()).find(|&i| buf[i..i + pat.len()] == pat[..]).map_or(-1, |i| i as i64)
+    (from..=buf.len() - pat.len())
+        .find(|&i| buf[i..i + pat.len()] == pat[..])
+        .map_or(-1, |i| i as i64)
 }
 
 /// `substring(begin, end)` over UTF-16 units.

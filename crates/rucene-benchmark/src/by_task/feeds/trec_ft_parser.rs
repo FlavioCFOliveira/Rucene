@@ -22,7 +22,9 @@ use rucene::error::Result;
 
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::trec_content_source::TrecContentSource;
-use crate::by_task::feeds::trec_doc_parser::{extract, strip_tags_buf, ParsePathType, TrecDocParser};
+use crate::by_task::feeds::trec_doc_parser::{
+    extract, strip_tags_buf, ParsePathType, TrecDocParser,
+};
 
 /// `DATE`.
 const DATE: &str = "<DATE>";

@@ -86,8 +86,15 @@ impl ReadTaskBase {
         with_search: bool,
         get_query_maker: impl FnOnce() -> Result<Option<Arc<dyn QueryMaker>>>,
     ) -> Result<Self> {
-        let query_maker = if with_search { get_query_maker()? } else { None };
-        Ok(ReadTaskBase { query_maker, num_hits: AtomicI32::new(0) })
+        let query_maker = if with_search {
+            get_query_maker()?
+        } else {
+            None
+        };
+        Ok(ReadTaskBase {
+            query_maker,
+            num_hits: AtomicI32::new(0),
+        })
     }
 
     /// `super.clone()`.
@@ -197,7 +204,12 @@ pub trait ReadTask: PerfTask {
     /// # Errors
     ///
     /// The exception of retrieving documents.
-    fn with_top_docs(&self, searcher: &Arc<IndexSearcher>, q: &Arc<dyn Query>, hits: &TopDocs) -> Result<i32> {
+    fn with_top_docs(
+        &self,
+        searcher: &Arc<IndexSearcher>,
+        q: &Arc<dyn Query>,
+        hits: &TopDocs,
+    ) -> Result<i32> {
         with_top_docs(self, searcher, q, hits)
     }
 
@@ -232,20 +244,23 @@ pub fn do_logic<T: ReadTask + ?Sized>(task: &T) -> Result<i32> {
     // open reader or use existing one
     let existing = run_data.get_index_searcher()?; // (will incRef the reader)
 
-    let (searcher, reader, close_searcher): (Arc<IndexSearcher>, Arc<dyn IndexReader>, bool) = match existing {
-        None => {
-            // open our own reader
-            let dir = run_data.get_directory().ok_or_else(rucene::error::LuceneError::null_pointer)?;
-            let reader: Arc<dyn IndexReader> = directory_reader::open(dir)?;
-            let searcher = Arc::new(IndexSearcher::new(Arc::clone(&reader))?);
-            (searcher, reader, true)
-        }
-        Some(searcher) => {
-            // use existing one; this passes +1 ref to us
-            let reader = Arc::clone(searcher.get_index_reader());
-            (searcher, reader, false)
-        }
-    };
+    let (searcher, reader, close_searcher): (Arc<IndexSearcher>, Arc<dyn IndexReader>, bool) =
+        match existing {
+            None => {
+                // open our own reader
+                let dir = run_data
+                    .get_directory()
+                    .ok_or_else(rucene::error::LuceneError::null_pointer)?;
+                let reader: Arc<dyn IndexReader> = directory_reader::open(dir)?;
+                let searcher = Arc::new(IndexSearcher::new(Arc::clone(&reader))?);
+                (searcher, reader, true)
+            }
+            Some(searcher) => {
+                // use existing one; this passes +1 ref to us
+                let reader = Arc::clone(searcher.get_index_reader());
+                (searcher, reader, false)
+            }
+        };
 
     let stored_fields = reader.stored_fields()?;
 
@@ -262,7 +277,11 @@ pub fn do_logic<T: ReadTask + ?Sized>(task: &T) -> Result<i32> {
 
     if task.with_search() {
         res += 1;
-        let q = task.read_base().query_maker().ok_or_else(rucene::error::LuceneError::null_pointer)?.make_query()?;
+        let q = task
+            .read_base()
+            .query_maker()
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?
+            .make_query()?;
         let sort = task.get_sort()?;
         let mut hits: Option<TopDocs> = None;
         let num_hits = task.num_hits();
@@ -275,13 +294,19 @@ pub fn do_logic<T: ReadTask + ?Sized>(task: &T) -> Result<i32> {
                     // Weight public again, we can go back to
                     // pulling the Weight ourselves:
                     let total_hits_threshold = if task.with_total_hits() { i32::MAX } else { 1 };
-                    let collector_manager = TopFieldCollectorManager::new(sort, num_hits, None, total_hits_threshold)?;
-                    hits = Some(searcher.search_with_manager(Arc::clone(&q), &collector_manager)?.to_top_docs());
+                    let collector_manager =
+                        TopFieldCollectorManager::new(sort, num_hits, None, total_hits_threshold)?;
+                    hits = Some(
+                        searcher
+                            .search_with_manager(Arc::clone(&q), &collector_manager)?
+                            .to_top_docs(),
+                    );
                 } else {
                     hits = Some(searcher.search(Arc::clone(&q), num_hits)?);
                 }
             } else {
-                task.create_collector_manager()?.search(&searcher, Arc::clone(&q))?;
+                task.create_collector_manager()?
+                    .search(&searcher, Arc::clone(&q))?;
                 // hits = collector.topDocs();
             }
 
@@ -297,7 +322,8 @@ pub fn do_logic<T: ReadTask + ?Sized>(task: &T) -> Result<i32> {
                         println!(
                             "  {i}: doc={doc_id} score={} {print_hits_field} ={}",
                             crate::jdk::float_to_string(score_doc.score),
-                            doc.get(&print_hits_field).unwrap_or_else(|| "null".to_string())
+                            doc.get(&print_hits_field)
+                                .unwrap_or_else(|| "null".to_string())
                         );
                     }
                 }
@@ -352,12 +378,16 @@ pub fn with_top_docs<T: ReadTask + ?Sized>(
 /// # Errors
 ///
 /// The `IllegalArgumentException` of the manager.
-pub fn create_collector_manager<T: ReadTask + ?Sized>(task: &T) -> Result<Box<dyn AnyCollectorManager>> {
-    Ok(Box::new(ErasedCollectorManager(TopScoreDocCollectorManager::new(
-        task.num_hits(),
-        None,
-        if task.with_total_hits() { i32::MAX } else { 1 },
-    )?)))
+pub fn create_collector_manager<T: ReadTask + ?Sized>(
+    task: &T,
+) -> Result<Box<dyn AnyCollectorManager>> {
+    Ok(Box::new(ErasedCollectorManager(
+        TopScoreDocCollectorManager::new(
+            task.num_hits(),
+            None,
+            if task.with_total_hits() { i32::MAX } else { 1 },
+        )?,
+    )))
 }
 
 /// `ReadTask.setup()`.
@@ -366,7 +396,11 @@ pub fn create_collector_manager<T: ReadTask + ?Sized>(task: &T) -> Result<Box<dy
 ///
 /// The exception of reading `search.num.hits`.
 pub fn setup<T: ReadTask + ?Sized>(task: &T) -> Result<()> {
-    let num_hits = task.base().get_run_data().get_config().get_int("search.num.hits", DEFAULT_SEARCH_NUM_HITS)?;
+    let num_hits = task
+        .base()
+        .get_run_data()
+        .get_config()
+        .get_int("search.num.hits", DEFAULT_SEARCH_NUM_HITS)?;
     task.read_base().num_hits.store(num_hits, Ordering::SeqCst);
     Ok(())
 }

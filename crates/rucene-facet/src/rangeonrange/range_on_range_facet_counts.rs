@@ -86,7 +86,9 @@ impl RangeOnRangeFacetCounts {
         labels: Vec<String>,
     ) -> Result<Self> {
         debug_assert!(encoded_ranges.len() == labels.len());
-        debug_assert!(encoded_ranges[0].len() % (2 * num_encoded_value_bytes) == 0);
+        debug_assert!(encoded_ranges[0]
+            .len()
+            .is_multiple_of(2 * num_encoded_value_bytes));
         let mut this = Self {
             filter: FacetCountsWithFilterQuery::new(fast_match_query),
             labels,
@@ -94,7 +96,13 @@ impl RangeOnRangeFacetCounts {
             field: field.to_string(),
             tot_count: 0,
         };
-        this.count(field, hits.get_matching_docs()?, &encoded_ranges, num_encoded_value_bytes, query_type)?;
+        this.count(
+            field,
+            hits.get_matching_docs()?,
+            &encoded_ranges,
+            num_encoded_value_bytes,
+            query_type,
+        )?;
         Ok(this)
     }
 
@@ -142,7 +150,12 @@ impl RangeOnRangeFacetCounts {
                     for (range, encoded_range) in encoded_ranges.iter().enumerate() {
                         let packed_range = binary_range_doc_values.packed_value();
                         debug_assert!(encoded_range.len() == packed_range.len());
-                        if query_type.matches(encoded_range, packed_range, dims, num_encoded_value_bytes) {
+                        if query_type.matches(
+                            encoded_range,
+                            packed_range,
+                            dims,
+                            num_encoded_value_bytes,
+                        ) {
                             self.counts[range] += 1;
                             has_valid_range = true;
                         }
@@ -180,12 +193,18 @@ impl RangeOnRangeFacetCounts {
     }
 
     /// Equivalent to `getTopChildren(int, String, String...)`.
-    pub(crate) fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    pub(crate) fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
         self.validate_dim_and_path_for_get_children(dim, path)?;
 
         let size = top_n.min(self.counts.len() as i32);
-        let mut pq: PriorityQueue<Entry, EntryLessThan> = PriorityQueue::new(size.max(0) as usize, EntryLessThan)?;
+        let mut pq: PriorityQueue<Entry, EntryLessThan> =
+            PriorityQueue::new(size.max(0) as usize, EntryLessThan)?;
 
         let mut child_count = 0;
         let mut e: Option<Entry> = None;
@@ -202,7 +221,10 @@ impl RangeOnRangeFacetCounts {
         let mut results: Vec<Option<LabelAndValue>> = (0..pq.size()).map(|_| None).collect();
         while pq.size() != 0 {
             let entry = pq.pop().expect("INVARIANT: size > 0");
-            results[pq.size()] = Some(LabelAndValue::new(entry.label, NumericValue::Int(entry.count)));
+            results[pq.size()] = Some(LabelAndValue::new(
+                entry.label,
+                NumericValue::Int(entry.count),
+            ));
         }
         Ok(Some(FacetResult::new(
             dim,
@@ -222,7 +244,10 @@ impl RangeOnRangeFacetCounts {
     /// Equivalent to `getAllDims(int)`.
     pub(crate) fn get_all_dims(&self, top_n: i32) -> Result<Vec<FacetResult>> {
         validate_top_n(top_n)?;
-        Ok(self.get_top_children(top_n, &self.field, &[])?.into_iter().collect())
+        Ok(self
+            .get_top_children(top_n, &self.field, &[])?
+            .into_iter()
+            .collect())
     }
 
     /// Equivalent to `validateDimAndPathForGetChildren(String, String...)`.

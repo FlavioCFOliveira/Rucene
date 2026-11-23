@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -105,6 +105,9 @@ impl IntProperties {
 
     fn get(&self, key: i32) -> Option<&str> {
         let hash = (key % self.entries.len() as i32) as usize;
-        self.entries[hash].iter().find(|e| e.0 == key).map(|e| e.1.as_str())
+        self.entries[hash]
+            .iter()
+            .find(|e| e.0 == key)
+            .map(|e| e.1.as_str())
     }
 }

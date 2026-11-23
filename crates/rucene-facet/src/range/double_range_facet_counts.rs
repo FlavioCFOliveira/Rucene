@@ -112,10 +112,14 @@ impl DoubleRangeFacetCounts {
             base: RangeFacetCounts::new(field, Ranges::Double(ranges), fast_match_query),
         };
         match values_source {
-            Some(values_source) => match <dyn MultiDoubleValuesSource>::unwrap_singleton(&*values_source) {
-                Some(single_values) => this.count_source(single_values, hits.get_matching_docs()?)?,
-                None => this.count_multi_source(&*values_source, hits.get_matching_docs()?)?,
-            },
+            Some(values_source) => {
+                match <dyn MultiDoubleValuesSource>::unwrap_singleton(&*values_source) {
+                    Some(single_values) => {
+                        this.count_source(single_values, hits.get_matching_docs()?)?
+                    }
+                    None => this.count_multi_source(&*values_source, hits.get_matching_docs()?)?,
+                }
+            }
             None => this.base.count_field(field, hits.get_matching_docs()?)?,
         }
         Ok(this)
@@ -124,7 +128,11 @@ impl DoubleRangeFacetCounts {
     /// Counts from the provided `DoubleValuesSource`.
     ///
     /// Equivalent to `count(DoubleValuesSource, List)`.
-    fn count_source(&mut self, value_source: Arc<dyn DoubleValuesSource>, matching_docs: &[MatchingDocs]) -> Result<()> {
+    fn count_source(
+        &mut self,
+        value_source: Arc<dyn DoubleValuesSource>,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         let mut counter: Option<Box<dyn LongRangeCounter>> = None;
         let mut missing_count = 0;
         for hits in matching_docs {
@@ -167,7 +175,11 @@ impl DoubleRangeFacetCounts {
     /// Counts from the provided `MultiDoubleValuesSource`.
     ///
     /// Equivalent to `count(MultiDoubleValuesSource, List)`.
-    fn count_multi_source(&mut self, value_source: &dyn MultiDoubleValuesSource, matching_docs: &[MatchingDocs]) -> Result<()> {
+    fn count_multi_source(
+        &mut self,
+        value_source: &dyn MultiDoubleValuesSource,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         let mut counter: Option<Box<dyn LongRangeCounter>> = None; // LongRangeCounter.create(longRanges, counts);
         let mut missing_count = 0;
         for hits in matching_docs {
@@ -193,13 +205,16 @@ impl DoubleRangeFacetCounts {
                     let limit = multi_values.get_value_count()?;
                     // optimize single-valued case
                     if limit == 1 {
-                        c.add_single_valued(NumericUtils::double_to_sortable_long(multi_values.next_value()?));
+                        c.add_single_valued(NumericUtils::double_to_sortable_long(
+                            multi_values.next_value()?,
+                        ));
                         self.base.tot_count += 1;
                     } else {
                         c.start_multi_valued_doc();
                         let mut previous = 0i64;
                         for i in 0..limit {
-                            let val = NumericUtils::double_to_sortable_long(multi_values.next_value()?);
+                            let val =
+                                NumericUtils::double_to_sortable_long(multi_values.next_value()?);
                             if i == 0 || val != previous {
                                 c.add_multi_valued(val);
                                 previous = val;

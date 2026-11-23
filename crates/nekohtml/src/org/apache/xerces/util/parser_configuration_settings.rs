@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -49,7 +49,11 @@ pub struct ParserConfigurationSettings {
 
 /// Equivalent to `ParserConfigurationSettings.PARSER_SETTINGS`.
 pub fn parser_settings() -> String {
-    format!("{}{}", constants::XERCES_FEATURE_PREFIX, constants::PARSER_SETTINGS)
+    format!(
+        "{}{}",
+        constants::XERCES_FEATURE_PREFIX,
+        constants::PARSER_SETTINGS
+    )
 }
 
 impl std::fmt::Debug for ParserConfigurationSettings {
@@ -57,7 +61,10 @@ impl std::fmt::Debug for ParserConfigurationSettings {
         f.debug_struct("ParserConfigurationSettings")
             .field("recognized_features", &self.recognized_features.borrow())
             .field("features", &self.features.borrow())
-            .field("recognized_properties", &self.recognized_properties.borrow())
+            .field(
+                "recognized_properties",
+                &self.recognized_properties.borrow(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -106,7 +113,9 @@ impl ParserConfigurationSettings {
     /// `XMLConfigurationException` for an unrecognized feature.
     pub fn set_feature(&self, feature_id: &str, state: bool) -> JResult<()> {
         self.check_feature(feature_id)?;
-        self.features.borrow_mut().insert(feature_id.to_string(), state);
+        self.features
+            .borrow_mut()
+            .insert(feature_id.to_string(), state);
         Ok(())
     }
 
@@ -130,7 +139,9 @@ impl ParserConfigurationSettings {
     /// `XMLConfigurationException` for an unrecognized property.
     pub fn set_property(&self, property_id: &str, value: Option<Object>) -> JResult<()> {
         self.check_property(property_id)?;
-        self.properties.borrow_mut().insert(property_id.to_string(), value);
+        self.properties
+            .borrow_mut()
+            .insert(property_id.to_string(), value);
         Ok(())
     }
 
@@ -175,7 +186,12 @@ impl ParserConfigurationSettings {
     ///
     /// `XMLConfigurationException(NOT_RECOGNIZED, featureId)`.
     pub fn check_feature(&self, feature_id: &str) -> JResult<()> {
-        if !self.recognized_features.borrow().iter().any(|f| f == feature_id) {
+        if !self
+            .recognized_features
+            .borrow()
+            .iter()
+            .any(|f| f == feature_id)
+        {
             if let Some(parent) = &self.parent_settings {
                 parent.get_feature(feature_id)?;
             } else {
@@ -193,7 +209,12 @@ impl ParserConfigurationSettings {
     ///
     /// `XMLConfigurationException(NOT_RECOGNIZED, propertyId)`.
     pub fn check_property(&self, property_id: &str) -> JResult<()> {
-        if !self.recognized_properties.borrow().iter().any(|p| p == property_id) {
+        if !self
+            .recognized_properties
+            .borrow()
+            .iter()
+            .any(|p| p == property_id)
+        {
             if let Some(parent) = &self.parent_settings {
                 parent.get_property(property_id)?;
             } else {

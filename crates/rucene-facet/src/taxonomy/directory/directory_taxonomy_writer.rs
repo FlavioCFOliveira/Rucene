@@ -26,13 +26,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rucene::document::{BinaryDocValuesField, Document, NumericDocValuesField, Store, StringField};
 use rucene::error::{LuceneError, Result};
+use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
 use rucene::index::merge_policy::LogMergePolicy;
-use rucene::index::index_writer::IndexWriter;
 use rucene::index::reader_manager::ReaderManager;
 use rucene::index::{
-    directory_reader, IndexReader, SegmentInfos, TwoPhaseCommit,
-    POSTINGS_ENUM_NONE,
+    directory_reader, IndexReader, SegmentInfos, TwoPhaseCommit, POSTINGS_ENUM_NONE,
 };
 use rucene::store::Directory;
 use rucene::util::java_collections::JavaHashMap;
@@ -461,19 +460,18 @@ impl DirectoryTaxonomyWriter {
         // the taxonomy if it's not already there). Then add the parent ordinal
         // as payloads (rather than a stored field; payloads can be more
         // efficiently read into memory in bulk by LuceneTaxonomyReader)
-        let parent;
-        if cp.length > 1 {
+        let parent = if cp.length > 1 {
             let parent_path = cp.subpath(cp.length - 1);
             let mut found = self.find_category(state, &parent_path)?;
             if found < 0 {
                 found = self.internal_add_category(state, &parent_path)?;
             }
-            parent = found;
+            found
         } else if cp.length == 1 {
-            parent = ROOT_ORDINAL;
+            ROOT_ORDINAL
         } else {
-            parent = INVALID_ORDINAL;
-        }
+            INVALID_ORDINAL
+        };
         self.add_category_document(state, cp, parent)
     }
 
@@ -526,7 +524,8 @@ impl DirectoryTaxonomyWriter {
         d.add_shared(Arc::clone(&self.full_path_field) as Arc<dyn rucene::index::IndexableField>);
 
         // add arbitrary ordinal data to the doc
-        self.overrides.enrich_ordinal_document(&mut d, category_path);
+        self.overrides
+            .enrich_ordinal_document(&mut d, category_path);
 
         self.index_writer.add_document(&d)?;
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -607,7 +606,10 @@ impl DirectoryTaxonomyWriter {
     ///
     /// Equivalent to `combinedCommitData(Iterable)`; the result iterates in
     /// the order of Java's `HashMap.entrySet()`.
-    fn combined_commit_data(&self, commit_data: Option<Vec<(String, String)>>) -> Vec<(String, String)> {
+    fn combined_commit_data(
+        &self,
+        commit_data: Option<Vec<(String, String)>>,
+    ) -> Vec<(String, String)> {
         let mut m: JavaHashMap<String> = JavaHashMap::new();
         if let Some(commit_data) = commit_data {
             for (k, v) in commit_data {
@@ -664,7 +666,8 @@ impl DirectoryTaxonomyWriter {
                         break;
                     };
                     if !self.cache.is_full()? {
-                        let cp = FacetLabel::new(FacetsConfig::string_to_path(&t.utf8_to_string()?))?;
+                        let cp =
+                            FacetLabel::new(FacetsConfig::string_to_path(&t.utf8_to_string()?))?;
                         let mut postings_enum = terms_enum
                             .postings(None, POSTINGS_ENUM_NONE)?
                             .ok_or_else(LuceneError::null_pointer)?;
@@ -727,7 +730,11 @@ impl DirectoryTaxonomyWriter {
     /// missing ones to this taxonomy.
     ///
     /// Equivalent to `addTaxonomy(Directory, OrdinalMap)`.
-    pub fn add_taxonomy(&self, taxo_dir: Arc<dyn Directory>, map: &mut dyn OrdinalMap) -> Result<()> {
+    pub fn add_taxonomy(
+        &self,
+        taxo_dir: Arc<dyn Directory>,
+        map: &mut dyn OrdinalMap,
+    ) -> Result<()> {
         self.ensure_open()?;
         let r = directory_reader::open(taxo_dir)?;
         let result = (|| -> Result<()> {
@@ -737,14 +744,17 @@ impl DirectoryTaxonomyWriter {
             let reader: Arc<dyn IndexReader> = Arc::clone(&r) as Arc<dyn IndexReader>;
             for ctx in reader.leaves()? {
                 let ar = ctx.leaf_reader();
-                let terms = ar.terms(Consts::FULL)?.ok_or_else(LuceneError::null_pointer)?;
+                let terms = ar
+                    .terms(Consts::FULL)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 // TODO: share per-segment TermsEnum here!
                 let mut te = terms.iterator()?;
                 loop {
                     let Some(term) = te.next()?.cloned() else {
                         break;
                     };
-                    let cp = FacetLabel::new(FacetsConfig::string_to_path(&term.utf8_to_string()?))?;
+                    let cp =
+                        FacetLabel::new(FacetsConfig::string_to_path(&term.utf8_to_string()?))?;
                     let ordinal = self.add_category(&cp)?;
                     let mut docs = te
                         .postings(None, POSTINGS_ENUM_NONE)?
@@ -791,7 +801,8 @@ impl DirectoryTaxonomyWriter {
     /// Delete all taxonomy data and start over.
     ///
     /// Equivalent to the package-private `deleteAll()`.
-    pub(crate) fn delete_all(&self) -> Result<()> {
+    // Public for the port of the facet tests (Java package-private).
+    pub fn delete_all(&self) -> Result<()> {
         let mut state = self.state();
         self.delete_all_locked(&mut state)
     }

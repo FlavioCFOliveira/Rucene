@@ -57,7 +57,10 @@ fn manifest() -> PathBuf {
 }
 
 fn abs(p: &Path) -> String {
-    std::path::absolute(p).unwrap().to_string_lossy().into_owned()
+    std::path::absolute(p)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[test]
@@ -82,16 +85,30 @@ fn benchmark_alg_parse_oracle() {
     for f in &files {
         let config = Arc::new(Config::from_reader(&std::fs::read_to_string(f).unwrap()).unwrap());
         config.set("work.dir", &abs(work.path())).unwrap();
-        config.set("content.source", "org.apache.lucene.benchmark.byTask.feeds.SingleDocSource").unwrap();
+        config
+            .set(
+                "content.source",
+                "org.apache.lucene.benchmark.byTask.feeds.SingleDocSource",
+            )
+            .unwrap();
         config.set("directory", "ByteBuffersDirectory").unwrap();
         if config.get_str("line.file.out", None).unwrap().is_some() {
             config.set("line.file.out", &abs(&line_file)).unwrap();
         }
         if config.get_str("query.maker", None).unwrap().is_some() {
-            config.set("query.maker", "org.apache.lucene.benchmark.byTask.feeds.SimpleQueryMaker").unwrap();
+            config
+                .set(
+                    "query.maker",
+                    "org.apache.lucene.benchmark.byTask.feeds.SimpleQueryMaker",
+                )
+                .unwrap();
         }
         let alg = Algorithm::new(PerfRunData::new(config).unwrap()).unwrap();
-        out.push_str(&format!("ALG {}\n{}\n", f.file_name().unwrap().to_string_lossy(), escape(&alg.to_string())));
+        out.push_str(&format!(
+            "ALG {}\n{}\n",
+            f.file_name().unwrap().to_string_lossy(),
+            escape(&alg.to_string())
+        ));
         alg.close().unwrap();
     }
     sprint17_oracle::assert_same(&java, &out);
@@ -99,7 +116,11 @@ fn benchmark_alg_parse_oracle() {
 
 /// ISO-8859-1 text of a file (each byte one char).
 fn latin1(p: &Path) -> String {
-    std::fs::read(p).unwrap().iter().map(|&b| b as char).collect()
+    std::fs::read(p)
+        .unwrap()
+        .iter()
+        .map(|&b| b as char)
+        .collect()
 }
 
 #[test]
@@ -115,7 +136,10 @@ fn benchmark_html_parser_oracle() {
     files.sort();
     let mut out = String::new();
     for f in &files {
-        out.push_str(&format!("FILE {}\n", f.file_name().unwrap().to_string_lossy()));
+        out.push_str(&format!(
+            "FILE {}\n",
+            f.file_name().unwrap().to_string_lossy()
+        ));
         let p = match Parser::from_reader(&latin1(f)) {
             Ok(p) => p,
             Err(e) => {
@@ -123,9 +147,16 @@ fn benchmark_html_parser_oracle() {
                 continue;
             }
         };
-        out.push_str(&format!("TITLE {}\nBODY {}\n", escape(&p.title), escape(&p.body)));
-        let mut meta: Vec<(String, String)> =
-            p.meta_tags.entries().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        out.push_str(&format!(
+            "TITLE {}\nBODY {}\n",
+            escape(&p.title),
+            escape(&p.body)
+        ));
+        let mut meta: Vec<(String, String)> = p
+            .meta_tags
+            .entries()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         meta.sort_by(|a, b| sprint17_oracle_compare(&a.0, &b.0));
         for (k, v) in meta {
             out.push_str(&format!("META {}={}\n", escape(&k), escape(&v)));
@@ -141,15 +172,32 @@ fn benchmark_html_parser_oracle() {
         .zip(&rl)
         .enumerate()
         .filter(|(_, (j, r))| j != r)
-        .map(|(i, (j, r))| format!("line {}: java {j} | rust {r} (after {})", i + 1, jl[i.saturating_sub(2)]))
+        .map(|(i, (j, r))| {
+            format!(
+                "line {}: java {j} | rust {r} (after {})",
+                i + 1,
+                jl[i.saturating_sub(2)]
+            )
+        })
         .collect();
-    assert!(diffs.is_empty(), "{} lines differ:\n{}", diffs.len(), diffs.join("\n"));
+    assert!(
+        diffs.is_empty(),
+        "{} lines differ:\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
 }
 
 /// `e.getClass().getName() + ": " + escape(e.getMessage())` of a parser
 /// exception.
 fn java_exception(e: &nekohtml::java::Exception) -> String {
-    format!("{}: {}", e.class_name(), e.get_message().as_deref().map_or_else(|| "null".to_string(), escape))
+    format!(
+        "{}: {}",
+        e.class_name(),
+        e.get_message()
+            .as_deref()
+            .map_or_else(|| "null".to_string(), escape)
+    )
 }
 
 /// `String.compareTo` (UTF-16 order), the order of Java's `TreeMap`.
@@ -171,7 +219,10 @@ fn dump_doc_data(dd: &DocData, out: &mut String) {
         opt(dd.get_body())
     ));
     if let Some(props) = dd.get_props() {
-        let mut sorted: Vec<(String, String)> = props.entries().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut sorted: Vec<(String, String)> = props
+            .entries()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         sorted.sort_by(|a, b| sprint17_oracle_compare(&a.0, &b.0));
         for (k, v) in sorted {
             out.push_str(&format!("PROP {}={}\n", escape(&k), escape(&v)));
@@ -201,7 +252,10 @@ fn benchmark_trec_oracle() {
     let work = WorkDir::new("s17b-trec");
     let zip = std::fs::read(manifest().join("tests/resources/by_task/feeds/trecdocs.zip")).unwrap();
     rucene_test_framework::util::test_util::TestUtil::unzip(&zip, work.path()).unwrap();
-    let dir = std::fs::canonicalize(work.path()).unwrap().to_string_lossy().into_owned();
+    let dir = std::fs::canonicalize(work.path())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let java = sprint17_oracle::run(Module::Benchmark, "trec", SEED, &[&dir]);
     let tcs = TrecContentSource::new();
     let mut props = Properties::new();
@@ -209,9 +263,13 @@ fn benchmark_trec_oracle() {
     props.set_property("content.source.verbose", "false");
     props.set_property("content.source.excludeIteration", "true");
     props.set_property("docs.dir", dir.as_str());
-    props.set_property("trec.doc.parser", "org.apache.lucene.benchmark.byTask.feeds.TrecParserByPath");
+    props.set_property(
+        "trec.doc.parser",
+        "org.apache.lucene.benchmark.byTask.feeds.TrecParserByPath",
+    );
     props.set_property("content.source.forever", "false");
-    tcs.set_config(Arc::new(Config::from_properties(props))).unwrap();
+    tcs.set_config(Arc::new(Config::from_properties(props)))
+        .unwrap();
     tcs.reset_inputs().unwrap();
     let mut out = String::new();
     drain(&tcs, false, &mut out);
@@ -220,7 +278,12 @@ fn benchmark_trec_oracle() {
 }
 
 fn line_doc_case(file: &Path, parser: Option<&str>) {
-    let java = sprint17_oracle::run(Module::Benchmark, "linedoc", SEED, &[&abs(file), parser.unwrap_or("-")]);
+    let java = sprint17_oracle::run(
+        Module::Benchmark,
+        "linedoc",
+        SEED,
+        &[&abs(file), parser.unwrap_or("-")],
+    );
     let src = LineDocSource::new();
     let mut props = Properties::new();
     props.set_property("docs.file", abs(file));
@@ -228,7 +291,8 @@ fn line_doc_case(file: &Path, parser: Option<&str>) {
     if let Some(parser) = parser {
         props.set_property("line.parser", parser);
     }
-    src.set_config(Arc::new(Config::from_properties(props))).unwrap();
+    src.set_config(Arc::new(Config::from_properties(props)))
+        .unwrap();
     src.reset_inputs().unwrap();
     let mut out = String::new();
     drain(&src, true, &mut out);
@@ -250,7 +314,10 @@ fn benchmark_line_doc_oracle() {
          t1\td1\tb1 x\tn1\ts1\nt2\t\tb2\tn2\ts2\n",
     )
     .unwrap();
-    line_doc_case(&f, Some("org.apache.lucene.benchmark.byTask.feeds.LineDocSource$HeaderLineParser"));
+    line_doc_case(
+        &f,
+        Some("org.apache.lucene.benchmark.byTask.feeds.LineDocSource$HeaderLineParser"),
+    );
     line_doc_case(&f, None);
 }
 
@@ -261,7 +328,9 @@ fn mask_report_line(line: &str) -> String {
     let n = t.len();
     let grouped = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == ',');
     let fraction = |s: &str| {
-        s.split_once('.').is_some_and(|(a, b)| a.chars().all(|c| c.is_ascii_digit() || c == ',') && grouped(b) && !b.contains(','))
+        s.split_once('.').is_some_and(|(a, b)| {
+            a.chars().all(|c| c.is_ascii_digit() || c == ',') && grouped(b) && !b.contains(',')
+        })
     };
     let nums: Vec<usize> = (0..n).filter(|&i| t[i] != "-").collect();
     let k = nums.len();
@@ -298,10 +367,23 @@ fn benchmark_report_oracle() {
     let java = sprint17_oracle::run(Module::Benchmark, "report", SEED, &[&alg]);
     let b = Benchmark::new(&alg).unwrap();
     b.execute().unwrap();
-    let stats: Vec<TaskStats> =
-        b.get_run_data().get_points().task_stats().iter().map(|s| s.lock().unwrap().clone()).collect();
-    let rep = RepSumByNameTask::new(Arc::clone(b.get_run_data())).unwrap().report_sum_by_name(&stats).unwrap();
-    let mut out = format!("outOf={} size={} reported={}\n", rep.get_out_of(), rep.get_size(), rep.get_reported());
+    let stats: Vec<TaskStats> = b
+        .get_run_data()
+        .get_points()
+        .task_stats()
+        .iter()
+        .map(|s| s.lock().unwrap().clone())
+        .collect();
+    let rep = RepSumByNameTask::new(Arc::clone(b.get_run_data()))
+        .unwrap()
+        .report_sum_by_name(&stats)
+        .unwrap();
+    let mut out = format!(
+        "outOf={} size={} reported={}\n",
+        rep.get_out_of(),
+        rep.get_size(),
+        rep.get_reported()
+    );
     for line in rep.get_text().split('\n') {
         out.push_str(&escape(&mask_report_line(line)));
         out.push('\n');
@@ -328,5 +410,10 @@ fn benchmark_spellout_oracle() {
         rows += 1;
     }
     assert_eq!(rows, 38_871);
-    assert!(diffs.is_empty(), "{} rows differ, first: {:?}", diffs.len(), &diffs[..diffs.len().min(5)]);
+    assert!(
+        diffs.is_empty(),
+        "{} rows differ, first: {:?}",
+        diffs.len(),
+        &diffs[..diffs.len().min(5)]
+    );
 }

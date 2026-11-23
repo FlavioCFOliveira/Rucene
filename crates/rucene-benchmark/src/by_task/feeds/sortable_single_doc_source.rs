@@ -29,8 +29,8 @@ use crate::by_task::feeds::content_source::ContentSource;
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::single_doc_source::SingleDocSource;
 use crate::by_task::utils::config::Config;
-use crate::jdk::properties::Properties;
 use crate::jdk;
+use crate::jdk::properties::Properties;
 
 /// `COUNTRIES`.
 const COUNTRIES: [&str; 211] = [
@@ -317,7 +317,10 @@ impl ContentSource for SortableSingleDocSource {
         props.set_property("random_string", String::from_utf16_lossy(&buffer));
 
         // random country
-        props.set_property("country", COUNTRIES[r.next_int_bound(COUNTRIES.len() as i32) as usize]);
+        props.set_property(
+            "country",
+            COUNTRIES[r.next_int_bound(COUNTRIES.len() as i32) as usize],
+        );
         doc_data.set_props(Some(props));
         Ok(())
     }

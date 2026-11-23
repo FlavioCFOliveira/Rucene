@@ -39,7 +39,9 @@ impl ResetInputsTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(ResetInputsTask { base: PerfTaskBase::new(run_data, "ResetInputsTask")? })
+        Ok(ResetInputsTask {
+            base: PerfTaskBase::new(run_data, "ResetInputsTask")?,
+        })
     }
 }
 
@@ -47,7 +49,9 @@ impl PerfTask for ResetInputsTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(ResetInputsTask { base: self.base.clone_base() }))
+        Ok(Arc::new(ResetInputsTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

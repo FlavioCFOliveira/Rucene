@@ -59,7 +59,9 @@ impl ChildrenIterator {
     /// Return the next child ordinal, or [`INVALID_ORDINAL`] if no more
     /// children.
     ///
-    /// Equivalent to `next()`.
+    /// Equivalent to `next()` (Java's `ChildrenIterator.next()`, not an
+    /// `Iterator`: `INVALID_ORDINAL` ends it).
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> i32 {
         let res = self.child;
         if self.child != INVALID_ORDINAL {
@@ -200,9 +202,7 @@ pub trait TaxonomyReader: Send + Sync {
     /// Equivalent to `ensureOpen()`.
     fn ensure_open(&self) -> Result<()> {
         if self.get_ref_count() <= 0 {
-            return Err(LuceneError::already_closed(
-                "this TaxonomyReader is closed",
-            ));
+            return Err(LuceneError::already_closed("this TaxonomyReader is closed"));
         }
         Ok(())
     }

@@ -75,7 +75,10 @@ impl QualityQueriesFinder {
         let qqf = QualityQueriesFinder::new(Arc::new(FSDirectory::open(PathBuf::from(&args[0]))?));
         let q = qqf.best_queries("body", 20)?;
         for (i, query) in q.iter().enumerate() {
-            println!("{NEW_LINE}{}", Self::format_query_as_trec_topic(i as i32, Some(query), None, None));
+            println!(
+                "{NEW_LINE}{}",
+                Self::format_query_as_trec_topic(i as i32, Some(query), None, None)
+            );
         }
         Ok(())
     }
@@ -87,7 +90,13 @@ impl QualityQueriesFinder {
         let m = n / 4;
         let mut res = Vec::with_capacity(m);
         for i in 0..m {
-            res.push(format!("{} {}  {} {}", words[i], words[m + i], words[n - 1 - m - i], words[n - 1 - i]));
+            res.push(format!(
+                "{} {}  {} {}",
+                words[i],
+                words[m + i],
+                words[n - 1 - m - i],
+                words[n - 1 - i]
+            ));
             // System.out.println("query["+i+"]:  "+res[i]);
         }
         Ok(res)
@@ -95,7 +104,12 @@ impl QualityQueriesFinder {
 
     /// `formatQueryAsTrecTopic(int qnum, String title, String description,
     /// String narrative)`.
-    fn format_query_as_trec_topic(qnum: i32, title: Option<&str>, description: Option<&str>, narrative: Option<&str>) -> String {
+    fn format_query_as_trec_topic(
+        qnum: i32,
+        title: Option<&str>,
+        description: Option<&str>,
+        narrative: Option<&str>,
+    ) -> String {
         let nl = NEW_LINE;
         format!(
             "<top>{nl}<num> Number: {qnum}{nl}{nl}<title> {}{nl}{nl}<desc> Description:{nl}{}{nl}{nl}<narr> Narrative:{nl}{}{nl}{nl}</top>",

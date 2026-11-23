@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -71,7 +71,11 @@ pub struct XNIException {
 impl XNIException {
     /// Equivalent to `new XNIException(String)`.
     pub fn with_message(message: Option<&str>) -> Self {
-        Self::of(XNIExceptionClass::XNIException, message.map(str::to_string), None)
+        Self::of(
+            XNIExceptionClass::XNIException,
+            message.map(str::to_string),
+            None,
+        )
     }
 
     /// Equivalent to `new XNIException(Exception)`.
@@ -82,11 +86,19 @@ impl XNIException {
 
     /// Equivalent to `new XNIException(String, Exception)`.
     pub fn with_message_and_exception(message: Option<&str>, exception: Option<Exception>) -> Self {
-        Self::of(XNIExceptionClass::XNIException, message.map(str::to_string), exception)
+        Self::of(
+            XNIExceptionClass::XNIException,
+            message.map(str::to_string),
+            exception,
+        )
     }
 
     /// An XNI exception of class `class`.
-    pub(crate) fn of(class: XNIExceptionClass, message: Option<String>, exception: Option<Exception>) -> Self {
+    pub(crate) fn of(
+        class: XNIExceptionClass,
+        message: Option<String>,
+        exception: Option<Exception>,
+    ) -> Self {
         Self {
             class,
             message,
@@ -103,7 +115,9 @@ impl XNIException {
     pub fn class_name(&self) -> &'static str {
         match self.class {
             XNIExceptionClass::XNIException => "org.apache.xerces.xni.XNIException",
-            XNIExceptionClass::XMLParseException(_) => "org.apache.xerces.xni.parser.XMLParseException",
+            XNIExceptionClass::XMLParseException(_) => {
+                "org.apache.xerces.xni.parser.XMLParseException"
+            }
             XNIExceptionClass::XMLConfigurationException { .. } => {
                 "org.apache.xerces.xni.parser.XMLConfigurationException"
             }
@@ -129,7 +143,9 @@ impl XNIException {
     /// `IllegalStateException` when a cause is already set.
     pub fn init_cause(&mut self, throwable: Exception) -> crate::java::JResult<()> {
         if self.exception.is_some() {
-            return Err(Exception::runtime(rucene::error::LuceneError::illegal_state("")));
+            return Err(Exception::runtime(
+                rucene::error::LuceneError::illegal_state(""),
+            ));
         }
         self.exception = Some(Box::new(throwable));
         Ok(())

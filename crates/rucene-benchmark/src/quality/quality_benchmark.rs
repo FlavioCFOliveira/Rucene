@@ -111,7 +111,14 @@ impl QualityBenchmark {
             let search_time = jdk::current_time_millis() - t1;
             // most likely we either submit or judge, but check both
             if let Some(judge) = judge {
-                stats[i] = Some(self.analyze_query_results(qq, &q, &td, judge, quality_log, search_time)?);
+                stats[i] = Some(self.analyze_query_results(
+                    qq,
+                    &q,
+                    &td,
+                    judge,
+                    quality_log,
+                    search_time,
+                )?);
             }
             if let Some(submit_rep) = submit_rep {
                 submit_rep.report(qq, &td, &self.doc_name_field, &self.searcher)?;
@@ -149,8 +156,17 @@ impl QualityBenchmark {
             stts.add_result(i as i32 + 1, is_relevant, doc_name_extract_time)?;
         }
         if let Some(logger) = logger {
-            logger.println(&format!("{}  -  {}", qq.get_query_id(), query_to_string(&**q)));
-            stts.log(Some(&format!("{} Stats:", qq.get_query_id())), 1, logger, Some("  "))?;
+            logger.println(&format!(
+                "{}  -  {}",
+                qq.get_query_id(),
+                query_to_string(&**q)
+            ));
+            stts.log(
+                Some(&format!("{} Stats:", qq.get_query_id())),
+                1,
+                logger,
+                Some("  "),
+            )?;
         }
         Ok(stts)
     }

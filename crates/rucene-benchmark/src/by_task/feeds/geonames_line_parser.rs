@@ -57,7 +57,12 @@ impl LineParser for GeonamesLineParser {
     fn parse_line(&self, doc_data: &mut DocData, line: &str) -> Result<()> {
         // `line.split("\\t", 7)`: no more than first 6 fields needed
         let parts: Vec<&str> = line.splitn(7, '\t').collect();
-        let part = |i: usize| parts.get(i).copied().ok_or_else(|| index_out_of_bounds(i, parts.len()));
+        let part = |i: usize| {
+            parts
+                .get(i)
+                .copied()
+                .ok_or_else(|| index_out_of_bounds(i, parts.len()))
+        };
         //    Sample data line:
         // 3578267, Morne du Vitet, Morne du Vitet, 17.88333, -62.8, ...
         // ID, Name, Alternate name (unused), Lat, Lon, ...

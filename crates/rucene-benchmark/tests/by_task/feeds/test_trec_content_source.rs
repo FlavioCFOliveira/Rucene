@@ -46,18 +46,22 @@ use crate::benchmark_support::{expect_no_more_data_exception, resource_bytes};
 /// `private static class StringableTrecSource extends TrecContentSource`:
 /// a TrecDocMaker which works on a String and not files.
 fn stringable_trec_source(docs: &'static str, forever: bool) -> TrecContentSource {
-    let source = TrecContentSource::with_open_next_file(Arc::new(move |s: &mut OpenNextFileState<'_>| {
-        if s.reader.is_some() {
-            if !s.forever {
-                return Err(NoMoreDataException::new());
+    let source =
+        TrecContentSource::with_open_next_file(Arc::new(move |s: &mut OpenNextFileState<'_>| {
+            if s.reader.is_some() {
+                if !s.forever {
+                    return Err(NoMoreDataException::new());
+                }
+                *s.iteration += 1;
             }
-            *s.iteration += 1;
-        }
-        // new BufferedReader(new StringReader(docs))
-        let stream: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(docs.as_bytes()));
-        *s.reader = Some(BufferedReader::new(InputStreamReader::with_charset(stream, Charset::for_name("UTF-8")?)));
-        Ok(())
-    }));
+            // new BufferedReader(new StringReader(docs))
+            let stream: Box<dyn Read + Send> = Box::new(std::io::Cursor::new(docs.as_bytes()));
+            *s.reader = Some(BufferedReader::new(InputStreamReader::with_charset(
+                stream,
+                Charset::for_name("UTF-8")?,
+            )));
+            Ok(())
+        }));
     source.items_base().set_forever(forever);
     source
 }
@@ -116,7 +120,13 @@ fn test_one_document() -> Result<()> {
     let mut dd = DocData::new();
     source.get_next_doc_data(&mut dd)?;
     let exp = time_of(source.parse_date("Sun, 11 Jan 2009 08:00:00 GMT")?);
-    assert_doc_data(&dd, "TEST-000_0", Some("TEST-000 title"), "TEST-000 text", exp)?;
+    assert_doc_data(
+        &dd,
+        "TEST-000_0",
+        Some("TEST-000 title"),
+        "TEST-000 text",
+        exp,
+    )?;
     assert_no_more_data_exception(&source);
     Ok(())
 }
@@ -127,10 +137,22 @@ fn test_two_documents() -> Result<()> {
     let mut dd = DocData::new();
     source.get_next_doc_data(&mut dd)?;
     let exp = time_of(source.parse_date("Sun, 11 Jan 2009 08:00:00 GMT")?);
-    assert_doc_data(&dd, "TEST-000_0", Some("TEST-000 title"), "TEST-000 text", exp)?;
+    assert_doc_data(
+        &dd,
+        "TEST-000_0",
+        Some("TEST-000 title"),
+        "TEST-000 text",
+        exp,
+    )?;
     source.get_next_doc_data(&mut dd)?;
     let exp = time_of(source.parse_date("Tue, 09 Dec 2003 22:39:08 GMT")?);
-    assert_doc_data(&dd, "TEST-001_0", Some("TEST-001 title"), "TEST-001 text", exp)?;
+    assert_doc_data(
+        &dd,
+        "TEST-001_0",
+        Some("TEST-001 title"),
+        "TEST-001 text",
+        exp,
+    )?;
     assert_no_more_data_exception(&source);
     Ok(())
 }
@@ -142,10 +164,22 @@ fn test_missing_date() -> Result<()> {
     set_config_override(&source);
     let mut dd = DocData::new();
     source.get_next_doc_data(&mut dd)?;
-    assert_doc_data(&dd, "TEST-000_0", Some("TEST-000 title"), "TEST-000 text", None)?;
+    assert_doc_data(
+        &dd,
+        "TEST-000_0",
+        Some("TEST-000 title"),
+        "TEST-000 text",
+        None,
+    )?;
     source.get_next_doc_data(&mut dd)?;
     let exp = time_of(source.parse_date("Sun, 11 Jan 2009 08:01:00 GMT")?);
-    assert_doc_data(&dd, "TEST-001_0", Some("TEST-001 title"), "TEST-001 text", exp)?;
+    assert_doc_data(
+        &dd,
+        "TEST-001_0",
+        Some("TEST-001 title"),
+        "TEST-001 text",
+        exp,
+    )?;
     assert_no_more_data_exception(&source);
     Ok(())
 }
@@ -157,7 +191,13 @@ fn test_bad_date() -> Result<()> {
     set_config_override(&source);
     let mut dd = DocData::new();
     source.get_next_doc_data(&mut dd)?;
-    assert_doc_data(&dd, "TEST-000_0", Some("TEST-000 title"), "TEST-000 text", None)?;
+    assert_doc_data(
+        &dd,
+        "TEST-000_0",
+        Some("TEST-000 title"),
+        "TEST-000 text",
+        None,
+    )?;
     assert_no_more_data_exception(&source);
     Ok(())
 }
@@ -168,10 +208,22 @@ fn test_forever() -> Result<()> {
     let mut dd = DocData::new();
     source.get_next_doc_data(&mut dd)?;
     let exp = time_of(source.parse_date("Sun, 11 Jan 2009 08:00:00 GMT")?);
-    assert_doc_data(&dd, "TEST-000_0", Some("TEST-000 title"), "TEST-000 text", exp)?;
+    assert_doc_data(
+        &dd,
+        "TEST-000_0",
+        Some("TEST-000 title"),
+        "TEST-000 text",
+        exp,
+    )?;
     // same document, but the second iteration changes the name.
     source.get_next_doc_data(&mut dd)?;
-    assert_doc_data(&dd, "TEST-000_1", Some("TEST-000 title"), "TEST-000 text", exp)?;
+    assert_doc_data(
+        &dd,
+        "TEST-000_1",
+        Some("TEST-000 title"),
+        "TEST-000 text",
+        exp,
+    )?;
     source.close()?;
     // Don't test that NoMoreDataException is thrown, since the forever flag is
     // turned on.
@@ -182,7 +234,10 @@ fn test_forever() -> Result<()> {
 /// types and all supported formats - bzip, gzip, txt.
 fn test_trec_feed_dir_all_types() -> Result<()> {
     let data_dir = LuceneTestCase::create_temp_dir_prefix("trecFeedAllTypes");
-    TestUtil::unzip(&resource_bytes("by_task/feeds", "trecdocs.zip"), data_dir.as_std_path())?;
+    TestUtil::unzip(
+        &resource_bytes("by_task/feeds", "trecdocs.zip"),
+        data_dir.as_std_path(),
+    )?;
     let tcs = TrecContentSource::new();
     let mut props = Properties::new();
     props.set_property("print.props", "false");
@@ -190,18 +245,29 @@ fn test_trec_feed_dir_all_types() -> Result<()> {
     props.set_property("content.source.excludeIteration", "true");
     props.set_property(
         "docs.dir",
-        std::fs::canonicalize(data_dir.as_std_path())?.to_string_lossy().replace('\\', "/"),
+        std::fs::canonicalize(data_dir.as_std_path())?
+            .to_string_lossy()
+            .replace('\\', "/"),
     );
-    props.set_property("trec.doc.parser", "org.apache.lucene.benchmark.byTask.feeds.TrecParserByPath");
+    props.set_property(
+        "trec.doc.parser",
+        "org.apache.lucene.benchmark.byTask.feeds.TrecParserByPath",
+    );
     props.set_property("content.source.forever", "false");
     tcs.set_config(Arc::new(Config::from_properties(props)))?;
     tcs.reset_inputs()?;
     let mut dd = DocData::new();
     let mut n = 0;
     let mut got_expected_exception = false;
-    let mut unseen_types: HashSet<ParsePathType> = [ParsePathType::Gov2, ParsePathType::Fbis, ParsePathType::Ft, ParsePathType::Fr94, ParsePathType::Latimes]
-        .into_iter()
-        .collect();
+    let mut unseen_types: HashSet<ParsePathType> = [
+        ParsePathType::Gov2,
+        ParsePathType::Fbis,
+        ParsePathType::Ft,
+        ParsePathType::Fr94,
+        ParsePathType::Latimes,
+    ]
+    .into_iter()
+    .collect();
     let result = (|| -> Result<()> {
         while n < 100 {
             // arbiterary limit to prevent looping forever in case of test failure
@@ -261,8 +327,15 @@ fn test_trec_feed_dir_all_types() -> Result<()> {
         }
         got_expected_exception = true;
     }
-    Assert::assert_true_msg("Should have gotten NoMoreDataException!", got_expected_exception);
-    crate::benchmark_support::assert_equals_msg("Wrong number of documents created by source!", 5, n);
+    Assert::assert_true_msg(
+        "Should have gotten NoMoreDataException!",
+        got_expected_exception,
+    );
+    crate::benchmark_support::assert_equals_msg(
+        "Wrong number of documents created by source!",
+        5,
+        n,
+    );
     Assert::assert_true_msg("Did not see all types!", unseen_types.is_empty());
     Ok(())
 }

@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -25,10 +25,16 @@ use crate::org::apache::xerces::xni::parser::xml_input_source::XMLInputSource;
 use crate::org::apache::xerces::xni::parser::xml_parser_configuration::XMLParserConfiguration;
 
 /// Property identifier: entity resolver.
-pub const ENTITY_RESOLVER: &str = concatcp!(constants::XERCES_PROPERTY_PREFIX, constants::ENTITY_RESOLVER_PROPERTY);
+pub const ENTITY_RESOLVER: &str = concatcp!(
+    constants::XERCES_PROPERTY_PREFIX,
+    constants::ENTITY_RESOLVER_PROPERTY
+);
 
 /// Property identifier: error handler.
-pub const ERROR_HANDLER: &str = concatcp!(constants::XERCES_PROPERTY_PREFIX, constants::ERROR_HANDLER_PROPERTY);
+pub const ERROR_HANDLER: &str = concatcp!(
+    constants::XERCES_PROPERTY_PREFIX,
+    constants::ERROR_HANDLER_PROPERTY
+);
 
 /// Recognized properties.
 const RECOGNIZED_PROPERTIES: [&str; 2] = [ENTITY_RESOLVER, ERROR_HANDLER];
@@ -54,9 +60,14 @@ impl XMLParser {
     ///
     /// Equivalent to `XMLParser(XMLParserConfiguration)`.
     pub fn new(config: Rc<dyn XMLParserConfiguration>) -> Self {
-        let props: Vec<String> = RECOGNIZED_PROPERTIES.iter().map(|s| s.to_string()).collect();
+        let props: Vec<String> = RECOGNIZED_PROPERTIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         config.add_recognized_properties(Some(&props));
-        Self { configuration: config }
+        Self {
+            configuration: config,
+        }
     }
 
     /// The body of `parse(XMLInputSource)` after `reset()`.

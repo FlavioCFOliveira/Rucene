@@ -40,7 +40,9 @@ impl ClearStatsTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(ClearStatsTask { base: PerfTaskBase::new(run_data, "ClearStatsTask")? })
+        Ok(ClearStatsTask {
+            base: PerfTaskBase::new(run_data, "ClearStatsTask")?,
+        })
     }
 }
 
@@ -48,7 +50,9 @@ impl PerfTask for ClearStatsTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(ClearStatsTask { base: self.base.clone_base() }))
+        Ok(Arc::new(ClearStatsTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

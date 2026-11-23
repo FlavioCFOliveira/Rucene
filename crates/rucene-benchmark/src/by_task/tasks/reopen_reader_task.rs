@@ -40,7 +40,9 @@ impl ReopenReaderTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(ReopenReaderTask { base: PerfTaskBase::new(run_data, "ReopenReaderTask")? })
+        Ok(ReopenReaderTask {
+            base: PerfTaskBase::new(run_data, "ReopenReaderTask")?,
+        })
     }
 }
 
@@ -48,12 +50,16 @@ impl PerfTask for ReopenReaderTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(ReopenReaderTask { base: self.base.clone_base() }))
+        Ok(Arc::new(ReopenReaderTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
         let run_data = self.base.get_run_data();
-        let r = run_data.get_index_reader()?.ok_or_else(LuceneError::null_pointer)?;
+        let r = run_data
+            .get_index_reader()?
+            .ok_or_else(LuceneError::null_pointer)?;
         let nr = directory_reader::open_if_changed(Arc::clone(&r))?;
         if let Some(nr) = nr {
             run_data.set_index_reader(Some(Arc::clone(&nr)))?;

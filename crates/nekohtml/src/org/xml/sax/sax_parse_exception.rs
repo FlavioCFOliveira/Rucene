@@ -72,7 +72,14 @@ impl SAXParseException {
         line_number: i32,
         column_number: i32,
     ) -> Self {
-        Self::with_exception(message, public_id, system_id, line_number, column_number, None)
+        Self::with_exception(
+            message,
+            public_id,
+            system_id,
+            line_number,
+            column_number,
+            None,
+        )
     }
 
     /// Equivalent to `new SAXParseException(String, String, String, int,

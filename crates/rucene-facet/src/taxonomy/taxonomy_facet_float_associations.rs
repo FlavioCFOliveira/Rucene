@@ -141,7 +141,12 @@ impl TaxonomyFacetFloatAssociations {
         Ok(this)
     }
 
-    fn add(&mut self, aggregation_function: &dyn AssociationAggregationFunction, ord: i32, value: f32) {
+    fn add(
+        &mut self,
+        aggregation_function: &dyn AssociationAggregationFunction,
+        ord: i32,
+        value: f32,
+    ) {
         let ValueStore::Float(float) = &mut self.base.values else {
             unreachable!("a FloatTaxonomyFacets value");
         };
@@ -169,8 +174,10 @@ impl TaxonomyFacetFloatAssociations {
             }
             self.base.initialize_value_counters()?;
 
-            let mut ordinal_values =
-                DocValues::get_sorted_numeric(&*hits.context.leaf_reader(), &self.base.index_field_name)?;
+            let mut ordinal_values = DocValues::get_sorted_numeric(
+                &*hits.context.leaf_reader(),
+                &self.base.index_field_name,
+            )?;
             let scores: Option<Box<dyn DoubleValues + '_>> = if keep_scores {
                 Some(Box::new(ScoresValues {
                     scores: hits.scores.clone().unwrap_or_default(),
@@ -179,7 +186,8 @@ impl TaxonomyFacetFloatAssociations {
             } else {
                 None
             };
-            let mut function_values = Arc::clone(&value_source).get_values(&hits.context, scores)?;
+            let mut function_values =
+                Arc::clone(&value_source).get_values(&hits.context, scores)?;
             let mut bits_it = hits.bits.iterator()?;
 
             loop {
@@ -217,7 +225,8 @@ impl TaxonomyFacetFloatAssociations {
             }
             self.base.initialize_value_counters()?;
 
-            let mut dv = DocValues::get_binary(&*hits.context.leaf_reader(), &self.base.index_field_name)?;
+            let mut dv =
+                DocValues::get_binary(&*hits.context.leaf_reader(), &self.base.index_field_name)?;
             let mut bits_it = hits.bits.iterator()?;
             loop {
                 let doc = Intersect2::new(&mut *bits_it, &mut *dv).next_doc()?;
@@ -229,7 +238,8 @@ impl TaxonomyFacetFloatAssociations {
                 let end = bytes_ref.offset + bytes_ref.length;
                 let mut offset = bytes_ref.offset;
                 while offset < end {
-                    let ord = i32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"));
+                    let ord =
+                        i32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"));
                     offset += 4;
                     let value = f32::from_bits(u32::from_be_bytes(
                         bytes[offset..offset + 4].try_into().expect("4 bytes"),

@@ -111,7 +111,10 @@ fn test_meta() -> Result<()> {
     Assert::assert_equals_nullable(Some("1"), tags.get_property("a"));
     Assert::assert_equals_nullable(Some("2"), tags.get_property("b"));
     Assert::assert_equals_nullable(Some("this is a test"), tags.get_property("keywords"));
-    Assert::assert_equals_nullable(Some("text/html;charset=UTF-8"), tags.get_property("content-type"));
+    Assert::assert_equals_nullable(
+        Some("text/html;charset=UTF-8"),
+        tags.get_property("content-type"),
+    );
     Ok(())
 }
 

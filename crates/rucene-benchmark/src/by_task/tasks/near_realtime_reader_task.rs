@@ -58,7 +58,11 @@ impl NearRealtimeReaderTask {
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         Ok(NearRealtimeReaderTask {
             base: PerfTaskBase::new(run_data, "NearRealtimeReaderTask")?,
-            state: Mutex::new(State { pause_msec: 3000, reopen_count: 0, reopen_times: vec![0; 1] }),
+            state: Mutex::new(State {
+                pause_msec: 3000,
+                reopen_count: 0,
+                reopen_times: vec![0; 1],
+            }),
         })
     }
 }
@@ -78,7 +82,9 @@ impl PerfTask for NearRealtimeReaderTask {
 
         // Get initial reader
         let Some(w) = run_data.get_index_writer() else {
-            return Err(jdk::runtime_exception("please open the writer before invoking NearRealtimeReader"));
+            return Err(jdk::runtime_exception(
+                "please open the writer before invoking NearRealtimeReader",
+            ));
         };
 
         if let Some(existing) = run_data.get_index_reader()? {
@@ -118,7 +124,10 @@ impl PerfTask for NearRealtimeReaderTask {
                     let mut s = jdk::lock(&self.state);
                     let count = s.reopen_count as usize;
                     if s.reopen_times.len() == count {
-                        s.reopen_times = rucene::util::ArrayUtil::grow_int(std::mem::take(&mut s.reopen_times), 1 + count);
+                        s.reopen_times = rucene::util::ArrayUtil::grow_int(
+                            std::mem::take(&mut s.reopen_times),
+                            1 + count,
+                        );
                     }
                     s.reopen_times[count] = delay;
                     s.reopen_count += 1;

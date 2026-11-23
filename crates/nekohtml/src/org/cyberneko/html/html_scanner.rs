@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -28,8 +28,8 @@ use rucene_queryparser::jdk::object::JavaObject;
 
 use crate::java::{
     char_upper, equals_ignore_case, from_chars, interface_object, io_exception, is_java_whitespace,
-    is_letter_or_digit, java_len, object_as_interface, object_as_str, string_object, to_chars, to_lower_case,
-    to_upper_case, trim, Exception, InputStream, JResult, Object, Reader,
+    is_letter_or_digit, java_len, object_as_interface, object_as_str, string_object, to_chars,
+    to_lower_case, to_upper_case, trim, Exception, InputStream, JResult, Object, Reader,
 };
 use crate::org::apache::xerces::util::encoding_map::EncodingMap;
 use crate::org::apache::xerces::util::namespace_support::NamespaceSupport;
@@ -82,27 +82,34 @@ pub const REPORT_ERRORS: &str = "http://cyberneko.org/html/features/report-error
 pub const NOTIFY_CHAR_REFS: &str = "http://apache.org/xml/features/scanner/notify-char-refs";
 /// Notify handler of built-in entity references (e.g. &amp;amp;, &amp;lt;,
 /// etc).
-pub const NOTIFY_XML_BUILTIN_REFS: &str = "http://apache.org/xml/features/scanner/notify-builtin-refs";
+pub const NOTIFY_XML_BUILTIN_REFS: &str =
+    "http://apache.org/xml/features/scanner/notify-builtin-refs";
 /// Notify handler of built-in entity references (e.g. &amp;nobr;,
 /// &amp;copy;, etc).
-pub const NOTIFY_HTML_BUILTIN_REFS: &str = "http://cyberneko.org/html/features/scanner/notify-builtin-refs";
+pub const NOTIFY_HTML_BUILTIN_REFS: &str =
+    "http://cyberneko.org/html/features/scanner/notify-builtin-refs";
 /// Fix Microsoft Windows&reg; character entity references.
-pub const FIX_MSWINDOWS_REFS: &str = "http://cyberneko.org/html/features/scanner/fix-mswindows-refs";
+pub const FIX_MSWINDOWS_REFS: &str =
+    "http://cyberneko.org/html/features/scanner/fix-mswindows-refs";
 /// Strip HTML comment delimiters ("&lt;!&minus;&minus;" and
 /// "&minus;&minus;&gt;") from SCRIPT tag contents.
 pub const SCRIPT_STRIP_COMMENT_DELIMS: &str =
     "http://cyberneko.org/html/features/scanner/script/strip-comment-delims";
 /// Strip XHTML CDATA delimiters ("&lt;![CDATA[" and "]]&gt;") from SCRIPT
 /// tag contents.
-pub const SCRIPT_STRIP_CDATA_DELIMS: &str = "http://cyberneko.org/html/features/scanner/script/strip-cdata-delims";
+pub const SCRIPT_STRIP_CDATA_DELIMS: &str =
+    "http://cyberneko.org/html/features/scanner/script/strip-cdata-delims";
 /// Strip HTML comment delimiters from STYLE tag contents.
-pub const STYLE_STRIP_COMMENT_DELIMS: &str = "http://cyberneko.org/html/features/scanner/style/strip-comment-delims";
+pub const STYLE_STRIP_COMMENT_DELIMS: &str =
+    "http://cyberneko.org/html/features/scanner/style/strip-comment-delims";
 /// Strip XHTML CDATA delimiters from STYLE tag contents.
-pub const STYLE_STRIP_CDATA_DELIMS: &str = "http://cyberneko.org/html/features/scanner/style/strip-cdata-delims";
+pub const STYLE_STRIP_CDATA_DELIMS: &str =
+    "http://cyberneko.org/html/features/scanner/style/strip-cdata-delims";
 /// Ignore specified charset found in the &lt;meta equiv='Content-Type'
 /// content='text/html;charset=&hellip;'&gt; tag or in the &lt;?xml
 /// &hellip; encoding='&hellip;'&gt; processing instruction.
-pub const IGNORE_SPECIFIED_CHARSET: &str = "http://cyberneko.org/html/features/scanner/ignore-specified-charset";
+pub const IGNORE_SPECIFIED_CHARSET: &str =
+    "http://cyberneko.org/html/features/scanner/ignore-specified-charset";
 /// Scan CDATA sections.
 pub const CDATA_SECTIONS: &str = "http://cyberneko.org/html/features/scanner/cdata-sections";
 /// Override doctype declaration public and system identifiers.
@@ -110,11 +117,14 @@ pub const OVERRIDE_DOCTYPE: &str = "http://cyberneko.org/html/features/override-
 /// Insert document type declaration.
 pub const INSERT_DOCTYPE: &str = "http://cyberneko.org/html/features/insert-doctype";
 /// Parse &lt;noscript&gt;...&lt;/noscript&gt; content.
-pub const PARSE_NOSCRIPT_CONTENT: &str = "http://cyberneko.org/html/features/parse-noscript-content";
+pub const PARSE_NOSCRIPT_CONTENT: &str =
+    "http://cyberneko.org/html/features/parse-noscript-content";
 /// Allows self closing &lt;iframe/&gt; tag.
-pub const ALLOW_SELFCLOSING_IFRAME: &str = "http://cyberneko.org/html/features/scanner/allow-selfclosing-iframe";
+pub const ALLOW_SELFCLOSING_IFRAME: &str =
+    "http://cyberneko.org/html/features/scanner/allow-selfclosing-iframe";
 /// Allows self closing tags e.g. &lt;div/&gt; (XHTML).
-pub const ALLOW_SELFCLOSING_TAGS: &str = "http://cyberneko.org/html/features/scanner/allow-selfclosing-tags";
+pub const ALLOW_SELFCLOSING_TAGS: &str =
+    "http://cyberneko.org/html/features/scanner/allow-selfclosing-tags";
 /// Normalize attribute values.
 pub const NORMALIZE_ATTRIBUTES: &str = "http://cyberneko.org/html/features/scanner/normalize-attrs";
 
@@ -243,7 +253,7 @@ pub const SYNTHESIZED_ITEM: SynthesizedItem = SynthesizedItem;
 /// `ENTITY_CHARS`: the characters of an entity reference name.
 fn entity_char(c: i32) -> bool {
     const STR: &str = "-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
-    c >= 0 && c < 128 && STR.as_bytes().contains(&(c as u8))
+    (0..128).contains(&c) && STR.as_bytes().contains(&(c as u8))
 }
 
 /// `new EOFException()`.
@@ -308,13 +318,17 @@ impl<T: Default> Deref for SlotGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        self.value.as_ref().expect("INVARIANT: present until dropped")
+        self.value
+            .as_ref()
+            .expect("INVARIANT: present until dropped")
     }
 }
 
 impl<T: Default> DerefMut for SlotGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        self.value.as_mut().expect("INVARIANT: present until dropped")
+        self.value
+            .as_mut()
+            .expect("INVARIANT: present until dropped")
     }
 }
 
@@ -389,7 +403,15 @@ impl LocationItem {
     /// Sets the values of this item.
     ///
     /// Equivalent to `setValues(int, int, int, int, int, int)`.
-    pub fn set_values(&self, begin_line: i32, begin_column: i32, begin_offset: i32, end_line: i32, end_column: i32, end_offset: i32) {
+    pub fn set_values(
+        &self,
+        begin_line: i32,
+        begin_column: i32,
+        begin_offset: i32,
+        end_line: i32,
+        end_column: i32,
+        end_offset: i32,
+    ) {
         self.begin_line_number.set(begin_line);
         self.begin_column_number.set(begin_column);
         self.begin_character_offset.set(begin_offset);
@@ -526,9 +548,14 @@ impl Read for SharedRead {
 
 /// `new InputStreamReader(in, charsetName)` as a [`Reader`], with the name
 /// `getEncoding()` reports.
-fn input_stream_reader<R: Read + 'static>(input: R, charset_name: &str) -> JResult<(Reader, String)> {
+fn input_stream_reader<R: Read + 'static>(
+    input: R,
+    charset_name: &str,
+) -> JResult<(Reader, String)> {
     let charset = charset_for_reader(charset_name)?;
-    let reader: Reader = Rc::new(RefCell::new(InputStreamReader::with_charset(input, charset)));
+    let reader: Reader = Rc::new(RefCell::new(InputStreamReader::with_charset(
+        input, charset,
+    )));
     Ok((reader, historical_name(&charset)))
 }
 
@@ -650,7 +677,9 @@ impl CurrentEntity {
         // read a block of characters
         let read = {
             let mut stream = self.stream.borrow_mut();
-            stream.read_chars(&mut self.buffer[offset as usize..]).map_err(Exception::from)?
+            stream
+                .read_chars(&mut self.buffer[offset as usize..])
+                .map_err(Exception::from)?
         };
         let count = if read == 0 { -1 } else { read as i32 };
         if count == -1 {
@@ -770,7 +799,13 @@ impl CurrentEntity {
 
     /// Equivalent to `resetBuffer(XMLStringBuffer, int, int, int)`; Java
     /// makes the entity read the string buffer's array, the port copies it.
-    fn reset_buffer(&mut self, buffer: &XMLStringBuffer, line_number: i32, column_number: i32, character_offset: i32) {
+    fn reset_buffer(
+        &mut self,
+        buffer: &XMLStringBuffer,
+        line_number: i32,
+        column_number: i32,
+        character_offset: i32,
+    ) {
         self.line_number = line_number;
         self.column_number = column_number;
         self.character_offset = character_offset;
@@ -783,7 +818,12 @@ impl CurrentEntity {
         self.column_number
     }
 
-    fn restore_position(&mut self, original_offset: i32, original_column_number: i32, original_character_offset: i32) {
+    fn restore_position(
+        &mut self,
+        original_offset: i32,
+        original_column_number: i32,
+        original_character_offset: i32,
+    ) {
         self.offset = original_offset;
         self.column_number = original_column_number;
         self.character_offset = original_character_offset;
@@ -860,7 +900,11 @@ impl PlaybackInputStream {
             return Ok(0);
         }
         loop {
-            match self.input.borrow_mut().read(&mut array[offset as usize..(offset + length) as usize]) {
+            match self
+                .input
+                .borrow_mut()
+                .read(&mut array[offset as usize..(offset + length) as usize])
+            {
                 Ok(0) => return Ok(-1),
                 Ok(n) => return Ok(n as i32),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -1044,7 +1088,8 @@ impl PlaybackInputStream {
             if len + count as usize > buffer.len() {
                 buffer.resize(len + count as usize + 512, 0);
             }
-            buffer[len..len + count as usize].copy_from_slice(&array[offset as usize..(offset + count) as usize]);
+            buffer[len..len + count as usize]
+                .copy_from_slice(&array[offset as usize..(offset + count) as usize]);
             self.byte_length += count;
         }
         if DEBUG_PLAYBACK {
@@ -1288,7 +1333,13 @@ pub fn expand_system_id(system_id: Option<&str>, base_system_id: Option<&str>) -
                     if base_system_id.contains(':') {
                         // for xml schemas we might have baseURI with
                         // a specified drive
-                        URI::with_host_parts(Some("file"), Some(""), Some(&fix_uri(base_system_id)), None, None)?
+                        URI::with_host_parts(
+                            Some("file"),
+                            Some(""),
+                            Some(&fix_uri(base_system_id)),
+                            None,
+                            None,
+                        )?
                     } else {
                         if !dir.ends_with('/') {
                             dir.push('/');
@@ -1390,7 +1441,7 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() + 0 && i + 2 <= bytes.len() - 1 {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
             if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
                 out.push(b);
                 i += 3;
@@ -1521,7 +1572,11 @@ fn ends_with(buffer: &XMLStringBuffer, string: &str) -> bool {
 ///
 /// Equivalent to the package-private static `reduceToContent(
 /// XMLStringBuffer, String, String)`.
-pub(crate) fn reduce_to_content(buffer: &mut XMLStringBuffer, start_marker: &str, end_marker: &str) {
+pub(crate) fn reduce_to_content(
+    buffer: &mut XMLStringBuffer,
+    start_marker: &str,
+    end_marker: &str,
+) {
     let start = to_chars(start_marker);
     let end = to_chars(end_marker);
     let mut i = 0;
@@ -1534,7 +1589,9 @@ pub(crate) fn reduce_to_content(buffer: &mut XMLStringBuffer, start_marker: &str
             let c = ch[(buffer.offset + i) as usize];
             if is_java_whitespace(c) {
                 i += 1;
-            } else if c == start[0] && ch[(buffer.offset + i) as usize..(buffer.offset + i + l1) as usize] == start[..] {
+            } else if c == start[0]
+                && ch[(buffer.offset + i) as usize..(buffer.offset + i + l1) as usize] == start[..]
+            {
                 start_content = buffer.offset + i + l1;
                 break;
             } else {
@@ -1648,7 +1705,8 @@ impl HTMLScanner {
     /// Without a current entity, where Java throws `NullPointerException`.
     fn ce(&self) -> RefMut<'_, CurrentEntity> {
         RefMut::map(self.current_entity.borrow_mut(), |e| {
-            e.as_mut().expect("java.lang.NullPointerException: fCurrentEntity")
+            e.as_mut()
+                .expect("java.lang.NullPointerException: fCurrentEntity")
         })
     }
 
@@ -1849,7 +1907,8 @@ impl HTMLScanner {
         self.begin_character_offset.set(0);
         self.end_line_number.set(self.begin_line_number.get());
         self.end_column_number.set(self.begin_column_number.get());
-        self.end_character_offset.set(self.begin_character_offset.get());
+        self.end_character_offset
+            .set(self.begin_character_offset.get());
 
         // reset encoding information
         let default_iana = self.default_iana_encoding.borrow().clone();
@@ -1899,7 +1958,8 @@ impl HTMLScanner {
             /* PATCH: Asgeir Asgeirsson */
             let iana = encodings[0].clone().unwrap_or_default();
             self.iso8859_encoding.set(
-                to_upper_case(&iana).starts_with("ISO-8859") || equals_ignore_case(&iana, &default_iana),
+                to_upper_case(&iana).starts_with("ISO-8859")
+                    || equals_ignore_case(&iana, &default_iana),
             );
             encoding = Some(iana);
             let java_encoding = encodings[1].clone().unwrap_or_default();
@@ -2047,7 +2107,10 @@ impl HTMLScanner {
                     self.report_error("HTML1014", None)?;
                 }
             } else {
-                root = Some(modify_name(root.as_deref().unwrap_or(""), self.names_elems.get()));
+                root = Some(modify_name(
+                    root.as_deref().unwrap_or(""),
+                    self.names_elems.get(),
+                ));
             }
             if self.skip_spaces()? {
                 if self.skip("PUBLIC", false)? {
@@ -2086,7 +2149,12 @@ impl HTMLScanner {
                 sysid = Some(self.doctype_sysid.borrow().clone());
             }
             self.set_end_location();
-            h.doctype_decl(root.as_deref(), pubid.as_deref(), sysid.as_deref(), self.location_augs())?;
+            h.doctype_decl(
+                root.as_deref(),
+                pubid.as_deref(),
+                sysid.as_deref(),
+                self.location_augs(),
+            )?;
         }
         Ok(())
     }
@@ -2150,14 +2218,20 @@ impl HTMLScanner {
         loop {
             while ce.has_next() {
                 let c = ce.get_next_char();
-                if !is_letter_or_digit(c) && !(c == b'-' as u16 || c == b'.' as u16 || c == b':' as u16 || c == b'_' as u16) {
+                if !is_letter_or_digit(c)
+                    && !(c == b'-' as u16
+                        || c == b'.' as u16
+                        || c == b':' as u16
+                        || c == b'_' as u16)
+                {
                     ce.rewind();
                     break;
                 }
             }
             if ce.offset == ce.length {
                 let length = ce.length - offset;
-                ce.buffer.copy_within(offset as usize..(offset + length) as usize, 0);
+                ce.buffer
+                    .copy_within(offset as usize..(offset + length) as usize, 0);
                 let count = ce.load(length)?;
                 offset = 0;
                 if count == -1 {
@@ -2169,7 +2243,9 @@ impl HTMLScanner {
         }
         let length = ce.offset - offset;
         let name = if length > 0 {
-            Some(from_chars(&ce.buffer[offset as usize..(offset + length) as usize]))
+            Some(from_chars(
+                &ce.buffer[offset as usize..(offset + length) as usize],
+            ))
         } else {
             None
         };
@@ -2241,7 +2317,12 @@ impl HTMLScanner {
                                 self.set_end_location();
                                 if self.notify_char_refs.get() {
                                     let id = self.resource_id();
-                                    h.start_general_entity(&name, Some(&id), None, self.location_augs())?;
+                                    h.start_general_entity(
+                                        &name,
+                                        Some(&id),
+                                        None,
+                                        self.location_augs(),
+                                    )?;
                                 }
                                 str.clear();
                                 str.append_char(value as u16);
@@ -2398,7 +2479,8 @@ impl HTMLScanner {
             }
         }
         if DEBUG_BUFFER {
-            self.ce().debug_buffer_if_needed(")skipMarkup: ", &format!(" -> {slashgt}"));
+            self.ce()
+                .debug_buffer_if_needed(")skipMarkup: ", &format!(" -> {slashgt}"));
         }
         Ok(slashgt)
     }
@@ -2430,7 +2512,8 @@ impl HTMLScanner {
             }
         }
         if DEBUG_BUFFER {
-            self.ce().debug_buffer_if_needed(")skipSpaces: ", &format!(" -> {spaces}"));
+            self.ce()
+                .debug_buffer_if_needed(")skipSpaces: ", &format!(" -> {spaces}"));
         }
         Ok(spaces)
     }
@@ -2505,8 +2588,10 @@ impl HTMLScanner {
                 self.end_character_offset.get(),
             );
             self.infoset_augs.remove_all_items();
-            self.infoset_augs
-                .put_item(AUGMENTATIONS, Some(Rc::clone(&self.location_item) as Object));
+            self.infoset_augs.put_item(
+                AUGMENTATIONS,
+                Some(Rc::clone(&self.location_item) as Object),
+            );
             Some(&self.infoset_augs)
         } else {
             None
@@ -2574,12 +2659,18 @@ impl HTMLScanner {
         loop {
             let c = self.read_preserving_buffer_content()?;
             if c == -1 {
-                self.ce()
-                    .restore_position(original_offset, original_column_number, original_character_offset);
+                self.ce().restore_position(
+                    original_offset,
+                    original_column_number,
+                    original_character_offset,
+                );
                 return Ok(false);
             } else if c == b'>' as i32 && nb_caret >= 2 {
-                self.ce()
-                    .restore_position(original_offset, original_column_number, original_character_offset);
+                self.ce().restore_position(
+                    original_offset,
+                    original_column_number,
+                    original_character_offset,
+                );
                 return Ok(true);
             } else if c == b'-' as i32 {
                 nb_caret += 1;
@@ -2689,9 +2780,13 @@ impl HTMLScanner {
                                 && ename_lc.as_deref() == Some("iframe")
                             {
                                 self.scan_until_end_tag("iframe")?;
-                            } else if !self.parse_no_script_content.get() && ename_lc.as_deref() == Some("noscript") {
+                            } else if !self.parse_no_script_content.get()
+                                && ename_lc.as_deref() == Some("noscript")
+                            {
                                 self.scan_until_end_tag("noscript")?;
-                            } else if !self.parse_no_frames_content.get() && ename_lc.as_deref() == Some("noframes") {
+                            } else if !self.parse_no_frames_content.get()
+                                && ename_lc.as_deref() == Some("noframes")
+                            {
                                 self.scan_until_end_tag("noframes")?;
                             } else if let Some(ename) = &ename {
                                 let lc = ename_lc.as_deref().unwrap_or("");
@@ -2718,7 +2813,8 @@ impl HTMLScanner {
                                     self.this().map(|s| s as Rc<dyn XMLLocator>);
                                 let encoding = self.iana_encoding.borrow().clone();
                                 let augs = self.location_augs();
-                                let nscontext: Rc<dyn NamespaceContext> = Rc::new(NamespaceSupport::new());
+                                let nscontext: Rc<dyn NamespaceContext> =
+                                    Rc::new(NamespaceSupport::new());
                                 xerces_bridge::get_instance().xml_document_handler_start_document(
                                     &*h,
                                     locator,
@@ -2730,11 +2826,18 @@ impl HTMLScanner {
                         }
                         if self.insert_doctype.get() {
                             if let Some(h) = self.handler() {
-                                let root = html_elements::get_element_by_code(html_elements::HTML).name.clone();
+                                let root = html_elements::get_element_by_code(html_elements::HTML)
+                                    .name
+                                    .clone();
                                 let root = modify_name(&root, self.names_elems.get());
                                 let pubid = self.doctype_pubid.borrow().clone();
                                 let sysid = self.doctype_sysid.borrow().clone();
-                                h.doctype_decl(Some(&root), Some(&pubid), Some(&sysid), self.synthesized_augs())?;
+                                h.doctype_decl(
+                                    Some(&root),
+                                    Some(&pubid),
+                                    Some(&sysid),
+                                    self.synthesized_augs(),
+                                )?;
                             }
                         }
                         self.set_scanner_state(STATE_CONTENT);
@@ -2913,7 +3016,11 @@ impl HTMLScanner {
             }
             buff.push(c as u16);
         }
-        ce.restore_position(original_offset, original_column_number, original_character_offset);
+        ce.restore_position(
+            original_offset,
+            original_column_number,
+            original_character_offset,
+        );
         Ok(from_chars(&buff))
     }
 
@@ -2962,7 +3069,11 @@ impl HTMLScanner {
             }
 
             let has_next = (ce.offset as usize) < ce.buffer.len();
-            let next = if has_next { ce.get_current_char() as i32 } else { -1 };
+            let next = if has_next {
+                ce.get_current_char() as i32
+            } else {
+                -1
+            };
 
             if next == b'&' as i32 || next == b'<' as i32 || next == -1 {
                 break;
@@ -3253,13 +3364,19 @@ impl HTMLScanner {
                 // if the encoding is successfully changed, the stream will
                 // be processed again with the right encoding an we will come
                 // here again but without need to change the encoding
-                let xml_decl_now = self.ignore_specified_charset.get() || !self.change_encoding(encoding.as_deref())?;
+                let xml_decl_now = self.ignore_specified_charset.get()
+                    || !self.change_encoding(encoding.as_deref())?;
                 if xml_decl_now {
                     self.begin_line_number.set(begin_line_number);
                     self.begin_column_number.set(begin_column_number);
                     self.begin_character_offset.set(begin_character_offset);
                     self.set_end_location();
-                    h.xml_decl(version.as_deref(), encoding.as_deref(), standalone.as_deref(), self.location_augs())?;
+                    h.xml_decl(
+                        version.as_deref(),
+                        encoding.as_deref(),
+                        standalone.as_deref(),
+                        self.location_augs(),
+                    )?;
                 }
             }
         }
@@ -3279,7 +3396,10 @@ impl HTMLScanner {
         let units = ename.as_deref().map(to_chars).unwrap_or_default();
         let length = units.len();
         let c = if length > 0 { units[0] as i32 } else { -1 };
-        if length == 0 || !((b'a' as i32..=b'z' as i32).contains(&c) || (b'A' as i32..=b'Z' as i32).contains(&c)) {
+        if length == 0
+            || !((b'a' as i32..=b'z' as i32).contains(&c)
+                || (b'A' as i32..=b'Z' as i32).contains(&c))
+        {
             if self.report_errors.get() {
                 self.report_error("HTML1009", None)?;
             }
@@ -3315,7 +3435,9 @@ impl HTMLScanner {
                     println!("+++ <META>");
                 }
                 let http_equiv = get_value(Some(&*attributes), "http-equiv");
-                if let Some(http_equiv) = http_equiv.filter(|h| equals_ignore_case(h, "content-type")) {
+                if let Some(http_equiv) =
+                    http_equiv.filter(|h| equals_ignore_case(h, "content-type"))
+                {
                     if DEBUG_CHARSET {
                         println!("+++ @content-type: \"{http_equiv}\"");
                     }
@@ -3362,7 +3484,7 @@ impl HTMLScanner {
                 let mut q = self.content_qname.take();
                 q.set_values(None, Some(&ename), Some(&ename), None);
                 if DEBUG_CALLBACKS {
-                    println!("startElement({},{:?})", q.to_java_string(), &*attributes);
+                    println!("startElement({},{:?})", q.to_java_string(), *attributes);
                 }
                 self.set_end_location();
                 if *empty {
@@ -3395,7 +3517,10 @@ impl HTMLScanner {
         if java_encoding.is_none() {
             java_encoding = Some(iana_encoding.clone());
             if self.report_errors.get() {
-                self.report_error("HTML1001", Some(&[JavaObject::String(iana_encoding.clone())]))?;
+                self.report_error(
+                    "HTML1001",
+                    Some(&[JavaObject::String(iana_encoding.clone())]),
+                )?;
             }
         }
         let java_encoding = java_encoding.unwrap_or_default();
@@ -3430,9 +3555,13 @@ impl HTMLScanner {
                         self.element_count.set(0);
                         encoding_changed = true;
                     }
-                    Err(e) if matches!(&e, Exception::Io(io) if io.java_simple_name() == "UnsupportedEncodingException") => {
+                    Err(e) if matches!(&e, Exception::Io(io) if io.java_simple_name() == "UnsupportedEncodingException") =>
+                    {
                         if self.report_errors.get() {
-                            self.report_error("HTML1010", Some(&[JavaObject::String(charset.clone())]))?;
+                            self.report_error(
+                                "HTML1010",
+                                Some(&[JavaObject::String(charset.clone())]),
+                            )?;
                         }
                         // NOTE: If the encoding change doesn't work,
                         //       then there's no point in continuing to
@@ -3451,7 +3580,11 @@ impl HTMLScanner {
     ///
     /// Equivalent to the protected `ContentScanner.scanAttribute(
     /// XMLAttributesImpl, boolean[])`.
-    fn scan_attribute(&self, attributes: &mut XMLAttributesImpl, empty: &mut bool) -> JResult<bool> {
+    fn scan_attribute(
+        &self,
+        attributes: &mut XMLAttributesImpl,
+        empty: &mut bool,
+    ) -> JResult<bool> {
         self.scan_attribute_with(attributes, empty, b'/' as u16)
     }
 
@@ -3470,7 +3603,12 @@ impl HTMLScanner {
     ///
     /// Equivalent to the protected `ContentScanner.scanAttribute(
     /// XMLAttributesImpl, boolean[], char)`.
-    fn scan_attribute_with(&self, attributes: &mut XMLAttributesImpl, empty: &mut bool, _endc: u16) -> JResult<bool> {
+    fn scan_attribute_with(
+        &self,
+        attributes: &mut XMLAttributesImpl,
+        empty: &mut bool,
+        _endc: u16,
+    ) -> JResult<bool> {
         let skipped_spaces = self.skip_spaces()?;
         self.set_begin_location();
         let mut c = self.read()?;
@@ -3614,7 +3752,11 @@ impl HTMLScanner {
                     non_norm.append_xml_string(&buf2);
                 } else if c == b' ' as i32 || c == b'\t' as i32 {
                     if accept_space {
-                        buf.append_char(if self.normalize_attributes.get() { b' ' as u16 } else { c as u16 });
+                        buf.append_char(if self.normalize_attributes.get() {
+                            b' ' as u16
+                        } else {
+                            c as u16
+                        });
                     }
                     non_norm.append_char(c as u16);
                 } else if c == b'\r' as i32 || c == b'\n' as i32 {
@@ -3628,7 +3770,11 @@ impl HTMLScanner {
                         }
                     }
                     if accept_space {
-                        buf.append_char(if self.normalize_attributes.get() { b' ' as u16 } else { b'\n' as u16 });
+                        buf.append_char(if self.normalize_attributes.get() {
+                            b' ' as u16
+                        } else {
+                            b'\n' as u16
+                        });
                     }
                     self.ce().inc_line();
                     non_norm.append_char(c as u16);
@@ -3637,7 +3783,8 @@ impl HTMLScanner {
                     buf.append_char(c as u16);
                     non_norm.append_char(c as u16);
                 }
-                prev_space = c == b' ' as i32 || c == b'\t' as i32 || c == b'\r' as i32 || c == b'\n' as i32;
+                prev_space =
+                    c == b' ' as i32 || c == b'\t' as i32 || c == b'\r' as i32 || c == b'\n' as i32;
                 is_start = is_start && prev_space;
                 if c == quote {
                     break;
@@ -3736,7 +3883,12 @@ fn remove_spaces(content: &str) -> String {
     if !units.iter().any(|&c| is_java_whitespace(c)) {
         return content.to_string();
     }
-    from_chars(&units.into_iter().filter(|&c| !is_java_whitespace(c)).collect::<Vec<_>>())
+    from_chars(
+        &units
+            .into_iter()
+            .filter(|&c| !is_java_whitespace(c))
+            .collect::<Vec<_>>(),
+    )
 }
 
 //
@@ -3752,7 +3904,8 @@ impl HTMLScanner {
     fn special_set_element_name(&self, ename: &str) {
         *self.special_element_name.borrow_mut() = ename.to_string();
         self.special_style.set(equals_ignore_case(ename, "STYLE"));
-        self.special_textarea.set(equals_ignore_case(ename, "TEXTAREA"));
+        self.special_textarea
+            .set(equals_ignore_case(ename, "TEXTAREA"));
         self.special_title.set(equals_ignore_case(ename, "TITLE"));
     }
 
@@ -3801,7 +3954,12 @@ impl HTMLScanner {
                                         if let Some(h) = self.handler() {
                                             if self.emitting() {
                                                 let mut q = self.special_qname.take();
-                                                q.set_values(None, Some(&ename), Some(&ename), None);
+                                                q.set_values(
+                                                    None,
+                                                    Some(&ename),
+                                                    Some(&ename),
+                                                    None,
+                                                );
                                                 if DEBUG_CALLBACKS {
                                                     println!("endElement({})", q.to_java_string());
                                                 }
@@ -3933,39 +4091,66 @@ impl HTMLScanner {
 
 impl XMLLocator for HTMLScanner {
     fn get_encoding(&self) -> Option<String> {
-        self.current_entity.borrow().as_ref().and_then(|e| e.encoding.clone())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .and_then(|e| e.encoding.clone())
     }
 
     fn get_public_id(&self) -> Option<String> {
-        self.current_entity.borrow().as_ref().and_then(|e| e.public_id.clone())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .and_then(|e| e.public_id.clone())
     }
 
     fn get_base_system_id(&self) -> Option<String> {
-        self.current_entity.borrow().as_ref().and_then(|e| e.base_system_id.clone())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .and_then(|e| e.base_system_id.clone())
     }
 
     fn get_literal_system_id(&self) -> Option<String> {
-        self.current_entity.borrow().as_ref().and_then(|e| e.literal_system_id.clone())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .and_then(|e| e.literal_system_id.clone())
     }
 
     fn get_expanded_system_id(&self) -> Option<String> {
-        self.current_entity.borrow().as_ref().and_then(|e| e.expanded_system_id.clone())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .and_then(|e| e.expanded_system_id.clone())
     }
 
     fn get_line_number(&self) -> i32 {
-        self.current_entity.borrow().as_ref().map_or(-1, |e| e.get_line_number())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .map_or(-1, |e| e.get_line_number())
     }
 
     fn get_column_number(&self) -> i32 {
-        self.current_entity.borrow().as_ref().map_or(-1, |e| e.get_column_number())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .map_or(-1, |e| e.get_column_number())
     }
 
     fn get_xml_version(&self) -> Option<String> {
-        self.current_entity.borrow().as_ref().map(|e| e.version.clone())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .map(|e| e.version.clone())
     }
 
     fn get_character_offset(&self) -> i32 {
-        self.current_entity.borrow().as_ref().map_or(-1, |e| e.get_character_offset())
+        self.current_entity
+            .borrow()
+            .as_ref()
+            .map_or(-1, |e| e.get_character_offset())
     }
 }
 
@@ -3993,7 +4178,12 @@ impl XMLComponent for HTMLScanner {
     }
 
     fn get_recognized_properties(&self) -> Option<Vec<String>> {
-        Some(RECOGNIZED_PROPERTIES.iter().map(|s| s.to_string()).collect())
+        Some(
+            RECOGNIZED_PROPERTIES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
     }
 
     /// Resets the component.
@@ -4001,38 +4191,59 @@ impl XMLComponent for HTMLScanner {
         // get features
         self.augmentations.set(manager.get_feature(AUGMENTATIONS)?);
         self.report_errors.set(manager.get_feature(REPORT_ERRORS)?);
-        self.notify_char_refs.set(manager.get_feature(NOTIFY_CHAR_REFS)?);
-        self.notify_xml_builtin_refs.set(manager.get_feature(NOTIFY_XML_BUILTIN_REFS)?);
-        self.notify_html_builtin_refs.set(manager.get_feature(NOTIFY_HTML_BUILTIN_REFS)?);
-        self.fix_windows_char_refs.set(manager.get_feature(FIX_MSWINDOWS_REFS)?);
-        self.script_strip_cdata_delims.set(manager.get_feature(SCRIPT_STRIP_CDATA_DELIMS)?);
-        self.script_strip_comment_delims.set(manager.get_feature(SCRIPT_STRIP_COMMENT_DELIMS)?);
-        self.style_strip_cdata_delims.set(manager.get_feature(STYLE_STRIP_CDATA_DELIMS)?);
-        self.style_strip_comment_delims.set(manager.get_feature(STYLE_STRIP_COMMENT_DELIMS)?);
-        self.ignore_specified_charset.set(manager.get_feature(IGNORE_SPECIFIED_CHARSET)?);
-        self.cdata_sections.set(manager.get_feature(CDATA_SECTIONS)?);
-        self.override_doctype.set(manager.get_feature(OVERRIDE_DOCTYPE)?);
-        self.insert_doctype.set(manager.get_feature(INSERT_DOCTYPE)?);
-        self.normalize_attributes.set(manager.get_feature(NORMALIZE_ATTRIBUTES)?);
-        self.parse_no_script_content.set(manager.get_feature(PARSE_NOSCRIPT_CONTENT)?);
-        self.allow_selfclosing_iframe.set(manager.get_feature(ALLOW_SELFCLOSING_IFRAME)?);
-        self.allow_selfclosing_tags.set(manager.get_feature(ALLOW_SELFCLOSING_TAGS)?);
+        self.notify_char_refs
+            .set(manager.get_feature(NOTIFY_CHAR_REFS)?);
+        self.notify_xml_builtin_refs
+            .set(manager.get_feature(NOTIFY_XML_BUILTIN_REFS)?);
+        self.notify_html_builtin_refs
+            .set(manager.get_feature(NOTIFY_HTML_BUILTIN_REFS)?);
+        self.fix_windows_char_refs
+            .set(manager.get_feature(FIX_MSWINDOWS_REFS)?);
+        self.script_strip_cdata_delims
+            .set(manager.get_feature(SCRIPT_STRIP_CDATA_DELIMS)?);
+        self.script_strip_comment_delims
+            .set(manager.get_feature(SCRIPT_STRIP_COMMENT_DELIMS)?);
+        self.style_strip_cdata_delims
+            .set(manager.get_feature(STYLE_STRIP_CDATA_DELIMS)?);
+        self.style_strip_comment_delims
+            .set(manager.get_feature(STYLE_STRIP_COMMENT_DELIMS)?);
+        self.ignore_specified_charset
+            .set(manager.get_feature(IGNORE_SPECIFIED_CHARSET)?);
+        self.cdata_sections
+            .set(manager.get_feature(CDATA_SECTIONS)?);
+        self.override_doctype
+            .set(manager.get_feature(OVERRIDE_DOCTYPE)?);
+        self.insert_doctype
+            .set(manager.get_feature(INSERT_DOCTYPE)?);
+        self.normalize_attributes
+            .set(manager.get_feature(NORMALIZE_ATTRIBUTES)?);
+        self.parse_no_script_content
+            .set(manager.get_feature(PARSE_NOSCRIPT_CONTENT)?);
+        self.allow_selfclosing_iframe
+            .set(manager.get_feature(ALLOW_SELFCLOSING_IFRAME)?);
+        self.allow_selfclosing_tags
+            .set(manager.get_feature(ALLOW_SELFCLOSING_TAGS)?);
 
         // get properties
-        self.names_elems
-            .set(get_names_value(&value_of(&manager.get_property(NAMES_ELEMS)?)));
-        self.names_attrs
-            .set(get_names_value(&value_of(&manager.get_property(NAMES_ATTRS)?)));
-        *self.default_iana_encoding.borrow_mut() = value_of(&manager.get_property(DEFAULT_ENCODING)?);
+        self.names_elems.set(get_names_value(&value_of(
+            &manager.get_property(NAMES_ELEMS)?,
+        )));
+        self.names_attrs.set(get_names_value(&value_of(
+            &manager.get_property(NAMES_ATTRS)?,
+        )));
+        *self.default_iana_encoding.borrow_mut() =
+            value_of(&manager.get_property(DEFAULT_ENCODING)?);
         let reporter = manager.get_property(ERROR_REPORTER)?;
         *self.error_reporter.borrow_mut() = match &reporter {
             None => None,
-            Some(o) => Some(object_as_interface::<dyn HTMLErrorReporter>(o).ok_or_else(|| {
-                Exception::runtime(LuceneError::unchecked(
-                    "java.lang.ClassCastException",
-                    "org.cyberneko.html.HTMLErrorReporter",
-                ))
-            })?),
+            Some(o) => Some(
+                object_as_interface::<dyn HTMLErrorReporter>(o).ok_or_else(|| {
+                    Exception::runtime(LuceneError::unchecked(
+                        "java.lang.ClassCastException",
+                        "org.cyberneko.html.HTMLErrorReporter",
+                    ))
+                })?,
+            ),
         };
         *self.doctype_pubid.borrow_mut() = value_of(&manager.get_property(DOCTYPE_PUBID)?);
         *self.doctype_sysid.borrow_mut() = value_of(&manager.get_property(DOCTYPE_SYSID)?);

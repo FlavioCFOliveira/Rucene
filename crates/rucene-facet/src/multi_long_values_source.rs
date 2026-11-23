@@ -41,7 +41,9 @@ use crate::multi_long_values::MultiLongValues;
 /// abstract `equals`/`hashCode`/`toString` are
 /// [`source_eq`](Self::source_eq), [`source_hash`](Self::source_hash) and
 /// [`Display`](fmt::Display).
-pub trait MultiLongValuesSource: SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync {
+pub trait MultiLongValuesSource:
+    SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync
+{
     /// Returns a `MultiLongValues` instance for the passed-in
     /// `LeafReaderContext`.
     ///
@@ -84,15 +86,21 @@ impl dyn MultiLongValuesSource {
     /// `LongValuesSource`.
     ///
     /// Equivalent to `fromSingleValued(LongValuesSource)`.
-    pub fn from_single_valued(single_valued: Arc<dyn LongValuesSource>) -> Arc<dyn MultiLongValuesSource> {
-        Arc::new(SingleValuedAsMultiValued { input: single_valued })
+    pub fn from_single_valued(
+        single_valued: Arc<dyn LongValuesSource>,
+    ) -> Arc<dyn MultiLongValuesSource> {
+        Arc::new(SingleValuedAsMultiValued {
+            input: single_valued,
+        })
     }
 
     /// Returns a single-valued view of the `MultiLongValuesSource` if it was
     /// previously wrapped with `from_single_valued`, or `None`.
     ///
     /// Equivalent to `unwrapSingleton(MultiLongValuesSource)`.
-    pub fn unwrap_singleton(input: &dyn MultiLongValuesSource) -> Option<Arc<dyn LongValuesSource>> {
+    pub fn unwrap_singleton(
+        input: &dyn MultiLongValuesSource,
+    ) -> Option<Arc<dyn LongValuesSource>> {
         input.single_valued()
     }
 }
@@ -101,7 +109,9 @@ impl dyn MultiLongValuesSource {
 /// doubles.
 ///
 /// Equivalent to `toMultiDoubleValuesSource()`.
-pub fn to_multi_double_values_source(source: Arc<dyn MultiLongValuesSource>) -> Arc<dyn MultiDoubleValuesSource> {
+pub fn to_multi_double_values_source(
+    source: Arc<dyn MultiLongValuesSource>,
+) -> Arc<dyn MultiDoubleValuesSource> {
     Arc::new(DoubleLongValuesSources { input: source })
 }
 
@@ -129,7 +139,6 @@ impl MultiLongValues for FieldMultiLongValues {
         self.doc_values.advance_exact(doc)
     }
 }
-
 
 impl SegmentCacheable for FieldMultiValueSource {
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {

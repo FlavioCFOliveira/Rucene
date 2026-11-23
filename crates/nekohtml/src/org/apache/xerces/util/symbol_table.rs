@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -87,7 +87,11 @@ impl SymbolTable {
                 rucene::util::java_fmt::float_to_string(load_factor)
             ))));
         }
-        let initial_capacity = if initial_capacity == 0 { 1 } else { initial_capacity };
+        let initial_capacity = if initial_capacity == 0 {
+            1
+        } else {
+            initial_capacity
+        };
         Ok(Self {
             state: RefCell::new(SymbolTableState {
                 buckets: vec![Vec::new(); initial_capacity as usize],
@@ -194,7 +198,10 @@ impl SymbolTable {
     ///
     /// Equivalent to `hash(char[], int, int)`.
     pub fn hash_chars(&self, buffer: &[u16], offset: i32, length: i32) -> i32 {
-        Self::hash_with(&self.state.borrow(), &buffer[offset as usize..(offset + length) as usize])
+        Self::hash_with(
+            &self.state.borrow(),
+            &buffer[offset as usize..(offset + length) as usize],
+        )
     }
 
     /// Equivalent to the protected `rehash()`.
@@ -205,7 +212,9 @@ impl SymbolTable {
 
     /// Equivalent to the protected `rebalance()`.
     fn rebalance(s: &mut SymbolTableState) {
-        let multipliers = s.hash_multipliers.get_or_insert_with(|| vec![0; MULTIPLIERS_SIZE as usize]);
+        let multipliers = s
+            .hash_multipliers
+            .get_or_insert_with(|| vec![0; MULTIPLIERS_SIZE as usize]);
         PrimeNumberSequenceGenerator::generate_sequence(multipliers);
         let capacity = s.buckets.len();
         Self::rehash_common(s, capacity);

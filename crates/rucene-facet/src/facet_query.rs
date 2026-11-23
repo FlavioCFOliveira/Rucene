@@ -45,7 +45,11 @@ impl FacetQuery {
     /// Equivalent to `FacetQuery(FacetsConfig, String, String...)`.
     pub fn new(facets_config: &FacetsConfig, dimension: &str, path: &[&str]) -> Result<Self> {
         Ok(Self {
-            inner: TermQuery::new(to_term(&facets_config.get_dim_config(dimension), dimension, path)?),
+            inner: TermQuery::new(to_term(
+                &facets_config.get_dim_config(dimension),
+                dimension,
+                path,
+            )?),
         })
     }
 
@@ -77,7 +81,9 @@ impl std::ops::Deref for FacetQuery {
 pub(crate) fn to_term(dim_config: &DimConfig, dimension: &str, path: &[&str]) -> Result<Term> {
     Ok(Term::new(
         dim_config.index_field_name(),
-        rucene::util::BytesRef::from_char_sequence(&FacetsConfig::path_to_string_dim(dimension, path)?),
+        rucene::util::BytesRef::from_char_sequence(&FacetsConfig::path_to_string_dim(
+            dimension, path,
+        )?),
     ))
 }
 

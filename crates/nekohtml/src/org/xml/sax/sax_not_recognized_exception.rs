@@ -17,6 +17,7 @@ pub struct SAXNotRecognizedException;
 
 impl SAXNotRecognizedException {
     /// Equivalent to `new SAXNotRecognizedException()`.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> SAXException {
         SAXException::of(SAXExceptionClass::SAXNotRecognizedException, None, None)
     }

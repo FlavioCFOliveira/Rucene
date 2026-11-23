@@ -45,7 +45,9 @@ const LENGTH: usize = ID + 1;
 const PAGE: usize = LENGTH + 1;
 
 /// `months`.
-const MONTHS: [&str; 12] = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const MONTHS: [&str; 12] = [
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+];
 
 /// `getElementType(String elem)`: the type of the element if defined,
 /// otherwise -1.
@@ -82,7 +84,9 @@ struct ClosableInputStream {
 
 impl ClosableInputStream {
     fn new(stream: Box<dyn Read + Send>) -> Arc<Self> {
-        Arc::new(ClosableInputStream { stream: Mutex::new(Some(stream)) })
+        Arc::new(ClosableInputStream {
+            stream: Mutex::new(Some(stream)),
+        })
     }
 
     /// `close()`.
@@ -134,7 +138,9 @@ impl Shared {
         if let Some(open_input_stream) = &self.open_input_stream_override {
             return Ok(ClosableInputStream::new(open_input_stream()?));
         }
-        let file = jdk::lock(&self.file).clone().ok_or_else(LuceneError::null_pointer)?;
+        let file = jdk::lock(&self.file)
+            .clone()
+            .ok_or_else(LuceneError::null_pointer)?;
         Ok(ClosableInputStream::new(StreamUtils::input_stream(&file)?))
     }
 }
@@ -267,16 +273,27 @@ impl DefaultHandler for Parser {
                 // title does not start with Image:
                 let keep_images = *jdk::lock(&self.shared.keep_images);
                 if let Some(body) = &self.body {
-                    let title = self.title.as_deref().ok_or_else(LuceneError::null_pointer)?;
+                    let title = self
+                        .title
+                        .as_deref()
+                        .ok_or_else(LuceneError::null_pointer)?;
                     if keep_images || !title.starts_with("Image:") {
                         let mut tmp_tuple = vec![String::new(); LENGTH];
                         tmp_tuple[TITLE] = title.replace('\t', " ");
-                        tmp_tuple[DATE] = self.time.as_deref().ok_or_else(LuceneError::null_pointer)?.replace('\t', " ");
+                        tmp_tuple[DATE] = self
+                            .time
+                            .as_deref()
+                            .ok_or_else(LuceneError::null_pointer)?
+                            .replace('\t', " ");
                         tmp_tuple[BODY] = body.replace(['\t', '\n'], " ");
                         tmp_tuple[ID] = self.id.clone().unwrap_or_else(|| "null".to_string());
                         let mut hand_off = jdk::lock(&self.shared.hand_off);
                         while hand_off.tuple.is_some() && !hand_off.stopped {
-                            hand_off = self.shared.cond.wait(hand_off).unwrap_or_else(|e| e.into_inner());
+                            hand_off = self
+                                .shared
+                                .cond
+                                .wait(hand_off)
+                                .unwrap_or_else(|e| e.into_inner());
                         }
                         hand_off.tuple = Some(tmp_tuple);
                         self.shared.cond.notify_all();
@@ -287,7 +304,11 @@ impl DefaultHandler for Parser {
                 // workaround that startswith doesn't have an ignore case option, get at least 20 chars.
                 let n = 10.min(self.contents.len());
                 let starts_with = String::from_utf16_lossy(&self.contents[..n]).to_lowercase();
-                self.body = if starts_with.starts_with("#redirect") { None } else { Some(contents) };
+                self.body = if starts_with.starts_with("#redirect") {
+                    None
+                } else {
+                    Some(contents)
+                };
             }
             t if t == DATE as i64 => {
                 self.time = Some(Parser::time(&contents)?);
@@ -309,7 +330,13 @@ impl DefaultHandler for Parser {
         Ok(())
     }
 
-    fn start_element(&mut self, _namespace: &str, _simple: &str, qualified: &str, _attributes: &Attributes) -> Result<()> {
+    fn start_element(
+        &mut self,
+        _namespace: &str,
+        _simple: &str,
+        qualified: &str,
+        _attributes: &Attributes,
+    ) -> Result<()> {
         let elem_type = get_element_type(qualified);
         match elem_type {
             t if t == PAGE as i64 => {
@@ -375,7 +402,9 @@ impl EnwikiContentSource {
     /// subclassing; the override replaces the method body, as in Java).
     pub fn with_open_input_stream(open_input_stream: OpenInputStreamOverride) -> Self {
         let mut source = Self::new();
-        Arc::get_mut(&mut source.shared).expect("not shared yet").open_input_stream_override = Some(open_input_stream);
+        Arc::get_mut(&mut source.shared)
+            .expect("not shared yet")
+            .open_input_stream_override = Some(open_input_stream);
         source
     }
 
@@ -387,30 +416,39 @@ impl EnwikiContentSource {
             hand_off.thread_done = false;
             hand_off.started = true;
             let thread_shared = Arc::clone(&shared);
-            let spawned = std::thread::Builder::new().name(jdk::next_thread_name()).spawn(move || {
-                let mut parser = Parser {
-                    shared: Arc::clone(&thread_shared),
-                    contents: Vec::new(),
-                    title: None,
-                    body: None,
-                    time: None,
-                    id: None,
-                };
-                if let Err(e) = parser.run() {
-                    eprintln!(
-                        "Exception in thread \"{}\" {}",
-                        jdk::current_thread_name(),
-                        jdk::runtime_exception_from(e)
-                    );
-                }
-                let mut hand_off = jdk::lock(&thread_shared.hand_off);
-                hand_off.thread_done = true;
-                thread_shared.cond.notify_all();
-            });
+            let spawned = std::thread::Builder::new()
+                .name(jdk::next_thread_name())
+                .spawn(move || {
+                    let mut parser = Parser {
+                        shared: Arc::clone(&thread_shared),
+                        contents: Vec::new(),
+                        title: None,
+                        body: None,
+                        time: None,
+                        id: None,
+                    };
+                    if let Err(e) = parser.run() {
+                        eprintln!(
+                            "Exception in thread \"{}\" {}",
+                            jdk::current_thread_name(),
+                            jdk::runtime_exception_from(e)
+                        );
+                    }
+                    let mut hand_off = jdk::lock(&thread_shared.hand_off);
+                    hand_off.thread_done = true;
+                    thread_shared.cond.notify_all();
+                });
             spawned.map_err(LuceneError::from)?;
         }
-        while hand_off.tuple.is_none() && !hand_off.nmde && !hand_off.thread_done && !hand_off.stopped {
-            hand_off = shared.cond.wait(hand_off).unwrap_or_else(|e| e.into_inner());
+        while hand_off.tuple.is_none()
+            && !hand_off.nmde
+            && !hand_off.thread_done
+            && !hand_off.stopped
+        {
+            hand_off = shared
+                .cond
+                .wait(hand_off)
+                .unwrap_or_else(|e| e.into_inner());
         }
         if let Some(result) = hand_off.tuple.take() {
             shared.cond.notify_all();

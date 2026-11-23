@@ -33,7 +33,9 @@ use crate::facet_result::FacetResult;
 use crate::facets::validate_top_n;
 use crate::facets_collector::MatchingDocs;
 use crate::facets_config::{DimConfig, FacetsConfig};
-use crate::label_and_value::{number_double_value, number_float_value, number_int_value, LabelAndValue};
+use crate::label_and_value::{
+    number_double_value, number_float_value, number_int_value, LabelAndValue,
+};
 use crate::taxonomy::facet_label::FacetLabel;
 use crate::taxonomy::float_taxonomy_facets::FloatTaxonomyFacets;
 use crate::taxonomy::int_taxonomy_facets::IntTaxonomyFacets;
@@ -75,7 +77,9 @@ impl ValueComparator {
     pub(crate) fn compare(self, a: &NumericValue, b: &NumericValue) -> Ordering {
         match self {
             ValueComparator::Int => number_int_value(a).cmp(&number_int_value(b)),
-            ValueComparator::Float => java_float_compare(number_float_value(a), number_float_value(b)),
+            ValueComparator::Float => {
+                java_float_compare(number_float_value(a), number_float_value(b))
+            }
         }
     }
 }
@@ -134,6 +138,7 @@ pub(crate) struct AggregatedCount;
 
 impl AggregatedCount {
     /// Equivalent to `AggregatedCount(int)`.
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new(count: i32) -> AggregatedValue {
         AggregatedValue::Count(count)
     }
@@ -383,7 +388,11 @@ impl TaxonomyFacets {
     /// Apply an aggregation to the two values and return the result.
     ///
     /// Equivalent to `aggregate(Number, Number)` and its overrides.
-    pub(crate) fn aggregate(&self, existing_val: &NumericValue, new_val: &NumericValue) -> NumericValue {
+    pub(crate) fn aggregate(
+        &self,
+        existing_val: &NumericValue,
+        new_val: &NumericValue,
+    ) -> NumericValue {
         match &self.values {
             // By default, we are computing counts, so the values are
             // interpreted as integers and summed.
@@ -394,10 +403,10 @@ impl TaxonomyFacets {
                 v.aggregation_function
                     .aggregate_int(number_int_value(existing_val), number_int_value(new_val)),
             ),
-            ValueStore::Float(v) => NumericValue::Float(
-                v.aggregation_function
-                    .aggregate_float(number_float_value(existing_val), number_float_value(new_val)),
-            ),
+            ValueStore::Float(v) => NumericValue::Float(v.aggregation_function.aggregate_float(
+                number_float_value(existing_val),
+                number_float_value(new_val),
+            )),
         }
     }
 
@@ -414,7 +423,9 @@ impl TaxonomyFacets {
     /// Equivalent to `verifyDim(String)`.
     pub(crate) fn verify_dim(&self, dim: &str) -> Result<DimConfig> {
         let dim_config = self.config.get_dim_config(dim);
-        if self.config.is_dim_configured(dim) && dim_config.index_field_name() != self.index_field_name {
+        if self.config.is_dim_configured(dim)
+            && dim_config.index_field_name() != self.index_field_name
+        {
             return Err(LuceneError::illegal_argument(format!(
                 "dimension \"{}\" cannot be found in field \"{}\", since it was configured to be indexed into field \"{}\"",
                 dim, self.index_field_name, dim_config.index_field_name()
@@ -427,7 +438,9 @@ impl TaxonomyFacets {
     ///
     /// Equivalent to `updateValueFromRollup(int, int)` and its overrides.
     pub(crate) fn update_value_from_rollup(&mut self, ordinal: i32, child_ordinal: i32) {
-        let count = self.get_count(ordinal).wrapping_add(self.rollup_counts(child_ordinal));
+        let count = self
+            .get_count(ordinal)
+            .wrapping_add(self.rollup_counts(child_ordinal));
         self.set_count(ordinal, count);
         match &self.values {
             ValueStore::Counts => {}
@@ -500,7 +513,9 @@ impl TaxonomyFacets {
             .collect();
         for (dim, ft) in &dim_configs {
             if ft.hierarchical() && !ft.multi_valued() {
-                let dim_root_ord = self.taxo_reader.get_ordinal(&FacetLabel::new([dim.as_str()])?)?;
+                let dim_root_ord = self
+                    .taxo_reader
+                    .get_ordinal(&FacetLabel::new([dim.as_str()])?)?;
                 // It can be -1 if this field was declared in the config but
                 // never indexed:
                 if dim_root_ord > 0 {
@@ -594,7 +609,9 @@ impl TaxonomyFacets {
         let child_component_idx = path.len() + 1;
         let mut label_values = Vec::with_capacity(len);
         for i in 0..len {
-            let label = bulk_path[i].as_ref().ok_or_else(LuceneError::null_pointer)?;
+            let label = bulk_path[i]
+                .as_ref()
+                .ok_or_else(LuceneError::null_pointer)?;
             label_values.push(LabelAndValue::with_count(
                 label.components[child_component_idx].clone(),
                 values[i],
@@ -678,7 +695,9 @@ impl TaxonomyFacets {
         let bulk_path = self.taxo_reader.get_bulk_path(&mut ordinals.clone())?;
         let mut label_values = Vec::with_capacity(ord_values.len());
         for i in 0..ord_values.len() {
-            let label = bulk_path[i].as_ref().ok_or_else(LuceneError::null_pointer)?;
+            let label = bulk_path[i]
+                .as_ref()
+                .ok_or_else(LuceneError::null_pointer)?;
             label_values.push(LabelAndValue::with_count(
                 label.components[cp.length].clone(),
                 ord_values[i],
@@ -850,7 +869,9 @@ impl TaxonomyFacets {
                 ));
             }
         }
-        let ord = self.taxo_reader.get_ordinal(&FacetLabel::with_dim(dim, path)?)?;
+        let ord = self
+            .taxo_reader
+            .get_ordinal(&FacetLabel::with_dim(dim, path)?)?;
         if ord < 0 {
             return Ok(NumericValue::Int(-1));
         }
@@ -903,7 +924,11 @@ impl TaxonomyFacets {
     }
 
     /// Equivalent to `getTopDims(int, int)`.
-    pub(crate) fn get_top_dims(&self, top_n_dims: i32, top_n_children: i32) -> Result<Vec<FacetResult>> {
+    pub(crate) fn get_top_dims(
+        &self,
+        top_n_dims: i32,
+        top_n_children: i32,
+    ) -> Result<Vec<FacetResult>> {
         if top_n_dims <= 0 || top_n_children <= 0 {
             return Err(LuceneError::illegal_argument("topN must be > 0"));
         }
@@ -997,9 +1022,8 @@ impl TaxonomyFacets {
         while pq.size() > 0 {
             let dim_value = pq.pop().expect("INVARIANT: size > 0");
             let dim = dim_value.dim;
-            let mut top_children_for_path = intermediate_results
-                .as_mut()
-                .and_then(|m| m.remove(&dim));
+            let mut top_children_for_path =
+                intermediate_results.as_mut().and_then(|m| m.remove(&dim));
             if top_children_for_path.is_none() {
                 let dim_config = self.config.get_dim_config(&dim);
                 top_children_for_path = Some(self.get_top_children_for_path(

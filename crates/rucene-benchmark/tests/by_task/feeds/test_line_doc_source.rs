@@ -40,7 +40,8 @@ use crate::benchmark_support::search_support::{ftest, tq};
 use crate::benchmark_support::{benchmark_class, get_work_dir, run_data_of};
 
 /// The binary name of `LineDocSource.HeaderLineParser`.
-const HEADER_LINE_PARSER: &str = "org.apache.lucene.benchmark.byTask.feeds.LineDocSource$HeaderLineParser";
+const HEADER_LINE_PARSER: &str =
+    "org.apache.lucene.benchmark.byTask.feeds.LineDocSource$HeaderLineParser";
 
 /// The instance of `TestLineDocSource`.
 #[derive(Default)]
@@ -54,8 +55,14 @@ pub fn class_def() -> Arc<Class> {
             ftest("testBZip2", test_bzip2),
             ftest("testBZip2NoHeaderLine", test_bzip2_no_header_line),
             ftest("testRegularFile", test_regular_file),
-            ftest("testRegularFileSpecialHeader", test_regular_file_special_header),
-            ftest("testRegularFileNoHeaderLine", test_regular_file_no_header_line),
+            ftest(
+                "testRegularFileSpecialHeader",
+                test_regular_file_special_header,
+            ),
+            ftest(
+                "testRegularFileNoHeaderLine",
+                test_regular_file_no_header_line,
+            ),
             ftest("testInvalidFormat", test_invalid_format),
             ftest("testWithDocsName", test_with_docs_name),
             ftest("testWithProperties", test_with_properties),
@@ -122,10 +129,15 @@ fn create_regular_line_file_with_more_fields(file: &Path, extra_fields: &[&str])
     Ok(())
 }
 
-fn do_index_and_search_test(file: &Path, line_parser_class: Option<&str>, stored_field: Option<&str>) -> Result<()> {
+fn do_index_and_search_test(
+    file: &Path,
+    line_parser_class: Option<&str>,
+    stored_field: Option<&str>,
+) -> Result<()> {
     do_index_and_search_test_with_repeats(file, line_parser_class, 1, stored_field)?; // no extra repetitions
     do_index_and_search_test_with_repeats(file, line_parser_class, 2, stored_field)?; // 1 extra repetition
-    do_index_and_search_test_with_repeats(file, line_parser_class, 4, stored_field) // 3 extra repetitions
+    do_index_and_search_test_with_repeats(file, line_parser_class, 4, stored_field)
+    // 3 extra repetitions
 }
 
 fn do_index_and_search_test_with_repeats(
@@ -135,12 +147,21 @@ fn do_index_and_search_test_with_repeats(
     stored_field: Option<&str>,
 ) -> Result<()> {
     let mut props = Properties::new();
-    props.set_property("docs.file", std::path::absolute(file)?.to_string_lossy().into_owned());
+    props.set_property(
+        "docs.file",
+        std::path::absolute(file)?.to_string_lossy().into_owned(),
+    );
     if let Some(line_parser_class) = line_parser_class {
         props.set_property("line.parser", line_parser_class);
     }
-    props.set_property("analyzer", "org.apache.lucene.analysis.core.WhitespaceAnalyzer");
-    props.set_property("content.source", "org.apache.lucene.benchmark.byTask.feeds.LineDocSource");
+    props.set_property(
+        "analyzer",
+        "org.apache.lucene.analysis.core.WhitespaceAnalyzer",
+    );
+    props.set_property(
+        "content.source",
+        "org.apache.lucene.benchmark.byTask.feeds.LineDocSource",
+    );
     props.set_property("directory", "ByteBuffersDirectory");
     props.set_property("doc.stored", "true");
     props.set_property("doc.index.props", "true");
@@ -164,7 +185,7 @@ fn do_index_and_search_test_with_repeats(
         let td = searcher.search(tq("body", "body"), 10)?;
         Assert::assert_equals(i64::from(num_adds), td.total_hits.value());
         Assert::assert_true(!td.score_docs.is_empty()); // assertNotNull(td.scoreDocs[0])
-        // added to all docs and satisfies field-name == value
+                                                        // added to all docs and satisfies field-name == value
         let stored_field = stored_field.unwrap_or(DocMaker::BODY_FIELD);
         Assert::assert_equals_nullable_msg(
             Some("Wrong field value"),
@@ -215,10 +236,10 @@ fn test_regular_file_no_header_line(_f: &mut LineDocSourceTest) -> Result<()> {
 fn test_invalid_format(_f: &mut LineDocSourceTest) -> Result<()> {
     let sep = WriteLineDocTask::SEP;
     let test_cases = [
-        String::new(),                // empty line
-        "title".to_string(),          // just title
-        format!("title{sep}"),        // title + SEP
-        format!("title{sep}body"),    // title + SEP + body
+        String::new(),             // empty line
+        "title".to_string(),       // just title
+        format!("title{sep}"),     // title + SEP
+        format!("title{sep}body"), // title + SEP + body
     ];
     for test_case in &test_cases {
         let file = get_work_dir().join("one-line");

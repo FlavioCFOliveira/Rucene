@@ -108,7 +108,10 @@ pub(crate) struct AbstractSortedSetDocValueFacetCounts {
 
 impl AbstractSortedSetDocValueFacetCounts {
     /// Equivalent to `AbstractSortedSetDocValueFacetCounts(SortedSetDocValuesReaderState)`.
-    pub(crate) fn new(state: Arc<dyn SortedSetDocValuesReaderState>, counts: CountStore) -> Result<Self> {
+    pub(crate) fn new(
+        state: Arc<dyn SortedSetDocValuesReaderState>,
+        counts: CountStore,
+    ) -> Result<Self> {
         let field = state.get_field().to_string();
         let state_config = Arc::clone(state.get_facets_config());
         let (dv, dv_mapping) = match state.get_doc_values()? {
@@ -157,13 +160,21 @@ impl AbstractSortedSetDocValueFacetCounts {
     /// Equivalent to `getCount(int)`.
     pub(crate) fn get_count(&self, ord: i32) -> i32 {
         match &self.counts {
-            CountStore::Plain(counts) => counts.as_ref().ok_or_else(LuceneError::null_pointer).expect("NullPointerException: counts")[ord as usize],
+            CountStore::Plain(counts) => counts
+                .as_ref()
+                .ok_or_else(LuceneError::null_pointer)
+                .expect("NullPointerException: counts")[ord as usize],
             CountStore::Atomic(counts) => counts[ord as usize].load(AtomicOrdering::SeqCst),
         }
     }
 
     /// Equivalent to `getTopChildren(int, String, String...)`.
-    pub(crate) fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    pub(crate) fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
         if !self.has_counts() {
             return Ok(None);
@@ -176,7 +187,8 @@ impl AbstractSortedSetDocValueFacetCounts {
     pub(crate) fn get_all_children(&self, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
         let dim_config = self.state_config.get_dim_config(dim);
 
-        let Some(mut iteration_cursor) = self.prepare_child_iteration(dim, &dim_config, path)? else {
+        let Some(mut iteration_cursor) = self.prepare_child_iteration(dim, &dim_config, path)?
+        else {
             return Ok(None);
         };
 
@@ -197,7 +209,8 @@ impl AbstractSortedSetDocValueFacetCounts {
             }
         }
 
-        path_count = self.adjust_path_count_if_necessary(&dim_config, iteration_cursor.path_ord, path_count);
+        path_count =
+            self.adjust_path_count_if_necessary(&dim_config, iteration_cursor.path_ord, path_count);
 
         let child_count = label_values.len() as i32;
         Ok(Some(FacetResult::new(
@@ -216,12 +229,18 @@ impl AbstractSortedSetDocValueFacetCounts {
                 "{dim} is not configured as hierarchical, path must be length=1"
             )));
         }
-        let ord = self.lookup_term(&BytesRef::from_char_sequence(&FacetsConfig::path_to_string_dim(dim, path)?))? as i32;
+        let ord = self.lookup_term(&BytesRef::from_char_sequence(
+            &FacetsConfig::path_to_string_dim(dim, path)?,
+        ))? as i32;
         if ord < 0 {
             return Ok(NumericValue::Int(-1));
         }
 
-        Ok(NumericValue::Int(if !self.has_counts() { 0 } else { self.get_count(ord) }))
+        Ok(NumericValue::Int(if !self.has_counts() {
+            0
+        } else {
+            self.get_count(ord)
+        }))
     }
 
     /// Equivalent to `getAllDims(int)`.
@@ -234,7 +253,9 @@ impl AbstractSortedSetDocValueFacetCounts {
         let mut results = Vec::new();
         for dim in self.state.get_dims() {
             let top_children_for_path = self.get_top_children_for_path(top_n, &dim, &[])?;
-            if let Some(facet_result) = self.create_facet_result(top_children_for_path, &dim, &[])? {
+            if let Some(facet_result) =
+                self.create_facet_result(top_children_for_path, &dim, &[])?
+            {
                 results.push(facet_result);
             }
         }
@@ -254,7 +275,11 @@ impl AbstractSortedSetDocValueFacetCounts {
     }
 
     /// Equivalent to `getTopDims(int, int)`.
-    pub(crate) fn get_top_dims(&self, top_n_dims: i32, top_n_children: i32) -> Result<Vec<FacetResult>> {
+    pub(crate) fn get_top_dims(
+        &self,
+        top_n_dims: i32,
+        top_n_children: i32,
+    ) -> Result<Vec<FacetResult>> {
         validate_top_n(top_n_dims)?;
         validate_top_n(top_n_children)?;
 
@@ -350,9 +375,11 @@ impl AbstractSortedSetDocValueFacetCounts {
                 .as_mut()
                 .and_then(|m| m.remove(&dim_value.dim));
             if top_children_for_path.is_none() {
-                top_children_for_path = self.get_top_children_for_path(top_n_children, &dim_value.dim, &[])?;
+                top_children_for_path =
+                    self.get_top_children_for_path(top_n_children, &dim_value.dim, &[])?;
             }
-            let facet_result = self.create_facet_result(top_children_for_path, &dim_value.dim, &[])?;
+            let facet_result =
+                self.create_facet_result(top_children_for_path, &dim_value.dim, &[])?;
             // should not be null since only dims with non-zero values were
             // considered earlier
             debug_assert!(facet_result.is_some());
@@ -380,7 +407,10 @@ impl AbstractSortedSetDocValueFacetCounts {
             } else {
                 // If there's no path, this is a little more efficient to just
                 // look up the dim:
-                path_ord = dim_tree.as_ref().ok_or_else(LuceneError::null_pointer)?.dim_start_ord;
+                path_ord = dim_tree
+                    .as_ref()
+                    .ok_or_else(LuceneError::null_pointer)?
+                    .dim_start_ord;
             }
             if path_ord < 0 {
                 // path was never indexed
@@ -494,7 +524,12 @@ impl AbstractSortedSetDocValueFacetCounts {
     /// result.
     ///
     /// Equivalent to `adjustPathCountIfNecessary(DimConfig, int, int)`.
-    fn adjust_path_count_if_necessary(&self, dim_config: &DimConfig, path_ord: i32, computed_count: i32) -> i32 {
+    fn adjust_path_count_if_necessary(
+        &self,
+        dim_config: &DimConfig,
+        path_ord: i32,
+        computed_count: i32,
+    ) -> i32 {
         if dim_config.hierarchical() {
             // For hierarchical dims, we directly index each level of the
             // ancestry path (i.e., we "rollup" at indexing time), meaning we
@@ -540,7 +575,9 @@ impl AbstractSortedSetDocValueFacetCounts {
             return Ok(None);
         }
 
-        let mut q = top_children_for_path.q.expect("INVARIANT: children were counted");
+        let mut q = top_children_for_path
+            .q
+            .expect("INVARIANT: children were counted");
         let len = q.size();
         let mut label_values: Vec<Option<LabelAndValue>> = (0..len).map(|_| None).collect();
         for i in (0..len).rev() {

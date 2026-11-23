@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2004-2008 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -58,7 +58,10 @@ impl HTMLAugmentations {
         let s = Self::new();
         for key in augs.keys() {
             let mut value = augs.get_item(&key);
-            if let Some(item) = value.as_ref().and_then(|v| v.downcast_ref::<LocationItem>()) {
+            if let Some(item) = value
+                .as_ref()
+                .and_then(|v| v.downcast_ref::<LocationItem>())
+            {
                 value = Some(Rc::new(LocationItem::copy_of(item)) as Object);
             }
             s.items.borrow_mut().put(&key, value);

@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -57,7 +57,10 @@ impl Default for MalformedURIException {
 
 impl From<MalformedURIException> for Exception {
     fn from(e: MalformedURIException) -> Self {
-        io_exception("org.apache.xerces.util.URI$MalformedURIException", e.message)
+        io_exception(
+            "org.apache.xerces.util.URI$MalformedURIException",
+            e.message,
+        )
     }
 }
 
@@ -198,7 +201,10 @@ fn last_index_of(s: &[u16], c: char, from: i32) -> i32 {
     if s.is_empty() {
         return -1;
     }
-    (0..=start).rev().find(|&i| s[i] == c as u16).map_or(-1, |i| i as i32)
+    (0..=start)
+        .rev()
+        .find(|&i| s[i] == c as u16)
+        .map_or(-1, |i| i as i32)
 }
 
 fn index_of_str(s: &str, needle: &str, from: usize) -> i32 {
@@ -292,7 +298,10 @@ impl URI {
     /// # Errors
     ///
     /// `MalformedURIException` for a malformed specification.
-    pub fn parse_allow_non_absolute(p_uri_spec: Option<&str>, allow_non_absolute_uri: bool) -> UResult<Self> {
+    pub fn parse_allow_non_absolute(
+        p_uri_spec: Option<&str>,
+        allow_non_absolute_uri: bool,
+    ) -> UResult<Self> {
         Self::with_base_allow_non_absolute(None, p_uri_spec, allow_non_absolute_uri)
     }
 
@@ -331,7 +340,10 @@ impl URI {
     /// # Errors
     ///
     /// `MalformedURIException` for an empty part.
-    pub fn with_scheme_specific_part(p_scheme: Option<&str>, p_scheme_specific_part: Option<&str>) -> UResult<Self> {
+    pub fn with_scheme_specific_part(
+        p_scheme: Option<&str>,
+        p_scheme_specific_part: Option<&str>,
+    ) -> UResult<Self> {
         if p_scheme.is_none_or(|s| trim(s).is_empty()) {
             return err("Cannot construct URI with null/empty scheme!");
         }
@@ -359,7 +371,15 @@ impl URI {
         p_query_string: Option<&str>,
         p_fragment: Option<&str>,
     ) -> UResult<Self> {
-        Self::with_parts(p_scheme, None, p_host, -1, p_path, p_query_string, p_fragment)
+        Self::with_parts(
+            p_scheme,
+            None,
+            p_host,
+            -1,
+            p_path,
+            p_query_string,
+            p_fragment,
+        )
     }
 
     /// Construct a new URI that follows the generic URI syntax from its
@@ -423,7 +443,12 @@ impl URI {
     }
 
     /// Initializes this URI from a base URI and a URI specification string.
-    fn initialize_allow(&mut self, p_base: Option<&URI>, p_uri_spec: Option<&str>, allow_non_absolute_uri: bool) -> UResult<()> {
+    fn initialize_allow(
+        &mut self,
+        p_base: Option<&URI>,
+        p_uri_spec: Option<&str>,
+        allow_non_absolute_uri: bool,
+    ) -> UResult<()> {
         self.initialize_common(p_base, p_uri_spec, Some(allow_non_absolute_uri))
     }
 
@@ -435,7 +460,12 @@ impl URI {
     /// The common body of the two `initialize(URI, String[, boolean])`
     /// overloads; `allow` is `None` for the two-argument one, which differs
     /// only by ignoring the flag.
-    fn initialize_common(&mut self, p_base: Option<&URI>, p_uri_spec: Option<&str>, allow: Option<bool>) -> UResult<()> {
+    fn initialize_common(
+        &mut self,
+        p_base: Option<&URI>,
+        p_uri_spec: Option<&str>,
+        allow: Option<bool>,
+    ) -> UResult<()> {
         let allow_non_absolute_uri = allow.unwrap_or(false);
         let uri_spec: Vec<u16> = p_uri_spec.map(to_chars).unwrap_or_default();
         let uri_spec_len = uri_spec.len() as i32;
@@ -467,7 +497,9 @@ impl URI {
 
             if colon_idx == 0 || slash_idx != -1 || query_idx != -1 || fragment_idx != -1 {
                 // A standalone base is a valid URI according to spec
-                if colon_idx == 0 || (p_base.is_none() && fragment_idx != 0 && !allow_non_absolute_uri) {
+                if colon_idx == 0
+                    || (p_base.is_none() && fragment_idx != 0 && !allow_non_absolute_uri)
+                {
                     return err("No scheme found in URI.");
                 }
             } else {
@@ -475,7 +507,9 @@ impl URI {
                 index = len(self.scheme.as_deref().unwrap_or("")) + 1;
 
                 // Neither 'scheme:' or 'scheme:#fragment' are valid URIs.
-                if colon_idx == uri_spec_len - 1 || uri_spec[(colon_idx + 1) as usize] == b'#' as u16 {
+                if colon_idx == uri_spec_len - 1
+                    || uri_spec[(colon_idx + 1) as usize] == b'#' as u16
+                {
                     return err("Scheme specific part cannot be empty.");
                 }
             }
@@ -503,7 +537,8 @@ impl URI {
             // Authority will be everything up to path, query or fragment
             while index < uri_spec_len {
                 let test_char = uri_spec[index as usize];
-                if test_char == b'/' as u16 || test_char == b'?' as u16 || test_char == b'#' as u16 {
+                if test_char == b'/' as u16 || test_char == b'?' as u16 || test_char == b'#' as u16
+                {
                     break;
                 }
                 index += 1;
@@ -548,7 +583,11 @@ impl URI {
         // see <http://www.ics.uci.edu/~fielding/url/test1.html> which
         // identified this as a bug in the RFC
         let m_path = self.path.clone().unwrap_or_default();
-        if m_path.is_empty() && self.scheme.is_none() && self.host.is_none() && self.reg_authority.is_none() {
+        if m_path.is_empty()
+            && self.scheme.is_none()
+            && self.host.is_none()
+            && self.reg_authority.is_none()
+        {
             self.scheme = p_base.get_scheme().map(str::to_string);
             self.userinfo = p_base.get_userinfo().map(str::to_string);
             self.host = p_base.get_host().map(str::to_string);
@@ -641,7 +680,8 @@ impl URI {
             let seg_index = last_index_of(&ts, '/', ts.len() as i32);
             if seg_index != -1 {
                 if substring(&temp_string, seg_index, len(&temp_string)) != ".." {
-                    path = substring(&path, 0, seg_index + 1) + &substring(&path, index + 4, len(&path));
+                    path = substring(&path, 0, seg_index + 1)
+                        + &substring(&path, index + 4, len(&path));
                     index = seg_index;
                 } else {
                     index += 4;
@@ -670,7 +710,11 @@ impl URI {
         let mut index = 0;
         while index < uri_spec_len {
             let test_char = p_uri_spec[index];
-            if test_char == b':' as u16 || test_char == b'/' as u16 || test_char == b'?' as u16 || test_char == b'#' as u16 {
+            if test_char == b':' as u16
+                || test_char == b'/' as u16
+                || test_char == b'?' as u16
+                || test_char == b'#' as u16
+            {
                 break;
             }
             index += 1;
@@ -709,7 +753,11 @@ impl URI {
         if index < end {
             if p_uri_spec[start] == b'[' as u16 {
                 let bracket_index = index_of(p_uri_spec, ']', start);
-                index = if bracket_index != -1 { bracket_index as usize } else { end };
+                index = if bracket_index != -1 {
+                    bracket_index as usize
+                } else {
+                    end
+                };
                 if index + 1 < end && p_uri_spec[index + 1] == b':' as u16 {
                     index += 1;
                     has_port = true;
@@ -718,7 +766,11 @@ impl URI {
                 }
             } else {
                 let colon_index = last_index_of(p_uri_spec, ':', end as i32);
-                index = if colon_index > start as i32 { colon_index as usize } else { end };
+                index = if colon_index > start as i32 {
+                    colon_index as usize
+                } else {
+                    end
+                };
                 has_port = index != end;
             }
         }
@@ -808,7 +860,10 @@ impl URI {
         while index < end {
             let test_char = authority[index];
             if test_char == b'%' as u16 {
-                if index + 2 >= end || !is_hex(authority[index + 1]) || !is_hex(authority[index + 2]) {
+                if index + 2 >= end
+                    || !is_hex(authority[index + 1])
+                    || !is_hex(authority[index + 2])
+                {
                     return false;
                 }
                 index += 2;
@@ -846,7 +901,10 @@ impl URI {
 
                     // check for valid escape sequence
                     if test_char == b'%' as u16 {
-                        if index + 2 >= end || !is_hex(p_uri_spec[index + 1]) || !is_hex(p_uri_spec[index + 2]) {
+                        if index + 2 >= end
+                            || !is_hex(p_uri_spec[index + 1])
+                            || !is_hex(p_uri_spec[index + 2])
+                        {
                             return err("Path contains invalid escape sequence!");
                         }
                         index += 2;
@@ -857,7 +915,10 @@ impl URI {
                         if test_char == b'?' as u16 || test_char == b'#' as u16 {
                             break;
                         }
-                        return err(&format!("Path contains invalid character: {}", ch(test_char)));
+                        return err(&format!(
+                            "Path contains invalid character: {}",
+                            ch(test_char)
+                        ));
                     }
                     index += 1;
                 }
@@ -873,7 +934,10 @@ impl URI {
 
                     // check for valid escape sequence
                     if test_char == b'%' as u16 {
-                        if index + 2 >= end || !is_hex(p_uri_spec[index + 1]) || !is_hex(p_uri_spec[index + 2]) {
+                        if index + 2 >= end
+                            || !is_hex(p_uri_spec[index + 1])
+                            || !is_hex(p_uri_spec[index + 2])
+                        {
                             return err("Opaque part contains invalid escape sequence!");
                         }
                         index += 2;
@@ -882,7 +946,10 @@ impl URI {
                     // '[' and ']'. uric_no_slash wasn't changed by RFC 2732,
                     // so we allow them anyway.
                     else if !is_uri_character(test_char) {
-                        return err(&format!("Opaque part contains invalid character: {}", ch(test_char)));
+                        return err(&format!(
+                            "Opaque part contains invalid character: {}",
+                            ch(test_char)
+                        ));
                     }
                     index += 1;
                 }
@@ -900,12 +967,18 @@ impl URI {
                     break;
                 }
                 if test_char == b'%' as u16 {
-                    if index + 2 >= end || !is_hex(p_uri_spec[index + 1]) || !is_hex(p_uri_spec[index + 2]) {
+                    if index + 2 >= end
+                        || !is_hex(p_uri_spec[index + 1])
+                        || !is_hex(p_uri_spec[index + 2])
+                    {
                         return err("Query string contains invalid escape sequence!");
                     }
                     index += 2;
                 } else if !is_uri_character(test_char) {
-                    return err(&format!("Query string contains invalid character: {}", ch(test_char)));
+                    return err(&format!(
+                        "Query string contains invalid character: {}",
+                        ch(test_char)
+                    ));
                 }
                 index += 1;
             }
@@ -920,12 +993,18 @@ impl URI {
                 test_char = p_uri_spec[index];
 
                 if test_char == b'%' as u16 {
-                    if index + 2 >= end || !is_hex(p_uri_spec[index + 1]) || !is_hex(p_uri_spec[index + 2]) {
+                    if index + 2 >= end
+                        || !is_hex(p_uri_spec[index + 1])
+                        || !is_hex(p_uri_spec[index + 2])
+                    {
                         return err("Fragment contains invalid escape sequence!");
                     }
                     index += 2;
                 } else if !is_uri_character(test_char) {
-                    return err(&format!("Fragment contains invalid character: {}", ch(test_char)));
+                    return err(&format!(
+                        "Fragment contains invalid character: {}",
+                        ch(test_char)
+                    ));
                 }
                 index += 1;
             }
@@ -1021,7 +1100,10 @@ impl URI {
     ///
     /// Equivalent to `getPath(boolean, boolean)`.
     pub fn get_path_with(&self, p_include_query_string: bool, p_include_fragment: bool) -> String {
-        let mut path_string = self.path.clone().expect("java.lang.NullPointerException: m_path");
+        let mut path_string = self
+            .path
+            .clone()
+            .expect("java.lang.NullPointerException: m_path");
         if p_include_query_string {
             if let Some(q) = &self.query_string {
                 path_string.push('?');
@@ -1106,7 +1188,10 @@ impl URI {
                     return err("Userinfo contains invalid escape sequence!");
                 }
             } else if !is_userinfo_character(test_char) {
-                return err(&format!("Userinfo contains invalid character:{}", ch(test_char)));
+                return err(&format!(
+                    "Userinfo contains invalid character:{}",
+                    ch(test_char)
+                ));
             }
             index += 1;
         }
@@ -1496,7 +1581,9 @@ impl URI {
                     let first = a[i - 2];
                     let second = a[i - 1];
                     let (c2, c5) = (b'2' as u16, b'5' as u16);
-                    if !(first < c2 || (first == c2 && (second < c5 || (second == c5 && test_char <= c5)))) {
+                    if !(first < c2
+                        || (first == c2 && (second < c5 || (second == c5 && test_char <= c5))))
+                    {
                         return false;
                     }
                 }
@@ -1551,7 +1638,8 @@ impl URI {
             // the remainder of the string must match IPv4Address,
             // and we must have read exactly 6 16-bit groups.
             else {
-                return counter[0] == 6 && Self::is_well_formed_ipv4_address(&from_chars(&a[index + 1..end]));
+                return counter[0] == 6
+                    && Self::is_well_formed_ipv4_address(&from_chars(&a[index + 1..end]));
             }
         } else {
             return false;
@@ -1566,14 +1654,23 @@ impl URI {
         // made sure that we have the right number of bits.
         scanned == end as i32
             || (scanned != -1 && {
-                let from = if counter[0] > prev_count { scanned as usize + 1 } else { scanned as usize };
+                let from = if counter[0] > prev_count {
+                    scanned as usize + 1
+                } else {
+                    scanned as usize
+                };
                 Self::is_well_formed_ipv4_address(&from_chars(&a[from..end]))
             })
     }
 
     /// Helper method for isWellFormedIPv6Reference which scans the hex
     /// sequences of an IPv6 address.
-    fn scan_hex_sequence(address: &[u16], mut index: usize, end: usize, counter: &mut [i32; 1]) -> i32 {
+    fn scan_hex_sequence(
+        address: &[u16],
+        mut index: usize,
+        end: usize,
+        counter: &mut [i32; 1],
+    ) -> i32 {
         let mut num_digits = 0;
         let start = index;
 

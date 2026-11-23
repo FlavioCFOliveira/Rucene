@@ -55,12 +55,18 @@ impl TaxonomyFacetLabels {
     /// dimension.
     ///
     /// Equivalent to `getFacetLabelReader(LeafReaderContext)`.
-    pub fn get_facet_label_reader(&self, reader_context: &LeafReaderContext) -> Result<FacetLabelReader> {
+    pub fn get_facet_label_reader(
+        &self,
+        reader_context: &LeafReaderContext,
+    ) -> Result<FacetLabelReader> {
         // `DocValues.getSortedNumeric` never returns null, so Java's
         // `emptySortedNumeric()` fallback is unreachable.
         let ordinal_values =
             DocValues::get_sorted_numeric(&*reader_context.leaf_reader(), &self.index_field_name)?;
-        Ok(FacetLabelReader::new(Arc::clone(&self.taxo_reader), ordinal_values))
+        Ok(FacetLabelReader::new(
+            Arc::clone(&self.taxo_reader),
+            ordinal_values,
+        ))
     }
 }
 

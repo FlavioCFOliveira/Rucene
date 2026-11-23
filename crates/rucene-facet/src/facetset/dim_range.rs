@@ -79,19 +79,28 @@ impl DimRange {
     /// Creates a `DimRange` for the given min and max long values.
     ///
     /// Equivalent to `fromLongs(long, boolean, long, boolean)`.
-    pub fn from_longs(mut min: i64, min_inclusive: bool, mut max: i64, max_inclusive: bool) -> Result<Self> {
+    pub fn from_longs(
+        mut min: i64,
+        min_inclusive: bool,
+        mut max: i64,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         if !min_inclusive {
             if min != i64::MAX {
                 min += 1;
             } else {
-                return Err(LuceneError::illegal_argument(format!("Invalid min input: {min}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Invalid min input: {min}"
+                )));
             }
         }
         if !max_inclusive {
             if max != i64::MIN {
                 max -= 1;
             } else {
-                return Err(LuceneError::illegal_argument(format!("Invalid max input: {max}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Invalid max input: {max}"
+                )));
             }
         }
         if min > max {
@@ -105,7 +114,12 @@ impl DimRange {
     /// Creates a `DimRange` for the given min and max double values.
     ///
     /// Equivalent to `fromDoubles(double, boolean, double, boolean)`.
-    pub fn from_doubles(mut min: f64, min_inclusive: bool, mut max: f64, max_inclusive: bool) -> Result<Self> {
+    pub fn from_doubles(
+        mut min: f64,
+        min_inclusive: bool,
+        mut max: f64,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         if min.is_nan() {
             return Err(LuceneError::illegal_argument("min cannot be NaN"));
         }
@@ -121,7 +135,9 @@ impl DimRange {
         }
 
         if min > max {
-            return Err(LuceneError::illegal_argument("Minimum cannot be greater than maximum"));
+            return Err(LuceneError::illegal_argument(
+                "Minimum cannot be greater than maximum",
+            ));
         }
         Ok(Self::new(
             NumericUtils::double_to_sortable_long(min),
@@ -132,7 +148,12 @@ impl DimRange {
     /// Creates a `DimRange` for the given min and max float values.
     ///
     /// Equivalent to `fromFloats(float, boolean, float, boolean)`.
-    pub fn from_floats(mut min: f32, min_inclusive: bool, mut max: f32, max_inclusive: bool) -> Result<Self> {
+    pub fn from_floats(
+        mut min: f32,
+        min_inclusive: bool,
+        mut max: f32,
+        max_inclusive: bool,
+    ) -> Result<Self> {
         if min.is_nan() {
             return Err(LuceneError::illegal_argument("min cannot be NaN"));
         }
@@ -148,7 +169,9 @@ impl DimRange {
         }
 
         if min > max {
-            return Err(LuceneError::illegal_argument("Minimum cannot be greater than maximum"));
+            return Err(LuceneError::illegal_argument(
+                "Minimum cannot be greater than maximum",
+            ));
         }
         Ok(Self::new(
             NumericUtils::float_to_sortable_int(min) as i64,

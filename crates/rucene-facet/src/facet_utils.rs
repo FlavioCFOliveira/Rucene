@@ -118,13 +118,16 @@ impl<'a> Intersect2<'a> {
         self.do_next(doc)
     }
 
-    /// Equivalent to `ConjunctionDISI.advance(int)`.
+    /// Equivalent to `ConjunctionDISI.advance(int)` (a `DocIdSetIterator`
+    /// member of the Java class; no caller in the module).
+    #[allow(dead_code)]
     pub(crate) fn advance(&mut self, target: i32) -> Result<i32> {
         let doc = self.lead1.advance(target)?;
         self.do_next(doc)
     }
 
-    /// Equivalent to `ConjunctionDISI.docID()`.
+    /// Equivalent to `ConjunctionDISI.docID()` (no caller in the module).
+    #[allow(dead_code)]
     pub(crate) fn doc_id(&self) -> i32 {
         self.lead1.doc_id()
     }

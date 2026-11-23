@@ -36,7 +36,10 @@ static THREAD_INIT_NUMBER: AtomicU64 = AtomicU64::new(0);
 /// `"Thread-" + nextThreadNum()`: the name Java gives a thread created
 /// without one.
 pub fn next_thread_name() -> String {
-    format!("Thread-{}", THREAD_INIT_NUMBER.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "Thread-{}",
+        THREAD_INIT_NUMBER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// `Thread.currentThread().getName()`.
@@ -60,7 +63,8 @@ pub fn java_trim(s: &str) -> &str {
 ///
 /// `NumberFormatException` where Java throws it.
 pub fn parse_int(s: &str) -> Result<i32> {
-    rucene::util::extra::java_parse_int(s).ok_or_else(|| LuceneError::number_format_for_input_string(s, 10))
+    rucene::util::extra::java_parse_int(s)
+        .ok_or_else(|| LuceneError::number_format_for_input_string(s, 10))
 }
 
 /// `Double.parseDouble(s)` (which first trims `s`).
@@ -153,12 +157,16 @@ pub fn object_to_string<T: ?Sized>(binary_name: &str, identity: &T) -> String {
 /// A `java.lang.ThreadLocal`: one value per thread, per instance.
 #[derive(Debug)]
 pub struct ThreadLocal<T> {
-    values: std::sync::Mutex<std::collections::HashMap<std::thread::ThreadId, std::sync::Arc<std::sync::Mutex<T>>>>,
+    values: std::sync::Mutex<
+        std::collections::HashMap<std::thread::ThreadId, std::sync::Arc<std::sync::Mutex<T>>>,
+    >,
 }
 
 impl<T> Default for ThreadLocal<T> {
     fn default() -> Self {
-        ThreadLocal { values: std::sync::Mutex::new(std::collections::HashMap::new()) }
+        ThreadLocal {
+            values: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 }
 
@@ -261,9 +269,8 @@ pub fn get_message(error: &LuceneError) -> Option<String> {
     match error.kind() {
         LuceneErrorKind::Unchecked { message, .. } => message.clone(),
         LuceneErrorKind::Throwable(t) => t.get_message().map(str::to_string),
-        LuceneErrorKind::IllegalArgument { message, .. } | LuceneErrorKind::IllegalState { message, .. } => {
-            Some(message.clone())
-        }
+        LuceneErrorKind::IllegalArgument { message, .. }
+        | LuceneErrorKind::IllegalState { message, .. } => Some(message.clone()),
         _ => Some(error.to_string()),
     }
 }
@@ -296,7 +303,10 @@ pub type FileReader = rucene_analysis_common::jdk::io::BufferedReader<
 pub fn new_buffered_reader_utf8(path: &std::path::Path) -> Result<FileReader> {
     use rucene_analysis_common::jdk::io::{BufferedReader, CodingErrorAction, InputStreamReader};
     let file = std::fs::File::open(path)?;
-    Ok(BufferedReader::new(InputStreamReader::with_action(file, CodingErrorAction::Report)))
+    Ok(BufferedReader::new(InputStreamReader::with_action(
+        file,
+        CodingErrorAction::Report,
+    )))
 }
 
 /// `reader.readLine()` as a `String`.
@@ -336,12 +346,18 @@ impl std::fmt::Debug for PrintWriter {
 impl PrintWriter {
     /// `new PrintWriter(out)`.
     pub fn new(out: Box<dyn std::io::Write + Send>) -> Self {
-        PrintWriter { out: std::sync::Mutex::new(out), auto_flush: false }
+        PrintWriter {
+            out: std::sync::Mutex::new(out),
+            auto_flush: false,
+        }
     }
 
     /// `new PrintWriter(out, true)`.
     pub fn with_auto_flush(out: Box<dyn std::io::Write + Send>) -> Self {
-        PrintWriter { out: std::sync::Mutex::new(out), auto_flush: true }
+        PrintWriter {
+            out: std::sync::Mutex::new(out),
+            auto_flush: true,
+        }
     }
 
     /// `println(String)`.
@@ -368,7 +384,8 @@ impl PrintWriter {
 /// The tokens of `new StringTokenizer(s)`: runs between the default
 /// delimiters `" \t\n\r\f"`.
 pub fn string_tokens(s: &str) -> impl Iterator<Item = &str> {
-    s.split([' ', '\t', '\n', '\r', '\u{c}']).filter(|t| !t.is_empty())
+    s.split([' ', '\t', '\n', '\r', '\u{c}'])
+        .filter(|t| !t.is_empty())
 }
 
 /// `StringTokenizer.nextToken()` past the last token:

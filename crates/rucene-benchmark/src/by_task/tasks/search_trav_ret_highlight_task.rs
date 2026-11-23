@@ -89,7 +89,7 @@ pub(crate) trait HLImpl: Send + Sync {
 /// `docIdOrder(ScoreDoc[] scoreDocs)`.
 fn doc_id_order(score_docs: &[ScoreDoc]) -> Vec<ScoreDoc> {
     let mut clone: Vec<ScoreDoc> = score_docs.to_vec();
-    clone.sort_unstable_by(|a, b| a.doc.cmp(&b.doc));
+    clone.sort_unstable_by_key(|a| a.doc);
     clone
 }
 
@@ -112,18 +112,27 @@ impl StandardHLImpl {
     /// `IllegalArgumentException("'fragmentScorer' must not be null")`.
     pub(crate) fn new(term_vecs: bool, max_doc_chars_to_analyze: i32) -> Result<Self> {
         let _ = (term_vecs, max_doc_chars_to_analyze);
-        Err(LuceneError::illegal_argument("'fragmentScorer' must not be null"))
+        Err(LuceneError::illegal_argument(
+            "'fragmentScorer' must not be null",
+        ))
     }
 
     /// The state the constructor would build past the field initialisers:
     /// `highlighter.setEncoder(new DefaultEncoder());
     /// highlighter.setMaxDocCharsToAnalyze(maxDocCharsToAnalyze)`.
     #[allow(dead_code)]
-    fn configure(mut highlighter: Highlighter, term_vecs: bool, max_doc_chars_to_analyze: i32) -> Self {
+    fn configure(
+        mut highlighter: Highlighter,
+        term_vecs: bool,
+        max_doc_chars_to_analyze: i32,
+    ) -> Self {
         highlighter.set_encoder(Box::new(DefaultEncoder::new()));
         highlighter.set_max_doc_chars_to_analyze(max_doc_chars_to_analyze);
         let _ = SimpleHTMLFormatter::with_tags("<em>", "</em>");
-        StandardHLImpl { highlighter: Mutex::new(highlighter), term_vecs }
+        StandardHLImpl {
+            highlighter: Mutex::new(highlighter),
+            term_vecs,
+        }
     }
 }
 
@@ -145,9 +154,15 @@ impl HLImpl for StandardHLImpl {
         // Default here is trivial
         for score_doc in doc_id_order(&hits.score_docs) {
             let document = stored_fields.document_fields(score_doc.doc, &outer.hl_fields)?;
-            let tv_fields = if self.term_vecs { term_vectors.get(score_doc.doc)? } else { None };
+            let tv_fields = if self.term_vecs {
+                term_vectors.get(score_doc.doc)?
+            } else {
+                None
+            };
             for indexable_field in document.get_fields() {
-                let text = indexable_field.string_value().ok_or_else(LuceneError::null_pointer)?;
+                let text = indexable_field
+                    .string_value()
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let token_stream: Box<dyn TokenStream> = if self.term_vecs {
                     TokenSources::get_token_stream(
                         indexable_field.name(),
@@ -158,11 +173,17 @@ impl HLImpl for StandardHLImpl {
                     )?
                 } else {
                     Box::new(SharedTokenStream::new(
-                        outer.analyzer()?.token_stream_from_str(indexable_field.name(), &text)?,
+                        outer
+                            .analyzer()?
+                            .token_stream_from_str(indexable_field.name(), &text)?,
                     ))
                 };
                 // will close TokenStream:
-                let fragments = highlighter.get_best_fragments_from_stream(token_stream, &text, outer.max_frags)?;
+                let fragments = highlighter.get_best_fragments_from_stream(
+                    token_stream,
+                    &text,
+                    outer.max_frags,
+                )?;
                 prevent_optimize_away.store(fragments.len() as i32, Ordering::SeqCst);
             }
         }
@@ -212,7 +233,9 @@ impl HLImpl for FastVectorHLImpl {
         hits: &TopDocs,
     ) -> Result<()> {
         let reader = searcher.get_index_reader();
-        let fq = self.highlighter.get_field_query_with_reader(q, Some(reader))?;
+        let fq = self
+            .highlighter
+            .get_field_query_with_reader(q, Some(reader))?;
         for score_doc in doc_id_order(&hits.score_docs) {
             for hl_field in &outer.hl_fields {
                 let fragments = self
@@ -277,7 +300,11 @@ impl UnifiedHLImpl {
     /// `reset(IndexSearcher searcher)`.
     fn reset(&self, outer: &Outer, searcher: &Arc<IndexSearcher>) -> Result<()> {
         let mut state = jdk::lock(&self.state);
-        if state.1.as_ref().is_some_and(|last| Arc::ptr_eq(last, searcher)) {
+        if state
+            .1
+            .as_ref()
+            .is_some_and(|last| Arc::ptr_eq(last, searcher))
+        {
             return Ok(());
         }
         state.1 = Some(Arc::clone(searcher));
@@ -305,7 +332,12 @@ impl HLImpl for UnifiedHLImpl {
         self.reset(outer, searcher)?;
         let state = jdk::lock(&self.state);
         let highlighter = state.0.as_ref().ok_or_else(LuceneError::null_pointer)?;
-        let result = highlighter.highlight_fields_top_docs_max_passages(&self.fields, q, hits, &self.max_passages)?;
+        let result = highlighter.highlight_fields_top_docs_max_passages(
+            &self.fields,
+            q,
+            hits,
+            &self.max_passages,
+        )?;
         prevent_optimize_away.store(result.len() as i32, Ordering::SeqCst);
         Ok(())
     }
@@ -328,7 +360,10 @@ impl HLImpl for NoHLImpl {
         // just retrieve the HL fields
         let stored_fields = searcher.stored_fields()?;
         for score_doc in doc_id_order(&hits.score_docs) {
-            let has_next = !stored_fields.document_fields(score_doc.doc, &outer.hl_fields)?.get_fields().is_empty();
+            let has_next = !stored_fields
+                .document_fields(score_doc.doc, &outer.hl_fields)?
+                .get_fields()
+                .is_empty();
             prevent_optimize_away.fetch_add(if has_next { 2 } else { 1 }, Ordering::SeqCst);
         }
         Ok(())
@@ -388,7 +423,9 @@ impl SearchTravRetHighlightTask {
     /// The exception of the `PerfTask` constructor or of the query maker.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchTravRetHighlightTask")?;
-        let read = ReadTaskBase::new(true, || query_maker_of::<SearchTravRetHighlightTask>(&run_data))?;
+        let read = ReadTaskBase::new(true, || {
+            query_maker_of::<SearchTravRetHighlightTask>(&run_data)
+        })?;
         Ok(SearchTravRetHighlightTask {
             base,
             read,
@@ -410,12 +447,21 @@ impl SearchTravRetHighlightTask {
 
 /// `split.substring(prefix.length(), split.length() - 1)`.
 fn bracket_value<'a>(split: &'a str, prefix: &str) -> Result<&'a str> {
-    let end = split.len().checked_sub(1).filter(|&e| e >= prefix.len()).ok_or_else(|| {
-        LuceneError::unchecked(
-            "java.lang.StringIndexOutOfBoundsException",
-            format!("begin {}, end {}, length {}", prefix.len(), split.len() as i64 - 1, split.len()),
-        )
-    })?;
+    let end = split
+        .len()
+        .checked_sub(1)
+        .filter(|&e| e >= prefix.len())
+        .ok_or_else(|| {
+            LuceneError::unchecked(
+                "java.lang.StringIndexOutOfBoundsException",
+                format!(
+                    "begin {}, end {}, length {}",
+                    prefix.len(),
+                    split.len() as i64 - 1,
+                    split.len()
+                ),
+            )
+        })?;
     Ok(&split[prefix.len()..end])
 }
 
@@ -433,7 +479,10 @@ impl PerfTask for SearchTravRetHighlightTask {
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "SearchTravRetHighlightTask" | "SearchTravTask" | "ReadTask")
+        matches!(
+            simple_class_name,
+            "SearchTravRetHighlightTask" | "SearchTravTask" | "ReadTask"
+        )
     }
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
@@ -455,7 +504,8 @@ impl PerfTask for SearchTravRetHighlightTask {
             if split.starts_with("type[") {
                 state.type_ = Some(bracket_value(&split, "type[")?.to_string());
             } else if split.starts_with("maxFrags[") {
-                state.outer.max_frags = jdk::parse_float(bracket_value(&split, "maxFrags[")?)? as i32;
+                state.outer.max_frags =
+                    jdk::parse_float(bracket_value(&split, "maxFrags[")?)? as i32;
             } else if split.starts_with("fields[") {
                 let field_names = bracket_value(&split, "fields[")?;
                 state.outer.hl_fields = jdk::split(field_names, ";").into_iter().collect();
@@ -476,8 +526,10 @@ impl PerfTask for SearchTravRetHighlightTask {
             return Err(jdk::exception("doc.stored must be set to true"));
         }
         let mut state = jdk::lock(&self.state);
-        state.outer.max_doc_chars_to_analyze =
-            data.get_config().get_int("highlighter.maxDocCharsToAnalyze", Highlighter::DEFAULT_MAX_CHARS_TO_ANALYZE)?;
+        state.outer.max_doc_chars_to_analyze = data.get_config().get_int(
+            "highlighter.maxDocCharsToAnalyze",
+            Highlighter::DEFAULT_MAX_CHARS_TO_ANALYZE,
+        )?;
         state.outer.analyzer = data.get_analyzer();
         let type_ = match state.type_.clone() {
             Some(t) => Some(t),
@@ -487,15 +539,37 @@ impl PerfTask for SearchTravRetHighlightTask {
         let type_ = type_.ok_or_else(LuceneError::null_pointer)?;
         let hl_impl: Arc<dyn HLImpl> = match type_.as_str() {
             "NONE" => Arc::new(NoHLImpl),
-            "SH_A" => Arc::new(StandardHLImpl::new(false, state.outer.max_doc_chars_to_analyze)?),
-            "SH_V" => Arc::new(StandardHLImpl::new(true, state.outer.max_doc_chars_to_analyze)?),
+            "SH_A" => Arc::new(StandardHLImpl::new(
+                false,
+                state.outer.max_doc_chars_to_analyze,
+            )?),
+            "SH_V" => Arc::new(StandardHLImpl::new(
+                true,
+                state.outer.max_doc_chars_to_analyze,
+            )?),
             "FVH_V" => Arc::new(FastVectorHLImpl::new()),
             "UH" => Arc::new(UnifiedHLImpl::new(None, &state.outer)),
-            "UH_A" => Arc::new(UnifiedHLImpl::new(Some(OffsetSource::ANALYSIS), &state.outer)),
-            "UH_V" => Arc::new(UnifiedHLImpl::new(Some(OffsetSource::TERM_VECTORS), &state.outer)),
-            "UH_P" => Arc::new(UnifiedHLImpl::new(Some(OffsetSource::POSTINGS), &state.outer)),
-            "UH_PV" => Arc::new(UnifiedHLImpl::new(Some(OffsetSource::POSTINGS_WITH_TERM_VECTORS), &state.outer)),
-            _ => return Err(jdk::exception(format!("unrecognized highlighter type: {type_} (try 'UH')"))),
+            "UH_A" => Arc::new(UnifiedHLImpl::new(
+                Some(OffsetSource::ANALYSIS),
+                &state.outer,
+            )),
+            "UH_V" => Arc::new(UnifiedHLImpl::new(
+                Some(OffsetSource::TERM_VECTORS),
+                &state.outer,
+            )),
+            "UH_P" => Arc::new(UnifiedHLImpl::new(
+                Some(OffsetSource::POSTINGS),
+                &state.outer,
+            )),
+            "UH_PV" => Arc::new(UnifiedHLImpl::new(
+                Some(OffsetSource::POSTINGS_WITH_TERM_VECTORS),
+                &state.outer,
+            )),
+            _ => {
+                return Err(jdk::exception(format!(
+                    "unrecognized highlighter type: {type_} (try 'UH')"
+                )))
+            }
         };
         state.hl_impl = Some(hl_impl);
         Ok(())
@@ -533,18 +607,19 @@ impl ReadTask for SearchTravRetHighlightTask {
 
     /// Here is where we intercept ReadTask's logic to do the highlighting,
     /// and nothing else (no retrieval of all field vals).
-    fn with_top_docs(&self, searcher: &Arc<IndexSearcher>, q: &Arc<dyn Query>, hits: &TopDocs) -> Result<i32> {
+    fn with_top_docs(
+        &self,
+        searcher: &Arc<IndexSearcher>,
+        q: &Arc<dyn Query>,
+        hits: &TopDocs,
+    ) -> Result<i32> {
         let (outer, hl_impl) = {
             let state = jdk::lock(&self.state);
             (state.outer.clone(), state.hl_impl.clone())
         };
-        hl_impl.ok_or_else(LuceneError::null_pointer)?.with_top_docs(
-            &outer,
-            &self.prevent_optimize_away,
-            searcher,
-            q,
-            hits,
-        )?;
+        hl_impl
+            .ok_or_else(LuceneError::null_pointer)?
+            .with_top_docs(&outer, &self.prevent_optimize_away, searcher, q, hits)?;
         // note: it'd be nice if we knew the sum kilobytes of text across these hits so we could return
         // that. It'd be a more
         //  useful number to gauge the amount of work. But given "average" document sizes and lots of

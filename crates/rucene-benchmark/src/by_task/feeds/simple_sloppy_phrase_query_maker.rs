@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use rucene::error::Result;
 use rucene::index::terms::Term;
-use rucene::search::PhraseQueryBuilder;
 use rucene::search::query::Query;
+use rucene::search::PhraseQueryBuilder;
 
 use crate::by_task::feeds::abstract_query_maker::{AbstractQueryMaker, AbstractQueryMakerBase};
 use crate::by_task::feeds::doc_maker::DocMaker;
@@ -74,7 +74,10 @@ impl AbstractQueryMaker for SimpleSloppyPhraseQueryMaker {
                     let mut wind = wd;
                     let mut builder = PhraseQueryBuilder::new();
                     for i in 0..qlen {
-                        builder.add_at(Term::from_text(DocMaker::BODY_FIELD, words[wind as usize]), i)?;
+                        builder.add_at(
+                            Term::from_text(DocMaker::BODY_FIELD, words[wind as usize]),
+                            i,
+                        )?;
                         wind += 1;
                         if remained_slop > 0 {
                             remained_slop -= 1;
@@ -89,7 +92,10 @@ impl AbstractQueryMaker for SimpleSloppyPhraseQueryMaker {
                     wind = wd + qlen + remained_slop - 1;
                     let mut builder = PhraseQueryBuilder::new();
                     for i in 0..qlen {
-                        builder.add_at(Term::from_text(DocMaker::BODY_FIELD, words[wind as usize]), i)?;
+                        builder.add_at(
+                            Term::from_text(DocMaker::BODY_FIELD, words[wind as usize]),
+                            i,
+                        )?;
                         wind -= 1;
                         if remained_slop > 0 {
                             remained_slop -= 1;

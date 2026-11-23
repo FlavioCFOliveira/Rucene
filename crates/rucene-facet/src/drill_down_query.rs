@@ -111,7 +111,11 @@ impl DrillDownQuery {
     ///
     /// Equivalent to the package-private `DrillDownQuery(FacetsConfig, Query,
     /// DrillDownQuery)`.
-    pub(crate) fn with_filter(config: Arc<FacetsConfig>, filter: Arc<dyn Query>, other: &DrillDownQuery) -> Result<Self> {
+    pub(crate) fn with_filter(
+        config: Arc<FacetsConfig>,
+        filter: Arc<dyn Query>,
+        other: &DrillDownQuery,
+    ) -> Result<Self> {
         let mut bq = BooleanQueryBuilder::new();
         bq.add(
             other
@@ -161,7 +165,10 @@ impl DrillDownQuery {
     /// Equivalent to `add(String, String...)`.
     pub fn add(&mut self, dim: &str, path: &[&str]) -> Result<()> {
         let indexed_field = self.config.get_dim_config(dim).index_field_name();
-        self.add_query(dim, Arc::new(TermQuery::new(term(&indexed_field, dim, path)?)))
+        self.add_query(
+            dim,
+            Arc::new(TermQuery::new(term(&indexed_field, dim, path)?)),
+        )
     }
 
     /// Expert: add a custom drill-down subQuery.
@@ -174,7 +181,8 @@ impl DrillDownQuery {
         if !self.drill_down_dims.iter().any(|(d, _)| d == dim) {
             let index = self.drill_down_dims.len() as i32;
             self.drill_down_dims.push((dim.to_string(), index));
-            self.dim_queries.push(Arc::new(Mutex::new(BooleanQueryBuilder::new())));
+            self.dim_queries
+                .push(Arc::new(Mutex::new(BooleanQueryBuilder::new())));
             built.built_dim_queries.push(None);
         }
         let index = self
@@ -239,9 +247,14 @@ impl DrillDownQuery {
     /// Equivalent to `getDrillDownQueries()`.
     pub fn get_drill_down_queries(&self) -> Vec<Arc<dyn Query>> {
         let mut built = lock(&self.built);
-        let dirty: Vec<i32> = built.dirty_dim_query_index.iter().map(|c| c.value).collect();
+        let dirty: Vec<i32> = built
+            .dirty_dim_query_index
+            .iter()
+            .map(|c| c.value)
+            .collect();
         for dirty_dim_index in dirty {
-            let query: Arc<dyn Query> = Arc::new(lock(&self.dim_queries[dirty_dim_index as usize]).build());
+            let query: Arc<dyn Query> =
+                Arc::new(lock(&self.dim_queries[dirty_dim_index as usize]).build());
             built.built_dim_queries[dirty_dim_index as usize] = Some(query);
         }
         built.dirty_dim_query_index.clear();
@@ -295,11 +308,14 @@ impl Query for DrillDownQuery {
         let base = self.base_query.as_ref().map_or(0, |q| q.query_hash());
         let mut list_hash = 1i32;
         for _ in &self.dim_queries {
-            list_hash = list_hash.wrapping_mul(31).wrapping_add(java_identity_hash_code_stand_in(
-                "org.apache.lucene.search.BooleanQuery$Builder",
-            ));
+            list_hash = list_hash
+                .wrapping_mul(31)
+                .wrapping_add(java_identity_hash_code_stand_in(
+                    "org.apache.lucene.search.BooleanQuery$Builder",
+                ));
         }
-        self.class_hash().wrapping_add(objects_hash(&[base, list_hash]))
+        self.class_hash()
+            .wrapping_add(objects_hash(&[base, list_hash]))
     }
 
     fn java_class_name(&self) -> &'static str {

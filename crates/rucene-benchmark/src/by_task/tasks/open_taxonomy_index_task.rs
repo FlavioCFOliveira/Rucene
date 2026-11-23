@@ -41,7 +41,9 @@ impl OpenTaxonomyIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(OpenTaxonomyIndexTask { base: PerfTaskBase::new(run_data, "OpenTaxonomyIndexTask")? })
+        Ok(OpenTaxonomyIndexTask {
+            base: PerfTaskBase::new(run_data, "OpenTaxonomyIndexTask")?,
+        })
     }
 }
 
@@ -49,12 +51,16 @@ impl PerfTask for OpenTaxonomyIndexTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(OpenTaxonomyIndexTask { base: self.base.clone_base() }))
+        Ok(Arc::new(OpenTaxonomyIndexTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
         let run_data = self.base.get_run_data();
-        let dir = run_data.get_taxonomy_dir().ok_or_else(LuceneError::null_pointer)?;
+        let dir = run_data
+            .get_taxonomy_dir()
+            .ok_or_else(LuceneError::null_pointer)?;
         run_data.set_taxonomy_writer(Some(Arc::new(DirectoryTaxonomyWriter::new(dir)?)));
         Ok(1)
     }

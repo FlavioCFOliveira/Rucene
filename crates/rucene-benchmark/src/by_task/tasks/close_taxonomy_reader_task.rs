@@ -40,7 +40,9 @@ impl CloseTaxonomyReaderTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CloseTaxonomyReaderTask { base: PerfTaskBase::new(run_data, "CloseTaxonomyReaderTask")? })
+        Ok(CloseTaxonomyReaderTask {
+            base: PerfTaskBase::new(run_data, "CloseTaxonomyReaderTask")?,
+        })
     }
 }
 
@@ -48,12 +50,16 @@ impl PerfTask for CloseTaxonomyReaderTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(CloseTaxonomyReaderTask { base: self.base.clone_base() }))
+        Ok(Arc::new(CloseTaxonomyReaderTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
         let run_data = self.base.get_run_data();
-        let taxo_reader = run_data.get_taxonomy_reader()?.ok_or_else(LuceneError::null_pointer)?;
+        let taxo_reader = run_data
+            .get_taxonomy_reader()?
+            .ok_or_else(LuceneError::null_pointer)?;
         let body = (|| -> Result<()> {
             run_data.set_taxonomy_reader(None)?;
             if taxo_reader.get_ref_count() != 1 {

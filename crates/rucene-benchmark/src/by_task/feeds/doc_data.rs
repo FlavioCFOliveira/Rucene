@@ -92,7 +92,10 @@ impl DocData {
     /// `setDate(Date)`.
     pub fn set_date_from(&mut self, date: Option<&Date>) {
         match date {
-            Some(date) => self.set_date(Some(DateTools::time_to_string(date.get_time(), Resolution::SECOND))),
+            Some(date) => self.set_date(Some(DateTools::time_to_string(
+                date.get_time(),
+                Resolution::SECOND,
+            ))),
             None => self.date = None,
         }
     }
@@ -121,5 +124,4 @@ impl DocData {
     pub fn set_title(&mut self, title: Option<String>) {
         self.title = title;
     }
-
 }

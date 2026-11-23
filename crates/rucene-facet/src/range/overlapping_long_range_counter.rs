@@ -97,7 +97,13 @@ impl OverlappingLongRangeCounter {
             let mid = (start + end) >> 1;
             let left = Self::split(start, mid, elementary_intervals);
             let right = Self::split(mid, end, elementary_intervals);
-            LongRangeNode::new(left.start, right.end, Some(Box::new(left)), Some(Box::new(right)), -1)
+            LongRangeNode::new(
+                left.start,
+                right.end,
+                Some(Box::new(left)),
+                Some(Box::new(right)),
+                -1,
+            )
         }
     }
 
@@ -115,8 +121,10 @@ impl OverlappingLongRangeCounter {
         let mut count;
         saw_outputs |= node.outputs.is_some();
         if let (Some(left), Some(right)) = (&node.left, &node.right) {
-            count = Self::rollup_single_valued(left, saw_outputs, counts, upto, missing_count, base);
-            count += Self::rollup_single_valued(right, saw_outputs, counts, upto, missing_count, base);
+            count =
+                Self::rollup_single_valued(left, saw_outputs, counts, upto, missing_count, base);
+            count +=
+                Self::rollup_single_valued(right, saw_outputs, counts, upto, missing_count, base);
         } else {
             // Leaf:
             count = counts[*upto];
@@ -244,7 +252,8 @@ impl LongRangeCounter for OverlappingLongRangeCounter {
         // multi-valued doc:
         match &mut self.multi_valued_doc_elementary_interval_hits {
             None => {
-                self.multi_valued_doc_elementary_interval_hits = Some(FixedBitSet::new(self.boundaries.len()));
+                self.multi_valued_doc_elementary_interval_hits =
+                    Some(FixedBitSet::new(self.boundaries.len()));
             }
             Some(hits) => hits.clear_all(),
         }
@@ -271,12 +280,20 @@ impl LongRangeCounter for OverlappingLongRangeCounter {
             Some(hits) => hits.clear_all(),
         }
         self.elementary_interval_upto = 0;
-        let mut range_hits = self.multi_valued_doc_range_hits.take().expect("INVARIANT: set above");
+        let mut range_hits = self
+            .multi_valued_doc_range_hits
+            .take()
+            .expect("INVARIANT: set above");
         let hits = self
             .multi_valued_doc_elementary_interval_hits
             .as_ref()
             .expect("INVARIANT: must call startDoc() first");
-        Self::rollup_multi_valued(&self.root, hits, &mut self.elementary_interval_upto, &mut range_hits);
+        Self::rollup_multi_valued(
+            &self.root,
+            hits,
+            &mut self.elementary_interval_upto,
+            &mut range_hits,
+        );
 
         // Actually increment the count for each matching range, and see if
         // the doc contributed to at least one:
@@ -354,6 +371,8 @@ pub struct LongRangeNode {
     // Which range indices to output when a query goes through this node:
     outputs: Option<Vec<i32>>,
     // If we are a leaf, the index into elementary ranges that we point to:
+    // (assigned and never read, as in Java)
+    #[allow(dead_code)]
     elementary_interval_index: i32,
 }
 

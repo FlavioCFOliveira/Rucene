@@ -66,9 +66,12 @@ impl FacetResult {
 
     /// Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        let mut hash_code = number_hash_code(&self.value).wrapping_add(31i32.wrapping_mul(self.child_count));
+        let mut hash_code =
+            number_hash_code(&self.value).wrapping_add(31i32.wrapping_mul(self.child_count));
         for label_value in &self.label_values {
-            hash_code = label_value.hash_code().wrapping_add(31i32.wrapping_mul(hash_code));
+            hash_code = label_value
+                .hash_code()
+                .wrapping_add(31i32.wrapping_mul(hash_code));
         }
         hash_code
     }
@@ -77,9 +80,9 @@ impl FacetResult {
 impl fmt::Display for FacetResult {
     /// Equivalent to `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
+        writeln!(
             f,
-            "dim={} path={} value={} childCount={}\n",
+            "dim={} path={} value={} childCount={}",
             self.dim,
             arrays_to_string(&self.path),
             self.value,

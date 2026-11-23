@@ -44,7 +44,9 @@ impl RepAllTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(RepAllTask { base: PerfTaskBase::new(run_data, "RepAllTask")? })
+        Ok(RepAllTask {
+            base: PerfTaskBase::new(run_data, "RepAllTask")?,
+        })
     }
 
     /// `reportAll(List<TaskStats> taskStats)`: report detailed statistics as
@@ -72,7 +74,11 @@ impl RepAllTask {
                 sb.push_str(&line);
             }
         }
-        let reptxt = if reported == 0 { "No Matching Entries Were Found!".to_string() } else { sb };
+        let reptxt = if reported == 0 {
+            "No Matching Entries Were Found!".to_string()
+        } else {
+            sb
+        };
         Report::new(reptxt, reported, reported, task_stats.len() as i32)
     }
 }
@@ -81,14 +87,20 @@ impl PerfTask for RepAllTask {
     report_task::report_task_perf_methods!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(RepAllTask { base: self.base.clone_base() }))
+        Ok(Arc::new(RepAllTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
         let stats = ReportTask::snapshot(&self.base.get_run_data().get_points().task_stats());
         let rp = self.report_all(&stats);
         println!();
-        println!("------------> Report All ({} out of {})", rp.get_size(), rp.get_out_of());
+        println!(
+            "------------> Report All ({} out of {})",
+            rp.get_size(),
+            rp.get_out_of()
+        );
         println!("{}", rp.get_text());
         println!();
         Ok(0)

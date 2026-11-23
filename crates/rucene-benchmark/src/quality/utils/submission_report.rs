@@ -55,7 +55,11 @@ impl SubmissionReport {
         let mut nf = number_format::get_instance(&Locale::root())?;
         nf.set_maximum_fraction_digits(4);
         nf.set_minimum_fraction_digits(4);
-        Ok(SubmissionReport { nf, logger, name: name.to_string() })
+        Ok(SubmissionReport {
+            nf,
+            logger,
+            name: name.to_string(),
+        })
     }
 
     /// `report(QualityQuery qq, TopDocs td, String docNameField, IndexSearcher
@@ -64,7 +68,13 @@ impl SubmissionReport {
     /// # Errors
     ///
     /// In case of a problem.
-    pub fn report(&self, qq: &QualityQuery, td: &TopDocs, doc_name_field: &str, searcher: &IndexSearcher) -> Result<()> {
+    pub fn report(
+        &self,
+        qq: &QualityQuery,
+        td: &TopDocs,
+        doc_name_field: &str,
+        searcher: &IndexSearcher,
+    ) -> Result<()> {
         let Some(logger) = &self.logger else {
             return Ok(());
         };

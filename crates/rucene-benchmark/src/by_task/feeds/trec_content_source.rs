@@ -36,7 +36,9 @@ use crate::by_task::feeds::content_source::ContentSource;
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::html_parser::HTMLParser;
 use crate::by_task::feeds::no_more_data_exception::NoMoreDataException;
-use crate::by_task::feeds::trec_doc_parser::{self, index_of, substring, ParsePathType, TrecDocParser};
+use crate::by_task::feeds::trec_doc_parser::{
+    self, index_of, substring, ParsePathType, TrecDocParser,
+};
 use crate::by_task::feeds::trec_gov2_parser::TrecGov2Parser;
 use crate::by_task::utils::config::Config;
 use crate::by_task::utils::stream_utils::StreamUtils;
@@ -197,7 +199,13 @@ impl TrecContentSource {
             df.set_lenient(true);
             dfs.push(df);
         }
-        Ok(self.date_formats.set(Some(DateFormatInfo { dfs, pos: ParsePosition::new(0) })).expect("just set"))
+        Ok(self
+            .date_formats
+            .set(Some(DateFormatInfo {
+                dfs,
+                pos: ParsePosition::new(0),
+            }))
+            .expect("just set"))
     }
 
     /// `getHtmlParser()`.
@@ -258,8 +266,11 @@ impl TrecContentSource {
     fn open_next_file(&self, l: &mut Locked) -> Result<()> {
         let open_next_file_override = jdk::lock(&self.settings).open_next_file_override.clone();
         if let Some(open_next_file) = open_next_file_override {
-            let mut state =
-                OpenNextFileState { reader: &mut l.reader, iteration: &mut l.iteration, forever: self.base.forever() };
+            let mut state = OpenNextFileState {
+                reader: &mut l.reader,
+                iteration: &mut l.iteration,
+                forever: self.base.forever(),
+            };
             return open_next_file(&mut state);
         }
         self.close_locked(l);
@@ -276,14 +287,21 @@ impl TrecContentSource {
             let f = l.input_files[l.next_file].clone();
             l.next_file += 1;
             if self.base.verbose() {
-                println!("opening: {} length: {}", f.display(), std::fs::metadata(&f)?.len());
+                println!(
+                    "opening: {} length: {}",
+                    f.display(),
+                    std::fs::metadata(&f)?.len()
+                );
             }
             let opened = (|| -> Result<TrecReader> {
                 // support either gzip, bzip2, or regular text file, by extension
                 let input_stream = StreamUtils::input_stream(&f)?;
                 let encoding = self.base.encoding().ok_or_else(LuceneError::null_pointer)?;
                 let charset = Charset::for_name(&encoding)?;
-                BufferedReader::with_size(InputStreamReader::with_charset(input_stream, charset), StreamUtils::BUFFER_SIZE as i32)
+                BufferedReader::with_size(
+                    InputStreamReader::with_charset(input_stream, charset),
+                    StreamUtils::BUFFER_SIZE as i32,
+                )
             })();
             match opened {
                 Ok(reader) => {
@@ -361,8 +379,14 @@ impl ContentItemsSource for TrecContentSource {
     fn set_config(&self, config: Arc<Config>) -> Result<()> {
         self.base.set_config(Arc::clone(&config))?;
         // dirs
-        let work_dir = PathBuf::from(config.get_str("work.dir", Some("work"))?.unwrap_or_default());
-        let d = config.get_str("docs.dir", Some("trec"))?.unwrap_or_default();
+        let work_dir = PathBuf::from(
+            config
+                .get_str("work.dir", Some("work"))?
+                .unwrap_or_default(),
+        );
+        let d = config
+            .get_str("docs.dir", Some("trec"))?
+            .unwrap_or_default();
         let mut data_dir = PathBuf::from(&d);
         if !data_dir.is_absolute() {
             data_dir = work_dir.join(&d);
@@ -370,22 +394,33 @@ impl ContentItemsSource for TrecContentSource {
         // files
         {
             let mut l = jdk::lock(&self.lock);
-            ContentItemsSourceBase::collect_files(&data_dir, &mut l.input_files).map_err(jdk::runtime_exception_from)?;
+            ContentItemsSourceBase::collect_files(&data_dir, &mut l.input_files)
+                .map_err(jdk::runtime_exception_from)?;
             if l.input_files.is_empty() {
-                return Err(LuceneError::illegal_argument(format!("No files in dataDir: {}", data_dir.display())));
+                return Err(LuceneError::illegal_argument(format!(
+                    "No files in dataDir: {}",
+                    data_dir.display()
+                )));
             }
         }
         // trec doc parser
         let trec_doc_parser_class_name = config
-            .get_str("trec.doc.parser", Some("org.apache.lucene.benchmark.byTask.feeds.TrecGov2Parser"))?
+            .get_str(
+                "trec.doc.parser",
+                Some("org.apache.lucene.benchmark.byTask.feeds.TrecGov2Parser"),
+            )?
             .unwrap_or_default();
-        let trec_doc_parser =
-            classes::trec_doc_parser_for_name(&trec_doc_parser_class_name).map_err(jdk::runtime_exception_from)?;
+        let trec_doc_parser = classes::trec_doc_parser_for_name(&trec_doc_parser_class_name)
+            .map_err(jdk::runtime_exception_from)?;
         // html parser
         let html_parser_class_name = config
-            .get_str("html.parser", Some("org.apache.lucene.benchmark.byTask.feeds.DemoHTMLParser"))?
+            .get_str(
+                "html.parser",
+                Some("org.apache.lucene.benchmark.byTask.feeds.DemoHTMLParser"),
+            )?
             .unwrap_or_default();
-        let html_parser = classes::html_parser_for_name(&html_parser_class_name).map_err(jdk::runtime_exception_from)?;
+        let html_parser = classes::html_parser_for_name(&html_parser_class_name)
+            .map_err(jdk::runtime_exception_from)?;
         // encoding
         if self.base.encoding().is_none() {
             self.base.set_encoding(Some("ISO-8859-1".to_string()));
@@ -438,7 +473,13 @@ impl ContentSource for TrecContentSource {
 
             // 3. read all until end of doc
             doc_buf.clear();
-            self.read(&mut l, &mut doc_buf, Some(Self::TERMINATING_DOC), false, true)?;
+            self.read(
+                &mut l,
+                &mut doc_buf,
+                Some(Self::TERMINATING_DOC),
+                false,
+                true,
+            )?;
             (name, parsed_path_type)
         };
 

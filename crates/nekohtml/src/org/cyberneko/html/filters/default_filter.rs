@@ -1,6 +1,6 @@
-/* 
+/*
  * Copyright 2002-2009 Andy Clark, Marc Guillemot
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -100,16 +100,27 @@ impl DefaultFilter {
     /// # Errors
     ///
     /// What the next handler throws.
-    pub fn start_document_no_context(&self, locator: Option<Rc<dyn XMLLocator>>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    pub fn start_document_no_context(
+        &self,
+        locator: Option<Rc<dyn XMLLocator>>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         XMLDocumentHandler::start_document(self, locator, encoding, None, augs)
     }
 
     /// Start prefix mapping (XNI 2.0).
     ///
     /// Equivalent to `startPrefixMapping(String, String, Augmentations)`.
-    pub fn start_prefix_mapping(&self, prefix: &str, uri: Option<&str>, augs: Option<&dyn Augmentations>) {
+    pub fn start_prefix_mapping(
+        &self,
+        prefix: &str,
+        uri: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) {
         if let Some(h) = self.next_handler() {
-            xerces_bridge::get_instance().xml_document_handler_start_prefix_mapping(&*h, prefix, uri, augs);
+            xerces_bridge::get_instance()
+                .xml_document_handler_start_prefix_mapping(&*h, prefix, uri, augs);
         }
     }
 
@@ -118,7 +129,8 @@ impl DefaultFilter {
     /// Equivalent to `endPrefixMapping(String, Augmentations)`.
     pub fn end_prefix_mapping(&self, prefix: &str, augs: Option<&dyn Augmentations>) {
         if let Some(h) = self.next_handler() {
-            xerces_bridge::get_instance().xml_document_handler_end_prefix_mapping(&*h, prefix, augs);
+            xerces_bridge::get_instance()
+                .xml_document_handler_end_prefix_mapping(&*h, prefix, augs);
         }
     }
 }
@@ -144,11 +156,23 @@ impl XMLDocumentHandler for DefaultFilter {
         next!(self, h => xerces_bridge::get_instance().xml_document_handler_start_document(&*h, locator, encoding, nscontext, augs))
     }
 
-    fn xml_decl(&self, version: Option<&str>, encoding: Option<&str>, standalone: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn xml_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        standalone: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.xml_decl(version, encoding, standalone, augs))
     }
 
-    fn doctype_decl(&self, root: Option<&str>, public_id: Option<&str>, system_id: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn doctype_decl(
+        &self,
+        root: Option<&str>,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.doctype_decl(root, public_id, system_id, augs))
     }
 
@@ -156,15 +180,30 @@ impl XMLDocumentHandler for DefaultFilter {
         next!(self, h => h.comment(text, augs))
     }
 
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.processing_instruction(target, data, augs))
     }
 
-    fn start_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.start_element(element, attributes, augs))
     }
 
-    fn empty_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn empty_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.empty_element(element, attributes, augs))
     }
 
@@ -178,7 +217,12 @@ impl XMLDocumentHandler for DefaultFilter {
         next!(self, h => h.start_general_entity(name, id, encoding, augs))
     }
 
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.text_decl(version, encoding, augs))
     }
 
@@ -190,7 +234,11 @@ impl XMLDocumentHandler for DefaultFilter {
         next!(self, h => h.characters(text, augs))
     }
 
-    fn ignorable_whitespace(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignorable_whitespace(
+        &self,
+        text: &XMLString,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         next!(self, h => h.ignorable_whitespace(text, augs))
     }
 
@@ -215,7 +263,10 @@ impl XMLDocumentHandler for DefaultFilter {
     }
 
     fn get_document_source(&self) -> Option<Rc<dyn XMLDocumentSource>> {
-        self.document_source.borrow().as_ref().and_then(Weak::upgrade)
+        self.document_source
+            .borrow()
+            .as_ref()
+            .and_then(Weak::upgrade)
     }
 }
 

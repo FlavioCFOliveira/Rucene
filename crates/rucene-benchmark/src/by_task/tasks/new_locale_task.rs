@@ -51,7 +51,10 @@ impl NewLocaleTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(NewLocaleTask { base: PerfTaskBase::new(run_data, "NewLocaleTask")?, tag: Mutex::new(None) })
+        Ok(NewLocaleTask {
+            base: PerfTaskBase::new(run_data, "NewLocaleTask")?,
+            tag: Mutex::new(None),
+        })
     }
 
     /// `createLocale(String tag)`.
@@ -74,7 +77,10 @@ impl PerfTask for NewLocaleTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(NewLocaleTask { base: self.base.clone_base(), tag: Mutex::new(jdk::lock(&self.tag).clone()) }))
+        Ok(Arc::new(NewLocaleTask {
+            base: self.base.clone_base(),
+            tag: Mutex::new(jdk::lock(&self.tag).clone()),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

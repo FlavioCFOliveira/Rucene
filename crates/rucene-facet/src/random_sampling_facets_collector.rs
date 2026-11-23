@@ -120,7 +120,10 @@ impl SamplingState {
     ///
     /// Java's `RuntimeException` wrapping the `IOException` sampling a
     /// segment raises (`RandomSamplingFacetsCollector.java:210-212`).
-    pub(crate) fn get_matching_docs<'a>(&'a self, matching_docs: &'a Vec<MatchingDocs>) -> Result<&'a Vec<MatchingDocs>> {
+    pub(crate) fn get_matching_docs<'a>(
+        &'a self,
+        matching_docs: &'a Vec<MatchingDocs>,
+    ) -> Result<&'a Vec<MatchingDocs>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.total_hits == NOT_CALCULATED {
             state.total_hits = 0;
@@ -144,7 +147,10 @@ impl SamplingState {
     /// Create a sampled copy of the matching documents list.
     ///
     /// Equivalent to `createSampledDocs(List)`.
-    fn create_sampled_docs(state: &mut SamplingMutable, matching_docs_list: &[MatchingDocs]) -> Result<Vec<MatchingDocs>> {
+    fn create_sampled_docs(
+        state: &mut SamplingMutable,
+        matching_docs_list: &[MatchingDocs],
+    ) -> Result<Vec<MatchingDocs>> {
         matching_docs_list
             .iter()
             .map(|docs| Self::create_sample(state, docs))
@@ -178,7 +184,10 @@ impl SamplingState {
             random_index = state.random.next_int(bin_size);
         }
         // try { ... } catch (IOException e) { throw new RuntimeException(e); }
-        let mut it = docs.bits.iterator().map_err(LuceneError::runtime_exception)?;
+        let mut it = docs
+            .bits
+            .iterator()
+            .map_err(LuceneError::runtime_exception)?;
         let mut doc = it.next_doc().map_err(LuceneError::runtime_exception)?;
         while doc != NO_MORE_DOCS {
             if counter == random_index {
@@ -213,9 +222,8 @@ impl SamplingState {
         }
 
         let set: Arc<dyn BitSet> = Arc::new(sample_docs);
-        let bits: SharedDocIdSet = Arc::new(
-            BitDocIdSet::from_set(set).expect("INVARIANT: a non-negative cardinality"),
-        );
+        let bits: SharedDocIdSet =
+            Arc::new(BitDocIdSet::from_set(set).expect("INVARIANT: a non-negative cardinality"));
         let mut sample = MatchingDocs::new(Arc::clone(&docs.context), bits, docs.total_hits, None);
         sample.context_identity = docs.context_identity;
         Ok(sample)
@@ -230,7 +238,6 @@ impl SamplingState {
 pub struct RandomSamplingFacetsCollector {
     inner: FacetsCollector,
     sample_size: i32,
-    seed: i64,
 }
 
 impl RandomSamplingFacetsCollector {
@@ -247,15 +254,14 @@ impl RandomSamplingFacetsCollector {
     pub fn with_seed(sample_size: i32, seed: i64) -> Self {
         let mut inner = FacetsCollector::with_keep_scores(false);
         inner.sampling = Some(Box::new(SamplingState::new(sample_size, seed)));
-        Self {
-            inner,
-            sample_size,
-            seed,
-        }
+        Self { inner, sample_size }
     }
 
     fn sampling(&self) -> &SamplingState {
-        self.inner.sampling.as_ref().expect("INVARIANT: a sampling collector")
+        self.inner
+            .sampling
+            .as_ref()
+            .expect("INVARIANT: a sampling collector")
     }
 
     /// Returns the sampled list of the matching documents.
@@ -322,7 +328,8 @@ impl RandomSamplingFacetsCollector {
                 dim_config.index_field_name(),
                 rucene::util::BytesRef::from_char_sequence(&full_path),
             ))?;
-            let mut corrected_count = (number_double_value(&label_value.value) / sampling_rate) as i32;
+            let mut corrected_count =
+                (number_double_value(&label_value.value) / sampling_rate) as i32;
             corrected_count = max.min(corrected_count);
             fixed_label_values.push(LabelAndValue::new(
                 label_value.label.clone(),
@@ -411,15 +418,27 @@ impl CollectorManager for RandomSamplingCollectorManager {
     type Output = RandomSamplingFacetsCollector;
 
     fn new_collector(&self) -> Result<RandomSamplingFacetsCollector> {
-        Ok(RandomSamplingFacetsCollector::with_seed(self.sample_size, self.seed))
+        Ok(RandomSamplingFacetsCollector::with_seed(
+            self.sample_size,
+            self.seed,
+        ))
     }
 
-    fn reduce(&self, collectors: Vec<RandomSamplingFacetsCollector>) -> Result<RandomSamplingFacetsCollector> {
+    fn reduce(
+        &self,
+        collectors: Vec<RandomSamplingFacetsCollector>,
+    ) -> Result<RandomSamplingFacetsCollector> {
         if collectors.is_empty() {
-            return Ok(RandomSamplingFacetsCollector::with_seed(self.sample_size, self.seed));
+            return Ok(RandomSamplingFacetsCollector::with_seed(
+                self.sample_size,
+                self.seed,
+            ));
         }
         if collectors.len() == 1 {
-            return Ok(collectors.into_iter().next().expect("INVARIANT: one collector"));
+            return Ok(collectors
+                .into_iter()
+                .next()
+                .expect("INVARIANT: one collector"));
         }
         ReducedRandomSamplingFacetsCollector::create(self.sample_size, self.seed, &collectors)
     }

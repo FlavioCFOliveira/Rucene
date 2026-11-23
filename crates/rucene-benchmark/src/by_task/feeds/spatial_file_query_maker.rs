@@ -36,8 +36,8 @@ use crate::by_task::feeds::line_doc_source::LineDocSource;
 use crate::by_task::feeds::no_more_data_exception::NoMoreDataException;
 use crate::by_task::feeds::spatial_doc_maker::{ShapeConverter, SpatialDocMaker};
 use crate::by_task::utils::config::Config;
-use crate::jdk::properties::Properties;
 use crate::jdk;
+use crate::jdk::properties::Properties;
 
 /// The fields `setConfig` sets.
 #[derive(Default)]
@@ -92,7 +92,10 @@ impl SpatialFileQueryMaker {
         if score {
             // wrap with distance computing query
             let value_source = strategy.make_distance_value_source_default(&shape.get_center())?;
-            Ok(Arc::new(FunctionScoreQuery::new(filter_query, value_source)))
+            Ok(Arc::new(FunctionScoreQuery::new(
+                filter_query,
+                value_source,
+            )))
         } else {
             Ok(filter_query) // assume constant scoring
         }
@@ -110,10 +113,17 @@ impl AbstractQueryMaker for SpatialFileQueryMaker {
 
     fn set_config(&self, config: Arc<Config>) -> Result<()> {
         let strategy = SpatialDocMaker::get_spatial_strategy(config.get_round_number())?;
-        let shape_converter = SpatialDocMaker::make_shape_converter(Arc::clone(&strategy), &config, "query.spatial.")?;
+        let shape_converter = SpatialDocMaker::make_shape_converter(
+            Arc::clone(&strategy),
+            &config,
+            "query.spatial.",
+        )?;
         let dist_err_pct = config.get_double("query.spatial.distErrPct", f64::NAN)?;
-        let operation =
-            SpatialOperation::get(&config.get_str("query.spatial.predicate", Some("Intersects"))?.unwrap_or_default())?;
+        let operation = SpatialOperation::get(
+            &config
+                .get_str("query.spatial.predicate", Some("Intersects"))?
+                .unwrap_or_default(),
+        )?;
         let score = config.get_bool("query.spatial.score", false)?;
         {
             let mut s = jdk::lock(&self.state);
@@ -137,7 +147,10 @@ impl AbstractQueryMaker for SpatialFileQueryMaker {
             src_config.set(name, &value)
         };
         set("docs.file", config.get_str("query.file", None)?)?;
-        set("line.parser", config.get_str("query.file.line.parser", None)?)?;
+        set(
+            "line.parser",
+            config.get_str("query.file.line.parser", None)?,
+        )?;
         set("content.source.forever", Some("false".to_string()))?;
 
         let mut queries: Vec<Arc<dyn Query>> = Vec::new();
@@ -155,7 +168,11 @@ impl AbstractQueryMaker for SpatialFileQueryMaker {
             let mut i = 0;
             while i < max_queries {
                 src.get_next_doc_data(&mut doc_data)?;
-                match SpatialDocMaker::make_shape_from_string(&*strategy, doc_data.get_name(), doc_data.get_body()) {
+                match SpatialDocMaker::make_shape_from_string(
+                    &*strategy,
+                    doc_data.get_name(),
+                    doc_data.get_body(),
+                ) {
                     Some(shape) => {
                         let shape = shape_converter.convert(shape)?;
                         queries.push(self.make_query_from_shape(shape)?);

@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -30,7 +30,11 @@ use crate::org::apache::xerces::xni::parser::xml_dtd_content_model_source::XMLDT
 /// Equivalent to `org.apache.xerces.xni.XMLDTDContentModelHandler`.
 pub trait XMLDTDContentModelHandler {
     /// Equivalent to `startContentModel(String, Augmentations)`.
-    fn start_content_model(&self, element_name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn start_content_model(
+        &self,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()>;
     /// Equivalent to `any(Augmentations)`.
     fn any(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `empty(Augmentations)`.
@@ -40,11 +44,13 @@ pub trait XMLDTDContentModelHandler {
     /// Equivalent to `pcdata(Augmentations)`.
     fn pcdata(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `element(String, Augmentations)`.
-    fn element(&self, element_name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn element(&self, element_name: &str, augmentations: Option<&dyn Augmentations>)
+        -> JResult<()>;
     /// Equivalent to `separator(short, Augmentations)`.
     fn separator(&self, separator: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `occurrence(short, Augmentations)`.
-    fn occurrence(&self, occurrence: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
+    fn occurrence(&self, occurrence: i16, augmentations: Option<&dyn Augmentations>)
+        -> JResult<()>;
     /// Equivalent to `endGroup(Augmentations)`.
     fn end_group(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()>;
     /// Equivalent to `endContentModel(Augmentations)`.

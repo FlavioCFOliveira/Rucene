@@ -48,7 +48,10 @@ impl QualityQuery {
     /// `QualityQuery(String queryID, Map<String, String> nameValPairs)`:
     /// create a QualityQuery with given ID and name-value pairs.
     pub fn new(query_id: String, name_val_pairs: JavaHashMap<String>) -> Self {
-        QualityQuery { query_id, name_val_pairs }
+        QualityQuery {
+            query_id,
+            name_val_pairs,
+        }
     }
 
     /// `getNames()`: return all the names of name-value-pairs in this
@@ -80,7 +83,11 @@ impl QualityQuery {
         ) {
             (Some(n), Some(n_other)) => n.wrapping_sub(n_other),
             // fall back to string comparison
-            _ => match self.query_id.encode_utf16().cmp(other.query_id.encode_utf16()) {
+            _ => match self
+                .query_id
+                .encode_utf16()
+                .cmp(other.query_id.encode_utf16())
+            {
                 Ordering::Less => -1,
                 Ordering::Equal => 0,
                 Ordering::Greater => 1,

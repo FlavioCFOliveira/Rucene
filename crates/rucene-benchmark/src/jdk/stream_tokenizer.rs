@@ -120,8 +120,8 @@ impl StreamTokenizer {
 
     /// `parseNumbers()`.
     pub fn parse_numbers(&mut self) {
-        for i in '0' as usize..='9' as usize {
-            self.ctype[i] |= CT_DIGIT;
+        for c in &mut self.ctype['0' as usize..='9' as usize] {
+            *c |= CT_DIGIT;
         }
         self.ctype['.' as usize] |= CT_DIGIT;
         self.ctype['-' as usize] |= CT_DIGIT;
@@ -259,7 +259,11 @@ impl StreamTokenizer {
             loop {
                 buf.push(c as u16);
                 c = self.read();
-                let ct = if c < 0 { CT_WHITESPACE } else { self.class_of(c) };
+                let ct = if c < 0 {
+                    CT_WHITESPACE
+                } else {
+                    self.class_of(c)
+                };
                 if ct & (CT_ALPHA | CT_DIGIT) == 0 {
                     break;
                 }

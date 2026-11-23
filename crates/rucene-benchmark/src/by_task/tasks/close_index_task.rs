@@ -45,7 +45,10 @@ impl CloseIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(CloseIndexTask { base: PerfTaskBase::new(run_data, "CloseIndexTask")?, do_wait: AtomicBool::new(true) })
+        Ok(CloseIndexTask {
+            base: PerfTaskBase::new(run_data, "CloseIndexTask")?,
+            do_wait: AtomicBool::new(true),
+        })
     }
 }
 
@@ -77,7 +80,8 @@ impl PerfTask for CloseIndexTask {
 
     fn set_params(&self, params: &str) -> Result<()> {
         perf_task::set_params(self, params)?;
-        self.do_wait.store(jdk::parse_boolean(Some(params)), Ordering::SeqCst);
+        self.do_wait
+            .store(jdk::parse_boolean(Some(params)), Ordering::SeqCst);
         Ok(())
     }
 

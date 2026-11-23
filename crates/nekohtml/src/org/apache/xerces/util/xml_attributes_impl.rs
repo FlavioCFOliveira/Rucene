@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -131,7 +131,8 @@ impl XMLAttributesImpl {
     fn grow(&mut self, by_doubling: bool) {
         let len = self.attributes.len();
         let new_len = if by_doubling { len << 1 } else { len + 4 };
-        self.attributes.extend((len..new_len).map(|_| Attribute::new()));
+        self.attributes
+            .extend((len..new_len).map(|_| Attribute::new()));
     }
 
     fn append_index(&mut self, by_doubling: bool) -> i32 {
@@ -225,7 +226,9 @@ impl XMLAttributesImpl {
     /// Equivalent to `checkDuplicatesNS()`.
     pub fn check_duplicates_ns(&self) -> Option<QName> {
         let length = self.length as usize;
-        let same = |a: &Attribute, b: &Attribute| a.name.localpart == b.name.localpart && a.name.uri == b.name.uri;
+        let same = |a: &Attribute, b: &Attribute| {
+            a.name.localpart == b.name.localpart && a.name.uri == b.name.uri
+        };
         if self.length <= SIZE_LIMIT {
             for i in 0..length.saturating_sub(1) {
                 for j in i + 1..length {
@@ -267,7 +270,11 @@ impl XMLAttributes for XMLAttributesImpl {
             } else {
                 self.get_index_fast(name.rawname.as_deref())
             };
-            index = if found == -1 { self.append_index(false) } else { found };
+            index = if found == -1 {
+                self.append_index(false)
+            } else {
+                found
+            };
         } else {
             let found_ns = if has_uri {
                 self.get_index_fast_ns(name.uri.as_deref(), name.localpart.as_deref())
@@ -278,7 +285,11 @@ impl XMLAttributes for XMLAttributesImpl {
                 index = found_ns;
             } else {
                 let found = self.get_index_fast(name.rawname.as_deref());
-                index = if found == -1 { self.append_index(true) } else { found };
+                index = if found == -1 {
+                    self.append_index(true)
+                } else {
+                    found
+                };
             }
         }
         self.reset_attribute(index, name, type_, value);
@@ -321,7 +332,9 @@ impl XMLAttributes for XMLAttributesImpl {
     }
 
     fn set_name(&mut self, attr_index: i32, attr_name: &QName) {
-        self.attributes[attr_index as usize].name.set_values_from(attr_name);
+        self.attributes[attr_index as usize]
+            .name
+            .set_values_from(attr_name);
     }
 
     fn get_name(&self, attr_index: i32, attr_name: &mut QName) {
@@ -332,7 +345,13 @@ impl XMLAttributes for XMLAttributesImpl {
         if index < 0 || index >= self.length {
             return None;
         }
-        Some(self.attributes[index as usize].name.prefix.clone().unwrap_or_default())
+        Some(
+            self.attributes[index as usize]
+                .name
+                .prefix
+                .clone()
+                .unwrap_or_default(),
+        )
     }
 
     fn get_uri(&self, index: i32) -> Option<String> {
@@ -356,7 +375,13 @@ impl XMLAttributes for XMLAttributesImpl {
         if index < 0 || index >= self.length {
             return None;
         }
-        Some(self.attributes[index as usize].name.rawname.clone().unwrap_or_default())
+        Some(
+            self.attributes[index as usize]
+                .name
+                .rawname
+                .clone()
+                .unwrap_or_default(),
+        )
     }
 
     fn set_type(&mut self, attr_index: i32, attr_type: &str) {
@@ -431,7 +456,9 @@ impl XMLAttributes for XMLAttributesImpl {
     }
 
     fn get_non_normalized_value(&self, attr_index: i32) -> Option<String> {
-        self.attributes[attr_index as usize].non_normalized_value.clone()
+        self.attributes[attr_index as usize]
+            .non_normalized_value
+            .clone()
     }
 
     fn set_specified(&mut self, attr_index: i32, specified: bool) {
@@ -449,7 +476,11 @@ impl XMLAttributes for XMLAttributesImpl {
         Some(Rc::clone(&self.attributes[attribute_index as usize].augs))
     }
 
-    fn get_augmentations_ns(&self, uri: Option<&str>, local_part: &str) -> Option<Rc<dyn Augmentations>> {
+    fn get_augmentations_ns(
+        &self,
+        uri: Option<&str>,
+        local_part: &str,
+    ) -> Option<Rc<dyn Augmentations>> {
         let index = self.get_index_ns(uri, local_part);
         if index != -1 {
             Some(Rc::clone(&self.attributes[index as usize].augs))

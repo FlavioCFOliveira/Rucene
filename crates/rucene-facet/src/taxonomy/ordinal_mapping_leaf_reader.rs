@@ -81,7 +81,8 @@ impl OrdinalMappingLeafReader {
 
 impl fmt::Debug for OrdinalMappingLeafReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OrdinalMappingLeafReader").finish_non_exhaustive()
+        f.debug_struct("OrdinalMappingLeafReader")
+            .finish_non_exhaustive()
     }
 }
 
@@ -142,7 +143,10 @@ impl LeafReader for OrdinalMappingLeafReader {
 }
 
 #[allow(unused_imports)]
-use {BinaryDocValues as _, SortedDocValues as _, SortedSetDocValues as _, StoredFields as _, TermVectors as _, Terms as _};
+use {
+    BinaryDocValues as _, SortedDocValues as _, SortedSetDocValues as _, StoredFields as _,
+    TermVectors as _, Terms as _,
+};
 
 /// Equivalent to
 /// `org.apache.lucene.facet.taxonomy.OrdinalMappingLeafReader.OrdinalMappingSortedNumericDocValues`,

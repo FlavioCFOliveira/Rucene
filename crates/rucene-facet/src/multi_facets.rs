@@ -60,7 +60,10 @@ impl MultiFacets {
     }
 
     /// Builds the instance from a `HashMap`.
-    pub fn from_map(dim_to_facets: HashMap<String, Arc<dyn Facets>>, default_facets: Option<Arc<dyn Facets>>) -> Self {
+    pub fn from_map(
+        dim_to_facets: HashMap<String, Arc<dyn Facets>>,
+        default_facets: Option<Arc<dyn Facets>>,
+    ) -> Self {
         Self::with_default(dim_to_facets.into_iter().collect(), default_facets)
     }
 
@@ -80,7 +83,12 @@ impl Facets for MultiFacets {
         self.facets_for(dim)?.get_all_children(dim, path)
     }
 
-    fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
         self.facets_for(dim)?.get_top_children(top_n, dim, path)
     }

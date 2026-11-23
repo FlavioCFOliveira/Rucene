@@ -43,7 +43,10 @@ pub fn class_def() -> Arc<Class> {
         "org.apache.lucene.benchmark.byTask.utils.TestStreamUtils",
         vec![
             set_up(setup),
-            ftest("testGetInputStreamPlainText", test_get_input_stream_plain_text),
+            ftest(
+                "testGetInputStreamPlainText",
+                test_get_input_stream_plain_text,
+            ),
             ftest("testGetInputStreamGzip", test_get_input_stream_gzip),
             ftest("testGetInputStreamBzip2", test_get_input_stream_bzip2),
             ftest("testGetOutputStreamBzip2", test_get_output_stream_bzip2),
@@ -54,7 +57,9 @@ pub fn class_def() -> Arc<Class> {
 }
 
 fn setup(f: &mut StreamUtilsTest) -> Result<()> {
-    f.test_dir = LuceneTestCase::create_temp_dir_prefix("ContentSourceTest").as_std_path().to_path_buf();
+    f.test_dir = LuceneTestCase::create_temp_dir_prefix("ContentSourceTest")
+        .as_std_path()
+        .to_path_buf();
     Ok(())
 }
 
@@ -113,7 +118,10 @@ fn raw_text_file(f: &StreamUtilsTest, ext: &str) -> Result<PathBuf> {
 /// the port's `flate2` encoder, rmp #611 declared divergence on the bytes).
 fn raw_gzip_file(f: &StreamUtilsTest, ext: &str) -> Result<PathBuf> {
     let path = f.test_dir.join(format!("testfile.{ext}"));
-    let mut os = flate2::write::GzEncoder::new(std::fs::File::create(&path)?, flate2::Compression::default());
+    let mut os = flate2::write::GzEncoder::new(
+        std::fs::File::create(&path)?,
+        flate2::Compression::default(),
+    );
     os.write_all(text_line().as_bytes())?;
     os.finish()?;
     Ok(path)
@@ -122,7 +130,8 @@ fn raw_gzip_file(f: &StreamUtilsTest, ext: &str) -> Result<PathBuf> {
 /// `CompressorStreamFactory.BZIP2` (the port's `bzip2` encoder).
 fn raw_bzip2_file(f: &StreamUtilsTest, ext: &str) -> Result<PathBuf> {
     let path = f.test_dir.join(format!("testfile.{ext}"));
-    let mut os = bzip2::write::BzEncoder::new(std::fs::File::create(&path)?, bzip2::Compression::default());
+    let mut os =
+        bzip2::write::BzEncoder::new(std::fs::File::create(&path)?, bzip2::Compression::default());
     os.write_all(text_line().as_bytes())?;
     os.finish()?;
     Ok(path)
@@ -143,7 +152,10 @@ fn assert_read_text(f: &Path) -> Result<()> {
     r.read_line(&mut line)?;
     let line = line.trim_end_matches(['\r', '\n']);
     crate::benchmark_support::assert_equals_msg(
-        &format!("Wrong text found in {}", f.file_name().unwrap().to_string_lossy()),
+        &format!(
+            "Wrong text found in {}",
+            f.file_name().unwrap().to_string_lossy()
+        ),
         TEXT,
         line,
     );

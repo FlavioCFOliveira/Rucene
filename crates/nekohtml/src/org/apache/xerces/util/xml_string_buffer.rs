@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -147,7 +147,11 @@ impl XMLStringBuffer {
 
     /// Equivalent to `append(XMLString)`.
     pub fn append_xml_string(&mut self, s: &XMLString) {
-        let chars = if s.length > 0 { s.chars().to_vec() } else { Vec::new() };
+        let chars = if s.length > 0 {
+            s.chars().to_vec()
+        } else {
+            Vec::new()
+        };
         self.append_chars(&chars, 0, s.length.max(0));
     }
 }

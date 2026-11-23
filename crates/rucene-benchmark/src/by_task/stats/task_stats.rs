@@ -173,7 +173,9 @@ impl TaskStats {
         if self.round != stat2.round {
             self.round = -1; // no meaning if aggregating tasks of different round.
         }
-        if let (Some(counts), Some(counts2)) = (self.counts_by_time.as_mut(), stat2.counts_by_time.as_ref()) {
+        if let (Some(counts), Some(counts2)) =
+            (self.counts_by_time.as_mut(), stat2.counts_by_time.as_ref())
+        {
             if self.counts_by_time_step_msec != stat2.counts_by_time_step_msec {
                 return Err(LuceneError::illegal_state("different by-time msec step"));
             }
@@ -196,6 +198,12 @@ impl TaskStats {
 impl std::fmt::Display for TaskStats {
     /// `toString()`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {} {}", self.task.get_name(), self.count, self.elapsed)
+        write!(
+            f,
+            "{} {} {}",
+            self.task.get_name(),
+            self.count,
+            self.elapsed
+        )
     }
 }

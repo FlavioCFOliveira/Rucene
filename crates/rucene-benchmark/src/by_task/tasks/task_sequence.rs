@@ -26,7 +26,9 @@ use rucene::error::Result;
 
 use crate::by_task::feeds::no_more_data_exception::NoMoreDataException;
 use crate::by_task::perf_run_data::PerfRunData;
-use crate::by_task::tasks::perf_task::{self, run_and_maybe_stats, PerfTask, PerfTaskBase, NEW_LINE};
+use crate::by_task::tasks::perf_task::{
+    self, run_and_maybe_stats, PerfTask, PerfTaskBase, NEW_LINE,
+};
 use crate::constants::Constants;
 use crate::jdk;
 
@@ -87,9 +89,12 @@ impl TaskSequence {
     ) -> Result<Arc<TaskSequence>> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "TaskSequence")?;
         let collapsable = name.is_none();
-        let name = name.map(str::to_string).unwrap_or_else(|| if parallel { "Par" } else { "Seq" }.to_string());
+        let name = name
+            .map(str::to_string)
+            .unwrap_or_else(|| if parallel { "Par" } else { "Seq" }.to_string());
         base.set_name(name);
-        let log_by_time_msec = i64::from(run_data.get_config().get_int("report.time.step.msec", 0)?);
+        let log_by_time_msec =
+            i64::from(run_data.get_config().get_int("report.time.step.msec", 0)?);
         let seq = Arc::new_cyclic(|me| TaskSequence {
             base,
             state: Mutex::new(SeqState {
@@ -124,12 +129,16 @@ impl TaskSequence {
 
     /// This sequence as an `Arc` of its own type.
     pub fn as_arc(&self) -> Arc<TaskSequence> {
-        self.me.upgrade().expect("a TaskSequence is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a TaskSequence is shared as an Arc")
     }
 
     /// This sequence as the shared task its parent holds.
     pub fn as_task(&self) -> Arc<dyn PerfTask> {
-        self.me.upgrade().expect("a TaskSequence is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a TaskSequence is shared as an Arc")
     }
 
     /// `initTasksArray()`.
@@ -183,7 +192,9 @@ impl TaskSequence {
             s.fixed_time = false;
             s.repetitions = repetitions;
             if repetitions == Self::REPEAT_EXHAUST && s.parallel {
-                return Err(jdk::exception("REPEAT_EXHAUST is not allowed for parallel tasks"));
+                return Err(jdk::exception(
+                    "REPEAT_EXHAUST is not allowed for parallel tasks",
+                ));
             }
         }
         self.set_sequence_name();
@@ -204,20 +215,28 @@ impl TaskSequence {
         let mut count = 0;
         let (run_time_sec, tasks_array, let_child_report) = {
             let s = self.lock();
-            (s.run_time_sec, s.tasks_array.clone().unwrap_or_default(), s.let_child_report)
+            (
+                s.run_time_sec,
+                s.tasks_array.clone().unwrap_or_default(),
+                s.let_child_report,
+            )
         };
         let run_time = (run_time_sec * 1000.0) as i64;
         let t0 = jdk::current_time_millis();
         // Background tasks run on threads of their own: an exception in the
         // foreground leaves them running, as Java's threads keep running.
         (|| -> Result<()> {
-            let mut bg_tasks: Option<Vec<(Arc<dyn PerfTask>, std::thread::JoinHandle<i32>)>> = None;
+            #[allow(clippy::type_complexity)]
+            let mut bg_tasks: Option<
+                Vec<(Arc<dyn PerfTask>, std::thread::JoinHandle<i32>)>,
+            > = None;
             let mut k = 0;
             loop {
                 {
                     let s = self.lock();
                     let go = s.fixed_time
-                        || (s.repetitions == Self::REPEAT_EXHAUST && !self.exhausted.load(Ordering::SeqCst))
+                        || (s.repetitions == Self::REPEAT_EXHAUST
+                            && !self.exhausted.load(Ordering::SeqCst))
                         || k < s.repetitions;
                     if !go {
                         break;
@@ -233,7 +252,9 @@ impl TaskSequence {
                             .name(jdk::next_thread_name())
                             .spawn(move || run_background_task(&bg, let_child_report))
                             .map_err(rucene::error::LuceneError::from)?;
-                        bg_tasks.get_or_insert_with(Vec::new).push((Arc::clone(task), handle));
+                        bg_tasks
+                            .get_or_insert_with(Vec::new)
+                            .push((Arc::clone(task), handle));
                     } else {
                         match run_and_maybe_stats(task, let_child_report) {
                             Ok(inc) => {
@@ -294,7 +315,12 @@ impl TaskSequence {
         self.init_tasks_array();
         let (rate, per_min, tasks_array, let_child_report) = {
             let s = self.lock();
-            (s.rate, s.per_min, s.tasks_array.clone().unwrap_or_default(), s.let_child_report)
+            (
+                s.rate,
+                s.per_min,
+                s.tasks_array.clone().unwrap_or_default(),
+                s.let_child_report,
+            )
         };
         let delay_step = i64::from(if per_min { 60000 } else { 1000 } / rate);
         let mut next_start_time = jdk::current_time_millis();
@@ -304,7 +330,8 @@ impl TaskSequence {
         loop {
             {
                 let s = self.lock();
-                let go = (s.repetitions == Self::REPEAT_EXHAUST && !self.exhausted.load(Ordering::SeqCst))
+                let go = (s.repetitions == Self::REPEAT_EXHAUST
+                    && !self.exhausted.load(Ordering::SeqCst))
                     || k < s.repetitions;
                 if !go {
                     break;
@@ -391,16 +418,24 @@ impl TaskSequence {
                 let task = task.clone_task()?;
                 // Setting unique ThreadName with index value which is used in ReuersContentSource.java's
                 // getNextDocData().
-                t.push((format!("{}-{index}", Constants::PARALLEL_TASK_THREAD_NAME_PREFIX), task));
+                t.push((
+                    format!("{}-{index}", Constants::PARALLEL_TASK_THREAD_NAME_PREFIX),
+                    task,
+                ));
                 index += 1;
             }
         }
-        self.lock().running_parallel_tasks = Some(t.iter().map(|(_, task)| Arc::clone(task)).collect());
+        self.lock().running_parallel_tasks =
+            Some(t.iter().map(|(_, task)| Arc::clone(task)).collect());
         let counts: Vec<AtomicI32> = (0..t.len()).map(|_| AtomicI32::new(0)).collect();
         std::thread::scope(|scope| -> Result<()> {
             // run threads
             let mut handles = Vec::with_capacity(t.len());
-            let delay_step = if rate > 0 { i64::from(if per_min { 60000 } else { 1000 } / rate) } else { 0 };
+            let delay_step = if rate > 0 {
+                i64::from(if per_min { 60000 } else { 1000 } / rate)
+            } else {
+                0
+            };
             let mut next_start_time = jdk::current_time_millis();
             for (i, (name, task)) in t.iter().enumerate() {
                 if rate > 0 {
@@ -458,9 +493,14 @@ impl TaskSequence {
                 let sub_counts = sub.lock().counts_by_time.clone();
                 if let Some(sub_counts) = sub_counts {
                     let mut s = self.lock();
-                    let counts = s.counts_by_time.get_or_insert_with(|| vec![0; sub_counts.len()]);
+                    let counts = s
+                        .counts_by_time
+                        .get_or_insert_with(|| vec![0; sub_counts.len()]);
                     if counts.len() < sub_counts.len() {
-                        *counts = rucene::util::ArrayUtil::grow_int(std::mem::take(counts), sub_counts.len());
+                        *counts = rucene::util::ArrayUtil::grow_int(
+                            std::mem::take(counts),
+                            sub_counts.len(),
+                        );
                     }
                     for (j, c) in sub_counts.iter().enumerate() {
                         counts[j] += c;
@@ -529,7 +569,11 @@ impl TaskSequence {
             seq_name.push_str(&format!("_{}", s.repetitions));
         }
         if s.rate > 0 {
-            seq_name.push_str(&format!("_{}{}", s.rate, if s.per_min { "/min" } else { "/sec" }));
+            seq_name.push_str(&format!(
+                "_{}{}",
+                s.rate,
+                if s.per_min { "/min" } else { "/sec" }
+            ));
         }
         if s.parallel && !seq_name.to_lowercase().contains("par") {
             seq_name.push_str("_Par");
@@ -653,7 +697,8 @@ impl PerfTask for TaskSequence {
         if s.fixed_time {
             let format = rucene_queryparser::jdk::number_format::get_number_instance(
                 &rucene_queryparser::jdk::locale::Locale::root(),
-            ).expect("Locale.ROOT has a number format");
+            )
+            .expect("Locale.ROOT has a number format");
             sb.push(' ');
             sb.push_str(&format.format_double(s.run_time_sec).unwrap_or_default());
             sb.push('s');
@@ -663,7 +708,11 @@ impl PerfTask for TaskSequence {
             sb.push_str(" * EXHAUST");
         }
         if s.rate > 0 {
-            sb.push_str(&format!(",  rate: {}/{}", s.rate, if s.per_min { "min" } else { "sec" }));
+            sb.push_str(&format!(
+                ",  rate: {}/{}",
+                s.rate,
+                if s.per_min { "min" } else { "sec" }
+            ));
         }
         if self.base.get_run_in_background() {
             sb.push_str(" &");

@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -39,10 +39,19 @@ pub trait XSTypeDefinition: XSObject {
     fn get_anonymous(&self) -> bool;
 
     /// Equivalent to `derivedFromType(XSTypeDefinition, short)`.
-    fn derived_from_type(&self, ancestor_type: Option<&dyn XSTypeDefinition>, derivation_method: i16) -> bool;
+    fn derived_from_type(
+        &self,
+        ancestor_type: Option<&dyn XSTypeDefinition>,
+        derivation_method: i16,
+    ) -> bool;
 
     /// Equivalent to `derivedFrom(String, String, short)`.
-    fn derived_from(&self, namespace: Option<&str>, name: Option<&str>, derivation_method: i16) -> bool;
+    fn derived_from(
+        &self,
+        namespace: Option<&str>,
+        name: Option<&str>,
+        derivation_method: i16,
+    ) -> bool;
 }
 
 /// Equivalent to `XSTypeDefinition.COMPLEX_TYPE`.

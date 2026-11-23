@@ -59,7 +59,10 @@ impl StreamUtils {
 
     /// `fileType(Path file)`: the type of the file, `PLAIN` if unknown.
     fn file_type(file: &Path) -> Type {
-        let file_name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file_name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let ty = file_name.rfind('.').and_then(|idx| {
             // these are in lower case, we will lower case at the test as well
             match file_name[idx..].to_lowercase().as_str() {
@@ -137,8 +140,13 @@ impl Type {
     fn output_stream(self, os: BufWriter<File>) -> OutputStream {
         OutputStream(match self {
             Type::Plain => Sink::Plain(os),
-            Type::Gzip => Sink::Gzip(flate2::write::GzEncoder::new(os, flate2::Compression::new(6))),
-            Type::Bzip2 => Sink::Bzip2(bzip2::write::BzEncoder::new(os, bzip2::Compression::best())),
+            Type::Gzip => Sink::Gzip(flate2::write::GzEncoder::new(
+                os,
+                flate2::Compression::new(6),
+            )),
+            Type::Bzip2 => {
+                Sink::Bzip2(bzip2::write::BzEncoder::new(os, bzip2::Compression::best()))
+            }
         })
     }
 }

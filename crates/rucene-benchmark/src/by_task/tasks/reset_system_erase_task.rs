@@ -42,7 +42,9 @@ impl ResetSystemEraseTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(ResetSystemEraseTask { base: PerfTaskBase::new(run_data, "ResetSystemEraseTask")? })
+        Ok(ResetSystemEraseTask {
+            base: PerfTaskBase::new(run_data, "ResetSystemEraseTask")?,
+        })
     }
 }
 
@@ -50,7 +52,9 @@ impl PerfTask for ResetSystemEraseTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(ResetSystemEraseTask { base: self.base.clone_base() }))
+        Ok(Arc::new(ResetSystemEraseTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -63,6 +67,9 @@ impl PerfTask for ResetSystemEraseTask {
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "ResetSystemEraseTask" | "ResetSystemSoftTask" | "ResetInputsTask")
+        matches!(
+            simple_class_name,
+            "ResetSystemEraseTask" | "ResetSystemSoftTask" | "ResetInputsTask"
+        )
     }
 }

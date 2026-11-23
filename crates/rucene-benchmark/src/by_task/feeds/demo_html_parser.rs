@@ -39,8 +39,8 @@ use rucene_queryparser::jdk::date::Date;
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::html_parser::HTMLParser;
 use crate::by_task::feeds::trec_content_source::TrecContentSource;
-use crate::jdk::properties::Properties;
 use crate::jdk;
+use crate::jdk::properties::Properties;
 
 /// `new StringReader(s)`: the UTF-16 units of `s`.
 struct StringReader {
@@ -50,7 +50,10 @@ struct StringReader {
 
 impl StringReader {
     fn new(s: &str) -> Self {
-        StringReader { units: s.encode_utf16().collect(), pos: 0 }
+        StringReader {
+            units: s.encode_utf16().collect(),
+            pos: 0,
+        }
     }
 }
 
@@ -75,8 +78,33 @@ fn string_reader(s: &str) -> Reader {
 /// `ENDLINE_ELEMENTS`: HTML elements that cause a line break (they are
 /// block-elements).
 const ENDLINE_ELEMENTS: [&str; 27] = [
-    "p", "h1", "h2", "h3", "h4", "h5", "h6", "div", "ul", "ol", "dl", "pre", "hr", "blockquote", "address",
-    "fieldset", "table", "form", "noscript", "li", "dt", "dd", "noframes", "br", "tr", "select", "option",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "div",
+    "ul",
+    "ol",
+    "dl",
+    "pre",
+    "hr",
+    "blockquote",
+    "address",
+    "fieldset",
+    "table",
+    "form",
+    "noscript",
+    "li",
+    "dt",
+    "dd",
+    "noframes",
+    "br",
+    "tr",
+    "select",
+    "option",
 ];
 
 /// `SUPPRESS_ELEMENTS`: HTML elements with contents that are ignored.
@@ -113,15 +141,25 @@ impl ContentHandler for Handler {
         Ok(())
     }
 
-    fn start_element(&self, _uri: &str, local_name: &str, _qname: &str, atts: &dyn Attributes) -> JResult<()> {
+    fn start_element(
+        &self,
+        _uri: &str,
+        local_name: &str,
+        _qname: &str,
+        atts: &dyn Attributes,
+    ) -> JResult<()> {
         if self.in_head.get() > 0 {
             if local_name == "title" {
                 self.in_title.set(self.in_title.get() + 1);
             } else if local_name == "meta" {
-                let name = atts.get_value_by_qname("name").or_else(|| atts.get_value_by_qname("http-equiv"));
+                let name = atts
+                    .get_value_by_qname("name")
+                    .or_else(|| atts.get_value_by_qname("http-equiv"));
                 let val = atts.get_value_by_qname("content");
                 if let (Some(name), Some(val)) = (name, val) {
-                    self.meta_tags.borrow_mut().set_property(name.to_lowercase(), val);
+                    self.meta_tags
+                        .borrow_mut()
+                        .set_property(name.to_lowercase(), val);
                 }
             }
         } else if self.in_body.get() > 0 {
@@ -207,8 +245,14 @@ impl ErrorHandler for Handler {
 
 impl EntityResolver for Handler {
     /// `resolveEntity`: disable network access caused by DTDs.
-    fn resolve_entity(&self, _public_id: Option<&str>, _system_id: Option<&str>) -> JResult<Option<InputSource>> {
-        Ok(Some(InputSource::with_character_stream(Some(string_reader("")))))
+    fn resolve_entity(
+        &self,
+        _public_id: Option<&str>,
+        _system_id: Option<&str>,
+    ) -> JResult<Option<InputSource>> {
+        Ok(Some(InputSource::with_character_stream(Some(
+            string_reader(""),
+        ))))
     }
 }
 
@@ -224,6 +268,8 @@ pub struct Parser {
     pub body: String,
 }
 
+// `JResult` carries nekohtml's Java exception by value (see `nekohtml`).
+#[allow(clippy::result_large_err)]
 impl Parser {
     /// `Parser(Reader reader)`.
     ///
@@ -231,7 +277,9 @@ impl Parser {
     ///
     /// The `IOException` or `SAXException` of parsing.
     pub fn from_reader(reader: &str) -> JResult<Self> {
-        Self::new(&InputSource::with_character_stream(Some(string_reader(reader))))
+        Self::new(&InputSource::with_character_stream(Some(string_reader(
+            reader,
+        ))))
     }
 
     /// `Parser(InputSource source)`.
@@ -244,8 +292,14 @@ impl Parser {
         parser.set_feature("http://xml.org/sax/features/namespaces", true)?;
         parser.set_feature("http://cyberneko.org/html/features/balance-tags", true)?;
         parser.set_feature("http://cyberneko.org/html/features/report-errors", false)?;
-        parser.set_property("http://cyberneko.org/html/properties/names/elems", Some(string_object("lower")))?;
-        parser.set_property("http://cyberneko.org/html/properties/names/attrs", Some(string_object("lower")))?;
+        parser.set_property(
+            "http://cyberneko.org/html/properties/names/elems",
+            Some(string_object("lower")),
+        )?;
+        parser.set_property(
+            "http://cyberneko.org/html/properties/names/attrs",
+            Some(string_object("lower")),
+        )?;
 
         let handler = Rc::new(Handler::default());
         parser.set_content_handler(Some(Rc::clone(&handler) as Rc<dyn ContentHandler>));
@@ -257,7 +311,11 @@ impl Parser {
         // assign body text
         let body = String::from_utf16_lossy(&handler.body.borrow());
         let meta_tags = handler.meta_tags.borrow().clone();
-        Ok(Parser { meta_tags, title, body })
+        Ok(Parser {
+            meta_tags,
+            title,
+            body,
+        })
     }
 }
 
@@ -280,6 +338,7 @@ impl DemoHTMLParser {
     /// # Errors
     ///
     /// The `IOException` or `SAXException` of parsing.
+    #[allow(clippy::result_large_err)]
     pub fn parse_source(
         &self,
         doc_data: &mut DocData,
@@ -294,7 +353,8 @@ impl DemoHTMLParser {
         let props = p.meta_tags;
         let mut date = date.cloned();
         if let Some(date_str) = props.get_property("date") {
-            let trec_src = trec_src.ok_or_else(|| Exception::runtime(LuceneError::null_pointer()))?;
+            let trec_src =
+                trec_src.ok_or_else(|| Exception::runtime(LuceneError::null_pointer()))?;
             if let Some(new_date) = trec_src.parse_date(date_str).map_err(Exception::runtime)? {
                 date = Some(new_date);
             }
@@ -322,7 +382,9 @@ impl HTMLParser for DemoHTMLParser {
         let source = InputSource::with_character_stream(Some(string_reader(reader)));
         match self.parse_source(doc_data, name, date, &source, trec_src) {
             Ok(()) => Ok(()),
-            Err(Exception::Sax(_)) => Err(jdk::io_exception("SAX exception occurred while parsing HTML document.")),
+            Err(Exception::Sax(_)) => Err(jdk::io_exception(
+                "SAX exception occurred while parsing HTML document.",
+            )),
             Err(e) => Err(e.into_lucene_error()),
         }
     }

@@ -159,7 +159,8 @@ impl MatchingFacetSetsCounts {
 
             let Some(mut it) = self.filter.create_iterator(
                 hits,
-                vec![Some(Box::new(SharedBinary(Rc::clone(&binary_doc_values))) as Box<dyn DocIdSetIterator>)],
+                vec![Some(Box::new(SharedBinary(Rc::clone(&binary_doc_values)))
+                    as Box<dyn DocIdSetIterator>)],
             )?
             else {
                 continue;
@@ -187,7 +188,9 @@ impl MatchingFacetSetsCounts {
 
                 let mut start = 4usize;
                 while start < bytes_ref.length {
-                    start += self.facet_set_decoder.decode(&bytes_ref, start, &mut dim_values);
+                    start += self
+                        .facet_set_decoder
+                        .decode(&bytes_ref, start, &mut dim_values);
                     for (j, matcher) in self.facet_set_matchers.iter().enumerate() {
                         // for each facet set matcher
                         if matcher.matches(&dim_values) {
@@ -206,7 +209,9 @@ impl MatchingFacetSetsCounts {
     }
 
     /// Equivalent to `areFacetSetMatcherDimensionsInconsistent(FacetSetMatcher[])`.
-    fn are_facet_set_matcher_dimensions_inconsistent(facet_set_matchers: &[Arc<dyn FacetSetMatcher>]) -> bool {
+    fn are_facet_set_matcher_dimensions_inconsistent(
+        facet_set_matchers: &[Arc<dyn FacetSetMatcher>],
+    ) -> bool {
         let dims = facet_set_matchers[0].dims();
         facet_set_matchers.iter().any(|m| m.dims() != dims)
     }
@@ -227,7 +232,9 @@ impl Facets for MatchingFacetSetsCounts {
             .counts
             .iter()
             .enumerate()
-            .map(|(i, &c)| LabelAndValue::new(self.facet_set_matchers[i].label(), NumericValue::Int(c)))
+            .map(|(i, &c)| {
+                LabelAndValue::new(self.facet_set_matchers[i].label(), NumericValue::Int(c))
+            })
             .collect();
         let child_count = label_values.len() as i32;
         Ok(Some(FacetResult::new(
@@ -239,7 +246,12 @@ impl Facets for MatchingFacetSetsCounts {
         )))
     }
 
-    fn get_top_children(&self, top_n: i32, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
+    fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
         validate_top_n(top_n)?;
 
         let top_n = top_n.min(self.counts.len() as i32);
@@ -256,7 +268,9 @@ impl Facets for MatchingFacetSetsCounts {
             if count > 0 {
                 child_count += 1;
                 let label = self.facet_set_matchers[i].label();
-                let reuse = pq.top().expect("INVARIANT: the queue is pre-filled with sentinels");
+                let reuse = pq
+                    .top()
+                    .expect("INVARIANT: the queue is pre-filled with sentinels");
                 if compare(reuse.count, count, &reuse.label, label) == Ordering::Less {
                     let reuse = pq.top_mut().expect("INVARIANT: pre-filled");
                     reuse.label = label.to_string();
@@ -272,8 +286,9 @@ impl Facets for MatchingFacetSetsCounts {
             pq.pop();
         }
 
-        let mut label_values: Vec<Option<LabelAndValue>> =
-            (0..(top_n.min(child_count) as usize)).map(|_| None).collect();
+        let mut label_values: Vec<Option<LabelAndValue>> = (0..(top_n.min(child_count) as usize))
+            .map(|_| None)
+            .collect();
         for i in (0..pq.size()).rev() {
             let e = pq.pop().expect("INVARIANT: size > i");
             label_values[i] = Some(LabelAndValue::new(e.label, NumericValue::Int(e.count)));
@@ -294,6 +309,9 @@ impl Facets for MatchingFacetSetsCounts {
 
     fn get_all_dims(&self, top_n: i32) -> Result<Vec<FacetResult>> {
         validate_top_n(top_n)?;
-        Ok(self.get_top_children(top_n, &self.field, &[])?.into_iter().collect())
+        Ok(self
+            .get_top_children(top_n, &self.field, &[])?
+            .into_iter()
+            .collect())
     }
 }

@@ -84,7 +84,8 @@ pub(crate) trait LongRangeCounter {
     ///
     /// Equivalent to `startMultiValuedDoc()`.
     fn start_multi_valued_doc(&mut self) {
-        self.base_mut().multi_valued_doc_last_seen_elementary_interval = -1;
+        self.base_mut()
+            .multi_valued_doc_last_seen_elementary_interval = -1;
     }
 
     /// Finish processing a new doc. Returns whether-or-not the document
@@ -135,12 +136,16 @@ pub(crate) trait LongRangeCounter {
             let mid = ((lo + hi) as u32 >> 1) as i32;
             let (at_mid, after_mid) = {
                 let boundaries = self.boundaries();
-                (boundaries[mid as usize], boundaries.get(mid as usize + 1).copied())
+                (
+                    boundaries[mid as usize],
+                    boundaries.get(mid as usize + 1).copied(),
+                )
             };
             if v <= at_mid {
                 if mid == next_candidate_elementary_interval {
                     self.process_multi_valued_hit(mid);
-                    self.base_mut().multi_valued_doc_last_seen_elementary_interval = mid;
+                    self.base_mut()
+                        .multi_valued_doc_last_seen_elementary_interval = mid;
                     return;
                 } else {
                     hi = mid - 1;
@@ -150,7 +155,8 @@ pub(crate) trait LongRangeCounter {
             } else {
                 let idx = mid + 1;
                 self.process_multi_valued_hit(idx);
-                self.base_mut().multi_valued_doc_last_seen_elementary_interval = idx;
+                self.base_mut()
+                    .multi_valued_doc_last_seen_elementary_interval = idx;
                 return;
             }
         }
@@ -200,7 +206,10 @@ pub(crate) fn default_add_single_valued<C: LongRangeCounter + ?Sized>(counter: &
         let mid = ((lo + hi) as u32 >> 1) as i32;
         let (at_mid, after_mid) = {
             let boundaries = counter.boundaries();
-            (boundaries[mid as usize], boundaries.get(mid as usize + 1).copied())
+            (
+                boundaries[mid as usize],
+                boundaries.get(mid as usize + 1).copied(),
+            )
         };
         if v <= at_mid {
             if mid == 0 {

@@ -96,7 +96,12 @@ impl QualityStats {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a rank out of order.
-    pub fn add_result(&mut self, n: i32, is_relevant: bool, doc_name_extract_time: i64) -> Result<()> {
+    pub fn add_result(
+        &mut self,
+        n: i32,
+        is_relevant: bool,
+        doc_name_extract_time: i64,
+    ) -> Result<()> {
         if (self.num_points + 1.0 - f64::from(n)).abs() > 1E-6 {
             return Err(LuceneError::illegal_argument(format!(
                 "point {n} illegal after {} points!",
@@ -105,7 +110,10 @@ impl QualityStats {
         }
         if is_relevant {
             self.num_good_points += 1.0;
-            self.recall_points.push(RecallPoint { rank: n, recall: self.num_good_points });
+            self.recall_points.push(RecallPoint {
+                rank: n,
+                recall: self.num_good_points,
+            });
             if self.recall_points.len() == 1 && n <= 5 {
                 // first point, but only within 5 top scores.
                 self.mrr = 1.0 / f64::from(n);
@@ -119,7 +127,11 @@ impl QualityStats {
         if (n as usize) < self.p_at.len() {
             self.p_at[n as usize] = p;
         }
-        self.recall = if self.max_good_points <= 0.0 { p } else { self.num_good_points / self.max_good_points };
+        self.recall = if self.max_good_points <= 0.0 {
+            p
+        } else {
+            self.num_good_points / self.max_good_points
+        };
         self.doc_names_extract_time += doc_name_extract_time;
         Ok(())
     }
@@ -132,14 +144,16 @@ impl QualityStats {
     ///
     /// `IllegalArgumentException` for `n` out of range.
     pub fn get_precision_at(&self, n: i32) -> Result<f64> {
-        if n < 1 || n > Self::MAX_POINTS {
+        if !(1..=Self::MAX_POINTS).contains(&n) {
             return Err(LuceneError::illegal_argument(format!(
                 "n={n} - but it must be in [1,{}] range!",
                 Self::MAX_POINTS
             )));
         }
         if f64::from(n) > self.num_points {
-            return Ok((self.num_points * self.p_at[self.num_points as i32 as usize]) / f64::from(n));
+            return Ok(
+                (self.num_points * self.p_at[self.num_points as i32 as usize]) / f64::from(n),
+            );
         }
         Ok(self.p_at[n as usize])
     }
@@ -165,7 +179,13 @@ impl QualityStats {
     /// # Errors
     ///
     /// The exception of the number format.
-    pub fn log(&self, title: Option<&str>, padd_lines: i32, logger: &PrintWriter, prefix: Option<&str>) -> Result<()> {
+    pub fn log(
+        &self,
+        title: Option<&str>,
+        padd_lines: i32,
+        logger: &PrintWriter,
+        prefix: Option<&str>,
+    ) -> Result<()> {
         for _ in 0..padd_lines {
             logger.println_empty();
         }
@@ -179,10 +199,17 @@ impl QualityStats {
         nf.set_grouping_used(true);
         let m = 19;
         let line = |label: &str, value: f64| -> Result<String> {
-            Ok(format!("{prefix}{}{}", Self::format(Some(label), m), Self::frac_format(&nf.format_double(value)?)?))
+            Ok(format!(
+                "{prefix}{}{}",
+                Self::format(Some(label), m),
+                Self::frac_format(&nf.format_double(value)?)?
+            ))
         };
         logger.println(&line("Search Seconds: ", self.search_time as f64 / 1000.0)?);
-        logger.println(&line("DocName Seconds: ", self.doc_names_extract_time as f64 / 1000.0)?);
+        logger.println(&line(
+            "DocName Seconds: ",
+            self.doc_names_extract_time as f64 / 1000.0,
+        )?);
         logger.println(&line("Num Points: ", self.num_points)?);
         logger.println(&line("Num Good Points: ", self.num_good_points)?);
         logger.println(&line("Max Good Points: ", self.max_good_points)?);
@@ -191,7 +218,10 @@ impl QualityStats {
         logger.println(&line("Recall: ", self.get_recall())?);
         let mut i = 1;
         while i < self.num_points as i32 && (i as usize) < self.p_at.len() {
-            logger.println(&line(&format!("Precision At {i}: "), self.get_precision_at(i)?)?);
+            logger.println(&line(
+                &format!("Precision At {i}: "),
+                self.get_precision_at(i)?,
+            )?);
             i += 1;
         }
         for _ in 0..padd_lines {
@@ -239,7 +269,7 @@ impl QualityStats {
             return Ok(avg);
         }
         let mut m = 0; // queries with positive judgements
-        // aggregate
+                       // aggregate
         for stat in stats {
             avg.search_time += stat.search_time;
             avg.doc_names_extract_time += stat.doc_names_extract_time;

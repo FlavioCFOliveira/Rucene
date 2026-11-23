@@ -97,7 +97,9 @@ pub struct Config {
 /// `DEFAULT_PRINT_PROPS`: `System.getProperty("tests.verbose", "true")`.
 fn default_print_props() -> &'static str {
     static V: OnceLock<String> = OnceLock::new();
-    V.get_or_init(|| rucene::util::system_property("tests.verbose").unwrap_or_else(|| "true".to_string()))
+    V.get_or_init(|| {
+        rucene::util::system_property("tests.verbose").unwrap_or_else(|| "true".to_string())
+    })
 }
 
 /// `BufferedReader.readLine()` over a whole text: lines end at `\n`, `\r`
@@ -165,7 +167,8 @@ impl Config {
         if !props.contains_key("work.dir") {
             props.set_property(
                 "work.dir",
-                rucene::util::system_property("benchmark.work.dir").unwrap_or_else(|| "work".to_string()),
+                rucene::util::system_property("benchmark.work.dir")
+                    .unwrap_or_else(|| "work".to_string()),
             );
         }
         // copy algorithm lines
@@ -207,7 +210,12 @@ impl Config {
     fn maybe_print_props(&self) {
         let print = {
             let state = self.lock();
-            jdk::parse_boolean(state.props.get_property("print.props").or(Some(default_print_props())))
+            jdk::parse_boolean(
+                state
+                    .props
+                    .get_property("print.props")
+                    .or(Some(default_print_props())),
+            )
         };
         if print {
             self.print_props();
@@ -231,7 +239,11 @@ impl Config {
         let mut prop_keys: Vec<&str> = state.props.keys().collect();
         prop_keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
         for prop_name in prop_keys {
-            println!("{} = {}", prop_name, state.props.get_property(prop_name).unwrap_or("null"));
+            println!(
+                "{} = {}",
+                prop_name,
+                state.props.get_property(prop_name).unwrap_or("null")
+            );
         }
         println!("-------------------------------");
     }
@@ -249,7 +261,9 @@ impl Config {
         let k = sval.find(':').expect("checked by the caller");
         let col_name = &sval[..k];
         let rest = &sval[k + 1..];
-        state.col_for_val_by_round.insert(name.to_string(), col_name.to_string());
+        state
+            .col_for_val_by_round
+            .insert(name.to_string(), col_name.to_string());
         let vals = parse(rest)?;
         state.val_by_round.insert(name.to_string(), vals);
         Ok(())
@@ -281,8 +295,12 @@ impl Config {
             // there is no real value that starts with \ or /
             return Ok(Some(sval));
         }
-        Self::by_round(&mut state, name, &sval, |s| Ok(ValByRound::Str(prop_to_string_array(s))))?;
-        let Some(ValByRound::Str(vals)) = state.val_by_round.get(name) else { unreachable!() };
+        Self::by_round(&mut state, name, &sval, |s| {
+            Ok(ValByRound::Str(prop_to_string_array(s)))
+        })?;
+        let Some(ValByRound::Str(vals)) = state.val_by_round.get(name) else {
+            unreachable!()
+        };
         Ok(Some(vals[round as usize % vals.len()].clone()))
     }
 
@@ -305,12 +323,20 @@ impl Config {
                 other => Err(other.class_cast("[I")),
             };
         }
-        let sval = state.props.get_property(name).map(str::to_string).unwrap_or_else(|| dflt.to_string());
+        let sval = state
+            .props
+            .get_property(name)
+            .map(str::to_string)
+            .unwrap_or_else(|| dflt.to_string());
         if !sval.contains(':') {
             return jdk::parse_int(&sval);
         }
-        Self::by_round(&mut state, name, &sval, |s| Ok(ValByRound::Int(prop_to_int_array(s)?)))?;
-        let Some(ValByRound::Int(vals)) = state.val_by_round.get(name) else { unreachable!() };
+        Self::by_round(&mut state, name, &sval, |s| {
+            Ok(ValByRound::Int(prop_to_int_array(s)?))
+        })?;
+        let Some(ValByRound::Int(vals)) = state.val_by_round.get(name) else {
+            unreachable!()
+        };
         Ok(vals[round as usize % vals.len()])
     }
 
@@ -337,8 +363,12 @@ impl Config {
         if !sval.contains(':') {
             return jdk::parse_double(&sval);
         }
-        Self::by_round(&mut state, name, &sval, |s| Ok(ValByRound::Double(prop_to_double_array(s)?)))?;
-        let Some(ValByRound::Double(vals)) = state.val_by_round.get(name) else { unreachable!() };
+        Self::by_round(&mut state, name, &sval, |s| {
+            Ok(ValByRound::Double(prop_to_double_array(s)?))
+        })?;
+        let Some(ValByRound::Double(vals)) = state.val_by_round.get(name) else {
+            unreachable!()
+        };
         Ok(vals[round as usize % vals.len()])
     }
 
@@ -358,12 +388,20 @@ impl Config {
                 other => Err(other.class_cast("[Z")),
             };
         }
-        let sval = state.props.get_property(name).map(str::to_string).unwrap_or_else(|| dflt.to_string());
+        let sval = state
+            .props
+            .get_property(name)
+            .map(str::to_string)
+            .unwrap_or_else(|| dflt.to_string());
         if !sval.contains(':') {
             return Ok(jdk::parse_boolean(Some(&sval)));
         }
-        Self::by_round(&mut state, name, &sval, |s| Ok(ValByRound::Bool(prop_to_boolean_array(s))))?;
-        let Some(ValByRound::Bool(vals)) = state.val_by_round.get(name) else { unreachable!() };
+        Self::by_round(&mut state, name, &sval, |s| {
+            Ok(ValByRound::Bool(prop_to_boolean_array(s)))
+        })?;
+        let Some(ValByRound::Bool(vals)) = state.val_by_round.get(name) else {
+            unreachable!()
+        };
         Ok(vals[round as usize % vals.len()])
     }
 
@@ -519,5 +557,7 @@ fn prop_to_boolean_array(s: &str) -> Vec<bool> {
     if !s.contains(':') {
         return vec![jdk::parse_boolean(Some(s))];
     }
-    colon_tokens(s).map(|t| jdk::parse_boolean(Some(t))).collect()
+    colon_tokens(s)
+        .map(|t| jdk::parse_boolean(Some(t)))
+        .collect()
 }

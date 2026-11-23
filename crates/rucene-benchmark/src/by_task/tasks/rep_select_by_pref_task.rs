@@ -47,7 +47,10 @@ impl RepSelectByPrefTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(RepSelectByPrefTask { base: PerfTaskBase::new(run_data, "RepSelectByPrefTask")?, prefix: Mutex::new(None) })
+        Ok(RepSelectByPrefTask {
+            base: PerfTaskBase::new(run_data, "RepSelectByPrefTask")?,
+            prefix: Mutex::new(None),
+        })
     }
 
     fn prefix(&self) -> Option<String> {
@@ -74,7 +77,12 @@ impl RepSelectByPrefTask {
             |s| s.get_task().get_name(),
         )?;
         // now generate report from secondary list p2
-        Ok(ReportTask::gen_partial_report(self.base.get_run_data(), reported, &p2, task_stats.len() as i32))
+        Ok(ReportTask::gen_partial_report(
+            self.base.get_run_data(),
+            reported,
+            &p2,
+            task_stats.len() as i32,
+        ))
     }
 
     /// `reportSelectByPrefix(List<TaskStats> taskStats)`.
@@ -92,7 +100,9 @@ impl RepSelectByPrefTask {
         sb.push_str(ReportTask::NEWLINE);
         let mut reported = 0;
         for stat in task_stats {
-            if stat.get_elapsed() >= 0 && ReportTask::starts_with(&stat.get_task().get_name(), prefix.as_deref())? {
+            if stat.get_elapsed() >= 0
+                && ReportTask::starts_with(&stat.get_task().get_name(), prefix.as_deref())?
+            {
                 // only ended tasks with proper name
                 reported += 1;
                 if !first {
@@ -106,8 +116,17 @@ impl RepSelectByPrefTask {
                 sb.push_str(&line);
             }
         }
-        let reptxt = if reported == 0 { "No Matching Entries Were Found!".to_string() } else { sb };
-        Ok(Report::new(reptxt, reported, reported, task_stats.len() as i32))
+        let reptxt = if reported == 0 {
+            "No Matching Entries Were Found!".to_string()
+        } else {
+            sb
+        };
+        Ok(Report::new(
+            reptxt,
+            reported,
+            reported,
+            task_stats.len() as i32,
+        ))
     }
 }
 
@@ -115,7 +134,10 @@ impl PerfTask for RepSelectByPrefTask {
     report_task::report_task_perf_methods!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(RepSelectByPrefTask { base: self.base.clone_base(), prefix: Mutex::new(self.prefix()) }))
+        Ok(Arc::new(RepSelectByPrefTask {
+            base: self.base.clone_base(),
+            prefix: Mutex::new(self.prefix()),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -139,10 +161,17 @@ impl PerfTask for RepSelectByPrefTask {
     }
 
     fn task_to_string(&self) -> String {
-        format!("{} {}", perf_task::task_to_string(self), self.prefix().as_deref().unwrap_or("null"))
+        format!(
+            "{} {}",
+            perf_task::task_to_string(self),
+            self.prefix().as_deref().unwrap_or("null")
+        )
     }
 
     fn is_instance_of(&self, simple_class_name: &str) -> bool {
-        matches!(simple_class_name, "RepSelectByPrefTask" | "RepSumByPrefTask" | "ReportTask")
+        matches!(
+            simple_class_name,
+            "RepSelectByPrefTask" | "RepSumByPrefTask" | "ReportTask"
+        )
     }
 }

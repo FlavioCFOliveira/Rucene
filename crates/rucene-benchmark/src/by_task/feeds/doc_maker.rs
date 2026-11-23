@@ -24,7 +24,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rucene::document::{
-    DoublePoint, Field, FieldType, FieldValueSetters, FloatPoint, IntPoint, LongPoint, Store, StringField, TextField,
+    DoublePoint, Field, FieldType, FieldValueSetters, FloatPoint, IntPoint, LongPoint, Store,
+    StringField, TextField,
 };
 use rucene::error::Result;
 use rucene::index::{IndexOptions, IndexableField};
@@ -127,7 +128,8 @@ impl DocField {
     ///
     /// `IllegalArgumentException` when the field holds another type.
     pub fn set_bytes_value(&self, value: &[u8]) -> Result<()> {
-        self.setters().set_bytes_value(rucene::util::BytesRef::new(value.to_vec()))
+        self.setters()
+            .set_bytes_value(rucene::util::BytesRef::new(value.to_vec()))
     }
 }
 
@@ -170,23 +172,43 @@ impl DocState {
             // Initialize the map with the default fields.
             fields.insert(
                 DocMaker::BODY_FIELD.to_string(),
-                DocField::Field(Arc::new(Field::new(DocMaker::BODY_FIELD, String::new(), Arc::clone(body_ft))?)),
+                DocField::Field(Arc::new(Field::new(
+                    DocMaker::BODY_FIELD,
+                    String::new(),
+                    Arc::clone(body_ft),
+                )?)),
             );
             fields.insert(
                 DocMaker::TITLE_FIELD.to_string(),
-                DocField::Field(Arc::new(Field::new(DocMaker::TITLE_FIELD, String::new(), Arc::clone(ft))?)),
+                DocField::Field(Arc::new(Field::new(
+                    DocMaker::TITLE_FIELD,
+                    String::new(),
+                    Arc::clone(ft),
+                )?)),
             );
             fields.insert(
                 DocMaker::DATE_FIELD.to_string(),
-                DocField::Field(Arc::new(Field::new(DocMaker::DATE_FIELD, String::new(), Arc::clone(ft))?)),
+                DocField::Field(Arc::new(Field::new(
+                    DocMaker::DATE_FIELD,
+                    String::new(),
+                    Arc::clone(ft),
+                )?)),
             );
             fields.insert(
                 DocMaker::ID_FIELD.to_string(),
-                DocField::String(Arc::new(StringField::new(DocMaker::ID_FIELD, String::new(), Store::YES)?)),
+                DocField::String(Arc::new(StringField::new(
+                    DocMaker::ID_FIELD,
+                    String::new(),
+                    Store::YES,
+                )?)),
             );
             fields.insert(
                 DocMaker::NAME_FIELD.to_string(),
-                DocField::Field(Arc::new(Field::new(DocMaker::NAME_FIELD, String::new(), Arc::clone(ft))?)),
+                DocField::Field(Arc::new(Field::new(
+                    DocMaker::NAME_FIELD,
+                    String::new(),
+                    Arc::clone(ft),
+                )?)),
             );
             numeric_fields.insert(
                 DocMaker::DATE_MSEC_FIELD.to_string(),
@@ -224,13 +246,21 @@ impl DocState {
     /// The `IllegalArgumentException` of building the field.
     pub fn get_field(&mut self, name: &str, ft: &Arc<FieldType>) -> Result<DocField> {
         if !self.reuse_fields {
-            return Ok(DocField::Field(Arc::new(Field::new(name.to_string(), String::new(), Arc::clone(ft))?)));
+            return Ok(DocField::Field(Arc::new(Field::new(
+                name.to_string(),
+                String::new(),
+                Arc::clone(ft),
+            )?)));
         }
         let fields = self.fields.as_mut().expect("reuseFields");
         if let Some(f) = fields.get(name) {
             return Ok(f.clone());
         }
-        let f = DocField::Field(Arc::new(Field::new(name.to_string(), String::new(), Arc::clone(ft))?));
+        let f = DocField::Field(Arc::new(Field::new(
+            name.to_string(),
+            String::new(),
+            Arc::clone(ft),
+        )?));
         fields.insert(name.to_string(), f.clone());
         Ok(f)
     }
@@ -242,7 +272,9 @@ impl DocState {
     /// The `IllegalArgumentException` of building the field.
     pub fn get_numeric_field(&mut self, name: &str, numeric_type: NumericType) -> Result<DocField> {
         let existing = if self.reuse_fields {
-            self.numeric_fields.as_ref().and_then(|m| m.get(name).cloned())
+            self.numeric_fields
+                .as_ref()
+                .and_then(|m| m.get(name).cloned())
         } else {
             None
         };
@@ -252,11 +284,18 @@ impl DocState {
         let f = match numeric_type {
             NumericType::Integer => DocField::Int(Arc::new(IntPoint::new(name.to_string(), &[0])?)),
             NumericType::Long => DocField::Long(Arc::new(LongPoint::new(name.to_string(), &[0])?)),
-            NumericType::Float => DocField::Float(Arc::new(FloatPoint::new(name.to_string(), &[0.0])?)),
-            NumericType::Double => DocField::Double(Arc::new(DoublePoint::new(name.to_string(), &[0.0])?)),
+            NumericType::Float => {
+                DocField::Float(Arc::new(FloatPoint::new(name.to_string(), &[0.0])?))
+            }
+            NumericType::Double => {
+                DocField::Double(Arc::new(DoublePoint::new(name.to_string(), &[0.0])?))
+            }
         };
         if self.reuse_fields {
-            self.numeric_fields.as_mut().expect("reuseFields").insert(name.to_string(), f.clone());
+            self.numeric_fields
+                .as_mut()
+                .expect("reuseFields")
+                .insert(name.to_string(), f.clone());
         }
         Ok(f)
     }
@@ -397,7 +436,12 @@ impl DocMaker {
 
     /// `source`.
     pub fn source(&self) -> Arc<dyn ContentSource> {
-        Arc::clone(self.settings().source.as_ref().expect("setConfig was called"))
+        Arc::clone(
+            self.settings()
+                .source
+                .as_ref()
+                .expect("setConfig was called"),
+        )
     }
 
     /// `config`.
@@ -409,12 +453,28 @@ impl DocMaker {
     /// use only part of the body, modify it to keep the rest (or use all if
     /// size==0); reset the docdata properties so they are not added more
     /// than once.
-    fn create_document(&self, ds: &mut DocState, doc_data: &mut DocData, mut size: i32, cnt: i32) -> Result<Document> {
+    fn create_document(
+        &self,
+        ds: &mut DocState,
+        doc_data: &mut DocData,
+        mut size: i32,
+        cnt: i32,
+    ) -> Result<Document> {
         let (val_type, body_val_type, reuse_fields, index_properties, store_bytes) = {
             let s = self.settings();
-            (Arc::clone(&s.val_type), Arc::clone(&s.body_val_type), s.reuse_fields, s.index_properties, s.store_bytes)
+            (
+                Arc::clone(&s.val_type),
+                Arc::clone(&s.body_val_type),
+                s.reuse_fields,
+                s.index_properties,
+                s.store_bytes,
+            )
         };
-        let mut doc = if reuse_fields { ds.doc.take().expect("reuseFields") } else { Document::new() };
+        let mut doc = if reuse_fields {
+            ds.doc.take().expect("reuseFields")
+        } else {
+            Document::new()
+        };
         doc.clear();
 
         // Set ID_FIELD
@@ -441,7 +501,11 @@ impl DocMaker {
 
         // Set NAME_FIELD
         let name = doc_data.get_name().unwrap_or("").to_string();
-        let name = if cnt < 0 { name } else { format!("{name}_{cnt}") };
+        let name = if cnt < 0 {
+            name
+        } else {
+            format!("{name}_{cnt}")
+        };
         let name_field = ds.get_field(Self::NAME_FIELD, &val_type)?;
         name_field.set_string_value(name)?;
         doc.add_shared(name_field.indexable());
@@ -449,7 +513,10 @@ impl DocMaker {
         // Set DATE_FIELD
         let util = match self.date_parsers.get() {
             Some(util) => util,
-            None => self.date_parsers.set(Some(DateUtil::new()?)).expect("just set"),
+            None => self
+                .date_parsers
+                .set(Some(DateUtil::new()?))
+                .expect("just set"),
         };
         let mut util = jdk::lock(&util);
         let mut date: Option<Date> = None;
@@ -499,14 +566,17 @@ impl DocMaker {
                 // attempt not to break words - if whitespace found within next 20 chars...
                 let mut n = size - 1;
                 while n < size + 20 && (n as usize) < body.len() {
-                    if rucene_queryparser::jdk::character::is_whitespace(i32::from(body[n as usize])) {
+                    if rucene_queryparser::jdk::character::is_whitespace(i32::from(
+                        body[n as usize],
+                    )) {
                         size = n;
                         break;
                     }
                     n += 1;
                 }
                 bdy = String::from_utf16_lossy(&body[..size as usize]); // use part
-                doc_data.set_body(Some(String::from_utf16_lossy(&body[size as usize..]))); // some left
+                doc_data.set_body(Some(String::from_utf16_lossy(&body[size as usize..])));
+                // some left
             }
             let body_field = ds.get_field(Self::BODY_FIELD, &body_val_type)?;
             body_field.set_string_value(bdy.clone())?;
@@ -556,7 +626,12 @@ impl DocMaker {
     pub fn get_doc_state(&self) -> Result<Arc<Mutex<DocState>>> {
         let (tl, reuse_fields, val_type, body_val_type) = {
             let s = self.settings();
-            (Arc::clone(&s.doc_state), s.reuse_fields, Arc::clone(&s.val_type), Arc::clone(&s.body_val_type))
+            (
+                Arc::clone(&s.doc_state),
+                s.reuse_fields,
+                Arc::clone(&s.val_type),
+                Arc::clone(&s.body_val_type),
+            )
         };
         match tl.get() {
             Some(ds) => Ok(ds),
@@ -667,7 +742,10 @@ impl DocMaker {
         } else {
             let lvr = match lvr {
                 Some(l) => l,
-                None => self.leftovr.set(Some(LeftOver::default())).expect("just set"),
+                None => self
+                    .leftovr
+                    .set(Some(LeftOver::default()))
+                    .expect("just set"),
             };
             let mut l = jdk::lock(&lvr);
             l.docdata = dd;
@@ -709,7 +787,8 @@ impl DocMaker {
         body_val_type.set_tokenized(body_tokenized)?;
         body_val_type.set_omit_norms(!body_norms)?;
         if body_tokenized && body_offsets {
-            body_val_type.set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
+            body_val_type
+                .set_index_options(IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS)?;
         }
         body_val_type.set_store_term_vectors(term_vec)?;
         body_val_type.set_store_term_vector_positions(term_vec_positions)?;
@@ -824,4 +903,3 @@ impl DocMakerClass for DocMaker {
         self
     }
 }
-

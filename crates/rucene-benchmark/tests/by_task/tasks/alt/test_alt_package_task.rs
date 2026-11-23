@@ -40,7 +40,10 @@ pub fn class_def() -> Arc<Class> {
     AltTestTask::register();
     benchmark_class::<AltPackageTaskTest>(
         "org.apache.lucene.benchmark.byTask.tasks.alt.TestAltPackageTask",
-        vec![ftest("testWithoutAlt", test_without_alt), ftest("testWithAlt", test_with_alt)],
+        vec![
+            ftest("testWithoutAlt", test_without_alt),
+            ftest("testWithAlt", test_with_alt),
+        ],
     )
 }
 

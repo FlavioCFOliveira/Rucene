@@ -31,7 +31,8 @@ use rucene::index::field_infos::FieldInfos;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::{IndexWriterConfig, OpenMode};
 use rucene::index::merge_policy::{
-    CodecReaderSupplier, LogMergePolicy, MergeContext, MergePolicy, MergeSpecification, MergeTrigger,
+    CodecReaderSupplier, LogMergePolicy, MergeContext, MergePolicy, MergeSpecification,
+    MergeTrigger,
 };
 use rucene::index::merge_scheduler::{MergeScheduler, MergeSource, SerialMergeScheduler};
 use rucene::index::multi_fields::MultiTerms;
@@ -54,11 +55,13 @@ use rucene_test_framework::util::LuceneTestCase;
 
 use crate::benchmark_support::search_support::{ftest, set_up};
 use crate::benchmark_support::{
-    benchmark_class_annotated, copy_to_work_dir, exec_benchmark, get_work_dir, get_work_dir_resource_path,
+    benchmark_class_annotated, copy_to_work_dir, exec_benchmark, get_work_dir,
+    get_work_dir_resource_path,
 };
 use crate::by_task::tasks::counting_search_test_task::{self as cst, CountingSearchTestTask};
 
-const MY_MERGE_SCHEDULER: &str = "org.apache.lucene.benchmark.byTask.TestPerfTasksLogic$MyMergeScheduler";
+const MY_MERGE_SCHEDULER: &str =
+    "org.apache.lucene.benchmark.byTask.TestPerfTasksLogic$MyMergeScheduler";
 const MY_MERGE_POLICY: &str = "org.apache.lucene.benchmark.byTask.TestPerfTasksLogic$MyMergePolicy";
 
 /// The instance of `TestPerfTasksLogic`.
@@ -72,7 +75,10 @@ pub fn class_def() -> Arc<Class> {
         MY_MERGE_SCHEDULER,
         Arc::new(|| Arc::new(MyMergeScheduler::new()) as Arc<dyn MergeScheduler>),
     );
-    classes::register_merge_policy_class(MY_MERGE_POLICY, Arc::new(|| Arc::new(MyMergePolicy::new()) as Arc<dyn MergePolicy>));
+    classes::register_merge_policy_class(
+        MY_MERGE_POLICY,
+        Arc::new(|| Arc::new(MyMergePolicy::new()) as Arc<dyn MergePolicy>),
+    );
     benchmark_class_annotated::<PerfTasksLogicTest>(
         "org.apache.lucene.benchmark.byTask.TestPerfTasksLogic",
         vec![
@@ -99,7 +105,11 @@ pub fn class_def() -> Arc<Class> {
             ftest("testShingleAnalyzer", test_shingle_analyzer),
             ftest("testAnalyzerFactory", test_analyzer_factory),
         ],
-        |b| b.annotate(SuppressCodecs { value: vec!["SimpleText".to_string(), "Direct".to_string()] }),
+        |b| {
+            b.annotate(SuppressCodecs {
+                value: vec!["SimpleText".to_string(), "Direct".to_string()],
+            })
+        },
     )
 }
 
@@ -118,7 +128,9 @@ fn get_reuters20_lines_file() -> String {
 
 /// `new IndexWriter(dir, new IndexWriterConfig(new MockAnalyzer(random())).setOpenMode(OpenMode.APPEND)).close()`.
 fn open_append_and_close(dir: Arc<dyn rucene::store::Directory>) -> Result<()> {
-    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(&*LuceneTestCase::random())) as Arc<dyn Analyzer>));
+    let iwc = IndexWriterConfig::with_analyzer(Some(Arc::new(MockAnalyzer::new(
+        &*LuceneTestCase::random(),
+    )) as Arc<dyn Analyzer>));
     iwc.set_open_mode(OpenMode::APPEND)?;
     let iw = IndexWriter::new(dir, iwc)?;
     iw.close()
@@ -150,9 +162,16 @@ fn test_index_and_search_tasks(_f: &mut PerfTasksLogicTest) -> Result<()> {
     // 3. execute the algorithm  (required in every "logic" test)
     let benchmark = exec_benchmark(&alg_lines)?;
     // 4. test specific checks after the benchmark run completed.
-    crate::benchmark_support::assert_equals_msg("TestSearchTask was supposed to be called!", 279, cst::counters().num_searches);
+    crate::benchmark_support::assert_equals_msg(
+        "TestSearchTask was supposed to be called!",
+        279,
+        cst::counters().num_searches,
+    );
     let dir = benchmark.get_run_data().get_directory().expect("directory");
-    Assert::assert_true_msg("Index does not exist?...!", directory_reader::index_exists(&*dir)?);
+    Assert::assert_true_msg(
+        "Index does not exist?...!",
+        directory_reader::index_exists(&*dir)?,
+    );
     // now we should be able to open the index for write.
     open_append_and_close(Arc::clone(&dir))?;
     crate::benchmark_support::assert_equals_msg(
@@ -239,11 +258,22 @@ fn test_exhaust_content_source(_f: &mut PerfTasksLogicTest) -> Result<()> {
     ]);
     cst::reset_num_searches();
     let benchmark = exec_benchmark(&alg_lines)?;
-    crate::benchmark_support::assert_equals_msg("TestSearchTask was supposed to be called!", 139, cst::counters().num_searches);
+    crate::benchmark_support::assert_equals_msg(
+        "TestSearchTask was supposed to be called!",
+        139,
+        cst::counters().num_searches,
+    );
     let dir = benchmark.get_run_data().get_directory().expect("directory");
-    Assert::assert_true_msg("Index does not exist?...!", directory_reader::index_exists(&*dir)?);
+    Assert::assert_true_msg(
+        "Index does not exist?...!",
+        directory_reader::index_exists(&*dir)?,
+    );
     open_append_and_close(Arc::clone(&dir))?;
-    crate::benchmark_support::assert_equals_msg("1 docs were added to the index, this is what we expect to find!", 1, num_docs(dir)?);
+    crate::benchmark_support::assert_equals_msg(
+        "1 docs were added to the index, this is what we expect to find!",
+        1,
+        num_docs(dir)?,
+    );
     Ok(())
 }
 
@@ -311,7 +341,9 @@ fn test_parallel_doc_maker(_f: &mut PerfTasksLogicTest) -> Result<()> {
 /// Test WriteLineDoc and LineDocSource.
 fn test_line_doc_file(_f: &mut PerfTasksLogicTest) -> Result<()> {
     let line_file = LuceneTestCase::create_temp_file_with("test.reuters.lines", ".txt")?;
-    let line_file_abs = std::path::absolute(line_file.as_std_path())?.to_string_lossy().replace('\\', "/");
+    let line_file_abs = std::path::absolute(line_file.as_std_path())?
+        .to_string_lossy()
+        .replace('\\', "/");
     // We will call WriteLineDocs this many times
     const NUM_TRY_DOCS: i32 = 50;
     // Creates a line file with first 50 docs from SingleDocSource
@@ -334,7 +366,9 @@ fn test_line_doc_file(_f: &mut PerfTasksLogicTest) -> Result<()> {
         num_lines += 1;
     }
     crate::benchmark_support::assert_equals_msg(
-        &format!("did not see the right number of docs; should be {NUM_TRY_DOCS} but was {num_lines}"),
+        &format!(
+            "did not see the right number of docs; should be {NUM_TRY_DOCS} but was {num_lines}"
+        ),
         NUM_TRY_DOCS,
         num_lines,
     );
@@ -359,7 +393,11 @@ fn test_line_doc_file(_f: &mut PerfTasksLogicTest) -> Result<()> {
     let dir = benchmark.get_run_data().get_directory().expect("directory");
     open_append_and_close(Arc::clone(&dir))?;
     let n = num_docs(dir)?;
-    crate::benchmark_support::assert_equals_msg(&format!("{num_lines} lines were created but {n} docs are in the index"), num_lines, n);
+    crate::benchmark_support::assert_equals_msg(
+        &format!("{num_lines} lines were created but {n} docs are in the index"),
+        num_lines,
+        n,
+    );
     Ok(())
 }
 
@@ -393,7 +431,8 @@ fn test_read_tokens(_f: &mut PerfTasksLogicTest) -> Result<()> {
         }
     }
     // Separately count how many tokens are actually in the index:
-    let reader = directory_reader::open(benchmark.get_run_data().get_directory().expect("directory"))?;
+    let reader =
+        directory_reader::open(benchmark.get_run_data().get_directory().expect("directory"))?;
     Assert::assert_equals(NUM_DOCS, reader.num_docs());
     let reader_dyn: Arc<dyn IndexReader> = Arc::clone(&reader) as Arc<dyn IndexReader>;
     let mut total_token_count2 = 0;
@@ -411,7 +450,12 @@ fn test_read_tokens(_f: &mut PerfTasksLogicTest) -> Result<()> {
         let mut terms_enum = terms.iterator()?;
         let mut docs = None;
         while terms_enum.next()?.is_some() {
-            docs = TestUtil::docs_of(&*LuceneTestCase::random(), &mut *terms_enum, docs, POSTINGS_ENUM_FREQS)?;
+            docs = TestUtil::docs_of(
+                &*LuceneTestCase::random(),
+                &mut *terms_enum,
+                docs,
+                POSTINGS_ENUM_FREQS,
+            )?;
             let d = docs.as_mut().expect("docs");
             while d.next_doc()? != NO_MORE_DOCS {
                 total_token_count2 += d.freq()?;
@@ -448,7 +492,13 @@ fn test_parallel_exhausted(_f: &mut PerfTasksLogicTest) -> Result<()> {
             "doc.tokenized=false",
             "task.max.depth.log=1",
         ],
-        &["CreateIndex", "{ [ AddDoc]: 4} : * ", "ResetInputs ", "{ [ AddDoc]: 4} : * ", "CloseIndex"],
+        &[
+            "CreateIndex",
+            "{ [ AddDoc]: 4} : * ",
+            "ResetInputs ",
+            "{ [ AddDoc]: 4} : * ",
+            "CloseIndex",
+        ],
     );
     let benchmark = exec_benchmark(&alg_lines)?;
     let ndocs_expected = 2 * 20; // first 20 reuters docs.
@@ -472,7 +522,14 @@ fn test_exhausted_looped(_f: &mut PerfTasksLogicTest) -> Result<()> {
             "doc.tokenized=false",
             "task.max.depth.log=1",
         ],
-        &["{ \"Rounds\"", "  ResetSystemErase", "  CreateIndex", "  { \"AddDocs\"  AddDoc > : * ", "  CloseIndex", "} : 2"],
+        &[
+            "{ \"Rounds\"",
+            "  ResetSystemErase",
+            "  CreateIndex",
+            "  { \"AddDocs\"  AddDoc > : * ",
+            "  CloseIndex",
+            "} : 2",
+        ],
     );
     let benchmark = exec_benchmark(&alg_lines)?;
     let ndocs_expected = 20; // first 20 reuters docs.
@@ -525,7 +582,10 @@ pub struct MyMergeScheduler {
 
 impl MyMergeScheduler {
     fn new() -> Self {
-        MyMergeScheduler { inner: SerialMergeScheduler::new(), called: true }
+        MyMergeScheduler {
+            inner: SerialMergeScheduler::new(),
+            called: true,
+        }
     }
 }
 
@@ -598,7 +658,13 @@ fn test_merge_scheduler(_f: &mut PerfTasksLogicTest) -> Result<()> {
             "doc.tokenized=false",
             "debug.level=1",
         ],
-        &["{ \"Rounds\"", "  ResetSystemErase", "  CreateIndex", "  { \"AddDocs\"  AddDoc > : * ", "} : 2"],
+        &[
+            "{ \"Rounds\"",
+            "  ResetSystemErase",
+            "  CreateIndex",
+            "  { \"AddDocs\"  AddDoc > : * ",
+            "} : 2",
+        ],
     );
     let benchmark = exec_benchmark(&alg_lines)?;
     let writer = benchmark.get_run_data().get_index_writer().expect("writer");
@@ -629,7 +695,10 @@ pub struct MyMergePolicy {
 
 impl MyMergePolicy {
     fn new() -> Self {
-        MyMergePolicy { inner: LogMergePolicy::by_doc_count(), called: true }
+        MyMergePolicy {
+            inner: LogMergePolicy::by_doc_count(),
+            called: true,
+        }
     }
 }
 
@@ -646,10 +715,14 @@ impl MergePolicy for MyMergePolicy {
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner.find_merges(merge_trigger, segment_infos, merge_context)
+        self.inner
+            .find_merges(merge_trigger, segment_infos, merge_context)
     }
 
-    fn find_merges_for_readers(&self, readers: &[Arc<dyn CodecReader>]) -> Result<Option<MergeSpecification>> {
+    fn find_merges_for_readers(
+        &self,
+        readers: &[Arc<dyn CodecReader>],
+    ) -> Result<Option<MergeSpecification>> {
         self.inner.find_merges_for_readers(readers)
     }
 
@@ -660,7 +733,12 @@ impl MergePolicy for MyMergePolicy {
         segments_to_merge: &HashMap<String, bool>,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner.find_forced_merges(segment_infos, max_num_segments, segments_to_merge, merge_context)
+        self.inner.find_forced_merges(
+            segment_infos,
+            max_num_segments,
+            segments_to_merge,
+            merge_context,
+        )
     }
 
     fn find_forced_deletes_merges(
@@ -668,7 +746,8 @@ impl MergePolicy for MyMergePolicy {
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner.find_forced_deletes_merges(segment_infos, merge_context)
+        self.inner
+            .find_forced_deletes_merges(segment_infos, merge_context)
     }
 
     fn find_full_flush_merges(
@@ -677,7 +756,8 @@ impl MergePolicy for MyMergePolicy {
         segment_infos: &SegmentInfos,
         merge_context: &dyn MergeContext,
     ) -> Result<Option<MergeSpecification>> {
-        self.inner.find_full_flush_merges(merge_trigger, segment_infos, merge_context)
+        self.inner
+            .find_full_flush_merges(merge_trigger, segment_infos, merge_context)
     }
 
     fn use_compound_file(
@@ -686,7 +766,8 @@ impl MergePolicy for MyMergePolicy {
         merged_info: &SegmentCommitInfo,
         merge_context: &dyn MergeContext,
     ) -> Result<bool> {
-        self.inner.use_compound_file(infos, merged_info, merge_context)
+        self.inner
+            .use_compound_file(infos, merged_info, merge_context)
     }
 
     fn size(&self, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<i64> {
@@ -697,11 +778,19 @@ impl MergePolicy for MyMergePolicy {
         self.inner.max_full_flush_merge_size()
     }
 
-    fn is_merged(&self, infos: &SegmentInfos, info: &SegmentCommitInfo, merge_context: &dyn MergeContext) -> Result<bool> {
+    fn is_merged(
+        &self,
+        infos: &SegmentInfos,
+        info: &SegmentCommitInfo,
+        merge_context: &dyn MergeContext,
+    ) -> Result<bool> {
         self.inner.is_merged(infos, info, merge_context)
     }
 
-    fn keep_fully_deleted_segment(&self, reader_supplier: &mut CodecReaderSupplier<'_>) -> Result<bool> {
+    fn keep_fully_deleted_segment(
+        &self,
+        reader_supplier: &mut CodecReaderSupplier<'_>,
+    ) -> Result<bool> {
         self.inner.keep_fully_deleted_segment(reader_supplier)
     }
 
@@ -715,7 +804,8 @@ impl MergePolicy for MyMergePolicy {
         del_count: i32,
         reader_supplier: &mut dyn FnMut() -> Result<Arc<dyn CodecReader>>,
     ) -> Result<i32> {
-        self.inner.num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
+        self.inner
+            .num_deletes_to_merge_with_reader(info, del_count, reader_supplier)
     }
 
     fn get_no_cfs_ratio(&self) -> f64 {
@@ -763,14 +853,24 @@ fn test_merge_policy(_f: &mut PerfTasksLogicTest) -> Result<()> {
             "doc.tokenized=false",
             "debug.level=1",
         ],
-        &["{ \"Rounds\"", "  ResetSystemErase", "  CreateIndex", "  { \"AddDocs\"  AddDoc > : * ", "} : 2"],
+        &[
+            "{ \"Rounds\"",
+            "  ResetSystemErase",
+            "  CreateIndex",
+            "  { \"AddDocs\"  AddDoc > : * ",
+            "} : 2",
+        ],
     );
     let benchmark = exec_benchmark(&alg_lines)?;
     let writer = benchmark.get_run_data().get_index_writer().expect("writer");
     let policy = writer.get_config().merge_policy();
     Assert::assert_true_msg(
         "did not use the specified MergePolicy",
-        policy.as_any().and_then(|a| a.downcast_ref::<MyMergePolicy>()).expect("ClassCastException").called,
+        policy
+            .as_any()
+            .and_then(|a| a.downcast_ref::<MyMergePolicy>())
+            .expect("ClassCastException")
+            .called,
     );
     writer.close()?;
     let ndocs_expected = 20; // first 20 reuters docs.
@@ -798,16 +898,29 @@ fn test_index_writer_settings(_f: &mut PerfTasksLogicTest) -> Result<()> {
             "doc.tokenized=false",
             "debug.level=1",
         ],
-        &["{ \"Rounds\"", "  ResetSystemErase", "  CreateIndex", "  { \"AddDocs\"  AddDoc > : * ", "  NewRound", "} : 2"],
+        &[
+            "{ \"Rounds\"",
+            "  ResetSystemErase",
+            "  CreateIndex",
+            "  { \"AddDocs\"  AddDoc > : * ",
+            "  NewRound",
+            "} : 2",
+        ],
     );
     let benchmark = exec_benchmark(&alg_lines)?;
     let writer = benchmark.get_run_data().get_index_writer().expect("writer");
     Assert::assert_equals(2, writer.get_config().max_buffered_docs());
-    Assert::assert_equals(rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH, writer.get_config().ram_buffer_size_mb() as i32);
+    Assert::assert_equals(
+        rucene::index::index_writer_config::LiveIndexWriterConfig::DISABLE_AUTO_FLUSH,
+        writer.get_config().ram_buffer_size_mb() as i32,
+    );
     let mp = writer.get_config().merge_policy();
     Assert::assert_equals(
         3,
-        mp.as_any().and_then(|a| a.downcast_ref::<LogMergePolicy>()).expect("ClassCastException").get_merge_factor(),
+        mp.as_any()
+            .and_then(|a| a.downcast_ref::<LogMergePolicy>())
+            .expect("ClassCastException")
+            .get_merge_factor(),
     );
     Assert::assert_equals_double_msg(None, 0.0, mp.get_no_cfs_ratio(), 0.0);
     writer.close()?;
@@ -846,7 +959,10 @@ fn test_indexing_with_facets(_f: &mut PerfTasksLogicTest) -> Result<()> {
     // 2. execute the algorithm  (required in every "logic" test)
     let benchmark = exec_benchmark(&alg_lines)?;
     let run_data = benchmark.get_run_data();
-    Assert::assert_true_msg("taxo writer was not properly closed", run_data.get_taxonomy_writer().is_none());
+    Assert::assert_true_msg(
+        "taxo writer was not properly closed",
+        run_data.get_taxonomy_writer().is_none(),
+    );
     let taxo_reader = run_data.get_taxonomy_reader()?;
     Assert::assert_true_msg("taxo reader was not opened", taxo_reader.is_some());
     let taxo_reader = taxo_reader.unwrap();
@@ -886,7 +1002,11 @@ fn test_force_merge(_f: &mut PerfTasksLogicTest) -> Result<()> {
     let benchmark = exec_benchmark(&alg_lines)?;
     let dir = benchmark.get_run_data().get_directory().expect("directory");
     let ndocs_expected = 20; // first 20 reuters docs.
-    crate::benchmark_support::assert_equals_msg("wrong number of docs in the index!", ndocs_expected, num_docs(Arc::clone(&dir))?);
+    crate::benchmark_support::assert_equals_msg(
+        "wrong number of docs in the index!",
+        ndocs_expected,
+        num_docs(Arc::clone(&dir))?,
+    );
     let infos = SegmentInfos::read_latest_commit(dir)?;
     Assert::assert_equals(3usize, infos.size());
     Ok(())
@@ -908,13 +1028,25 @@ fn do_test_disable_counting(disable: bool) -> Result<()> {
         let stats = stats.lock().unwrap();
         let task_name = stats.get_task().get_name();
         if task_name == "Rounds" {
-            crate::benchmark_support::assert_equals_msg("Wrong total count!", 20 + 2 * n, stats.get_count());
+            crate::benchmark_support::assert_equals_msg(
+                "Wrong total count!",
+                20 + 2 * n,
+                stats.get_count(),
+            );
             n_checked += 1;
         } else if task_name == "CreateIndex" {
-            crate::benchmark_support::assert_equals_msg("Wrong count for CreateIndex!", n, stats.get_count());
+            crate::benchmark_support::assert_equals_msg(
+                "Wrong count for CreateIndex!",
+                n,
+                stats.get_count(),
+            );
             n_checked += 1;
         } else if task_name == "CloseIndex" {
-            crate::benchmark_support::assert_equals_msg("Wrong count for CloseIndex!", n, stats.get_count());
+            crate::benchmark_support::assert_equals_msg(
+                "Wrong count for CloseIndex!",
+                n,
+                stats.get_count(),
+            );
             n_checked += 1;
         }
     }
@@ -952,20 +1084,33 @@ fn test_locale(_f: &mut PerfTasksLogicTest) -> Result<()> {
     Assert::assert_true(benchmark.get_run_data().get_locale().is_none());
     // ROOT locale
     let benchmark = exec_benchmark(&get_locale_config("ROOT"))?;
-    Assert::assert_equals_nullable(Some(Locale::of_parts("", "", "", "")), benchmark.get_run_data().get_locale());
+    Assert::assert_equals_nullable(
+        Some(Locale::of_parts("", "", "", "")),
+        benchmark.get_run_data().get_locale(),
+    );
     // specify just a language
     let benchmark = exec_benchmark(&get_locale_config("de"))?;
-    Assert::assert_equals_nullable(Some(Locale::builder_from_language_tag("de")?), benchmark.get_run_data().get_locale());
+    Assert::assert_equals_nullable(
+        Some(Locale::builder_from_language_tag("de")?),
+        benchmark.get_run_data().get_locale(),
+    );
     // specify language + country
     let benchmark = exec_benchmark(&get_locale_config("en-US"))?;
-    Assert::assert_equals_nullable(Some(Locale::builder_from_language_tag("en-US")?), benchmark.get_run_data().get_locale());
+    Assert::assert_equals_nullable(
+        Some(Locale::builder_from_language_tag("en-US")?),
+        benchmark.get_run_data().get_locale(),
+    );
     Ok(())
 }
 
 fn get_locale_config(locale_param: &str) -> Vec<String> {
     let new_locale = format!("  NewLocale({locale_param})");
     reuters_lines(
-        &["content.source.log.step=3", "content.source.forever=false", "directory=ByteBuffersDirectory"],
+        &[
+            "content.source.log.step=3",
+            "content.source.forever=false",
+            "directory=ByteBuffersDirectory",
+        ],
         &[
             "{ \"Rounds\"",
             "  ResetSystemErase",
@@ -982,9 +1127,17 @@ fn get_locale_config(locale_param: &str) -> Vec<String> {
 fn test_collator(_f: &mut PerfTasksLogicTest) -> Result<()> {
     for tag in ["ROOT", "de", "en-US", "nn-NO"] {
         let benchmark = exec_benchmark(&get_collator_config(tag, "impl:jdk"))?;
-        let locale = if tag == "ROOT" { Locale::of_parts("", "", "", "") } else { Locale::builder_from_language_tag(tag)? };
+        let locale = if tag == "ROOT" {
+            Locale::of_parts("", "", "", "")
+        } else {
+            Locale::builder_from_language_tag(tag)?
+        };
         let expected = CollationKeyAnalyzer::new(&RuleBasedCollator::get_instance(&locale));
-        assert_equal_collation(&expected, &*benchmark.get_run_data().get_analyzer().expect("analyzer"), "foobar")?;
+        assert_equal_collation(
+            &expected,
+            &*benchmark.get_run_data().get_analyzer().expect("analyzer"),
+            "foobar",
+        )?;
     }
     Ok(())
 }
@@ -996,12 +1149,22 @@ fn assert_equal_collation(a1: &dyn Analyzer, a2: &dyn Analyzer, text: &str) -> R
     let mut ts2 = ts2.borrow_mut();
     ts1.reset()?;
     ts2.reset()?;
-    ts1.attribute_source_mut().add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
-    ts2.attribute_source_mut().add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
+    ts1.attribute_source_mut()
+        .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
+    ts2.attribute_source_mut()
+        .add_attribute_interface::<dyn TermToBytesRefAttribute>()?;
     Assert::assert_true(ts1.increment_token()?);
     Assert::assert_true(ts2.increment_token()?);
-    let bytes1 = ts1.attribute_source().get_attribute_interface::<dyn TermToBytesRefAttribute>().unwrap().get_bytes_ref();
-    let bytes2 = ts2.attribute_source().get_attribute_interface::<dyn TermToBytesRefAttribute>().unwrap().get_bytes_ref();
+    let bytes1 = ts1
+        .attribute_source()
+        .get_attribute_interface::<dyn TermToBytesRefAttribute>()
+        .unwrap()
+        .get_bytes_ref();
+    let bytes2 = ts2
+        .attribute_source()
+        .get_attribute_interface::<dyn TermToBytesRefAttribute>()
+        .unwrap()
+        .get_bytes_ref();
     Assert::assert_equals(bytes1, bytes2);
     Assert::assert_false(ts1.increment_token()?);
     Assert::assert_false(ts2.increment_token()?);
@@ -1014,7 +1177,11 @@ fn get_collator_config(locale_param: &str, collation_param: &str) -> Vec<String>
     let new_locale = format!("  NewLocale({locale_param})");
     let new_collation = format!("  NewCollationAnalyzer({collation_param})");
     reuters_lines(
-        &["content.source.log.step=3", "content.source.forever=false", "directory=ByteBuffersDirectory"],
+        &[
+            "content.source.log.step=3",
+            "content.source.forever=false",
+            "directory=ByteBuffersDirectory",
+        ],
         &[
             "{ \"Rounds\"",
             "  ResetSystemErase",
@@ -1028,8 +1195,16 @@ fn get_collator_config(locale_param: &str, collation_param: &str) -> Vec<String>
     )
 }
 
-fn analyzes_to(benchmark: &rucene_benchmark::by_task::benchmark::Benchmark, text: &str, output: &[&str]) -> Result<()> {
-    BaseTokenStreamTestCase::assert_analyzes_to(&*benchmark.get_run_data().get_analyzer().expect("analyzer"), text, output)
+fn analyzes_to(
+    benchmark: &rucene_benchmark::by_task::benchmark::Benchmark,
+    text: &str,
+    output: &[&str],
+) -> Result<()> {
+    BaseTokenStreamTestCase::assert_analyzes_to(
+        &*benchmark.get_run_data().get_analyzer().expect("analyzer"),
+        text,
+        output,
+    )
 }
 
 /// Test that we can create shingle analyzers using AnalyzerFactory.
@@ -1037,7 +1212,10 @@ fn test_shingle_analyzer(_f: &mut PerfTasksLogicTest) -> Result<()> {
     let text = "one,two,three, four five six";
 
     // StandardTokenizer, maxShingleSize, and outputUnigrams
-    let benchmark = exec_benchmark(&get_analyzer_factory_config("shingle-analyzer", "StandardTokenizer,ShingleFilter"))?;
+    let benchmark = exec_benchmark(&get_analyzer_factory_config(
+        "shingle-analyzer",
+        "StandardTokenizer,ShingleFilter",
+    ))?;
     {
         let analyzer = benchmark.get_run_data().get_analyzer().expect("analyzer");
         let ts = analyzer.token_stream("bogus", Box::new(StringCharReader::new(text)))?;
@@ -1046,7 +1224,19 @@ fn test_shingle_analyzer(_f: &mut PerfTasksLogicTest) -> Result<()> {
     analyzes_to(
         &benchmark,
         text,
-        &["one", "one two", "two", "two three", "three", "three four", "four", "four five", "five", "five six", "six"],
+        &[
+            "one",
+            "one two",
+            "two",
+            "two three",
+            "three",
+            "three four",
+            "four",
+            "four five",
+            "five",
+            "five six",
+            "six",
+        ],
     )?;
     // StandardTokenizer, maxShingleSize = 3, and outputUnigrams = false
     let benchmark = exec_benchmark(&get_analyzer_factory_config(
@@ -1069,12 +1259,22 @@ fn test_shingle_analyzer(_f: &mut PerfTasksLogicTest) -> Result<()> {
         ],
     )?;
     // WhitespaceTokenizer, default maxShingleSize and outputUnigrams
-    let benchmark =
-        exec_benchmark(&get_analyzer_factory_config("shingle-analyzer", "WhitespaceTokenizer,ShingleFilter"))?;
+    let benchmark = exec_benchmark(&get_analyzer_factory_config(
+        "shingle-analyzer",
+        "WhitespaceTokenizer,ShingleFilter",
+    ))?;
     analyzes_to(
         &benchmark,
         text,
-        &["one,two,three,", "one,two,three, four", "four", "four five", "five", "five six", "six"],
+        &[
+            "one,two,three,",
+            "one,two,three, four",
+            "four",
+            "four five",
+            "five",
+            "five six",
+            "six",
+        ],
     )?;
     // WhitespaceTokenizer, maxShingleSize=3 and outputUnigrams=false
     let benchmark = exec_benchmark(&get_analyzer_factory_config(
@@ -1084,7 +1284,13 @@ fn test_shingle_analyzer(_f: &mut PerfTasksLogicTest) -> Result<()> {
     analyzes_to(
         &benchmark,
         text,
-        &["one,two,three, four", "one,two,three, four five", "four five", "four five six", "five six"],
+        &[
+            "one,two,three, four",
+            "one,two,three, four five",
+            "four five",
+            "four five six",
+            "five six",
+        ],
     )
 }
 
@@ -1093,7 +1299,13 @@ fn get_analyzer_factory_config(name: &str, params: &str) -> Vec<String> {
     vec![
         "content.source=org.apache.lucene.benchmark.byTask.feeds.LineDocSource".to_string(),
         format!("docs.file={}", get_reuters20_lines_file()),
-        format!("work.dir={}", std::path::absolute(get_work_dir()).unwrap().to_string_lossy().replace('\\', "/")), // Fix Windows path
+        format!(
+            "work.dir={}",
+            std::path::absolute(get_work_dir())
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        ), // Fix Windows path
         "content.source.forever=false".to_string(),
         "directory=ByteBuffersDirectory".to_string(),
         format!("AnalyzerFactory(name:'{single_quote_escaped_name}', {params})"),
@@ -1118,8 +1330,9 @@ fn test_analyzer_factory(_f: &mut PerfTasksLogicTest) -> Result<()> {
         &benchmark,
         text,
         &[
-            "fo", "or", "rt", "ti", "ie", "et", "th", "qu", "ua", "ar", "ra", "an", "nt", "ti", "ix", "xx", "xx", "xe",
-            "cu", "ua", "ad", "dr", "ra", "ag", "gs", "si", "ix", "xx", "xx", "xs", "si", "io",
+            "fo", "or", "rt", "ti", "ie", "et", "th", "qu", "ua", "ar", "ra", "an", "nt", "ti",
+            "ix", "xx", "xx", "xe", "cu", "ua", "ad", "dr", "ra", "ag", "gs", "si", "ix", "xx",
+            "xx", "xs", "si", "io",
         ],
     )
 }

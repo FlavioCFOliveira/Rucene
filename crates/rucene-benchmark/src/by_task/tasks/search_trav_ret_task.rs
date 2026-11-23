@@ -56,7 +56,11 @@ impl SearchTravRetTask {
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchTravRetTask")?;
         let read = ReadTaskBase::new(true, || query_maker_of::<SearchTravRetTask>(&run_data))?;
-        Ok(SearchTravRetTask { base, read, trav: SearchTravState::new() })
+        Ok(SearchTravRetTask {
+            base,
+            read,
+            trav: SearchTravState::new(),
+        })
     }
 }
 

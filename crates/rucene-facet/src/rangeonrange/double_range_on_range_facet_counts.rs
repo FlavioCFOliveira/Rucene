@@ -43,7 +43,12 @@ impl DoubleRangeOnRangeFacetCounts {
     ///
     /// Equivalent to `DoubleRangeOnRangeFacetCounts(String, FacetsCollector,
     /// RangeFieldQuery.QueryType, DoubleRange...)`.
-    pub fn new(field: &str, hits: &FacetsCollector, query_type: RangeQueryType, ranges: &[DoubleRange]) -> Result<Self> {
+    pub fn new(
+        field: &str,
+        hits: &FacetsCollector,
+        query_type: RangeQueryType,
+        ranges: &[DoubleRange],
+    ) -> Result<Self> {
         Self::with_fast_match(field, hits, query_type, None, ranges)
     }
 

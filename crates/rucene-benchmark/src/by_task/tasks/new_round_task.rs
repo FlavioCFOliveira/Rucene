@@ -40,7 +40,9 @@ impl NewRoundTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(NewRoundTask { base: PerfTaskBase::new(run_data, "NewRoundTask")? })
+        Ok(NewRoundTask {
+            base: PerfTaskBase::new(run_data, "NewRoundTask")?,
+        })
     }
 }
 
@@ -48,7 +50,9 @@ impl PerfTask for NewRoundTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(NewRoundTask { base: self.base.clone_base() }))
+        Ok(Arc::new(NewRoundTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

@@ -46,7 +46,6 @@ pub(crate) struct ScorerIterator {
     pub(crate) scorer: Box<dyn Scorer>,
 }
 
-
 impl DocIdSetIterator for ScorerIterator {
     fn doc_id(&self) -> i32 {
         self.scorer

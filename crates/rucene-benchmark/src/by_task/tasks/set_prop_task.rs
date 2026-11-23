@@ -49,7 +49,10 @@ impl SetPropTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(SetPropTask { base: PerfTaskBase::new(run_data, "SetPropTask")?, state: Mutex::new((None, None)) })
+        Ok(SetPropTask {
+            base: PerfTaskBase::new(run_data, "SetPropTask")?,
+            state: Mutex::new((None, None)),
+        })
     }
 }
 
@@ -57,7 +60,10 @@ impl PerfTask for SetPropTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(SetPropTask { base: self.base.clone_base(), state: Mutex::new(jdk::lock(&self.state).clone()) }))
+        Ok(Arc::new(SetPropTask {
+            base: self.base.clone_base(),
+            state: Mutex::new(jdk::lock(&self.state).clone()),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

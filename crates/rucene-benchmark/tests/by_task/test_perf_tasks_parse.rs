@@ -25,8 +25,12 @@ use randomizedtesting::junit::Assert;
 use rucene::error::Result;
 use rucene::search::Query;
 use rucene_benchmark::by_task::benchmark::Benchmark;
-use rucene_benchmark::by_task::feeds::abstract_query_maker::{AbstractQueryMaker, AbstractQueryMakerBase};
-use rucene_benchmark::by_task::feeds::content_items_source::{ContentItemsSource, ContentItemsSourceBase};
+use rucene_benchmark::by_task::feeds::abstract_query_maker::{
+    AbstractQueryMaker, AbstractQueryMakerBase,
+};
+use rucene_benchmark::by_task::feeds::content_items_source::{
+    ContentItemsSource, ContentItemsSourceBase,
+};
 use rucene_benchmark::by_task::feeds::content_source::ContentSource;
 use rucene_benchmark::by_task::feeds::doc_data::DocData;
 use rucene_benchmark::by_task::perf_run_data::PerfRunData;
@@ -48,8 +52,10 @@ fn prop_part() -> String {
     format!("{INDENT}directory=ByteBuffersDirectory{NEW_LINE}{INDENT}print.props=false{NEW_LINE}")
 }
 
-const MOCK_CONTENT_SOURCE: &str = "org.apache.lucene.benchmark.byTask.TestPerfTasksParse$MockContentSource";
-const MOCK_QUERY_MAKER: &str = "org.apache.lucene.benchmark.byTask.TestPerfTasksParse$MockQueryMaker";
+const MOCK_CONTENT_SOURCE: &str =
+    "org.apache.lucene.benchmark.byTask.TestPerfTasksParse$MockContentSource";
+const MOCK_QUERY_MAKER: &str =
+    "org.apache.lucene.benchmark.byTask.TestPerfTasksParse$MockQueryMaker";
 
 /// `public static class MockContentSource extends ContentSource`.
 #[derive(Default)]
@@ -109,16 +115,29 @@ pub fn class_def() -> Arc<Class> {
     );
     classes::register_query_maker_class(
         MOCK_QUERY_MAKER,
-        Arc::new(|| Arc::new(MockQueryMaker::default()) as Arc<dyn rucene_benchmark::by_task::feeds::query_maker::QueryMaker>),
+        Arc::new(|| {
+            Arc::new(MockQueryMaker::default())
+                as Arc<dyn rucene_benchmark::by_task::feeds::query_maker::QueryMaker>
+        }),
     );
     class_annotated(
         "org.apache.lucene.benchmark.byTask.TestPerfTasksParse",
         vec![
-            test("testParseParallelTaskSequenceRepetition", test_parse_parallel_task_sequence_repetition),
-            test("testParseTaskSequenceRepetition", test_parse_task_sequence_repetition),
+            test(
+                "testParseParallelTaskSequenceRepetition",
+                test_parse_parallel_task_sequence_repetition,
+            ),
+            test(
+                "testParseTaskSequenceRepetition",
+                test_parse_task_sequence_repetition,
+            ),
             test("testParseExamples", test_parse_examples),
         ],
-        |b| b.annotate(SuppressSysoutChecks { bug_url: "very noisy".to_string() }),
+        |b| {
+            b.annotate(SuppressSysoutChecks {
+                bug_url: "very noisy".to_string(),
+            })
+        },
     )
 }
 
@@ -150,7 +169,10 @@ fn check_repetition(parsed_tasks: &str, parallel: bool) -> Result<()> {
                 );
             }
         }
-        Assert::assert_true_msg(&format!("Task {task_str} was not found in {alg}"), found_add);
+        Assert::assert_true_msg(
+            &format!("Task {task_str} was not found in {alg}"),
+            found_add,
+        );
     }
     Ok(())
 }
@@ -169,7 +191,10 @@ fn test_parse_task_sequence_repetition() -> Result<()> {
 fn test_parse_examples() -> Result<()> {
     // Locate the folder with *.alg resources.
     let examples_dir = conf_dir();
-    Assert::assert_true_msg("Couldn't locate *.alg resources?", examples_dir.join("addIndexes.alg").exists());
+    Assert::assert_true_msg(
+        "Couldn't locate *.alg resources?",
+        examples_dir.join("addIndexes.alg").exists(),
+    );
     let mut found_files = false;
     // Files.newDirectoryStream(examplesDir, "*.alg"): directory order.
     for entry in std::fs::read_dir(&examples_dir)? {
@@ -183,7 +208,10 @@ fn test_parse_examples() -> Result<()> {
             classes::content_source_for_name(&content_source)?;
         }
         let work_dir = LuceneTestCase::create_temp_dir_prefix("TestPerfTasksParse");
-        config.set("work.dir", &std::path::absolute(work_dir.as_std_path())?.to_string_lossy())?;
+        config.set(
+            "work.dir",
+            &std::path::absolute(work_dir.as_std_path())?.to_string_lossy(),
+        )?;
         config.set("content.source", MOCK_CONTENT_SOURCE)?;
         if let Some(dir) = config.get_str("content.source", None)? {
             classes::content_source_for_name(&dir)?;
@@ -191,7 +219,10 @@ fn test_parse_examples() -> Result<()> {
         config.set("directory", "ByteBuffersDirectory")?;
         if config.get_str("line.file.out", None)?.is_some() {
             let f = LuceneTestCase::create_temp_file_with("linefile", ".txt")?;
-            config.set("line.file.out", &std::path::absolute(f.as_std_path())?.to_string_lossy())?;
+            config.set(
+                "line.file.out",
+                &std::path::absolute(f.as_std_path())?.to_string_lossy(),
+            )?;
         }
         if let Some(query_maker) = config.get_str("query.maker", None)? {
             classes::check_query_maker_class(&query_maker)?;

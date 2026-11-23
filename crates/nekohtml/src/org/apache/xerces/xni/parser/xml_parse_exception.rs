@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -21,7 +21,9 @@ use std::ops::Deref;
 
 use crate::java::Exception;
 use crate::org::apache::xerces::xni::xml_locator::XMLLocator;
-use crate::org::apache::xerces::xni::xni_exception::{XMLParseLocation, XNIException, XNIExceptionClass};
+use crate::org::apache::xerces::xni::xni_exception::{
+    XMLParseLocation, XNIException, XNIExceptionClass,
+};
 
 /// A parsing exception. This exception is different from the standard XNI
 /// exception in that it stores the location in the document (or its
@@ -67,7 +69,11 @@ impl XMLParseException {
 
     /// Equivalent to `new XMLParseException(XMLLocator, String,
     /// Exception)`.
-    pub fn with_exception(locator: Option<&dyn XMLLocator>, message: Option<&str>, exception: Option<Exception>) -> Self {
+    pub fn with_exception(
+        locator: Option<&dyn XMLLocator>,
+        message: Option<&str>,
+        exception: Option<Exception>,
+    ) -> Self {
         Self(XNIException::of(
             XNIExceptionClass::XMLParseException(Self::location(locator)),
             message.map(str::to_string),

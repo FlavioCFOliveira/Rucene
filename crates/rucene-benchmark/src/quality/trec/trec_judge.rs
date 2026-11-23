@@ -40,12 +40,16 @@ pub(crate) struct QRelJudgement {
 
 impl QRelJudgement {
     fn new(query_id: &str) -> Self {
-        QRelJudgement { query_id: query_id.to_string(), relevant_docs: JavaHashMap::new() }
+        QRelJudgement {
+            query_id: query_id.to_string(),
+            relevant_docs: JavaHashMap::new(),
+        }
     }
 
     /// `addRelevandDoc(String docName)`.
     pub(crate) fn add_relevand_doc(&mut self, doc_name: &str) {
-        self.relevant_docs.insert(doc_name.to_string(), doc_name.to_string());
+        self.relevant_docs
+            .insert(doc_name.to_string(), doc_name.to_string());
     }
 
     /// `isRelevant(String docName)`.
@@ -110,7 +114,10 @@ impl TrecJudge {
                         curr = Some(query_id.to_string());
                     }
                     let key = curr.as_deref().expect("set above");
-                    judgements.get_mut(key).expect("present").add_relevand_doc(doc_name);
+                    judgements
+                        .get_mut(key)
+                        .expect("present")
+                        .add_relevand_doc(doc_name);
                 }
             }
             Ok(())
@@ -146,7 +153,10 @@ impl Judge for TrecJudge {
         if !missing_judgements.is_empty() {
             is_valid = false;
             if let Some(logger) = logger {
-                logger.println(&format!("WARNING: {} queries have no judgments! - ", missing_judgements.len()));
+                logger.println(&format!(
+                    "WARNING: {} queries have no judgments! - ",
+                    missing_judgements.len()
+                ));
                 for id in &missing_judgements {
                     logger.println(&format!("   {id}"));
                 }
@@ -155,7 +165,10 @@ impl Judge for TrecJudge {
         if !missing_queries.is_empty() {
             is_valid = false;
             if let Some(logger) = logger {
-                logger.println(&format!("WARNING: {} judgments match no query! - ", missing_queries.len()));
+                logger.println(&format!(
+                    "WARNING: {} judgments match no query! - ",
+                    missing_queries.len()
+                ));
                 for id in missing_queries.keys() {
                     logger.println(&format!("   {id}"));
                 }

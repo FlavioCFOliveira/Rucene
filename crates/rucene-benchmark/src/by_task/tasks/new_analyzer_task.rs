@@ -27,8 +27,8 @@ use rucene_analysis_common::analysis::core::stop_analyzer::StopAnalyzer;
 use crate::by_task::perf_run_data::PerfRunData;
 use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
 use crate::classes;
-use crate::jdk::stream_tokenizer::{StreamTokenizer, TT_EOF, TT_WORD};
 use crate::jdk;
+use crate::jdk::stream_tokenizer::{StreamTokenizer, TT_EOF, TT_WORD};
 
 #[derive(Clone, Default)]
 struct State {
@@ -51,7 +51,10 @@ impl NewAnalyzerTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(NewAnalyzerTask { base: PerfTaskBase::new(run_data, "NewAnalyzerTask")?, state: Mutex::new(State::default()) })
+        Ok(NewAnalyzerTask {
+            base: PerfTaskBase::new(run_data, "NewAnalyzerTask")?,
+            state: Mutex::new(State::default()),
+        })
     }
 
     /// `createAnalyzer(String className)`: the analyzer class's public
@@ -73,7 +76,12 @@ impl NewAnalyzerTask {
             *analyzer_name = "org.apache.lucene.analysis.standard.StandardAnalyzer".to_string();
         }
         // First, lookup analyzerName as a named analyzer factory
-        let factory = self.base.get_run_data().get_analyzer_factories().get(analyzer_name.as_str()).cloned();
+        let factory = self
+            .base
+            .get_run_data()
+            .get_analyzer_factories()
+            .get(analyzer_name.as_str())
+            .cloned();
         if let Some(factory) = factory {
             return Ok(factory.create());
         }
@@ -106,7 +114,10 @@ impl PerfTask for NewAnalyzerTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(NewAnalyzerTask { base: self.base.clone_base(), state: Mutex::new(jdk::lock(&self.state).clone()) }))
+        Ok(Arc::new(NewAnalyzerTask {
+            base: self.base.clone_base(),
+            state: Mutex::new(jdk::lock(&self.state).clone()),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
@@ -122,7 +133,10 @@ impl PerfTask for NewAnalyzerTask {
                 // `analyzerNames.get(current++)` throws IndexOutOfBoundsException
                 // on an empty list.
                 s.analyzer_names.get(i).cloned().ok_or_else(|| {
-                    LuceneError::unchecked("java.lang.IndexOutOfBoundsException", format!("Index {i} out of bounds for length 0"))
+                    LuceneError::unchecked(
+                        "java.lang.IndexOutOfBoundsException",
+                        format!("Index {i} out of bounds for length 0"),
+                    )
                 })?
             };
             analyzer_name = Some(name.clone());
@@ -134,7 +148,10 @@ impl PerfTask for NewAnalyzerTask {
         })();
         if let Err(e) = result {
             return Err(jdk::runtime_exception_with_cause(
-                format!("Error creating Analyzer: {}", analyzer_name.as_deref().unwrap_or("null")),
+                format!(
+                    "Error creating Analyzer: {}",
+                    analyzer_name.as_deref().unwrap_or("null")
+                ),
                 e,
             ));
         }
@@ -172,7 +189,9 @@ impl PerfTask for NewAnalyzerTask {
                         // Do nothing
                     }
                     t if t == '\'' as i32 || t == '"' as i32 || t == TT_WORD => {
-                        jdk::lock(&self.state).analyzer_names.push(stok.sval.clone().unwrap_or_default());
+                        jdk::lock(&self.state)
+                            .analyzer_names
+                            .push(stok.sval.clone().unwrap_or_default());
                     }
                     _ => {
                         return Err(jdk::runtime_exception(format!("Unexpected token: {stok}")));

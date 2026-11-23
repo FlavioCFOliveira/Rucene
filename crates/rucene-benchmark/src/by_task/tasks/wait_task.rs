@@ -47,7 +47,10 @@ impl WaitTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(WaitTask { base: PerfTaskBase::new(run_data, "WaitTask")?, wait_time_sec: Mutex::new(0.0) })
+        Ok(WaitTask {
+            base: PerfTaskBase::new(run_data, "WaitTask")?,
+            wait_time_sec: Mutex::new(0.0),
+        })
     }
 }
 
@@ -80,7 +83,9 @@ impl PerfTask for WaitTask {
     fn do_logic(&self) -> Result<i32> {
         let millis = (1000.0 * *jdk::lock(&self.wait_time_sec)) as i64;
         if millis < 0 {
-            return Err(rucene::error::LuceneError::illegal_argument("timeout value is negative"));
+            return Err(rucene::error::LuceneError::illegal_argument(
+                "timeout value is negative",
+            ));
         }
         std::thread::sleep(Duration::from_millis(millis as u64));
         Ok(0)

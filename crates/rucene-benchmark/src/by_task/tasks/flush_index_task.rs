@@ -39,7 +39,9 @@ impl FlushIndexTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(FlushIndexTask { base: PerfTaskBase::new(run_data, "FlushIndexTask")? })
+        Ok(FlushIndexTask {
+            base: PerfTaskBase::new(run_data, "FlushIndexTask")?,
+        })
     }
 }
 
@@ -47,7 +49,9 @@ impl PerfTask for FlushIndexTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(FlushIndexTask { base: self.base.clone_base() }))
+        Ok(Arc::new(FlushIndexTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {

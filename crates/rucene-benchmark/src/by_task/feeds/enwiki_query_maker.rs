@@ -29,7 +29,9 @@ use rucene::util::automaton::operations::DEFAULT_DETERMINIZE_WORK_LIMIT;
 
 use crate::by_task::feeds::abstract_query_maker::{AbstractQueryMaker, AbstractQueryMakerBase};
 use crate::by_task::feeds::doc_maker::DocMaker;
-use crate::by_task::feeds::reuters_query_maker::{create_queries, span_prebuilt_queries, QueryItem};
+use crate::by_task::feeds::reuters_query_maker::{
+    create_queries, span_prebuilt_queries, QueryItem,
+};
 use crate::by_task::tasks::new_analyzer_task::NewAnalyzerTask;
 
 /// `STANDARD_QUERIES`: common and a few uncommon queries from wikipedia
@@ -160,16 +162,29 @@ impl AbstractQueryMaker for EnwikiQueryMaker {
     }
 
     fn prepare_queries(&self) -> Result<Vec<Arc<dyn Query>>> {
-        let config = self.base.config().ok_or_else(rucene::error::LuceneError::null_pointer)?;
+        let config = self
+            .base
+            .config()
+            .ok_or_else(rucene::error::LuceneError::null_pointer)?;
         // analyzer (default is standard analyzer)
         let anlzr = NewAnalyzerTask::create_analyzer(
             &config
-                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .get_str(
+                    "analyzer",
+                    Some("org.apache.lucene.analysis.standard.StandardAnalyzer"),
+                )?
                 .unwrap_or_default(),
         )?;
-        let mut query_list: Vec<QueryItem> = STANDARD_QUERIES.iter().map(|s| QueryItem::Text(s.to_string())).collect();
+        let mut query_list: Vec<QueryItem> = STANDARD_QUERIES
+            .iter()
+            .map(|s| QueryItem::Text(s.to_string()))
+            .collect();
         if !config.get_bool("enwikiQueryMaker.disableSpanQueries", false)? {
-            query_list.extend(Self::get_prebuilt_queries(DocMaker::BODY_FIELD)?.into_iter().map(QueryItem::Query));
+            query_list.extend(
+                Self::get_prebuilt_queries(DocMaker::BODY_FIELD)?
+                    .into_iter()
+                    .map(QueryItem::Query),
+            );
         }
         create_queries(query_list, anlzr)
     }

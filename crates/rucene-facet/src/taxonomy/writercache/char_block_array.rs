@@ -25,20 +25,21 @@ use rucene::error::{LuceneError, Result};
 ///
 /// Equivalent to `org.apache.lucene.facet.taxonomy.writercache.CharBlockArray`;
 /// Java `char`s are UTF-16 code units.
+// Java package-private class; public for the port of `TestCharBlockArray`.
 #[derive(Debug, Clone)]
-pub(crate) struct CharBlockArray {
-    pub(crate) blocks: Vec<Block>,
+pub struct CharBlockArray {
+    pub blocks: Vec<Block>,
     /// Index of the current block in `blocks` (Java's `current` reference).
     current: usize,
-    pub(crate) block_size: usize,
-    pub(crate) length: usize,
+    pub block_size: usize,
+    pub length: usize,
 }
 
 /// Equivalent to `org.apache.lucene.facet.taxonomy.writercache.CharBlockArray.Block`.
 #[derive(Debug, Clone)]
-pub(crate) struct Block {
-    pub(crate) chars: Vec<u16>,
-    pub(crate) length: usize,
+pub struct Block {
+    pub chars: Vec<u16>,
+    pub length: usize,
 }
 
 impl Block {
@@ -56,12 +57,12 @@ impl CharBlockArray {
     const DEFAULT_BLOCK_SIZE: usize = 32 * 1024;
 
     /// Equivalent to `CharBlockArray()`.
-    pub(crate) fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         Self::with_block_size(Self::DEFAULT_BLOCK_SIZE)
     }
 
     /// Equivalent to `CharBlockArray(int)`.
-    pub(crate) fn with_block_size(block_size: usize) -> Result<Self> {
+    pub fn with_block_size(block_size: usize) -> Result<Self> {
         let mut array = Self {
             blocks: Vec::new(),
             current: 0,
@@ -85,22 +86,22 @@ impl CharBlockArray {
     }
 
     /// Equivalent to `blockIndex(int)`.
-    pub(crate) fn block_index(&self, index: usize) -> usize {
+    pub fn block_index(&self, index: usize) -> usize {
         index / self.block_size
     }
 
     /// Equivalent to `indexInBlock(int)`.
-    pub(crate) fn index_in_block(&self, index: usize) -> usize {
+    pub fn index_in_block(&self, index: usize) -> usize {
         index % self.block_size
     }
 
     /// Equivalent to `append(CharSequence)`.
-    pub(crate) fn append_char_sequence(&mut self, chars: &[u16]) -> Result<&mut Self> {
+    pub fn append_char_sequence(&mut self, chars: &[u16]) -> Result<&mut Self> {
         self.append_char_sequence_range(chars, 0, chars.len())
     }
 
     /// Equivalent to `append(char)`.
-    pub(crate) fn append_char(&mut self, c: u16) -> Result<&mut Self> {
+    pub fn append_char(&mut self, c: u16) -> Result<&mut Self> {
         if self.blocks[self.current].length == self.block_size {
             self.add_block()?;
         }
@@ -112,7 +113,7 @@ impl CharBlockArray {
     }
 
     /// Equivalent to `append(CharSequence, int, int)`.
-    pub(crate) fn append_char_sequence_range(
+    pub fn append_char_sequence_range(
         &mut self,
         chars: &[u16],
         start: usize,
@@ -126,7 +127,7 @@ impl CharBlockArray {
     }
 
     /// Equivalent to `append(char[], int, int)`.
-    pub(crate) fn append_chars(
+    pub fn append_chars(
         &mut self,
         chars: &[u16],
         start: usize,
@@ -155,24 +156,24 @@ impl CharBlockArray {
     }
 
     /// Equivalent to `append(String)`.
-    pub(crate) fn append_str(&mut self, s: &str) -> Result<&mut Self> {
+    pub fn append_str(&mut self, s: &str) -> Result<&mut Self> {
         let units: Vec<u16> = s.encode_utf16().collect();
         self.append_chars(&units, 0, units.len())
     }
 
     /// Equivalent to `charAt(int)`.
-    pub(crate) fn char_at(&self, index: usize) -> u16 {
+    pub fn char_at(&self, index: usize) -> u16 {
         let b = &self.blocks[self.block_index(index)];
         b.chars[self.index_in_block(index)]
     }
 
     /// Equivalent to `length()`.
-    pub(crate) fn length(&self) -> usize {
+    pub fn length(&self) -> usize {
         self.length
     }
 
     /// Equivalent to `subSequence(int, int)`.
-    pub(crate) fn sub_sequence(&self, start: usize, end: usize) -> String {
+    pub fn sub_sequence(&self, start: usize, end: usize) -> String {
         let mut remaining = end - start;
         let mut sb: Vec<u16> = Vec::with_capacity(remaining);
         let mut block_idx = self.block_index(start);

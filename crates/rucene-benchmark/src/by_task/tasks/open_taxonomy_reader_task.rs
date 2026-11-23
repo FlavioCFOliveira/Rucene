@@ -42,7 +42,9 @@ impl OpenTaxonomyReaderTask {
     ///
     /// The exception of the `PerfTask` constructor.
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
-        Ok(OpenTaxonomyReaderTask { base: PerfTaskBase::new(run_data, "OpenTaxonomyReaderTask")? })
+        Ok(OpenTaxonomyReaderTask {
+            base: PerfTaskBase::new(run_data, "OpenTaxonomyReaderTask")?,
+        })
     }
 }
 
@@ -50,12 +52,16 @@ impl PerfTask for OpenTaxonomyReaderTask {
     perf_task::perf_task_plumbing!();
 
     fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
-        Ok(Arc::new(OpenTaxonomyReaderTask { base: self.base.clone_base() }))
+        Ok(Arc::new(OpenTaxonomyReaderTask {
+            base: self.base.clone_base(),
+        }))
     }
 
     fn do_logic(&self) -> Result<i32> {
         let run_data = self.base.get_run_data();
-        let dir = run_data.get_taxonomy_dir().ok_or_else(LuceneError::null_pointer)?;
+        let dir = run_data
+            .get_taxonomy_dir()
+            .ok_or_else(LuceneError::null_pointer)?;
         let taxo_reader: Arc<dyn TaxonomyReader> = Arc::new(DirectoryTaxonomyReader::open(dir)?);
         run_data.set_taxonomy_reader(Some(Arc::clone(&taxo_reader)))?;
         // We transfer reference to the run data

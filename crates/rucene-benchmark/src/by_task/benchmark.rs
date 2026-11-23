@@ -69,19 +69,24 @@ impl Benchmark {
     /// `Exception("Error: cannot understand algorithm!", e)`.
     pub fn new(alg_reader: &str) -> Result<Benchmark> {
         // prepare run data
-        let run_data = match Config::from_reader(alg_reader).and_then(|c| PerfRunData::new(Arc::new(c))) {
-            Ok(r) => r,
-            Err(e) => {
-                // e.printStackTrace()
-                eprintln!("{e}");
-                return Err(exception_with_cause("Error: cannot init PerfRunData!", e));
-            }
-        };
+        let run_data =
+            match Config::from_reader(alg_reader).and_then(|c| PerfRunData::new(Arc::new(c))) {
+                Ok(r) => r,
+                Err(e) => {
+                    // e.printStackTrace()
+                    eprintln!("{e}");
+                    return Err(exception_with_cause("Error: cannot init PerfRunData!", e));
+                }
+            };
 
         // parse algorithm
         let algorithm = Algorithm::new(Arc::clone(&run_data))
             .map_err(|e| exception_with_cause("Error: cannot understand algorithm!", e))?;
-        Ok(Benchmark { run_data, algorithm, executed: Mutex::new(false) })
+        Ok(Benchmark {
+            run_data,
+            algorithm,
+            executed: Mutex::new(false),
+        })
     }
 
     /// `execute()`: execute this benchmark.
@@ -146,7 +151,10 @@ impl Benchmark {
 
         // execute
         if let Err(e) = benchmark.execute() {
-            eprintln!("Error: cannot execute the algorithm! {}", jdk::get_message(&e).unwrap_or_else(|| "null".to_string()));
+            eprintln!(
+                "Error: cannot execute the algorithm! {}",
+                jdk::get_message(&e).unwrap_or_else(|| "null".to_string())
+            );
             eprintln!("{e}");
         }
 

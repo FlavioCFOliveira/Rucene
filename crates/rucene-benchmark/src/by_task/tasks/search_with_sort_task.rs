@@ -47,7 +47,11 @@ impl SearchWithSortTask {
     pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
         let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchWithSortTask")?;
         let read = ReadTaskBase::new(true, || query_maker_of::<SearchWithSortTask>(&run_data))?;
-        Ok(SearchWithSortTask { base, read, sort: Mutex::new(None) })
+        Ok(SearchWithSortTask {
+            base,
+            read,
+            sort: Mutex::new(None),
+        })
     }
 }
 
@@ -90,11 +94,16 @@ impl PerfTask for SearchWithSortTask {
                 SortField::FIELD_SCORE.clone()
             } else {
                 let Some(index) = field.rfind(':') else {
-                    return Err(jdk::runtime_exception("You must specify the sort type ie page:int,subject:string"));
+                    return Err(jdk::runtime_exception(
+                        "You must specify the sort type ie page:int,subject:string",
+                    ));
                 };
                 let field_name = &field[..index];
                 let type_string = &field[1 + index..];
-                SortField::new(Some(field_name.to_string()), sort_type_value_of(&type_string.to_uppercase())?)?
+                SortField::new(
+                    Some(field_name.to_string()),
+                    sort_type_value_of(&type_string.to_uppercase())?,
+                )?
             };
             sort_fields.push(sort_field0);
         }

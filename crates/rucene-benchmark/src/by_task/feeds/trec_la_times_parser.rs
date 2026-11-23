@@ -22,7 +22,9 @@ use rucene::error::Result;
 
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::trec_content_source::TrecContentSource;
-use crate::by_task::feeds::trec_doc_parser::{extract, strip_tags, strip_tags_buf, ParsePathType, TrecDocParser};
+use crate::by_task::feeds::trec_doc_parser::{
+    extract, strip_tags, strip_tags_buf, ParsePathType, TrecDocParser,
+};
 use crate::jdk;
 
 /// `DATE`.
@@ -63,7 +65,8 @@ impl TrecDocParser for TrecLATimesParser {
             let units: Vec<u16> = date_str.encode_utf16().collect();
             let d2a = crate::by_task::feeds::trec_doc_parser::index_of(&units, DATE_NOISE, 0);
             if d2a > 0 {
-                date_str = String::from_utf16_lossy(&units[..(d2a + 3) as usize]); // we need the "day" part
+                date_str = String::from_utf16_lossy(&units[..(d2a + 3) as usize]);
+                // we need the "day" part
             }
             let date_str = strip_tags(&date_str, 0)?;
             date = trec_src.parse_date(jdk::java_trim(&date_str))?;

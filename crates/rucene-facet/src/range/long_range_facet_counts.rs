@@ -113,10 +113,14 @@ impl LongRangeFacetCounts {
             base: RangeFacetCounts::new(field, Ranges::Long(ranges), fast_match_query),
         };
         match values_source {
-            Some(values_source) => match <dyn MultiLongValuesSource>::unwrap_singleton(&*values_source) {
-                Some(single_values) => this.count_source(single_values, hits.get_matching_docs()?)?,
-                None => this.count_multi_source(&*values_source, hits.get_matching_docs()?)?,
-            },
+            Some(values_source) => {
+                match <dyn MultiLongValuesSource>::unwrap_singleton(&*values_source) {
+                    Some(single_values) => {
+                        this.count_source(single_values, hits.get_matching_docs()?)?
+                    }
+                    None => this.count_multi_source(&*values_source, hits.get_matching_docs()?)?,
+                }
+            }
             None => this.base.count_field(field, hits.get_matching_docs()?)?,
         }
         Ok(this)
@@ -125,7 +129,11 @@ impl LongRangeFacetCounts {
     /// Counts from the provided `LongValuesSource`.
     ///
     /// Equivalent to `count(LongValuesSource, List)`.
-    fn count_source(&mut self, value_source: Arc<dyn LongValuesSource>, matching_docs: &[MatchingDocs]) -> Result<()> {
+    fn count_source(
+        &mut self,
+        value_source: Arc<dyn LongValuesSource>,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         let mut counter: Option<Box<dyn LongRangeCounter>> = None;
         let mut missing_count = 0;
         for hits in matching_docs {
@@ -168,7 +176,11 @@ impl LongRangeFacetCounts {
     /// Counts from the provided `MultiLongValuesSource`.
     ///
     /// Equivalent to `count(MultiLongValuesSource, List)`.
-    fn count_multi_source(&mut self, value_source: &dyn MultiLongValuesSource, matching_docs: &[MatchingDocs]) -> Result<()> {
+    fn count_multi_source(
+        &mut self,
+        value_source: &dyn MultiLongValuesSource,
+        matching_docs: &[MatchingDocs],
+    ) -> Result<()> {
         let mut counter: Option<Box<dyn LongRangeCounter>> = None;
         for hits in matching_docs {
             if hits.total_hits == 0 {

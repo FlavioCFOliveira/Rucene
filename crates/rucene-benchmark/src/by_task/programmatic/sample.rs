@@ -89,16 +89,28 @@ impl Sample {
         let mut p = Properties::new();
         p.set_property("task.max.depth.log", "3");
         p.set_property("max.buffered", "buf:10:10:100:100:10:10:100:100");
-        p.set_property("doc.maker", "org.apache.lucene.benchmark.byTask.feeds.ReutersContentSource");
+        p.set_property(
+            "doc.maker",
+            "org.apache.lucene.benchmark.byTask.feeds.ReutersContentSource",
+        );
         p.set_property("log.step", "2000");
         p.set_property("doc.delete.step", "8");
-        p.set_property("analyzer", "org.apache.lucene.analysis.standard.StandardAnalyzer");
+        p.set_property(
+            "analyzer",
+            "org.apache.lucene.analysis.standard.StandardAnalyzer",
+        );
         p.set_property("doc.term.vector", "false");
         p.set_property("directory", "FSDirectory");
-        p.set_property("query.maker", "org.apache.lucene.benchmark.byTask.feeds.ReutersQueryMaker");
+        p.set_property(
+            "query.maker",
+            "org.apache.lucene.benchmark.byTask.feeds.ReutersQueryMaker",
+        );
         p.set_property("doc.stored", "true");
         p.set_property("docs.dir", "reuters-out");
-        p.set_property("compound", "cmpnd:true:true:true:true:false:false:false:false");
+        p.set_property(
+            "compound",
+            "cmpnd:true:true:true:true:false:false:false:false",
+        );
         p.set_property("doc.tokenized", "true");
         p.set_property("merge.factor", "mrg:10:100:10:100:10:100:10:100");
         p

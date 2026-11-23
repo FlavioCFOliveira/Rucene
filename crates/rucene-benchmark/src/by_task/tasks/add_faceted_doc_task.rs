@@ -82,7 +82,11 @@ impl PerfTask for AddFacetedDocTask {
         self.add.setup(self.base.get_run_data())?;
         let mut config = jdk::lock(&self.config);
         if config.is_none() {
-            let with_facets = self.base.get_run_data().get_config().get_bool("with.facets", true)?;
+            let with_facets = self
+                .base
+                .get_run_data()
+                .get_config()
+                .get_bool("with.facets", true)?;
             if with_facets {
                 let facets_source = self.base.get_run_data().get_facet_source();
                 let c = FacetsConfig::new();
@@ -112,7 +116,9 @@ impl PerfTask for AddFacetedDocTask {
             let mut facets: Vec<FacetField> = Vec::new();
             run_data.get_facet_source().get_next_facets(&mut facets)?;
             let mut doc = jdk::lock(&self.add.doc);
-            let d = doc.as_mut().ok_or_else(rucene::error::LuceneError::null_pointer)?;
+            let d = doc
+                .as_mut()
+                .ok_or_else(rucene::error::LuceneError::null_pointer)?;
             for ff in facets {
                 d.add(ff);
             }

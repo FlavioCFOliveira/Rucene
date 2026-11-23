@@ -49,7 +49,10 @@ impl DateFormatInfo {
     pub(crate) fn new() -> Result<Self> {
         let df = SimpleDateFormat::new("dd-MMM-yyyy kk:mm:ss.SSS", &Locale::english())?;
         df.set_lenient(true);
-        Ok(DateFormatInfo { df, pos: ParsePosition::new(0) })
+        Ok(DateFormatInfo {
+            df,
+            pos: ParsePosition::new(0),
+        })
     }
 
     /// `parseDate(String dateStr)`: `df.parse(dateStr.trim(), pos)` after
@@ -57,7 +60,8 @@ impl DateFormatInfo {
     pub(crate) fn parse_date(&mut self, date_str: &str) -> Result<Option<Date>> {
         self.pos.index = 0;
         self.pos.error_index = -1;
-        self.df.parse_position(jdk::java_trim(date_str), &mut self.pos)
+        self.df
+            .parse_position(jdk::java_trim(date_str), &mut self.pos)
     }
 }
 
@@ -102,7 +106,11 @@ impl Iterator {
     ///
     /// The `IOException` of listing the directories.
     pub fn new(f: &Path) -> Result<Self> {
-        let mut it = Iterator { count: 0, stack: Vec::new(), c: Comparator };
+        let mut it = Iterator {
+            count: 0,
+            stack: Vec::new(),
+            c: Comparator,
+        };
         it.push(f)?;
         Ok(it)
     }
@@ -167,12 +175,13 @@ impl Iterator {
     ///
     /// A `RuntimeException` wrapping the `IOException` of listing; Java's
     /// `ArrayDeque.pop()` `NoSuchElementException` when empty.
+    // Java's `Iterator<Path>.next()` throws; it returns `Result` here.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<PathBuf> {
         self.count += 1;
-        let object = self
-            .stack
-            .pop()
-            .ok_or_else(|| LuceneError::unchecked_with_message("java.util.NoSuchElementException", None))?;
+        let object = self.stack.pop().ok_or_else(|| {
+            LuceneError::unchecked_with_message("java.util.NoSuchElementException", None)
+        })?;
         self.find().map_err(jdk::runtime_exception_from)?;
         Ok(object)
     }
@@ -221,7 +230,10 @@ impl DirContentSource {
     fn get_date_format_info(&self) -> Result<Arc<Mutex<DateFormatInfo>>> {
         match self.date_format.get() {
             Some(dfi) => Ok(dfi),
-            None => Ok(self.date_format.set(Some(DateFormatInfo::new()?)).expect("just set")),
+            None => Ok(self
+                .date_format
+                .set(Some(DateFormatInfo::new()?))
+                .expect("just set")),
         }
     }
 }
@@ -273,8 +285,14 @@ impl ContentItemsSource for DirContentSource {
 
     fn set_config(&self, config: Arc<Config>) -> Result<()> {
         self.base.set_config(Arc::clone(&config))?;
-        let work_dir = PathBuf::from(config.get_str("work.dir", Some("work"))?.unwrap_or_default());
-        let d = config.get_str("docs.dir", Some("dir-out"))?.unwrap_or_default();
+        let work_dir = PathBuf::from(
+            config
+                .get_str("work.dir", Some("work"))?
+                .unwrap_or_default(),
+        );
+        let d = config
+            .get_str("docs.dir", Some("dir-out"))?
+            .unwrap_or_default();
         let mut data_dir = PathBuf::from(&d);
         if !data_dir.is_absolute() {
             data_dir = work_dir.join(&d);
@@ -295,7 +313,11 @@ impl ContentSource for DirContentSource {
     fn get_next_doc_data(&self, doc_data: &mut DocData) -> Result<()> {
         let (f, name) = {
             let mut s = jdk::lock(&self.state);
-            let has_next = s.input_files.as_ref().ok_or_else(LuceneError::null_pointer)?.has_next();
+            let has_next = s
+                .input_files
+                .as_ref()
+                .ok_or_else(LuceneError::null_pointer)?
+                .has_next();
             if !has_next {
                 // exhausted files, start a new round, unless forever set to false.
                 if !self.base.forever() {

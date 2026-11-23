@@ -140,7 +140,8 @@ impl LabelAndValue {
 
     /// Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        java_string_hash_code(&self.label).wrapping_add(1439i32.wrapping_mul(number_hash_code(&self.value)))
+        java_string_hash_code(&self.label)
+            .wrapping_add(1439i32.wrapping_mul(number_hash_code(&self.value)))
     }
 }
 

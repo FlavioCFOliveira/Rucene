@@ -29,7 +29,13 @@ pub trait ContentHandler {
     /// Equivalent to `endPrefixMapping(String)`.
     fn end_prefix_mapping(&self, prefix: &str) -> JResult<()>;
     /// Equivalent to `startElement(String, String, String, Attributes)`.
-    fn start_element(&self, uri: &str, local_name: &str, qname: &str, atts: &dyn Attributes) -> JResult<()>;
+    fn start_element(
+        &self,
+        uri: &str,
+        local_name: &str,
+        qname: &str,
+        atts: &dyn Attributes,
+    ) -> JResult<()>;
     /// Equivalent to `endElement(String, String, String)`.
     fn end_element(&self, uri: &str, local_name: &str, qname: &str) -> JResult<()>;
     /// Equivalent to `characters(char[], int, int)`.

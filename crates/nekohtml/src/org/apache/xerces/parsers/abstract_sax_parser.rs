@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -23,7 +23,10 @@ use std::rc::{Rc, Weak};
 use rucene_queryparser::jdk::locale::Locale;
 use rucene_queryparser::jdk::object::JavaObject;
 
-use crate::java::{interface_object, object_as_bool, object_as_interface, string_object, Exception, JResult, Object};
+use crate::java::{
+    interface_object, object_as_bool, object_as_interface, string_object, Exception, JResult,
+    Object,
+};
 use crate::org::apache::xerces::parsers::abstract_xml_document_parser::AbstractXMLDocumentParser;
 use crate::org::apache::xerces::parsers::xml_parser::{ENTITY_RESOLVER, ERROR_HANDLER};
 use crate::org::apache::xerces::r#impl::constants;
@@ -35,7 +38,9 @@ use crate::org::apache::xerces::util::symbol_hash::SymbolHash;
 use crate::org::apache::xerces::util::xml_symbols;
 use crate::org::apache::xerces::xni::augmentations::Augmentations;
 use crate::org::apache::xerces::xni::namespace_context::NamespaceContext;
-use crate::org::apache::xerces::xni::parser::xml_configuration_exception::{XMLConfigurationException, NOT_RECOGNIZED};
+use crate::org::apache::xerces::xni::parser::xml_configuration_exception::{
+    XMLConfigurationException, NOT_RECOGNIZED,
+};
 use crate::org::apache::xerces::xni::parser::xml_document_source::XMLDocumentSource;
 use crate::org::apache::xerces::xni::parser::xml_dtd_content_model_source::XMLDTDContentModelSource;
 use crate::org::apache::xerces::xni::parser::xml_dtd_source::XMLDTDSource;
@@ -78,25 +83,36 @@ use crate::org::xml::sax::sax_parse_exception::SAXParseException;
 use crate::org::xml::sax::xml_reader::XMLReader;
 
 /// Feature identifier: namespaces.
-pub const NAMESPACES: &str = concatcp!(constants::SAX_FEATURE_PREFIX, constants::NAMESPACES_FEATURE);
+pub const NAMESPACES: &str =
+    concatcp!(constants::SAX_FEATURE_PREFIX, constants::NAMESPACES_FEATURE);
 
 /// Feature id: string interning.
-pub const STRING_INTERNING: &str = concatcp!(constants::SAX_FEATURE_PREFIX, constants::STRING_INTERNING_FEATURE);
+pub const STRING_INTERNING: &str = concatcp!(
+    constants::SAX_FEATURE_PREFIX,
+    constants::STRING_INTERNING_FEATURE
+);
 
 /// Feature identifier: allow notation and unparsed entity events to be
 /// sent out of order.
-pub const ALLOW_UE_AND_NOTATION_EVENTS: &str =
-    concatcp!(constants::SAX_FEATURE_PREFIX, constants::ALLOW_DTD_EVENTS_AFTER_ENDDTD_FEATURE);
+pub const ALLOW_UE_AND_NOTATION_EVENTS: &str = concatcp!(
+    constants::SAX_FEATURE_PREFIX,
+    constants::ALLOW_DTD_EVENTS_AFTER_ENDDTD_FEATURE
+);
 
 /// Recognized features.
 const RECOGNIZED_FEATURES: [&str; 2] = [NAMESPACES, STRING_INTERNING];
 
 /// Property id: lexical handler.
-pub const LEXICAL_HANDLER: &str = concatcp!(constants::SAX_PROPERTY_PREFIX, constants::LEXICAL_HANDLER_PROPERTY);
+pub const LEXICAL_HANDLER: &str = concatcp!(
+    constants::SAX_PROPERTY_PREFIX,
+    constants::LEXICAL_HANDLER_PROPERTY
+);
 
 /// Property id: declaration handler.
-pub const DECLARATION_HANDLER: &str =
-    concatcp!(constants::SAX_PROPERTY_PREFIX, constants::DECLARATION_HANDLER_PROPERTY);
+pub const DECLARATION_HANDLER: &str = concatcp!(
+    constants::SAX_PROPERTY_PREFIX,
+    constants::DECLARATION_HANDLER_PROPERTY
+);
 
 /// Property id: DOM node.
 pub const DOM_NODE: &str = concatcp!(constants::SAX_PROPERTY_PREFIX, constants::DOM_NODE_PROPERTY);
@@ -110,7 +126,11 @@ type AugmentationsSnapshot = Option<Option<Object>>;
 
 /// What `fAttributesProxy.fAttributes` held for `getAttributePSVI`: each
 /// attribute's namespace URI, local name and augmentations.
-type AttributesSnapshot = Vec<(Option<String>, Option<String>, Option<Rc<dyn Augmentations>>)>;
+type AttributesSnapshot = Vec<(
+    Option<String>,
+    Option<String>,
+    Option<Rc<dyn Augmentations>>,
+)>;
 
 /// This is the base class of all SAX parsers. It implements both the SAX1
 /// and SAX2 parser functionality, while the actual pipeline is defined in
@@ -242,7 +262,10 @@ impl AbstractSAXParser {
 
         let features: Vec<String> = RECOGNIZED_FEATURES.iter().map(|s| s.to_string()).collect();
         config.add_recognized_features(Some(&features));
-        let properties: Vec<String> = RECOGNIZED_PROPERTIES.iter().map(|s| s.to_string()).collect();
+        let properties: Vec<String> = RECOGNIZED_PROPERTIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         config.add_recognized_properties(Some(&properties));
 
         // XMLConfigurationException: it wasn't a recognized feature, so we
@@ -265,7 +288,10 @@ impl AbstractSAXParser {
     }
 
     fn not_supported(&self, key: &str, args: &[&str]) -> Exception {
-        let args: Vec<JavaObject> = args.iter().map(|a| JavaObject::String(a.to_string())).collect();
+        let args: Vec<JavaObject> = args
+            .iter()
+            .map(|a| JavaObject::String(a.to_string()))
+            .collect();
         match self.format(key, Some(&args)) {
             Ok(m) => SAXNotSupportedException::with_message(Some(&m)).into(),
             Err(e) => e,
@@ -273,7 +299,10 @@ impl AbstractSAXParser {
     }
 
     fn not_recognized(&self, key: &str, args: &[&str]) -> Exception {
-        let args: Vec<JavaObject> = args.iter().map(|a| JavaObject::String(a.to_string())).collect();
+        let args: Vec<JavaObject> = args
+            .iter()
+            .map(|a| JavaObject::String(a.to_string()))
+            .collect();
         match self.format(key, Some(&args)) {
             Ok(m) => SAXNotRecognizedException::with_message(Some(&m)).into(),
             Err(e) => e,
@@ -322,7 +351,11 @@ impl AbstractSAXParser {
     /// The `SAXException` or `IOException` of the parse.
     pub fn parse(&self, input_source: &InputSource) -> JResult<()> {
         // parse document
-        let mut xml_input_source = XMLInputSource::new(input_source.get_public_id(), input_source.get_system_id(), None);
+        let mut xml_input_source = XMLInputSource::new(
+            input_source.get_public_id(),
+            input_source.get_system_id(),
+            None,
+        );
         xml_input_source.set_byte_stream(input_source.get_byte_stream());
         xml_input_source.set_character_stream(input_source.get_character_stream());
         xml_input_source.set_encoding(input_source.get_encoding());
@@ -351,11 +384,14 @@ impl AbstractSAXParser {
                 locator_impl.base.set_line_number(pe.get_line_number());
                 locator_impl.base.set_column_number(pe.get_column_number());
                 return Err(match ex {
-                    None => SAXParseException::with_locator(pe.get_message(), Some(&locator_impl)).into(),
-                    Some(ex) => {
-                        SAXParseException::with_locator_and_exception(pe.get_message(), Some(&locator_impl), Some(ex))
-                            .into()
-                    }
+                    None => SAXParseException::with_locator(pe.get_message(), Some(&locator_impl))
+                        .into(),
+                    Some(ex) => SAXParseException::with_locator_and_exception(
+                        pe.get_message(),
+                        Some(&locator_impl),
+                        Some(ex),
+                    )
+                    .into(),
                 });
             }
             return Err(match ex.expect("INVARIANT: checked above") {
@@ -392,19 +428,33 @@ impl AbstractSAXParser {
             return;
         };
         let xer: Option<Rc<dyn XMLEntityResolver>> = xer.as_ref().and_then(object_as_interface);
-        let is_resolver2 = resolver.as_ref().is_some_and(|r| r.as_entity_resolver2().is_some());
+        let is_resolver2 = resolver
+            .as_ref()
+            .is_some_and(|r| r.as_entity_resolver2().is_some());
         if self.use_entity_resolver2.get() && is_resolver2 {
-            if let Some(er2w) = xer.as_ref().and_then(|x| x.as_any().downcast_ref::<EntityResolver2Wrapper>()) {
+            if let Some(er2w) = xer
+                .as_ref()
+                .and_then(|x| x.as_any().downcast_ref::<EntityResolver2Wrapper>())
+            {
                 er2w.set_entity_resolver(resolver);
             } else {
-                let w: Rc<dyn XMLEntityResolver> = Rc::new(EntityResolver2Wrapper::with_resolver(resolver));
-                let _ = self.configuration().set_property(ENTITY_RESOLVER, Some(interface_object(w)));
+                let w: Rc<dyn XMLEntityResolver> =
+                    Rc::new(EntityResolver2Wrapper::with_resolver(resolver));
+                let _ = self
+                    .configuration()
+                    .set_property(ENTITY_RESOLVER, Some(interface_object(w)));
             }
-        } else if let Some(erw) = xer.as_ref().and_then(|x| x.as_any().downcast_ref::<EntityResolverWrapper>()) {
+        } else if let Some(erw) = xer
+            .as_ref()
+            .and_then(|x| x.as_any().downcast_ref::<EntityResolverWrapper>())
+        {
             erw.set_entity_resolver(resolver);
         } else {
-            let w: Rc<dyn XMLEntityResolver> = Rc::new(EntityResolverWrapper::with_resolver(resolver));
-            let _ = self.configuration().set_property(ENTITY_RESOLVER, Some(interface_object(w)));
+            let w: Rc<dyn XMLEntityResolver> =
+                Rc::new(EntityResolverWrapper::with_resolver(resolver));
+            let _ = self
+                .configuration()
+                .set_property(ENTITY_RESOLVER, Some(interface_object(w)));
         }
     }
 
@@ -435,11 +485,17 @@ impl AbstractSAXParser {
             return;
         };
         let xeh: Option<Rc<dyn XMLErrorHandler>> = xeh.as_ref().and_then(object_as_interface);
-        if let Some(ehw) = xeh.as_ref().and_then(|x| x.as_any().downcast_ref::<ErrorHandlerWrapper>()) {
+        if let Some(ehw) = xeh
+            .as_ref()
+            .and_then(|x| x.as_any().downcast_ref::<ErrorHandlerWrapper>())
+        {
             ehw.set_error_handler(error_handler);
         } else {
-            let w: Rc<dyn XMLErrorHandler> = Rc::new(ErrorHandlerWrapper::with_handler(error_handler));
-            let _ = self.configuration().set_property(ERROR_HANDLER, Some(interface_object(w)));
+            let w: Rc<dyn XMLErrorHandler> =
+                Rc::new(ErrorHandlerWrapper::with_handler(error_handler));
+            let _ = self
+                .configuration()
+                .set_property(ERROR_HANDLER, Some(interface_object(w)));
         }
     }
 
@@ -683,7 +739,9 @@ impl AbstractSAXParser {
             }
             // http://xml.org/sax/features/use-attributes2
             // http://xml.org/sax/features/use-locator2
-            if suffix == constants::USE_ATTRIBUTES2_FEATURE || suffix == constants::USE_LOCATOR2_FEATURE {
+            if suffix == constants::USE_ATTRIBUTES2_FEATURE
+                || suffix == constants::USE_LOCATOR2_FEATURE
+            {
                 return Ok(true);
             }
 
@@ -764,7 +822,9 @@ impl AbstractSAXParser {
             // Access: read-only
             //   The literal string describing the actual XML version of the
             //   document.
-            if suffix == constants::DOM_NODE_PROPERTY || suffix == constants::DOCUMENT_XML_VERSION_PROPERTY {
+            if suffix == constants::DOM_NODE_PROPERTY
+                || suffix == constants::DOCUMENT_XML_VERSION_PROPERTY
+            {
                 return Err(self.not_supported("property-read-only", &[property_id]));
             }
             //
@@ -949,7 +1009,8 @@ impl AbstractSAXParser {
         self.standalone.set(false);
 
         // features
-        self.namespaces.set(self.configuration().get_feature(NAMESPACES)?);
+        self.namespaces
+            .set(self.configuration().get_feature(NAMESPACES)?);
         *self.augmentations.borrow_mut() = None;
         *self.declared_attrs.borrow_mut() = None;
         Ok(())
@@ -959,7 +1020,11 @@ impl AbstractSAXParser {
         let mut snapshot = self.attributes.borrow_mut();
         snapshot.clear();
         for i in 0..attributes.get_length() {
-            snapshot.push((attributes.get_uri(i), attributes.get_local_name(i), attributes.get_augmentations(i)));
+            snapshot.push((
+                attributes.get_uri(i),
+                attributes.get_local_name(i),
+                attributes.get_augmentations(i),
+            ));
         }
     }
 
@@ -1062,7 +1127,12 @@ impl XMLDocumentHandler for AbstractSAXParser {
         Ok(())
     }
 
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, _augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        _augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         //
         // REVISIT - I keep running into SAX apps that expect
         //   null data to be an empty string, which is contrary
@@ -1084,7 +1154,12 @@ impl XMLDocumentHandler for AbstractSAXParser {
     }
 
     /// The start of an element.
-    fn start_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         (|| -> JResult<()> {
             // SAX1
             let dh_handler = self.document_handler.borrow().clone();
@@ -1092,7 +1167,9 @@ impl XMLDocumentHandler for AbstractSAXParser {
                 // REVISIT: should we support schema-normalized-value for SAX1
                 // events?
                 self.snapshot_attributes(&*attributes);
-                let proxy = AttributesProxy { attributes: &*attributes };
+                let proxy = AttributesProxy {
+                    attributes: &*attributes,
+                };
                 dh.start_element(element.rawname.as_deref().unwrap_or(""), &proxy)?;
             }
 
@@ -1150,8 +1227,15 @@ impl XMLDocumentHandler for AbstractSAXParser {
                     String::new()
                 };
                 self.snapshot_attributes(&*attributes);
-                let proxy = AttributesProxy { attributes: &*attributes };
-                ch.start_element(&uri, &localpart, element.rawname.as_deref().unwrap_or(""), &proxy)?;
+                let proxy = AttributesProxy {
+                    attributes: &*attributes,
+                };
+                ch.start_element(
+                    &uri,
+                    &localpart,
+                    element.rawname.as_deref().unwrap_or(""),
+                    &proxy,
+                )?;
             }
             Ok(())
         })()
@@ -1159,7 +1243,12 @@ impl XMLDocumentHandler for AbstractSAXParser {
     }
 
     /// An empty element: `AbstractXMLDocumentParser`'s body.
-    fn empty_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn empty_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.start_element(element, attributes, augs)?;
         self.end_element(element, augs)
     }
@@ -1193,7 +1282,12 @@ impl XMLDocumentHandler for AbstractSAXParser {
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn text_decl(&self, _version: Option<&str>, _encoding: Option<&str>, _augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn text_decl(
+        &self,
+        _version: Option<&str>,
+        _encoding: Option<&str>,
+        _augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -1241,7 +1335,11 @@ impl XMLDocumentHandler for AbstractSAXParser {
     }
 
     /// Ignorable whitespace.
-    fn ignorable_whitespace(&self, text: &XMLString, _augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignorable_whitespace(
+        &self,
+        text: &XMLString,
+        _augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         let ch = text.ch.as_deref().unwrap_or(&[]);
         (|| -> JResult<()> {
             // SAX1
@@ -1341,7 +1439,11 @@ impl XMLDocumentHandler for AbstractSAXParser {
 
 impl XMLDTDHandler for AbstractSAXParser {
     /// `AbstractXMLDocumentParser`'s body.
-    fn start_dtd(&self, _locator: Option<Rc<dyn XMLLocator>>, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_dtd(
+        &self,
+        _locator: Option<Rc<dyn XMLLocator>>,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         self.base.start_dtd();
         Ok(())
     }
@@ -1377,7 +1479,12 @@ impl XMLDTDHandler for AbstractSAXParser {
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn text_decl(&self, _version: Option<&str>, _encoding: Option<&str>, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn text_decl(
+        &self,
+        _version: Option<&str>,
+        _encoding: Option<&str>,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -1414,17 +1521,31 @@ impl XMLDTDHandler for AbstractSAXParser {
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn comment(&self, _text: &XMLString, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn comment(
+        &self,
+        _text: &XMLString,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn processing_instruction(&self, _target: &str, _data: Option<&XMLString>, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn processing_instruction(
+        &self,
+        _target: &str,
+        _data: Option<&XMLString>,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
     /// An element declaration.
-    fn element_decl(&self, name: &str, content_model: &str, _augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn element_decl(
+        &self,
+        name: &str,
+        content_model: &str,
+        _augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         let dh_handler = self.decl_handler.borrow().clone();
         if let Some(dh) = dh_handler {
             dh.element_decl(name, content_model).map_err(xni)?;
@@ -1433,7 +1554,11 @@ impl XMLDTDHandler for AbstractSAXParser {
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn start_attlist(&self, _element_name: &str, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_attlist(
+        &self,
+        _element_name: &str,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -1486,8 +1611,14 @@ impl XMLDTDHandler for AbstractSAXParser {
             type_ = str;
         }
         let value = default_value.map(XMLString::to_java_string);
-        dh.attribute_decl(element_name, attribute_name, &type_, default_type, value.as_deref())
-            .map_err(xni)
+        dh.attribute_decl(
+            element_name,
+            attribute_name,
+            &type_,
+            default_type,
+            value.as_deref(),
+        )
+        .map_err(xni)
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
@@ -1505,7 +1636,8 @@ impl XMLDTDHandler for AbstractSAXParser {
     ) -> JResult<()> {
         let dh_handler = self.decl_handler.borrow().clone();
         if let Some(dh) = dh_handler {
-            dh.internal_entity_decl(name, &text.to_java_string()).map_err(xni)?;
+            dh.internal_entity_decl(name, &text.to_java_string())
+                .map_err(xni)?;
         }
         Ok(())
     }
@@ -1554,7 +1686,12 @@ impl XMLDTDHandler for AbstractSAXParser {
     }
 
     /// A notation declaration.
-    fn notation_decl(&self, name: &str, identifier: &dyn XMLResourceIdentifier, _augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn notation_decl(
+        &self,
+        name: &str,
+        identifier: &dyn XMLResourceIdentifier,
+        _augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         let dh_handler = self.dtd_handler.borrow().clone();
         if let Some(dh) = dh_handler {
             let public_id = identifier.get_public_id();
@@ -1563,18 +1700,27 @@ impl XMLDTDHandler for AbstractSAXParser {
             } else {
                 identifier.get_literal_system_id()
             };
-            dh.notation_decl(name, public_id.as_deref(), system_id.as_deref()).map_err(xni)?;
+            dh.notation_decl(name, public_id.as_deref(), system_id.as_deref())
+                .map_err(xni)?;
         }
         Ok(())
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn start_conditional(&self, _type_: i16, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_conditional(
+        &self,
+        _type_: i16,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn ignored_characters(&self, _text: &XMLString, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignored_characters(
+        &self,
+        _text: &XMLString,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -1614,7 +1760,11 @@ impl XMLDTDHandler for AbstractSAXParser {
 //
 
 impl XMLDTDContentModelHandler for AbstractSAXParser {
-    fn start_content_model(&self, _element_name: &str, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_content_model(
+        &self,
+        _element_name: &str,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -1634,15 +1784,27 @@ impl XMLDTDContentModelHandler for AbstractSAXParser {
         Ok(())
     }
 
-    fn element(&self, _element_name: &str, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn element(
+        &self,
+        _element_name: &str,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
-    fn separator(&self, _separator: i16, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn separator(
+        &self,
+        _separator: i16,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
-    fn occurrence(&self, _occurrence: i16, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn occurrence(
+        &self,
+        _occurrence: i16,
+        _augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         Ok(())
     }
 
@@ -1695,7 +1857,11 @@ impl PSVIProvider for AbstractSAXParser {
     ///
     /// For a name without attribute, where Java throws
     /// `NullPointerException`.
-    fn get_attribute_psvi_by_name(&self, uri: Option<&str>, localname: Option<&str>) -> Option<Rc<dyn AttributePSVI>> {
+    fn get_attribute_psvi_by_name(
+        &self,
+        uri: Option<&str>,
+        localname: Option<&str>,
+    ) -> Option<Rc<dyn AttributePSVI>> {
         let attributes = self.attributes.borrow();
         let augs = attributes
             .iter()
@@ -1823,31 +1989,76 @@ impl XMLDocumentHandler for AbstractSAXParserHandler {
         namespace_context: Option<Rc<dyn NamespaceContext>>,
         augs: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::start_document(locator, encoding, namespace_context, augs))
+        forward!(
+            self,
+            XMLDocumentHandler::start_document(locator, encoding, namespace_context, augs)
+        )
     }
 
-    fn xml_decl(&self, version: Option<&str>, encoding: Option<&str>, standalone: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::xml_decl(version, encoding, standalone, augs))
+    fn xml_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        standalone: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDocumentHandler::xml_decl(version, encoding, standalone, augs)
+        )
     }
 
-    fn doctype_decl(&self, root_element: Option<&str>, public_id: Option<&str>, system_id: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::doctype_decl(root_element, public_id, system_id, augs))
+    fn doctype_decl(
+        &self,
+        root_element: Option<&str>,
+        public_id: Option<&str>,
+        system_id: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDocumentHandler::doctype_decl(root_element, public_id, system_id, augs)
+        )
     }
 
     fn comment(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()> {
         forward!(self, XMLDocumentHandler::comment(text, augs))
     }
 
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augs: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::processing_instruction(target, data, augs))
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDocumentHandler::processing_instruction(target, data, augs)
+        )
     }
 
-    fn start_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::start_element(element, attributes, augs))
+    fn start_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDocumentHandler::start_element(element, attributes, augs)
+        )
     }
 
-    fn empty_element(&self, element: &mut QName, attributes: &mut dyn XMLAttributes, augs: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::empty_element(element, attributes, augs))
+    fn empty_element(
+        &self,
+        element: &mut QName,
+        attributes: &mut dyn XMLAttributes,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDocumentHandler::empty_element(element, attributes, augs)
+        )
     }
 
     fn start_general_entity(
@@ -1857,10 +2068,18 @@ impl XMLDocumentHandler for AbstractSAXParserHandler {
         encoding: Option<&str>,
         augs: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        forward!(self, XMLDocumentHandler::start_general_entity(name, identifier, encoding, augs))
+        forward!(
+            self,
+            XMLDocumentHandler::start_general_entity(name, identifier, encoding, augs)
+        )
     }
 
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         forward!(self, XMLDocumentHandler::text_decl(version, encoding, augs))
     }
 
@@ -1872,7 +2091,11 @@ impl XMLDocumentHandler for AbstractSAXParserHandler {
         forward!(self, XMLDocumentHandler::characters(text, augs))
     }
 
-    fn ignorable_whitespace(&self, text: &XMLString, augs: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignorable_whitespace(
+        &self,
+        text: &XMLString,
+        augs: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         forward!(self, XMLDocumentHandler::ignorable_whitespace(text, augs))
     }
 
@@ -1899,12 +2122,17 @@ impl XMLDocumentHandler for AbstractSAXParserHandler {
     }
 
     fn get_document_source(&self) -> Option<Rc<dyn XMLDocumentSource>> {
-        self.parser().and_then(|p| XMLDocumentHandler::get_document_source(&*p))
+        self.parser()
+            .and_then(|p| XMLDocumentHandler::get_document_source(&*p))
     }
 }
 
 impl XMLDTDHandler for AbstractSAXParserHandler {
-    fn start_dtd(&self, locator: Option<Rc<dyn XMLLocator>>, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_dtd(
+        &self,
+        locator: Option<Rc<dyn XMLLocator>>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         forward!(self, XMLDTDHandler::start_dtd(locator, augmentations))
     }
 
@@ -1915,19 +2143,44 @@ impl XMLDTDHandler for AbstractSAXParserHandler {
         encoding: Option<&str>,
         augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        forward!(self, XMLDTDHandler::start_parameter_entity(name, identifier, encoding, augmentations))
+        forward!(
+            self,
+            XMLDTDHandler::start_parameter_entity(name, identifier, encoding, augmentations)
+        )
     }
 
-    fn text_decl(&self, version: Option<&str>, encoding: Option<&str>, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::text_decl(version, encoding, augmentations))
+    fn text_decl(
+        &self,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::text_decl(version, encoding, augmentations)
+        )
     }
 
-    fn end_parameter_entity(&self, name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::end_parameter_entity(name, augmentations))
+    fn end_parameter_entity(
+        &self,
+        name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::end_parameter_entity(name, augmentations)
+        )
     }
 
-    fn start_external_subset(&self, identifier: Option<&dyn XMLResourceIdentifier>, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::start_external_subset(identifier, augmentations))
+    fn start_external_subset(
+        &self,
+        identifier: Option<&dyn XMLResourceIdentifier>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::start_external_subset(identifier, augmentations)
+        )
     }
 
     fn end_external_subset(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
@@ -1938,16 +2191,39 @@ impl XMLDTDHandler for AbstractSAXParserHandler {
         forward!(self, XMLDTDHandler::comment(text, augmentations))
     }
 
-    fn processing_instruction(&self, target: &str, data: Option<&XMLString>, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::processing_instruction(target, data, augmentations))
+    fn processing_instruction(
+        &self,
+        target: &str,
+        data: Option<&XMLString>,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::processing_instruction(target, data, augmentations)
+        )
     }
 
-    fn element_decl(&self, name: &str, content_model: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::element_decl(name, content_model, augmentations))
+    fn element_decl(
+        &self,
+        name: &str,
+        content_model: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::element_decl(name, content_model, augmentations)
+        )
     }
 
-    fn start_attlist(&self, element_name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::start_attlist(element_name, augmentations))
+    fn start_attlist(
+        &self,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::start_attlist(element_name, augmentations)
+        )
     }
 
     fn attribute_decl(
@@ -1987,11 +2263,22 @@ impl XMLDTDHandler for AbstractSAXParserHandler {
         non_normalized_text: &XMLString,
         augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        forward!(self, XMLDTDHandler::internal_entity_decl(name, text, non_normalized_text, augmentations))
+        forward!(
+            self,
+            XMLDTDHandler::internal_entity_decl(name, text, non_normalized_text, augmentations)
+        )
     }
 
-    fn external_entity_decl(&self, name: &str, identifier: &dyn XMLResourceIdentifier, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::external_entity_decl(name, identifier, augmentations))
+    fn external_entity_decl(
+        &self,
+        name: &str,
+        identifier: &dyn XMLResourceIdentifier,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::external_entity_decl(name, identifier, augmentations)
+        )
     }
 
     fn unparsed_entity_decl(
@@ -2001,18 +2288,37 @@ impl XMLDTDHandler for AbstractSAXParserHandler {
         notation: &str,
         augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        forward!(self, XMLDTDHandler::unparsed_entity_decl(name, identifier, notation, augmentations))
+        forward!(
+            self,
+            XMLDTDHandler::unparsed_entity_decl(name, identifier, notation, augmentations)
+        )
     }
 
-    fn notation_decl(&self, name: &str, identifier: &dyn XMLResourceIdentifier, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDHandler::notation_decl(name, identifier, augmentations))
+    fn notation_decl(
+        &self,
+        name: &str,
+        identifier: &dyn XMLResourceIdentifier,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDHandler::notation_decl(name, identifier, augmentations)
+        )
     }
 
-    fn start_conditional(&self, type_: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn start_conditional(
+        &self,
+        type_: i16,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         forward!(self, XMLDTDHandler::start_conditional(type_, augmentations))
     }
 
-    fn ignored_characters(&self, text: &XMLString, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+    fn ignored_characters(
+        &self,
+        text: &XMLString,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
         forward!(self, XMLDTDHandler::ignored_characters(text, augmentations))
     }
 
@@ -2031,13 +2337,21 @@ impl XMLDTDHandler for AbstractSAXParserHandler {
     }
 
     fn get_dtd_source(&self) -> Option<Rc<dyn XMLDTDSource>> {
-        self.parser().and_then(|p| XMLDTDHandler::get_dtd_source(&*p))
+        self.parser()
+            .and_then(|p| XMLDTDHandler::get_dtd_source(&*p))
     }
 }
 
 impl XMLDTDContentModelHandler for AbstractSAXParserHandler {
-    fn start_content_model(&self, element_name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDContentModelHandler::start_content_model(element_name, augmentations))
+    fn start_content_model(
+        &self,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDContentModelHandler::start_content_model(element_name, augmentations)
+        )
     }
 
     fn any(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
@@ -2056,16 +2370,33 @@ impl XMLDTDContentModelHandler for AbstractSAXParserHandler {
         forward!(self, XMLDTDContentModelHandler::pcdata(augmentations))
     }
 
-    fn element(&self, element_name: &str, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDContentModelHandler::element(element_name, augmentations))
+    fn element(
+        &self,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDContentModelHandler::element(element_name, augmentations)
+        )
     }
 
     fn separator(&self, separator: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDContentModelHandler::separator(separator, augmentations))
+        forward!(
+            self,
+            XMLDTDContentModelHandler::separator(separator, augmentations)
+        )
     }
 
-    fn occurrence(&self, occurrence: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDContentModelHandler::occurrence(occurrence, augmentations))
+    fn occurrence(
+        &self,
+        occurrence: i16,
+        augmentations: Option<&dyn Augmentations>,
+    ) -> JResult<()> {
+        forward!(
+            self,
+            XMLDTDContentModelHandler::occurrence(occurrence, augmentations)
+        )
     }
 
     fn end_group(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
@@ -2073,7 +2404,10 @@ impl XMLDTDContentModelHandler for AbstractSAXParserHandler {
     }
 
     fn end_content_model(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        forward!(self, XMLDTDContentModelHandler::end_content_model(augmentations))
+        forward!(
+            self,
+            XMLDTDContentModelHandler::end_content_model(augmentations)
+        )
     }
 
     fn set_dtd_content_model_source(&self, source: Option<Rc<dyn XMLDTDContentModelSource>>) {
@@ -2263,7 +2597,9 @@ impl Attributes2 for AttributesProxy<'_> {
     fn is_declared_by_qname(&self, qname: &str) -> JResult<bool> {
         let index = Attributes::get_index(self, qname);
         if index == -1 {
-            return Err(Exception::runtime(rucene::error::LuceneError::illegal_argument(qname)));
+            return Err(Exception::runtime(
+                rucene::error::LuceneError::illegal_argument(qname),
+            ));
         }
         Ok(self.declared_at(index))
     }
@@ -2271,7 +2607,9 @@ impl Attributes2 for AttributesProxy<'_> {
     fn is_declared_ns(&self, uri: &str, local_name: &str) -> JResult<bool> {
         let index = Attributes::get_index_ns(self, uri, local_name);
         if index == -1 {
-            return Err(Exception::runtime(rucene::error::LuceneError::illegal_argument(local_name)));
+            return Err(Exception::runtime(
+                rucene::error::LuceneError::illegal_argument(local_name),
+            ));
         }
         Ok(self.declared_at(index))
     }
@@ -2289,7 +2627,9 @@ impl Attributes2 for AttributesProxy<'_> {
     fn is_specified_ns(&self, uri: &str, local_name: &str) -> JResult<bool> {
         let index = Attributes::get_index_ns(self, uri, local_name);
         if index == -1 {
-            return Err(Exception::runtime(rucene::error::LuceneError::illegal_argument(local_name)));
+            return Err(Exception::runtime(
+                rucene::error::LuceneError::illegal_argument(local_name),
+            ));
         }
         Ok(self.attributes.is_specified(index))
     }
@@ -2297,7 +2637,9 @@ impl Attributes2 for AttributesProxy<'_> {
     fn is_specified_by_qname(&self, qname: &str) -> JResult<bool> {
         let index = Attributes::get_index(self, qname);
         if index == -1 {
-            return Err(Exception::runtime(rucene::error::LuceneError::illegal_argument(qname)));
+            return Err(Exception::runtime(
+                rucene::error::LuceneError::illegal_argument(qname),
+            ));
         }
         Ok(self.attributes.is_specified(index))
     }

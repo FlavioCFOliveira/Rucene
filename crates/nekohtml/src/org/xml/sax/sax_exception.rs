@@ -49,7 +49,11 @@ impl SAXException {
 
     /// Equivalent to `new SAXException(String)`.
     pub fn with_message(message: Option<&str>) -> Self {
-        Self::of(SAXExceptionClass::SAXException, message.map(str::to_string), None)
+        Self::of(
+            SAXExceptionClass::SAXException,
+            message.map(str::to_string),
+            None,
+        )
     }
 
     /// Equivalent to `new SAXException(Exception)`.
@@ -59,11 +63,19 @@ impl SAXException {
 
     /// Equivalent to `new SAXException(String, Exception)`.
     pub fn with_message_and_exception(message: Option<&str>, e: Option<Exception>) -> Self {
-        Self::of(SAXExceptionClass::SAXException, message.map(str::to_string), e)
+        Self::of(
+            SAXExceptionClass::SAXException,
+            message.map(str::to_string),
+            e,
+        )
     }
 
     /// A SAX exception of class `class`.
-    pub(crate) fn of(class: SAXExceptionClass, message: Option<String>, exception: Option<Exception>) -> Self {
+    pub(crate) fn of(
+        class: SAXExceptionClass,
+        message: Option<String>,
+        exception: Option<Exception>,
+    ) -> Self {
         Self {
             class,
             message,

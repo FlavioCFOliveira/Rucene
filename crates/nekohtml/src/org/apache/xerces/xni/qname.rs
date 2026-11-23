@@ -5,9 +5,9 @@
  * The ASF licenses this file to You under the Apache License, Version 2.0
  * (the "License"); you may not use this file except in compliance with
  * the License.  You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -45,7 +45,12 @@ impl QName {
     }
 
     /// Equivalent to `new QName(String, String, String, String)`.
-    pub fn with_values(prefix: Option<&str>, localpart: Option<&str>, rawname: Option<&str>, uri: Option<&str>) -> Self {
+    pub fn with_values(
+        prefix: Option<&str>,
+        localpart: Option<&str>,
+        rawname: Option<&str>,
+        uri: Option<&str>,
+    ) -> Self {
         let mut q = Self::new();
         q.set_values(prefix, localpart, rawname, uri);
         q
@@ -60,7 +65,13 @@ impl QName {
     }
 
     /// Equivalent to `setValues(String, String, String, String)`.
-    pub fn set_values(&mut self, prefix: Option<&str>, localpart: Option<&str>, rawname: Option<&str>, uri: Option<&str>) {
+    pub fn set_values(
+        &mut self,
+        prefix: Option<&str>,
+        localpart: Option<&str>,
+        rawname: Option<&str>,
+        uri: Option<&str>,
+    ) {
         self.prefix = prefix.map(str::to_string);
         self.localpart = localpart.map(str::to_string);
         self.rawname = rawname.map(str::to_string);
@@ -78,7 +89,8 @@ impl QName {
     /// Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
         if let Some(uri) = &self.uri {
-            return string_hash_code(uri).wrapping_add(self.localpart.as_deref().map_or(0, string_hash_code));
+            return string_hash_code(uri)
+                .wrapping_add(self.localpart.as_deref().map_or(0, string_hash_code));
         }
         self.rawname.as_deref().map_or(0, string_hash_code)
     }

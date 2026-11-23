@@ -70,7 +70,10 @@ impl PerfTaskBase {
     /// The `NumberFormatException`/`ClassCastException` of reading the
     /// properties.
     pub fn new(run_data: Arc<PerfRunData>, simple_class_name: &str) -> Result<Self> {
-        let name = simple_class_name.strip_suffix("Task").unwrap_or(simple_class_name).to_string();
+        let name = simple_class_name
+            .strip_suffix("Task")
+            .unwrap_or(simple_class_name)
+            .to_string();
         let config = run_data.get_config();
         let max_depth_log_start = config.get_int("task.max.depth.log", 0)?;
         let mut log_step_att = "log.step".to_string();
@@ -399,7 +402,9 @@ pub trait PerfTask: Send + Sync + Any {
 pub fn tear_down<T: PerfTask + ?Sized>(task: &T) -> Result<()> {
     let (log, count) = task.base().next_log_step();
     if log {
-        let time = (jdk::current_time_millis() - task.base().get_run_data().get_start_time_millis()) as f64 / 1000.0;
+        let time = (jdk::current_time_millis() - task.base().get_run_data().get_start_time_millis())
+            as f64
+            / 1000.0;
         println!(
             "{:>7} sec --> {} {}",
             rucene::util::java_fmt::format_fixed(time, 2),
@@ -461,7 +466,10 @@ pub fn run_and_maybe_stats(task: &Arc<dyn PerfTask>, report_stats: bool) -> Resu
         task.tear_down()?;
         return Ok(count);
     }
-    if report_stats && base.get_depth() <= base.get_max_depth_log_start() && !task.should_never_log_at_start() {
+    if report_stats
+        && base.get_depth() <= base.get_max_depth_log_start()
+        && !task.should_never_log_at_start()
+    {
         println!("------------> starting task: {}", task.get_name());
     }
     task.setup()?;

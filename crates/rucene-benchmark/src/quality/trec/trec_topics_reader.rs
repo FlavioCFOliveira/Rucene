@@ -51,7 +51,10 @@ pub struct TrecTopicsReader;
 
 /// `sb.substring(k + 1).trim()` over UTF-16 units, `k` being `indexOf(c)`.
 fn after(sb: &[u16], c: u8) -> String {
-    let k = sb.iter().position(|&u| u == u16::from(c)).map_or(-1, |p| p as i64);
+    let k = sb
+        .iter()
+        .position(|&u| u == u16::from(c))
+        .map_or(-1, |p| p as i64);
     let text = String::from_utf16_lossy(&sb[(k + 1) as usize..]);
     jdk::java_trim(&text).to_string()
 }
@@ -68,16 +71,23 @@ impl TrecTopicsReader {
     /// # Errors
     ///
     /// If cannot read the queries.
-    pub fn read_queries<S: ReadChars>(&self, mut reader: BufferedReader<S>) -> Result<Vec<QualityQuery>> {
+    pub fn read_queries<S: ReadChars>(
+        &self,
+        mut reader: BufferedReader<S>,
+    ) -> Result<Vec<QualityQuery>> {
         let mut res = Vec::new();
         let result = (|| -> Result<()> {
             while self.read(&mut reader, "<top>", false, false)?.is_some() {
                 let mut fields: JavaHashMap<String> = JavaHashMap::new();
                 // id
-                let sb = self.read(&mut reader, "<num>", true, false)?.ok_or_else(LuceneError::null_pointer)?;
+                let sb = self
+                    .read(&mut reader, "<num>", true, false)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let id = after(&sb, b':');
                 // title
-                let sb = self.read(&mut reader, "<title>", true, false)?.ok_or_else(LuceneError::null_pointer)?;
+                let sb = self
+                    .read(&mut reader, "<title>", true, false)?
+                    .ok_or_else(LuceneError::null_pointer)?;
                 let title = after(&sb, b'>');
                 // description
                 self.read(&mut reader, "<desc>", false, false)?;

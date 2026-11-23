@@ -80,7 +80,10 @@ impl Attributes {
     /// `getValue(String qName)`, `None` (Java's `null`) when the element has
     /// no such attribute.
     pub fn get_value(&self, qname: &str) -> Option<&str> {
-        self.list.iter().find(|(name, _)| name == qname).map(|(_, value)| value.as_str())
+        self.list
+            .iter()
+            .find(|(name, _)| name == qname)
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -93,7 +96,13 @@ pub trait DefaultHandler {
     /// # Errors
     ///
     /// What the handler throws; it ends the parse unchanged.
-    fn start_element(&mut self, _uri: &str, _local_name: &str, _qname: &str, _attributes: &Attributes) -> Result<()> {
+    fn start_element(
+        &mut self,
+        _uri: &str,
+        _local_name: &str,
+        _qname: &str,
+        _attributes: &Attributes,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -181,7 +190,11 @@ impl SaxParser {
     /// matching end-tag "</a>".`, `Attribute "a" was already specified for
     /// element "e".`, `The entity "x" was referenced, but not declared.` and
     /// `Recursive entity reference "x". (Reference path: x -> y -> x)`.
-    pub fn parse(&self, reader: &mut dyn CharReader, handler: &mut dyn DefaultHandler) -> Result<()> {
+    pub fn parse(
+        &self,
+        reader: &mut dyn CharReader,
+        handler: &mut dyn DefaultHandler,
+    ) -> Result<()> {
         let mut parse = Parse {
             handler,
             reader: Reader::from_reader(Utf8Stream::new(reader)),
@@ -242,7 +255,8 @@ impl<'a> Utf8Stream<'a> {
             }
         };
         let mut utf8 = [0u8; 4];
-        self.bytes.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+        self.bytes
+            .extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
     }
 
     /// Reads and encodes the next buffer of units; `false` at the end of the
@@ -388,10 +402,14 @@ impl Parse<'_, '_> {
                     open.push(qname);
                 }
                 Event::End(_) => {
-                    let qname = open.pop().expect("INVARIANT: quick-xml checks end tags against open elements");
+                    let qname = open
+                        .pop()
+                        .expect("INVARIANT: quick-xml checks end tags against open elements");
                     self.handler.end_element("", "", &qname)?;
                 }
-                Event::Empty(_) => unreachable!("INVARIANT: expand_empty_elements reports Start and End"),
+                Event::Empty(_) => {
+                    unreachable!("INVARIANT: expand_empty_elements reports Start and End")
+                }
                 Event::Text(text) => {
                     let content: &str = &text;
                     if open.is_empty() {
@@ -424,7 +442,9 @@ impl Parse<'_, '_> {
                 }
                 Event::Eof => {
                     if !open.is_empty() {
-                        return Err(self.fatal("XML document structures must start and end within the same entity."));
+                        return Err(self.fatal(
+                            "XML document structures must start and end within the same entity.",
+                        ));
                     }
                     if !seen_root {
                         return Err(self.fatal("Premature end of file."));
@@ -474,7 +494,9 @@ impl Parse<'_, '_> {
     fn doctype(&mut self, doctype: &str) -> Result<()> {
         let mut rest = doctype.trim_start();
         // The root element name.
-        let name_end = rest.find(|c: char| c.is_whitespace() || c == '[').unwrap_or(rest.len());
+        let name_end = rest
+            .find(|c: char| c.is_whitespace() || c == '[')
+            .unwrap_or(rest.len());
         rest = rest[name_end..].trim_start();
         if let Some(after) = rest.strip_prefix("SYSTEM") {
             let (_, after) = quoted(after.trim_start()).ok_or_else(|| {
@@ -486,8 +508,9 @@ impl Parse<'_, '_> {
             let (_, after) = quoted(after.trim_start()).ok_or_else(|| {
                 self.fatal("The public identifier must begin with either a single or double quote character.")
             })?;
-            let (_, after) = quoted(after.trim_start())
-                .ok_or_else(|| self.fatal("White spaces are required between publicId and systemId."))?;
+            let (_, after) = quoted(after.trim_start()).ok_or_else(|| {
+                self.fatal("White spaces are required between publicId and systemId.")
+            })?;
             self.external_subset = true;
             rest = after.trim_start();
         }
@@ -514,8 +537,9 @@ impl Parse<'_, '_> {
             let decl = if rest.starts_with("SYSTEM") || rest.starts_with("PUBLIC") {
                 EntityDecl::External
             } else {
-                let (literal, _) = quoted(rest)
-                    .ok_or_else(|| self.fatal(format!("The entity \"{name}\" must have a quoted value.")))?;
+                let (literal, _) = quoted(rest).ok_or_else(|| {
+                    self.fatal(format!("The entity \"{name}\" must have a quoted value."))
+                })?;
                 EntityDecl::Internal(self.expand_char_refs(literal)?)
             };
             self.entities.entry(name).or_insert(decl);
@@ -530,9 +554,9 @@ impl Parse<'_, '_> {
         while let Some(amp) = rest.find("&#") {
             out.push_str(&rest[..amp]);
             let after = &rest[amp + 1..];
-            let semi = after
-                .find(';')
-                .ok_or_else(|| self.fatal("The character reference must end with the ';' delimiter."))?;
+            let semi = after.find(';').ok_or_else(|| {
+                self.fatal("The character reference must end with the ';' delimiter.")
+            })?;
             out.push(self.char_ref(&after[..semi])?);
             rest = &after[semi + 1..];
         }
@@ -550,13 +574,22 @@ impl Parse<'_, '_> {
         value
             .filter(|v| *v != 0)
             .and_then(char::from_u32)
-            .ok_or_else(|| self.fatal(format!("Character reference \"&{body}\" is an invalid XML character.")))
+            .ok_or_else(|| {
+                self.fatal(format!(
+                    "Character reference \"&{body}\" is an invalid XML character."
+                ))
+            })
     }
 
     /// The text a reference `&name;` stands for in content, or, with
     /// `in_attribute`, in an attribute value (where its whitespace is
     /// normalized). `path` holds the entities being expanded.
-    fn expand_reference(&self, name: &str, in_attribute: bool, path: &mut Vec<String>) -> Result<String> {
+    fn expand_reference(
+        &self,
+        name: &str,
+        in_attribute: bool,
+        path: &mut Vec<String>,
+    ) -> Result<String> {
         if name.starts_with('#') {
             return Ok(self.char_ref(name)?.to_string());
         }
@@ -574,10 +607,12 @@ impl Parse<'_, '_> {
             // validity constraint, not a well-formedness one): the JDK skips
             // the reference (`skippedEntity`) without an error.
             None if self.external_subset && !self.standalone => Ok(String::new()),
-            None => Err(self.fatal(format!("The entity \"{name}\" was referenced, but not declared."))),
-            Some(EntityDecl::External) => {
-                Err(self.fatal(format!("The external entity \"{name}\" is not supported by this parser.")))
-            }
+            None => Err(self.fatal(format!(
+                "The entity \"{name}\" was referenced, but not declared."
+            ))),
+            Some(EntityDecl::External) => Err(self.fatal(format!(
+                "The external entity \"{name}\" is not supported by this parser."
+            ))),
             Some(EntityDecl::Internal(text)) => {
                 if text.contains('<') {
                     return Err(self.fatal(format!(
@@ -595,10 +630,19 @@ impl Parse<'_, '_> {
     /// Expands the entity references of a replacement text or a raw
     /// attribute value; with `in_attribute`, each literal tab or line end
     /// becomes a space.
-    fn expand_text(&self, text: &str, in_attribute: bool, path: &mut Vec<String>) -> Result<String> {
+    fn expand_text(
+        &self,
+        text: &str,
+        in_attribute: bool,
+        path: &mut Vec<String>,
+    ) -> Result<String> {
         let normalize = |out: &mut String, literal: &str| {
             if in_attribute {
-                out.extend(literal.chars().map(|c| if matches!(c, '\t' | '\n') { ' ' } else { c }));
+                out.extend(
+                    literal
+                        .chars()
+                        .map(|c| if matches!(c, '\t' | '\n') { ' ' } else { c }),
+                );
             } else {
                 out.push_str(literal);
             }
@@ -608,9 +652,9 @@ impl Parse<'_, '_> {
         while let Some(amp) = rest.find('&') {
             normalize(&mut out, &rest[..amp]);
             let after = &rest[amp + 1..];
-            let semi = after
-                .find(';')
-                .ok_or_else(|| self.fatal("The reference to entity must end with the ';' delimiter."))?;
+            let semi = after.find(';').ok_or_else(|| {
+                self.fatal("The reference to entity must end with the ';' delimiter.")
+            })?;
             let name = &after[..semi];
             if in_attribute && name.starts_with('#') {
                 // A character reference is kept as is, a tab or line end too.
