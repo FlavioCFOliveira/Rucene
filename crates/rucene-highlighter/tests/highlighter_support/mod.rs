@@ -104,3 +104,33 @@ impl Analyzer for FnAnalyzer {
 pub fn attempt<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
     body()
 }
+
+/// A public instance method `name` of a Java test class whose instance is a
+/// `T` (fields initialised by its constructor): an `Err` is thrown as its
+/// Java exception.
+pub fn ti<T: std::any::Any + Send>(name: &str, body: fn(&mut T) -> Result<()>) -> Method {
+    Method::new(name)
+        .throws(&["java.lang.Exception"])
+        .body(move |t: &mut T| {
+            if let Err(e) = body(t) {
+                rucene_test_framework::util::java_exceptions::rethrow_java(e)
+            }
+        })
+}
+
+/// The declaration of a Java test class `name` extending `parent`, whose
+/// instances `constructor` builds, with `methods`.
+pub fn instance_class(
+    name: &str,
+    parent: &Arc<Class>,
+    constructor: Constructor,
+    methods: Vec<Method>,
+) -> Arc<Class> {
+    let mut builder = Class::builder(name)
+        .extends(parent)
+        .constructor(constructor);
+    for m in methods {
+        builder = builder.method(m);
+    }
+    builder.build()
+}

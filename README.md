@@ -24,6 +24,11 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
   - `rucene-queries` — `lucene/queries` (function queries and value sources, intervals, spans, payload queries, more-like-this);
   - `rucene-queryparser` — `lucene/queryparser` (classic, flexible, simple, surround, complex-phrase, extendable and XML query parsers);
   - `rucene-sandbox` — `lucene/sandbox`, limited to `FuzzyLikeThisQuery`;
+  - `rucene-spatial3d` — `lucene/spatial3d` (Geo3D planar geometry and the `Geo3DPoint` field; see `specs/modules/spatial3d.md`);
+  - `rucene-spatial-extras` — `lucene/spatial-extras` (spatial strategies, prefix trees, heatmaps; see `specs/modules/spatial-extras.md`);
+  - `rucene-spatial-test-fixtures` — `lucene/spatial-test-fixtures` (random Geo3D shapes for the spatial tests);
+  - `spatial4j` — LocationTech spatial4j 0.8, limited to the types `spatial-extras` and `benchmark` use (test helpers behind the `test-helpers` feature);
+  - `s2-geometry` — s2-geometry-library-java 1.0.0, limited to the types `spatial-extras` uses;
   - `rucene-memory` — `lucene/memory` (`MemoryIndex`, the single-document in-memory index; see `specs/modules/memory.md`);
   - `rucene-highlighter` — `lucene/highlighter` (the original, fast vector, unified and match highlighters; see `specs/modules/highlighter.md`);
   - `randomizedtesting` — randomizedtesting 2.8.1 (`com.carrotsearch.randomizedtesting`), the runner of Lucene's tests;
