@@ -15,10 +15,49 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FlushIndexTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `FlushIndexTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.FlushIndexTask`; ported by rmp task #626.
-pub struct FlushIndexTask;
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.FlushIndexTask`
+/// (`public class FlushIndexTask extends PerfTask`): flush Index Task uses
+/// flushNextBuffer() to flush documents at thread level.
+pub struct FlushIndexTask {
+    base: PerfTaskBase,
+}
+
+impl FlushIndexTask {
+    /// `FlushIndexTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(FlushIndexTask { base: PerfTaskBase::new(run_data, "FlushIndexTask")? })
+    }
+}
+
+impl PerfTask for FlushIndexTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(FlushIndexTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        if let Some(iw) = self.base.get_run_data().get_index_writer() {
+            iw.flush_next_buffer()?;
+        }
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "FlushIndexTask"
+    }
+}

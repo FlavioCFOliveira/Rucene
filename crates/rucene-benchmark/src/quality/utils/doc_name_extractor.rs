@@ -15,10 +15,61 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `DocNameExtractor.java`, of the Java
-//! package `org.apache.lucene.benchmark.quality.utils`.
+//! The types declared in `DocNameExtractor.java`, of the Java package
+//! `org.apache.lucene.benchmark.quality.utils`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.quality.utils.DocNameExtractor`; ported by rmp task #627.
-pub struct DocNameExtractor;
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::index::index_reader::StoredFields;
+use rucene::index::{FieldInfo, StoredFieldVisitor, StoredFieldVisitorStatus};
+
+/// Equivalent to `org.apache.lucene.benchmark.quality.utils.DocNameExtractor`:
+/// utility: extract doc names from an index.
+#[derive(Clone, Debug)]
+pub struct DocNameExtractor {
+    doc_name_field: String,
+}
+
+/// The anonymous `StoredFieldVisitor` of `docName`.
+struct NameVisitor<'a> {
+    doc_name_field: &'a str,
+    name: Vec<String>,
+}
+
+impl StoredFieldVisitor for NameVisitor<'_> {
+    fn string_field(&mut self, _field_info: &Arc<FieldInfo>, value: String) -> Result<()> {
+        self.name.push(value);
+        Ok(())
+    }
+
+    fn needs_field(&mut self, field_info: &FieldInfo) -> Result<StoredFieldVisitorStatus> {
+        if !self.name.is_empty() {
+            Ok(StoredFieldVisitorStatus::Stop)
+        } else if field_info.name == self.doc_name_field {
+            Ok(StoredFieldVisitorStatus::Yes)
+        } else {
+            Ok(StoredFieldVisitorStatus::No)
+        }
+    }
+}
+
+impl DocNameExtractor {
+    /// `DocNameExtractor(String docNameField)`: `doc_name_field` is the name
+    /// of the stored field containing the doc name.
+    pub fn new(doc_name_field: &str) -> Self {
+        DocNameExtractor { doc_name_field: doc_name_field.to_string() }
+    }
+
+    /// `docName(StoredFields storedFields, int docid)`: extract the name of
+    /// the input doc from the index.
+    ///
+    /// # Errors
+    ///
+    /// If cannot extract the doc name from the index.
+    pub fn doc_name(&self, stored_fields: &dyn StoredFields, docid: i32) -> Result<Option<String>> {
+        let mut visitor = NameVisitor { doc_name_field: &self.doc_name_field, name: Vec::new() };
+        stored_fields.document_with_visitor(docid, &mut visitor)?;
+        Ok(visitor.name.into_iter().next())
+    }
+}

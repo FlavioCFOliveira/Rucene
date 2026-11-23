@@ -15,10 +15,71 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `PrintReaderTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `PrintReaderTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.PrintReaderTask`; ported by rmp task #626.
-pub struct PrintReaderTask;
+use std::sync::{Arc, Mutex};
+
+use rucene::error::{LuceneError, Result};
+use rucene::index::directory_reader;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::open_reader_task::OpenReaderTask;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+use crate::jdk;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.PrintReaderTask`
+/// (`public class PrintReaderTask extends PerfTask`): opens a reader and
+/// prints basic statistics.
+pub struct PrintReaderTask {
+    base: PerfTaskBase,
+    user_data: Mutex<Option<String>>,
+}
+
+impl PrintReaderTask {
+    /// `PrintReaderTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(PrintReaderTask { base: PerfTaskBase::new(run_data, "PrintReaderTask")?, user_data: Mutex::new(None) })
+    }
+}
+
+impl PerfTask for PrintReaderTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(PrintReaderTask {
+            base: self.base.clone_base(),
+            user_data: Mutex::new(jdk::lock(&self.user_data).clone()),
+        }))
+    }
+
+    fn set_params(&self, params: &str) -> Result<()> {
+        perf_task::set_params(self, params)?;
+        *jdk::lock(&self.user_data) = Some(params.to_string());
+        Ok(())
+    }
+
+    fn supports_params(&self) -> bool {
+        true
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let dir = self.base.get_run_data().get_directory().ok_or_else(LuceneError::null_pointer)?;
+        let user_data = jdk::lock(&self.user_data).clone();
+        let r = match user_data {
+            None => directory_reader::open(dir)?,
+            Some(user_data) => directory_reader::open_with_commit(&*OpenReaderTask::find_index_commit(dir, &user_data)?)?,
+        };
+        println!("--> numDocs:{} dels:{}", r.num_docs(), r.num_deleted_docs());
+        r.close()?;
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "PrintReaderTask"
+    }
+}

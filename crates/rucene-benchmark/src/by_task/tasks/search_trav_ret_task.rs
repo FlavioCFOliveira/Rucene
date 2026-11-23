@@ -15,10 +15,98 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SearchTravRetTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `SearchTravRetTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::feeds::query_maker::QueryMaker;
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+use crate::by_task::tasks::read_task::{self, query_maker_of, ReadTask, ReadTaskBase};
+use crate::by_task::tasks::search_trav_task::SearchTravState;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.SearchTravRetTask`
+/// (`public class SearchTravRetTask extends SearchTravTask`): search and
+/// Traverse and Retrieve docs task.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.SearchTravRetTask`; ported by rmp task #626.
-pub struct SearchTravRetTask;
+/// Note: This task reuses the reader if it is already open. Otherwise a
+/// reader is opened at start and closed at the end.
+///
+/// Takes optional param: traversal size (otherwise all results are
+/// traversed).
+///
+/// Other side effects: counts additional 1 (record) for each traversed hit,
+/// and 1 more for each retrieved (non null) document.
+pub struct SearchTravRetTask {
+    base: PerfTaskBase,
+    read: ReadTaskBase,
+    trav: SearchTravState,
+}
+
+impl SearchTravRetTask {
+    /// `SearchTravRetTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor or of the query maker.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchTravRetTask")?;
+        let read = ReadTaskBase::new(true, || query_maker_of::<SearchTravRetTask>(&run_data))?;
+        Ok(SearchTravRetTask { base, read, trav: SearchTravState::new() })
+    }
+}
+
+impl PerfTask for SearchTravRetTask {
+    read_task::read_task_perf_methods!("SearchTravRetTask", "SearchTravTask");
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(SearchTravRetTask {
+            base: self.base.clone_base(),
+            read: self.read.clone_base(),
+            trav: self.trav.clone_state(),
+        }))
+    }
+
+    fn set_params(&self, params: &str) -> Result<()> {
+        perf_task::set_params(self, params)?;
+        self.trav.set_params(params)
+    }
+
+    fn supports_params(&self) -> bool {
+        true
+    }
+}
+
+impl ReadTask for SearchTravRetTask {
+    fn read_base(&self) -> &ReadTaskBase {
+        &self.read
+    }
+
+    fn get_query_maker(&self) -> Result<Option<Arc<dyn QueryMaker>>> {
+        self.base.get_run_data().get_query_maker(self).map(Some)
+    }
+
+    fn with_retrieve(&self) -> bool {
+        true
+    }
+
+    fn with_search(&self) -> bool {
+        true
+    }
+
+    fn with_traverse(&self) -> bool {
+        true
+    }
+
+    fn with_warm(&self) -> bool {
+        false
+    }
+
+    fn traversal_size(&self) -> i32 {
+        self.trav.traversal_size.load(Ordering::SeqCst)
+    }
+}

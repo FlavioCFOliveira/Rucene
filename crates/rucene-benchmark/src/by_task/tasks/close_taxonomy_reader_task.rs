@@ -15,10 +15,69 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `CloseTaxonomyReaderTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `CloseTaxonomyReaderTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.CloseTaxonomyReaderTask`
+/// (`public class CloseTaxonomyReaderTask extends PerfTask`): close taxonomy reader.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.CloseTaxonomyReaderTask`; ported by rmp task #626.
-pub struct CloseTaxonomyReaderTask;
+/// Other side effects: taxonomy reader in perfRunData is nullified.
+pub struct CloseTaxonomyReaderTask {
+    base: PerfTaskBase,
+}
+
+impl CloseTaxonomyReaderTask {
+    /// `CloseTaxonomyReaderTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(CloseTaxonomyReaderTask { base: PerfTaskBase::new(run_data, "CloseTaxonomyReaderTask")? })
+    }
+}
+
+impl PerfTask for CloseTaxonomyReaderTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(CloseTaxonomyReaderTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let run_data = self.base.get_run_data();
+        let taxo_reader = run_data.get_taxonomy_reader()?.ok_or_else(LuceneError::null_pointer)?;
+        let body = (|| -> Result<()> {
+            run_data.set_taxonomy_reader(None)?;
+            if taxo_reader.get_ref_count() != 1 {
+                println!(
+                    "WARNING: CloseTaxonomyReader: reference count is currently {}",
+                    taxo_reader.get_ref_count()
+                );
+            }
+            Ok(())
+        })();
+        // try-with-resources: close() after the body, its failure suppressed
+        // into the body's.
+        match (body, taxo_reader.close()) {
+            (Err(mut e), Err(c)) => {
+                e.add_suppressed(c);
+                return Err(e);
+            }
+            (Err(e), Ok(())) | (Ok(()), Err(e)) => return Err(e),
+            (Ok(()), Ok(())) => {}
+        }
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "CloseTaxonomyReaderTask"
+    }
+}

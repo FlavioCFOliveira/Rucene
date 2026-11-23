@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.quality.utils`.
+//! The Java package `org.apache.lucene.benchmark.quality.utils`.
 
 pub mod doc_name_extractor;
 pub mod quality_queries_finder;

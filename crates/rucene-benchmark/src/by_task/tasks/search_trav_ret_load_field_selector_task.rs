@@ -15,10 +15,125 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `SearchTravRetLoadFieldSelectorTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `SearchTravRetLoadFieldSelectorTask.java`, of the
+//! Java package `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::collections::HashSet;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use rucene::document::{Document, DocumentStoredFieldVisitor};
+use rucene::error::Result;
+use rucene::index::index_reader::StoredFields;
+
+use crate::by_task::feeds::query_maker::QueryMaker;
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{PerfTask, PerfTaskBase};
+use crate::by_task::tasks::read_task::{self, query_maker_of, ReadTask, ReadTaskBase};
+use crate::by_task::tasks::search_trav_task::SearchTravState;
+use crate::jdk;
+
+/// Equivalent to
+/// `org.apache.lucene.benchmark.byTask.tasks.SearchTravRetLoadFieldSelectorTask`
+/// (`public class SearchTravRetLoadFieldSelectorTask extends
+/// SearchTravTask`): search and Traverse and Retrieve docs task using a
+/// FieldVisitor loading only the requested fields.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.SearchTravRetLoadFieldSelectorTask`; ported by rmp task #626.
-pub struct SearchTravRetLoadFieldSelectorTask;
+/// Note: This task reuses the reader if it is already open. Otherwise a
+/// reader is opened at start and closed at the end.
+///
+/// Takes optional param: comma separated list of Fields to load.
+///
+/// Other side effects: counts additional 1 (record) for each traversed hit,
+/// and 1 more for each retrieved (non null) document.
+pub struct SearchTravRetLoadFieldSelectorTask {
+    base: PerfTaskBase,
+    read: ReadTaskBase,
+    trav: SearchTravState,
+    /// `fieldsToLoad`.
+    fields_to_load: Mutex<Option<HashSet<String>>>,
+}
+
+impl SearchTravRetLoadFieldSelectorTask {
+    /// `SearchTravRetLoadFieldSelectorTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor or of the query maker.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        let base = PerfTaskBase::new(Arc::clone(&run_data), "SearchTravRetLoadFieldSelectorTask")?;
+        let read = ReadTaskBase::new(true, || query_maker_of::<SearchTravRetLoadFieldSelectorTask>(&run_data))?;
+        Ok(SearchTravRetLoadFieldSelectorTask {
+            base,
+            read,
+            trav: SearchTravState::new(),
+            fields_to_load: Mutex::new(None),
+        })
+    }
+}
+
+impl PerfTask for SearchTravRetLoadFieldSelectorTask {
+    read_task::read_task_perf_methods!("SearchTravRetLoadFieldSelectorTask", "SearchTravTask");
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(SearchTravRetLoadFieldSelectorTask {
+            base: self.base.clone_base(),
+            read: self.read.clone_base(),
+            trav: self.trav.clone_state(),
+            fields_to_load: Mutex::new(jdk::lock(&self.fields_to_load).clone()),
+        }))
+    }
+
+    fn set_params(&self, params: &str) -> Result<()> {
+        self.base.store_params(params); // cannot just call super.setParams(), b/c its params differ.
+        let fields: HashSet<String> = params.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
+        *jdk::lock(&self.fields_to_load) = Some(fields);
+        Ok(())
+    }
+
+    fn supports_params(&self) -> bool {
+        true
+    }
+}
+
+impl ReadTask for SearchTravRetLoadFieldSelectorTask {
+    fn read_base(&self) -> &ReadTaskBase {
+        &self.read
+    }
+
+    fn get_query_maker(&self) -> Result<Option<Arc<dyn QueryMaker>>> {
+        self.base.get_run_data().get_query_maker(self).map(Some)
+    }
+
+    fn with_retrieve(&self) -> bool {
+        true
+    }
+
+    fn with_search(&self) -> bool {
+        true
+    }
+
+    fn with_traverse(&self) -> bool {
+        true
+    }
+
+    fn with_warm(&self) -> bool {
+        false
+    }
+
+    fn traversal_size(&self) -> i32 {
+        self.trav.traversal_size.load(Ordering::SeqCst)
+    }
+
+    fn retrieve_doc(&self, stored_fields: &dyn StoredFields, id: i32) -> Result<Option<Document>> {
+        let fields = jdk::lock(&self.fields_to_load).clone();
+        match fields {
+            None => stored_fields.document(id).map(Some),
+            Some(fields) => {
+                let mut visitor = DocumentStoredFieldVisitor::with_fields(fields);
+                stored_fields.document_with_visitor(id, &mut visitor)?;
+                Ok(Some(visitor.into_document()))
+            }
+        }
+    }
+}

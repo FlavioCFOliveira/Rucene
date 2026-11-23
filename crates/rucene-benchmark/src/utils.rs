@@ -15,6 +15,6 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.utils`.
+//! The Java package `org.apache.lucene.benchmark.utils`.
 
 pub mod extract_wikipedia;

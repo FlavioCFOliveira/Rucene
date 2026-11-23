@@ -15,10 +15,75 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `WarmTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `WarmTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::feeds::query_maker::QueryMaker;
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{PerfTask, PerfTaskBase};
+use crate::by_task::tasks::read_task::{self, ReadTask, ReadTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.WarmTask`
+/// (`public class WarmTask extends ReadTask`): warm reader task: retrieve
+/// all reader documents.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.WarmTask`; ported by rmp task #626.
-pub struct WarmTask;
+/// Note: This task reuses the reader if it is already open. Otherwise a
+/// reader is opened at start and closed at the end.
+///
+/// Other side effects: counts additional 1 (record) for each retrieved (non
+/// null) document.
+pub struct WarmTask {
+    base: PerfTaskBase,
+    read: ReadTaskBase,
+}
+
+impl WarmTask {
+    /// `WarmTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        let base = PerfTaskBase::new(run_data, "WarmTask")?;
+        let read = ReadTaskBase::new(false, || Ok(None))?;
+        Ok(WarmTask { base, read })
+    }
+}
+
+impl PerfTask for WarmTask {
+    read_task::read_task_perf_methods!("WarmTask");
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(WarmTask { base: self.base.clone_base(), read: self.read.clone_base() }))
+    }
+}
+
+impl ReadTask for WarmTask {
+    fn read_base(&self) -> &ReadTaskBase {
+        &self.read
+    }
+
+    fn get_query_maker(&self) -> Result<Option<Arc<dyn QueryMaker>>> {
+        Ok(None) // not required for this task.
+    }
+
+    fn with_retrieve(&self) -> bool {
+        false
+    }
+
+    fn with_search(&self) -> bool {
+        false
+    }
+
+    fn with_traverse(&self) -> bool {
+        false
+    }
+
+    fn with_warm(&self) -> bool {
+        true
+    }
+}

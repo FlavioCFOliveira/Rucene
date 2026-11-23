@@ -18,7 +18,7 @@
 //! The types declared in `Geo3dShapeFactory.java`, of the Java package
 //! `org.apache.lucene.spatial.spatial4j`.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -296,6 +296,11 @@ impl ShapeFactory for Geo3dShapeFactory {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn as_interface(self: Arc<Self>, interface: TypeId) -> Option<Box<dyn Any + Send + Sync>> {
+        (interface == TypeId::of::<dyn S2ShapeFactory>())
+            .then(|| Box::new(self as Arc<dyn S2ShapeFactory>) as Box<dyn Any + Send + Sync>)
     }
 }
 

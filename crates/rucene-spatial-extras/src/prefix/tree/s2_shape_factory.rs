@@ -18,13 +18,12 @@
 //! The types declared in `S2ShapeFactory.java`, of the Java package
 //! `org.apache.lucene.spatial.prefix.tree`.
 
+use std::any::TypeId;
 use std::sync::Arc;
 
 use s2_geometry::s2_cell_id::S2CellId;
 use spatial4j::shape::shape::Shape;
 use spatial4j::shape::shape_factory::ShapeFactory;
-
-use crate::spatial4j::geo3d_shape_factory::Geo3dShapeFactory;
 
 /// Equivalent to `org.apache.lucene.spatial.prefix.tree.S2ShapeFactory`
 /// (`public interface S2ShapeFactory extends ShapeFactory`): shape factory
@@ -36,15 +35,15 @@ pub trait S2ShapeFactory: ShapeFactory {
 }
 
 /// `shapeFactory instanceof S2ShapeFactory ? (S2ShapeFactory) shapeFactory :
-/// null`.
+/// null` (`S2PrefixTree.java:73-76`).
 ///
-/// **Divergence.** Java tests the runtime class of any factory
-/// (`S2PrefixTree.java:73-76`); a Rust `dyn ShapeFactory` cannot be narrowed
-/// to another trait, so the factory is matched against the implementations
-/// Lucene ships, which is [`Geo3dShapeFactory`] only.
-pub fn as_s2_shape_factory(shape_factory: &dyn ShapeFactory) -> Option<&dyn S2ShapeFactory> {
-    shape_factory
-        .as_any()
-        .downcast_ref::<Geo3dShapeFactory>()
-        .map(|f| f as &dyn S2ShapeFactory)
+/// Every factory that implements [`S2ShapeFactory`] answers spatial4j's
+/// interface query ([`ShapeFactory::as_interface`]) for
+/// `TypeId::of::<dyn S2ShapeFactory>()` with itself, so any implementation is
+/// recognised, as Java's `instanceof` recognises it.
+pub fn as_s2_shape_factory(shape_factory: &Arc<dyn ShapeFactory>) -> Option<Arc<dyn S2ShapeFactory>> {
+    Arc::clone(shape_factory)
+        .as_interface(TypeId::of::<dyn S2ShapeFactory>())
+        .and_then(|view| view.downcast::<Arc<dyn S2ShapeFactory>>().ok())
+        .map(|view| *view)
 }

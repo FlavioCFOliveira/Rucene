@@ -15,10 +15,54 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ResetSystemEraseTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `ResetSystemEraseTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.ResetSystemEraseTask`
+/// (`public class ResetSystemEraseTask extends ResetSystemSoftTask`): reset all index and input data and call gc, erase index and dir, does NOT
+/// clear statistics. This contains ResetInputs.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.ResetSystemEraseTask`; ported by rmp task #626.
-pub struct ResetSystemEraseTask;
+/// Other side effects: writers/readers nullified, deleted, closed. Index is
+/// erased. Directory is erased.
+pub struct ResetSystemEraseTask {
+    base: PerfTaskBase,
+}
+
+impl ResetSystemEraseTask {
+    /// `ResetSystemEraseTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(ResetSystemEraseTask { base: PerfTaskBase::new(run_data, "ResetSystemEraseTask")? })
+    }
+}
+
+impl PerfTask for ResetSystemEraseTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(ResetSystemEraseTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        self.base.get_run_data().reinit(true)?;
+        Ok(0)
+    }
+
+    fn should_not_record_stats(&self) -> bool {
+        true
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        matches!(simple_class_name, "ResetSystemEraseTask" | "ResetSystemSoftTask" | "ResetInputsTask")
+    }
+}

@@ -3,11 +3,10 @@
 //! tasks and reports) and the `quality` search-quality evaluation with its TREC
 //! readers.
 //!
-//! Every type of the module is declared here as a skeleton: a declaration that
-//! stands for one Java type, without fields, methods or behaviour (an enum lists
-//! its Java constants as variants), whose doc names the sprint-17 rmp task that
-//! will port it. A type stays a skeleton until that task replaces it with its
-//! port.
+//! Every type of the module is ported, each documented with the Java type
+//! it is equivalent to. Java's `Class.forName` lookups of tasks, sources,
+//! makers and parsers go through [`classes`]; the JDK and icu4j behaviours
+//! the module relies on are reproduced in crate-private modules.
 //!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.benchmark`: the types of that package sit at the crate
@@ -20,11 +19,12 @@
 //! own name is a name of the Rust prelude or the name of another item of that
 //! module, and the Java kind is appended when the prefixed name is itself taken.
 
-// Package-private and private Java types are `pub(crate)` skeletons that nothing
-// uses yet. This allowance goes away when the module is fully ported.
-#![allow(dead_code)]
 
 pub mod by_task;
 pub mod constants;
 pub mod quality;
 pub mod utils;
+
+pub mod classes;
+pub(crate) mod icu;
+pub(crate) mod jdk;

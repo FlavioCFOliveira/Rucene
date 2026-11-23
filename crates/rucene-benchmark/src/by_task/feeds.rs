@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.byTask.feeds`.
+//! The Java package `org.apache.lucene.benchmark.byTask.feeds`.
 
 pub mod abstract_query_maker;
 pub mod content_items_source;

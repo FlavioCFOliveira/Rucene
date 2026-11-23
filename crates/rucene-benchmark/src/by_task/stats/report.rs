@@ -15,10 +15,43 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Report.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.stats`.
+//! The types declared in `Report.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.stats`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.stats.Report`; ported by rmp task #625.
-pub struct Report;
+/// Equivalent to `org.apache.lucene.benchmark.byTask.stats.Report`: textual
+/// report of current statistics.
+#[derive(Clone, Debug)]
+pub struct Report {
+    text: String,
+    size: i32,
+    out_of: i32,
+    reported: i32,
+}
+
+impl Report {
+    /// `Report(String text, int size, int reported, int outOf)`.
+    pub fn new(text: String, size: i32, reported: i32, out_of: i32) -> Self {
+        Report { text, size, out_of, reported }
+    }
+
+    /// `getOutOf()`: total number of stats points when this report was
+    /// created.
+    pub fn get_out_of(&self) -> i32 {
+        self.out_of
+    }
+
+    /// `getSize()`: number of lines in the report.
+    pub fn get_size(&self) -> i32 {
+        self.size
+    }
+
+    /// `getText()`: the report text.
+    pub fn get_text(&self) -> &str {
+        &self.text
+    }
+
+    /// `getReported()`: number of stats points represented in this report.
+    pub fn get_reported(&self) -> i32 {
+        self.reported
+    }
+}

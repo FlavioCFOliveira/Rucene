@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use rucene::error::{LuceneError, Result};
 use rucene::index::IndexReaderContext;
-use rucene::util::{ArrayUtil, Bits};
+use rucene::util::{ArrayUtil, Bits, MatchNoBits};
 use spatial4j::shape::rectangle::Rectangle;
 use spatial4j::shape::shape::Shape;
 use spatial4j::shape::spatial_relation::SpatialRelation;
@@ -277,13 +277,9 @@ pub fn calc_facets(
     Ok(heatmap)
 }
 
-/// `topAcceptDocs instanceof Bits.MatchNoBits`.
-///
-/// **Divergence.** Java tests the runtime class (`HeatmapFacetCounter.java:174`);
-/// the core's `Bits` trait has no `Any` view, so the class is recognized by
-/// the name its derived `Debug` output starts with.
+/// `topAcceptDocs instanceof Bits.MatchNoBits` (`HeatmapFacetCounter.java:174`).
 fn is_match_no_bits(bits: &dyn Bits) -> bool {
-    format!("{bits:?}").starts_with("MatchNoBits")
+    bits.bits_as_any().is_some_and(|any| any.is::<MatchNoBits>())
 }
 
 /// `Map<Rectangle, Integer> ancestors`: a `HashMap` keyed by

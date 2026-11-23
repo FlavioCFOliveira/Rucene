@@ -9,7 +9,7 @@
 //! The types declared in `ShapeFactory.java`, of the Java package
 //! `org.locationtech.spatial4j.shape`.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 
 use rucene::error::Result;
@@ -109,6 +109,21 @@ pub trait ShapeFactory: Send + Sync + Any {
 
     /// This factory as `Any`, for `instanceof` and casts.
     fn as_any(&self) -> &dyn Any;
+
+    /// `factory instanceof I ? (I) factory : null` for an interface `I`
+    /// that extends `ShapeFactory` and is declared outside this crate (such
+    /// as Lucene's `org.apache.lucene.spatial.prefix.tree.S2ShapeFactory`).
+    ///
+    /// `interface` is `TypeId::of::<dyn I>()`. An implementation of `I`
+    /// answers with `Some(Box::new(self as Arc<dyn I>))`, which the caller
+    /// downcasts to `Arc<dyn I>`; every other request, and every factory
+    /// that implements no such interface, answers `None` (the default). This
+    /// is the Rust form of Java's runtime interface test: a `dyn ShapeFactory`
+    /// cannot otherwise be narrowed to a trait this crate cannot name.
+    fn as_interface(self: Arc<Self>, interface: TypeId) -> Option<Box<dyn Any + Send + Sync>> {
+        let _ = interface;
+        None
+    }
 }
 
 /// Equivalent to `org.locationtech.spatial4j.shape.ShapeFactory.PointsBuilder`

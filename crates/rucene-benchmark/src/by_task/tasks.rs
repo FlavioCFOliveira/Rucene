@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The Java package `org.apache.lucene.benchmark.byTask.tasks`.
 
 pub mod add_doc_task;
 pub mod add_faceted_doc_task;

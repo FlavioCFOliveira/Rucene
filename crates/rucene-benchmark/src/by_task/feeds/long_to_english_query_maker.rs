@@ -15,10 +15,96 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `LongToEnglishQueryMaker.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.feeds`.
+//! The types declared in `LongToEnglishQueryMaker.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.feeds`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.feeds.LongToEnglishQueryMaker`; ported by rmp task #625.
-pub struct LongToEnglishQueryMaker;
+use std::any::Any;
+use std::sync::{Arc, Mutex};
+
+use rucene::error::{LuceneError, Result};
+use rucene::search::query::Query;
+use rucene_queryparser::classic::query_parser::QueryParser;
+use rucene_queryparser::classic::query_parser_base;
+
+use crate::by_task::feeds::doc_maker::DocMaker;
+use crate::by_task::feeds::query_maker::QueryMaker;
+use crate::by_task::tasks::new_analyzer_task::NewAnalyzerTask;
+use crate::by_task::utils::config::Config;
+use crate::icu::RuleBasedNumberFormat;
+use crate::jdk;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.LongToEnglishQueryMaker`
+/// (`public class LongToEnglishQueryMaker implements QueryMaker`): creates
+/// queries whose content is a spelled-out `long` number starting from
+/// `Long.MIN_VALUE + 10`.
+pub struct LongToEnglishQueryMaker {
+    counter: Mutex<i64>,
+    /// `parser`.
+    parser: Mutex<Option<QueryParser>>,
+    // TODO: we could take param to specify locale...
+    rnbf: RuleBasedNumberFormat,
+}
+
+impl Default for LongToEnglishQueryMaker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LongToEnglishQueryMaker {
+    /// `new LongToEnglishQueryMaker()`.
+    pub fn new() -> Self {
+        LongToEnglishQueryMaker {
+            counter: Mutex::new(i64::MIN + 10),
+            parser: Mutex::new(None),
+            rnbf: RuleBasedNumberFormat::root_spellout(),
+        }
+    }
+
+    /// `getNextCounter()`.
+    fn get_next_counter(&self) -> i64 {
+        let mut counter = jdk::lock(&self.counter);
+        if *counter == i64::MAX {
+            *counter = i64::MIN + 10;
+        }
+        let c = *counter;
+        *counter = counter.wrapping_add(1);
+        c
+    }
+}
+
+impl QueryMaker for LongToEnglishQueryMaker {
+    fn make_query_of_size(&self, _size: i32) -> Result<Arc<dyn Query>> {
+        Err(LuceneError::unchecked_with_message("java.lang.UnsupportedOperationException", None))
+    }
+
+    fn make_query(&self) -> Result<Arc<dyn Query>> {
+        let text = self.rnbf.format(self.get_next_counter());
+        let mut parser = jdk::lock(&self.parser);
+        let parser = parser.as_mut().ok_or_else(LuceneError::null_pointer)?;
+        query_parser_base::parse(parser, &text)
+    }
+
+    fn set_config(&self, config: Arc<Config>) -> Result<()> {
+        let anlzr = NewAnalyzerTask::create_analyzer(
+            &config
+                .get_str("analyzer", Some("org.apache.lucene.analysis.standard.StandardAnalyzer"))?
+                .unwrap_or_default(),
+        )?;
+        *jdk::lock(&self.parser) = Some(QueryParser::new(Some(DocMaker::BODY_FIELD), Some(anlzr))?);
+        Ok(())
+    }
+
+    fn reset_inputs(&self) -> Result<()> {
+        *jdk::lock(&self.counter) = i64::MIN + 10;
+        Ok(())
+    }
+
+    fn print_queries(&self) -> String {
+        format!("LongToEnglish: [{} TO {}]", i64::MIN, *jdk::lock(&self.counter))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}

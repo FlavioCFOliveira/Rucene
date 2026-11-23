@@ -15,10 +15,33 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ContentSource.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.feeds`.
+//! The types declared in `ContentSource.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.feeds`.
 
-/// Java: `public abstract class`.
+use rucene::error::Result;
+
+use crate::by_task::feeds::content_items_source::ContentItemsSource;
+use crate::by_task::feeds::doc_data::DocData;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.ContentSource`
+/// (`public abstract class ContentSource extends ContentItemsSource`):
+/// represents content from a specified source, such as TREC, Reuters etc. A
+/// `ContentSource` is responsible for creating [`DocData`] objects for its
+/// documents to be consumed by
+/// [`DocMaker`](crate::by_task::feeds::doc_maker::DocMaker). It also keeps
+/// track of various statistics, such as how many documents were generated,
+/// size in bytes etc.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.feeds.ContentSource`; ported by rmp task #625.
-pub struct ContentSource;
+/// For supported configuration parameters see [`ContentItemsSource`].
+pub trait ContentSource: ContentItemsSource {
+    /// `getNextDocData(DocData docData)`: fills `doc_data` with the next
+    /// document of the content source (Java returns the filled object).
+    /// Implementations must account for multi-threading, as multiple threads
+    /// can call this method simultaneously.
+    ///
+    /// # Errors
+    ///
+    /// [`NoMoreDataException`](crate::by_task::feeds::no_more_data_exception::NoMoreDataException)
+    /// when the source is exhausted; the `IOException` of reading.
+    fn get_next_doc_data(&self, doc_data: &mut DocData) -> Result<()>;
+}

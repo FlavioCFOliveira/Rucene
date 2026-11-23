@@ -15,10 +15,14 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Constants.java`, of the Java
-//! package `org.apache.lucene.benchmark`.
+//! The types declared in `Constants.java`, of the Java package
+//! `org.apache.lucene.benchmark`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.Constants`; ported by rmp task #627.
+/// Equivalent to `org.apache.lucene.benchmark.Constants`: various
+/// benchmarking constants (mostly defaults).
 pub struct Constants;
+
+impl Constants {
+    /// `PARALLEL_TASK_THREAD_NAME_PREFIX`.
+    pub const PARALLEL_TASK_THREAD_NAME_PREFIX: &'static str = "ParallelTaskThread";
+}

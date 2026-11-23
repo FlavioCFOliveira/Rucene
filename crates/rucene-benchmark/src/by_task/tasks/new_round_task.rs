@@ -15,10 +15,52 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NewRoundTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `NewRoundTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.NewRoundTask`
+/// (`public class NewRoundTask extends PerfTask`): increment the counter for properties maintained by Round Number.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.NewRoundTask`; ported by rmp task #626.
-pub struct NewRoundTask;
+/// Other side effects: if there are props by round number, log value change.
+pub struct NewRoundTask {
+    base: PerfTaskBase,
+}
+
+impl NewRoundTask {
+    /// `NewRoundTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(NewRoundTask { base: PerfTaskBase::new(run_data, "NewRoundTask")? })
+    }
+}
+
+impl PerfTask for NewRoundTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(NewRoundTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        self.base.get_run_data().get_config().new_round();
+        Ok(0)
+    }
+
+    fn should_not_record_stats(&self) -> bool {
+        true
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        matches!(simple_class_name, "NewRoundTask")
+    }
+}

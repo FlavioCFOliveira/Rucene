@@ -15,10 +15,30 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `Judge.java`, of the Java
-//! package `org.apache.lucene.benchmark.quality`.
+//! The types declared in `Judge.java`, of the Java package
+//! `org.apache.lucene.benchmark.quality`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.quality.Judge`; ported by rmp task #627.
-pub trait Judge {}
+use crate::jdk::PrintWriter;
+use crate::quality::quality_query::QualityQuery;
+
+/// Equivalent to `org.apache.lucene.benchmark.quality.Judge` (`public
+/// interface Judge`): judge if a document is relevant for a quality query.
+pub trait Judge: Send + Sync {
+    /// `isRelevant(String docName, QualityQuery query)`: judge if document
+    /// `doc_name` is relevant for the given quality query.
+    fn is_relevant(&self, doc_name: Option<&str>, query: &QualityQuery) -> bool;
+
+    /// `validateData(QualityQuery[] qq, PrintWriter logger)`: validate that
+    /// queries and this Judge match each other. To be perfectly valid, this
+    /// Judge must have some data for each and every input quality query, and
+    /// must not have any data on any other quality query. **Note**: the
+    /// quality benchmark run would not fail in case of imperfect validity,
+    /// just a warning message would be logged. If `logger` is not `None`,
+    /// validation issues are logged.
+    fn validate_data(&self, qq: &[QualityQuery], logger: Option<&PrintWriter>) -> bool;
+
+    /// `maxRecall(QualityQuery query)`: the maximal recall for the input
+    /// quality query. It is the number of relevant docs this Judge "knows"
+    /// for the query.
+    fn max_recall(&self, query: &QualityQuery) -> i32;
+}

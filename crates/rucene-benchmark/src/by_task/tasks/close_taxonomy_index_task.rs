@@ -15,10 +15,52 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `CloseTaxonomyIndexTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `CloseTaxonomyIndexTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.CloseTaxonomyIndexTask`
+/// (`public class CloseTaxonomyIndexTask extends PerfTask`): close taxonomy index.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.CloseTaxonomyIndexTask`; ported by rmp task #626.
-pub struct CloseTaxonomyIndexTask;
+/// Other side effects: taxonomy writer object in perfRunData is nullified.
+pub struct CloseTaxonomyIndexTask {
+    base: PerfTaskBase,
+}
+
+impl CloseTaxonomyIndexTask {
+    /// `CloseTaxonomyIndexTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(CloseTaxonomyIndexTask { base: PerfTaskBase::new(run_data, "CloseTaxonomyIndexTask")? })
+    }
+}
+
+impl PerfTask for CloseTaxonomyIndexTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(CloseTaxonomyIndexTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let run_data = self.base.get_run_data();
+        if let Some(w) = run_data.get_taxonomy_writer() {
+            w.close()?;
+        }
+        run_data.set_taxonomy_writer(None);
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "CloseTaxonomyIndexTask"
+    }
+}

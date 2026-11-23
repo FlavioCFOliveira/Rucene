@@ -18,7 +18,10 @@
 //! The types declared in `UnsupportedSpatialOperation.java`, of the Java
 //! package `org.apache.lucene.spatial.query`.
 
-use rucene::error::LuceneError;
+use std::any::Any;
+use std::sync::Arc;
+
+use rucene::error::{JavaThrowable, LuceneError, LuceneErrorKind};
 
 use crate::query::spatial_operation::SpatialOperation;
 
@@ -27,16 +30,42 @@ use crate::query::spatial_operation::SpatialOperation;
 /// UnsupportedOperationException`): exception thrown when the
 /// `SpatialStrategy` cannot implement the requested operation.
 ///
-/// The exception is a [`LuceneError`] of the core's
-/// `UnsupportedOperation` kind (its Java superclass), whose message is the
-/// operation's name.
+/// The exception is a [`LuceneError`] of the core's `Throwable` kind holding
+/// this class, so its class name is
+/// `org.apache.lucene.spatial.query.UnsupportedSpatialOperation`,
+/// [`LuceneError::is_unsupported_operation_exception`] accepts it (its Java
+/// superclass), and its message is the operation's name.
 #[derive(Debug)]
-pub struct UnsupportedSpatialOperation;
+pub struct UnsupportedSpatialOperation {
+    /// `getMessage()`: `op.getName()`.
+    message: String,
+}
 
 impl UnsupportedSpatialOperation {
-    /// `UnsupportedSpatialOperation(SpatialOperation op)`.
+    /// `UnsupportedSpatialOperation(SpatialOperation op)`: `super(op.getName())`
+    /// (`UnsupportedSpatialOperation.java:28-30`).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(op: SpatialOperation) -> LuceneError {
-        LuceneError::unsupported_operation(op.get_name())
+        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(UnsupportedSpatialOperation {
+            message: op.get_name().to_string(),
+        })))
+    }
+}
+
+impl JavaThrowable for UnsupportedSpatialOperation {
+    fn java_class(&self) -> &'static str {
+        "org.apache.lucene.spatial.query.UnsupportedSpatialOperation"
+    }
+
+    fn get_message(&self) -> Option<&str> {
+        Some(&self.message)
+    }
+
+    fn is_unsupported_operation_exception(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

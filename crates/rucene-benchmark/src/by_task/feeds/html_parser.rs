@@ -15,10 +15,35 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `HTMLParser.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.feeds`.
+//! The types declared in `HTMLParser.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.feeds`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.feeds.HTMLParser`; ported by rmp task #625.
-pub trait HTMLParser {}
+use rucene::error::Result;
+use rucene_queryparser::jdk::date::Date;
+
+use crate::by_task::feeds::doc_data::DocData;
+use crate::by_task::feeds::trec_content_source::TrecContentSource;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.HTMLParser`
+/// (`public interface HTMLParser`): HTML parsing interface for test
+/// purposes.
+pub trait HTMLParser: Send + Sync {
+    /// `parse(DocData docData, String name, Date date, Reader reader,
+    /// TrecContentSource trecSrc)`: parse the input text and fill
+    /// `doc_data`. The provided name, title, date are used for the result,
+    /// unless when they're `None`, in which case an attempt is made to set
+    /// them from the parsed data. `trec_src` is the [`TrecContentSource`]
+    /// used to parse dates.
+    ///
+    /// # Errors
+    ///
+    /// If there is a low-level I/O error.
+    fn parse(
+        &self,
+        doc_data: &mut DocData,
+        name: Option<&str>,
+        date: Option<&Date>,
+        reader: &str,
+        trec_src: Option<&TrecContentSource>,
+    ) -> Result<()>;
+}

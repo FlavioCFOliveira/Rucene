@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.quality`.
+//! The Java package `org.apache.lucene.benchmark.quality`.
 
 pub mod judge;
 pub mod quality_benchmark;

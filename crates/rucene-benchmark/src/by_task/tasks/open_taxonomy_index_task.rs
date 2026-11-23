@@ -15,10 +15,51 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `OpenTaxonomyIndexTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `OpenTaxonomyIndexTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene_facet::taxonomy::directory::directory_taxonomy_writer::DirectoryTaxonomyWriter;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.OpenTaxonomyIndexTask`
+/// (`public class OpenTaxonomyIndexTask extends PerfTask`): open a taxonomy index.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.OpenTaxonomyIndexTask`; ported by rmp task #626.
-pub struct OpenTaxonomyIndexTask;
+/// Other side effects: taxonomy writer object in perfRunData is set.
+pub struct OpenTaxonomyIndexTask {
+    base: PerfTaskBase,
+}
+
+impl OpenTaxonomyIndexTask {
+    /// `OpenTaxonomyIndexTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(OpenTaxonomyIndexTask { base: PerfTaskBase::new(run_data, "OpenTaxonomyIndexTask")? })
+    }
+}
+
+impl PerfTask for OpenTaxonomyIndexTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(OpenTaxonomyIndexTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let run_data = self.base.get_run_data();
+        let dir = run_data.get_taxonomy_dir().ok_or_else(LuceneError::null_pointer)?;
+        run_data.set_taxonomy_writer(Some(Arc::new(DirectoryTaxonomyWriter::new(dir)?)));
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "OpenTaxonomyIndexTask"
+    }
+}

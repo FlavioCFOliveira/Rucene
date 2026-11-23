@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.quality.trec`.
+//! The Java package `org.apache.lucene.benchmark.quality.trec`.
 
 pub mod query_driver;
 pub mod trec1_mq_reader;

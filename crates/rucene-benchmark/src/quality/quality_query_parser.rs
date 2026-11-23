@@ -15,10 +15,25 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `QualityQueryParser.java`, of the Java
-//! package `org.apache.lucene.benchmark.quality`.
+//! The types declared in `QualityQueryParser.java`, of the Java package
+//! `org.apache.lucene.benchmark.quality`.
 
-/// Java: `public interface`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.quality.QualityQueryParser`; ported by rmp task #627.
-pub trait QualityQueryParser {}
+use std::sync::Arc;
+
+use rucene::error::Result;
+use rucene::search::query::Query;
+
+use crate::quality::quality_query::QualityQuery;
+
+/// Equivalent to `org.apache.lucene.benchmark.quality.QualityQueryParser`
+/// (`public interface QualityQueryParser`): parse a QualityQuery into a
+/// Lucene query.
+pub trait QualityQueryParser: Send + Sync {
+    /// `parse(QualityQuery qq)`: parse a given QualityQuery into a Lucene
+    /// query.
+    ///
+    /// # Errors
+    ///
+    /// `ParseException` if parsing failed.
+    fn parse(&self, qq: &QualityQuery) -> Result<Arc<dyn Query>>;
+}

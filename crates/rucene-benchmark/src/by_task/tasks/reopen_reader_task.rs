@@ -15,10 +15,55 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ReopenReaderTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `ReopenReaderTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.ReopenReaderTask`; ported by rmp task #626.
-pub struct ReopenReaderTask;
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+use rucene::index::directory_reader;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.ReopenReaderTask`
+/// (`public class ReopenReaderTask extends PerfTask`): reopens IndexReader
+/// and closes old IndexReader.
+pub struct ReopenReaderTask {
+    base: PerfTaskBase,
+}
+
+impl ReopenReaderTask {
+    /// `ReopenReaderTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(ReopenReaderTask { base: PerfTaskBase::new(run_data, "ReopenReaderTask")? })
+    }
+}
+
+impl PerfTask for ReopenReaderTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(ReopenReaderTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let run_data = self.base.get_run_data();
+        let r = run_data.get_index_reader()?.ok_or_else(LuceneError::null_pointer)?;
+        let nr = directory_reader::open_if_changed(Arc::clone(&r))?;
+        if let Some(nr) = nr {
+            run_data.set_index_reader(Some(Arc::clone(&nr)))?;
+            nr.dec_ref()?;
+        }
+        r.dec_ref()?;
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "ReopenReaderTask"
+    }
+}

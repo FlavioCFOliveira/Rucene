@@ -15,10 +15,49 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `FacetSource.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.feeds`.
+//! The types declared in `FacetSource.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.feeds`.
 
-/// Java: `public abstract class`.
+use rucene::error::Result;
+use rucene_facet::facet_field::FacetField;
+use rucene_facet::facets_config::FacetsConfig;
+
+use crate::by_task::feeds::content_items_source::ContentItemsSource;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.FacetSource`
+/// (`public abstract class FacetSource extends ContentItemsSource`): source
+/// items for facets.
 ///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.feeds.FacetSource`; ported by rmp task #625.
-pub struct FacetSource;
+/// For supported configuration parameters see [`ContentItemsSource`].
+/// `FacetSource.resetInputs()` is [`reset_inputs`], which every
+/// implementation's [`ContentItemsSource::reset_inputs`] calls.
+pub trait FacetSource: ContentItemsSource {
+    /// `getNextFacets(List<FacetField> facets)`: fills the next facets
+    /// content items in the given list. Implementations must account for
+    /// multi-threading, as multiple threads can call this method
+    /// simultaneously.
+    ///
+    /// # Errors
+    ///
+    /// `NoMoreDataException` or an `IOException`.
+    fn get_next_facets(&self, facets: &mut Vec<FacetField>) -> Result<()>;
+
+    /// `configure(FacetsConfig config)`.
+    fn configure(&self, config: &FacetsConfig);
+}
+
+/// `FacetSource.resetInputs()`: prints the statistics, re-initiates the
+/// source (properties by round may have changed), then
+/// `ContentItemsSource.resetInputs()`.
+///
+/// # Errors
+///
+/// The exception of `setConfig`.
+pub fn reset_inputs<S: FacetSource + ?Sized>(source: &S) -> Result<()> {
+    source.print_statistics("facets");
+    // re-initiate since properties by round may have changed.
+    let config = source.get_config().expect("setConfig was called");
+    source.set_config(config)?;
+    source.items_base().reset_inputs();
+    Ok(())
+}

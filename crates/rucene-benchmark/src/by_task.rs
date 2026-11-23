@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.byTask`.
+//! The Java package `org.apache.lucene.benchmark.byTask`.
 
 pub mod benchmark;
 pub mod feeds;

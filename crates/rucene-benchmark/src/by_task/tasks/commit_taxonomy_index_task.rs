@@ -15,10 +15,52 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `CommitTaxonomyIndexTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `CommitTaxonomyIndexTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.CommitTaxonomyIndexTask`; ported by rmp task #626.
-pub struct CommitTaxonomyIndexTask;
+use std::sync::Arc;
+
+use rucene::error::{LuceneError, Result};
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.CommitTaxonomyIndexTask`
+/// (`public class CommitTaxonomyIndexTask extends PerfTask`): commits the Taxonomy Index.
+pub struct CommitTaxonomyIndexTask {
+    base: PerfTaskBase,
+}
+
+impl CommitTaxonomyIndexTask {
+    /// `CommitTaxonomyIndexTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(CommitTaxonomyIndexTask { base: PerfTaskBase::new(run_data, "CommitTaxonomyIndexTask")? })
+    }
+}
+
+impl PerfTask for CommitTaxonomyIndexTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(CommitTaxonomyIndexTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let run_data = self.base.get_run_data();
+        match run_data.get_taxonomy_writer() {
+            Some(taxonomy_writer) => {
+                taxonomy_writer.commit()?;
+            }
+            None => return Err(LuceneError::illegal_state("TaxonomyWriter is not currently open")),
+        }
+        Ok(1)
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "CommitTaxonomyIndexTask"
+    }
+}

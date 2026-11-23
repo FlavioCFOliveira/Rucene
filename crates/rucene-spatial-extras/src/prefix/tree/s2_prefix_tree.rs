@@ -30,7 +30,6 @@ use s2_geometry::s2_projections::S2Projections;
 use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::distance::distance_utils::DistanceUtils;
 use spatial4j::shape::shape::Shape;
-use spatial4j::shape::shape_factory::ShapeFactory;
 
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::cell_iterator::{CellIterator, ListCellIterator};
@@ -83,7 +82,7 @@ pub struct S2PrefixTree {
     base: SpatialPrefixTreeBase,
     /// `s2ShapeFactory`: factory to generate S2 cell shapes (the context's
     /// shape factory).
-    s2_shape_factory: Arc<dyn ShapeFactory>,
+    s2_shape_factory: Arc<dyn S2ShapeFactory>,
     /// `arity`.
     pub(crate) arity: i32,
     me: Weak<S2PrefixTree>,
@@ -107,12 +106,11 @@ impl S2PrefixTree {
     /// an `S2ShapeFactory`, or for an arity out of `[1, 3]`.
     pub fn with_arity(ctx: Arc<SpatialContext>, max_levels: i32, arity: i32) -> Result<Arc<S2PrefixTree>> {
         let base = SpatialPrefixTreeBase::new(Arc::clone(&ctx), max_levels);
-        let shape_factory = ctx.get_shape_factory();
-        if as_s2_shape_factory(&*shape_factory).is_none() {
+        let Some(shape_factory) = as_s2_shape_factory(&ctx.get_shape_factory()) else {
             return Err(LuceneError::illegal_argument(
                 "Spatial context does not support S2 spatial index.",
             ));
-        }
+        };
         if !(1..=3).contains(&arity) {
             return Err(LuceneError::illegal_argument(format!(
                 "Invalid value for S2 tree arity. Possible values are 1, 2 or 3. Provided value is {arity}."
@@ -137,7 +135,7 @@ impl S2PrefixTree {
 
     /// `s2ShapeFactory`.
     pub(crate) fn s2_shape_factory(&self) -> &dyn S2ShapeFactory {
-        as_s2_shape_factory(&*self.s2_shape_factory).expect("checked by the constructor")
+        &*self.s2_shape_factory
     }
 }
 

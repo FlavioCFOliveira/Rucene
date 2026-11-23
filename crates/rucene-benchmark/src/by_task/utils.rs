@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-//! Skeletons of the Java package `org.apache.lucene.benchmark.byTask.utils`.
+//! The Java package `org.apache.lucene.benchmark.byTask.utils`.
 
 pub mod algorithm;
 pub mod analyzer_factory;

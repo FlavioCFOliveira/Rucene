@@ -15,20 +15,156 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `NewCollationAnalyzerTask.java`, of the Java
+//! The types declared in `NewCollationAnalyzerTask.java`, of the Java
 //! package `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.NewCollationAnalyzerTask`; ported by rmp task #626.
-pub struct NewCollationAnalyzerTask;
+use std::sync::{Arc, Mutex};
 
-/// Java: `public enum`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.NewCollationAnalyzerTask.Implementation`; ported by rmp task #626.
+use rucene::analysis::Analyzer;
+use rucene::error::Result;
+use rucene_analysis_common::collation::collation_key_analyzer::CollationKeyAnalyzer;
+use rucene_analysis_common::jdk::collator::RuleBasedCollator;
+use rucene_analysis_common::jdk::locale::Locale;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+use crate::classes;
+use crate::jdk;
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.NewCollationAnalyzerTask.Implementation`
+/// (`public enum Implementation`): different Collation implementations:
+/// currently limited to what is provided in the JDK and ICU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Implementation {
-    /// Java constant `JDK`.
+    /// `JDK("org.apache.lucene.collation.CollationKeyAnalyzer", "java.text.Collator")`.
     Jdk,
-    /// Java constant `ICU`.
+    /// `ICU("org.apache.lucene.analysis.icu.ICUCollationKeyAnalyzer", "com.ibm.icu.text.Collator")`.
     Icu,
+}
+
+impl Implementation {
+    /// `className`.
+    pub fn class_name(self) -> &'static str {
+        match self {
+            Implementation::Jdk => "org.apache.lucene.collation.CollationKeyAnalyzer",
+            Implementation::Icu => "org.apache.lucene.analysis.icu.ICUCollationKeyAnalyzer",
+        }
+    }
+
+    /// `collatorClassName`.
+    pub fn collator_class_name(self) -> &'static str {
+        match self {
+            Implementation::Jdk => "java.text.Collator",
+            Implementation::Icu => "com.ibm.icu.text.Collator",
+        }
+    }
+
+    /// `name()`, as `toString()` prints it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Implementation::Jdk => "JDK",
+            Implementation::Icu => "ICU",
+        }
+    }
+}
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.NewCollationAnalyzerTask`
+/// (`public class NewCollationAnalyzerTask extends PerfTask`): task to support
+/// benchmarking collation.
+///
+/// * `NewCollationAnalyzer` with the default jdk impl
+/// * `NewCollationAnalyzer(impl:icu)` specify an impl (jdk,icu)
+pub struct NewCollationAnalyzerTask {
+    base: PerfTaskBase,
+    impl_: Mutex<Implementation>,
+}
+
+impl NewCollationAnalyzerTask {
+    /// `NewCollationAnalyzerTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(NewCollationAnalyzerTask {
+            base: PerfTaskBase::new(run_data, "NewCollationAnalyzerTask")?,
+            impl_: Mutex::new(Implementation::Jdk),
+        })
+    }
+
+    /// `createAnalyzer(Locale locale, Implementation impl)`: the analyzer
+    /// class's `(Collator)` constructor over `Collator.getInstance(locale)`,
+    /// both found by name. The ICU classes (lucene/analysis/icu, icu4j) are
+    /// not part of this port's classpath, so `Class.forName` fails for them.
+    ///
+    /// # Errors
+    ///
+    /// `ClassNotFoundException` for the ICU implementation.
+    pub(crate) fn create_analyzer(locale: &Locale, impl_: Implementation) -> Result<Arc<dyn Analyzer>> {
+        match impl_ {
+            Implementation::Jdk => {
+                let collator = RuleBasedCollator::get_instance(locale);
+                Ok(Arc::new(CollationKeyAnalyzer::new(&collator)))
+            }
+            Implementation::Icu => Err(classes::class_not_found(impl_.collator_class_name())),
+        }
+    }
+}
+
+impl PerfTask for NewCollationAnalyzerTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(NewCollationAnalyzerTask {
+            base: self.base.clone_base(),
+            impl_: Mutex::new(*jdk::lock(&self.impl_)),
+        }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        let impl_ = *jdk::lock(&self.impl_);
+        let result = (|| -> Result<()> {
+            let Some(locale) = self.base.get_run_data().get_locale() else {
+                return Err(jdk::runtime_exception("Locale must be set with the NewLocale task!"));
+            };
+            let analyzer = Self::create_analyzer(&locale, impl_)?;
+            self.base.get_run_data().set_analyzer(Some(analyzer));
+            println!("Changed Analyzer to: {}({locale})", impl_.class_name());
+            Ok(())
+        })();
+        result.map_err(|e| jdk::runtime_exception_with_cause(format!("Error creating Analyzer: impl={}", impl_.name()), e))?;
+        Ok(1)
+    }
+
+    fn set_params(&self, params: &str) -> Result<()> {
+        perf_task::set_params(self, params)?;
+        for param in params.split(',').filter(|s| !s.is_empty()) {
+            let mut expr = param.split(':').filter(|s| !s.is_empty());
+            let no_such = || rucene::error::LuceneError::unchecked_with_message("java.util.NoSuchElementException", None);
+            let key = expr.next().ok_or_else(no_such)?;
+            let value = expr.next().ok_or_else(no_such)?;
+            // for now we only support the "impl" parameter.
+            // TODO: add strength, decomposition, etc
+            if key == "impl" {
+                if value.eq_ignore_ascii_case("icu") {
+                    *jdk::lock(&self.impl_) = Implementation::Icu;
+                } else if value.eq_ignore_ascii_case("jdk") {
+                    *jdk::lock(&self.impl_) = Implementation::Jdk;
+                } else {
+                    return Err(jdk::runtime_exception(format!("Unknown parameter {param}")));
+                }
+            } else {
+                return Err(jdk::runtime_exception(format!("Unknown parameter {param}")));
+            }
+        }
+        Ok(())
+    }
+
+    fn supports_params(&self) -> bool {
+        true
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        simple_class_name == "NewCollationAnalyzerTask"
+    }
 }

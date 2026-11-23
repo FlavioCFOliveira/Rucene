@@ -15,10 +15,51 @@
  * limitations under the License.
  */
 
-//! Skeletons of the types declared in `ResetInputsTask.java`, of the Java
-//! package `org.apache.lucene.benchmark.byTask.tasks`.
+//! The types declared in `ResetInputsTask.java`, of the Java package
+//! `org.apache.lucene.benchmark.byTask.tasks`.
 
-/// Java: `public class`.
-///
-/// Skeleton of `org.apache.lucene.benchmark.byTask.tasks.ResetInputsTask`; ported by rmp task #626.
-pub struct ResetInputsTask;
+use std::sync::Arc;
+
+use rucene::error::Result;
+
+use crate::by_task::perf_run_data::PerfRunData;
+use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
+
+/// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.ResetInputsTask`
+/// (`public class ResetInputsTask extends PerfTask`): reset inputs so that the test run would behave, input wise, as if it just
+/// started. This affects e.g. the generation of docs and queries.
+pub struct ResetInputsTask {
+    base: PerfTaskBase,
+}
+
+impl ResetInputsTask {
+    /// `ResetInputsTask(PerfRunData runData)`.
+    ///
+    /// # Errors
+    ///
+    /// The exception of the `PerfTask` constructor.
+    pub fn new(run_data: Arc<PerfRunData>) -> Result<Self> {
+        Ok(ResetInputsTask { base: PerfTaskBase::new(run_data, "ResetInputsTask")? })
+    }
+}
+
+impl PerfTask for ResetInputsTask {
+    perf_task::perf_task_plumbing!();
+
+    fn clone_task(&self) -> Result<Arc<dyn PerfTask>> {
+        Ok(Arc::new(ResetInputsTask { base: self.base.clone_base() }))
+    }
+
+    fn do_logic(&self) -> Result<i32> {
+        self.base.get_run_data().reset_inputs()?;
+        Ok(0)
+    }
+
+    fn should_not_record_stats(&self) -> bool {
+        true
+    }
+
+    fn is_instance_of(&self, simple_class_name: &str) -> bool {
+        matches!(simple_class_name, "ResetInputsTask")
+    }
+}
