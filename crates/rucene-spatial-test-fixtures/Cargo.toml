@@ -17,3 +17,7 @@ name = "rucene_spatial_test_fixtures"
 [dependencies]
 rucene-test-framework = { path = "../rucene-test-framework" }
 rucene-spatial3d = { path = "../rucene-spatial3d" }
+# Reached in Java through test-framework's `api` dependency on
+# randomizedtesting and spatial3d's on lucene-core.
+rucene = { path = "../.." }
+randomizedtesting = { path = "../randomizedtesting" }
