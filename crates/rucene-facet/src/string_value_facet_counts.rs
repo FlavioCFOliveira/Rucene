@@ -546,6 +546,11 @@ impl StringValueFacetCounts {
 }
 
 impl Facets for StringValueFacetCounts {
+    /// This instance, for Java's `instanceof` tests and casts.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get_all_children(&self, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
         self.validate_dim_and_path_for_get_children(dim, path)?;
 

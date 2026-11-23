@@ -52,12 +52,41 @@ const BYTES_PER_CACHE_ENTRY: i64 = 4 * RamUsageEstimator::NUM_BYTES_OBJECT_REF
 
 /// `LRUHashMap<FacetLabel, Integer>`, shared between a reader and the
 /// readers `doOpenIfChanged` derives from it.
-type OrdinalCache = Arc<Mutex<LRUHashMap<FacetLabel, i32>>>;
+pub type OrdinalCache = Arc<Mutex<LRUHashMap<FacetLabel, i32>>>;
 /// `LRUHashMap<Integer, FacetLabel>`, shared likewise.
-type CategoryCache = Arc<Mutex<LRUHashMap<i32, FacetLabel>>>;
+pub type CategoryCache = Arc<Mutex<LRUHashMap<i32, FacetLabel>>>;
 
 fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The protected method of `DirectoryTaxonomyReader` a subclass overrides:
+/// `doOpenIfChanged`.
+///
+/// Rust has no implementation inheritance; a subclass's overrides are this
+/// strategy object, and its default is the base class's body
+/// ([`DirectoryTaxonomyReader::default_do_open_if_changed`]).
+pub trait DirectoryTaxonomyReaderOverrides: Send + Sync {
+    /// Implements the opening of a new `DirectoryTaxonomyReader` instance if
+    /// the taxonomy has changed; `reader` is `this`.
+    ///
+    /// Equivalent to the protected `doOpenIfChanged()`, typed as Java's
+    /// covariant override.
+    fn do_open_if_changed(
+        &self,
+        reader: &DirectoryTaxonomyReader,
+    ) -> Result<Option<DirectoryTaxonomyReader>> {
+        reader.default_do_open_if_changed()
+    }
+}
+
+/// The base class's own overrides.
+struct DefaultOverrides;
+
+impl DirectoryTaxonomyReaderOverrides for DefaultOverrides {}
+
+fn default_overrides() -> Arc<dyn DirectoryTaxonomyReaderOverrides> {
+    Arc::new(DefaultOverrides)
 }
 
 /// The fields `doClose()` nulls.
@@ -78,6 +107,7 @@ pub struct DirectoryTaxonomyReader {
     taxo_epoch: i64,
     index_reader: Arc<dyn DirectoryReader>,
     caches: Mutex<ReaderCaches>,
+    overrides: Arc<dyn DirectoryTaxonomyReaderOverrides>,
 }
 
 impl fmt::Debug for DirectoryTaxonomyReader {
@@ -92,13 +122,37 @@ impl DirectoryTaxonomyReader {
     /// Called only from `doOpenIfChanged`. If the taxonomy has been recreated,
     /// you should pass `None` as the caches and parent/children arrays.
     ///
-    /// Equivalent to the package-private five-argument constructor.
-    fn from_parts(
+    /// Equivalent to the package-private five-argument constructor
+    /// `DirectoryTaxonomyReader(DirectoryReader, DirectoryTaxonomyWriter,
+    /// LRUHashMap, LRUHashMap, TaxonomyIndexArrays)`; each `None` is Java's
+    /// `null`.
+    pub fn from_parts(
         index_reader: Arc<dyn DirectoryReader>,
         taxo_writer: Option<Arc<DirectoryTaxonomyWriter>>,
         ordinal_cache: Option<OrdinalCache>,
         category_cache: Option<CategoryCache>,
         taxo_arrays: Option<Arc<TaxonomyIndexArrays>>,
+    ) -> Result<Self> {
+        Self::from_parts_with_overrides(
+            index_reader,
+            taxo_writer,
+            ordinal_cache,
+            category_cache,
+            taxo_arrays,
+            default_overrides(),
+        )
+    }
+
+    /// [`Self::from_parts`] as the `super(...)` call of a subclass that
+    /// overrides the protected method listed by
+    /// [`DirectoryTaxonomyReaderOverrides`].
+    pub fn from_parts_with_overrides(
+        index_reader: Arc<dyn DirectoryReader>,
+        taxo_writer: Option<Arc<DirectoryTaxonomyWriter>>,
+        ordinal_cache: Option<OrdinalCache>,
+        category_cache: Option<CategoryCache>,
+        taxo_arrays: Option<Arc<TaxonomyIndexArrays>>,
+        overrides: Arc<dyn DirectoryTaxonomyReaderOverrides>,
     ) -> Result<Self> {
         let taxo_epoch = taxo_writer.as_ref().map_or(-1, |w| w.get_taxonomy_epoch());
 
@@ -126,6 +180,7 @@ impl DirectoryTaxonomyReader {
                 category_cache: Some(category_cache),
                 taxo_arrays,
             }),
+            overrides,
         })
     }
 
@@ -133,6 +188,16 @@ impl DirectoryTaxonomyReader {
     ///
     /// Equivalent to `DirectoryTaxonomyReader(Directory)`.
     pub fn open(directory: Arc<dyn Directory>) -> Result<Self> {
+        Self::open_with_overrides(directory, default_overrides())
+    }
+
+    /// [`Self::open`] as the `super(directory)` call of a subclass that
+    /// overrides the protected method listed by
+    /// [`DirectoryTaxonomyReaderOverrides`].
+    pub fn open_with_overrides(
+        directory: Arc<dyn Directory>,
+        overrides: Arc<dyn DirectoryTaxonomyReaderOverrides>,
+    ) -> Result<Self> {
         let index_reader = Self::open_index_reader(directory)?;
         Ok(Self {
             base: TaxonomyReaderBase::default(),
@@ -146,6 +211,7 @@ impl DirectoryTaxonomyReader {
                 category_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(DEFAULT_CACHE_VALUE)))),
                 taxo_arrays: None,
             }),
+            overrides,
         })
     }
 
@@ -168,6 +234,7 @@ impl DirectoryTaxonomyReader {
                 category_cache: Some(Arc::new(Mutex::new(LRUHashMap::new(DEFAULT_CACHE_VALUE)))),
                 taxo_arrays: None,
             }),
+            overrides: default_overrides(),
         })
     }
 
@@ -190,8 +257,15 @@ impl DirectoryTaxonomyReader {
     /// Implements the opening of a new `DirectoryTaxonomyReader` instance if
     /// the taxonomy has changed.
     ///
-    /// Equivalent to `doOpenIfChanged()`, typed as Java's covariant override.
+    /// Equivalent to `doOpenIfChanged()`, typed as Java's covariant override:
+    /// the virtual call, dispatched to [`DirectoryTaxonomyReaderOverrides`].
     pub fn open_if_changed(&self) -> Result<Option<DirectoryTaxonomyReader>> {
+        Arc::clone(&self.overrides).do_open_if_changed(self)
+    }
+
+    /// The body of `DirectoryTaxonomyReader.doOpenIfChanged()`, which a
+    /// subclass's override reaches as `super.doOpenIfChanged()`.
+    pub fn default_do_open_if_changed(&self) -> Result<Option<DirectoryTaxonomyReader>> {
         self.ensure_open()?;
 
         // This works for both NRT and non-NRT readers (i.e. an NRT reader

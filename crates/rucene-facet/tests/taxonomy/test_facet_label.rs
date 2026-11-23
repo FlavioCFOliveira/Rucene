@@ -17,10 +17,8 @@
 
 //! Port of `org.apache.lucene.facet.taxonomy.TestFacetLabel`.
 //!
-//! `testEmptyNullComponents`: the rows with a `null` component (and the
-//! `null` dimension cases) cannot be built, because the port's constructors
-//! take `&str` (Java's `null` check is carried by the type); the rows with an
-//! empty component or dimension are ported as is.
+//! `testEmptyNullComponents` builds its `null` components and dimensions
+//! through the `new_nullable` constructors (`None` is Java's `null`).
 
 use std::sync::Arc;
 
@@ -201,33 +199,48 @@ fn test_compare_to() -> Result<()> {
 
 fn test_empty_null_components() -> Result<()> {
     // LUCENE-4724: CategoryPath should not allow empty or null components
-    let components_tests: [&[&str]; 3] = [
-        &["", "test"], // empty in the beginning
-        &["test", ""], // empty in the end
-        &["test", "", "foo"], // empty in the middle
-                       // `{null, "test"}`, `{"test", null}`, `{"test", null, "foo"}`:
-                       // not representable (`&str`), see the module docs.
+    let components_tests: [&[Option<&str>]; 6] = [
+        &[Some(""), Some("test")],              // empty in the beginning
+        &[Some("test"), Some("")],              // empty in the end
+        &[Some("test"), Some(""), Some("foo")], // empty in the middle
+        &[None, Some("test")],                  // null at the beginning
+        &[Some("test"), None],                  // null in the end
+        &[Some("test"), None, Some("foo")],     // null in the middle
     ];
 
     // empty or null components should not be allowed.
     for components in components_tests {
-        expect_throws(IAE, || fl(components));
-        expect_throws(IAE, || FacetField::new("dim", components));
+        expect_throws(IAE, || FacetLabel::new_nullable(components));
+        expect_throws(IAE, || FacetField::new_nullable(Some("dim"), components));
         expect_throws(IAE, || {
-            AssociationFacetField::new(BytesRef::new(Vec::new()), "dim", components)
+            AssociationFacetField::new_nullable(BytesRef::new(Vec::new()), Some("dim"), components)
         });
-        expect_throws(IAE, || IntAssociationFacetField::new(17, "dim", components));
         expect_throws(IAE, || {
-            FloatAssociationFacetField::new(17.0, "dim", components)
+            IntAssociationFacetField::new_nullable(17, Some("dim"), components)
+        });
+        expect_throws(IAE, || {
+            FloatAssociationFacetField::new_nullable(17.0, Some("dim"), components)
         });
     }
-    // `new FacetField(null, ...)` and the other `null` dimensions: not
-    // representable, see the module docs.
+
+    expect_throws(IAE, || FacetField::new_nullable(None, &[Some("abc")]));
     expect_throws(IAE, || FacetField::new("", &["abc"]));
+    expect_throws(IAE, || {
+        IntAssociationFacetField::new_nullable(17, None, &[Some("abc")])
+    });
     expect_throws(IAE, || IntAssociationFacetField::new(17, "", &["abc"]));
+    expect_throws(IAE, || {
+        FloatAssociationFacetField::new_nullable(17.0, None, &[Some("abc")])
+    });
     expect_throws(IAE, || FloatAssociationFacetField::new(17.0, "", &["abc"]));
     expect_throws(IAE, || {
+        AssociationFacetField::new_nullable(BytesRef::new(Vec::new()), None, &[Some("abc")])
+    });
+    expect_throws(IAE, || {
         AssociationFacetField::new(BytesRef::new(Vec::new()), "", &["abc"])
+    });
+    expect_throws(IAE, || {
+        SortedSetDocValuesFacetField::new_nullable(None, &[Some("abc")])
     });
     expect_throws(IAE, || SortedSetDocValuesFacetField::new("", &["abc"]));
     expect_throws(IAE, || SortedSetDocValuesFacetField::new("dim", &[""]));

@@ -30,7 +30,8 @@ use rucene::util::{BitSet, Bits, FixedBitSet};
 
 /// A sideways collector of one dimension for one leaf, shared with the
 /// `DrillSidewaysQuery` that keeps it for the reduction.
-pub(crate) type CollectorSlot<K> = Arc<Mutex<K>>;
+#[doc(hidden)]
+pub type CollectorSlot<K> = Arc<Mutex<K>>;
 
 const CHUNK: i32 = 2048;
 const MASK: i32 = CHUNK - 1;
@@ -45,7 +46,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// supplier is built; a Rucene leaf collector borrows its collector, so the
 /// dimension keeps the collector and its leaf collector is obtained when
 /// scoring starts.
-pub(crate) struct DocsAndCost<K> {
+#[doc(hidden)]
+pub struct DocsAndCost<K> {
     scorer: Box<dyn Scorer>,
     has_two_phase: bool,
     /// Equivalent to `cost`.
@@ -57,7 +59,7 @@ pub(crate) struct DocsAndCost<K> {
 
 impl<K> DocsAndCost<K> {
     /// Equivalent to `DocsAndCost(Scorer, LeafCollector)`.
-    pub(crate) fn new(mut scorer: Box<dyn Scorer>, collector: CollectorSlot<K>) -> Self {
+    pub fn new(mut scorer: Box<dyn Scorer>, collector: CollectorSlot<K>) -> Self {
         let (has_two_phase, match_cost) = match scorer.two_phase_iterator() {
             None => (false, 0f32),
             Some(two_phase) => (true, two_phase.match_cost()),
@@ -128,7 +130,8 @@ impl Scorable for Score {
 /// Bulk scorer for `DrillSidewaysQuery`.
 ///
 /// Equivalent to `org.apache.lucene.facet.DrillSidewaysScorer`.
-pub(crate) struct DrillSidewaysScorer<K: Collector> {
+#[doc(hidden)]
+pub struct DrillSidewaysScorer<K: Collector> {
     dims: Vec<DocsAndCost<K>>,
     base_scorer: Box<dyn Scorer>,
     base_has_two_phase: bool,
@@ -152,7 +155,7 @@ fn advance_if_behind(doc_id: i32, iterator: &mut dyn DocIdSetIterator) -> Result
 impl<K: Collector> DrillSidewaysScorer<K> {
     /// Equivalent to `DrillSidewaysScorer(LeafReaderContext, Scorer,
     /// DocsAndCost[], boolean)`.
-    pub(crate) fn new(
+    pub fn new(
         context: Arc<LeafReaderContext>,
         mut base_scorer: Box<dyn Scorer>,
         dims: Vec<DocsAndCost<K>>,

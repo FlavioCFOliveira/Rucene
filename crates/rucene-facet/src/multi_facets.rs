@@ -79,6 +79,11 @@ impl MultiFacets {
 }
 
 impl Facets for MultiFacets {
+    /// This instance, for Java's `instanceof` tests and casts.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get_all_children(&self, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
         self.facets_for(dim)?.get_all_children(dim, path)
     }

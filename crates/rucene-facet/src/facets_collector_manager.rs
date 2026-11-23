@@ -37,9 +37,45 @@ use crate::facets_collector::{FacetsCollector, MatchingDocs, SharedDocIdSet};
 /// produces a merged `FacetsCollector`.
 ///
 /// Equivalent to `org.apache.lucene.facet.FacetsCollectorManager`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct FacetsCollectorManager {
     keep_scores: bool,
+    /// A subclass's overrides of `newCollector` and `reduce`; `None` is the
+    /// base class.
+    overrides: Option<Arc<dyn FacetsCollectorManagerOverrides>>,
+}
+
+impl std::fmt::Debug for FacetsCollectorManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FacetsCollectorManager")
+            .field("keep_scores", &self.keep_scores)
+            .field("overridden", &self.overrides.is_some())
+            .finish()
+    }
+}
+
+/// The methods of `FacetsCollectorManager` a subclass overrides: `newCollector`
+/// and `reduce`.
+///
+/// Rust has no implementation inheritance; a subclass's overrides are this
+/// strategy object, which receives the manager in place of `this`, and its
+/// defaults are the base class's bodies
+/// ([`FacetsCollectorManager::super_new_collector`],
+/// [`FacetsCollectorManager::super_reduce`]).
+pub trait FacetsCollectorManagerOverrides: Send + Sync {
+    /// Equivalent to `newCollector()`.
+    fn new_collector(&self, manager: &FacetsCollectorManager) -> Result<FacetsCollector> {
+        manager.super_new_collector()
+    }
+
+    /// Equivalent to `reduce(Collection<FacetsCollector>)`.
+    fn reduce(
+        &self,
+        manager: &FacetsCollectorManager,
+        collectors: Vec<FacetsCollector>,
+    ) -> Result<FacetsCollector> {
+        manager.super_reduce(collectors)
+    }
 }
 
 impl FacetsCollectorManager {
@@ -54,7 +90,47 @@ impl FacetsCollectorManager {
     ///
     /// Equivalent to `FacetsCollectorManager(boolean)`.
     pub fn with_keep_scores(keep_scores: bool) -> Self {
-        Self { keep_scores }
+        Self {
+            keep_scores,
+            overrides: None,
+        }
+    }
+
+    /// The `super(keepScores)` call of a subclass that overrides the methods
+    /// listed by [`FacetsCollectorManagerOverrides`].
+    pub fn with_overrides(
+        keep_scores: bool,
+        overrides: Arc<dyn FacetsCollectorManagerOverrides>,
+    ) -> Self {
+        Self {
+            keep_scores,
+            overrides: Some(overrides),
+        }
+    }
+
+    /// The base class's `newCollector()`, reached by an override as
+    /// `super.newCollector()`.
+    pub fn super_new_collector(&self) -> Result<FacetsCollector> {
+        Ok(FacetsCollector::with_keep_scores(self.keep_scores))
+    }
+
+    /// The base class's `reduce(Collection<FacetsCollector>)`, reached by an
+    /// override as `super.reduce(collectors)`.
+    pub fn super_reduce(&self, collectors: Vec<FacetsCollector>) -> Result<FacetsCollector> {
+        if collectors.is_empty() {
+            return Ok(FacetsCollector::new());
+        }
+        if collectors.len() == 1 {
+            return Ok(collectors
+                .into_iter()
+                .next()
+                .expect("INVARIANT: one collector"));
+        }
+        debug_assert!(collectors
+            .iter()
+            .all(|fc| fc.get_keep_scores() == self.keep_scores));
+        let refs: Vec<&FacetsCollector> = collectors.iter().collect();
+        ReducedFacetsCollector::create(&refs, self.keep_scores)
     }
 
     /// Equivalent to `reduceMatchingDocs(Collection)`: the matching docs of
@@ -248,7 +324,7 @@ impl FacetsCollectorManager {
                 TotalHitCountCollectorManager::new(searcher.get_slices()?);
             let multi_collector_manager = MultiCollectorManager::new(vec![
                 Some(Box::new(hit_count_collector_manager) as Box<dyn ErasedCollectorManager>),
-                Some(Box::new(*fcm)),
+                Some(Box::new(fcm.clone())),
             ])?;
             let mut result = searcher.search_with_manager(q, &multi_collector_manager)?;
             let fc = result.pop().expect("INVARIANT: two managers");
@@ -277,7 +353,7 @@ impl FacetsCollectorManager {
                     TopFieldCollectorManager::new(sort.clone(), n, after, i32::MAX)?;
                 multi_collector_manager = MultiCollectorManager::new(vec![
                     Some(Box::new(top_field_collector_manager) as Box<dyn ErasedCollectorManager>),
-                    Some(Box::new(*fcm)),
+                    Some(Box::new(fcm.clone())),
                 ])?;
             } else {
                 let after = match after {
@@ -290,7 +366,7 @@ impl FacetsCollectorManager {
                 multi_collector_manager = MultiCollectorManager::new(vec![
                     Some(Box::new(top_score_doc_collector_manager)
                         as Box<dyn ErasedCollectorManager>),
-                    Some(Box::new(*fcm)),
+                    Some(Box::new(fcm.clone())),
                 ])?;
             }
             let mut result =
@@ -431,23 +507,16 @@ impl CollectorManager for FacetsCollectorManager {
     type Output = FacetsCollector;
 
     fn new_collector(&self) -> Result<FacetsCollector> {
-        Ok(FacetsCollector::with_keep_scores(self.keep_scores))
+        match &self.overrides {
+            Some(overrides) => overrides.new_collector(self),
+            None => self.super_new_collector(),
+        }
     }
 
     fn reduce(&self, collectors: Vec<FacetsCollector>) -> Result<FacetsCollector> {
-        if collectors.is_empty() {
-            return Ok(FacetsCollector::new());
+        match &self.overrides {
+            Some(overrides) => overrides.reduce(self, collectors),
+            None => self.super_reduce(collectors),
         }
-        if collectors.len() == 1 {
-            return Ok(collectors
-                .into_iter()
-                .next()
-                .expect("INVARIANT: one collector"));
-        }
-        debug_assert!(collectors
-            .iter()
-            .all(|fc| fc.get_keep_scores() == self.keep_scores));
-        let refs: Vec<&FacetsCollector> = collectors.iter().collect();
-        ReducedFacetsCollector::create(&refs, self.keep_scores)
     }
 }

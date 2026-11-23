@@ -39,6 +39,25 @@ impl IntAssociationFacetField {
     /// Equivalent to `IntAssociationFacetField(int, String, String...)`.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(assoc: i32, dim: &str, path: &[&str]) -> Result<AssociationFacetField> {
+        let path: Vec<Option<&str>> = path.iter().copied().map(Some).collect();
+        Self::new_nullable(assoc, Some(dim), &path)
+    }
+
+    /// Creates this from `assoc`, a nullable dimension and nullable path
+    /// labels.
+    ///
+    /// Equivalent to `IntAssociationFacetField(int, String, String...)` with Java's nullable `String`
+    /// (`None` is `null`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` for a `null` or empty label or an empty
+    /// path.
+    pub fn new_nullable(
+        assoc: i32,
+        dim: Option<&str>,
+        path: &[Option<&str>],
+    ) -> Result<AssociationFacetField> {
         AssociationFacetField::with_kind(int_to_bytes_ref(assoc), dim, path, AssociationKind::Int)
     }
 

@@ -25,7 +25,7 @@ use rucene::document::{Field, FieldType};
 use rucene::error::{LuceneError, Result};
 use rucene::index::IndexOptions;
 
-use crate::facet_field::{delegate_indexable_field, verify_label};
+use crate::facet_field::{delegate_indexable_field, verify_label_nullable};
 use crate::facets_config::FacetsConfig;
 
 /// Indexed `FieldType`.
@@ -58,11 +58,26 @@ impl SortedSetDocValuesFacetField {
     ///
     /// Equivalent to `SortedSetDocValuesFacetField(String, String...)`.
     pub fn new(dim: &str, path: &[&str]) -> Result<Self> {
+        let path: Vec<Option<&str>> = path.iter().copied().map(Some).collect();
+        Self::new_nullable(Some(dim), &path)
+    }
+
+    /// Sole constructor, with Java's nullable `String` (`None` is `null`).
+    ///
+    /// Equivalent to `SortedSetDocValuesFacetField(String, String...)`: the
+    /// path labels are verified before the dimension, as in Java.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` for a `null` or empty label or an empty
+    /// path.
+    pub fn new_nullable(dim: Option<&str>, path: &[Option<&str>]) -> Result<Self> {
         let field = Field::new_with_type("dummy", Arc::clone(&TYPE))?;
-        for label in path {
-            verify_label(label)?;
-        }
-        verify_label(dim)?;
+        let path = path
+            .iter()
+            .map(|label| verify_label_nullable(*label).map(str::to_string))
+            .collect::<Result<Vec<String>>>()?;
+        let dim = verify_label_nullable(dim)?;
         if path.is_empty() {
             return Err(LuceneError::illegal_argument(
                 "path must have at least one element",
@@ -71,7 +86,7 @@ impl SortedSetDocValuesFacetField {
         Ok(Self {
             field,
             dim: dim.to_string(),
-            path: path.iter().map(|p| p.to_string()).collect(),
+            path,
         })
     }
 }

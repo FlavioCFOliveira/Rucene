@@ -2992,6 +2992,36 @@ impl IOUtils {
             }));
         }
     }
+
+    /// Deletes every named file of `dir`; `None` entries are ignored. After
+    /// every file was tried, the first failure is returned.
+    ///
+    /// Equivalent to `IOUtils.deleteFiles(Directory, Collection<String>)`
+    /// (`IOUtils.java:247-262`): `dir.deleteFile(name)` for each non-null name
+    /// inside `catch (Throwable t)`, the first throwable rethrown and the later
+    /// ones suppressed (`useOrSuppress`); a panic is caught like any
+    /// `Throwable`, as in [`close`](Self::close).
+    ///
+    /// # Errors
+    ///
+    /// The first error `delete_file` returned, unchanged.
+    pub fn delete_files_in<D, I, S>(dir: &D, names: I) -> Result<(), LuceneError>
+    where
+        D: crate::store::Directory + ?Sized,
+        I: IntoIterator<Item = Option<S>>,
+        S: AsRef<str>,
+    {
+        let mut th: Option<Thrown> = None;
+        for name in names.into_iter().flatten() {
+            if let Some(t) = Self::close_one(|| dir.delete_file(name.as_ref())) {
+                th = Some(Self::use_or_suppress(th, t));
+            }
+        }
+        match th {
+            Some(th) => Err(th.rethrow()),
+            None => Ok(()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -143,22 +143,14 @@ fn top_children(facets: &dyn Facets, top_n: i32, dim: &str) -> Result<String> {
 /// with `LongRange.verifyAndEncode`, which the field's constructor does.
 fn long_range_doc(min: &[i64], max: &[i64]) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(
-        LongRangeDocValuesField::new("field", min, max)?
-            .as_binary_range_doc_values_field()
-            .clone(),
-    );
+    doc.add(LongRangeDocValuesField::new("field", min, max)?);
     Ok(doc)
 }
 
 /// A document holding one `DoubleRangeDocValuesField` (`setDoubleRangeValue`).
 fn double_range_doc(min: &[f64], max: &[f64]) -> Result<Document> {
     let mut doc = Document::new();
-    doc.add(
-        DoubleRangeDocValuesField::new("field", min, max)?
-            .as_binary_range_doc_values_field()
-            .clone(),
-    );
+    doc.add(DoubleRangeDocValuesField::new("field", min, max)?);
     Ok(doc)
 }
 
@@ -574,11 +566,7 @@ fn check_mixed_range_and_non_range_taxonomy(
         let (min, max) = bounds(l);
         let mut doc = Document::new();
         // For computing range facet counts:
-        doc.add(
-            LongRangeDocValuesField::new("field", &min, &max)?
-                .as_binary_range_doc_values_field()
-                .clone(),
-        );
+        doc.add(LongRangeDocValuesField::new("field", &min, &max)?);
         // For drill down by numeric range:
         doc.add(LongRangeField::new("field", &min, &max)?);
 
@@ -861,11 +849,7 @@ fn test_random_single_dim_longs() -> Result<()> {
         }
         mins[i] = min;
         maxes[i] = max;
-        doc.add(
-            LongRangeDocValuesField::new("field", &[min], &[max])?
-                .as_binary_range_doc_values_field()
-                .clone(),
-        );
+        doc.add(LongRangeDocValuesField::new("field", &[min], &[max])?);
         doc.add(LongRangeField::new("field", &[min], &[max])?);
         w.add_document(&doc)?;
         min_value = min_value.min(min);
@@ -1010,11 +994,7 @@ fn test_random_multi_dim_longs() -> Result<()> {
             mins[i][dim] = min;
             maxes[i][dim] = max;
         }
-        doc.add(
-            LongRangeDocValuesField::new("field", &mins[i], &maxes[i])?
-                .as_binary_range_doc_values_field()
-                .clone(),
-        );
+        doc.add(LongRangeDocValuesField::new("field", &mins[i], &maxes[i])?);
         doc.add(LongRangeField::new("field", &mins[i], &maxes[i])?);
         w.add_document(&doc)?;
     }
@@ -1158,11 +1138,7 @@ fn test_random_single_dim_doubles() -> Result<()> {
         }
         mins[i] = min;
         maxes[i] = max;
-        doc.add(
-            DoubleRangeDocValuesField::new("field", &[min], &[max])?
-                .as_binary_range_doc_values_field()
-                .clone(),
-        );
+        doc.add(DoubleRangeDocValuesField::new("field", &[min], &[max])?);
         doc.add(DoubleRangeField::new("field", &[min], &[max])?);
         w.add_document(&doc)?;
         min_value = min_value.min(min);
@@ -1306,11 +1282,9 @@ fn test_random_multi_dim_doubles() -> Result<()> {
             mins[i][dim] = min;
             maxes[i][dim] = max;
         }
-        doc.add(
-            DoubleRangeDocValuesField::new("field", &mins[i], &maxes[i])?
-                .as_binary_range_doc_values_field()
-                .clone(),
-        );
+        doc.add(DoubleRangeDocValuesField::new(
+            "field", &mins[i], &maxes[i],
+        )?);
         doc.add(DoubleRangeField::new("field", &mins[i], &maxes[i])?);
         w.add_document(&doc)?;
     }

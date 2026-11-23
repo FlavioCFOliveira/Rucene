@@ -269,6 +269,11 @@ impl RangeOnRangeFacetCounts {
 macro_rules! range_on_range_facets_delegate {
     ($ty:ty, $base:ident) => {
         impl crate::facets::Facets for $ty {
+            /// This instance, for Java's `instanceof` tests and casts.
+            fn as_any(&self) -> Option<&dyn std::any::Any> {
+                Some(self)
+            }
+
             fn get_all_children(
                 &self,
                 dim: &str,

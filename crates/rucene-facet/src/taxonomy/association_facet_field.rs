@@ -26,7 +26,7 @@ use rucene::error::{LuceneError, Result};
 use rucene::index::IndexOptions;
 use rucene::util::BytesRef;
 
-use crate::facet_field::{delegate_indexable_field, verify_label};
+use crate::facet_field::{delegate_indexable_field, verify_label_nullable};
 use crate::taxonomy::facet_label::arrays_to_string;
 
 /// Indexed `FieldType`.
@@ -76,20 +76,36 @@ impl AssociationFacetField {
     ///
     /// Equivalent to `AssociationFacetField(BytesRef, String, String...)`.
     pub fn new(assoc: BytesRef, dim: &str, path: &[&str]) -> Result<Self> {
+        let path: Vec<Option<&str>> = path.iter().copied().map(Some).collect();
+        Self::new_nullable(assoc, Some(dim), &path)
+    }
+
+    /// Creates this from `bytes` which represents the association, a
+    /// nullable dimension and nullable path labels.
+    ///
+    /// Equivalent to `AssociationFacetField(BytesRef, String, String...)`
+    /// with Java's nullable `String` (`None` is `null`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` for a `null` or empty label or an empty
+    /// path.
+    pub fn new_nullable(assoc: BytesRef, dim: Option<&str>, path: &[Option<&str>]) -> Result<Self> {
         Self::with_kind(assoc, dim, path, AssociationKind::Bytes)
     }
 
     pub(crate) fn with_kind(
         assoc: BytesRef,
-        dim: &str,
-        path: &[&str],
+        dim: Option<&str>,
+        path: &[Option<&str>],
         kind: AssociationKind,
     ) -> Result<Self> {
         let field = Field::new_with_type("dummy", Arc::clone(&TYPE))?;
-        verify_label(dim)?;
-        for label in path {
-            verify_label(label)?;
-        }
+        let dim = verify_label_nullable(dim)?;
+        let path = path
+            .iter()
+            .map(|label| verify_label_nullable(*label).map(str::to_string))
+            .collect::<Result<Vec<String>>>()?;
         if path.is_empty() {
             return Err(LuceneError::illegal_argument(
                 "path must have at least one element",
@@ -98,7 +114,7 @@ impl AssociationFacetField {
         Ok(Self {
             field,
             dim: dim.to_string(),
-            path: path.iter().map(|p| p.to_string()).collect(),
+            path,
             assoc,
             kind,
         })

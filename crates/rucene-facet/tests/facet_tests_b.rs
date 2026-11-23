@@ -16,7 +16,11 @@
  */
 
 //! Port of the test classes of Lucene 10.5.0 `lucene/facet/src/test`
-//! packages `range`, `rangeonrange`, `facetset` and `sortedset` (rmp #630,
+//! packages `range`, `rangeonrange`, `facetset` and `sortedset`, and of
+//! `TestDrillSideways`, `TestParallelDrillSideways`,
+//! `taxonomy.TestTaxonomyFacetCounts`, `taxonomy.TestTaxonomyFacetAssociations`,
+//! `taxonomy.TestTaxonomyFacetValueSource` and
+//! `taxonomy.directory.TestAlwaysRefreshDirectoryTaxonomyReader` (rmp #630,
 //! lane A), each run as a suite by the ported runner.
 
 #[path = "facet_support/mod.rs"]
@@ -41,6 +45,20 @@ mod sortedset {
     pub mod test_sorted_set_doc_values_facets;
 }
 
+mod root_b {
+    pub mod test_drill_sideways;
+}
+
+mod taxonomy_b {
+    pub mod test_taxonomy_facet_associations;
+    pub mod test_taxonomy_facet_counts;
+    pub mod test_taxonomy_facet_value_source;
+
+    pub mod directory {
+        pub mod test_always_refresh_directory_taxonomy_reader;
+    }
+}
+
 use facet_support::core_support::run;
 
 macro_rules! suites {
@@ -62,4 +80,11 @@ suites! {
     test_range_facet_counts => range::test_range_facet_counts::class_def,
     test_range_on_range_facet_counts => rangeonrange::test_range_on_range_facet_counts::class_def,
     test_sorted_set_doc_values_facets => sortedset::test_sorted_set_doc_values_facets::class_def,
+    test_drill_sideways => root_b::test_drill_sideways::class_def,
+    test_parallel_drill_sideways => root_b::test_drill_sideways::parallel_class_def,
+    test_taxonomy_facet_associations => taxonomy_b::test_taxonomy_facet_associations::class_def,
+    test_taxonomy_facet_counts => taxonomy_b::test_taxonomy_facet_counts::class_def,
+    test_taxonomy_facet_value_source => taxonomy_b::test_taxonomy_facet_value_source::class_def,
+    test_always_refresh_directory_taxonomy_reader =>
+        taxonomy_b::directory::test_always_refresh_directory_taxonomy_reader::class_def,
 }

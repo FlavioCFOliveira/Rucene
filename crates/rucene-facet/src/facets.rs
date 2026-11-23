@@ -60,6 +60,14 @@ pub trait Facets {
         all_results.truncate(n);
         Ok(all_results)
     }
+
+    /// This instance as `Any`, for Java's `instanceof` tests and casts on a
+    /// `Facets` (`facets instanceof MultiFacets`); every concrete facets
+    /// class of the crate returns itself. `None` for an implementor that
+    /// does not answer.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 }
 
 /// This helper method checks if topN is valid.

@@ -18,6 +18,7 @@
 //! Port of `FacetsCollector.java`, of the Java package
 //! `org.apache.lucene.facet`.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use rucene::error::Result;
@@ -119,6 +120,34 @@ impl std::fmt::Debug for MatchingDocs {
     }
 }
 
+/// The methods of `FacetsCollector` a subclass overrides: `doSetNextReader`
+/// and `finish`.
+///
+/// Rust has no implementation inheritance; a subclass's overrides (and its
+/// own fields) are this strategy object, which receives the collector in
+/// place of `this`, and its defaults are the base class's bodies
+/// ([`FacetsCollector::super_do_set_next_reader`],
+/// [`FacetsCollector::super_finish`]). [`Self::as_any`] answers Java's
+/// `instanceof` tests and casts on the subclass.
+pub trait FacetsCollectorOverrides: Send + Sync {
+    /// Equivalent to the protected `doSetNextReader(LeafReaderContext)`.
+    fn do_set_next_reader(
+        &self,
+        collector: &mut FacetsCollector,
+        context: &LeafReaderContext,
+    ) -> Result<()> {
+        collector.super_do_set_next_reader(context)
+    }
+
+    /// Equivalent to `finish()`.
+    fn finish(&self, collector: &mut FacetsCollector) -> Result<()> {
+        collector.super_finish()
+    }
+
+    /// The subclass instance, for `instanceof` tests and casts.
+    fn as_any(&self) -> &dyn Any;
+}
+
 /// Collects hits for subsequent faceting.
 ///
 /// Equivalent to `org.apache.lucene.facet.FacetsCollector`, a
@@ -134,6 +163,9 @@ pub struct FacetsCollector {
     /// The `RandomSamplingFacetsCollector` state, whose `getMatchingDocs()`
     /// override samples the collected docs.
     pub(crate) sampling: Option<Box<crate::random_sampling_facets_collector::SamplingState>>,
+    /// A subclass's overrides of `doSetNextReader` and `finish`; `None` is
+    /// the base class.
+    overrides: Option<Arc<dyn FacetsCollectorOverrides>>,
 }
 
 impl Default for FacetsCollector {
@@ -164,7 +196,23 @@ impl FacetsCollector {
             matching_docs: Vec::new(),
             docs_builder: None,
             sampling: None,
+            overrides: None,
         }
+    }
+
+    /// The `super(keepScores)` call of a subclass that overrides the methods
+    /// listed by [`FacetsCollectorOverrides`].
+    pub fn with_overrides(keep_scores: bool, overrides: Arc<dyn FacetsCollectorOverrides>) -> Self {
+        let mut this = Self::with_keep_scores(keep_scores);
+        this.overrides = Some(overrides);
+        this
+    }
+
+    /// The subclass overrides, `None` for a plain `FacetsCollector`: Java's
+    /// `instanceof` test on a subclass reads them through
+    /// [`FacetsCollectorOverrides::as_any`].
+    pub fn overrides(&self) -> Option<&Arc<dyn FacetsCollectorOverrides>> {
+        self.overrides.as_ref()
     }
 
     /// True if scores were saved.
@@ -202,8 +250,18 @@ impl FacetsCollector {
         &mut self.matching_docs
     }
 
-    /// Equivalent to `doSetNextReader(LeafReaderContext)`.
+    /// Equivalent to `doSetNextReader(LeafReaderContext)`: the virtual call,
+    /// dispatched to the [`FacetsCollectorOverrides`] when present.
     fn do_set_next_reader(&mut self, context: &LeafReaderContext) -> Result<()> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.do_set_next_reader(self, context),
+            None => self.super_do_set_next_reader(context),
+        }
+    }
+
+    /// The base class's `doSetNextReader(LeafReaderContext)`, reached by an
+    /// override as `super.doSetNextReader(context)`.
+    pub fn super_do_set_next_reader(&mut self, context: &LeafReaderContext) -> Result<()> {
         debug_assert!(self.docs_builder.is_none());
         self.docs_builder = Some(DocIdSetBuilder::new(context.leaf_reader().max_doc()));
         self.total_hits = 0;
@@ -242,6 +300,17 @@ impl LeafCollector for FacetsCollector {
     }
 
     fn finish(&mut self) -> Result<()> {
+        match self.overrides.clone() {
+            Some(overrides) => overrides.finish(self),
+            None => self.super_finish(),
+        }
+    }
+}
+
+impl FacetsCollector {
+    /// The base class's `finish()`, reached by an override as
+    /// `super.finish()`.
+    pub fn super_finish(&mut self) -> Result<()> {
         let bits: SharedDocIdSet = match self.docs_builder.take() {
             Some(builder) => Arc::from(builder.build()?),
             None => Arc::new(rucene::search::doc_id_set::empty()),

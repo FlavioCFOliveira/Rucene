@@ -105,11 +105,27 @@ impl FacetField {
     ///
     /// `IllegalArgumentException` for an empty label or an empty path.
     pub fn new(dim: &str, path: &[&str]) -> Result<Self> {
+        let path: Vec<Option<&str>> = path.iter().copied().map(Some).collect();
+        Self::new_nullable(Some(dim), &path)
+    }
+
+    /// Creates the this from a nullable `dim` and nullable `path` labels.
+    ///
+    /// Equivalent to `FacetField(String, String...)` with Java's nullable
+    /// `String`: `None` is Java's `null`, rejected by
+    /// [`verify_label_nullable`].
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` for a `null` or empty label or an empty
+    /// path.
+    pub fn new_nullable(dim: Option<&str>, path: &[Option<&str>]) -> Result<Self> {
         let field = Field::new_with_type("dummy", Arc::clone(&TYPE))?;
-        verify_label(dim)?;
-        for label in path {
-            verify_label(label)?;
-        }
+        let dim = verify_label_nullable(dim)?;
+        let path = path
+            .iter()
+            .map(|label| verify_label_nullable(*label).map(str::to_string))
+            .collect::<Result<Vec<String>>>()?;
         if path.is_empty() {
             return Err(LuceneError::illegal_argument(
                 "path must have at least one element",
@@ -118,7 +134,7 @@ impl FacetField {
         Ok(Self {
             field,
             dim: dim.to_string(),
-            path: path.iter().map(|p| p.to_string()).collect(),
+            path,
         })
     }
 }
@@ -141,10 +157,23 @@ delegate_indexable_field!(FacetField, field);
 ///
 /// Equivalent to `FacetField.verifyLabel(String)`.
 pub fn verify_label(label: &str) -> Result<()> {
-    if label.is_empty() {
-        return Err(LuceneError::illegal_argument(format!(
-            "empty or null components not allowed; got: {label}"
-        )));
+    verify_label_nullable(Some(label)).map(|_| ())
+}
+
+/// Verifies the label is not null or empty string, returning it.
+///
+/// Equivalent to `FacetField.verifyLabel(String)` with Java's nullable
+/// `String`: `None` is Java's `null`, printed as `null` in the message.
+///
+/// # Errors
+///
+/// `IllegalArgumentException` for a `null` or empty label.
+pub fn verify_label_nullable(label: Option<&str>) -> Result<&str> {
+    match label {
+        Some(label) if !label.is_empty() => Ok(label),
+        _ => Err(LuceneError::illegal_argument(format!(
+            "empty or null components not allowed; got: {}",
+            label.unwrap_or("null")
+        ))),
     }
-    Ok(())
 }

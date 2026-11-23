@@ -112,6 +112,33 @@ impl FacetLabel {
         Ok(label)
     }
 
+    /// Construct from the given nullable path components.
+    ///
+    /// Equivalent to `FacetLabel(String...)` with Java's nullable `String`:
+    /// `None` is Java's `null`, rejected by `checkComponents()` with the
+    /// components printed by `Arrays.toString` (`null` for `None`).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new); also `IllegalArgumentException` for a `null`
+    /// component.
+    pub fn new_nullable(components: &[Option<&str>]) -> Result<Self> {
+        // `checkComponents()` (`FacetLabel.java:76-83`) throws at the first
+        // null or empty component, before the length check.
+        if components.iter().any(|c| c.is_none_or(str::is_empty)) {
+            return Err(LuceneError::illegal_argument(format!(
+                "empty or null components not allowed: {}",
+                arrays_to_string(
+                    &components
+                        .iter()
+                        .map(|c| c.unwrap_or("null"))
+                        .collect::<Vec<&str>>()
+                )
+            )));
+        }
+        Self::new(components.iter().flatten().copied())
+    }
+
     /// Construct from the dimension plus the given path components.
     ///
     /// Equivalent to `FacetLabel(String, String[])`.
