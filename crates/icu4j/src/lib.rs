@@ -180,6 +180,28 @@ pub mod r#impl {
         pub mod u_vector64;
         pub mod utf16_collation_iterator;
     }
+    pub mod collection_set;
+    pub mod grego;
+    pub mod icu_cache;
+    pub mod pair;
+    pub mod simple_cache;
+    pub mod static_unicode_sets;
+    pub mod string_segment;
+    pub mod text_trie_map;
+    /// `com.ibm.icu.impl.number`.
+    pub mod number {
+        pub mod affix_pattern_provider;
+        pub mod multiplier_producer;
+        /// `com.ibm.icu.impl.number.parse`.
+        pub mod parse {
+            pub mod parsing_utils;
+        }
+        /// `com.ibm.icu.impl.number.range`.
+        pub mod range {
+            pub mod prefix_infix_suffix_length_helper;
+            pub mod standard_plural_ranges;
+        }
+    }
 }
 
 /// `com.ibm.icu.lang`.
@@ -261,6 +283,27 @@ pub mod text {
     pub(crate) mod collator_service_shim;
     pub mod raw_collation_key;
     pub mod rule_based_collator;
+    pub mod constrained_field_position;
+    pub mod display_options;
+    pub mod formatted_value;
+    pub mod message_pattern;
+    pub mod numbering_system;
+    pub mod rbnf_lenient_scanner;
+    pub mod rbnf_lenient_scanner_provider;
+    pub mod simple_formatter;
+    pub mod u_field_position;
+    pub mod u_format;
+}
+
+/// `com.ibm.icu.math`.
+pub mod math {
+    pub mod big_decimal;
+    pub mod math_context;
+}
+
+/// `com.ibm.icu.number`.
+pub mod number {
+    pub mod skeleton_syntax_exception;
 }
 
 /// `com.ibm.icu.util`.

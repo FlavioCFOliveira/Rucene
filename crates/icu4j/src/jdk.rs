@@ -15,6 +15,11 @@ pub use rucene::store::java_nio_file::{InputStream, OutputStream};
 
 use crate::class_path_data;
 
+/// `java.math`: `BigInteger`, `BigDecimal`, `MathContext`, `RoundingMode`.
+pub mod math;
+/// `java.text`: `Format`, `Format.Field`, `FieldPosition`, `AttributedString`.
+pub mod text;
+
 // ---------------------------------------------------------------------------
 // Exceptions
 // ---------------------------------------------------------------------------
