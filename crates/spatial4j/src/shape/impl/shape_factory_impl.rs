@@ -20,18 +20,18 @@ use crate::context::spatial_context_factory::SpatialContextFactoryOps;
 use crate::distance::distance_utils::DistanceUtils;
 use crate::exception::invalid_shape_exception::InvalidShapeException;
 use crate::shape::circle::Circle;
+use crate::shape::point::Point;
 use crate::shape::r#impl::buffered_line_string::BufferedLineString;
 use crate::shape::r#impl::circle_impl::CircleImpl;
 use crate::shape::r#impl::geo_circle::GeoCircle;
 use crate::shape::r#impl::point_impl::PointImpl;
 use crate::shape::r#impl::rectangle_impl::RectangleImpl;
-use crate::shape::point::Point;
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::shape_collection::ShapeCollection;
 use crate::shape::shape_factory::{
-    LineStringBuilder, MultiLineStringBuilder, MultiPointBuilder, MultiPolygonBuilder, MultiShapeBuilder,
-    PointsBuilder, PolygonBuilder, ShapeFactory,
+    LineStringBuilder, MultiLineStringBuilder, MultiPointBuilder, MultiPolygonBuilder,
+    MultiShapeBuilder, PointsBuilder, PolygonBuilder, ShapeFactory,
 };
 
 /// Equivalent to `org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl`
@@ -57,7 +57,9 @@ impl ShapeFactoryImpl {
 
     /// `ctx`.
     pub fn ctx(&self) -> Arc<SpatialContext> {
-        self.ctx.upgrade().expect("the SpatialContext of a ShapeFactoryImpl is alive")
+        self.ctx
+            .upgrade()
+            .expect("the SpatialContext of a ShapeFactoryImpl is alive")
     }
 
     fn ctx_ref(&self) -> Option<SpatialContextRef> {
@@ -135,11 +137,26 @@ impl ShapeFactory for ShapeFactoryImpl {
         self.point_xy(x, y) // or throw?
     }
 
-    fn rect_from_points(&self, lower_left: &dyn Point, upper_right: &dyn Point) -> Result<Arc<dyn Rectangle>> {
-        self.rect(lower_left.get_x(), upper_right.get_x(), lower_left.get_y(), upper_right.get_y())
+    fn rect_from_points(
+        &self,
+        lower_left: &dyn Point,
+        upper_right: &dyn Point,
+    ) -> Result<Arc<dyn Rectangle>> {
+        self.rect(
+            lower_left.get_x(),
+            upper_right.get_x(),
+            lower_left.get_y(),
+            upper_right.get_y(),
+        )
     }
 
-    fn rect(&self, mut min_x: f64, mut max_x: f64, min_y: f64, max_y: f64) -> Result<Arc<dyn Rectangle>> {
+    fn rect(
+        &self,
+        mut min_x: f64,
+        mut max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Result<Arc<dyn Rectangle>> {
         let ctx = self.ctx();
         let bounds = ctx.get_world_bounds();
         // Y
@@ -189,7 +206,13 @@ impl ShapeFactory for ShapeFactoryImpl {
                 )));
             }
         }
-        Ok(RectangleImpl::new(min_x, max_x, min_y, max_y, self.ctx_ref()))
+        Ok(RectangleImpl::new(
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            self.ctx_ref(),
+        ))
     }
 
     fn circle(&self, x: f64, y: f64, distance: f64) -> Result<Arc<dyn Circle>> {
@@ -223,7 +246,12 @@ impl ShapeFactory for ShapeFactoryImpl {
 
     fn line_string_from(&self, points: Vec<Arc<dyn Point>>, buf: f64) -> Result<Arc<dyn Shape>> {
         let ctx = self.ctx();
-        Ok(BufferedLineString::with_skew(&points, buf, ctx.is_geo(), &ctx)?)
+        Ok(BufferedLineString::with_skew(
+            &points,
+            buf,
+            ctx.is_geo(),
+            &ctx,
+        )?)
     }
 
     fn multi_shape_from(&self, coll: Vec<Arc<dyn Shape>>) -> Result<Arc<ShapeCollection>> {
@@ -231,7 +259,11 @@ impl ShapeFactory for ShapeFactoryImpl {
     }
 
     fn line_string(&self) -> Box<dyn LineStringBuilder> {
-        Box::new(ImplLineStringBuilder { factory: self.ctx(), points: Vec::new(), buffer_distance: 0.0 })
+        Box::new(ImplLineStringBuilder {
+            factory: self.ctx(),
+            points: Vec::new(),
+            buffer_distance: 0.0,
+        })
     }
 
     fn polygon(&self) -> Result<Box<dyn PolygonBuilder>> {
@@ -271,17 +303,23 @@ struct ImplLineStringBuilder {
 
 impl PointsBuilder for ImplLineStringBuilder {
     fn point_xy(&mut self, x: f64, y: f64) -> Result<()> {
-        self.points.push(self.factory.get_shape_factory().point_xy(x, y)?);
+        self.points
+            .push(self.factory.get_shape_factory().point_xy(x, y)?);
         Ok(())
     }
 
     fn point_xyz(&mut self, x: f64, y: f64, z: f64) -> Result<()> {
-        self.points.push(self.factory.get_shape_factory().point_xyz(x, y, z)?);
+        self.points
+            .push(self.factory.get_shape_factory().point_xyz(x, y, z)?);
         Ok(())
     }
 
     fn point_lat_lon(&mut self, latitude: f64, longitude: f64) -> Result<()> {
-        self.points.push(self.factory.get_shape_factory().point_lat_lon(latitude, longitude)?);
+        self.points.push(
+            self.factory
+                .get_shape_factory()
+                .point_lat_lon(latitude, longitude)?,
+        );
         Ok(())
     }
 }
@@ -292,7 +330,12 @@ impl LineStringBuilder for ImplLineStringBuilder {
     }
 
     fn build(&mut self) -> Result<Arc<dyn Shape>> {
-        Ok(BufferedLineString::with_skew(&self.points, self.buffer_distance, false, &self.factory)?)
+        Ok(BufferedLineString::with_skew(
+            &self.points,
+            self.buffer_distance,
+            false,
+            &self.factory,
+        )?)
     }
 }
 
@@ -312,7 +355,10 @@ pub struct GeneralShapeMultiShapeBuilder {
 impl GeneralShapeMultiShapeBuilder {
     /// `new GeneralShapeMultiShapeBuilder<>()` of the factory of `ctx`.
     pub fn new(ctx: Arc<SpatialContext>) -> Self {
-        Self { ctx, shapes: Vec::new() }
+        Self {
+            ctx,
+            shapes: Vec::new(),
+        }
     }
 
     fn factory(&self) -> Arc<dyn ShapeFactory> {

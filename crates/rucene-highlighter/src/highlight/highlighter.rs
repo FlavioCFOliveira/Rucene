@@ -69,7 +69,11 @@ impl Highlighter {
 
     /// Equivalent to `new Highlighter(Formatter, Scorer)`.
     pub fn with_formatter(formatter: Box<dyn Formatter>, fragment_scorer: Box<dyn Scorer>) -> Self {
-        Self::with_formatter_and_encoder(formatter, Box::new(DefaultEncoder::new()), fragment_scorer)
+        Self::with_formatter_and_encoder(
+            formatter,
+            Box::new(DefaultEncoder::new()),
+            fragment_scorer,
+        )
     }
 
     /// Equivalent to `new Highlighter(Formatter, Encoder, Scorer)`; Java's
@@ -207,8 +211,11 @@ impl Highlighter {
             AttributeHandle::add(token_stream.attribute_source_mut())?;
         let offset_att: AttributeHandle<dyn OffsetAttribute> =
             AttributeHandle::add(token_stream.attribute_source_mut())?;
-        let mut current_frag =
-            TextFragment::new(Arc::clone(&new_text), lock(&new_text).len() as i32, doc_frags.len() as i32);
+        let mut current_frag = TextFragment::new(
+            Arc::clone(&new_text),
+            lock(&new_text).len() as i32,
+            doc_frags.len() as i32,
+        );
 
         if let Some(query_scorer) = self
             .fragment_scorer
@@ -305,8 +312,11 @@ impl Highlighter {
                     current_frag.set_score(self.fragment_scorer.get_fragment_score());
                     // record stats for a new fragment
                     current_frag.set_text_end_pos(new_text_len());
-                    *current_frag =
-                        TextFragment::new(Arc::clone(new_text), new_text_len(), doc_frags.len() as i32);
+                    *current_frag = TextFragment::new(
+                        Arc::clone(new_text),
+                        new_text_len(),
+                        doc_frags.len() as i32,
+                    );
                     self.fragment_scorer.start_fragment(current_frag);
                     doc_frags.push(current_frag.clone());
                 }
@@ -388,8 +398,8 @@ impl Highlighter {
         if frag.len() > 1 {
             loop {
                 merging_still_being_done = false; // initialise loop control flag
-                // for each fragment, scan other frags looking for contiguous
-                // blocks
+                                                  // for each fragment, scan other frags looking for contiguous
+                                                  // blocks
                 for i in 0..frag.len() {
                     if frag[i].is_none() {
                         continue;
@@ -461,7 +471,8 @@ impl Highlighter {
         max_num_fragments: i32,
         separator: &str,
     ) -> Result<String> {
-        let sections = self.get_best_fragments_from_stream(token_stream, text, max_num_fragments)?;
+        let sections =
+            self.get_best_fragments_from_stream(token_stream, text, max_num_fragments)?;
         let mut result = String::new();
         for (i, section) in sections.iter().enumerate() {
             if i > 0 {

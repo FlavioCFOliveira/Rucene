@@ -215,8 +215,8 @@ impl BreakIterator for LengthGoalBreakIterator {
     }
 
     fn following(&mut self, match_end_index: i32) -> Result<i32> {
-        let target =
-            (match_end_index + 1) + (self.length_goal as f32 * (1.0 - self.fragment_alignment)) as i32;
+        let target = (match_end_index + 1)
+            + (self.length_goal as f32 * (1.0 - self.fragment_alignment)) as i32;
         self.following_target(match_end_index, target)
     }
 

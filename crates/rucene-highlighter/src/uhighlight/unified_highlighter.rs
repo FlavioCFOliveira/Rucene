@@ -25,11 +25,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use rucene::analysis::Analyzer;
 use rucene::error::{LuceneError, Result};
+use rucene::index::base_composite_reader::BaseCompositeReader;
 use rucene::index::filter_reader::FilterLeafReader;
 use rucene::index::index_reader::{
     build_composite_context, CacheHelper, CompositeReader, IndexReaderCore, StoredFields,
 };
-use rucene::index::base_composite_reader::BaseCompositeReader;
 use rucene::index::multi_reader::reader_util::sub_index_from_leaves;
 use rucene::index::{
     FieldInfo, FieldInfos, Fields, IndexOptions, IndexReader, IndexReaderContext, LeafReader,
@@ -370,7 +370,11 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
     }
 
     /// Equivalent to the deprecated protected `shouldPreferPassageRelevancyOverSpeed(String)`.
-    fn should_prefer_passage_relevancy_over_speed(&self, this: &UnifiedHighlighter, field: &str) -> bool {
+    fn should_prefer_passage_relevancy_over_speed(
+        &self,
+        this: &UnifiedHighlighter,
+        field: &str,
+    ) -> bool {
         this.passage_relevancy_over_speed
     }
 
@@ -405,7 +409,11 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
     }
 
     /// Equivalent to the protected `getPassageSortComparator(String)`.
-    fn get_passage_sort_comparator(&self, this: &UnifiedHighlighter, field: &str) -> PassageSortComparator {
+    fn get_passage_sort_comparator(
+        &self,
+        this: &UnifiedHighlighter,
+        field: &str,
+    ) -> PassageSortComparator {
         Arc::clone(&this.passage_sort_comparator)
     }
 
@@ -494,7 +502,12 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
     }
 
     /// Equivalent to the protected `hasUnrecognizedQuery(Predicate, Query)`.
-    fn has_unrecognized_query(&self, this: &UnifiedHighlighter, field_matcher: &FieldMatcher, query: &dyn Query) -> bool {
+    fn has_unrecognized_query(
+        &self,
+        this: &UnifiedHighlighter,
+        field_matcher: &FieldMatcher,
+        query: &dyn Query,
+    ) -> bool {
         this.super_has_unrecognized_query(field_matcher, query)
     }
 
@@ -529,7 +542,11 @@ pub trait UnifiedHighlighterOverrides: Send + Sync {
     /// # Errors
     ///
     /// What reading the field infos raises.
-    fn get_optimized_offset_source(&self, this: &UnifiedHighlighter, components: &UHComponents) -> Result<OffsetSource> {
+    fn get_optimized_offset_source(
+        &self,
+        this: &UnifiedHighlighter,
+        components: &UHComponents,
+    ) -> Result<OffsetSource> {
         this.super_get_optimized_offset_source(components)
     }
 
@@ -839,7 +856,10 @@ impl UnifiedHighlighter {
     /// Analyzer)`; `index_searcher` is `None` when only
     /// `highlight_without_searcher` is used.
     #[deprecated]
-    pub fn new(index_searcher: Option<Arc<IndexSearcher>>, index_analyzer: Arc<dyn Analyzer>) -> Self {
+    pub fn new(
+        index_searcher: Option<Arc<IndexSearcher>>,
+        index_analyzer: Arc<dyn Analyzer>,
+    ) -> Self {
         Self {
             searcher: index_searcher, // TODO: make non nullable
             index_analyzer,
@@ -1089,7 +1109,10 @@ impl UnifiedHighlighter {
     /// Evaluate the highlight flags from the deprecated setters.
     ///
     /// Equivalent to the deprecated protected `evaluateFlags(UnifiedHighlighter)`.
-    pub fn evaluate_flags_from_highlighter(&self, uh: &UnifiedHighlighter) -> HashSet<HighlightFlag> {
+    pub fn evaluate_flags_from_highlighter(
+        &self,
+        uh: &UnifiedHighlighter,
+    ) -> HashSet<HighlightFlag> {
         self.evaluate_flags(
             uh.handle_multi_term_query,
             uh.highlight_phrases_strictly,
@@ -1134,7 +1157,9 @@ impl UnifiedHighlighter {
 
     /// The base class's `getMaskedFields(String)`.
     pub fn super_get_masked_fields(&self, field: &str) -> Option<Vec<String>> {
-        self.masked_fields_func.as_ref().and_then(|func| func(field))
+        self.masked_fields_func
+            .as_ref()
+            .and_then(|func| func(field))
     }
 
     /// Returns the `HighlightFlag`s applicable for the current UH instance.
@@ -1286,7 +1311,9 @@ impl UnifiedHighlighter {
     /// What reading the field infos raises.
     pub fn super_get_offset_source(&self, field: &str) -> Result<OffsetSource> {
         if let Some(field_info) = self.get_field_info(field)? {
-            if field_info.get_index_options() == IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS {
+            if field_info.get_index_options()
+                == IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS
+            {
                 return Ok(if field_info.has_term_vectors() {
                     OffsetSource::POSTINGS_WITH_TERM_VECTORS
                 } else {
@@ -1347,7 +1374,12 @@ impl UnifiedHighlighter {
     ///
     /// Propagates I/O errors; `IllegalArgumentException` if `field` was
     /// indexed without positions or offsets.
-    pub fn highlight(&self, field: &str, query: &Arc<dyn Query>, top_docs: &TopDocs) -> Result<Vec<Option<String>>> {
+    pub fn highlight(
+        &self,
+        field: &str,
+        query: &Arc<dyn Query>,
+        top_docs: &TopDocs,
+    ) -> Result<Vec<Option<String>>> {
         self.highlight_max_passages(field, query, top_docs, 1)
     }
 
@@ -1460,7 +1492,9 @@ impl UnifiedHighlighter {
             return Err(LuceneError::illegal_argument("fieldsIn must not be empty"));
         }
         if fields_in.len() != max_passages_in.len() {
-            return Err(LuceneError::illegal_argument("invalid number of maxPassagesIn"));
+            return Err(LuceneError::illegal_argument(
+                "invalid number of maxPassagesIn",
+            ));
         }
         let Some(searcher) = &self.searcher else {
             return Err(LuceneError::illegal_state(
@@ -1509,11 +1543,14 @@ impl UnifiedHighlighter {
         let cache_chars_threshold =
             self.calculate_optimal_cache_chars_threshold(num_term_vectors, num_postings);
 
-        let index_reader_with_term_vec_cache: Option<Arc<dyn IndexReader>> = if num_term_vectors >= 2 {
-            Some(TermVectorReusingLeafReader::wrap(Arc::clone(searcher.get_index_reader()))?)
-        } else {
-            None
-        };
+        let index_reader_with_term_vec_cache: Option<Arc<dyn IndexReader>> =
+            if num_term_vectors >= 2 {
+                Some(TermVectorReusingLeafReader::wrap(Arc::clone(
+                    searcher.get_index_reader(),
+                ))?)
+            } else {
+                None
+            };
 
         // [fieldIdx][docIdInIndex] of highlightDoc result
         let mut highlight_docs_in_by_field: Vec<Vec<Option<Box<dyn FormattedPassages>>>> = (0
@@ -1555,7 +1592,8 @@ impl UnifiedHighlighter {
                         _ => Arc::clone(searcher.get_index_reader()),
                     };
                     let leaves = index_reader.leaves()?;
-                    let leaf_reader_context = &leaves[sub_index_from_leaves(doc_id, &leaves) as usize];
+                    let leaf_reader_context =
+                        &leaves[sub_index_from_leaves(doc_id, &leaves) as usize];
                     let leaf_reader = leaf_reader_context.leaf_reader();
                     doc_id -= leaf_reader_context.doc_base(); // adjust 'doc' to be within this leaf reader
                     let doc_in_index = doc_in_indexes[doc_idx]; // original input order
@@ -1591,7 +1629,11 @@ impl UnifiedHighlighter {
 
     /// When cacheCharsThreshold is 0, loadFieldValues() only fetches one
     /// document at a time. We override it to be 0 in two circumstances:
-    fn calculate_optimal_cache_chars_threshold(&self, num_term_vectors: i32, num_postings: i32) -> i32 {
+    fn calculate_optimal_cache_chars_threshold(
+        &self,
+        num_term_vectors: i32,
+        num_postings: i32,
+    ) -> i32 {
         if num_postings == 0 && num_term_vectors == 0 {
             // (1) When all fields are highlighted via re-analysis
             0
@@ -1669,9 +1711,11 @@ impl UnifiedHighlighter {
                 let mut fields_offset_strategies: Vec<Box<dyn FieldOffsetStrategy>> =
                     Vec::with_capacity(masked_fields.len() + 1);
                 for masked_field in &masked_fields {
-                    let components = self.get_highlight_components(masked_field, query, all_terms)?;
+                    let components =
+                        self.get_highlight_components(masked_field, query, all_terms)?;
                     let offset_source = self.get_optimized_offset_source(&components)?;
-                    fields_offset_strategies.push(self.get_offset_strategy(offset_source, components)?);
+                    fields_offset_strategies
+                        .push(self.get_offset_strategy(offset_source, components)?);
                 }
                 // adding original field as well
                 let components = self.get_highlight_components(field, query, all_terms)?;
@@ -1777,7 +1821,8 @@ impl UnifiedHighlighter {
         let query_has_unrecognized_part = self.has_unrecognized_query(&field_matcher, &**query);
         let mut terms = None;
         let mut automata = None;
-        if !highlight_flags.contains(&HighlightFlag::WEIGHT_MATCHES) || !query_has_unrecognized_part {
+        if !highlight_flags.contains(&HighlightFlag::WEIGHT_MATCHES) || !query_has_unrecognized_part
+        {
             terms = Some(Self::filter_extracted_terms(&field_matcher, all_terms));
             automata = Some(self.get_automata(field, &**query, &highlight_flags));
         } // otherwise don't need to extract
@@ -1802,7 +1847,11 @@ impl UnifiedHighlighter {
     }
 
     /// The base class's `hasUnrecognizedQuery(Predicate, Query)`.
-    pub fn super_has_unrecognized_query(&self, field_matcher: &FieldMatcher, query: &dyn Query) -> bool {
+    pub fn super_has_unrecognized_query(
+        &self,
+        field_matcher: &FieldMatcher,
+        query: &dyn Query,
+    ) -> bool {
         let mut visitor = UnknownLeafVisitor {
             field_matcher,
             has_unknown_leaf: false,
@@ -1813,7 +1862,10 @@ impl UnifiedHighlighter {
 
     /// Equivalent to the protected static `filterExtractedTerms(Predicate,
     /// Set)`: the terms of the accepted fields, sorted.
-    pub fn filter_extracted_terms(field_matcher: &FieldMatcher, query_terms: &HashSet<Term>) -> Vec<BytesRef> {
+    pub fn filter_extracted_terms(
+        field_matcher: &FieldMatcher,
+        query_terms: &HashSet<Term>,
+    ) -> Vec<BytesRef> {
         // Strip off the redundant field and sort the remaining terms
         let mut filtered_terms: BTreeSet<BytesRef> = BTreeSet::new();
         for term in query_terms {
@@ -1867,10 +1919,12 @@ impl UnifiedHighlighter {
             Arc::clone(query),
             field,
             self.get_field_matcher(field),
-            Arc::new(move |span_query: &dyn SpanQuery| match &overrides_for_rewrite {
-                Some(o) => o.requires_rewrite(span_query),
-                None => None,
-            }),
+            Arc::new(
+                move |span_query: &dyn SpanQuery| match &overrides_for_rewrite {
+                    Some(o) => o.requires_rewrite(span_query),
+                    None => None,
+                },
+            ),
             Arc::new(move |query: &Arc<dyn Query>| match &overrides_for_pre {
                 Some(o) => o.pre_span_query_rewrite(query),
                 None => None,
@@ -1906,7 +1960,11 @@ impl UnifiedHighlighter {
             || highlight_flags.contains(&HighlightFlag::WEIGHT_MATCHES); // Weight.Matches will find all
 
         if highlight_flags.contains(&HighlightFlag::MULTI_TERM_QUERY) {
-            MultiTermHighlighting::extract_automata(query, &self.get_field_matcher(field), look_in_span)
+            MultiTermHighlighting::extract_automata(
+                query,
+                &self.get_field_matcher(field),
+                look_in_span,
+            )
         } else {
             Vec::new()
         }
@@ -1929,7 +1987,10 @@ impl UnifiedHighlighter {
     /// # Errors
     ///
     /// What reading the field infos raises.
-    pub fn super_get_optimized_offset_source(&self, components: &UHComponents) -> Result<OffsetSource> {
+    pub fn super_get_optimized_offset_source(
+        &self,
+        components: &UHComponents,
+    ) -> Result<OffsetSource> {
         let offset_source = self.get_offset_source(components.field())?;
 
         // null automata means unknown, so assume a possibility
@@ -1996,7 +2057,9 @@ impl UnifiedHighlighter {
                     && !components
                         .highlight_flags()
                         .contains(&HighlightFlag::PASSAGE_RELEVANCY_OVER_SPEED)
-                    && !components.highlight_flags().contains(&HighlightFlag::WEIGHT_MATCHES)
+                    && !components
+                        .highlight_flags()
+                        .contains(&HighlightFlag::WEIGHT_MATCHES)
                 {
                     // skip using a memory index since it's pure term filtering
                     Box::new(TokenStreamOffsetStrategy::new(
@@ -2057,7 +2120,10 @@ impl UnifiedHighlighter {
         let mut doc_list_of_fields: Vec<Vec<Option<Vec<u16>>>> = Vec::with_capacity(capacity);
 
         let mut visitor = self.new_limited_stored_fields_visitor(fields);
-        let searcher = self.searcher.as_ref().ok_or_else(LuceneError::null_pointer)?;
+        let searcher = self
+            .searcher
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)?;
         let stored_fields: Box<dyn StoredFields> = searcher.stored_fields()?;
         let mut sum_chars: i64 = 0;
         loop {
@@ -2080,7 +2146,10 @@ impl UnifiedHighlighter {
     }
 
     /// Equivalent to the protected `newLimitedStoredFieldsVisitor(String[])`.
-    pub fn new_limited_stored_fields_visitor(&self, fields: &[String]) -> Box<dyn LimitedStoredFieldVisitorExt> {
+    pub fn new_limited_stored_fields_visitor(
+        &self,
+        fields: &[String],
+    ) -> Box<dyn LimitedStoredFieldVisitorExt> {
         match &self.overrides {
             Some(o) => o.new_limited_stored_fields_visitor(self, fields),
             None => Box::new(self.super_new_limited_stored_fields_visitor(fields)),
@@ -2088,7 +2157,10 @@ impl UnifiedHighlighter {
     }
 
     /// The base class's `newLimitedStoredFieldsVisitor(String[])`.
-    pub fn super_new_limited_stored_fields_visitor(&self, fields: &[String]) -> LimitedStoredFieldVisitor {
+    pub fn super_new_limited_stored_fields_visitor(
+        &self,
+        fields: &[String],
+    ) -> LimitedStoredFieldVisitor {
         LimitedStoredFieldVisitor::new(fields.to_vec(), MULTIVAL_SEP_CHAR, self.get_max_length())
     }
 }
@@ -2107,7 +2179,8 @@ pub(crate) struct TermVectorReusingLeafReader {
 
 impl fmt::Debug for TermVectorReusingLeafReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TermVectorReusingLeafReader").finish_non_exhaustive()
+        f.debug_struct("TermVectorReusingLeafReader")
+            .finish_non_exhaustive()
     }
 }
 
@@ -2124,7 +2197,9 @@ impl TermVectorReusingLeafReader {
             let wrapped: Arc<dyn LeafReader> = Arc::new(Self::new(context.leaf_reader())?);
             leaf_readers.push(wrapped.as_index_reader());
         }
-        Ok(Arc::new(TermVectorReusingCompositeReader::new(leaf_readers)?))
+        Ok(Arc::new(TermVectorReusingCompositeReader::new(
+            leaf_readers,
+        )?))
     }
 
     fn new(input: Arc<dyn LeafReader>) -> Result<Self> {
@@ -2143,7 +2218,8 @@ struct ReusingTermVectors {
 
 impl fmt::Debug for ReusingTermVectors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TermVectorReusingLeafReader$1").finish_non_exhaustive()
+        f.debug_struct("TermVectorReusingLeafReader$1")
+            .finish_non_exhaustive()
     }
 }
 

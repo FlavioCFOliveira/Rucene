@@ -17,6 +17,7 @@
 //! The types declared in `S2Cell.java`, of the Java package
 //! `com.google.common.geometry`.
 
+use rucene::util::java_math;
 use std::cell::Cell;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -40,7 +41,7 @@ const MAX_ERROR: f64 = 1.0 / (1u64 << 51) as f64;
 
 /// `POLE_MIN_LAT`: `Math.asin(Math.sqrt(1.0 / 3.0)) - MAX_ERROR`.
 fn pole_min_lat() -> f64 {
-    (1.0f64 / 3.0).sqrt().asin() - MAX_ERROR
+    java_math::asin(java_math::sqrt(1.0f64 / 3.0)) - MAX_ERROR
 }
 
 /// One row of the Java `double[][] uv` array.
@@ -109,7 +110,8 @@ impl S2Cell {
     }
 
     fn cell_id_or_npe(&self) -> S2CellId {
-        self.cell_id.expect("java.lang.NullPointerException: cellId is null")
+        self.cell_id
+            .expect("java.lang.NullPointerException: cellId is null")
     }
 
     /// `id()`; `None` for the `null` id of a `clone()`.
@@ -210,7 +212,8 @@ impl S2Cell {
     pub fn get_center_uv(&self) -> R2Vector {
         let mut i = MutableInteger::new(0);
         let mut j = MutableInteger::new(0);
-        self.cell_id_or_npe().to_face_ij_orientation(&mut i, &mut j, None);
+        self.cell_id_or_npe()
+            .to_face_ij_orientation(&mut i, &mut j, None);
         let cell_size = 1 << (S2CellId::MAX_LEVEL - i32::from(self.level));
         let si = (i.int_value() & -cell_size) * 2 + cell_size - MAX_CELL_SIZE;
         let x = S2Projections::st_to_uv((1.0 / f64::from(MAX_CELL_SIZE)) * f64::from(si));
@@ -240,7 +243,7 @@ impl S2Cell {
                 &S2Point::sub(&self.get_vertex(3), &self.get_vertex(1)),
             )
             .norm();
-        flat_area * 2.0 / (1.0 + (1.0 - (S2::M_1_PI * flat_area).min(1.0)).sqrt())
+        flat_area * 2.0 / (1.0 + java_math::sqrt(1.0 - (S2::M_1_PI * flat_area).min(1.0)))
     }
 
     /// `exactArea()`.
@@ -303,12 +306,12 @@ impl S2Cell {
 
     fn get_latitude(&self, i: usize, j: usize) -> f64 {
         let p = S2Projections::face_uv_to_xyz(i32::from(self.face), self.uv(0, i), self.uv(1, j));
-        p.z.atan2((p.x * p.x + p.y * p.y).sqrt())
+        java_math::atan2(p.z, java_math::sqrt(p.x * p.x + p.y * p.y))
     }
 
     fn get_longitude(&self, i: usize, j: usize) -> f64 {
         let p = S2Projections::face_uv_to_xyz(i32::from(self.face), self.uv(0, i), self.uv(1, j));
-        p.y.atan2(p.x)
+        java_math::atan2(p.y, p.x)
     }
 
     /// `hashCode()`.
@@ -321,7 +324,9 @@ impl S2Cell {
                     .wrapping_add(i32::from(self.orientation)),
             )
             .wrapping_add(i32::from(self.level));
-        37i32.wrapping_mul(value).wrapping_add(self.cell_id_or_npe().hash_code())
+        37i32
+            .wrapping_mul(value)
+            .wrapping_add(self.cell_id_or_npe().hash_code())
     }
 }
 
@@ -356,9 +361,13 @@ impl S2Region for S2Cell {
             } else {
                 usize::from(v > 0.0)
             };
-            let mut lat =
-                R1Interval::from_point_pair(self.get_latitude(i, j), self.get_latitude(1 - i, 1 - j));
-            lat = lat.expanded(MAX_ERROR).intersection(&S2LatLngRect::full_lat());
+            let mut lat = R1Interval::from_point_pair(
+                self.get_latitude(i, j),
+                self.get_latitude(1 - i, 1 - j),
+            );
+            lat = lat
+                .expanded(MAX_ERROR)
+                .intersection(&S2LatLngRect::full_lat());
             if lat.lo() == -S2::M_PI_2 || lat.hi() == S2::M_PI_2 {
                 return S2LatLngRect::new(lat, S1Interval::full());
             }
@@ -430,6 +439,10 @@ impl fmt::Display for S2Cell {
             Some(id) => id.to_string(),
             None => "null".to_string(),
         };
-        write!(f, "[{}, {}, {}, {}]", self.face, self.level, self.orientation, id)
+        write!(
+            f,
+            "[{}, {}, {}, {}]",
+            self.face, self.level, self.orientation, id
+        )
     }
 }

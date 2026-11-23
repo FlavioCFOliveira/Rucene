@@ -82,7 +82,8 @@ struct OrHighlighter {
 
 impl FieldValueHighlighter for OrHighlighter {
     fn is_applicable(&self, field: &str, has_matches: bool) -> bool {
-        self.first.is_applicable(field, has_matches) || self.second.is_applicable(field, has_matches)
+        self.first.is_applicable(field, has_matches)
+            || self.second.is_applicable(field, has_matches)
     }
 
     fn format(
@@ -180,7 +181,10 @@ impl fmt::Debug for QueryOffsetRange {
 impl QueryOffsetRange {
     /// Equivalent to `new QueryOffsetRange(Query, int, int)`.
     pub fn new(query: Arc<dyn Query>, from: i32, to: i32) -> Self {
-        debug_assert!(from <= to, "A non-empty offset range is required: {from}-{to}");
+        debug_assert!(
+            from <= to,
+            "A non-empty offset range is required: {from}-{to}"
+        );
         Self { query, from, to }
     }
 
@@ -284,7 +288,10 @@ impl MatchHighlighter {
     /// field highlighters is important (first-matching wins).
     ///
     /// Equivalent to `appendFieldHighlighter(FieldValueHighlighter)`.
-    pub fn append_field_highlighter(&mut self, highlighter: Arc<dyn FieldValueHighlighter>) -> &mut Self {
+    pub fn append_field_highlighter(
+        &mut self,
+        highlighter: Arc<dyn FieldValueHighlighter>,
+    ) -> &mut Self {
         self.fields_always_returned
             .extend(highlighter.always_fetched_fields());
         self.field_highlighters.push(highlighter);
@@ -309,7 +316,11 @@ impl MatchHighlighter {
     ///
     /// Propagates I/O errors; Java's `RuntimeException` when no field
     /// highlighter matches a field.
-    pub fn highlight(&self, top_docs: &TopDocs, queries: &[Arc<dyn Query>]) -> Result<Vec<DocHighlights>> {
+    pub fn highlight(
+        &self,
+        top_docs: &TopDocs,
+        queries: &[Arc<dyn Query>],
+    ) -> Result<Vec<DocHighlights>> {
         // We want to preserve the order of documents in TopDocs on output.
         // Remap.
         let mut doc_hits: Vec<(i32, Option<DocHit>)> = Vec::new();
@@ -320,11 +331,13 @@ impl MatchHighlighter {
         }
 
         let always = self.fields_always_returned.clone();
-        let fields_to_load_unconditionally: FieldPredicate = Arc::new(move |f: &str| always.contains(f));
+        let fields_to_load_unconditionally: FieldPredicate =
+            Arc::new(move |f: &str| always.contains(f));
         let highlighters = self.field_highlighters.clone();
         let fields_to_load_if_with_hits: FieldPredicate = Arc::new(move |field_name: &str| {
             highlighters.iter().any(|highlighter| {
-                highlighter.is_applicable(field_name, true) || highlighter.is_applicable(field_name, false)
+                highlighter.is_applicable(field_name, true)
+                    || highlighter.is_applicable(field_name, false)
             })
         });
 
@@ -381,16 +394,14 @@ impl MatchHighlighter {
                 .find(|(f, _)| f == field)
                 .map(|(_, o)| o.as_slice());
 
-            let formatted_values = self.field_value_highlighter(field, offsets.is_some())?.format(
-                field,
-                values,
-                &contiguous_value,
-                &value_ranges,
-                offsets,
-            )?;
+            let formatted_values = self
+                .field_value_highlighter(field, offsets.is_some())?
+                .format(field, values, &contiguous_value, &value_ranges, offsets)?;
 
             if let Some(formatted_values) = formatted_values {
-                doc_highlights.fields.push((field.clone(), formatted_values));
+                doc_highlights
+                    .fields
+                    .push((field.clone(), formatted_values));
             }
         }
 
@@ -417,12 +428,17 @@ impl MatchHighlighter {
             // logic of applying offsets would get much more complicated so
             // leaving for now (would have to recalculate all offsets to
             // omit gaps).
-            let field_gap_padding = " ".repeat(self.analyzer.get_offset_gap(Some(field)).max(0) as usize);
+            let field_gap_padding =
+                " ".repeat(self.analyzer.get_offset_gap(Some(field)).max(0) as usize);
             values.join(&field_gap_padding)
         }
     }
 
-    fn field_value_highlighter(&self, field: &str, has_matches: bool) -> Result<&Arc<dyn FieldValueHighlighter>> {
+    fn field_value_highlighter(
+        &self,
+        field: &str,
+        has_matches: bool,
+    ) -> Result<&Arc<dyn FieldValueHighlighter>> {
         for highlighter in &self.field_highlighters {
             if highlighter.is_applicable(field, has_matches) {
                 return Ok(highlighter);

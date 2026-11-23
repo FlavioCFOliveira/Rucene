@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoDegenerateLongitudeSlice.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -30,6 +30,7 @@ use super::base_planet_object::BasePlanetObject;
 use super::bounded::Bounded;
 use super::bounds::Bounds;
 use super::distance_style::DistanceStyle;
+use super::geo_area::{self, GeoArea};
 use super::geo_area_shape::GeoAreaShape;
 use super::geo_b_box::GeoBBox;
 use super::geo_b_box_factory::GeoBBoxFactory;
@@ -43,7 +44,6 @@ use super::planet_model::PlanetModel;
 use super::serializable_object as so;
 use super::sided_plane::SidedPlane;
 use super::{d2s, iae, java_min};
-use super::geo_area::{self, GeoArea};
 
 /// Degenerate longitude slice.
 ///
@@ -69,11 +69,12 @@ impl GeoDegenerateLongitudeSlice {
         if longitude < -PI || longitude > PI {
             return Err(iae("Longitude out of range"));
         }
-        let sin_longitude = longitude.sin();
-        let cos_longitude = longitude.cos();
+        let sin_longitude = java_math::sin(longitude);
+        let cos_longitude = java_math::cos(longitude);
         let plane = Plane::new_vertical(cos_longitude, sin_longitude);
         let interior_point = GeoPoint::new_sin_cos(pm, 0.0, sin_longitude, 1.0, cos_longitude);
-        let bounding_plane = SidedPlane::new_vertical(&interior_point, -sin_longitude, cos_longitude)?;
+        let bounding_plane =
+            SidedPlane::new_vertical(&interior_point, -sin_longitude, cos_longitude)?;
         Ok(Self {
             planet_model: pm.clone(),
             longitude,
@@ -102,23 +103,31 @@ impl GeoDegenerateLongitudeSlice {
 
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         let pm = &self.planet_model;
-        let distance = ds.compute_plane_distance_xyz(pm, &self.plane, x, y, z, &[&self.bounding_plane]);
+        let distance =
+            ds.compute_plane_distance_xyz(pm, &self.plane, x, y, z, &[&self.bounding_plane]);
         let north_distance = ds.compute_distance_xyz(&pm.north_pole, x, y, z);
         let south_distance = ds.compute_distance_xyz(&pm.south_pole, x, y, z);
         Ok(java_min(distance, java_min(north_distance, south_distance)))
     }
 
     fn equals_impl(&self, other: &Self) -> bool {
-        BasePlanetObject::equals(&self.planet_model, &other.planet_model) && other.longitude == self.longitude
+        BasePlanetObject::equals(&self.planet_model, &other.planet_model)
+            && other.longitude == self.longitude
     }
 
     fn hash_code_impl(&self) -> i32 {
         let result = BasePlanetObject::hash_code(&self.planet_model);
-        result.wrapping_mul(31).wrapping_add(super::dhash(self.longitude))
+        result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.longitude))
     }
 }
 
-impl_geo_base_area_shape_common!(GeoDegenerateLongitudeSlice, "org.apache.lucene.spatial3d.geom.GeoDegenerateLongitudeSlice", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoDegenerateLongitudeSlice,
+    "org.apache.lucene.spatial3d.geom.GeoDegenerateLongitudeSlice",
+    geo_b_box
+);
 
 impl GeoArea for GeoDegenerateLongitudeSlice {
     fn get_relationship(&self, path: &dyn GeoShape) -> Result<i32> {
@@ -154,8 +163,20 @@ impl GeoShape for GeoDegenerateLongitudeSlice {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
-        p.intersects(&self.planet_model, &self.plane, notable_points, &self.plane_points, bounds, &[&self.bounding_plane])
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        p.intersects(
+            &self.planet_model,
+            &self.plane,
+            notable_points,
+            &self.plane_points,
+            bounds,
+            &[&self.bounding_plane],
+        )
     }
 }
 
@@ -184,7 +205,13 @@ impl GeoBBox for GeoDegenerateLongitudeSlice {
             new_left_lon = -PI;
             new_right_lon = PI;
         }
-        GeoBBoxFactory::make_geo_bbox(&self.planet_model, PI * 0.5, -PI * 0.5, new_left_lon, new_right_lon)
+        GeoBBoxFactory::make_geo_bbox(
+            &self.planet_model,
+            PI * 0.5,
+            -PI * 0.5,
+            new_left_lon,
+            new_right_lon,
+        )
     }
 }
 

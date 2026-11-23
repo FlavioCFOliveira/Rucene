@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `dXdYdZSolid.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -27,6 +26,7 @@ use rucene::error::Result;
 
 use super::base_planet_object::BasePlanetObject;
 use super::base_xyz_solid::BaseXYZSolid;
+use super::d2s;
 use super::geo_area::{self, GeoArea};
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
@@ -34,7 +34,6 @@ use super::membership::Membership;
 use super::planet_model::PlanetModel;
 use super::serializable_object as so;
 use super::xyz_solid::XYZSolid;
-use super::d2s;
 
 /// 3D rectangle, bounded on six sides by X,Y,Z limits, degenerate in all
 /// dimensions.
@@ -109,7 +108,9 @@ impl dXdYdZSolid {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(if self.is_on_surface { 1 } else { 0 });
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(if self.is_on_surface { 1 } else { 0 });
         if let Some(p) = &self.the_point {
             result = result.wrapping_mul(31).wrapping_add(p.java_hash_code());
         }
@@ -117,7 +118,11 @@ impl dXdYdZSolid {
     }
 }
 
-impl_serializable_object!(dXdYdZSolid, "org.apache.lucene.spatial3d.geom.dXdYdZSolid", planet_object);
+impl_serializable_object!(
+    dXdYdZSolid,
+    "org.apache.lucene.spatial3d.geom.dXdYdZSolid",
+    planet_object
+);
 impl_planet_object!(dXdYdZSolid);
 impl XYZSolid for dXdYdZSolid {}
 
@@ -143,7 +148,8 @@ impl GeoArea for dXdYdZSolid {
         if inside_shape == BaseXYZSolid::SOME_INSIDE {
             return Ok(geo_area::OVERLAPS);
         }
-        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE {
+        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE
+        {
             return Ok(geo_area::OVERLAPS);
         }
         if inside_rectangle == BaseXYZSolid::ALL_INSIDE {

@@ -35,7 +35,9 @@ use crate::prefix::tree::cell_iterator::CellIterator;
 use crate::prefix::tree::legacy_cell::{self, LegacyCell, LegacyCellState};
 use crate::prefix::tree::legacy_prefix_tree::{self, LegacyPrefixTree};
 use crate::prefix::tree::spatial_prefix_tree::{SpatialPrefixTree, SpatialPrefixTreeBase};
-use crate::prefix::tree::spatial_prefix_tree_factory::{SpatialPrefixTreeFactory, SpatialPrefixTreeFactoryBase};
+use crate::prefix::tree::spatial_prefix_tree_factory::{
+    SpatialPrefixTreeFactory, SpatialPrefixTreeFactoryBase,
+};
 
 /// Equivalent to `org.apache.lucene.spatial.prefix.tree.GeohashPrefixTree.Factory`
 /// (`public static class Factory extends SpatialPrefixTreeFactory`): factory
@@ -55,14 +57,19 @@ impl SpatialPrefixTreeFactory for Factory {
     }
 
     fn get_level_for_distance(&self, degrees: f64) -> Result<i32> {
-        let grid = GeohashPrefixTree::new(Arc::clone(self.base.ctx()), GeohashPrefixTree::get_max_levels_possible())?;
+        let grid = GeohashPrefixTree::new(
+            Arc::clone(self.base.ctx()),
+            GeohashPrefixTree::get_max_levels_possible(),
+        )?;
         Ok(grid.get_level_for_distance(degrees))
     }
 
     fn new_spt(&self) -> Result<Arc<dyn SpatialPrefixTree>> {
         Ok(GeohashPrefixTree::new(
             Arc::clone(self.base.ctx()),
-            self.base.max_levels.unwrap_or_else(GeohashPrefixTree::get_max_levels_possible),
+            self.base
+                .max_levels
+                .unwrap_or_else(GeohashPrefixTree::get_max_levels_possible),
         )?)
     }
 }
@@ -98,7 +105,10 @@ impl GeohashPrefixTree {
                 "maxLevels must be [1-{maxp}] but got {max_levels}"
             )));
         }
-        Ok(Arc::new_cyclic(|me| GeohashPrefixTree { base, me: me.clone() }))
+        Ok(Arc::new_cyclic(|me| GeohashPrefixTree {
+            base,
+            me: me.clone(),
+        }))
     }
 
     /// `getMaxLevelsPossible()`: any more than this and there's no point
@@ -108,7 +118,9 @@ impl GeohashPrefixTree {
     }
 
     fn me(&self) -> Arc<GeohashPrefixTree> {
-        self.me.upgrade().expect("a GeohashPrefixTree is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a GeohashPrefixTree is shared as an Arc")
     }
 
     /// `stringToBytesPlus1(String token)`: copies an ASCII token to a byte
@@ -154,7 +166,11 @@ impl SpatialPrefixTree for GeohashPrefixTree {
         legacy_prefix_tree::legacy_read_cell(self, term, scratch)
     }
 
-    fn get_tree_cell_iterator(&self, shape: Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn get_tree_cell_iterator(
+        &self,
+        shape: Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         legacy_prefix_tree::legacy_get_tree_cell_iterator(self, shape, detail_level)
     }
 
@@ -166,7 +182,10 @@ impl SpatialPrefixTree for GeohashPrefixTree {
 impl LegacyPrefixTree for GeohashPrefixTree {
     fn get_cell(&self, p: &dyn Point, level: i32) -> CellRef {
         // args are lat,lon (y,x)
-        GhCell::from_geohash(&self.me(), &GeohashUtils::encode_lat_lon_with(p.get_y(), p.get_x(), level))
+        GhCell::from_geohash(
+            &self.me(),
+            &GeohashUtils::encode_lat_lon_with(p.get_y(), p.get_x(), level),
+        )
     }
 }
 
@@ -187,7 +206,11 @@ impl GhCell {
         let len = geohash.encode_utf16().count();
         let cell = GhCell {
             tree: Arc::clone(tree),
-            state: Mutex::new(LegacyCellState::new(GeohashPrefixTree::string_to_bytes_plus1(geohash), 0, len)),
+            state: Mutex::new(LegacyCellState::new(
+                GeohashPrefixTree::string_to_bytes_plus1(geohash),
+                0,
+                len,
+            )),
             geohash: Mutex::new(Some(geohash.to_string())),
         };
         cell.read_leaf_adjust();
@@ -201,7 +224,12 @@ impl GhCell {
     }
 
     /// `GhCell(byte[] bytes, int off, int len)`.
-    fn from_bytes(tree: &Arc<GeohashPrefixTree>, bytes: Vec<u8>, off: usize, len: usize) -> CellRef {
+    fn from_bytes(
+        tree: &Arc<GeohashPrefixTree>,
+        bytes: Vec<u8>,
+        off: usize,
+        len: usize,
+    ) -> CellRef {
         let cell = GhCell {
             tree: Arc::clone(tree),
             state: Mutex::new(LegacyCellState::new(bytes, off, len)),
@@ -213,14 +241,19 @@ impl GhCell {
 
     /// `getGeohash()`.
     fn get_geohash(&self) -> String {
-        let cached = self.geohash.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let cached = self
+            .geohash
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if let Some(geohash) = cached {
             return geohash;
         }
         let token = self.get_token_bytes_no_leaf(None);
-        let geohash = token
-            .utf8_to_string()
-            .unwrap_or_else(|_| String::from_utf8_lossy(&token.bytes[token.offset..token.offset + token.length]).into_owned());
+        let geohash = token.utf8_to_string().unwrap_or_else(|_| {
+            String::from_utf8_lossy(&token.bytes[token.offset..token.offset + token.length])
+                .into_owned()
+        });
         *self.geohash.lock().unwrap_or_else(|e| e.into_inner()) = Some(geohash.clone());
         geohash
     }
@@ -252,7 +285,10 @@ impl LegacyCell for GhCell {
 
     fn get_sub_cells(&self) -> Vec<CellRef> {
         let hashes = GeohashUtils::get_sub_geohashes(&self.get_geohash()); // sorted
-        hashes.iter().map(|hash| GhCell::from_geohash(&self.tree, hash)).collect()
+        hashes
+            .iter()
+            .map(|hash| GhCell::from_geohash(&self.tree, hash))
+            .collect()
     }
 }
 
@@ -281,8 +317,9 @@ impl Cell for GhCell {
         if let Some(shape) = &self.state().shape {
             return Arc::clone(shape);
         }
-        let shape: Arc<dyn Shape> = GeohashUtils::decode_boundary(&self.get_geohash(), &self.tree.base.ctx)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let shape: Arc<dyn Shape> =
+            GeohashUtils::decode_boundary(&self.get_geohash(), &self.tree.base.ctx)
+                .unwrap_or_else(|e| panic!("{e}"));
         self.state().shape = Some(Arc::clone(&shape));
         shape
     }

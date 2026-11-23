@@ -48,21 +48,22 @@ use rucene::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
 use rucene::index::point_values::{IntersectVisitor, PointTree};
 use rucene::index::vector_values::DocIndexIterator;
 use rucene::index::{
-    BinaryDocValues, ByteVectorValues, DocValuesIterator, DocValuesSkipIndexType,
-    DocValuesSkipper, DocValuesType, FieldInfo, FieldInfos, FieldInvertState, Fields,
-    FloatVectorValues, ImpactsEnum, IndexOptions, IndexReader, IndexableField,
-    IndexableFieldType, KnnVectorValues, LeafMetaData, LeafReader, NumericDocValues,
-    OrdTermState, PointValues, PostingsEnum, SeekStatus, SlowImpactsEnum, SortedDocValues,
-    SortedNumericDocValues, SortedSetDocValues, StoredFieldVisitor, StoredFieldVisitorStatus,
-    TermState, TermVectors, Terms, TermsEnum, VectorEncoding,
+    BinaryDocValues, ByteVectorValues, DocValuesIterator, DocValuesSkipIndexType, DocValuesSkipper,
+    DocValuesType, FieldInfo, FieldInfos, FieldInvertState, Fields, FloatVectorValues, ImpactsEnum,
+    IndexOptions, IndexReader, IndexableField, IndexableFieldType, KnnVectorValues, LeafMetaData,
+    LeafReader, NumericDocValues, OrdTermState, PointValues, PostingsEnum, SeekStatus,
+    SlowImpactsEnum, SortedDocValues, SortedNumericDocValues, SortedSetDocValues,
+    StoredFieldVisitor, StoredFieldVisitorStatus, TermState, TermVectors, Terms, TermsEnum,
+    VectorEncoding,
 };
 use rucene::search::knn::KnnCollector;
 use rucene::search::similarities::Similarity;
-use rucene::search::vector_scorer::{default_bulk, SharedVectorScorer, VectorScorer, VectorScorerBulk};
+use rucene::search::vector_scorer::{
+    default_bulk, SharedVectorScorer, VectorScorer, VectorScorerBulk,
+};
 use rucene::search::{
-    AcceptDocs, CollectionResult, CollectorManager, DocIdSetIterator, IndexSearcher,
-    LeafCollector, Query, Scorable, ScoreMode, SimpleCollector, SimpleCollectorImpl,
-    NO_MORE_DOCS,
+    AcceptDocs, CollectionResult, CollectorManager, DocIdSetIterator, IndexSearcher, LeafCollector,
+    Query, Scorable, ScoreMode, SimpleCollector, SimpleCollectorImpl, NO_MORE_DOCS,
 };
 use rucene::util::attribute::AttributeSource;
 use rucene::util::byte_block_pool::{Allocator, ByteBlockPool, BYTE_BLOCK_SIZE};
@@ -102,8 +103,13 @@ fn number_long_value(value: &NumericValue) -> i64 {
 /// does for bytes.
 ///
 /// Equivalent to `org.apache.lucene.index.memory.MemoryIndex.SlicedIntBlockPool`.
+///
+/// Java's member is package-private, reached by the same package's tests
+/// (`TestSlicedIntBlockPool`); Rust's integration tests are another crate, so
+/// the port makes it public (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct SlicedIntBlockPool {
+pub struct SlicedIntBlockPool {
     pool: IntBlockPool,
 }
 
@@ -116,7 +122,7 @@ impl SlicedIntBlockPool {
     const FIRST_LEVEL_SIZE: usize = Self::LEVEL_SIZE_ARRAY[0];
 
     /// Equivalent to `SlicedIntBlockPool(Allocator)`.
-    fn new(allocator: Box<dyn rucene::util::int_block_pool::IntBlockAllocator>) -> Self {
+    pub fn new(allocator: Box<dyn rucene::util::int_block_pool::IntBlockAllocator>) -> Self {
         Self {
             pool: IntBlockPool::with_allocator(allocator),
         }
@@ -178,7 +184,7 @@ impl SlicedIntBlockPool {
     }
 
     /// Equivalent to `IntBlockPool.reset(boolean, boolean)`.
-    fn reset(&mut self, zero_fill_buffers: bool, reuse_first: bool) {
+    pub fn reset(&mut self, zero_fill_buffers: bool, reuse_first: bool) {
         self.pool.reset(zero_fill_buffers, reuse_first);
     }
 }
@@ -189,20 +195,25 @@ impl SlicedIntBlockPool {
 /// `org.apache.lucene.index.memory.MemoryIndex.SlicedIntBlockPool.SliceWriter`.
 /// Java's writer keeps a reference to its pool; here the pool is passed to
 /// each call, because it lives in the same locked state as the writer.
+///
+/// Java's member is package-private, reached by the same package's tests
+/// (`TestSlicedIntBlockPool`); Rust's integration tests are another crate, so
+/// the port makes it public (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Default)]
-pub(crate) struct SliceWriter {
+pub struct SliceWriter {
     offset: i32,
 }
 
 impl SliceWriter {
     /// Equivalent to `SliceWriter.reset(int)`.
-    pub(crate) fn reset(&mut self, slice_offset: i32) {
+    pub fn reset(&mut self, slice_offset: i32) {
         self.offset = slice_offset;
     }
 
     /// Equivalent to `SliceWriter.writeInt(int)`: writes the given value
     /// into the slice and resizes the slice if needed.
-    pub(crate) fn write_int(&mut self, pool: &mut SlicedIntBlockPool, value: i32) -> Result<()> {
+    pub fn write_int(&mut self, pool: &mut SlicedIntBlockPool, value: i32) -> Result<()> {
         let mut block = (self.offset >> INT_BLOCK_SHIFT) as usize;
         let mut relative_offset = self.offset as usize & INT_BLOCK_MASK;
         if pool.pool.buffer(block)[relative_offset] != 0 {
@@ -218,14 +229,14 @@ impl SliceWriter {
 
     /// Equivalent to `SliceWriter.startNewSlice()`: starts a new slice and
     /// returns the start offset, the "address" of the slice.
-    pub(crate) fn start_new_slice(&mut self, pool: &mut SlicedIntBlockPool) -> Result<i32> {
+    pub fn start_new_slice(&mut self, pool: &mut SlicedIntBlockPool) -> Result<i32> {
         self.offset =
             pool.new_slice(SlicedIntBlockPool::FIRST_LEVEL_SIZE)? as i32 + pool.pool.int_offset();
         Ok(self.offset)
     }
 
     /// Equivalent to `SliceWriter.getCurrentOffset()`.
-    pub(crate) fn get_current_offset(&self) -> i32 {
+    pub fn get_current_offset(&self) -> i32 {
         self.offset
     }
 }
@@ -236,8 +247,13 @@ impl SliceWriter {
 /// `org.apache.lucene.index.memory.MemoryIndex.SlicedIntBlockPool.SliceReader`.
 /// Java's reader keeps a reference to its pool and to the current block; here
 /// the pool is passed to each call and the block is kept as its index.
+///
+/// Java's member is package-private, reached by the same package's tests
+/// (`TestSlicedIntBlockPool`); Rust's integration tests are another crate, so
+/// the port makes it public (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Debug, Default, Clone)]
-pub(crate) struct SliceReader {
+pub struct SliceReader {
     upto: usize,
     buffer_upto: usize,
     buffer_offset: i32,
@@ -248,7 +264,7 @@ pub(crate) struct SliceReader {
 
 impl SliceReader {
     /// Equivalent to `SliceReader.reset(int, int)`.
-    pub(crate) fn reset(&mut self, start_offset: i32, end_offset: i32) {
+    pub fn reset(&mut self, start_offset: i32, end_offset: i32) {
         self.buffer_upto = (start_offset / INT_BLOCK_SIZE as i32) as usize;
         self.buffer_offset = self.buffer_upto as i32 * INT_BLOCK_SIZE as i32;
         self.end = end_offset;
@@ -266,13 +282,13 @@ impl SliceReader {
     }
 
     /// Equivalent to `SliceReader.endOfSlice()`.
-    pub(crate) fn end_of_slice(&self) -> bool {
+    pub fn end_of_slice(&self) -> bool {
         debug_assert!(self.upto as i32 + self.buffer_offset <= self.end);
         self.upto as i32 + self.buffer_offset == self.end
     }
 
     /// Equivalent to `SliceReader.readInt()`.
-    pub(crate) fn read_int(&mut self, pool: &SlicedIntBlockPool) -> i32 {
+    pub fn read_int(&mut self, pool: &SlicedIntBlockPool) -> i32 {
         debug_assert!(!self.end_of_slice());
         debug_assert!(self.upto <= self.limit);
         if self.upto == self.limit {
@@ -641,7 +657,10 @@ impl Info {
 
     /// Equivalent to `Info.getNormDocValues()`: computes (once) and caches the
     /// norm, and returns a numeric doc values over it.
-    fn get_norm_doc_values(&mut self, similarity: &dyn Similarity) -> Result<MemoryNumericDocValues> {
+    fn get_norm_doc_values(
+        &mut self,
+        similarity: &dyn Similarity,
+    ) -> Result<MemoryNumericDocValues> {
         if self.norm.is_none() {
             let invert_state = FieldInvertState::with_statistics(
                 Version::LATEST.major as i32,
@@ -872,7 +891,8 @@ impl MemoryIndex {
         store_payloads: bool,
         max_reused_bytes: i64,
     ) -> Result<MemoryIndex> {
-        let mut mi = MemoryIndex::with_max_reused_bytes(store_offsets, store_payloads, max_reused_bytes);
+        let mut mi =
+            MemoryIndex::with_max_reused_bytes(store_offsets, store_payloads, max_reused_bytes);
         for field in document {
             mi.add_field(field, analyzer)?;
         }
@@ -911,15 +931,8 @@ impl MemoryIndex {
 
         let offset_gap;
         let position_increment_gap;
-        // `field.tokenStream(analyzer, null)` returns `null` for a field that
-        // is not indexed (`Field.java:463-465`); Rucene's `token_stream`
-        // returns an empty stream there instead, so `null` is recognised by
-        // the index options.
-        let token_stream = if field.field_type().index_options() == IndexOptions::NONE {
-            None
-        } else {
-            Some(field.token_stream(analyzer, &mut None)?)
-        };
+        // `field.tokenStream(analyzer, null)`, which may return `null`.
+        let token_stream = field.token_stream_or_null(analyzer, &mut None)?;
         if let Some(analyzer) = analyzer {
             offset_gap = analyzer.get_offset_gap(Some(field.name()));
             position_increment_gap = analyzer.get_position_increment_gap(Some(field.name()));
@@ -928,7 +941,12 @@ impl MemoryIndex {
             position_increment_gap = 0;
         }
         if let Some(mut token_stream) = token_stream {
-            self.store_terms(&info, &mut *token_stream, position_increment_gap, offset_gap)?;
+            self.store_terms(
+                &info,
+                &mut *token_stream,
+                position_increment_gap,
+                offset_gap,
+            )?;
         } else if field
             .field_type()
             .index_options()
@@ -1035,7 +1053,9 @@ impl MemoryIndex {
                 let info = Arc::new(Mutex::new(Info::new(
                     self.create_field_info(field_name, ord, field_type)?,
                 )));
-                state.fields.insert(field_name.to_string(), Arc::clone(&info));
+                state
+                    .fields
+                    .insert(field_name.to_string(), Arc::clone(&info));
                 info
             }
         };
@@ -1105,7 +1125,9 @@ impl MemoryIndex {
     fn store_point_values(info: &Mutex<Info>, point_value: &BytesRef) {
         let mut info = lock(info);
         let count = info.point_values_count;
-        let values = info.point_values.get_or_insert_with(|| Vec::with_capacity(4));
+        let values = info
+            .point_values
+            .get_or_insert_with(|| Vec::with_capacity(4));
         // `ArrayUtil.grow(info.pointValues, count + 1)`.
         if values.len() < count + 1 {
             values.resize(count + 1, BytesRef::default());
@@ -1131,7 +1153,8 @@ impl MemoryIndex {
                     }
                     info.byte_vector_count += 1;
                     let copy = value[..dimension].to_vec();
-                    info.byte_vector_values.get_or_insert_with(|| vec![Vec::new()])[0] = copy;
+                    info.byte_vector_values
+                        .get_or_insert_with(|| vec![Vec::new()])[0] = copy;
                     return Ok(());
                 }
                 Err(LuceneError::illegal_argument(format!(
@@ -1149,7 +1172,8 @@ impl MemoryIndex {
                     }
                     info.float_vector_count += 1;
                     let copy = value[..dimension].to_vec();
-                    info.float_vector_values.get_or_insert_with(|| vec![Vec::new()])[0] = copy;
+                    info.float_vector_values
+                        .get_or_insert_with(|| vec![Vec::new()])[0] = copy;
                     return Ok(());
                 }
                 Err(LuceneError::illegal_argument(format!(
@@ -1431,7 +1455,8 @@ impl MemoryIndex {
                         .payloads_bytes_refs
                         .as_mut()
                         .expect("INVARIANT: payloads are stored")
-                        .append(&payload)? as i32,
+                        .append(&payload)?
+                        as i32,
                     _ => -1,
                 };
                 pools
@@ -2159,7 +2184,11 @@ impl LeafReader for MemoryIndexReader {
             return Ok(None);
         };
         let info = lock(&info);
-        let values = info.numeric_producer.dv_long_values.clone().unwrap_or_default();
+        let values = info
+            .numeric_producer
+            .dv_long_values
+            .clone()
+            .unwrap_or_default();
         Ok(Some(Box::new(sorted_numeric_doc_values(
             values,
             info.numeric_producer.count,
@@ -2783,7 +2812,10 @@ pub(crate) struct MemoryIndexPointValues {
 impl MemoryIndexPointValues {
     /// Equivalent to `MemoryIndexPointValues(Info)`.
     fn new(info: Arc<Mutex<Info>>) -> Self {
-        debug_assert!(lock(&info).point_values.is_some(), "Field does not have points");
+        debug_assert!(
+            lock(&info).point_values.is_some(),
+            "Field does not have points"
+        );
         Self { info }
     }
 }

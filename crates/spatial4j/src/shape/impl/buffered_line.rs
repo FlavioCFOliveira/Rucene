@@ -9,6 +9,7 @@
 //! The types declared in `BufferedLine.java`, of the Java package
 //! `org.locationtech.spatial4j.shape.impl`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::sync::Arc;
 
@@ -19,9 +20,9 @@ use crate::context::spatial_context::{SpatialContext, SpatialContextRef};
 use crate::distance::distance_utils::DistanceUtils;
 use crate::jdk::{double_compare_ne, hash_double};
 use crate::shape::base_shape::BaseShape;
+use crate::shape::point::Point;
 use crate::shape::r#impl::inf_buf_line::InfBufLine;
 use crate::shape::r#impl::point_impl::PointImpl;
-use crate::shape::point::Point;
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::spatial_relation::SpatialRelation;
@@ -49,19 +50,32 @@ impl BufferedLine {
     ///
     /// The `InvalidShapeException` of `ctx.makeRectangle` for the bounding
     /// box.
-    pub fn new(p_a: Arc<dyn Point>, p_b: Arc<dyn Point>, buf: f64, ctx: &Arc<SpatialContext>) -> Result<Arc<BufferedLine>> {
+    pub fn new(
+        p_a: Arc<dyn Point>,
+        p_b: Arc<dyn Point>,
+        buf: f64,
+        ctx: &Arc<SpatialContext>,
+    ) -> Result<Arc<BufferedLine>> {
         debug_assert!(buf >= 0.0); //TODO support buf=0 via another class ?
         let buf_extend = true;
         let delta_y = p_b.get_y() - p_a.get_y();
         let delta_x = p_b.get_x() - p_a.get_x();
-        let center = PointImpl::new(p_a.get_x() + delta_x / 2.0, p_a.get_y() + delta_y / 2.0, None);
+        let center = PointImpl::new(
+            p_a.get_x() + delta_x / 2.0,
+            p_a.get_y() + delta_y / 2.0,
+            None,
+        );
         let perp_extent = if buf_extend { buf } else { 0.0 };
         let (line_primary, line_perp) = if delta_x == 0.0 && delta_y == 0.0 {
-            (InfBufLine::new(0.0, &*center, buf), InfBufLine::new(f64::INFINITY, &*center, buf))
+            (
+                InfBufLine::new(0.0, &*center, buf),
+                InfBufLine::new(f64::INFINITY, &*center, buf),
+            )
         } else {
             let line_primary = InfBufLine::new(delta_y / delta_x, &*center, buf);
-            let length = (delta_x * delta_x + delta_y * delta_y).sqrt();
-            let line_perp = InfBufLine::new(-delta_x / delta_y, &*center, length / 2.0 + perp_extent);
+            let length = java_math::sqrt(delta_x * delta_x + delta_y * delta_y);
+            let line_perp =
+                InfBufLine::new(-delta_x / delta_y, &*center, length / 2.0 + perp_extent);
             (line_primary, line_perp)
         };
         let (min_x, max_x, min_y, max_y);
@@ -81,7 +95,8 @@ impl BufferedLine {
                 return Err(LuceneError::unsupported_operation("TODO"));
             }
             //solved via Wolfram Alpha
-            let bbox_buf = buf * (1.0 + line_primary.get_slope().abs()) * line_primary.get_dist_denom_inv();
+            let bbox_buf =
+                buf * (1.0 + line_primary.get_slope().abs()) * line_primary.get_dist_denom_inv();
             debug_assert!(bbox_buf >= buf && bbox_buf <= buf * 1.5);
             if p_a.get_x() <= p_b.get_x() {
                 min_x = p_a.get_x() - bbox_buf;
@@ -189,7 +204,11 @@ impl Shape for BufferedLine {
     /// neither a point nor a rectangle; this panics with that text.
     fn relate(&self, other: &dyn Shape) -> SpatialRelation {
         if let Some(p) = other.as_point() {
-            return if self.contains(p) { SpatialRelation::Contains } else { SpatialRelation::Disjoint };
+            return if self.contains(p) {
+                SpatialRelation::Contains
+            } else {
+                SpatialRelation::Disjoint
+            };
         }
         if let Some(r) = other.as_rectangle() {
             return self.relate_rect(r);
@@ -215,7 +234,12 @@ impl Shape for BufferedLine {
 
     fn get_buffered(&self, distance: f64, _ctx: &SpatialContext) -> Result<Arc<dyn Shape>> {
         let ctx = _ctx.self_arc();
-        let line = BufferedLine::new(Arc::clone(&self.p_a), Arc::clone(&self.p_b), self.buf + distance, &ctx)?;
+        let line = BufferedLine::new(
+            Arc::clone(&self.p_a),
+            Arc::clone(&self.p_b),
+            self.buf + distance,
+            &ctx,
+        )?;
         Ok(line)
     }
 
@@ -247,8 +271,12 @@ impl Shape for BufferedLine {
 
     fn hash_code(&self) -> i32 {
         let mut result = self.p_a.hash_code();
-        result = 31i32.wrapping_mul(result).wrapping_add(self.p_b.hash_code());
-        31i32.wrapping_mul(result).wrapping_add(hash_double(self.buf))
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(self.p_b.hash_code());
+        31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(self.buf))
     }
 
     fn get_context(&self) -> Option<Arc<SpatialContext>> {
@@ -261,6 +289,12 @@ impl Shape for BufferedLine {
 impl fmt::Display for BufferedLine {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BufferedLine({}, {} b={})", self.p_a, self.p_b, double_to_string(self.buf))
+        write!(
+            f,
+            "BufferedLine({}, {} b={})",
+            self.p_a,
+            self.p_b,
+            double_to_string(self.buf)
+        )
     }
 }

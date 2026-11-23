@@ -207,8 +207,10 @@ impl MatchRegionRetriever {
         fields_to_load_unconditionally: FieldPredicate,
         fields_to_load_if_with_hits: FieldPredicate,
     ) -> Result<Self> {
-        let supplier =
-            Self::compute_offset_retrieval_strategies(Arc::clone(searcher.get_index_reader()), analyzer)?;
+        let supplier = Self::compute_offset_retrieval_strategies(
+            Arc::clone(searcher.get_index_reader()),
+            analyzer,
+        )?;
         Self::with_supplier(
             searcher,
             query,
@@ -252,7 +254,8 @@ impl MatchRegionRetriever {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Compute value offset retrieval strategy for all affected fields.
-        let mut offset_strategies: HashMap<String, Arc<dyn OffsetsRetrievalStrategy>> = HashMap::new();
+        let mut offset_strategies: HashMap<String, Arc<dyn OffsetsRetrievalStrategy>> =
+            HashMap::new();
         for field in &query_affected_highlighted_fields {
             offset_strategies.insert(field.clone(), field_offset_strategy_supplier.apply(field));
         }
@@ -260,7 +263,9 @@ impl MatchRegionRetriever {
         let affected = query_affected_highlighted_fields.clone();
         let should_load_stored_field: FieldPredicate = Arc::new(move |field: &str| {
             fields_to_load_unconditionally(field)
-                || affected.binary_search_by(|f| java_compare(f, field)).is_ok()
+                || affected
+                    .binary_search_by(|f| java_compare(f, field))
+                    .is_ok()
         });
 
         Ok(Self {
@@ -283,7 +288,11 @@ impl MatchRegionRetriever {
     /// # Errors
     ///
     /// Propagates I/O errors.
-    pub fn highlight_documents(&self, top_docs: &TopDocs, consumer: &mut dyn MatchOffsetsConsumer) -> Result<()> {
+    pub fn highlight_documents(
+        &self,
+        top_docs: &TopDocs,
+        consumer: &mut dyn MatchOffsetsConsumer,
+    ) -> Result<()> {
         let mut doc_ids: Vec<i32> = top_docs.score_docs.iter().map(|sd| sd.doc).collect();
         doc_ids.sort_unstable();
         self.highlight_documents_with_limits(&doc_ids, consumer, Arc::new(|_| i32::MAX))
@@ -358,13 +367,23 @@ impl MatchRegionRetriever {
             if block.len() >= max_block_size || iter.peek().is_none() {
                 block_queue.push(std::mem::take(&mut block));
                 if block_queue.len() >= max_blocks_processed_in_parallel {
-                    self.drain_queue(&mut block_queue, consumer, &max_hits_per_field, max_blocks_processed_in_parallel)?;
+                    self.drain_queue(
+                        &mut block_queue,
+                        consumer,
+                        &max_hits_per_field,
+                        max_blocks_processed_in_parallel,
+                    )?;
                 }
             }
         }
 
         if !block_queue.is_empty() {
-            self.drain_queue(&mut block_queue, consumer, &max_hits_per_field, max_blocks_processed_in_parallel)?;
+            self.drain_queue(
+                &mut block_queue,
+                consumer,
+                &max_hits_per_field,
+                max_blocks_processed_in_parallel,
+            )?;
         }
         Ok(())
     }
@@ -384,7 +403,9 @@ impl MatchRegionRetriever {
                     .map_err(|e| LuceneError::from(std::io::Error::other(e.to_string())))?;
             }
         } else {
-            let callables: Vec<Box<dyn FnOnce() -> Result<Vec<DocHighlightData>> + Send + 'static>> = queue
+            let callables: Vec<
+                Box<dyn FnOnce() -> Result<Vec<DocHighlightData>> + Send + 'static>,
+            > = queue
                 .iter()
                 .map(|id_block| {
                     let inner = Arc::clone(&self.inner);
@@ -402,7 +423,10 @@ impl MatchRegionRetriever {
         Ok(())
     }
 
-    fn process_block(doc_highlight_data: &[DocHighlightData], consumer: &mut dyn MatchOffsetsConsumer) -> Result<()> {
+    fn process_block(
+        doc_highlight_data: &[DocHighlightData],
+        consumer: &mut dyn MatchOffsetsConsumer,
+    ) -> Result<()> {
         for data in doc_highlight_data {
             consumer.accept(
                 data.doc_id,
@@ -464,36 +488,46 @@ impl MatchRegionRetriever {
         analyzer: Arc<dyn Analyzer>,
     ) -> Result<Arc<dyn OffsetsRetrievalStrategySupplier>> {
         let field_infos: FieldInfos = FieldInfos::get_merged_field_infos(reader)?;
-        Ok(Arc::new(move |field: &str| -> Arc<dyn OffsetsRetrievalStrategy> {
-            let Some(field_info) = field_infos.field_info(field) else {
-                let message = format!("FieldInfo is null for field: {field}");
-                return Arc::new(move |_: &mut dyn MatchesIterator, _: &dyn FieldValueProvider| {
-                    Err(LuceneError::from(std::io::Error::other(message.clone())))
-                });
-            };
-
-            match field_info.get_index_options() {
-                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS => Arc::new(OffsetsFromMatchIterator::new(
-                    field,
-                    OffsetsFromPositions::new(field, Arc::clone(&analyzer)),
-                )),
-                IndexOptions::DOCS_AND_FREQS_AND_POSITIONS => {
-                    Arc::new(OffsetsFromPositions::new(field, Arc::clone(&analyzer)))
-                }
-                IndexOptions::DOCS_AND_CUSTOM_FREQS | IndexOptions::DOCS_AND_FREQS | IndexOptions::DOCS => {
-                    // By default use overlapping offsets from tokens.
-                    Arc::new(OffsetsFromTokens::new(field, Arc::clone(&analyzer)))
-                }
-                other => {
-                    let message = format!(
-                        "Field is indexed without positions and/or offsets: {field}, {other:?}"
+        Ok(Arc::new(
+            move |field: &str| -> Arc<dyn OffsetsRetrievalStrategy> {
+                let Some(field_info) = field_infos.field_info(field) else {
+                    let message = format!("FieldInfo is null for field: {field}");
+                    return Arc::new(
+                        move |_: &mut dyn MatchesIterator, _: &dyn FieldValueProvider| {
+                            Err(LuceneError::from(std::io::Error::other(message.clone())))
+                        },
                     );
-                    Arc::new(move |_: &mut dyn MatchesIterator, _: &dyn FieldValueProvider| {
-                        Err(LuceneError::from(std::io::Error::other(message.clone())))
-                    })
+                };
+
+                match field_info.get_index_options() {
+                    IndexOptions::DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS => {
+                        Arc::new(OffsetsFromMatchIterator::new(
+                            field,
+                            OffsetsFromPositions::new(field, Arc::clone(&analyzer)),
+                        ))
+                    }
+                    IndexOptions::DOCS_AND_FREQS_AND_POSITIONS => {
+                        Arc::new(OffsetsFromPositions::new(field, Arc::clone(&analyzer)))
+                    }
+                    IndexOptions::DOCS_AND_CUSTOM_FREQS
+                    | IndexOptions::DOCS_AND_FREQS
+                    | IndexOptions::DOCS => {
+                        // By default use overlapping offsets from tokens.
+                        Arc::new(OffsetsFromTokens::new(field, Arc::clone(&analyzer)))
+                    }
+                    other => {
+                        let message = format!(
+                            "Field is indexed without positions and/or offsets: {field}, {other:?}"
+                        );
+                        Arc::new(
+                            move |_: &mut dyn MatchesIterator, _: &dyn FieldValueProvider| {
+                                Err(LuceneError::from(std::io::Error::other(message.clone())))
+                            },
+                        )
+                    }
                 }
-            }
-        }))
+            },
+        ))
     }
 }
 
@@ -512,16 +546,17 @@ impl Inner {
         let mut reader = current_context.leaf_reader();
         for &doc_id in id_block {
             while doc_id >= current_context.doc_base() + reader.max_doc() {
-                current_context = ctx
-                    .next()
-                    .ok_or_else(|| LuceneError::unchecked("java.util.NoSuchElementException", ""))?;
+                current_context = ctx.next().ok_or_else(|| {
+                    LuceneError::unchecked("java.util.NoSuchElementException", "")
+                })?;
                 reader = current_context.leaf_reader();
             }
 
             let context_relative_doc_id = doc_id - current_context.doc_base();
 
             // Only preload fields we may potentially need.
-            let mut field_visitor = StoredFieldsVisitor::new(Arc::clone(&this.should_load_stored_field));
+            let mut field_visitor =
+                StoredFieldsVisitor::new(Arc::clone(&this.should_load_stored_field));
             let stored_fields = reader.stored_fields()?;
             stored_fields.document_with_visitor(context_relative_doc_id, &mut field_visitor)?;
 
@@ -723,4 +758,3 @@ impl StoredFieldVisitor for StoredFieldsVisitor {
         Ok(())
     }
 }
-

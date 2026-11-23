@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `ArcDistance.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -85,11 +84,19 @@ impl DistanceStyle for ArcDistance {
         plane.find_arc_distance_points(planet_model, distance_value, start_point, bounds)
     }
 
-    fn find_minimum_arc_distance(&self, _planet_model: &PlanetModel, distance_value: f64) -> Result<f64> {
+    fn find_minimum_arc_distance(
+        &self,
+        _planet_model: &PlanetModel,
+        distance_value: f64,
+    ) -> Result<f64> {
         Ok(distance_value)
     }
 
-    fn find_maximum_arc_distance(&self, _planet_model: &PlanetModel, distance_value: f64) -> Result<f64> {
+    fn find_maximum_arc_distance(
+        &self,
+        _planet_model: &PlanetModel,
+        distance_value: f64,
+    ) -> Result<f64> {
         Ok(distance_value)
     }
 }

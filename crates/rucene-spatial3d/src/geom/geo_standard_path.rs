@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoStandardPath.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -54,7 +54,12 @@ use super::{d2s, iae, ise, java_min, list_hash_code, list_to_string, npe, rte};
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoStandardPath`. The path
 /// components (segments, endpoints and tree nodes) are shared [`Arc`]s, as
 /// Java's object references; there are no reference cycles.
-pub(crate) struct GeoStandardPath {
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct GeoStandardPath {
     planet_model: Arc<PlanetModel>,
     /// The cutoff angle (width).
     cutoff_angle: f64,
@@ -79,7 +84,11 @@ impl GeoStandardPath {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an illegal path.
-    pub fn new(planet_model: &Arc<PlanetModel>, max_cutoff_angle: f64, path_points: &[GeoPoint]) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        max_cutoff_angle: f64,
+        path_points: &[GeoPoint],
+    ) -> Result<Self> {
         let mut s = Self::new_empty(planet_model, max_cutoff_angle)?;
         s.points.extend_from_slice(path_points);
         s.done()?;
@@ -100,8 +109,8 @@ impl GeoStandardPath {
         Ok(Self {
             planet_model: planet_model.clone(),
             cutoff_angle: max_cutoff_angle,
-            cos_angle: max_cutoff_angle.cos(),
-            sin_angle: max_cutoff_angle.sin(),
+            cos_angle: java_math::cos(max_cutoff_angle),
+            sin_angle: java_math::sin(max_cutoff_angle),
             points: Vec::new(),
             root_component: None,
             edge_points: None,
@@ -119,7 +128,8 @@ impl GeoStandardPath {
         if self.is_done {
             return Err(ise("Can't call addPoint() if done() already called"));
         }
-        self.points.push(GeoPoint::new_lat_lon(&self.planet_model, lat, lon)?);
+        self.points
+            .push(GeoPoint::new_lat_lon(&self.planet_model, lat, lon)?);
         Ok(())
     }
 
@@ -184,8 +194,16 @@ impl GeoStandardPath {
             let upper_point = GeoPoint::new_lat_lon(pm, upper_lat, upper_lon)?;
             let lower_point = GeoPoint::new_lat_lon(pm, lower_lat, lower_lon)?;
             let point = self.points[0].clone();
-            let normal_plane = Plane::construct_normalized_z_plane_points(&[&upper_point, &lower_point, &point]);
-            let only_endpoint = CircleSegmentEndpoint::new_normal(pm, None, point, normal_plane.as_ref(), &upper_point, &lower_point)?;
+            let normal_plane =
+                Plane::construct_normalized_z_plane_points(&[&upper_point, &lower_point, &point]);
+            let only_endpoint = CircleSegmentEndpoint::new_normal(
+                pm,
+                None,
+                point,
+                normal_plane.as_ref(),
+                &upper_point,
+                &lower_point,
+            )?;
             let edge = only_endpoint
                 .circle_plane
                 .as_ref()
@@ -273,7 +291,12 @@ impl GeoStandardPath {
         Ok(ds.from_aggregation_form(root.path_delta_distance(ds, x, y, z)?))
     }
 
-    fn distance_bounds(&self, bounds: &mut dyn Bounds, _ds: &dyn DistanceStyle, _distance_value: f64) -> Result<()> {
+    fn distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        _ds: &dyn DistanceStyle,
+        _distance_value: f64,
+    ) -> Result<()> {
         self.get_bounds(bounds);
         Ok(())
     }
@@ -293,7 +316,9 @@ impl GeoStandardPath {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(super::dhash(self.cutoff_angle));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.cutoff_angle));
         result = result
             .wrapping_mul(31)
             .wrapping_add(list_hash_code(&self.points, |p| p.java_hash_code()));
@@ -301,19 +326,34 @@ impl GeoStandardPath {
     }
 }
 
-impl_geo_base_area_shape_common!(GeoStandardPath, "org.apache.lucene.spatial3d.geom.GeoStandardPath");
+impl_geo_base_area_shape_common!(
+    GeoStandardPath,
+    "org.apache.lucene.spatial3d.geom.GeoStandardPath"
+);
 impl_geo_base_area_relationship!(GeoStandardPath);
 impl_geo_base_distance_shape!(GeoStandardPath);
 
 impl GeoPath for GeoStandardPath {
-    fn compute_path_center_distance_xyz(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn compute_path_center_distance_xyz(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         let Some(root) = &self.root_component else {
             return Ok(f64::INFINITY);
         };
         Ok(ds.from_aggregation_form(root.path_center_distance(ds, x, y, z)?))
     }
 
-    fn compute_nearest_distance_xyz(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn compute_nearest_distance_xyz(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         let Some(root) = &self.root_component else {
             return Ok(f64::INFINITY);
         };
@@ -352,7 +392,12 @@ impl GeoShape for GeoStandardPath {
             .collect()
     }
 
-    fn intersects(&self, plane: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        plane: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let Some(root) = &self.root_component else {
             return false;
         };
@@ -428,7 +473,13 @@ pub(crate) trait PathComponent: Send + Sync + fmt::Display {
     /// `distance(DistanceStyle, double, double, double)`.
     fn distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64>;
     /// `nearestDistance(DistanceStyle, double, double, double)`.
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>>;
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>>;
     /// `pathDistance(DistanceStyle, double, double, double)`.
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64>;
     /// `pathDeltaDistance(DistanceStyle, double, double, double)`.
@@ -440,7 +491,13 @@ pub(crate) trait PathComponent: Send + Sync + fmt::Display {
     /// `outsideDistance(DistanceStyle, double, double, double)`.
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64;
     /// `intersects(Plane, XYZBounds, GeoPoint[], Membership[])`.
-    fn intersects(&self, p: &Plane, plane_bounds: Option<&XYZBounds>, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool;
+    fn intersects(
+        &self,
+        p: &Plane,
+        plane_bounds: Option<&XYZBounds>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool;
     /// `intersects(GeoShape)`.
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool;
     /// `getBounds(Bounds)`.
@@ -477,7 +534,11 @@ impl PathNode {
         let mut bounds = XYZBounds::new();
         child1.get_bounds(&mut bounds);
         child2.get_bounds(&mut bounds);
-        Self { child1, child2, bounds }
+        Self {
+            child1,
+            child2,
+            bounds,
+        }
     }
 }
 
@@ -521,25 +582,40 @@ impl PathComponent for PathNode {
         Ok(java_min(child1_distance, child2_distance))
     }
 
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         let first_child_distance = self.child1.nearest_distance(ds, x, y, z)?;
         let second_child_distance = self.child2.nearest_distance(ds, x, y, z)?;
         let (Some(first), Some(second)) = (first_child_distance, second_child_distance) else {
-            return Ok(if first_child_distance.is_none() { second_child_distance } else { first_child_distance });
+            return Ok(if first_child_distance.is_none() {
+                second_child_distance
+            } else {
+                first_child_distance
+            });
         };
-        Ok(Some(if first.path_center_distance < second.path_center_distance {
-            first
-        } else if second.path_center_distance < first.path_center_distance {
-            second
-        } else if first.distance_along_path < second.distance_along_path {
-            first
-        } else {
-            second
-        }))
+        Ok(Some(
+            if first.path_center_distance < second.path_center_distance {
+                first
+            } else if second.path_center_distance < first.path_center_distance {
+                second
+            } else if first.distance_along_path < second.distance_along_path {
+                first
+            } else {
+                second
+            },
+        ))
     }
 
     fn full_path_distance(&self, ds: &dyn DistanceStyle) -> f64 {
-        ds.aggregate_distances(&[self.child1.full_path_distance(ds), self.child2.full_path_distance(ds)])
+        ds.aggregate_distances(&[
+            self.child1.full_path_distance(ds),
+            self.child2.full_path_distance(ds),
+        ])
     }
 
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
@@ -574,17 +650,29 @@ impl PathComponent for PathNode {
     }
 
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
-        java_min(self.child1.outside_distance(ds, x, y, z), self.child2.outside_distance(ds, x, y, z))
+        java_min(
+            self.child1.outside_distance(ds, x, y, z),
+            self.child2.outside_distance(ds, x, y, z),
+        )
     }
 
-    fn intersects(&self, p: &Plane, plane_bounds: Option<&XYZBounds>, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        plane_bounds: Option<&XYZBounds>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         if let Some(pb) = plane_bounds {
             if !pb.overlaps(&self.bounds) {
                 return false;
             }
         }
-        self.child1.intersects(p, plane_bounds, notable_points, bounds)
-            || self.child2.intersects(p, plane_bounds, notable_points, bounds)
+        self.child1
+            .intersects(p, plane_bounds, notable_points, bounds)
+            || self
+                .child2
+                .intersects(p, plane_bounds, notable_points, bounds)
     }
 
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
@@ -626,7 +714,11 @@ pub(crate) struct BaseSegmentEndpoint {
 }
 
 impl BaseSegmentEndpoint {
-    fn new(planet_model: &Arc<PlanetModel>, previous: Option<Arc<dyn PathComponent>>, point: GeoPoint) -> Self {
+    fn new(
+        planet_model: &Arc<PlanetModel>,
+        previous: Option<Arc<dyn PathComponent>>,
+        point: GeoPoint,
+    ) -> Self {
         Self {
             planet_model: planet_model.clone(),
             previous,
@@ -637,11 +729,20 @@ impl BaseSegmentEndpoint {
     fn get_starting_distance(&self, ds: &dyn DistanceStyle) -> f64 {
         match &self.previous {
             None => ds.to_aggregation_form(0.0),
-            Some(previous) => ds.aggregate_distances(&[previous.get_starting_distance(ds), previous.full_path_distance(ds)]),
+            Some(previous) => ds.aggregate_distances(&[
+                previous.get_starting_distance(ds),
+                previous.full_path_distance(ds),
+            ]),
         }
     }
 
-    fn distance(this: &dyn PathComponent, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn distance(
+        this: &dyn PathComponent,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         if !this.is_within_xyz(x, y, z) {
             return Ok(f64::INFINITY);
         }
@@ -650,7 +751,13 @@ impl BaseSegmentEndpoint {
         Ok(ds.aggregate_distances(&[starting_distance, path_distance]))
     }
 
-    fn nearest_distance(this: &dyn PathComponent, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        this: &dyn PathComponent,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         if !this.is_within_section_xyz(x, y, z) {
             return Ok(None);
         }
@@ -667,7 +774,14 @@ impl BaseSegmentEndpoint {
         ds.to_aggregation_form(0.0)
     }
 
-    fn path_delta_distance(&self, this: &dyn PathComponent, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+    fn path_delta_distance(
+        &self,
+        this: &dyn PathComponent,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
         if !this.is_within_xyz(x, y, z) {
             return f64::INFINITY;
         }
@@ -675,21 +789,41 @@ impl BaseSegmentEndpoint {
         ds.aggregate_distances(&[the_distance, the_distance])
     }
 
-    fn path_distance(&self, this: &dyn PathComponent, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+    fn path_distance(
+        &self,
+        this: &dyn PathComponent,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
         if !this.is_within_xyz(x, y, z) {
             return f64::INFINITY;
         }
         ds.to_aggregation_form(ds.compute_distance_xyz(&self.point, x, y, z))
     }
 
-    fn nearest_path_distance(this: &dyn PathComponent, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+    fn nearest_path_distance(
+        this: &dyn PathComponent,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
         if !this.is_within_section_xyz(x, y, z) {
             return f64::INFINITY;
         }
         ds.to_aggregation_form(0.0)
     }
 
-    fn path_center_distance(&self, this: &dyn PathComponent, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+    fn path_center_distance(
+        &self,
+        this: &dyn PathComponent,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
         if !this.is_within_section_xyz(x, y, z) {
             return f64::INFINITY;
         }
@@ -742,25 +876,43 @@ impl PathComponent for BaseSegmentEndpoint {
     fn distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         BaseSegmentEndpoint::distance(self, ds, x, y, z)
     }
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         BaseSegmentEndpoint::nearest_distance(self, ds, x, y, z)
     }
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         Ok(BaseSegmentEndpoint::path_distance(self, self, ds, x, y, z))
     }
     fn path_delta_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        Ok(BaseSegmentEndpoint::path_delta_distance(self, self, ds, x, y, z))
+        Ok(BaseSegmentEndpoint::path_delta_distance(
+            self, self, ds, x, y, z,
+        ))
     }
     fn nearest_path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        Ok(BaseSegmentEndpoint::nearest_path_distance(self, ds, x, y, z))
+        Ok(BaseSegmentEndpoint::nearest_path_distance(
+            self, ds, x, y, z,
+        ))
     }
     fn path_center_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        Ok(BaseSegmentEndpoint::path_center_distance(self, self, ds, x, y, z))
+        Ok(BaseSegmentEndpoint::path_center_distance(
+            self, self, ds, x, y, z,
+        ))
     }
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
         BaseSegmentEndpoint::outside_distance(self, ds, x, y, z)
     }
-    fn intersects(&self, _p: &Plane, _plane_bounds: Option<&XYZBounds>, _notable_points: &[GeoPoint], _bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        _p: &Plane,
+        _plane_bounds: Option<&XYZBounds>,
+        _notable_points: &[GeoPoint],
+        _bounds: &[&dyn Membership],
+    ) -> bool {
         false
     }
     fn intersects_shape(&self, _geo_shape: &dyn GeoShape) -> bool {
@@ -799,7 +951,8 @@ impl CircleSegmentEndpoint {
         upper_point: &GeoPoint,
         lower_point: &GeoPoint,
     ) -> Result<Self> {
-        let circle_plane = SidedPlane::construct_sided_plane_from_two_points(&point, upper_point, lower_point)?;
+        let circle_plane =
+            SidedPlane::construct_sided_plane_from_two_points(&point, upper_point, lower_point)?;
         debug_assert!(circle_plane.is_within(&point));
         Ok(Self {
             base: BaseSegmentEndpoint::new(planet_model, previous, point),
@@ -862,7 +1015,13 @@ impl PathComponent for CircleSegmentEndpoint {
     fn distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         BaseSegmentEndpoint::distance(self, ds, x, y, z)
     }
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         BaseSegmentEndpoint::nearest_distance(self, ds, x, y, z)
     }
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
@@ -872,7 +1031,9 @@ impl PathComponent for CircleSegmentEndpoint {
         Ok(self.base.path_delta_distance(self, ds, x, y, z))
     }
     fn nearest_path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        Ok(BaseSegmentEndpoint::nearest_path_distance(self, ds, x, y, z))
+        Ok(BaseSegmentEndpoint::nearest_path_distance(
+            self, ds, x, y, z,
+        ))
     }
     fn path_center_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         Ok(self.base.path_center_distance(self, ds, x, y, z))
@@ -880,8 +1041,15 @@ impl PathComponent for CircleSegmentEndpoint {
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
         self.base.outside_distance(ds, x, y, z)
     }
-    fn intersects(&self, p: &Plane, _plane_bounds: Option<&XYZBounds>, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
-        self.plane().intersects(&self.base.planet_model, p, notable_points, &[], bounds, &[])
+    fn intersects(
+        &self,
+        p: &Plane,
+        _plane_bounds: Option<&XYZBounds>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        self.plane()
+            .intersects(&self.base.planet_model, p, notable_points, &[], bounds, &[])
     }
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
         geo_shape.intersects(self.plane(), &[], NO_BOUNDS)
@@ -919,7 +1087,13 @@ impl CutoffSingleCircleSegmentEndpoint {
         top_edge_point: &GeoPoint,
         bottom_edge_point: &GeoPoint,
     ) -> Result<Self> {
-        let circle = CircleSegmentEndpoint::new_two_points(planet_model, previous, point, top_edge_point, bottom_edge_point)?;
+        let circle = CircleSegmentEndpoint::new_two_points(
+            planet_model,
+            previous,
+            point,
+            top_edge_point,
+            bottom_edge_point,
+        )?;
         Ok(Self {
             circle,
             cutoff_plane: SidedPlane::new_inverse(cutoff_plane),
@@ -950,7 +1124,13 @@ impl PathComponent for CutoffSingleCircleSegmentEndpoint {
     fn distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         BaseSegmentEndpoint::distance(self, ds, x, y, z)
     }
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         BaseSegmentEndpoint::nearest_distance(self, ds, x, y, z)
     }
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
@@ -963,7 +1143,9 @@ impl PathComponent for CutoffSingleCircleSegmentEndpoint {
         if !self.is_within_section_xyz(x, y, z) {
             return Ok(f64::INFINITY);
         }
-        Ok(BaseSegmentEndpoint::nearest_path_distance(self, ds, x, y, z))
+        Ok(BaseSegmentEndpoint::nearest_path_distance(
+            self, ds, x, y, z,
+        ))
     }
     fn path_center_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         if !self.is_within_section_xyz(x, y, z) {
@@ -974,7 +1156,13 @@ impl PathComponent for CutoffSingleCircleSegmentEndpoint {
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
         self.circle.base.outside_distance(ds, x, y, z)
     }
-    fn intersects(&self, p: &Plane, _plane_bounds: Option<&XYZBounds>, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        _plane_bounds: Option<&XYZBounds>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         self.circle.plane().intersects(
             &self.circle.base.planet_model,
             p,
@@ -985,7 +1173,11 @@ impl PathComponent for CutoffSingleCircleSegmentEndpoint {
         )
     }
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
-        geo_shape.intersects(self.circle.plane(), &self.notable_points, &[&self.cutoff_plane])
+        geo_shape.intersects(
+            self.circle.plane(),
+            &self.notable_points,
+            &[&self.cutoff_plane],
+        )
     }
     fn get_bounds(&self, bounds: &mut dyn Bounds) {
         self.circle.circle_get_bounds(self, bounds);
@@ -1028,6 +1220,8 @@ pub(crate) struct CutoffDualCircleSegmentEndpoint {
 
 impl CutoffDualCircleSegmentEndpoint {
     #[allow(clippy::too_many_arguments)]
+    // Java's late-assigned locals.
+    #[allow(clippy::needless_late_init)]
     fn new(
         planet_model: &Arc<PlanetModel>,
         previous: Option<Arc<dyn PathComponent>>,
@@ -1042,25 +1236,59 @@ impl CutoffDualCircleSegmentEndpoint {
         let circle_plane1;
         let notable_points1;
         if !prev_cutoff_plane.is_within(current_ulhc) {
-            circle_plane1 = SidedPlane::construct_normalized_three_point_sided_plane(&point, prev_urhc, prev_lrhc, current_ulhc);
+            circle_plane1 = SidedPlane::construct_normalized_three_point_sided_plane(
+                &point,
+                prev_urhc,
+                prev_lrhc,
+                current_ulhc,
+            );
             notable_points1 = vec![prev_urhc.clone(), prev_lrhc.clone(), current_ulhc.clone()];
         } else if !prev_cutoff_plane.is_within(current_llhc) {
-            circle_plane1 = SidedPlane::construct_normalized_three_point_sided_plane(&point, prev_urhc, prev_lrhc, current_llhc);
+            circle_plane1 = SidedPlane::construct_normalized_three_point_sided_plane(
+                &point,
+                prev_urhc,
+                prev_lrhc,
+                current_llhc,
+            );
             notable_points1 = vec![prev_urhc.clone(), prev_lrhc.clone(), current_llhc.clone()];
         } else {
-            circle_plane1 = Some(SidedPlane::construct_sided_plane_from_two_points(&point, prev_urhc, prev_lrhc)?);
+            circle_plane1 = Some(SidedPlane::construct_sided_plane_from_two_points(
+                &point, prev_urhc, prev_lrhc,
+            )?);
             notable_points1 = vec![prev_urhc.clone(), prev_lrhc.clone()];
         }
         let circle_plane2;
         let notable_points2;
         if !next_cutoff_plane.is_within(prev_urhc) {
-            circle_plane2 = SidedPlane::construct_normalized_three_point_sided_plane(&point, current_ulhc, current_llhc, prev_urhc);
-            notable_points2 = vec![current_ulhc.clone(), current_llhc.clone(), prev_urhc.clone()];
+            circle_plane2 = SidedPlane::construct_normalized_three_point_sided_plane(
+                &point,
+                current_ulhc,
+                current_llhc,
+                prev_urhc,
+            );
+            notable_points2 = vec![
+                current_ulhc.clone(),
+                current_llhc.clone(),
+                prev_urhc.clone(),
+            ];
         } else if !next_cutoff_plane.is_within(prev_lrhc) {
-            circle_plane2 = SidedPlane::construct_normalized_three_point_sided_plane(&point, current_ulhc, current_llhc, prev_lrhc);
-            notable_points2 = vec![current_ulhc.clone(), current_llhc.clone(), prev_lrhc.clone()];
+            circle_plane2 = SidedPlane::construct_normalized_three_point_sided_plane(
+                &point,
+                current_ulhc,
+                current_llhc,
+                prev_lrhc,
+            );
+            notable_points2 = vec![
+                current_ulhc.clone(),
+                current_llhc.clone(),
+                prev_lrhc.clone(),
+            ];
         } else {
-            circle_plane2 = Some(SidedPlane::construct_sided_plane_from_two_points(&point, current_ulhc, current_llhc)?);
+            circle_plane2 = Some(SidedPlane::construct_sided_plane_from_two_points(
+                &point,
+                current_ulhc,
+                current_llhc,
+            )?);
             notable_points2 = vec![current_ulhc.clone(), current_llhc.clone()];
         }
         Ok(Self {
@@ -1091,7 +1319,9 @@ impl PathComponent for CutoffDualCircleSegmentEndpoint {
         self.c1().is_within(point) || self.c2().is_within(point)
     }
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
-        if !self.boundary_plane1.is_within_xyz(x, y, z) || !self.boundary_plane2.is_within_xyz(x, y, z) {
+        if !self.boundary_plane1.is_within_xyz(x, y, z)
+            || !self.boundary_plane2.is_within_xyz(x, y, z)
+        {
             return false;
         }
         self.c1().is_within_xyz(x, y, z) || self.c2().is_within_xyz(x, y, z)
@@ -1111,7 +1341,13 @@ impl PathComponent for CutoffDualCircleSegmentEndpoint {
     fn distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         BaseSegmentEndpoint::distance(self, ds, x, y, z)
     }
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         BaseSegmentEndpoint::nearest_distance(self, ds, x, y, z)
     }
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
@@ -1124,7 +1360,9 @@ impl PathComponent for CutoffDualCircleSegmentEndpoint {
         if !self.is_within_section_xyz(x, y, z) {
             return Ok(f64::INFINITY);
         }
-        Ok(BaseSegmentEndpoint::nearest_path_distance(self, ds, x, y, z))
+        Ok(BaseSegmentEndpoint::nearest_path_distance(
+            self, ds, x, y, z,
+        ))
     }
     fn path_center_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         if !self.is_within_section_xyz(x, y, z) {
@@ -1135,11 +1373,30 @@ impl PathComponent for CutoffDualCircleSegmentEndpoint {
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
         self.base.outside_distance(ds, x, y, z)
     }
-    fn intersects(&self, p: &Plane, _plane_bounds: Option<&XYZBounds>, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        _plane_bounds: Option<&XYZBounds>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let pm = &self.base.planet_model;
         let cutoff: [&dyn Membership; 2] = [&self.boundary_plane1, &self.boundary_plane2];
-        self.c1().intersects(pm, p, notable_points, &self.notable_points1, bounds, &cutoff)
-            || self.c2().intersects(pm, p, notable_points, &self.notable_points2, bounds, &cutoff)
+        self.c1().intersects(
+            pm,
+            p,
+            notable_points,
+            &self.notable_points1,
+            bounds,
+            &cutoff,
+        ) || self.c2().intersects(
+            pm,
+            p,
+            notable_points,
+            &self.notable_points2,
+            bounds,
+            &cutoff,
+        )
     }
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
         let cutoff: [&dyn Membership; 2] = [&self.boundary_plane1, &self.boundary_plane2];
@@ -1149,7 +1406,12 @@ impl PathComponent for CutoffDualCircleSegmentEndpoint {
     fn get_bounds(&self, bounds: &mut dyn Bounds) {
         self.base.get_bounds(self, bounds);
         let pm = &self.base.planet_model;
-        let (c1, c2, b1, b2) = (self.c1(), self.c2(), &self.boundary_plane1, &self.boundary_plane2);
+        let (c1, c2, b1, b2) = (
+            self.c1(),
+            self.c2(),
+            &self.boundary_plane1,
+            &self.boundary_plane2,
+        );
         bounds.add_plane(pm, c1, &[b1, b2]);
         bounds.add_plane(pm, c2, &[b1, b2]);
         bounds.add_plane(pm, b1, &[c1, b2]);
@@ -1223,8 +1485,10 @@ impl PathSegment {
         plane_bounding_offset: f64,
     ) -> Result<Self> {
         let pm = planet_model;
-        let upper_connecting_plane = SidedPlane::new_vector_d(&start, &normalized_connecting_plane, -plane_bounding_offset)?;
-        let lower_connecting_plane = SidedPlane::new_vector_d(&start, &normalized_connecting_plane, plane_bounding_offset)?;
+        let upper_connecting_plane =
+            SidedPlane::new_vector_d(&start, &normalized_connecting_plane, -plane_bounding_offset)?;
+        let lower_connecting_plane =
+            SidedPlane::new_vector_d(&start, &normalized_connecting_plane, plane_bounding_offset)?;
         debug_assert!(upper_connecting_plane.is_within(&start));
         debug_assert!(upper_connecting_plane.is_within(&end));
         debug_assert!(lower_connecting_plane.is_within(&start));
@@ -1241,17 +1505,39 @@ impl PathSegment {
         let end_side: [&dyn Membership; 1] = [&end_cutoff_plane];
         let one = |points: Vec<GeoPoint>| -> Result<GeoPoint> {
             if points.is_empty() {
-                return Err(iae("Some segment boundary points are off the ellipsoid; path too wide"));
+                return Err(iae(
+                    "Some segment boundary points are off the ellipsoid; path too wide",
+                ));
             }
             if points.len() > 1 {
                 return Err(iae("Ambiguous boundary points; path too short"));
             }
             Ok(points.into_iter().next().unwrap_or_else(|| npe()))
         };
-        let ulhc = one(upper_connecting_plane.find_intersections_with(pm, &start_cutoff_plane, &lower_side, &end_side))?;
-        let urhc = one(upper_connecting_plane.find_intersections_with(pm, &end_cutoff_plane, &lower_side, &start_side))?;
-        let llhc = one(lower_connecting_plane.find_intersections_with(pm, &start_cutoff_plane, &upper_side, &end_side))?;
-        let lrhc = one(lower_connecting_plane.find_intersections_with(pm, &end_cutoff_plane, &upper_side, &start_side))?;
+        let ulhc = one(upper_connecting_plane.find_intersections_with(
+            pm,
+            &start_cutoff_plane,
+            &lower_side,
+            &end_side,
+        ))?;
+        let urhc = one(upper_connecting_plane.find_intersections_with(
+            pm,
+            &end_cutoff_plane,
+            &lower_side,
+            &start_side,
+        ))?;
+        let llhc = one(lower_connecting_plane.find_intersections_with(
+            pm,
+            &start_cutoff_plane,
+            &upper_side,
+            &end_side,
+        ))?;
+        let lrhc = one(lower_connecting_plane.find_intersections_with(
+            pm,
+            &end_cutoff_plane,
+            &upper_side,
+            &start_side,
+        ))?;
         Ok(Self {
             planet_model: pm.clone(),
             previous,
@@ -1275,7 +1561,10 @@ impl PathSegment {
     fn compute_starting_distance(&self, ds: &dyn DistanceStyle) -> f64 {
         match &self.previous {
             None => 0.0,
-            Some(previous) => ds.aggregate_distances(&[previous.get_starting_distance(ds), previous.full_path_distance(ds)]),
+            Some(previous) => ds.aggregate_distances(&[
+                previous.get_starting_distance(ds),
+                previous.full_path_distance(ds),
+            ]),
         }
     }
 
@@ -1284,28 +1573,55 @@ impl PathSegment {
         let perp_x = p.y * z - p.z * y;
         let perp_y = p.z * x - p.x * z;
         let perp_z = p.x * y - p.y * x;
-        let magnitude = (perp_x * perp_x + perp_y * perp_y + perp_z * perp_z).sqrt();
+        let magnitude = java_math::sqrt(perp_x * perp_x + perp_y * perp_y + perp_z * perp_z);
         (perp_x, perp_y, perp_z, magnitude)
     }
 
     /// The point of the connecting plane nearest the given point, shared by
     /// the distance methods.
     #[allow(clippy::too_many_arguments)]
-    fn the_point(&self, x: f64, y: f64, z: f64, magnitude: f64, perp_x: f64, perp_y: f64, perp_z: f64) -> Result<GeoPoint> {
+    // Java's branches, kept as written.
+    #[allow(clippy::if_same_then_else)]
+    fn the_point(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        magnitude: f64,
+        perp_x: f64,
+        perp_y: f64,
+        perp_z: f64,
+    ) -> Result<GeoPoint> {
         let norm_factor = 1.0 / magnitude;
-        let normalized_perp_plane = Plane::new(perp_x * norm_factor, perp_y * norm_factor, perp_z * norm_factor, 0.0);
+        let normalized_perp_plane = Plane::new(
+            perp_x * norm_factor,
+            perp_y * norm_factor,
+            perp_z * norm_factor,
+            0.0,
+        );
         let intersection_points = self
             .normalized_connecting_plane
             .find_intersections(&self.planet_model, &normalized_perp_plane, NO_BOUNDS)
             .unwrap_or_else(|| npe());
-        let world = || rte(format!("Can't find world intersection for point x={} y={} z={}", d2s(x), d2s(y), d2s(z)));
+        let world = || {
+            rte(format!(
+                "Can't find world intersection for point x={} y={} z={}",
+                d2s(x),
+                d2s(y),
+                d2s(z)
+            ))
+        };
         if intersection_points.is_empty() {
             Err(world())
         } else if intersection_points.len() == 1 {
             Ok(intersection_points[0].clone())
-        } else if self.start_cutoff_plane.is_within(&intersection_points[0]) && self.end_cutoff_plane.is_within(&intersection_points[0]) {
+        } else if self.start_cutoff_plane.is_within(&intersection_points[0])
+            && self.end_cutoff_plane.is_within(&intersection_points[0])
+        {
             Ok(intersection_points[0].clone())
-        } else if self.start_cutoff_plane.is_within(&intersection_points[1]) && self.end_cutoff_plane.is_within(&intersection_points[1]) {
+        } else if self.start_cutoff_plane.is_within(&intersection_points[1])
+            && self.end_cutoff_plane.is_within(&intersection_points[1])
+        {
             Ok(intersection_points[1].clone())
         } else {
             Err(world())
@@ -1315,7 +1631,12 @@ impl PathSegment {
 
 impl PathComponent for PathSegment {
     fn full_path_distance(&self, ds: &dyn DistanceStyle) -> f64 {
-        ds.to_aggregation_form(ds.compute_distance_xyz(&self.start, self.end.x, self.end.y, self.end.z))
+        ds.to_aggregation_form(ds.compute_distance_xyz(
+            &self.start,
+            self.end.x,
+            self.end.y,
+            self.end.z,
+        ))
     }
 
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
@@ -1334,17 +1655,26 @@ impl PathComponent for PathSegment {
     }
 
     fn is_within_section_xyz(&self, x: f64, y: f64, z: f64) -> bool {
-        self.start_cutoff_plane.is_within_xyz(x, y, z) && self.end_cutoff_plane.is_within_xyz(x, y, z)
+        self.start_cutoff_plane.is_within_xyz(x, y, z)
+            && self.end_cutoff_plane.is_within_xyz(x, y, z)
     }
 
     fn get_starting_distance(&self, ds: &dyn DistanceStyle) -> f64 {
         let key = style_key(ds);
-        let cached = self.start_distance_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied();
+        let cached = self
+            .start_distance_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .copied();
         match cached {
             Some(d) => d,
             None => {
                 let dist = self.compute_starting_distance(ds);
-                self.start_distance_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, dist);
+                self.start_distance_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key, dist);
                 dist
             }
         }
@@ -1359,7 +1689,13 @@ impl PathComponent for PathSegment {
         Ok(ds.from_aggregation_form(ds.aggregate_distances(&[starting_distance, path_distance])))
     }
 
-    fn nearest_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<Option<DistancePair>> {
+    fn nearest_distance(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Option<DistancePair>> {
         if !self.is_within_section_xyz(x, y, z) {
             return Ok(None);
         }
@@ -1393,7 +1729,12 @@ impl PathComponent for PathSegment {
             return Ok(ds.to_aggregation_form(0.0));
         }
         let the_point = self.the_point(x, y, z, magnitude, perp_x, perp_y, perp_z)?;
-        Ok(ds.to_aggregation_form(ds.compute_distance_xyz(&self.start, the_point.x, the_point.y, the_point.z)))
+        Ok(ds.to_aggregation_form(ds.compute_distance_xyz(
+            &self.start,
+            the_point.x,
+            the_point.y,
+            the_point.z,
+        )))
     }
 
     fn path_delta_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
@@ -1421,7 +1762,12 @@ impl PathComponent for PathSegment {
         let the_point = self.the_point(x, y, z, magnitude, perp_x, perp_y, perp_z)?;
         Ok(ds.aggregate_distances(&[
             ds.to_aggregation_form(ds.compute_distance_xyz(&the_point, x, y, z)),
-            ds.to_aggregation_form(ds.compute_distance_xyz(&self.start, the_point.x, the_point.y, the_point.z)),
+            ds.to_aggregation_form(ds.compute_distance_xyz(
+                &self.start,
+                the_point.x,
+                the_point.y,
+                the_point.z,
+            )),
         ]))
     }
 
@@ -1433,7 +1779,11 @@ impl PathComponent for PathSegment {
             x,
             y,
             z,
-            &[&self.lower_connecting_plane, &self.start_cutoff_plane, &self.end_cutoff_plane],
+            &[
+                &self.lower_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
         );
         let lower_distance = ds.compute_plane_distance_xyz(
             pm,
@@ -1441,7 +1791,11 @@ impl PathComponent for PathSegment {
             x,
             y,
             z,
-            &[&self.upper_connecting_plane, &self.start_cutoff_plane, &self.end_cutoff_plane],
+            &[
+                &self.upper_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
         );
         let start_distance = ds.compute_plane_distance_xyz(
             pm,
@@ -1449,7 +1803,11 @@ impl PathComponent for PathSegment {
             x,
             y,
             z,
-            &[&self.end_cutoff_plane, &self.lower_connecting_plane, &self.upper_connecting_plane],
+            &[
+                &self.end_cutoff_plane,
+                &self.lower_connecting_plane,
+                &self.upper_connecting_plane,
+            ],
         );
         let end_distance = ds.compute_plane_distance_xyz(
             pm,
@@ -1457,19 +1815,35 @@ impl PathComponent for PathSegment {
             x,
             y,
             z,
-            &[&self.start_cutoff_plane, &self.lower_connecting_plane, &self.upper_connecting_plane],
+            &[
+                &self.start_cutoff_plane,
+                &self.lower_connecting_plane,
+                &self.upper_connecting_plane,
+            ],
         );
         let ulhc_distance = ds.compute_distance_xyz(&self.ulhc, x, y, z);
         let urhc_distance = ds.compute_distance_xyz(&self.urhc, x, y, z);
         let llhc_distance = ds.compute_distance_xyz(&self.llhc, x, y, z);
         let lrhc_distance = ds.compute_distance_xyz(&self.lrhc, x, y, z);
         ds.to_aggregation_form(java_min(
-            java_min(java_min(upper_distance, lower_distance), java_min(start_distance, end_distance)),
-            java_min(java_min(ulhc_distance, urhc_distance), java_min(llhc_distance, lrhc_distance)),
+            java_min(
+                java_min(upper_distance, lower_distance),
+                java_min(start_distance, end_distance),
+            ),
+            java_min(
+                java_min(ulhc_distance, urhc_distance),
+                java_min(llhc_distance, lrhc_distance),
+            ),
         ))
     }
 
-    fn intersects(&self, p: &Plane, _plane_bounds: Option<&XYZBounds>, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        _plane_bounds: Option<&XYZBounds>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let pm = &self.planet_model;
         self.upper_connecting_plane.intersects(
             pm,
@@ -1477,14 +1851,22 @@ impl PathComponent for PathSegment {
             notable_points,
             &self.upper_connecting_plane_points,
             bounds,
-            &[&self.lower_connecting_plane, &self.start_cutoff_plane, &self.end_cutoff_plane],
+            &[
+                &self.lower_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
         ) || self.lower_connecting_plane.intersects(
             pm,
             p,
             notable_points,
             &self.lower_connecting_plane_points,
             bounds,
-            &[&self.upper_connecting_plane, &self.start_cutoff_plane, &self.end_cutoff_plane],
+            &[
+                &self.upper_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
         )
     }
 
@@ -1492,11 +1874,19 @@ impl PathComponent for PathSegment {
         geo_shape.intersects(
             &self.upper_connecting_plane,
             &self.upper_connecting_plane_points,
-            &[&self.lower_connecting_plane, &self.start_cutoff_plane, &self.end_cutoff_plane],
+            &[
+                &self.lower_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
         ) || geo_shape.intersects(
             &self.lower_connecting_plane,
             &self.lower_connecting_plane_points,
-            &[&self.upper_connecting_plane, &self.start_cutoff_plane, &self.end_cutoff_plane],
+            &[
+                &self.upper_connecting_plane,
+                &self.start_cutoff_plane,
+                &self.end_cutoff_plane,
+            ],
         )
     }
 
@@ -1529,7 +1919,11 @@ impl PathComponent for PathSegment {
 
 impl fmt::Display for PathSegment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PathSegment ({}, {}, {}, {})", self.ulhc, self.urhc, self.lrhc, self.llhc)
+        write!(
+            f,
+            "PathSegment ({}, {}, {}, {})",
+            self.ulhc, self.urhc, self.lrhc, self.llhc
+        )
     }
 }
 
@@ -1579,6 +1973,7 @@ impl TreeBuilder {
         let new_depth = self.depth_stack.pop().unwrap_or_else(|| npe()) + 1;
         let first_component = self.component_stack.pop().unwrap_or_else(|| npe());
         self.depth_stack.push(new_depth);
-        self.component_stack.push(Arc::new(PathNode::new(first_component, second_component)));
+        self.component_stack
+            .push(Arc::new(PathNode::new(first_component, second_component)));
     }
 }

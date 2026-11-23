@@ -24,11 +24,13 @@
 //! `readObject` is the closed table of the package's serializable classes
 //! (see [`StandardObjects`](super::standard_objects::StandardObjects)).
 //!
-//! **Divergence.** Java's `readClass` loads any `SerializableObject` class by
-//! name through `MethodHandles.lookup().findClass` (`SerializableObject.java`
-//! `readClass`), and `readObject` instantiates it reflectively; Rust has no
-//! reflection, so a class name resolves only to the package's own
-//! serializable classes, any other name failing as Java's
+//! Java's `readClass` loads any class by name through
+//! `MethodHandles.lookup().findClass` and checks it is a `SerializableObject`
+//! (`SerializableObject.java` `readClass`), and `readObject` instantiates it
+//! reflectively. Rust has no class path: a name resolves to the package's own
+//! serializable classes or to a class registered with
+//! [`register_class`](super::standard_objects::register_class) (the
+//! port's class path), and any other name fails as Java's
 //! `ClassNotFoundException` does. An `InvocationTargetException` is reported
 //! with Java's message (`null` detail) but without its cause.
 
@@ -56,7 +58,9 @@ use super::{ioe, JavaBitSet};
 /// package relies on: `getClass().getName()`, `equals(Object)` and
 /// `hashCode()`; `toString()` is [`fmt::Display`]. The `into_*` methods are
 /// Java's checked casts (`clazz.cast`, `instanceof`) of a deserialized object.
-pub trait SerializableObject: SerializableObjectCasts + Send + Sync + fmt::Display + 'static {
+pub trait SerializableObject:
+    SerializableObjectCasts + Send + Sync + fmt::Display + 'static
+{
     /// `write(OutputStream)`.
     ///
     /// # Errors
@@ -105,7 +109,9 @@ pub trait SerializableObject: SerializableObjectCasts + Send + Sync + fmt::Displ
     }
 
     /// `(GeoPointShape) this`, `None` when this is not a `GeoPointShape`.
-    fn into_geo_point_shape(self: Arc<Self>) -> Option<Arc<dyn crate::geom::geo_point_shape::GeoPointShape>> {
+    fn into_geo_point_shape(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn crate::geom::geo_point_shape::GeoPointShape>> {
         None
     }
 }
@@ -232,10 +238,7 @@ pub fn read_object_with_model_class(
 /// # Errors
 ///
 /// `IOException` wrapping what Java's reflection reports.
-pub fn read_object_class(
-    input: &mut dyn Read,
-    clazz: &str,
-) -> Result<Arc<dyn SerializableObject>> {
+pub fn read_object_class(input: &mut dyn Read, clazz: &str) -> Result<Arc<dyn SerializableObject>> {
     match standard_objects::new_instance(clazz, input) {
         standard_objects::Instantiation::Created(o) => Ok(o),
         standard_objects::Instantiation::NoSuchConstructor => Err(ioe(format!(
@@ -281,15 +284,30 @@ fn read_class(input: &mut dyn Read) -> Result<String> {
         }
     } else {
         let class_name = read_string(input)?;
-        if standard_objects::is_known_class(&class_name) {
-            Ok(class_name)
-        } else {
+        // Load without initializing and confirm the named class is actually a
+        // SerializableObject before it can be instantiated, so a crafted
+        // stream cannot load arbitrary classes.
+        let (class, message) = match standard_objects::find_class(&class_name) {
+            standard_objects::ClassLookup::Found => return Ok(class_name),
             // `ClassNotFoundException.getMessage()` is the class name.
-            Err(ioe(format!(
-                "Can't find or access class of correct type for deserialization: {}",
-                class_name
-            )))
-        }
+            standard_objects::ClassLookup::NotFound => {
+                ("java.lang.ClassNotFoundException", class_name.clone())
+            }
+            // `Class.asSubclass` throws `new ClassCastException(this.toString())`.
+            standard_objects::ClassLookup::NotSerializable => (
+                "java.lang.ClassCastException",
+                format!("class {}", class_name),
+            ),
+        };
+        Err(LuceneError::from(
+            rucene::store::java_nio_file::io_exception_with_cause(
+                format!(
+                    "Can't find or access class of correct type for deserialization: {}",
+                    message
+                ),
+                Some(LuceneError::unchecked(class, message)),
+            ),
+        ))
     }
 }
 
@@ -355,7 +373,10 @@ pub(crate) fn downcast_point(o: Arc<dyn SerializableObject>) -> Result<GeoPoint>
     let class = o.class_name();
     match o.into_any_arc().downcast::<GeoPoint>() {
         Ok(p) => Ok(Arc::unwrap_or_clone(p)),
-        Err(_) => Err(class_cast(class, "org.apache.lucene.spatial3d.geom.GeoPoint")),
+        Err(_) => Err(class_cast(
+            class,
+            "org.apache.lucene.spatial3d.geom.GeoPoint",
+        )),
     }
 }
 
@@ -383,9 +404,12 @@ pub fn read_polygon_array(
     planet_model: &Arc<PlanetModel>,
     input: &mut dyn Read,
 ) -> Result<Vec<Arc<dyn GeoPolygon>>> {
-    read_heterogeneous_array(planet_model, input, "org.apache.lucene.spatial3d.geom.GeoPolygon", |o| {
-        o.into_geo_polygon()
-    })
+    read_heterogeneous_array(
+        planet_model,
+        input,
+        "org.apache.lucene.spatial3d.geom.GeoPolygon",
+        |o| o.into_geo_polygon(),
+    )
 }
 
 /// `writeHeterogeneousArray(OutputStream, SerializableObject[])`.

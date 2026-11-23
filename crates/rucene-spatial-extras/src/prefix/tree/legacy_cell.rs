@@ -164,7 +164,10 @@ pub fn legacy_read_leaf_adjust<C: LegacyCell + ?Sized>(cell: &C) {
 }
 
 /// The body of `LegacyCell.getTokenBytesWithLeaf(BytesRef result)`.
-pub fn legacy_get_token_bytes_with_leaf<C: LegacyCell + ?Sized>(cell: &C, result: Option<BytesRef>) -> BytesRef {
+pub fn legacy_get_token_bytes_with_leaf<C: LegacyCell + ?Sized>(
+    cell: &C,
+    result: Option<BytesRef>,
+) -> BytesRef {
     let mut result = legacy_get_token_bytes_no_leaf(cell, result);
     let (is_leaf, level) = {
         let s = cell.state();
@@ -185,7 +188,10 @@ pub fn legacy_get_token_bytes_with_leaf<C: LegacyCell + ?Sized>(cell: &C, result
 }
 
 /// The body of `LegacyCell.getTokenBytesNoLeaf(BytesRef result)`.
-pub fn legacy_get_token_bytes_no_leaf<C: LegacyCell + ?Sized>(cell: &C, result: Option<BytesRef>) -> BytesRef {
+pub fn legacy_get_token_bytes_no_leaf<C: LegacyCell + ?Sized>(
+    cell: &C,
+    result: Option<BytesRef>,
+) -> BytesRef {
     let s = cell.state();
     let mut result = result.unwrap_or_else(|| BytesRef::new(Vec::new()));
     result.bytes.clear();
@@ -263,7 +269,14 @@ pub fn legacy_compare_to_no_leaf<C: LegacyCell + ?Sized>(this: &C, from_cell: &d
 
 /// `LegacyCell.compare(byte[] aBytes, int aUpto, int a_length, byte[] bBytes,
 /// int bUpto, int b_length)`.
-pub fn compare(a_bytes: &[u8], mut a_upto: usize, a_length: usize, b_bytes: &[u8], mut b_upto: usize, b_length: usize) -> i32 {
+pub fn compare(
+    a_bytes: &[u8],
+    mut a_upto: usize,
+    a_length: usize,
+    b_bytes: &[u8],
+    mut b_upto: usize,
+    b_length: usize,
+) -> i32 {
     let a_stop = a_upto + a_length.min(b_length);
     while a_upto < a_stop {
         let a_byte = i32::from(a_bytes[a_upto]);
@@ -282,7 +295,8 @@ pub fn compare(a_bytes: &[u8], mut a_upto: usize, a_length: usize, b_bytes: &[u8
 /// The body of `LegacyCell.equals(Object obj)`: this method isn't
 /// "normally" called; just in asserts/tests.
 pub fn legacy_equals<C: LegacyCell + ?Sized>(this: &C, cell: &dyn Cell) -> bool {
-    this.get_token_bytes_with_leaf(None).bytes_equals(&cell.get_token_bytes_with_leaf(None))
+    this.get_token_bytes_with_leaf(None)
+        .bytes_equals(&cell.get_token_bytes_with_leaf(None))
 }
 
 /// The body of `LegacyCell.hashCode()`.
@@ -294,8 +308,9 @@ pub fn legacy_hash_code<C: LegacyCell + ?Sized>(this: &C) -> i32 {
 /// called; just in asserts/tests.
 pub fn legacy_to_string<C: LegacyCell + ?Sized>(this: &C) -> String {
     let b = this.get_token_bytes_with_leaf(None);
-    b.utf8_to_string()
-        .unwrap_or_else(|_| String::from_utf8_lossy(&b.bytes[b.offset..b.offset + b.length]).into_owned())
+    b.utf8_to_string().unwrap_or_else(|_| {
+        String::from_utf8_lossy(&b.bytes[b.offset..b.offset + b.length]).into_owned()
+    })
 }
 
 /// Implements the [`Cell`] methods every legacy cell shares with
@@ -339,7 +354,9 @@ macro_rules! legacy_cell_common {
             self
         }
 
-        fn as_cell_can_prune(&self) -> Option<&dyn $crate::prefix::tree::cell_can_prune::CellCanPrune> {
+        fn as_cell_can_prune(
+            &self,
+        ) -> Option<&dyn $crate::prefix::tree::cell_can_prune::CellCanPrune> {
             Some(self)
         }
     };

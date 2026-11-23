@@ -15,11 +15,11 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `NormalSquaredDistance.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
 use rucene::error::Result;
+use rucene::util::java_math;
 
 use super::distance_style::DistanceStyle;
 use super::geo_point::GeoPoint;
@@ -80,7 +80,7 @@ impl DistanceStyle for NormalSquaredDistance {
     }
 
     fn to_aggregation_form(&self, distance: f64) -> f64 {
-        distance.sqrt()
+        java_math::sqrt(distance)
     }
 
     fn from_aggregation_form(&self, aggregate_distance: f64) -> f64 {
@@ -98,11 +98,19 @@ impl DistanceStyle for NormalSquaredDistance {
         Err(ise(NO_REVERSE))
     }
 
-    fn find_minimum_arc_distance(&self, _planet_model: &PlanetModel, _distance_value: f64) -> Result<f64> {
+    fn find_minimum_arc_distance(
+        &self,
+        _planet_model: &PlanetModel,
+        _distance_value: f64,
+    ) -> Result<f64> {
         Err(ise(NO_REVERSE))
     }
 
-    fn find_maximum_arc_distance(&self, _planet_model: &PlanetModel, _distance_value: f64) -> Result<f64> {
+    fn find_maximum_arc_distance(
+        &self,
+        _planet_model: &PlanetModel,
+        _distance_value: f64,
+    ) -> Result<f64> {
         Err(ise(NO_REVERSE))
     }
 }

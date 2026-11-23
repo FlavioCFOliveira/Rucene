@@ -125,7 +125,10 @@ impl PolyshapeWriter {
             return Ok(());
         }
         enc.writer
-            .write_str(&format!("{{unkwnwon {}}}", LegacyShapeWriter::write_shape(shape)))
+            .write_str(&format!(
+                "{{unkwnwon {}}}",
+                LegacyShapeWriter::write_shape(shape)
+            ))
             .map_err(io_error)
     }
 }
@@ -145,7 +148,8 @@ impl ShapeWriter for PolyshapeWriter {
     /// in a `RuntimeException`, which cannot happen.
     fn to_string_of(&self, shape: &dyn Shape) -> String {
         let mut buffer = String::new();
-        ShapeWriter::write(self, &mut buffer, shape).unwrap_or_else(|e| panic!("java.lang.RuntimeException: {e}"));
+        ShapeWriter::write(self, &mut buffer, shape)
+            .unwrap_or_else(|e| panic!("java.lang.RuntimeException: {e}"));
         buffer
     }
 
@@ -165,7 +169,11 @@ pub struct Encoder<'a> {
 impl<'a> Encoder<'a> {
     /// `Encoder(Writer writer)`.
     pub fn new(writer: &'a mut dyn std::fmt::Write) -> Self {
-        Self { last_lat: 0, last_lng: 0, writer }
+        Self {
+            last_lat: 0,
+            last_lng: 0,
+            writer,
+        }
     }
 
     /// `seperator()`.
@@ -174,7 +182,9 @@ impl<'a> Encoder<'a> {
     ///
     /// `IOException` from the output.
     pub fn seperator(&mut self) -> Result<()> {
-        self.writer.write_char(PolyshapeWriter::KEY_SEPERATOR).map_err(io_error)?;
+        self.writer
+            .write_char(PolyshapeWriter::KEY_SEPERATOR)
+            .map_err(io_error)?;
         self.last_lat = 0;
         self.last_lng = 0;
         Ok(())
@@ -186,7 +196,9 @@ impl<'a> Encoder<'a> {
     ///
     /// `IOException` from the output.
     pub fn start_ring(&mut self) -> Result<()> {
-        self.writer.write_char(PolyshapeWriter::KEY_ARG_START).map_err(io_error)?;
+        self.writer
+            .write_char(PolyshapeWriter::KEY_ARG_START)
+            .map_err(io_error)?;
         self.last_lat = 0;
         self.last_lng = 0;
         Ok(())
@@ -210,9 +222,13 @@ impl<'a> Encoder<'a> {
     ///
     /// `IOException` from the output.
     pub fn write_arg(&mut self, value: f64) -> Result<()> {
-        self.writer.write_char(PolyshapeWriter::KEY_ARG_START).map_err(io_error)?;
+        self.writer
+            .write_char(PolyshapeWriter::KEY_ARG_START)
+            .map_err(io_error)?;
         self.encode(java_round(value * 1e5))?;
-        self.writer.write_char(PolyshapeWriter::KEY_ARG_END).map_err(io_error)
+        self.writer
+            .write_char(PolyshapeWriter::KEY_ARG_END)
+            .map_err(io_error)
     }
 
     /// `write(double latitude, double longitude)`.
@@ -233,7 +249,11 @@ impl<'a> Encoder<'a> {
     }
 
     fn encode(&mut self, v: i64) -> Result<()> {
-        let mut v = if v < 0 { !(v.wrapping_shl(1)) } else { v.wrapping_shl(1) };
+        let mut v = if v < 0 {
+            !(v.wrapping_shl(1))
+        } else {
+            v.wrapping_shl(1)
+        };
         while v >= 0x20 {
             self.write_code_point(((0x20 | (v & 0x1f)) + 63) as i32)?;
             v >>= 5;
@@ -243,9 +263,14 @@ impl<'a> Encoder<'a> {
 
     /// `writer.write(Character.toChars(cp))`.
     fn write_code_point(&mut self, cp: i32) -> Result<()> {
-        let c = u32::try_from(cp).ok().and_then(char::from_u32).ok_or_else(|| {
-            rucene::error::LuceneError::illegal_argument(format!("Not a valid Unicode code point: 0x{cp:X}"))
-        })?;
+        let c = u32::try_from(cp)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or_else(|| {
+                rucene::error::LuceneError::illegal_argument(format!(
+                    "Not a valid Unicode code point: 0x{cp:X}"
+                ))
+            })?;
         self.writer.write_char(c).map_err(io_error)
     }
 }

@@ -18,8 +18,8 @@ use rucene::util::java_fmt::double_to_string;
 use crate::context::spatial_context::{SpatialContext, SpatialContextRef};
 use crate::jdk::{double_compare_ne, hash_double};
 use crate::shape::base_shape::BaseShape;
-use crate::shape::r#impl::buffered_line::BufferedLine;
 use crate::shape::point::Point;
+use crate::shape::r#impl::buffered_line::BufferedLine;
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::shape_collection::ShapeCollection;
@@ -45,7 +45,11 @@ impl BufferedLineString {
     /// # Errors
     ///
     /// The `InvalidShapeException` of a segment's bounding box.
-    pub fn new(points: &[Arc<dyn Point>], buf: f64, ctx: &Arc<SpatialContext>) -> Result<Arc<BufferedLineString>> {
+    pub fn new(
+        points: &[Arc<dyn Point>],
+        buf: f64,
+        ctx: &Arc<SpatialContext>,
+    ) -> Result<Arc<BufferedLineString>> {
         Self::with_skew(points, buf, false, ctx)
     }
 
@@ -68,19 +72,33 @@ impl BufferedLineString {
                 if let Some(prev) = prev_point {
                     let mut seg_buf = buf;
                     if expand_buf_for_longitude_skew {
-                        seg_buf = BufferedLine::expand_buf_for_longitude_skew(&**prev, &**point, buf);
+                        seg_buf =
+                            BufferedLine::expand_buf_for_longitude_skew(&**prev, &**point, buf);
                     }
-                    lines.push(BufferedLine::new(Arc::clone(prev), Arc::clone(point), seg_buf, ctx)?);
+                    lines.push(BufferedLine::new(
+                        Arc::clone(prev),
+                        Arc::clone(point),
+                        seg_buf,
+                        ctx,
+                    )?);
                 }
                 prev_point = Some(point);
             }
             if lines.is_empty() {
                 //TODO throw exception instead?
                 let prev = prev_point.expect("points is not empty");
-                lines.push(BufferedLine::new(Arc::clone(prev), Arc::clone(prev), buf, ctx)?);
+                lines.push(BufferedLine::new(
+                    Arc::clone(prev),
+                    Arc::clone(prev),
+                    buf,
+                    ctx,
+                )?);
             }
         }
-        let shapes: Vec<Arc<dyn Shape>> = lines.iter().map(|l| Arc::clone(l) as Arc<dyn Shape>).collect();
+        let shapes: Vec<Arc<dyn Shape>> = lines
+            .iter()
+            .map(|l| Arc::clone(l) as Arc<dyn Shape>)
+            .collect();
         let segments = ctx.make_collection(shapes)?;
         Ok(Arc::new(BufferedLineString {
             base: BaseShape::new(Some(SpatialContextRef::from(ctx))),
@@ -168,7 +186,9 @@ impl Shape for BufferedLineString {
 
     fn hash_code(&self) -> i32 {
         let result = self.segments.hash_code();
-        31i32.wrapping_mul(result).wrapping_add(hash_double(self.buf))
+        31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(self.buf))
     }
 
     fn get_context(&self) -> Option<Arc<SpatialContext>> {

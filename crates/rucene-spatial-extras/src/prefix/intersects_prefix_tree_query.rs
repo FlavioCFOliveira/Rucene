@@ -31,7 +31,9 @@ use spatial4j::shape::spatial_relation::SpatialRelation;
 use crate::prefix::abstract_prefix_tree_query::{
     create_weight, AbstractPrefixTreeQuery, BaseTermsEnumTraverser, PrefixTreeQuery, TreeDocIdSet,
 };
-use crate::prefix::abstract_visiting_prefix_tree_query::{AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate};
+use crate::prefix::abstract_visiting_prefix_tree_query::{
+    AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate,
+};
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree;
 
@@ -56,7 +58,13 @@ impl IntersectsPrefixTreeQuery {
         prefix_grid_scan_level: i32,
     ) -> Self {
         Self {
-            avptq: AbstractVisitingPrefixTreeQuery::new(query_shape, field_name, grid, detail_level, prefix_grid_scan_level),
+            avptq: AbstractVisitingPrefixTreeQuery::new(
+                query_shape,
+                field_name,
+                grid,
+                detail_level,
+                prefix_grid_scan_level,
+            ),
         }
     }
 }
@@ -68,7 +76,10 @@ struct IntersectsVisitor {
 
 impl VisitorHooks for IntersectsVisitor {
     fn start(&mut self, t: &mut BaseTermsEnumTraverser) -> Result<()> {
-        let terms = t.terms.as_ref().expect("terms != null when termsEnum != null");
+        let terms = t
+            .terms
+            .as_ref()
+            .expect("terms != null when termsEnum != null");
         self.results = Some(DocIdSetBuilder::from_terms(t.max_doc, &**terms)?);
         Ok(())
     }
@@ -78,15 +89,27 @@ impl VisitorHooks for IntersectsVisitor {
         Ok(Some(TreeDocIdSet::Core(Arc::from(results.build()?))))
     }
 
-    fn visit_prefix(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<bool> {
-        if cell.get_shape_rel() == Some(SpatialRelation::Within) || cell.get_level() == q.base.detail_level {
+    fn visit_prefix(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<bool> {
+        if cell.get_shape_rel() == Some(SpatialRelation::Within)
+            || cell.get_level() == q.base.detail_level
+        {
             t.collect_docs_builder(self.results.as_mut().expect("set by start()"))?;
             return Ok(false);
         }
         Ok(true)
     }
 
-    fn visit_leaf(&mut self, t: &mut BaseTermsEnumTraverser, _q: &AbstractVisitingPrefixTreeQuery, _cell: &CellRef) -> Result<()> {
+    fn visit_leaf(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        _q: &AbstractVisitingPrefixTreeQuery,
+        _cell: &CellRef,
+    ) -> Result<()> {
         t.collect_docs_builder(self.results.as_mut().expect("set by start()"))
     }
 }
@@ -97,7 +120,8 @@ impl PrefixTreeQuery for IntersectsPrefixTreeQuery {
     }
 
     fn get_doc_id_set(&self, context: &LeafReaderContext) -> Result<Option<TreeDocIdSet>> {
-        VisitorTemplate::new(&self.avptq, context, IntersectsVisitor { results: None })?.get_doc_id_set()
+        VisitorTemplate::new(&self.avptq, context, IntersectsVisitor { results: None })?
+            .get_doc_id_set()
     }
 }
 
@@ -118,7 +142,12 @@ impl Query for IntersectsPrefixTreeQuery {
         self
     }
 
-    fn create_weight(&self, _searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         Ok(create_weight(self, score_mode, boost))
     }
 

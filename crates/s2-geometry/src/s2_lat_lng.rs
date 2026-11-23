@@ -17,13 +17,14 @@
 //! The types declared in `S2LatLng.java`, of the Java package
 //! `com.google.common.geometry`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use rucene::util::java_fmt::double_to_string;
 
 use crate::s1_angle::S1Angle;
-use crate::s2::{double_to_long_bits, ieee_remainder, S2};
+use crate::s2::{double_to_long_bits, S2};
 use crate::s2_point::S2Point;
 
 /// Equivalent to `com.google.common.geometry.S2LatLng` (`public strictfp
@@ -38,16 +39,25 @@ impl S2LatLng {
     /// `EARTH_RADIUS_METERS`.
     pub const EARTH_RADIUS_METERS: f64 = 6367000.0;
     /// `CENTER`.
-    pub const CENTER: S2LatLng = S2LatLng { lat_radians: 0.0, lng_radians: 0.0 };
+    pub const CENTER: S2LatLng = S2LatLng {
+        lat_radians: 0.0,
+        lng_radians: 0.0,
+    };
 
     /// `fromRadians(double, double)`.
     pub fn from_radians(lat_radians: f64, lng_radians: f64) -> S2LatLng {
-        S2LatLng { lat_radians, lng_radians }
+        S2LatLng {
+            lat_radians,
+            lng_radians,
+        }
     }
 
     /// `fromDegrees(double, double)`.
     pub fn from_degrees(lat_degrees: f64, lng_degrees: f64) -> S2LatLng {
-        S2LatLng::new(&S1Angle::from_degrees(lat_degrees), &S1Angle::from_degrees(lng_degrees))
+        S2LatLng::new(
+            &S1Angle::from_degrees(lat_degrees),
+            &S1Angle::from_degrees(lng_degrees),
+        )
     }
 
     /// `fromE5(long, long)`.
@@ -67,14 +77,15 @@ impl S2LatLng {
 
     /// `latitude(S2Point)`.
     pub fn latitude(p: &S2Point) -> S1Angle {
-        S1Angle::from_radians(
-            p.get(2).atan2((p.get(0) * p.get(0) + p.get(1) * p.get(1)).sqrt()),
-        )
+        S1Angle::from_radians(java_math::atan2(
+            p.get(2),
+            java_math::sqrt(p.get(0) * p.get(0) + p.get(1) * p.get(1)),
+        ))
     }
 
     /// `longitude(S2Point)`.
     pub fn longitude(p: &S2Point) -> S1Angle {
-        S1Angle::from_radians(p.get(1).atan2(p.get(0)))
+        S1Angle::from_radians(java_math::atan2(p.get(1), p.get(0)))
     }
 
     /// `S2LatLng(S1Angle lat, S1Angle lng)`.
@@ -84,7 +95,10 @@ impl S2LatLng {
 
     /// `S2LatLng(S2Point)`.
     pub fn from_point(p: &S2Point) -> S2LatLng {
-        Self::from_radians(p.z.atan2((p.x * p.x + p.y * p.y).sqrt()), p.y.atan2(p.x))
+        Self::from_radians(
+            java_math::atan2(p.z, java_math::sqrt(p.x * p.x + p.y * p.y)),
+            java_math::atan2(p.y, p.x),
+        )
     }
 
     /// `lat()`.
@@ -126,7 +140,7 @@ impl S2LatLng {
     pub fn normalized(&self) -> S2LatLng {
         S2LatLng::from_radians(
             (-S2::M_PI_2).max(S2::M_PI_2.min(self.lat().radians())),
-            ieee_remainder(self.lng().radians(), 2.0 * S2::M_PI),
+            java_math::ieee_remainder(self.lng().radians(), 2.0 * S2::M_PI),
         )
     }
 
@@ -134,8 +148,12 @@ impl S2LatLng {
     pub fn to_point(&self) -> S2Point {
         let phi = self.lat().radians();
         let theta = self.lng().radians();
-        let cosphi = phi.cos();
-        S2Point::new(theta.cos() * cosphi, theta.sin() * cosphi, phi.sin())
+        let cosphi = java_math::cos(phi);
+        S2Point::new(
+            java_math::cos(theta) * cosphi,
+            java_math::sin(theta) * cosphi,
+            java_math::sin(phi),
+        )
     }
 
     /// `getDistance(S2LatLng)`.
@@ -144,10 +162,12 @@ impl S2LatLng {
         let lat2 = o.lat().radians();
         let lng1 = self.lng().radians();
         let lng2 = o.lng().radians();
-        let dlat = (0.5 * (lat2 - lat1)).sin();
-        let dlng = (0.5 * (lng2 - lng1)).sin();
-        let x = dlat * dlat + dlng * dlng * lat1.cos() * lat2.cos();
-        S1Angle::from_radians(2.0 * x.sqrt().atan2(0.0f64.max(1.0 - x).sqrt()))
+        let dlat = java_math::sin(0.5 * (lat2 - lat1));
+        let dlng = java_math::sin(0.5 * (lng2 - lng1));
+        let x = dlat * dlat + dlng * dlng * java_math::cos(lat1) * java_math::cos(lat2);
+        S1Angle::from_radians(
+            2.0 * java_math::atan2(java_math::sqrt(x), java_math::sqrt(0.0f64.max(1.0 - x))),
+        )
     }
 
     /// `getDistance(S2LatLng, double radius)`.
@@ -162,12 +182,18 @@ impl S2LatLng {
 
     /// `add(S2LatLng)`.
     pub fn add(&self, o: &S2LatLng) -> S2LatLng {
-        S2LatLng::from_radians(self.lat_radians + o.lat_radians, self.lng_radians + o.lng_radians)
+        S2LatLng::from_radians(
+            self.lat_radians + o.lat_radians,
+            self.lng_radians + o.lng_radians,
+        )
     }
 
     /// `sub(S2LatLng)`.
     pub fn sub(&self, o: &S2LatLng) -> S2LatLng {
-        S2LatLng::from_radians(self.lat_radians - o.lat_radians, self.lng_radians - o.lng_radians)
+        S2LatLng::from_radians(
+            self.lat_radians - o.lat_radians,
+            self.lng_radians - o.lng_radians,
+        )
     }
 
     /// `mul(double)`.
@@ -179,10 +205,14 @@ impl S2LatLng {
     pub fn hash_code(&self) -> i32 {
         let mut value: i64 = 17;
         value = value.wrapping_add(
-            37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.lat_radians)),
+            37i64
+                .wrapping_mul(value)
+                .wrapping_add(double_to_long_bits(self.lat_radians)),
         );
         value = value.wrapping_add(
-            37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.lng_radians)),
+            37i64
+                .wrapping_mul(value)
+                .wrapping_add(double_to_long_bits(self.lng_radians)),
         );
         (value ^ ((value as u64) >> 32) as i64) as i32
     }

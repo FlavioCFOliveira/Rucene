@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoStandardCircle.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -50,7 +49,12 @@ use super::{d2s, iae, npe};
 /// and longitude distance from the center where the planet will be cut.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoStandardCircle`.
-pub(crate) struct GeoStandardCircle {
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct GeoStandardCircle {
     planet_model: Arc<PlanetModel>,
     center: GeoPoint,
     cutoff_angle: f64,
@@ -67,7 +71,12 @@ impl GeoStandardCircle {
     ///
     /// `IllegalArgumentException` for out-of-bounds arguments or a circle
     /// too small to construct.
-    pub fn new(planet_model: &Arc<PlanetModel>, lat: f64, lon: f64, cutoff_angle: f64) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        lat: f64,
+        lon: f64,
+        cutoff_angle: f64,
+    ) -> Result<Self> {
         let pm = planet_model;
         if lat < -PI * 0.5 || lat > PI * 0.5 {
             return Err(iae("Latitude out of bounds"));
@@ -108,8 +117,9 @@ impl GeoStandardCircle {
             circle_plane = None;
             edge_points = Vec::new();
         } else {
-            let normal_plane = Plane::construct_normalized_z_plane_points(&[&upper_point, &lower_point, &center])
-                .unwrap_or_else(|| npe());
+            let normal_plane =
+                Plane::construct_normalized_z_plane_points(&[&upper_point, &lower_point, &center])
+                    .unwrap_or_else(|| npe());
             let Some(cp) = SidedPlane::construct_normalized_perpendicular_sided_plane(
                 &center,
                 &normal_plane,
@@ -124,7 +134,9 @@ impl GeoStandardCircle {
                     lower_point
                 )));
             };
-            let Some(recomputed_intersection_point) = cp.get_sample_intersection_point(pm, &normal_plane) else {
+            let Some(recomputed_intersection_point) =
+                cp.get_sample_intersection_point(pm, &normal_plane)
+            else {
                 return Err(iae(format!(
                     "Couldn't construct intersection point, probably circle too small?  Plane = {}",
                     cp
@@ -169,7 +181,12 @@ impl GeoStandardCircle {
         Ok(self.distance(ds, x, y, z)? * 2.0)
     }
 
-    fn distance_bounds(&self, bounds: &mut dyn Bounds, _ds: &dyn DistanceStyle, _distance_value: f64) -> Result<()> {
+    fn distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        _ds: &dyn DistanceStyle,
+        _distance_value: f64,
+    ) -> Result<()> {
         self.get_bounds(bounds);
         Ok(())
     }
@@ -187,13 +204,21 @@ impl GeoStandardCircle {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.center.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(super::dhash(self.cutoff_angle));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.center.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.cutoff_angle));
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoStandardCircle, "org.apache.lucene.spatial3d.geom.GeoStandardCircle", geo_circle);
+impl_geo_base_area_shape_common!(
+    GeoStandardCircle,
+    "org.apache.lucene.spatial3d.geom.GeoStandardCircle",
+    geo_circle
+);
 impl_geo_base_distance_shape!(GeoStandardCircle);
 
 impl GeoArea for GeoStandardCircle {
@@ -233,7 +258,12 @@ impl GeoShape for GeoStandardCircle {
         self.edge_points.clone()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let Some(circle_plane) = &self.circle_plane else {
             return false;
         };

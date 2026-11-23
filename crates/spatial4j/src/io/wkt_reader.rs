@@ -61,12 +61,16 @@ pub struct WKTReader {
 impl WKTReader {
     /// `WKTReader(SpatialContext ctx, SpatialContextFactory factory)`.
     pub fn new(ctx: &Arc<SpatialContext>, _factory: &dyn SpatialContextFactoryOps) -> Self {
-        Self { ctx: Arc::downgrade(ctx) }
+        Self {
+            ctx: Arc::downgrade(ctx),
+        }
     }
 
     /// `ctx`.
     pub fn ctx(&self) -> Arc<SpatialContext> {
-        self.ctx.upgrade().expect("the SpatialContext of a WKTReader is alive")
+        self.ctx
+            .upgrade()
+            .expect("the SpatialContext of a WKTReader is alive")
     }
 
     /// `shapeFactory`: `ctx.getShapeFactory()`.
@@ -90,7 +94,10 @@ impl WKTReader {
         } else {
             format!("{}...", String::from_utf16_lossy(&units[..128 - 3]))
         };
-        Err(ParseException::error(format!("Unknown Shape definition [{shortened_string}]"), 0))
+        Err(ParseException::error(
+            format!("Unknown Shape definition [{shortened_string}]"),
+            0,
+        ))
     }
 
     /// `parseIfSupported(String wktString)`: `None` (Java `null`) for text
@@ -113,18 +120,27 @@ impl WKTReader {
         let shape_type = state.next_word()?;
         let result = match self.parse_shape_by_type(&mut state, &shape_type) {
             Ok(r) => r,
-            Err(e) if ParseException::of(&e).is_some() || InvalidShapeException::is(&e) => return Err(e),
+            Err(e) if ParseException::of(&e).is_some() || InvalidShapeException::is(&e) => {
+                return Err(e)
+            }
             Err(e) if e.is_illegal_argument_exception() => {
                 // NOTE: JTS Throws IAE for bad WKT
                 return Err(InvalidShapeException::with_cause(message_of(&e), e));
             }
             Err(e) => {
                 let message = e.to_string();
-                return Err(ParseException::error_with_cause(message, state.offset as i32, e));
+                return Err(ParseException::error_with_cause(
+                    message,
+                    state.offset as i32,
+                    e,
+                ));
             }
         };
         if result.is_some() && !state.eof() {
-            return Err(ParseException::error("end of shape expected", state.offset as i32));
+            return Err(ParseException::error(
+                "end of shape expected",
+                state.offset as i32,
+            ));
         }
         Ok(result)
     }
@@ -140,7 +156,11 @@ impl WKTReader {
     /// # Errors
     ///
     /// `ParseException` and the factory's errors.
-    pub fn parse_shape_by_type(&self, state: &mut State, shape_type: &str) -> Result<Option<Arc<dyn Shape>>> {
+    pub fn parse_shape_by_type(
+        &self,
+        state: &mut State,
+        shape_type: &str,
+    ) -> Result<Option<Arc<dyn Shape>>> {
         debug_assert!(
             shape_type.chars().next().is_some_and(is_letter),
             "Shape must start with letter: {shape_type}"
@@ -199,7 +219,9 @@ impl WKTReader {
         let mut one_points_builder = OnePointsBuilder::new(Arc::clone(&shape_factory));
         self.point(state, &mut one_points_builder)?;
         state.next_expect(')')?;
-        Ok(one_points_builder.get_point().ok_or_else(LuceneError::null_pointer)?)
+        Ok(one_points_builder
+            .get_point()
+            .ok_or_else(LuceneError::null_pointer)?)
     }
 
     /// `parseMultiPointShape(State)`.
@@ -348,7 +370,12 @@ impl WKTReader {
     pub fn shape(&self, state: &mut State) -> Result<Arc<dyn Shape>> {
         let type_ = state.next_word()?;
         let shape = self.parse_shape_by_type(state, &type_)?;
-        shape.ok_or_else(|| ParseException::error(format!("Shape of type {type_} is unknown"), state.offset as i32))
+        shape.ok_or_else(|| {
+            ParseException::error(
+                format!("Shape of type {type_} is unknown"),
+                state.offset as i32,
+            )
+        })
     }
 
     /// `pointList(State, B pointsBuilder)`.
@@ -356,7 +383,11 @@ impl WKTReader {
     /// # Errors
     ///
     /// `ParseException` and the builder's errors.
-    pub fn point_list(&self, state: &mut State, points_builder: &mut dyn PointsBuilder) -> Result<()> {
+    pub fn point_list(
+        &self,
+        state: &mut State,
+        points_builder: &mut dyn PointsBuilder,
+    ) -> Result<()> {
         state.next_expect('(')?;
         loop {
             self.point(state, points_builder)?;
@@ -386,7 +417,11 @@ impl WKTReader {
     /// # Errors
     ///
     /// `ParseException` and the builder's errors.
-    pub fn polygon(&self, state: &mut State, polygon_builder: &mut dyn PolygonBuilder) -> Result<()> {
+    pub fn polygon(
+        &self,
+        state: &mut State,
+        polygon_builder: &mut dyn PolygonBuilder,
+    ) -> Result<()> {
         state.next_expect('(')?;
         self.point_list(state, polygon_builder)?; // outer ring
         while state.next_if(',') {
@@ -449,7 +484,11 @@ pub struct State {
 impl State {
     /// `State(String rawString)`.
     pub fn new(raw_string: &str) -> Self {
-        Self { raw_string: raw_string.encode_utf16().collect(), offset: 0, dimension: None }
+        Self {
+            raw_string: raw_string.encode_utf16().collect(),
+            offset: 0,
+            dimension: None,
+        }
     }
 
     /// `rawString.charAt(index)`, a lone surrogate as U+FFFD (which no
@@ -469,7 +508,9 @@ impl State {
     /// `ParseException` (`Word expected`) when there is none.
     pub fn next_word(&mut self) -> Result<String> {
         let start_offset = self.offset;
-        while self.offset < self.raw_string.len() && is_java_identifier_part(self.char_at(self.offset)) {
+        while self.offset < self.raw_string.len()
+            && is_java_identifier_part(self.char_at(self.offset))
+        {
             self.offset += 1;
         }
         if start_offset == self.offset {
@@ -527,7 +568,10 @@ impl State {
         let start_offset = self.offset;
         self.skip_double();
         if start_offset == self.offset {
-            return Err(ParseException::error("Expected a number", self.offset as i32));
+            return Err(ParseException::error(
+                "Expected a number",
+                self.offset as i32,
+            ));
         }
         let result = match parse_double(&self.substring(start_offset, self.offset)) {
             Ok(v) => v,
@@ -573,12 +617,18 @@ impl State {
     /// `ParseException` when the next character is not `expected`.
     pub fn next_expect(&mut self, expected: char) -> Result<()> {
         if self.eof() {
-            return Err(ParseException::error(format!("Expected [{expected}] found EOF"), self.offset as i32));
+            return Err(ParseException::error(
+                format!("Expected [{expected}] found EOF"),
+                self.offset as i32,
+            ));
         }
         let c = self.char_at(self.offset);
         if c != expected {
             return Err(ParseException::error(
-                format!("Expected [{expected}] found [{}]", String::from_utf16_lossy(&[self.raw_string[self.offset]])),
+                format!(
+                    "Expected [{expected}] found [{}]",
+                    String::from_utf16_lossy(&[self.raw_string[self.offset]])
+                ),
                 self.offset as i32,
             ));
         }
@@ -637,7 +687,10 @@ impl State {
             self.offset += 1;
         }
         if paren_stack != 0 {
-            return Err(ParseException::error("Unbalanced parenthesis", start_offset as i32));
+            return Err(ParseException::error(
+                "Unbalanced parenthesis",
+                start_offset as i32,
+            ));
         }
         Ok(self.substring(start_offset, self.offset))
     }

@@ -66,7 +66,8 @@ impl OffsetsRetrievalStrategy for OffsetsFromValues {
             let ts = self.analyzer.token_stream_from_str(&self.field, value)?;
             let mut ts = ts.borrow_mut();
             let offset_attr: AttributeHandle<dyn OffsetAttribute> =
-                AttributeHandle::get(ts.attribute_source()).ok_or_else(LuceneError::null_pointer)?;
+                AttributeHandle::get(ts.attribute_source())
+                    .ok_or_else(LuceneError::null_pointer)?;
             ts.reset()?;
             let start_offset = value_offset;
             while ts.increment_token()? {

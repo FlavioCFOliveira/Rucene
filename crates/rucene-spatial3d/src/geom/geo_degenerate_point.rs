@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoDegeneratePoint.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -28,6 +27,7 @@ use rucene::error::Result;
 
 use super::bounded::Bounded;
 use super::bounds::Bounds;
+use super::d2s;
 use super::distance_style::DistanceStyle;
 use super::geo_area_shape::GeoAreaShape;
 use super::geo_b_box::GeoBBox;
@@ -38,7 +38,6 @@ use super::geo_sizeable::GeoSizeable;
 use super::membership::Membership;
 use super::plane::Plane;
 use super::planet_model::PlanetModel;
-use super::d2s;
 use std::any::Any;
 use std::ops::Deref;
 
@@ -136,7 +135,9 @@ impl SerializableObject for GeoDegeneratePoint {
     fn into_geo_circle(self: Arc<Self>) -> Option<Arc<dyn super::geo_circle::GeoCircle>> {
         Some(self)
     }
-    fn into_geo_point_shape(self: Arc<Self>) -> Option<Arc<dyn super::geo_point_shape::GeoPointShape>> {
+    fn into_geo_point_shape(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn super::geo_point_shape::GeoPointShape>> {
         Some(self)
     }
 }
@@ -165,7 +166,12 @@ impl GeoShape for GeoDegeneratePoint {
         vec![self.point.clone()]
     }
 
-    fn intersects(&self, plane: &Plane, _notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        plane: &Plane,
+        _notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         if !plane.evaluate_is_zero(&self.point) {
             return false;
         }
@@ -179,11 +185,21 @@ impl GeoShape for GeoDegeneratePoint {
 }
 
 impl GeoOutsideDistance for GeoDegeneratePoint {
-    fn compute_outside_distance(&self, distance_style: &dyn DistanceStyle, point: &GeoPoint) -> Result<f64> {
+    fn compute_outside_distance(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        point: &GeoPoint,
+    ) -> Result<f64> {
         Ok(distance_style.compute_distance(&self.point, point))
     }
 
-    fn compute_outside_distance_xyz(&self, distance_style: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn compute_outside_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         Ok(distance_style.compute_distance_xyz(&self.point, x, y, z))
     }
 }
@@ -206,7 +222,13 @@ impl GeoAreaShape for GeoDegeneratePoint {
 }
 
 impl GeoDistance for GeoDegeneratePoint {
-    fn compute_distance_xyz(&self, _distance_style: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn compute_distance_xyz(
+        &self,
+        _distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         if self.is_within_xyz(x, y, z) {
             return Ok(0.0);
         }
@@ -215,7 +237,12 @@ impl GeoDistance for GeoDegeneratePoint {
 }
 
 impl GeoDistanceShape for GeoDegeneratePoint {
-    fn get_distance_bounds(&self, bounds: &mut dyn Bounds, _distance_style: &dyn DistanceStyle, _distance_value: f64) -> Result<()> {
+    fn get_distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        _distance_style: &dyn DistanceStyle,
+        _distance_value: f64,
+    ) -> Result<()> {
         self.get_bounds(bounds);
         Ok(())
     }
@@ -239,7 +266,13 @@ impl GeoBBox for GeoDegeneratePoint {
         let new_bottom_lat = self.latitude() - angle;
         let new_left_lon = self.longitude() - angle;
         let new_right_lon = self.longitude() + angle;
-        GeoBBoxFactory::make_geo_bbox(&self.planet_model, new_top_lat, new_bottom_lat, new_left_lon, new_right_lon)
+        GeoBBoxFactory::make_geo_bbox(
+            &self.planet_model,
+            new_top_lat,
+            new_bottom_lat,
+            new_left_lon,
+            new_right_lon,
+        )
     }
 }
 

@@ -33,8 +33,22 @@ pub struct SupportedFormats {
 impl std::fmt::Debug for SupportedFormats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SupportedFormats")
-            .field("readers", &self.readers.iter().map(|r| r.get_format_name()).collect::<Vec<_>>())
-            .field("writers", &self.writers.iter().map(|w| w.get_format_name()).collect::<Vec<_>>())
+            .field(
+                "readers",
+                &self
+                    .readers
+                    .iter()
+                    .map(|r| r.get_format_name())
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "writers",
+                &self
+                    .writers
+                    .iter()
+                    .map(|w| w.get_format_name())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -70,12 +84,18 @@ impl SupportedFormats {
 
     /// `getReader(String fmt)`: the first reader of the format.
     pub fn get_reader(&self, fmt: &str) -> Option<Arc<dyn ShapeReader>> {
-        self.readers.iter().find(|f| fmt == f.get_format_name()).cloned()
+        self.readers
+            .iter()
+            .find(|f| fmt == f.get_format_name())
+            .cloned()
     }
 
     /// `getWriter(String fmt)`: the first writer of the format.
     pub fn get_writer(&self, fmt: &str) -> Option<Arc<dyn ShapeWriter>> {
-        self.writers.iter().find(|f| fmt == f.get_format_name()).cloned()
+        self.writers
+            .iter()
+            .find(|f| fmt == f.get_format_name())
+            .cloned()
     }
 
     /// `getWktReader()`.

@@ -165,8 +165,12 @@ impl R1Interval {
             return 17;
         }
         let mut value: i64 = 17;
-        value = 37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.lo));
-        value = 37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.hi));
+        value = 37i64
+            .wrapping_mul(value)
+            .wrapping_add(double_to_long_bits(self.lo));
+        value = 37i64
+            .wrapping_mul(value)
+            .wrapping_add(double_to_long_bits(self.hi));
         (value ^ ((value as u64) >> 32) as i64) as i32
     }
 
@@ -203,6 +207,11 @@ impl Hash for R1Interval {
 impl fmt::Display for R1Interval {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}, {}]", double_to_string(self.lo()), double_to_string(self.hi()))
+        write!(
+            f,
+            "[{}, {}]",
+            double_to_string(self.lo()),
+            double_to_string(self.hi())
+        )
     }
 }

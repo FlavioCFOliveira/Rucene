@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoDistance.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -35,7 +34,11 @@ pub trait GeoDistance: Membership {
     /// # Errors
     ///
     /// The unchecked exceptions of the distance computation.
-    fn compute_distance(&self, distance_style: &dyn DistanceStyle, point: &GeoPoint) -> Result<f64> {
+    fn compute_distance(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        point: &GeoPoint,
+    ) -> Result<f64> {
         self.compute_distance_xyz(distance_style, point.x, point.y, point.z)
     }
 

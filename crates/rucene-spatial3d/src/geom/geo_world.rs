@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoWorld.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -30,6 +29,7 @@ use super::base_planet_object::BasePlanetObject;
 use super::bounded::Bounded;
 use super::bounds::Bounds;
 use super::distance_style::DistanceStyle;
+use super::geo_area::{self, GeoArea};
 use super::geo_area_shape::GeoAreaShape;
 use super::geo_b_box::GeoBBox;
 use super::geo_base_bounds::GeoBaseBounds;
@@ -39,12 +39,16 @@ use super::geo_sizeable::GeoSizeable;
 use super::membership::Membership;
 use super::plane::Plane;
 use super::planet_model::PlanetModel;
-use super::geo_area::{self, GeoArea};
 
 /// Bounding box including the entire world.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoWorld`.
-pub(crate) struct GeoWorld {
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct GeoWorld {
     planet_model: Arc<PlanetModel>,
     /// Origin point.
     origin_point: GeoPoint,
@@ -85,7 +89,11 @@ impl GeoWorld {
     }
 }
 
-impl_geo_base_area_shape_common!(GeoWorld, "org.apache.lucene.spatial3d.geom.GeoWorld", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoWorld,
+    "org.apache.lucene.spatial3d.geom.GeoWorld",
+    geo_b_box
+);
 
 impl GeoArea for GeoWorld {
     fn get_relationship(&self, path: &dyn GeoShape) -> Result<i32> {
@@ -113,7 +121,12 @@ impl GeoShape for GeoWorld {
         Vec::new()
     }
 
-    fn intersects(&self, _p: &Plane, _notable_points: &[GeoPoint], _bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        _p: &Plane,
+        _notable_points: &[GeoPoint],
+        _bounds: &[&dyn Membership],
+    ) -> bool {
         false
     }
 }

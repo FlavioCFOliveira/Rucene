@@ -51,11 +51,22 @@ struct Lookup {
 
 /// The `LOOKUP_POS` and `LOOKUP_IJ` tables of the Java static initializer.
 static LOOKUP: LazyLock<Lookup> = LazyLock::new(|| {
-    let mut lookup = Lookup { pos: vec![0; LOOKUP_SIZE], ij: vec![0; LOOKUP_SIZE] };
+    let mut lookup = Lookup {
+        pos: vec![0; LOOKUP_SIZE],
+        ij: vec![0; LOOKUP_SIZE],
+    };
     init_lookup_cell(&mut lookup, 0, 0, 0, 0, 0, 0);
     init_lookup_cell(&mut lookup, 0, 0, 0, SWAP_MASK, 0, SWAP_MASK);
     init_lookup_cell(&mut lookup, 0, 0, 0, INVERT_MASK, 0, INVERT_MASK);
-    init_lookup_cell(&mut lookup, 0, 0, 0, SWAP_MASK | INVERT_MASK, 0, SWAP_MASK | INVERT_MASK);
+    init_lookup_cell(
+        &mut lookup,
+        0,
+        0,
+        0,
+        SWAP_MASK | INVERT_MASK,
+        0,
+        SWAP_MASK | INVERT_MASK,
+    );
     lookup
 });
 
@@ -78,9 +89,9 @@ fn init_lookup_cell(
         j <<= 1;
         pos <<= 2;
         for sub_pos in 0..4 {
-            let ij = S2::pos_to_ij(orientation, sub_pos).expect("orientation and position in [0,3]");
-            let orientation_mask =
-                S2::pos_to_orientation(sub_pos).expect("position in [0,3]");
+            let ij =
+                S2::pos_to_ij(orientation, sub_pos).expect("orientation and position in [0,3]");
+            let orientation_mask = S2::pos_to_orientation(sub_pos).expect("position in [0,3]");
             init_lookup_cell(
                 lookup,
                 level,
@@ -317,7 +328,9 @@ impl S2CellId {
     pub fn child_begin(&self) -> S2CellId {
         let old_lsb = self.lowest_on_bit();
         S2CellId::new(
-            self.id.wrapping_sub(old_lsb).wrapping_add(((old_lsb as u64) >> 2) as i64),
+            self.id
+                .wrapping_sub(old_lsb)
+                .wrapping_add(((old_lsb as u64) >> 2) as i64),
         )
     }
 
@@ -334,7 +347,9 @@ impl S2CellId {
     pub fn child_end(&self) -> S2CellId {
         let old_lsb = self.lowest_on_bit();
         S2CellId::new(
-            self.id.wrapping_add(old_lsb).wrapping_add(((old_lsb as u64) >> 2) as i64),
+            self.id
+                .wrapping_add(old_lsb)
+                .wrapping_add(((old_lsb as u64) >> 2) as i64),
         )
     }
 
@@ -565,12 +580,19 @@ impl S2CellId {
 
     /// `fromFaceIJ(int, int, int)`.
     pub fn from_face_ij(face: i32, i: i32, j: i32) -> S2CellId {
-        let mut n: [i64; 2] = [0, i64::from(face.wrapping_shl((Self::POS_BITS - 33) as u32))];
+        let mut n: [i64; 2] = [
+            0,
+            i64::from(face.wrapping_shl((Self::POS_BITS - 33) as u32)),
+        ];
         let mut bits = face & SWAP_MASK;
         for k in (0..=7).rev() {
             bits = Self::get_bits(&mut n, i, j, k, bits);
         }
-        S2CellId::new((n[1].wrapping_shl(32).wrapping_add(n[0])).wrapping_shl(1).wrapping_add(1))
+        S2CellId::new(
+            (n[1].wrapping_shl(32).wrapping_add(n[0]))
+                .wrapping_shl(1)
+                .wrapping_add(1),
+        )
     }
 
     fn get_bits(n: &mut [i64; 2], i: i32, j: i32, k: i32, mut bits: i32) -> i32 {
@@ -605,13 +627,26 @@ impl S2CellId {
         face
     }
 
-    fn get_bits1(&self, i: &mut MutableInteger, j: &mut MutableInteger, k: i32, mut bits: i32) -> i32 {
-        let nbits = if k == 7 { Self::MAX_LEVEL - 7 * LOOKUP_BITS } else { LOOKUP_BITS };
-        bits += ((((self.id as u64) >> (k * 2 * LOOKUP_BITS + 1)) as i32) & ((1 << (2 * nbits)) - 1))
+    fn get_bits1(
+        &self,
+        i: &mut MutableInteger,
+        j: &mut MutableInteger,
+        k: i32,
+        mut bits: i32,
+    ) -> i32 {
+        let nbits = if k == 7 {
+            Self::MAX_LEVEL - 7 * LOOKUP_BITS
+        } else {
+            LOOKUP_BITS
+        };
+        bits += ((((self.id as u64) >> (k * 2 * LOOKUP_BITS + 1)) as i32)
+            & ((1 << (2 * nbits)) - 1))
             << 2;
         bits = LOOKUP.ij[bits as usize];
         i.set_value(i.int_value() + ((bits >> (LOOKUP_BITS + 2)) << (k * LOOKUP_BITS)));
-        j.set_value(j.int_value() + (((bits >> 2) & ((1 << LOOKUP_BITS) - 1)) << (k * LOOKUP_BITS)));
+        j.set_value(
+            j.int_value() + (((bits >> 2) & ((1 << LOOKUP_BITS) - 1)) << (k * LOOKUP_BITS)),
+        );
         bits &= SWAP_MASK | INVERT_MASK;
         bits
     }
@@ -729,6 +764,12 @@ impl Hash for S2CellId {
 impl fmt::Display for S2CellId {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(face={}, pos={:x}, level={})", self.face(), self.pos() as u64, self.level())
+        write!(
+            f,
+            "(face={}, pos={:x}, level={})",
+            self.face(),
+            self.pos() as u64,
+            self.level()
+        )
     }
 }

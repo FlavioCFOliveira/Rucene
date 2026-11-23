@@ -46,9 +46,11 @@ impl UnsupportedSpatialOperation {
     /// (`UnsupportedSpatialOperation.java:28-30`).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(op: SpatialOperation) -> LuceneError {
-        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(UnsupportedSpatialOperation {
-            message: op.get_name().to_string(),
-        })))
+        LuceneError::from(LuceneErrorKind::Throwable(Arc::new(
+            UnsupportedSpatialOperation {
+                message: op.get_name().to_string(),
+            },
+        )))
     }
 }
 

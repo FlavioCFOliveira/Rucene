@@ -46,7 +46,12 @@ pub struct ShapeAreaValueSource {
 impl ShapeAreaValueSource {
     /// `ShapeAreaValueSource(ShapeValuesSource shapeValueSource,
     /// SpatialContext ctx, boolean geoArea, double multiplier)`.
-    pub fn new(shape_value_source: Arc<dyn ShapeValuesSource>, ctx: Arc<SpatialContext>, geo_area: bool, multiplier: f64) -> Self {
+    pub fn new(
+        shape_value_source: Arc<dyn ShapeValuesSource>,
+        ctx: Arc<SpatialContext>,
+        geo_area: bool,
+        multiplier: f64,
+    ) -> Self {
         Self {
             shape_value_source,
             ctx,
@@ -88,7 +93,11 @@ impl DoubleValuesSource for ShapeAreaValueSource {
         Ok(Box::new(with_default(
             AreaValues {
                 shape_values,
-                ctx: if self.geo_area { Some(Arc::clone(&self.ctx)) } else { None },
+                ctx: if self.geo_area {
+                    Some(Arc::clone(&self.ctx))
+                } else {
+                    None
+                },
                 multiplier: self.multiplier,
             },
             0.0,
@@ -122,7 +131,9 @@ impl DoubleValuesSource for ShapeAreaValueSource {
 
     fn source_hash(&self) -> i32 {
         let mut result = self.shape_value_source.source_hash();
-        result = result.wrapping_mul(31).wrapping_add(if self.geo_area { 1 } else { 0 });
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(if self.geo_area { 1 } else { 0 });
         result
     }
 

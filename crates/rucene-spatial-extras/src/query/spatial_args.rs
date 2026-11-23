@@ -86,7 +86,11 @@ impl SpatialArgs {
     /// # Errors
     ///
     /// `IllegalArgumentException` when `dist_err_pct` is out of `[0, 0.5]`.
-    pub fn calc_distance_from_err_pct(shape: &dyn Shape, dist_err_pct: f64, ctx: &SpatialContext) -> Result<f64> {
+    pub fn calc_distance_from_err_pct(
+        shape: &dyn Shape,
+        dist_err_pct: f64,
+        ctx: &SpatialContext,
+    ) -> Result<f64> {
         if !(0.0..=0.5).contains(&dist_err_pct) {
             return Err(LuceneError::illegal_argument(format!(
                 "distErrPct {} must be between [0 to 0.5]",
@@ -101,7 +105,11 @@ impl SpatialArgs {
         // to a bottom corner vs a top corner can vary in a geospatial scenario,
         // take the closest one (greater precision).
         let ctr = bbox.get_center();
-        let y = if ctr.get_y() >= 0.0 { bbox.get_max_y() } else { bbox.get_min_y() };
+        let y = if ctr.get_y() >= 0.0 {
+            bbox.get_max_y()
+        } else {
+            bbox.get_min_y()
+        };
         let diagonal_dist = ctx.get_dist_calc().distance_xy(&*ctr, bbox.get_max_x(), y);
         Ok(diagonal_dist * dist_err_pct)
     }
@@ -130,7 +138,9 @@ impl SpatialArgs {
     /// specified.")`.
     pub fn validate(&self) -> Result<()> {
         if self.get_dist_err().is_some() && self.get_dist_err_pct().is_some() {
-            return Err(LuceneError::illegal_argument("Only distErr or distErrPct can be specified."));
+            return Err(LuceneError::illegal_argument(
+                "Only distErr or distErrPct can be specified.",
+            ));
         }
         Ok(())
     }

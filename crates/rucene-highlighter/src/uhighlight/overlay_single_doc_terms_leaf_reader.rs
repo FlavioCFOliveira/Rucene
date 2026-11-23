@@ -215,7 +215,8 @@ impl fmt::Display for RemapPostingsEnum {
 
 impl fmt::Debug for RemapPostingsEnum {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OverlaySingleDocTermsLeafReader$1$1$1").finish_non_exhaustive()
+        f.debug_struct("OverlaySingleDocTermsLeafReader$1$1$1")
+            .finish_non_exhaustive()
     }
 }
 
@@ -231,7 +232,11 @@ impl DocIdSetIterator for RemapPostingsEnum {
 
     fn next_doc(&mut self) -> Result<i32> {
         let doc = self.inner.next_doc()?;
-        Ok(if doc == 0 { self.in2_target_doc_id } else { doc })
+        Ok(if doc == 0 {
+            self.in2_target_doc_id
+        } else {
+            doc
+        })
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {

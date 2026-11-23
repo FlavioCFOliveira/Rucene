@@ -113,7 +113,11 @@ impl DoubleValuesSource for ShapeFieldCacheDistanceValueSource {
         reader_context: &LeafReaderContext,
         _scores: Option<Box<dyn DoubleValues + 'a>>,
     ) -> Result<Box<dyn DoubleValues + 'a>> {
-        let null_value = if self.ctx.is_geo() { 180.0 * self.multiplier } else { f64::MAX };
+        let null_value = if self.ctx.is_geo() {
+            180.0 * self.multiplier
+        } else {
+            f64::MAX
+        };
         Ok(Box::new(with_default(
             CacheDistanceValues {
                 cache: self.provider.get_cache(&reader_context.leaf_reader())?,
@@ -139,7 +143,10 @@ impl DoubleValuesSource for ShapeFieldCacheDistanceValueSource {
     }
 
     fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
-        let Some(that) = other.as_any().downcast_ref::<ShapeFieldCacheDistanceValueSource>() else {
+        let Some(that) = other
+            .as_any()
+            .downcast_ref::<ShapeFieldCacheDistanceValueSource>()
+        else {
             return false;
         };
         if std::ptr::eq(self, that) {

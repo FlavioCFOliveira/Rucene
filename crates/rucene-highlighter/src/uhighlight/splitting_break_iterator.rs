@@ -229,8 +229,11 @@ impl BreakIterator for SplittingBreakIterator {
             } else {
                 self.slice_start_idx += 1; // move past separator
             }
-            self.slice_end_idx =
-                index_of(&self.text, self.slice_char, (offset + 1).max(self.slice_start_idx));
+            self.slice_end_idx = index_of(
+                &self.text,
+                self.slice_char,
+                (offset + 1).max(self.slice_start_idx),
+            );
             if self.slice_end_idx == -1 {
                 self.slice_end_idx = self.text_length();
             }
@@ -248,7 +251,8 @@ impl BreakIterator for SplittingBreakIterator {
             self.current = self.slice_start_idx + self.base_iter.first();
             Ok(self.current)
         } else {
-            self.current = self.slice_start_idx + self.base_iter.following(offset - self.slice_start_idx)?;
+            self.current =
+                self.slice_start_idx + self.base_iter.following(offset - self.slice_start_idx)?;
             Ok(self.current)
         }
     }
@@ -284,7 +288,8 @@ impl BreakIterator for SplittingBreakIterator {
             self.current = self.slice_start_idx + self.base_iter.last();
             Ok(self.current)
         } else {
-            self.current = self.slice_start_idx + self.base_iter.preceding(offset - self.slice_start_idx)?;
+            self.current =
+                self.slice_start_idx + self.base_iter.preceding(offset - self.slice_start_idx)?;
             Ok(self.current)
         }
     }

@@ -37,3 +37,8 @@ spatial4j = { path = "../spatial4j" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6.1"
 quick-xml = "0.42.0"
+
+[dev-dependencies]
+# The sprint-17 Java-oracle harness (`tests/sprint17_oracle/`, rmp #628)
+# draws on `randomizedtesting`.
+randomizedtesting = { path = "../randomizedtesting" }

@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `XYZSolidFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -63,27 +62,73 @@ impl XYZSolidFactory {
         if (max_x - min_x).abs() < Vector::MINIMUM_RESOLUTION {
             if (max_y - min_y).abs() < Vector::MINIMUM_RESOLUTION {
                 if (max_z - min_z).abs() < Vector::MINIMUM_RESOLUTION {
-                    return Ok(Arc::new(dXdYdZSolid::new(pm, (min_x + max_x) * 0.5, (min_y + max_y) * 0.5, min_z)));
+                    return Ok(Arc::new(dXdYdZSolid::new(
+                        pm,
+                        (min_x + max_x) * 0.5,
+                        (min_y + max_y) * 0.5,
+                        min_z,
+                    )));
                 } else {
-                    return Ok(Arc::new(dXdYZSolid::new(pm, (min_x + max_x) * 0.5, (min_y + max_y) * 0.5, min_z, max_z)?));
+                    return Ok(Arc::new(dXdYZSolid::new(
+                        pm,
+                        (min_x + max_x) * 0.5,
+                        (min_y + max_y) * 0.5,
+                        min_z,
+                        max_z,
+                    )?));
                 }
             } else if (max_z - min_z).abs() < Vector::MINIMUM_RESOLUTION {
-                return Ok(Arc::new(dXYdZSolid::new(pm, (min_x + max_x) * 0.5, min_y, max_y, (min_z + max_z) * 0.5)?));
+                return Ok(Arc::new(dXYdZSolid::new(
+                    pm,
+                    (min_x + max_x) * 0.5,
+                    min_y,
+                    max_y,
+                    (min_z + max_z) * 0.5,
+                )?));
             } else {
-                return Ok(Arc::new(dXYZSolid::new(pm, (min_x + max_x) * 0.5, min_y, max_y, min_z, max_z)?));
+                return Ok(Arc::new(dXYZSolid::new(
+                    pm,
+                    (min_x + max_x) * 0.5,
+                    min_y,
+                    max_y,
+                    min_z,
+                    max_z,
+                )?));
             }
         }
         if (max_y - min_y).abs() < Vector::MINIMUM_RESOLUTION {
             if (max_z - min_z).abs() < Vector::MINIMUM_RESOLUTION {
-                return Ok(Arc::new(XdYdZSolid::new(pm, min_x, max_x, (min_y + max_y) * 0.5, (min_z + max_z) * 0.5)?));
+                return Ok(Arc::new(XdYdZSolid::new(
+                    pm,
+                    min_x,
+                    max_x,
+                    (min_y + max_y) * 0.5,
+                    (min_z + max_z) * 0.5,
+                )?));
             } else {
-                return Ok(Arc::new(XdYZSolid::new(pm, min_x, max_x, (min_y + max_y) * 0.5, min_z, max_z)?));
+                return Ok(Arc::new(XdYZSolid::new(
+                    pm,
+                    min_x,
+                    max_x,
+                    (min_y + max_y) * 0.5,
+                    min_z,
+                    max_z,
+                )?));
             }
         }
         if (max_z - min_z).abs() < Vector::MINIMUM_RESOLUTION {
-            return Ok(Arc::new(XYdZSolid::new(pm, min_x, max_x, min_y, max_y, (min_z + max_z) * 0.5)?));
+            return Ok(Arc::new(XYdZSolid::new(
+                pm,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                (min_z + max_z) * 0.5,
+            )?));
         }
-        Ok(Arc::new(StandardXYZSolid::new(pm, min_x, max_x, min_y, max_y, min_z, max_z)?))
+        Ok(Arc::new(StandardXYZSolid::new(
+            pm, min_x, max_x, min_y, max_y, min_z, max_z,
+        )?))
     }
 
     /// `makeXYZSolid(PlanetModel, XYZBounds)`.
@@ -91,7 +136,10 @@ impl XYZSolidFactory {
     /// # Errors
     ///
     /// `IllegalArgumentException` when the values are in the wrong order.
-    pub fn make_xyz_solid_from_bounds(planet_model: &Arc<PlanetModel>, bounds: &XYZBounds) -> Result<Arc<dyn XYZSolid>> {
+    pub fn make_xyz_solid_from_bounds(
+        planet_model: &Arc<PlanetModel>,
+        bounds: &XYZBounds,
+    ) -> Result<Arc<dyn XYZSolid>> {
         let ub = |v: Option<f64>| v.unwrap_or_else(|| npe());
         Self::make_xyz_solid(
             planet_model,

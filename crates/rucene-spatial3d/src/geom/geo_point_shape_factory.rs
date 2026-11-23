@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoPointShapeFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -39,7 +38,11 @@ impl GeoPointShapeFactory {
     ///
     /// `IllegalArgumentException` when the latitude or longitude is out of
     /// range.
-    pub fn make_geo_point_shape(planet_model: &Arc<PlanetModel>, lat: f64, lon: f64) -> Result<Arc<dyn GeoPointShape>> {
+    pub fn make_geo_point_shape(
+        planet_model: &Arc<PlanetModel>,
+        lat: f64,
+        lon: f64,
+    ) -> Result<Arc<dyn GeoPointShape>> {
         Ok(Arc::new(GeoDegeneratePoint::new(planet_model, lat, lon)?))
     }
 }

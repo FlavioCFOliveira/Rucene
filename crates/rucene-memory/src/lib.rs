@@ -11,7 +11,6 @@
 //! own name is a name of the Rust prelude or the name of another item of that
 //! module, and the Java kind is appended when the prefixed name is itself taken.
 
-
 pub mod memory_index;
 
 pub use memory_index::MemoryIndex;

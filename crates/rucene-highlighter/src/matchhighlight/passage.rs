@@ -43,7 +43,10 @@ pub struct Passage {
 impl Passage {
     /// Equivalent to `new Passage(int, int, List)`.
     pub fn new(from: i32, to: i32, markers: Vec<OffsetRange>) -> Self {
-        debug_assert!(from <= to, "A non-empty offset range is required: {from}-{to}");
+        debug_assert!(
+            from <= to,
+            "A non-empty offset range is required: {from}-{to}"
+        );
         Self { from, to, markers }
     }
 

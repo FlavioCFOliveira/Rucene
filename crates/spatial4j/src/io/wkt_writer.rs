@@ -33,7 +33,12 @@ impl WKTWriter {
     }
 
     /// `append(StringBuilder buffer, Point p, NumberFormat nf)`.
-    pub fn append<'a>(&self, buffer: &'a mut String, p: &dyn Point, nf: &DecimalFormat) -> &'a mut String {
+    pub fn append<'a>(
+        &self,
+        buffer: &'a mut String,
+        p: &dyn Point,
+        nf: &DecimalFormat,
+    ) -> &'a mut String {
         buffer.push_str(&nf.format(p.get_x()));
         buffer.push(' ');
         buffer.push_str(&nf.format(p.get_y()));
@@ -127,7 +132,9 @@ impl ShapeWriter for WKTWriter {
     }
 
     fn write(&self, output: &mut dyn std::fmt::Write, shape: &dyn Shape) -> Result<()> {
-        output.write_str(&self.to_string_of(shape)).map_err(io_error)
+        output
+            .write_str(&self.to_string_of(shape))
+            .map_err(io_error)
     }
 
     fn as_any(&self) -> &dyn Any {

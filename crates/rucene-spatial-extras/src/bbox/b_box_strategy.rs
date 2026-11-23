@@ -21,11 +21,15 @@
 use std::fmt;
 use std::sync::{Arc, LazyLock, Weak};
 
-use rucene::document::{DoubleDocValuesField, DoublePoint, Field, FieldType, NumericValue, StoredField, StringField};
+use rucene::document::{
+    DoubleDocValuesField, DoublePoint, Field, FieldType, NumericValue, StoredField, StringField,
+};
 use rucene::error::{LuceneError, Result};
 use rucene::index::{DocValuesType, IndexOptions, IndexableField, IndexableFieldType, Term};
 use rucene::search::double_values_source::DoubleValuesSource;
-use rucene::search::{BooleanQuery, BooleanQueryBuilder, ConstantScoreQuery, Occur, Query, TermQuery};
+use rucene::search::{
+    BooleanQuery, BooleanQueryBuilder, ConstantScoreQuery, Occur, Query, TermQuery,
+};
 use rucene::util::BytesRef;
 use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::shape::point::Point;
@@ -48,7 +52,9 @@ pub static DEFAULT_FIELDTYPE: LazyLock<FieldType> = LazyLock::new(|| {
     // Default: pointValues + docValues
     let field_type = FieldType::new();
     field_type.set_dimensions(1, 8).expect("unfrozen"); // pointValues (assume Double)
-    field_type.set_doc_values_type(DocValuesType::NUMERIC).expect("unfrozen"); // docValues
+    field_type
+        .set_doc_values_type(DocValuesType::NUMERIC)
+        .expect("unfrozen"); // docValues
     field_type.set_stored(false).expect("unfrozen");
     field_type.freeze();
     field_type
@@ -112,7 +118,10 @@ impl BBoxStrategy {
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub fn new_instance(ctx: Arc<SpatialContext>, field_name_prefix: &str) -> Result<Arc<BBoxStrategy>> {
+    pub fn new_instance(
+        ctx: Arc<SpatialContext>,
+        field_name_prefix: &str,
+    ) -> Result<Arc<BBoxStrategy>> {
         Self::new(ctx, field_name_prefix, &DEFAULT_FIELDTYPE)
     }
 
@@ -126,7 +135,11 @@ impl BBoxStrategy {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an empty field name.
-    pub fn new(ctx: Arc<SpatialContext>, field_name_prefix: &str, field_type: &FieldType) -> Result<Arc<BBoxStrategy>> {
+    pub fn new(
+        ctx: Arc<SpatialContext>,
+        field_name_prefix: &str,
+        field_type: &FieldType,
+    ) -> Result<Arc<BBoxStrategy>> {
         let base = SpatialStrategyBase::new(ctx, field_name_prefix)?;
         field_type.freeze();
         let options_field_type = field_type.clone();
@@ -172,7 +185,9 @@ impl BBoxStrategy {
     }
 
     fn me(&self) -> Arc<BBoxStrategy> {
-        self.me.upgrade().expect("a BBoxStrategy is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a BBoxStrategy is shared as an Arc")
     }
 
     /// `getFieldType()`.
@@ -185,29 +200,76 @@ impl BBoxStrategy {
     // ---------------------------------
 
     /// `createIndexableFields(Rectangle bbox)`.
-    fn create_indexable_fields_rect(&self, bbox: &dyn Rectangle) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields_rect(
+        &self,
+        bbox: &dyn Rectangle,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         let mut fields: Vec<Arc<dyn IndexableField>> = Vec::with_capacity(self.fields_len);
         if self.has_stored {
-            fields.push(Arc::new(StoredField::new_number(self.field_min_x.clone(), NumericValue::Double(bbox.get_min_x()))?));
-            fields.push(Arc::new(StoredField::new_number(self.field_min_y.clone(), NumericValue::Double(bbox.get_min_y()))?));
-            fields.push(Arc::new(StoredField::new_number(self.field_max_x.clone(), NumericValue::Double(bbox.get_max_x()))?));
-            fields.push(Arc::new(StoredField::new_number(self.field_max_y.clone(), NumericValue::Double(bbox.get_max_y()))?));
+            fields.push(Arc::new(StoredField::new_number(
+                self.field_min_x.clone(),
+                NumericValue::Double(bbox.get_min_x()),
+            )?));
+            fields.push(Arc::new(StoredField::new_number(
+                self.field_min_y.clone(),
+                NumericValue::Double(bbox.get_min_y()),
+            )?));
+            fields.push(Arc::new(StoredField::new_number(
+                self.field_max_x.clone(),
+                NumericValue::Double(bbox.get_max_x()),
+            )?));
+            fields.push(Arc::new(StoredField::new_number(
+                self.field_max_y.clone(),
+                NumericValue::Double(bbox.get_max_y()),
+            )?));
         }
         if self.has_doc_vals {
-            fields.push(Arc::new(DoubleDocValuesField::new(self.field_min_x.clone(), bbox.get_min_x())));
-            fields.push(Arc::new(DoubleDocValuesField::new(self.field_min_y.clone(), bbox.get_min_y())));
-            fields.push(Arc::new(DoubleDocValuesField::new(self.field_max_x.clone(), bbox.get_max_x())));
-            fields.push(Arc::new(DoubleDocValuesField::new(self.field_max_y.clone(), bbox.get_max_y())));
+            fields.push(Arc::new(DoubleDocValuesField::new(
+                self.field_min_x.clone(),
+                bbox.get_min_x(),
+            )));
+            fields.push(Arc::new(DoubleDocValuesField::new(
+                self.field_min_y.clone(),
+                bbox.get_min_y(),
+            )));
+            fields.push(Arc::new(DoubleDocValuesField::new(
+                self.field_max_x.clone(),
+                bbox.get_max_x(),
+            )));
+            fields.push(Arc::new(DoubleDocValuesField::new(
+                self.field_max_y.clone(),
+                bbox.get_max_y(),
+            )));
         }
         if self.has_point_vals {
-            fields.push(Arc::new(DoublePoint::new(self.field_min_x.clone(), &[bbox.get_min_x()])?));
-            fields.push(Arc::new(DoublePoint::new(self.field_min_y.clone(), &[bbox.get_min_y()])?));
-            fields.push(Arc::new(DoublePoint::new(self.field_max_x.clone(), &[bbox.get_max_x()])?));
-            fields.push(Arc::new(DoublePoint::new(self.field_max_y.clone(), &[bbox.get_max_y()])?));
+            fields.push(Arc::new(DoublePoint::new(
+                self.field_min_x.clone(),
+                &[bbox.get_min_x()],
+            )?));
+            fields.push(Arc::new(DoublePoint::new(
+                self.field_min_y.clone(),
+                &[bbox.get_min_y()],
+            )?));
+            fields.push(Arc::new(DoublePoint::new(
+                self.field_max_x.clone(),
+                &[bbox.get_max_x()],
+            )?));
+            fields.push(Arc::new(DoublePoint::new(
+                self.field_max_y.clone(),
+                &[bbox.get_max_y()],
+            )?));
         }
         if let Some(xdl_field_type) = &self.xdl_field_type {
-            let value = if bbox.get_crosses_date_line() { "T" } else { "F" };
-            fields.push(Arc::new(Field::new(self.field_xdl.clone(), value.to_string(), Arc::clone(xdl_field_type))?));
+            let value = if bbox.get_crosses_date_line() {
+                "T"
+            } else {
+                "F"
+            };
+            fields.push(Arc::new(Field::new(
+                self.field_xdl.clone(),
+                value.to_string(),
+                Arc::clone(xdl_field_type),
+            )?));
         }
         debug_assert_eq!(fields.len(), self.fields_len);
         Ok(fields)
@@ -258,8 +320,20 @@ impl BBoxStrategy {
 
         // Y conditions
         // docMinY <= queryExtent.getMinY() AND docMaxY >= queryExtent.getMaxY()
-        let q_min_y = self.make_numeric_range_query(&self.field_min_y, None, Some(bbox.get_min_y()), false, true)?;
-        let q_max_y = self.make_numeric_range_query(&self.field_max_y, Some(bbox.get_max_y()), None, true, false)?;
+        let q_min_y = self.make_numeric_range_query(
+            &self.field_min_y,
+            None,
+            Some(bbox.get_min_y()),
+            false,
+            true,
+        )?;
+        let q_max_y = self.make_numeric_range_query(
+            &self.field_max_y,
+            Some(bbox.get_max_y()),
+            None,
+            true,
+            false,
+        )?;
         let y_conditions = self.make_query(Occur::MUST, &[Some(q_min_y), Some(q_max_y)])?;
 
         // X conditions
@@ -270,8 +344,20 @@ impl BBoxStrategy {
             // X Conditions for documents that do not cross the date line,
             // documents that contain the min X and max X of the query envelope,
             // docMinX <= queryExtent.getMinX() AND docMaxX >= queryExtent.getMaxX()
-            let q_min_x = self.make_numeric_range_query(&self.field_min_x, None, Some(bbox.get_min_x()), false, true)?;
-            let q_max_x = self.make_numeric_range_query(&self.field_max_x, Some(bbox.get_max_x()), None, true, false)?;
+            let q_min_x = self.make_numeric_range_query(
+                &self.field_min_x,
+                None,
+                Some(bbox.get_min_x()),
+                false,
+                true,
+            )?;
+            let q_max_x = self.make_numeric_range_query(
+                &self.field_max_x,
+                Some(bbox.get_max_x()),
+                None,
+                true,
+                false,
+            )?;
             let q_min_max = self.make_query(Occur::MUST, &[Some(q_min_x), Some(q_max_x)])?;
             let q_non_xdl = self.make_xdl_with(false, q_min_max)?;
 
@@ -282,11 +368,22 @@ impl BBoxStrategy {
                 // the left portion of the document contains the min X of the query
                 // OR the right portion of the document contains the max X of the query,
                 // docMinXLeft <= queryExtent.getMinX() OR docMaxXRight >= queryExtent.getMaxX()
-                let q_xdl_left =
-                    self.make_numeric_range_query(&self.field_min_x, None, Some(bbox.get_min_x()), false, true)?;
-                let q_xdl_right =
-                    self.make_numeric_range_query(&self.field_max_x, Some(bbox.get_max_x()), None, true, false)?;
-                let q_xdl_left_right = self.make_query(Occur::SHOULD, &[Some(q_xdl_left), Some(q_xdl_right)])?;
+                let q_xdl_left = self.make_numeric_range_query(
+                    &self.field_min_x,
+                    None,
+                    Some(bbox.get_min_x()),
+                    false,
+                    true,
+                )?;
+                let q_xdl_right = self.make_numeric_range_query(
+                    &self.field_max_x,
+                    Some(bbox.get_max_x()),
+                    None,
+                    true,
+                    false,
+                )?;
+                let q_xdl_left_right =
+                    self.make_query(Occur::SHOULD, &[Some(q_xdl_left), Some(q_xdl_right)])?;
                 let q_xdl = self.make_xdl_with(true, q_xdl_left_right)?;
 
                 let mut q_edge_dl: Option<Arc<dyn Query>> = None;
@@ -302,7 +399,8 @@ impl BBoxStrategy {
                 }
 
                 // apply the non-XDL and XDL conditions
-                x_conditions = self.make_query(Occur::SHOULD, &[Some(q_non_xdl), Some(q_xdl), q_edge_dl])?;
+                x_conditions =
+                    self.make_query(Occur::SHOULD, &[Some(q_non_xdl), Some(q_xdl), q_edge_dl])?;
             }
         } else {
             // queries that cross the date line
@@ -313,10 +411,24 @@ impl BBoxStrategy {
             // the left portion of the document contains the min X of the query
             // AND the right portion of the document contains the max X of the query,
             // docMinXLeft <= queryExtent.getMinX() AND docMaxXRight >= queryExtent.getMaxX()
-            let q_xdl_left = self.make_numeric_range_query(&self.field_min_x, None, Some(bbox.get_min_x()), false, true)?;
-            let q_xdl_right = self.make_numeric_range_query(&self.field_max_x, Some(bbox.get_max_x()), None, true, false)?;
-            let q_xdl_left_right =
-                self.make_xdl_with(true, self.make_query(Occur::MUST, &[Some(q_xdl_left), Some(q_xdl_right)])?)?;
+            let q_xdl_left = self.make_numeric_range_query(
+                &self.field_min_x,
+                None,
+                Some(bbox.get_min_x()),
+                false,
+                true,
+            )?;
+            let q_xdl_right = self.make_numeric_range_query(
+                &self.field_max_x,
+                Some(bbox.get_max_x()),
+                None,
+                true,
+                false,
+            )?;
+            let q_xdl_left_right = self.make_xdl_with(
+                true,
+                self.make_query(Occur::MUST, &[Some(q_xdl_left), Some(q_xdl_right)])?,
+            )?;
 
             let q_world = self.make_query(
                 Occur::MUST,
@@ -326,7 +438,8 @@ impl BBoxStrategy {
                 ],
             )?;
 
-            x_conditions = self.make_query(Occur::SHOULD, &[Some(q_xdl_left_right), Some(q_world)])?;
+            x_conditions =
+                self.make_query(Occur::SHOULD, &[Some(q_xdl_left_right), Some(q_world)])?;
         }
 
         // both X and Y conditions must occur
@@ -342,8 +455,20 @@ impl BBoxStrategy {
 
         // Y conditions
         // docMinY > queryExtent.getMaxY() OR docMaxY < queryExtent.getMinY()
-        let q_min_y = self.make_numeric_range_query(&self.field_min_y, Some(bbox.get_max_y()), None, false, false)?;
-        let q_max_y = self.make_numeric_range_query(&self.field_max_y, None, Some(bbox.get_min_y()), false, false)?;
+        let q_min_y = self.make_numeric_range_query(
+            &self.field_min_y,
+            Some(bbox.get_max_y()),
+            None,
+            false,
+            false,
+        )?;
+        let q_max_y = self.make_numeric_range_query(
+            &self.field_max_y,
+            None,
+            Some(bbox.get_min_y()),
+            false,
+            false,
+        )?;
         let y_conditions = self.make_query(Occur::SHOULD, &[Some(q_min_y), Some(q_max_y)])?;
 
         // X conditions
@@ -353,21 +478,39 @@ impl BBoxStrategy {
         if !bbox.get_crosses_date_line() {
             // X Conditions for documents that do not cross the date line,
             // docMinX > queryExtent.getMaxX() OR docMaxX < queryExtent.getMinX()
-            let mut q_min_x = self.make_numeric_range_query(&self.field_min_x, Some(bbox.get_max_x()), None, false, false)?;
+            let mut q_min_x = self.make_numeric_range_query(
+                &self.field_min_x,
+                Some(bbox.get_max_x()),
+                None,
+                false,
+                false,
+            )?;
             if bbox.get_min_x() == -180.0 && self.base.ctx.is_geo() {
                 // touches dateline; -180 == 180
                 let mut bq = BooleanQueryBuilder::new();
                 bq.add(q_min_x, Occur::MUST)?;
-                bq.add(self.make_number_term_query(&self.field_max_x, 180.0)?, Occur::MUST_NOT)?;
+                bq.add(
+                    self.make_number_term_query(&self.field_max_x, 180.0)?,
+                    Occur::MUST_NOT,
+                )?;
                 q_min_x = Arc::new(bq.build());
             }
-            let mut q_max_x = self.make_numeric_range_query(&self.field_max_x, None, Some(bbox.get_min_x()), false, false)?;
+            let mut q_max_x = self.make_numeric_range_query(
+                &self.field_max_x,
+                None,
+                Some(bbox.get_min_x()),
+                false,
+                false,
+            )?;
 
             if bbox.get_max_x() == 180.0 && self.base.ctx.is_geo() {
                 // touches dateline; -180 == 180
                 let mut bq = BooleanQueryBuilder::new();
                 bq.add(q_max_x, Occur::MUST)?;
-                bq.add(self.make_number_term_query(&self.field_min_x, -180.0)?, Occur::MUST_NOT)?;
+                bq.add(
+                    self.make_number_term_query(&self.field_min_x, -180.0)?,
+                    Occur::MUST_NOT,
+                )?;
                 q_max_x = Arc::new(bq.build());
             }
             let q_min_max = self.make_query(Occur::SHOULD, &[Some(q_min_x), Some(q_max_x)])?;
@@ -386,11 +529,22 @@ impl BBoxStrategy {
                 // ignored
                 // (docMinXRight > queryExtent.getMaxX()) equates to (-180.0 > queryExtent.getMaxX()) and is
                 // ignored
-                let q_min_x_left =
-                    self.make_numeric_range_query(&self.field_min_x, Some(bbox.get_max_x()), None, false, false)?;
-                let q_max_x_right =
-                    self.make_numeric_range_query(&self.field_max_x, None, Some(bbox.get_min_x()), false, false)?;
-                let q_left_right = self.make_query(Occur::MUST, &[Some(q_min_x_left), Some(q_max_x_right)])?;
+                let q_min_x_left = self.make_numeric_range_query(
+                    &self.field_min_x,
+                    Some(bbox.get_max_x()),
+                    None,
+                    false,
+                    false,
+                )?;
+                let q_max_x_right = self.make_numeric_range_query(
+                    &self.field_max_x,
+                    None,
+                    Some(bbox.get_min_x()),
+                    false,
+                    false,
+                )?;
+                let q_left_right =
+                    self.make_query(Occur::MUST, &[Some(q_min_x_left), Some(q_max_x_right)])?;
                 let q_xdl = self.make_xdl_with(true, q_left_right)?;
 
                 // apply the non-XDL and XDL conditions
@@ -403,14 +557,28 @@ impl BBoxStrategy {
             // (docMinX > queryExtent.getMaxX()Left OR docMaxX < queryExtent.getMinX()) AND (docMinX >
             // queryExtent.getMaxX() OR docMaxX < queryExtent.getMinX()Left)
             // where: queryExtent.getMaxX()Left = 180.0, queryExtent.getMinX()Left = -180.0
-            let q_min_x_left = self.make_numeric_range_query(&self.field_min_x, Some(180.0), None, false, false)?;
-            let q_max_x_left =
-                self.make_numeric_range_query(&self.field_max_x, None, Some(bbox.get_min_x()), false, false)?;
-            let q_min_x_right =
-                self.make_numeric_range_query(&self.field_min_x, Some(bbox.get_max_x()), None, false, false)?;
-            let q_max_x_right = self.make_numeric_range_query(&self.field_max_x, None, Some(-180.0), false, false)?;
-            let q_left = self.make_query(Occur::SHOULD, &[Some(q_min_x_left), Some(q_max_x_left)])?;
-            let q_right = self.make_query(Occur::SHOULD, &[Some(q_min_x_right), Some(q_max_x_right)])?;
+            let q_min_x_left =
+                self.make_numeric_range_query(&self.field_min_x, Some(180.0), None, false, false)?;
+            let q_max_x_left = self.make_numeric_range_query(
+                &self.field_max_x,
+                None,
+                Some(bbox.get_min_x()),
+                false,
+                false,
+            )?;
+            let q_min_x_right = self.make_numeric_range_query(
+                &self.field_min_x,
+                Some(bbox.get_max_x()),
+                None,
+                false,
+                false,
+            )?;
+            let q_max_x_right =
+                self.make_numeric_range_query(&self.field_max_x, None, Some(-180.0), false, false)?;
+            let q_left =
+                self.make_query(Occur::SHOULD, &[Some(q_min_x_left), Some(q_max_x_left)])?;
+            let q_right =
+                self.make_query(Occur::SHOULD, &[Some(q_min_x_right), Some(q_max_x_right)])?;
             let q_left_right = self.make_query(Occur::MUST, &[Some(q_left), Some(q_right)])?;
 
             // No need to search for documents that do not cross the date line
@@ -431,7 +599,10 @@ impl BBoxStrategy {
         let q_min_y = self.make_number_term_query(&self.field_min_y, bbox.get_min_y())?;
         let q_max_x = self.make_number_term_query(&self.field_max_x, bbox.get_max_x())?;
         let q_max_y = self.make_number_term_query(&self.field_max_y, bbox.get_max_y())?;
-        self.make_query(Occur::MUST, &[Some(q_min_x), Some(q_min_y), Some(q_max_x), Some(q_max_y)])
+        self.make_query(
+            Occur::MUST,
+            &[Some(q_min_x), Some(q_min_y), Some(q_max_x), Some(q_max_y)],
+        )
     }
 
     /// `makeIntersects(Rectangle bbox)`: constructs a query to retrieve
@@ -446,7 +617,11 @@ impl BBoxStrategy {
         // there must be an envelope, it must not be disjoint
         let q_has_env: Arc<dyn Query> = if self.base.ctx.is_geo() {
             let q_is_non_xdl = self.make_xdl(false);
-            let q_is_xdl = if self.base.ctx.is_geo() { Some(self.make_xdl(true)) } else { None };
+            let q_is_xdl = if self.base.ctx.is_geo() {
+                Some(self.make_xdl(true))
+            } else {
+                None
+            };
             self.make_query(Occur::SHOULD, &[Some(q_is_non_xdl), q_is_xdl])?
         } else {
             self.make_xdl(false)
@@ -467,7 +642,11 @@ impl BBoxStrategy {
     /// `makeQuery(BooleanClause.Occur occur, Query... queries)`: makes a
     /// boolean query based upon a collection of queries and a logical
     /// operator; `None` (Java `null`) queries are skipped.
-    pub(crate) fn make_query(&self, occur: Occur, queries: &[Option<Arc<dyn Query>>]) -> Result<Arc<dyn Query>> {
+    pub(crate) fn make_query(
+        &self,
+        occur: Occur,
+        queries: &[Option<Arc<dyn Query>>],
+    ) -> Result<Arc<dyn Query>> {
         let mut bq = BooleanQueryBuilder::new();
         for query in queries.iter().flatten() {
             bq.add(Arc::clone(query), occur)?;
@@ -485,8 +664,20 @@ impl BBoxStrategy {
 
         // Y conditions
         // docMinY >= queryExtent.getMinY() AND docMaxY <= queryExtent.getMaxY()
-        let q_min_y = self.make_numeric_range_query(&self.field_min_y, Some(bbox.get_min_y()), None, true, false)?;
-        let q_max_y = self.make_numeric_range_query(&self.field_max_y, None, Some(bbox.get_max_y()), false, true)?;
+        let q_min_y = self.make_numeric_range_query(
+            &self.field_min_y,
+            Some(bbox.get_min_y()),
+            None,
+            true,
+            false,
+        )?;
+        let q_max_y = self.make_numeric_range_query(
+            &self.field_max_y,
+            None,
+            Some(bbox.get_max_y()),
+            false,
+            true,
+        )?;
         let y_conditions = self.make_query(Occur::MUST, &[Some(q_min_y), Some(q_max_y)])?;
 
         // X conditions
@@ -499,8 +690,20 @@ impl BBoxStrategy {
             // queries that do not cross the date line
 
             // docMinX >= queryExtent.getMinX() AND docMaxX <= queryExtent.getMaxX()
-            let q_min_x = self.make_numeric_range_query(&self.field_min_x, Some(bbox.get_min_x()), None, true, false)?;
-            let q_max_x = self.make_numeric_range_query(&self.field_max_x, None, Some(bbox.get_max_x()), false, true)?;
+            let q_min_x = self.make_numeric_range_query(
+                &self.field_min_x,
+                Some(bbox.get_min_x()),
+                None,
+                true,
+                false,
+            )?;
+            let q_max_x = self.make_numeric_range_query(
+                &self.field_max_x,
+                None,
+                Some(bbox.get_max_x()),
+                false,
+                true,
+            )?;
             let mut q_min_max = self.make_query(Occur::MUST, &[Some(q_min_x), Some(q_max_x)])?;
 
             let mut edge = 0.0; // none, otherwise opposite dateline of query
@@ -528,17 +731,30 @@ impl BBoxStrategy {
 
             // the document should be within the left portion of the query
             // docMinX >= queryExtent.getMinX() AND docMaxX <= 180.0
-            let q_min_x_left =
-                self.make_numeric_range_query(&self.field_min_x, Some(bbox.get_min_x()), None, true, false)?;
-            let q_max_x_left = self.make_numeric_range_query(&self.field_max_x, None, Some(180.0), false, true)?;
+            let q_min_x_left = self.make_numeric_range_query(
+                &self.field_min_x,
+                Some(bbox.get_min_x()),
+                None,
+                true,
+                false,
+            )?;
+            let q_max_x_left =
+                self.make_numeric_range_query(&self.field_max_x, None, Some(180.0), false, true)?;
             let q_left = self.make_query(Occur::MUST, &[Some(q_min_x_left), Some(q_max_x_left)])?;
 
             // the document should be within the right portion of the query
             // docMinX >= -180.0 AND docMaxX <= queryExtent.getMaxX()
-            let q_min_x_right = self.make_numeric_range_query(&self.field_min_x, Some(-180.0), None, true, false)?;
-            let q_max_x_right =
-                self.make_numeric_range_query(&self.field_max_x, None, Some(bbox.get_max_x()), false, true)?;
-            let q_right = self.make_query(Occur::MUST, &[Some(q_min_x_right), Some(q_max_x_right)])?;
+            let q_min_x_right =
+                self.make_numeric_range_query(&self.field_min_x, Some(-180.0), None, true, false)?;
+            let q_max_x_right = self.make_numeric_range_query(
+                &self.field_max_x,
+                None,
+                Some(bbox.get_max_x()),
+                false,
+                true,
+            )?;
+            let q_right =
+                self.make_query(Occur::MUST, &[Some(q_min_x_right), Some(q_max_x_right)])?;
 
             // either left or right conditions should occur,
             // apply the left and right conditions to documents that do not cross the date line
@@ -550,9 +766,22 @@ impl BBoxStrategy {
             // AND the right portion of the document must be within the right portion of the query
             // docMinXLeft >= queryExtent.getMinX() AND docMaxXLeft <= 180.0
             // AND docMinXRight >= -180.0 AND docMaxXRight <= queryExtent.getMaxX()
-            let q_xdl_left = self.make_numeric_range_query(&self.field_min_x, Some(bbox.get_min_x()), None, true, false)?;
-            let q_xdl_right = self.make_numeric_range_query(&self.field_max_x, None, Some(bbox.get_max_x()), false, true)?;
-            let q_xdl_left_right = self.make_query(Occur::MUST, &[Some(q_xdl_left), Some(q_xdl_right)])?;
+            let q_xdl_left = self.make_numeric_range_query(
+                &self.field_min_x,
+                Some(bbox.get_min_x()),
+                None,
+                true,
+                false,
+            )?;
+            let q_xdl_right = self.make_numeric_range_query(
+                &self.field_max_x,
+                None,
+                Some(bbox.get_max_x()),
+                false,
+                true,
+            )?;
+            let q_xdl_left_right =
+                self.make_query(Occur::MUST, &[Some(q_xdl_left), Some(q_xdl_right)])?;
             let q_xdl = self.make_xdl_with(true, q_xdl_left_right)?;
 
             // apply the non-XDL and XDL conditions
@@ -576,7 +805,11 @@ impl BBoxStrategy {
     /// `makeXDL(boolean crossedDateLine, Query query)`: constructs a query
     /// to retrieve documents that do or do not cross the date line and
     /// match the supplied spatial query.
-    fn make_xdl_with(&self, crossed_date_line: bool, query: Arc<dyn Query>) -> Result<Arc<dyn Query>> {
+    fn make_xdl_with(
+        &self,
+        crossed_date_line: bool,
+        query: Arc<dyn Query>,
+    ) -> Result<Arc<dyn Query>> {
         if !self.base.ctx.is_geo() {
             debug_assert!(!crossed_date_line);
             return Ok(query);
@@ -592,7 +825,9 @@ impl BBoxStrategy {
         if self.has_point_vals {
             return DoublePoint::new_exact_query(field, number);
         }
-        Err(LuceneError::unsupported_operation("An index is required for this operation."))
+        Err(LuceneError::unsupported_operation(
+            "An index is required for this operation.",
+        ))
     }
 
     /// `makeNumericRangeQuery(String fieldname, Double min, Double max,
@@ -618,7 +853,9 @@ impl BBoxStrategy {
             }
             return DoublePoint::new_range_query(fieldname, &[min], &[max]);
         }
-        Err(LuceneError::unsupported_operation("An index is required for this operation."))
+        Err(LuceneError::unsupported_operation(
+            "An index is required for this operation.",
+        ))
     }
 }
 
@@ -643,11 +880,18 @@ impl SpatialStrategy for BBoxStrategy {
         &self.base
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         self.create_indexable_fields_rect(&*shape.get_bounding_box())
     }
 
-    fn make_distance_value_source(&self, query_point: &Arc<dyn Point>, multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
+    fn make_distance_value_source(
+        &self,
+        query_point: &Arc<dyn Point>,
+        multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
         // TODO if makeShapeValueSource gets lifted to the top; this could become a generic impl.
         Ok(Arc::new(DistanceToShapeValueSource::new(
             self.make_shape_value_source(),

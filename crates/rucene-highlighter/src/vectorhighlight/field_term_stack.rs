@@ -95,7 +95,8 @@ impl FieldTermStack {
 
             // For weight look here: http://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/DefaultSimilarity.html
             let weight = ((num_docs as f64
-                / (reader.doc_freq(&Term::new(field_name.to_string(), text.clone()))? as f64 + 1.0))
+                / (reader.doc_freq(&Term::new(field_name.to_string(), text.clone()))? as f64
+                    + 1.0))
                 .ln()
                 + 1.0) as f32;
 
@@ -181,6 +182,14 @@ impl FieldTermStack {
     /// Equivalent to `isEmpty()`.
     pub fn is_empty(&self) -> bool {
         self.term_list.is_empty()
+    }
+
+    /// The package-private field `termList`, read by the same package's
+    /// tests (`TestFieldTermStack`); Rust's integration tests are another
+    /// crate, so the port exposes it (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn term_list(&self) -> &VecDeque<TermInfo> {
+        &self.term_list
     }
 }
 

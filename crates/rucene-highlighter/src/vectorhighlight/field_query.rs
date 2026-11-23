@@ -45,7 +45,10 @@ const MAX_MTQ_TERMS: i32 = 1024;
 fn must_be_flatten_first(query: &dyn Query) -> LuceneError {
     LuceneError::unchecked(
         "java.lang.RuntimeException",
-        format!("query \"{}\" must be flatten first.", query.to_query_string("")),
+        format!(
+            "query \"{}\" must be flatten first.",
+            query.to_query_string("")
+        ),
     )
 }
 
@@ -145,7 +148,13 @@ impl FieldQuery {
         field_match: bool,
         overrides: Arc<dyn FieldQueryOverrides>,
     ) -> Result<Self> {
-        Self::construct(query, reader, phrase_highlight, field_match, Some(overrides))
+        Self::construct(
+            query,
+            reader,
+            phrase_highlight,
+            field_match,
+            Some(overrides),
+        )
     }
 
     fn construct(
@@ -547,13 +556,21 @@ impl FieldQuery {
                     term_set.insert(term.text());
                 }
             } else if let (true, Some(searcher)) = (query.is_multi_term_query(), searcher) {
-                let rewritten = query.rewrite(searcher)?.unwrap_or_else(|| Arc::clone(&query));
+                let rewritten = query
+                    .rewrite(searcher)?
+                    .unwrap_or_else(|| Arc::clone(&query));
                 let Some(mtq_terms) = rewritten.as_any().downcast_ref::<BooleanQuery>() else {
-                    return Err(class_cast(&*rewritten, "org.apache.lucene.search.BooleanQuery"));
+                    return Err(class_cast(
+                        &*rewritten,
+                        "org.apache.lucene.search.BooleanQuery",
+                    ));
                 };
                 for clause in mtq_terms.clauses() {
                     let Some(tq) = clause.query().as_term_query() else {
-                        return Err(class_cast(&**clause.query(), "org.apache.lucene.search.TermQuery"));
+                        return Err(class_cast(
+                            &**clause.query(),
+                            "org.apache.lucene.search.TermQuery",
+                        ));
                     };
                     term_set.insert(tq.get_term().text());
                 }

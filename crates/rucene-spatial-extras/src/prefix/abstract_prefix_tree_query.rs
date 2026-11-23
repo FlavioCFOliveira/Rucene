@@ -27,8 +27,8 @@ use rucene::index::{LeafReaderContext, PostingsEnum, Terms, TermsEnum};
 use rucene::search::doc_id_set::DocIdSet;
 use rucene::search::doc_id_set_iterator::DocIdSetIterator;
 use rucene::search::{
-    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier, Query, QueryVisitor,
-    ScoreMode, ScorerSupplier, Weight,
+    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier,
+    Query, QueryVisitor, ScoreMode, ScorerSupplier, Weight,
 };
 use rucene::util::bit_set::BitSet;
 use rucene::util::doc_id_set::DocIdSetBuilder;
@@ -72,7 +72,12 @@ impl fmt::Debug for AbstractPrefixTreeQuery {
 impl AbstractPrefixTreeQuery {
     /// `AbstractPrefixTreeQuery(Shape queryShape, String fieldName,
     /// SpatialPrefixTree grid, int detailLevel)`.
-    pub fn new(query_shape: Arc<dyn Shape>, field_name: &str, grid: Arc<dyn SpatialPrefixTree>, detail_level: i32) -> Self {
+    pub fn new(
+        query_shape: Arc<dyn Shape>,
+        field_name: &str,
+        grid: Arc<dyn SpatialPrefixTree>,
+        detail_level: i32,
+    ) -> Self {
         Self {
             query_shape,
             field_name: field_name.to_string(),
@@ -91,8 +96,12 @@ impl AbstractPrefixTreeQuery {
     /// `hashCode()`, from the query's `classHash()`.
     pub fn hash_code(&self, class_hash: i32) -> i32 {
         let mut result = class_hash;
-        result = result.wrapping_mul(31).wrapping_add(self.query_shape.hash_code());
-        result = result.wrapping_mul(31).wrapping_add(string_hash(&self.field_name));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.query_shape.hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(string_hash(&self.field_name));
         result = result.wrapping_mul(31).wrapping_add(self.detail_level);
         result
     }
@@ -152,7 +161,11 @@ struct PrefixTreeWeight<Q> {
 }
 
 impl<Q: PrefixTreeQuery> ConstantScoreWeightImpl for PrefixTreeWeight<Q> {
-    fn scorer_supplier(&self, context: &LeafReaderContext, score: f32) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+        score: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let Some(doc_set) = self.query.get_doc_id_set(context)? else {
             return Ok(None);
         };
@@ -170,7 +183,11 @@ impl<Q: PrefixTreeQuery> ConstantScoreWeightImpl for PrefixTreeWeight<Q> {
 
 /// The body of `AbstractPrefixTreeQuery.createWeight(IndexSearcher
 /// searcher, ScoreMode scoreMode, float boost)`.
-pub fn create_weight<Q: PrefixTreeQuery>(query: &Q, score_mode: ScoreMode, boost: f32) -> Arc<dyn Weight> {
+pub fn create_weight<Q: PrefixTreeQuery>(
+    query: &Q,
+    score_mode: ScoreMode,
+    boost: f32,
+) -> Arc<dyn Weight> {
     Arc::new(ConstantScoreWeight::new(
         Arc::new(query.clone()),
         boost,

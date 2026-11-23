@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoBBoxFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
@@ -110,7 +110,9 @@ impl GeoBBoxFactory {
                 return Ok(Arc::new(GeoDegenerateLongitudeSlice::new(pm, left_lon)?));
             }
             if extent >= PI {
-                return Ok(Arc::new(GeoWideLongitudeSlice::new(pm, left_lon, right_lon)?));
+                return Ok(Arc::new(GeoWideLongitudeSlice::new(
+                    pm, left_lon, right_lon,
+                )?));
             }
             return Ok(Arc::new(GeoLongitudeSlice::new(pm, left_lon, right_lon)?));
         }
@@ -180,7 +182,7 @@ impl GeoBBoxFactory {
 
     fn latitudes_equals(lat1: f64, lat2: f64) -> bool {
         (lat1 - lat2).abs() < Vector::MINIMUM_ANGULAR_RESOLUTION
-            || (lat1.sin() - lat2.sin()).abs() < Vector::MINIMUM_RESOLUTION
+            || (java_math::sin(lat1) - java_math::sin(lat2)).abs() < Vector::MINIMUM_RESOLUTION
     }
 
     fn longitudes_equals(lon1: f64, lon2: f64) -> bool {

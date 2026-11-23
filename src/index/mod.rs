@@ -570,6 +570,32 @@ pub trait IndexableField: std::fmt::Display + Send + Sync {
         reuse: &mut Option<Box<dyn TokenStream>>,
     ) -> Result<Box<dyn TokenStream>>;
 
+    /// [`token_stream`](Self::token_stream) with Java's `null` result: `None`
+    /// where `IndexableField.tokenStream(Analyzer, TokenStream)` returns
+    /// `null`.
+    ///
+    /// Every core `Field` returns `null` exactly when it is not indexed
+    /// (`Field.java:465-469`), which the default reproduces; a custom field
+    /// whose Java `tokenStream` returns `null` while it is indexed (as the
+    /// `MockIndexableField` of `TestMemoryIndex` does) overrides this.
+    /// `token_stream` cannot answer `null`, so the callers that test Java's
+    /// result for `null` (`MemoryIndex.addField`, `MemoryIndex.java:597-604`)
+    /// call this instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`token_stream`](Self::token_stream).
+    fn token_stream_or_null(
+        &self,
+        analyzer: Option<&dyn Analyzer>,
+        reuse: &mut Option<Box<dyn TokenStream>>,
+    ) -> Result<Option<Box<dyn TokenStream>>> {
+        if self.field_type().index_options() == IndexOptions::NONE {
+            return Ok(None);
+        }
+        self.token_stream(analyzer, reuse).map(Some)
+    }
+
     /// Non-null if this field has a binary value.
     fn binary_value(&self) -> Option<BytesRef>;
 

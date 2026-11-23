@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `PointInGeo3DShapeQuery.java`, of the Java package
 //! `org.apache.lucene.spatial3d`.
 
@@ -25,8 +24,8 @@ use std::sync::Arc;
 use rucene::error::Result;
 use rucene::index::LeafReaderContext;
 use rucene::search::{
-    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier, IndexSearcher, Query,
-    QueryVisitor, ScoreMode, ScorerSupplier, Weight,
+    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier,
+    IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, Weight,
 };
 use rucene::util::doc_id_set::DocIdSetBuilder;
 use rucene::util::java_collections::java_string_hash_code;
@@ -40,8 +39,13 @@ use crate::point_in_shape_intersect_visitor::PointInShapeIntersectVisitor;
 /// Query that matches documents whose 3D point is within the given shape.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.PointInGeo3DShapeQuery`.
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Clone)]
-pub(crate) struct PointInGeo3DShapeQuery {
+pub struct PointInGeo3DShapeQuery {
     field: String,
     shape: Arc<dyn GeoShape>,
     shape_bounds: XYZBounds,
@@ -51,7 +55,9 @@ impl PointInGeo3DShapeQuery {
     /// `RamUsageEstimator.shallowSizeOfInstance(PointInGeo3DShapeQuery.class)`:
     /// `Query.CLASS_NAME_HASH` and the three reference fields.
     const BASE_RAM_BYTES: i64 = RamUsageEstimator::align_object_size(
-        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER + 4 + 3 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
+        RamUsageEstimator::NUM_BYTES_OBJECT_HEADER
+            + 4
+            + 3 * RamUsageEstimator::NUM_BYTES_OBJECT_REF,
     );
 
     /// `new PointInGeo3DShapeQuery(String field, GeoShape shape)`.
@@ -66,12 +72,12 @@ impl PointInGeo3DShapeQuery {
     }
 
     /// `getField()`.
-    pub(crate) fn get_field(&self) -> &str {
+    pub fn get_field(&self) -> &str {
         &self.field
     }
 
     /// `getShape()`.
-    pub(crate) fn get_shape(&self) -> &Arc<dyn GeoShape> {
+    pub fn get_shape(&self) -> &Arc<dyn GeoShape> {
         &self.shape
     }
 
@@ -94,18 +100,26 @@ struct PointInGeo3DShapeWeight {
 }
 
 impl ConstantScoreWeightImpl for PointInGeo3DShapeWeight {
-    fn scorer_supplier(&self, context: &LeafReaderContext, score: f32) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+        score: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let reader = context.leaf_reader();
         let Some(values) = reader.get_point_values(&self.query.field)? else {
             return Ok(None);
         };
         let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
         {
-            let mut visitor =
-                PointInShapeIntersectVisitor::new(&mut result, self.query.shape.as_ref(), &self.query.shape_bounds);
+            let mut visitor = PointInShapeIntersectVisitor::new(
+                &mut result,
+                self.query.shape.as_ref(),
+                &self.query.shape_bounds,
+            );
             values.intersect(&mut visitor)?;
         }
-        let scorer = ConstantScoreScorer::from_iterator(score, self.score_mode, result.build()?.iterator()?);
+        let scorer =
+            ConstantScoreScorer::from_iterator(score, self.score_mode, result.build()?.iterator()?);
         Ok(Some(Box::new(DefaultScorerSupplier::new(Box::new(scorer)))))
     }
 
@@ -144,7 +158,12 @@ impl Query for PointInGeo3DShapeQuery {
     }
 
     /// `createWeight(IndexSearcher, ScoreMode, float)`.
-    fn create_weight(&self, _searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         let query: Arc<dyn Query> = Arc::new(self.clone());
         Ok(Arc::new(ConstantScoreWeight::new(
             query,
@@ -171,8 +190,12 @@ impl Query for PointInGeo3DShapeQuery {
     /// `hashCode()`.
     fn query_hash(&self) -> i32 {
         let mut result = self.class_hash();
-        result = result.wrapping_mul(31).wrapping_add(java_string_hash_code(&self.field));
-        result = result.wrapping_mul(31).wrapping_add(self.shape.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(java_string_hash_code(&self.field));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.shape.java_hash_code());
         result
     }
 }

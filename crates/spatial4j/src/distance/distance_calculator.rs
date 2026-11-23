@@ -72,7 +72,12 @@ pub trait DistanceCalculator: fmt::Display + fmt::Debug + Send + Sync + Any {
 
     /// `calcBoxByDistFromPt_yHorizAxisDEG(Point from, double distDEG,
     /// SpatialContext ctx)`.
-    fn calc_box_by_dist_from_pt_y_horiz_axis_deg(&self, from: &dyn Point, dist_deg: f64, ctx: &SpatialContext) -> f64;
+    fn calc_box_by_dist_from_pt_y_horiz_axis_deg(
+        &self,
+        from: &dyn Point,
+        dist_deg: f64,
+        ctx: &SpatialContext,
+    ) -> f64;
 
     /// `area(Rectangle rect)`.
     fn area_rect(&self, rect: &dyn Rectangle) -> f64;

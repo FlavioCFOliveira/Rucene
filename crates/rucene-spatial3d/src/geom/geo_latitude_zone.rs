@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoLatitudeZone.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -69,15 +69,33 @@ impl GeoLatitudeZone {
     /// `IllegalArgumentException` when a plane cannot be sided.
     pub fn new(planet_model: &Arc<PlanetModel>, top_lat: f64, bottom_lat: f64) -> Result<Self> {
         let pm = planet_model;
-        let sin_top_lat = top_lat.sin();
-        let sin_bottom_lat = bottom_lat.sin();
-        let cos_top_lat = top_lat.cos();
-        let cos_bottom_lat = bottom_lat.cos();
+        let sin_top_lat = java_math::sin(top_lat);
+        let sin_bottom_lat = java_math::sin(bottom_lat);
+        let cos_top_lat = java_math::cos(top_lat);
+        let cos_bottom_lat = java_math::cos(bottom_lat);
         let middle_lat = (top_lat + bottom_lat) * 0.5;
-        let sin_middle_lat = middle_lat.sin();
-        let interior_point = GeoPoint::new_sin_cos(pm, sin_middle_lat, 0.0, (1.0 - sin_middle_lat * sin_middle_lat).sqrt(), 1.0);
-        let top_boundary_point = GeoPoint::new_sin_cos(pm, sin_top_lat, 0.0, (1.0 - sin_top_lat * sin_top_lat).sqrt(), 1.0);
-        let bottom_boundary_point = GeoPoint::new_sin_cos(pm, sin_bottom_lat, 0.0, (1.0 - sin_bottom_lat * sin_bottom_lat).sqrt(), 1.0);
+        let sin_middle_lat = java_math::sin(middle_lat);
+        let interior_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_middle_lat,
+            0.0,
+            java_math::sqrt(1.0 - sin_middle_lat * sin_middle_lat),
+            1.0,
+        );
+        let top_boundary_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_top_lat,
+            0.0,
+            java_math::sqrt(1.0 - sin_top_lat * sin_top_lat),
+            1.0,
+        );
+        let bottom_boundary_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_bottom_lat,
+            0.0,
+            java_math::sqrt(1.0 - sin_bottom_lat * sin_bottom_lat),
+            1.0,
+        );
         let top_plane = SidedPlane::new_horizontal(&interior_point, pm, sin_top_lat)?;
         let bottom_plane = SidedPlane::new_horizontal(&interior_point, pm, sin_bottom_lat)?;
         Ok(Self {
@@ -114,8 +132,10 @@ impl GeoLatitudeZone {
 
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         let pm = &self.planet_model;
-        let top_distance = ds.compute_plane_distance_xyz(pm, &self.top_plane, x, y, z, &[&self.bottom_plane]);
-        let bottom_distance = ds.compute_plane_distance_xyz(pm, &self.bottom_plane, x, y, z, &[&self.top_plane]);
+        let top_distance =
+            ds.compute_plane_distance_xyz(pm, &self.top_plane, x, y, z, &[&self.bottom_plane]);
+        let bottom_distance =
+            ds.compute_plane_distance_xyz(pm, &self.bottom_plane, x, y, z, &[&self.top_plane]);
         Ok(java_min(top_distance, bottom_distance))
     }
 
@@ -127,13 +147,21 @@ impl GeoLatitudeZone {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.top_boundary_point.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.bottom_boundary_point.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.top_boundary_point.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.bottom_boundary_point.java_hash_code());
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoLatitudeZone, "org.apache.lucene.spatial3d.geom.GeoLatitudeZone", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoLatitudeZone,
+    "org.apache.lucene.spatial3d.geom.GeoLatitudeZone",
+    geo_b_box
+);
 impl_geo_base_area_relationship!(GeoLatitudeZone);
 
 impl Membership for GeoLatitudeZone {
@@ -158,10 +186,28 @@ impl GeoShape for GeoLatitudeZone {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let pm = &self.planet_model;
-        p.intersects(pm, &self.top_plane, notable_points, &[], bounds, &[&self.bottom_plane])
-            || p.intersects(pm, &self.bottom_plane, notable_points, &[], bounds, &[&self.top_plane])
+        p.intersects(
+            pm,
+            &self.top_plane,
+            notable_points,
+            &[],
+            bounds,
+            &[&self.bottom_plane],
+        ) || p.intersects(
+            pm,
+            &self.bottom_plane,
+            notable_points,
+            &[],
+            bounds,
+            &[&self.top_plane],
+        )
     }
 }
 

@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoDegenerateHorizontalLine.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -30,6 +30,7 @@ use super::base_planet_object::BasePlanetObject;
 use super::bounded::Bounded;
 use super::bounds::Bounds;
 use super::distance_style::DistanceStyle;
+use super::geo_area::{self, GeoArea};
 use super::geo_area_shape::GeoAreaShape;
 use super::geo_b_box::GeoBBox;
 use super::geo_b_box_factory::GeoBBoxFactory;
@@ -43,8 +44,6 @@ use super::planet_model::PlanetModel;
 use super::serializable_object as so;
 use super::sided_plane::SidedPlane;
 use super::{d2s, iae, java_max, java_min};
-use super::geo_area::{self, GeoArea};
-
 
 /// Degenerate bounding box limited on two sides (left lon, right lon). The
 /// left-right maximum extent for this shape is PI; for anything larger, use
@@ -73,7 +72,12 @@ impl GeoDegenerateHorizontalLine {
     /// # Errors
     ///
     /// `IllegalArgumentException` for out-of-range or inconsistent bounds.
-    pub fn new(planet_model: &Arc<PlanetModel>, latitude: f64, left_lon: f64, mut right_lon: f64) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        latitude: f64,
+        left_lon: f64,
+        mut right_lon: f64,
+    ) -> Result<Self> {
         let pm = planet_model;
         if latitude > PI * 0.5 || latitude < -PI * 0.5 {
             return Err(iae("Latitude out of range"));
@@ -92,22 +96,44 @@ impl GeoDegenerateHorizontalLine {
             return Err(iae("Width of rectangle too great"));
         }
         let stored_right_lon = right_lon;
-        let sin_latitude = latitude.sin();
-        let cos_latitude = latitude.cos();
-        let sin_left_lon = left_lon.sin();
-        let cos_left_lon = left_lon.cos();
-        let sin_right_lon = right_lon.sin();
-        let cos_right_lon = right_lon.cos();
-        let lhc = GeoPoint::new_sin_cos_lat_lon(pm, sin_latitude, sin_left_lon, cos_latitude, cos_left_lon, latitude, left_lon)?;
-        let rhc = GeoPoint::new_sin_cos_lat_lon(pm, sin_latitude, sin_right_lon, cos_latitude, cos_right_lon, latitude, right_lon)?;
+        let sin_latitude = java_math::sin(latitude);
+        let cos_latitude = java_math::cos(latitude);
+        let sin_left_lon = java_math::sin(left_lon);
+        let cos_left_lon = java_math::cos(left_lon);
+        let sin_right_lon = java_math::sin(right_lon);
+        let cos_right_lon = java_math::cos(right_lon);
+        let lhc = GeoPoint::new_sin_cos_lat_lon(
+            pm,
+            sin_latitude,
+            sin_left_lon,
+            cos_latitude,
+            cos_left_lon,
+            latitude,
+            left_lon,
+        )?;
+        let rhc = GeoPoint::new_sin_cos_lat_lon(
+            pm,
+            sin_latitude,
+            sin_right_lon,
+            cos_latitude,
+            cos_right_lon,
+            latitude,
+            right_lon,
+        )?;
         let plane = Plane::new_horizontal(pm, sin_latitude);
         while left_lon > right_lon {
             right_lon += PI * 2.0;
         }
         let middle_lon = (left_lon + right_lon) * 0.5;
-        let sin_middle_lon = middle_lon.sin();
-        let cos_middle_lon = middle_lon.cos();
-        let center_point = GeoPoint::new_sin_cos(pm, sin_latitude, sin_middle_lon, cos_latitude, cos_middle_lon);
+        let sin_middle_lon = java_math::sin(middle_lon);
+        let cos_middle_lon = java_math::cos(middle_lon);
+        let center_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_latitude,
+            sin_middle_lon,
+            cos_latitude,
+            cos_middle_lon,
+        );
         let left_plane = SidedPlane::new_vertical(&rhc, cos_left_lon, sin_left_lon)?;
         let right_plane = SidedPlane::new_vertical(&lhc, cos_right_lon, sin_right_lon)?;
         debug_assert!(left_plane.is_within(&center_point));
@@ -125,7 +151,6 @@ impl GeoDegenerateHorizontalLine {
             left_plane,
             right_plane,
             center_point,
-
         })
     }
 
@@ -149,7 +174,14 @@ impl GeoDegenerateHorizontalLine {
     }
 
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        let distance = ds.compute_plane_distance_xyz(&self.planet_model, &self.plane, x, y, z, &[&self.left_plane, &self.right_plane]);
+        let distance = ds.compute_plane_distance_xyz(
+            &self.planet_model,
+            &self.plane,
+            x,
+            y,
+            z,
+            &[&self.left_plane, &self.right_plane],
+        );
         let lhc_distance = ds.compute_distance_xyz(&self.lhc, x, y, z);
         let rhc_distance = ds.compute_distance_xyz(&self.rhc, x, y, z);
         Ok(java_min(distance, java_min(lhc_distance, rhc_distance)))
@@ -163,13 +195,21 @@ impl GeoDegenerateHorizontalLine {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.lhc.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.rhc.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.lhc.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.rhc.java_hash_code());
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoDegenerateHorizontalLine, "org.apache.lucene.spatial3d.geom.GeoDegenerateHorizontalLine", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoDegenerateHorizontalLine,
+    "org.apache.lucene.spatial3d.geom.GeoDegenerateHorizontalLine",
+    geo_b_box
+);
 
 impl GeoArea for GeoDegenerateHorizontalLine {
     fn get_relationship(&self, path: &dyn GeoShape) -> Result<i32> {
@@ -185,7 +225,9 @@ impl GeoArea for GeoDegenerateHorizontalLine {
 
 impl Membership for GeoDegenerateHorizontalLine {
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
-        self.plane.evaluate_is_zero_xyz(x, y, z) && self.left_plane.is_within_xyz(x, y, z) && self.right_plane.is_within_xyz(x, y, z)
+        self.plane.evaluate_is_zero_xyz(x, y, z)
+            && self.left_plane.is_within_xyz(x, y, z)
+            && self.right_plane.is_within_xyz(x, y, z)
     }
 }
 
@@ -194,8 +236,12 @@ impl Bounded for GeoDegenerateHorizontalLine {
         let pm = &self.planet_model;
         GeoBaseBounds::get_bounds(self, pm, bounds);
         bounds
-
-            .add_horizontal_plane(pm, self.latitude, &self.plane, &[&self.left_plane, &self.right_plane])
+            .add_horizontal_plane(
+                pm,
+                self.latitude,
+                &self.plane,
+                &[&self.left_plane, &self.right_plane],
+            )
             .add_point(&self.lhc)
             .add_point(&self.rhc);
     }
@@ -206,14 +252,30 @@ impl GeoShape for GeoDegenerateHorizontalLine {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
-        p.intersects(&self.planet_model, &self.plane, notable_points, &self.plane_points, bounds, &[&self.left_plane, &self.right_plane])
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        p.intersects(
+            &self.planet_model,
+            &self.plane,
+            notable_points,
+            &self.plane_points,
+            bounds,
+            &[&self.left_plane, &self.right_plane],
+        )
     }
 }
 
 impl GeoAreaShape for GeoDegenerateHorizontalLine {
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
-        geo_shape.intersects(&self.plane, &self.plane_points, &[&self.left_plane, &self.right_plane])
+        geo_shape.intersects(
+            &self.plane,
+            &self.plane_points,
+            &[&self.left_plane, &self.right_plane],
+        )
     }
 }
 
@@ -243,7 +305,13 @@ impl GeoBBox for GeoDegenerateHorizontalLine {
             new_left_lon = -PI;
             new_right_lon = PI;
         }
-        GeoBBoxFactory::make_geo_bbox(&self.planet_model, new_top_lat, new_bottom_lat, new_left_lon, new_right_lon)
+        GeoBBoxFactory::make_geo_bbox(
+            &self.planet_model,
+            new_top_lat,
+            new_bottom_lat,
+            new_left_lon,
+            new_right_lon,
+        )
     }
 }
 

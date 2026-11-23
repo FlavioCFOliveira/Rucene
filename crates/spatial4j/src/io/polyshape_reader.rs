@@ -43,11 +43,15 @@ pub struct PolyshapeReader {
 impl PolyshapeReader {
     /// `PolyshapeReader(SpatialContext ctx, SpatialContextFactory factory)`.
     pub fn new(ctx: &Arc<SpatialContext>, _factory: &dyn SpatialContextFactoryOps) -> Self {
-        Self { ctx: Arc::downgrade(ctx) }
+        Self {
+            ctx: Arc::downgrade(ctx),
+        }
     }
 
     fn ctx(&self) -> Arc<SpatialContext> {
-        self.ctx.upgrade().expect("the SpatialContext of a PolyshapeReader is alive")
+        self.ctx
+            .upgrade()
+            .expect("the SpatialContext of a PolyshapeReader is alive")
     }
 
     /// `shpFactory`: `ctx.getShapeFactory()`.
@@ -72,7 +76,10 @@ impl PolyshapeReader {
                 if event == PolyshapeWriter::KEY_SEPERATOR {
                     continue; // read the next key
                 }
-                return Err(ParseException::error(format!("expecting a shape key.  not '{event}'"), -1));
+                return Err(ParseException::error(
+                    format!("expecting a shape key.  not '{event}'"),
+                    -1,
+                ));
             }
 
             if let Some(last) = last_shape.take() {
@@ -87,7 +94,10 @@ impl PolyshapeReader {
                 }
             }
             if reader.is_event() {
-                return Err(ParseException::error("Invalid input. Event should be followed by data", -1));
+                return Err(ParseException::error(
+                    "Invalid input. Event should be followed by data",
+                    -1,
+                ));
             }
 
             last_shape = Some(match event {
@@ -118,7 +128,9 @@ impl PolyshapeReader {
                 }
                 PolyshapeWriter::KEY_CIRCLE => {
                     let Some(arg) = arg else {
-                        return Err(LuceneError::illegal_argument("the input should have a radius argument"));
+                        return Err(LuceneError::illegal_argument(
+                            "the input should have a radius argument",
+                        ));
                     };
                     let x = shp_factory.norm_x(reader.read_lat());
                     let y = shp_factory.norm_y(reader.read_lng());
@@ -219,7 +231,14 @@ pub struct XReader {
 impl XReader {
     /// `XReader(Reader input, ShapeFactory shpFactory)`.
     pub fn new(input: &str, shp_factory: Arc<dyn ShapeFactory>) -> Self {
-        let mut reader = Self { lat: 0, lng: 0, head: -1, input: input.encode_utf16().collect(), pos: 0, shp_factory };
+        let mut reader = Self {
+            lat: 0,
+            lng: 0,
+            head: -1,
+            input: input.encode_utf16().collect(),
+            pos: 0,
+            shp_factory,
+        };
         reader.head = reader.read();
         reader
     }

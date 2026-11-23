@@ -64,7 +64,11 @@ impl PassageFormatter {
     }
 
     /// Equivalent to `new PassageFormatter(String, Function, Function)`.
-    pub fn with_functions(ellipsis: &str, marker_start: MarkerFunction, marker_end: MarkerFunction) -> Self {
+    pub fn with_functions(
+        ellipsis: &str,
+        marker_start: MarkerFunction,
+        marker_end: MarkerFunction,
+    ) -> Self {
         Self {
             ellipsis: ellipsis.to_string(),
             marker_start,
@@ -78,7 +82,12 @@ impl PassageFormatter {
     ///
     /// Java's `AssertionError` (under `debug_assertions`) for unsorted
     /// passages or ranges, or passages outside the value.
-    pub fn format(&self, value: &str, passages: &[Passage], ranges: &[OffsetRange]) -> Result<Vec<String>> {
+    pub fn format(
+        &self,
+        value: &str,
+        passages: &[Passage],
+        ranges: &[OffsetRange],
+    ) -> Result<Vec<String>> {
         let value = units(value);
         if cfg!(debug_assertions) {
             PassageSelector::sorted_and_non_overlapping(passages)?;
@@ -150,16 +159,20 @@ impl PassageFormatter {
 
     fn append(buf: &mut Vec<u16>, value: &[u16], start: i32, end: i32) -> Result<()> {
         if start < 0 || start > end || end > value.len() as i32 {
-            return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(format!(
-                "start {start}, end {end}, length {}",
-                value.len()
-            ))));
+            return Err(LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                format!("start {start}, end {end}, length {}", value.len()),
+            )));
         }
         buf.extend_from_slice(&value[start as usize..end as usize]);
         Ok(())
     }
 
-    fn format_passage_units(&self, buf: &mut Vec<u16>, value: &[u16], passage: &Passage) -> Result<()> {
+    fn format_passage_units(
+        &self,
+        buf: &mut Vec<u16>,
+        value: &[u16],
+        passage: &Passage,
+    ) -> Result<()> {
         match passage.markers.len() {
             0 => {
                 // No markers, full passage appended.

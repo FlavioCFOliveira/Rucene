@@ -25,12 +25,12 @@ use crate::io::legacy_shape_reader::LegacyShapeReader;
 use crate::io::legacy_shape_writer::LegacyShapeWriter;
 use crate::io::polyshape_reader::PolyshapeReader;
 use crate::io::polyshape_writer::PolyshapeWriter;
-use crate::java_map::StringMap;
 use crate::io::shape_reader::ShapeReader;
 use crate::io::shape_writer::ShapeWriter;
 use crate::io::supported_formats::SupportedFormats;
 use crate::io::wkt_reader::WKTReader;
 use crate::io::wkt_writer::WKTWriter;
+use crate::java_map::StringMap;
 use crate::jdk::unchecked_with_cause;
 use crate::shape::r#impl::shape_factory_impl::ShapeFactoryImpl;
 use crate::shape::rectangle::Rectangle;
@@ -82,7 +82,9 @@ pub struct JavaClass {
 
 impl std::fmt::Debug for JavaClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JavaClass").field("name", &self.name).finish()
+        f.debug_struct("JavaClass")
+            .field("name", &self.name)
+            .finish()
     }
 }
 
@@ -124,7 +126,10 @@ fn builtin_classes() -> Vec<JavaClass> {
 
 /// Adds `class` to the classes [`load_class`] finds.
 pub fn register_class(class: JavaClass) {
-    REGISTRY.write().unwrap_or_else(|e| e.into_inner()).insert(class.name, class);
+    REGISTRY
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(class.name, class);
 }
 
 /// `Class.forName(name)`.
@@ -142,7 +147,11 @@ pub fn load_class(name: &str) -> Result<JavaClass> {
 }
 
 fn class_not_found(name: &str) -> LuceneError {
-    unchecked_with_cause("java.lang.ClassNotFoundException", Some(name.to_string()), None)
+    unchecked_with_cause(
+        "java.lang.ClassNotFoundException",
+        Some(name.to_string()),
+        None,
+    )
 }
 
 /// `new RuntimeException(cause)`: its message is `cause.toString()`.
@@ -196,12 +205,16 @@ impl SpatialContextFactory {
     /// `ShapeFactoryImpl.class`.
     pub const SHAPE_FACTORY_IMPL_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.shape.impl.ShapeFactoryImpl",
-        kind: JavaClassKind::ShapeFactory(|ctx, factory| Ok(Arc::new(ShapeFactoryImpl::new(ctx, factory)))),
+        kind: JavaClassKind::ShapeFactory(|ctx, factory| {
+            Ok(Arc::new(ShapeFactoryImpl::new(ctx, factory)))
+        }),
     };
     /// `BinaryCodec.class`.
     pub const BINARY_CODEC_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.io.BinaryCodec",
-        kind: JavaClassKind::BinaryCodec(|ctx, factory| Ok(Arc::new(BinaryCodecBase::new(ctx, factory)))),
+        kind: JavaClassKind::BinaryCodec(|ctx, factory| {
+            Ok(Arc::new(BinaryCodecBase::new(ctx, factory)))
+        }),
     };
     /// `WKTReader.class`.
     pub const WKT_READER_CLASS: JavaClass = JavaClass {
@@ -211,21 +224,29 @@ impl SpatialContextFactory {
     /// `PolyshapeReader.class`.
     pub const POLYSHAPE_READER_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.io.PolyshapeReader",
-        kind: JavaClassKind::ShapeReader(|ctx, factory| Ok(Arc::new(PolyshapeReader::new(ctx, factory)))),
+        kind: JavaClassKind::ShapeReader(|ctx, factory| {
+            Ok(Arc::new(PolyshapeReader::new(ctx, factory)))
+        }),
     };
     /// `LegacyShapeReader.class`.
     pub const LEGACY_SHAPE_READER_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.io.LegacyShapeReader",
-        kind: JavaClassKind::ShapeReader(|ctx, factory| Ok(Arc::new(LegacyShapeReader::new(ctx, factory)))),
+        kind: JavaClassKind::ShapeReader(|ctx, factory| {
+            Ok(Arc::new(LegacyShapeReader::new(ctx, factory)))
+        }),
     };
     /// `GeoJSONReader.class`: not ported (see
     /// [`geo_json_reader`](crate::io::geo_json_reader)); its name only.
-    pub const GEO_JSON_READER_CLASS: JavaClass =
-        JavaClass { name: "org.locationtech.spatial4j.io.GeoJSONReader", kind: JavaClassKind::Other };
+    pub const GEO_JSON_READER_CLASS: JavaClass = JavaClass {
+        name: "org.locationtech.spatial4j.io.GeoJSONReader",
+        kind: JavaClassKind::Other,
+    };
     /// `GeoJSONWriter.class`.
     pub const GEO_JSON_WRITER_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.io.GeoJSONWriter",
-        kind: JavaClassKind::ShapeWriter(|ctx, factory| Ok(Arc::new(GeoJSONWriter::new(ctx, factory)))),
+        kind: JavaClassKind::ShapeWriter(|ctx, factory| {
+            Ok(Arc::new(GeoJSONWriter::new(ctx, factory)))
+        }),
     };
     /// `WKTWriter.class` (its empty constructor).
     pub const WKT_WRITER_CLASS: JavaClass = JavaClass {
@@ -235,12 +256,16 @@ impl SpatialContextFactory {
     /// `PolyshapeWriter.class`.
     pub const POLYSHAPE_WRITER_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.io.PolyshapeWriter",
-        kind: JavaClassKind::ShapeWriter(|ctx, factory| Ok(Arc::new(PolyshapeWriter::new(ctx, factory)))),
+        kind: JavaClassKind::ShapeWriter(|ctx, factory| {
+            Ok(Arc::new(PolyshapeWriter::new(ctx, factory)))
+        }),
     };
     /// `LegacyShapeWriter.class`.
     pub const LEGACY_SHAPE_WRITER_CLASS: JavaClass = JavaClass {
         name: "org.locationtech.spatial4j.io.LegacyShapeWriter",
-        kind: JavaClassKind::ShapeWriter(|ctx, factory| Ok(Arc::new(LegacyShapeWriter::new(ctx, factory)))),
+        kind: JavaClassKind::ShapeWriter(|ctx, factory| {
+            Ok(Arc::new(LegacyShapeWriter::new(ctx, factory)))
+        }),
     };
     /// `SpatialContextFactory.class`.
     pub const SPATIAL_CONTEXT_FACTORY_CLASS: JavaClass = JavaClass {
@@ -406,7 +431,9 @@ pub trait SpatialContextFactoryOps: Send + Sync + Any {
     fn make_shape_factory(&self, ctx: &Arc<SpatialContext>) -> Result<Arc<dyn ShapeFactory>> {
         let class = self.base().shape_factory_class;
         match class.kind {
-            JavaClassKind::ShapeFactory(ctor) => ctor(ctx, self.as_ops()).map_err(runtime_exception),
+            JavaClassKind::ShapeFactory(ctor) => {
+                ctor(ctx, self.as_ops()).map_err(runtime_exception)
+            }
             _ => Err(class_cast(&class)),
         }
     }
@@ -436,7 +463,10 @@ pub trait SpatialContextFactoryOps: Send + Sync + Any {
 /// # Errors
 ///
 /// The errors of the `init*` steps.
-pub fn init_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, args: Arc<dyn StringMap>) -> Result<()> {
+pub fn init_default<F: SpatialContextFactoryOps + ?Sized>(
+    f: &mut F,
+    args: Arc<dyn StringMap>,
+) -> Result<()> {
     f.base_mut().args = Some(args);
     f.init_field("geo")?;
     f.init_field("shapeFactoryClass")?;
@@ -453,7 +483,10 @@ pub fn init_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, args: Arc<d
 /// # Errors
 ///
 /// As [`SpatialContextFactoryOps::init_field`].
-pub fn init_field_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, name: &str) -> Result<()> {
+pub fn init_field_default<F: SpatialContextFactoryOps + ?Sized>(
+    f: &mut F,
+    name: &str,
+) -> Result<()> {
     // `getClass().getField(name)`: the public fields of the class.
     let field_type = match name {
         "geo" | "normWrapLongitude" | "hasFormatConfig" => "boolean",
@@ -474,7 +507,9 @@ pub fn init_field_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, name:
     let invalid = |cause: LuceneError| {
         unchecked_with_cause(
             "java.lang.RuntimeException",
-            Some(format!("Invalid value '{str}' on field {name} of type {field_type}")),
+            Some(format!(
+                "Invalid value '{str}' on field {name} of type {field_type}"
+            )),
             Some(cause),
         )
     };
@@ -544,7 +579,11 @@ pub fn init_calculator_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F) 
 /// found; `ClassCastException` when it is not a reader or writer.
 pub fn init_formats_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F) -> Result<()> {
     let not_found = |e: LuceneError| {
-        unchecked_with_cause("java.lang.RuntimeException", Some("Unable to find format class".to_string()), Some(e))
+        unchecked_with_cause(
+            "java.lang.RuntimeException",
+            Some("Unable to find format class".to_string()),
+            Some(e),
+        )
     };
     let reader_class = |name: &str| -> Result<JavaClass> {
         let class = load_class(name.trim()).map_err(not_found)?;
@@ -588,14 +627,18 @@ pub fn make_formats_default<F: SpatialContextFactoryOps + ?Sized>(
     let mut read: Vec<Arc<dyn ShapeReader>> = Vec::with_capacity(f.base().readers.len());
     for class in f.base().readers.clone() {
         match class.kind {
-            JavaClassKind::ShapeReader(ctor) => read.push(ctor(ctx, f.as_ops()).map_err(runtime_exception)?),
+            JavaClassKind::ShapeReader(ctor) => {
+                read.push(ctor(ctx, f.as_ops()).map_err(runtime_exception)?)
+            }
             _ => return Err(runtime_exception(class_cast(&class))),
         }
     }
     let mut write: Vec<Arc<dyn ShapeWriter>> = Vec::with_capacity(f.base().writers.len());
     for class in f.base().writers.clone() {
         match class.kind {
-            JavaClassKind::ShapeWriter(ctor) => write.push(ctor(ctx, f.as_ops()).map_err(runtime_exception)?),
+            JavaClassKind::ShapeWriter(ctor) => {
+                write.push(ctor(ctx, f.as_ops()).map_err(runtime_exception)?)
+            }
             _ => return Err(runtime_exception(class_cast(&class))),
         }
     }
@@ -608,15 +651,20 @@ pub fn check_default_formats_default<F: SpatialContextFactoryOps + ?Sized>(f: &m
         f.add_reader_if_noggit_exists(SpatialContextFactory::GEO_JSON_READER_CLASS);
         let base = f.base_mut();
         base.readers.push(SpatialContextFactory::WKT_READER_CLASS);
-        base.readers.push(SpatialContextFactory::POLYSHAPE_READER_CLASS);
-        base.readers.push(SpatialContextFactory::LEGACY_SHAPE_READER_CLASS);
+        base.readers
+            .push(SpatialContextFactory::POLYSHAPE_READER_CLASS);
+        base.readers
+            .push(SpatialContextFactory::LEGACY_SHAPE_READER_CLASS);
     }
     let base = f.base_mut();
     if base.writers.is_empty() {
-        base.writers.push(SpatialContextFactory::GEO_JSON_WRITER_CLASS);
+        base.writers
+            .push(SpatialContextFactory::GEO_JSON_WRITER_CLASS);
         base.writers.push(SpatialContextFactory::WKT_WRITER_CLASS);
-        base.writers.push(SpatialContextFactory::POLYSHAPE_WRITER_CLASS);
-        base.writers.push(SpatialContextFactory::LEGACY_SHAPE_WRITER_CLASS);
+        base.writers
+            .push(SpatialContextFactory::POLYSHAPE_WRITER_CLASS);
+        base.writers
+            .push(SpatialContextFactory::LEGACY_SHAPE_WRITER_CLASS);
     }
 }
 
@@ -651,7 +699,9 @@ pub fn init_world_bounds_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F
     let rect = shape.as_rectangle().expect("checked above");
     let bounds: Arc<dyn Rectangle> = crate::shape::r#impl::rectangle_impl::RectangleImpl::from_rect(
         rect,
-        Some(crate::context::spatial_context::SpatialContextRef::from(&ctx)),
+        Some(crate::context::spatial_context::SpatialContextRef::from(
+            &ctx,
+        )),
     );
     f.base_mut().world_bounds = Some(bounds);
     Ok(())

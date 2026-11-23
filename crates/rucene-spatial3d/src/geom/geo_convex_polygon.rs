@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoConvexPolygon.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -49,7 +48,12 @@ use super::{iae, ise, list_hash_code, list_to_string, npe, JavaBitSet};
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoConvexPolygon`. The
 /// arrays Java computes in `done()` (null until then) are `built`.
-pub(crate) struct GeoConvexPolygon {
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct GeoConvexPolygon {
     planet_model: Arc<PlanetModel>,
     /// The list of polygon points.
     points: Vec<GeoPoint>,
@@ -123,13 +127,19 @@ impl GeoConvexPolygon {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an illegal polygon.
-    pub(crate) fn new_with_flags(
+    pub fn new_with_flags(
         planet_model: &Arc<PlanetModel>,
         point_list: Vec<GeoPoint>,
         internal_edge_flags: JavaBitSet,
         return_edge_internal: bool,
     ) -> Result<Self> {
-        Self::new_with_holes_and_flags(planet_model, point_list, None, internal_edge_flags, return_edge_internal)
+        Self::new_with_holes_and_flags(
+            planet_model,
+            point_list,
+            None,
+            internal_edge_flags,
+            return_edge_internal,
+        )
     }
 
     /// `new GeoConvexPolygon(PlanetModel, List<GeoPoint>, List<GeoPolygon>,
@@ -138,7 +148,7 @@ impl GeoConvexPolygon {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an illegal polygon.
-    pub(crate) fn new_with_holes_and_flags(
+    pub fn new_with_holes_and_flags(
         planet_model: &Arc<PlanetModel>,
         point_list: Vec<GeoPoint>,
         holes: Option<Vec<Arc<dyn GeoPolygon>>>,
@@ -163,7 +173,11 @@ impl GeoConvexPolygon {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an out-of-range start point.
-    pub fn new_start(planet_model: &Arc<PlanetModel>, start_latitude: f64, start_longitude: f64) -> Result<Self> {
+    pub fn new_start(
+        planet_model: &Arc<PlanetModel>,
+        start_latitude: f64,
+        start_longitude: f64,
+    ) -> Result<Self> {
         Self::new_start_with_holes(planet_model, start_latitude, start_longitude, None)
     }
 
@@ -180,7 +194,11 @@ impl GeoConvexPolygon {
         holes: Option<Vec<Arc<dyn GeoPolygon>>>,
     ) -> Result<Self> {
         let holes = normalize_holes(holes);
-        let points = vec![GeoPoint::new_lat_lon(planet_model, start_latitude, start_longitude)?];
+        let points = vec![GeoPoint::new_lat_lon(
+            planet_model,
+            start_latitude,
+            start_longitude,
+        )?];
         Ok(Self {
             planet_model: planet_model.clone(),
             points,
@@ -197,14 +215,23 @@ impl GeoConvexPolygon {
     ///
     /// `IllegalStateException` after `done()`; `IllegalArgumentException` for
     /// an out-of-range point.
-    pub fn add_point(&mut self, latitude: f64, longitude: f64, is_internal_edge: bool) -> Result<()> {
+    pub fn add_point(
+        &mut self,
+        latitude: f64,
+        longitude: f64,
+        is_internal_edge: bool,
+    ) -> Result<()> {
         if self.is_done {
             return Err(ise("Can't call addPoint() if done() already called"));
         }
         if is_internal_edge {
             self.is_internal_edges.set(self.points.len() - 1);
         }
-        self.points.push(GeoPoint::new_lat_lon(&self.planet_model, latitude, longitude)?);
+        self.points.push(GeoPoint::new_lat_lon(
+            &self.planet_model,
+            latitude,
+            longitude,
+        )?);
         Ok(())
     }
 
@@ -214,6 +241,8 @@ impl GeoConvexPolygon {
     ///
     /// `IllegalStateException` when called twice; `IllegalArgumentException`
     /// for an illegal polygon.
+    // Java's `HashMap<GeoPoint, …>`: the key's hash and equality are its coordinates; the cached latitude/longitude it mutates take no part.
+    #[allow(clippy::mutable_key_type)]
     pub fn done(&mut self, is_internal_return_edge: bool) -> Result<()> {
         if self.is_done {
             return Err(ise("Can't call done() more than once"));
@@ -245,12 +274,19 @@ impl GeoConvexPolygon {
                 }
             }
             if end_point_index == -1 {
-                return Err(iae(format!("Polygon points are all coplanar: {}", list_to_string(points))));
+                return Err(iae(format!(
+                    "Polygon points are all coplanar: {}",
+                    list_to_string(points)
+                )));
             }
             let check = &points[end_point_index as usize];
             let sp = SidedPlane::new_cross(check, start, end)?;
-            start_bounds.push(SidedPlane::construct_sided_plane_from_one_point(end, &sp, start)?);
-            end_bounds.push(SidedPlane::construct_sided_plane_from_one_point(start, &sp, end)?);
+            start_bounds.push(SidedPlane::construct_sided_plane_from_one_point(
+                end, &sp, start,
+            )?);
+            end_bounds.push(SidedPlane::construct_sided_plane_from_one_point(
+                start, &sp, end,
+            )?);
             notable_edge_points.push([start.clone(), end.clone()]);
             edges.push(sp);
         }
@@ -262,14 +298,20 @@ impl GeoConvexPolygon {
             let mut bound1_index = self.legal_index(edge_index as i64 + 1);
             while brothers[bound1_index].is_numerically_identical(edge) {
                 if bound1_index == edge_index {
-                    return Err(iae(format!("Constructed planes are all coplanar: {}", list_to_string(points))));
+                    return Err(iae(format!(
+                        "Constructed planes are all coplanar: {}",
+                        list_to_string(points)
+                    )));
                 }
                 bound1_index = self.legal_index(bound1_index as i64 + 1);
             }
             let mut bound2_index = self.legal_index(edge_index as i64 - 1);
             while brothers[bound2_index].is_numerically_identical(edge) {
                 if bound2_index == edge_index {
-                    return Err(iae(format!("Constructed planes are all coplanar: {}", list_to_string(points))));
+                    return Err(iae(format!(
+                        "Constructed planes are all coplanar: {}",
+                        list_to_string(points)
+                    )));
                 }
                 bound2_index = self.legal_index(bound2_index as i64 - 1);
             }
@@ -280,8 +322,12 @@ impl GeoConvexPolygon {
                     break;
                 }
                 let interior_point = &points[starting_index];
-                if !brothers[bound1_index].is_within(interior_point) || !brothers[bound2_index].is_within(interior_point) {
-                    return Err(iae("Convex polygon has a side that is more than 180 degrees"));
+                if !brothers[bound1_index].is_within(interior_point)
+                    || !brothers[bound2_index].is_within(interior_point)
+                {
+                    return Err(iae(
+                        "Convex polygon has a side that is more than 180 degrees",
+                    ));
                 }
             }
             next_brother_map.insert(edge.clone(), bound1_index);
@@ -454,7 +500,11 @@ impl GeoConvexPolygon {
     }
 }
 
-impl_geo_base_area_shape_common!(GeoConvexPolygon, "org.apache.lucene.spatial3d.geom.GeoConvexPolygon", geo_polygon);
+impl_geo_base_area_shape_common!(
+    GeoConvexPolygon,
+    "org.apache.lucene.spatial3d.geom.GeoConvexPolygon",
+    geo_polygon
+);
 impl_geo_base_area_relationship!(GeoConvexPolygon);
 
 impl GeoPolygon for GeoConvexPolygon {}
@@ -480,10 +530,16 @@ impl Bounded for GeoConvexPolygon {
         let pm = &self.planet_model;
         let b = self.built();
         if self.local_is_within(&pm.north_pole) {
-            bounds.no_top_latitude_bound().no_longitude_bound().add_point(&pm.north_pole);
+            bounds
+                .no_top_latitude_bound()
+                .no_longitude_bound()
+                .add_point(&pm.north_pole);
         }
         if self.local_is_within(&pm.south_pole) {
-            bounds.no_bottom_latitude_bound().no_longitude_bound().add_point(&pm.south_pole);
+            bounds
+                .no_bottom_latitude_bound()
+                .no_longitude_bound()
+                .add_point(&pm.south_pole);
         }
         if self.local_is_within(&pm.min_x_pole) {
             bounds.add_point(&pm.min_x_pole);
@@ -502,7 +558,11 @@ impl Bounded for GeoConvexPolygon {
         }
         for edge_index in 0..b.edges.len() {
             let edge = &b.edges[edge_index];
-            bounds.add_plane(pm, edge, &[&b.start_bounds[edge_index], &b.end_bounds[edge_index]]);
+            bounds.add_plane(
+                pm,
+                edge,
+                &[&b.start_bounds[edge_index], &b.end_bounds[edge_index]],
+            );
             let next_edge = &b.edges[*b.next_brother_map.get(edge).unwrap_or_else(|| npe())];
             bounds.add_intersection(
                 pm,
@@ -522,7 +582,12 @@ impl GeoShape for GeoConvexPolygon {
         self.built().edge_points.clone()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let b = self.built();
         for edge_index in 0..b.edges.len() {
             let edge = &b.edges[edge_index];
@@ -558,7 +623,11 @@ impl GeoAreaShape for GeoConvexPolygon {
             let edge = &b.edges[edge_index];
             let points = &b.notable_edge_points[edge_index];
             if !self.is_internal_edges.get(edge_index)
-                && shape.intersects(edge, points, &[&b.start_bounds[edge_index], &b.end_bounds[edge_index]])
+                && shape.intersects(
+                    edge,
+                    points,
+                    &[&b.start_bounds[edge_index], &b.end_bounds[edge_index]],
+                )
             {
                 return true;
             }

@@ -51,7 +51,9 @@ pub static FIELD_TYPE: LazyLock<Arc<FieldType>> = LazyLock::new(|| {
     let field_type = FieldType::new();
     field_type.set_tokenized(true).expect("unfrozen");
     field_type.set_omit_norms(true).expect("unfrozen");
-    field_type.set_index_options(IndexOptions::DOCS).expect("unfrozen");
+    field_type
+        .set_index_options(IndexOptions::DOCS)
+        .expect("unfrozen");
     field_type.freeze();
     Arc::new(field_type)
 });
@@ -167,7 +169,9 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
     /// `setPointsOnly(boolean pointsOnly)`: if the data is only points
     /// (and not shapes), set this to true for improved performance.
     fn set_points_only(&self, points_only: bool) {
-        self.prefix_base().points_only.store(points_only, Ordering::Relaxed);
+        self.prefix_base()
+            .points_only
+            .store(points_only, Ordering::Relaxed);
     }
 
     /// `createIndexableFields(Shape shape, double distErr)`.
@@ -175,7 +179,11 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
     /// # Errors
     ///
     /// As [`create_indexable_fields_at_level`](Self::create_indexable_fields_at_level).
-    fn create_indexable_fields_with_dist_err(&self, shape: &Arc<dyn Shape>, dist_err: f64) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields_with_dist_err(
+        &self,
+        shape: &Arc<dyn Shape>,
+        dist_err: f64,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         let detail_level = self.prefix_base().grid.get_level_for_distance(dist_err);
         self.create_indexable_fields_at_level(shape, detail_level)
     }
@@ -185,7 +193,11 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
     /// # Errors
     ///
     /// The errors of `createCellIteratorToIndex` and of the field.
-    fn create_indexable_fields_at_level(&self, shape: &Arc<dyn Shape>, detail_level: i32) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields_at_level(
+        &self,
+        shape: &Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         // TODO re-use TokenStream LUCENE-5776: Subclass Field, put cell iterator there, override
         // tokenStream()
         let cells = self.create_cell_iterator_to_index(shape, detail_level)?;
@@ -193,8 +205,13 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
         cell_to_bytes_ref_iterator.reset(cells);
         let mut token_stream = BytesRefIteratorTokenStream::new();
         token_stream.set_bytes_ref_iterator(Box::new(cell_to_bytes_ref_iterator));
-        let token_stream: Arc<AtomicRefCell<dyn TokenStream>> = Arc::new(AtomicRefCell::new(token_stream));
-        let field = Field::new_with_token_stream(self.get_field_name().to_string(), token_stream, Arc::clone(&FIELD_TYPE))?;
+        let token_stream: Arc<AtomicRefCell<dyn TokenStream>> =
+            Arc::new(AtomicRefCell::new(token_stream));
+        let field = Field::new_with_token_stream(
+            self.get_field_name().to_string(),
+            token_stream,
+            Arc::clone(&FIELD_TYPE),
+        )?;
         Ok(vec![Arc::new(field)])
     }
 
@@ -220,7 +237,11 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
     ///
     /// `IllegalArgumentException` for a non-point shape when `pointsOnly`;
     /// the errors of `getTreeCellIterator`.
-    fn create_cell_iterator_to_index(&self, shape: &Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn create_cell_iterator_to_index(
+        &self,
+        shape: &Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         prefix_create_cell_iterator_to_index(self, shape, detail_level)
     }
 
@@ -245,7 +266,14 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
         facet_level: i32,
         max_cells: i32,
     ) -> Result<Heatmap> {
-        heatmap_facet_counter::calc_facets(&*self.me_prefix(), context, top_accept_docs, input_shape, facet_level, max_cells)
+        heatmap_facet_counter::calc_facets(
+            &*self.me_prefix(),
+            context,
+            top_accept_docs,
+            input_shape,
+            facet_level,
+            max_cells,
+        )
     }
 }
 
@@ -266,7 +294,9 @@ pub fn prefix_create_cell_iterator_to_index<S: PrefixTreeStrategy + ?Sized>(
             shape.java_class_name()
         )));
     }
-    s.prefix_base().grid.get_tree_cell_iterator(Arc::clone(shape), detail_level) // TODO should take a re-use iterator
+    s.prefix_base()
+        .grid
+        .get_tree_cell_iterator(Arc::clone(shape), detail_level) // TODO should take a re-use iterator
 }
 
 /// The body of `PrefixTreeStrategy.createIndexableFields(Shape shape)`.
@@ -274,8 +304,15 @@ pub fn prefix_create_cell_iterator_to_index<S: PrefixTreeStrategy + ?Sized>(
 /// # Errors
 ///
 /// The errors of `SpatialArgs.calcDistanceFromErrPct` and of the fields.
-pub fn prefix_create_indexable_fields<S: PrefixTreeStrategy + ?Sized>(s: &S, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
-    let dist_err = SpatialArgs::calc_distance_from_err_pct(&**shape, s.get_dist_err_pct(), &s.prefix_base().strategy.ctx)?;
+pub fn prefix_create_indexable_fields<S: PrefixTreeStrategy + ?Sized>(
+    s: &S,
+    shape: &Arc<dyn Shape>,
+) -> Result<Vec<Arc<dyn IndexableField>>> {
+    let dist_err = SpatialArgs::calc_distance_from_err_pct(
+        &**shape,
+        s.get_dist_err_pct(),
+        &s.prefix_base().strategy.ctx,
+    )?;
     s.create_indexable_fields_with_dist_err(shape, dist_err)
 }
 
@@ -318,7 +355,9 @@ pub struct ShapeTokenStream {
 
 impl fmt::Debug for ShapeTokenStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ShapeTokenStream").field("inner", &self.inner).finish_non_exhaustive()
+        f.debug_struct("ShapeTokenStream")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
     }
 }
 
@@ -330,12 +369,17 @@ impl ShapeTokenStream {
     /// The errors of computing the cells.
     pub fn set_shape(&mut self, shape: &Arc<dyn Shape>) -> Result<()> {
         let s = &self.strategy;
-        let dist_err = SpatialArgs::calc_distance_from_err_pct(&**shape, s.get_dist_err_pct(), &s.prefix_base().strategy.ctx)?;
+        let dist_err = SpatialArgs::calc_distance_from_err_pct(
+            &**shape,
+            s.get_dist_err_pct(),
+            &s.prefix_base().strategy.ctx,
+        )?;
         let detail_level = s.prefix_base().grid.get_level_for_distance(dist_err);
         let cells = s.create_cell_iterator_to_index(shape, detail_level)?;
         let mut cell_to_bytes_ref_iterator = s.new_cell_to_bytes_ref_iterator();
         cell_to_bytes_ref_iterator.reset(cells);
-        self.inner.set_bytes_ref_iterator(Box::new(cell_to_bytes_ref_iterator));
+        self.inner
+            .set_bytes_ref_iterator(Box::new(cell_to_bytes_ref_iterator));
         Ok(())
     }
 }

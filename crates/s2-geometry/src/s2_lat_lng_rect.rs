@@ -17,6 +17,7 @@
 //! The types declared in `S2LatLngRect.java`, of the Java package
 //! `com.google.common.geometry`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -25,7 +26,7 @@ use rucene::error::{LuceneError, Result};
 use crate::r1_interval::R1Interval;
 use crate::s1_angle::S1Angle;
 use crate::s1_interval::S1Interval;
-use crate::s2::{ieee_remainder, null_message_error, S2};
+use crate::s2::{null_message_error, S2};
 use crate::s2_cap::S2Cap;
 use crate::s2_cell::S2Cell;
 use crate::s2_edge_util::S2EdgeUtil;
@@ -104,7 +105,7 @@ impl S2LatLngRect {
         if da * db >= 0.0 {
             return r;
         }
-        let abs_lat = (ab.z / ab.norm()).abs().acos();
+        let abs_lat = java_math::acos((ab.z / ab.norm()).abs());
         if da < 0.0 {
             Self::new(R1Interval::new(r.lat().lo(), abs_lat), r.lng())
         } else {
@@ -215,9 +216,9 @@ impl S2LatLngRect {
             return Err(null_message_error("java.lang.IllegalArgumentException"));
         }
         if a.lng().contains_point(p.lng().radians()) {
-            return Ok(S1Angle::from_radians(
-                0.0f64.max((p.lat().radians() - a.lat().hi()).max(a.lat().lo() - p.lat().radians())),
-            ));
+            return Ok(S1Angle::from_radians(0.0f64.max(
+                (p.lat().radians() - a.lat().hi()).max(a.lat().lo() - p.lat().radians()),
+            )));
         }
         let interval = S1Interval::new(a.lng().hi(), a.lng().complement().get_center());
         let mut a_lng = a.lng().lo();
@@ -226,7 +227,9 @@ impl S2LatLngRect {
         }
         let lo = S2LatLng::from_radians(a.lat().lo(), a_lng).to_point();
         let hi = S2LatLng::from_radians(a.lat().hi(), a_lng).to_point();
-        let lo_cross_hi = S2LatLng::from_radians(0.0, a_lng - S2::M_PI_2).normalized().to_point();
+        let lo_cross_hi = S2LatLng::from_radians(0.0, a_lng - S2::M_PI_2)
+            .normalized()
+            .to_point();
         S2EdgeUtil::get_distance_with_cross(&p.to_point(), &lo, &hi, &lo_cross_hi)
     }
 
@@ -266,12 +269,14 @@ impl S2LatLngRect {
         };
         let a_lo = S2LatLng::new(&a.lat_lo(), &a_lng).to_point();
         let a_hi = S2LatLng::new(&a.lat_hi(), &a_lng).to_point();
-        let a_lo_cross_hi =
-            S2LatLng::from_radians(0.0, a_lng.radians() - S2::M_PI_2).normalized().to_point();
+        let a_lo_cross_hi = S2LatLng::from_radians(0.0, a_lng.radians() - S2::M_PI_2)
+            .normalized()
+            .to_point();
         let b_lo = S2LatLng::new(&b.lat_lo(), &b_lng).to_point();
         let b_hi = S2LatLng::new(&b.lat_hi(), &b_lng).to_point();
-        let b_lo_cross_hi =
-            S2LatLng::from_radians(0.0, b_lng.radians() - S2::M_PI_2).normalized().to_point();
+        let b_lo_cross_hi = S2LatLng::from_radians(0.0, b_lng.radians() - S2::M_PI_2)
+            .normalized()
+            .to_point();
         // Java evaluates the four distances left to right, as written.
         let d1 = S2EdgeUtil::get_distance_with_cross(&a_lo, &b_lo, &b_hi, &b_lo_cross_hi)?;
         let d2 = S2EdgeUtil::get_distance_with_cross(&a_hi, &b_lo, &b_hi, &b_lo_cross_hi)?;
@@ -392,7 +397,9 @@ impl S2LatLngRect {
             return *self;
         }
         S2LatLngRect::new(
-            self.lat.expanded(margin.lat().radians()).intersection(&Self::full_lat()),
+            self.lat
+                .expanded(margin.lat().radians())
+                .intersection(&Self::full_lat()),
             self.lng.expanded(margin.lng().radians()),
         )
     }
@@ -428,7 +435,9 @@ impl S2LatLngRect {
         if self.is_empty() {
             return 0.0;
         }
-        self.lng().get_length() * (self.lat_hi().radians().sin() - self.lat_lo().radians().sin()).abs()
+        self.lng().get_length()
+            * (java_math::sin(self.lat_hi().radians()) - java_math::sin(self.lat_lo().radians()))
+                .abs()
     }
 
     /// `approxEquals(S2LatLngRect, double)`.
@@ -475,27 +484,27 @@ impl S2LatLngRect {
         }
         let y = S2Point::normalize(&S2::robust_cross_prod(&z, &S2Point::new(0.0, 0.0, 1.0)));
         let x = S2Point::cross_prod(&y, &z);
-        let sin_lat = lat.sin();
+        let sin_lat = java_math::sin(lat);
         if sin_lat.abs() >= x.z {
             return false; // The great circle does not reach the given latitude.
         }
         let cos_theta = sin_lat / x.z;
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-        let theta = sin_theta.atan2(cos_theta);
+        let sin_theta = java_math::sqrt(1.0 - cos_theta * cos_theta);
+        let theta = java_math::atan2(sin_theta, cos_theta);
         let ab_theta = S1Interval::from_point_pair(
-            a.dot_prod(&y).atan2(a.dot_prod(&x)),
-            b.dot_prod(&y).atan2(b.dot_prod(&x)),
+            java_math::atan2(a.dot_prod(&y), a.dot_prod(&x)),
+            java_math::atan2(b.dot_prod(&y), b.dot_prod(&x)),
         );
         if ab_theta.contains_point(theta) {
             let isect = S2Point::add(&S2Point::mul(&x, cos_theta), &S2Point::mul(&y, sin_theta));
-            if lng.contains_point(isect.y.atan2(isect.x)) {
+            if lng.contains_point(java_math::atan2(isect.y, isect.x)) {
                 return true;
             }
         }
         if ab_theta.contains_point(-theta) {
             let intersection =
                 S2Point::sub(&S2Point::mul(&x, cos_theta), &S2Point::mul(&y, sin_theta));
-            if lng.contains_point(intersection.y.atan2(intersection.x)) {
+            if lng.contains_point(java_math::atan2(intersection.y, intersection.x)) {
                 return true;
             }
         }
@@ -519,7 +528,7 @@ impl S2Region for S2LatLngRect {
             &S1Angle::from_radians(pole_angle),
         );
         let lng_span = self.lng.hi() - self.lng.lo();
-        if ieee_remainder(lng_span, 2.0 * S2::M_PI) >= 0.0 && lng_span < 2.0 * S2::M_PI {
+        if java_math::ieee_remainder(lng_span, 2.0 * S2::M_PI) >= 0.0 && lng_span < 2.0 * S2::M_PI {
             let mut mid_cap =
                 S2Cap::from_axis_angle(self.get_center().to_point(), &S1Angle::from_radians(0.0));
             for k in 0..4 {

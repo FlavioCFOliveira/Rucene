@@ -18,6 +18,7 @@
 //! The types declared in `GeoPoint.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -155,10 +156,10 @@ impl GeoPoint {
     pub fn new_lat_lon(planet_model: &PlanetModel, lat: f64, lon: f64) -> Result<Self> {
         Self::new_sin_cos_lat_lon(
             planet_model,
-            lat.sin(),
-            lon.sin(),
-            lat.cos(),
-            lon.cos(),
+            java_math::sin(lat),
+            java_math::sin(lon),
+            java_math::cos(lat),
+            java_math::cos(lon),
             lat,
             lon,
         )
@@ -278,7 +279,7 @@ impl GeoPoint {
     pub fn get_latitude(&self) -> f64 {
         let mut lat = f64::from_bits(self.latitude.load(Ordering::Relaxed));
         if lat == f64::NEG_INFINITY {
-            lat = (self.v.z / self.magnitude()).asin();
+            lat = java_math::asin(self.v.z / self.magnitude());
             self.latitude.store(lat.to_bits(), Ordering::Relaxed);
         }
         lat
@@ -293,7 +294,7 @@ impl GeoPoint {
             {
                 lon = 0.0;
             } else {
-                lon = self.v.y.atan2(self.v.x);
+                lon = java_math::atan2(self.v.y, self.v.x);
             }
             self.longitude.store(lon.to_bits(), Ordering::Relaxed);
         }

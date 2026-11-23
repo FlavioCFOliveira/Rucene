@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoS2Shape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -69,7 +68,13 @@ impl GeoS2Shape {
     /// # Errors
     ///
     /// `IllegalArgumentException` when a side plane cannot be built.
-    pub fn new(planet_model: &Arc<PlanetModel>, point1: GeoPoint, point2: GeoPoint, point3: GeoPoint, point4: GeoPoint) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        point1: GeoPoint,
+        point2: GeoPoint,
+        point3: GeoPoint,
+        point4: GeoPoint,
+    ) -> Result<Self> {
         let plane1 = SidedPlane::new_cross(&point4, &point1, &point2)?;
         let plane2 = SidedPlane::new_cross(&point1, &point2, &point3)?;
         let plane3 = SidedPlane::new_cross(&point2, &point3, &point4)?;
@@ -115,17 +120,27 @@ impl GeoS2Shape {
 
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         let pm = &self.planet_model;
-        let plane_distance1 = ds.compute_plane_distance_xyz(pm, &self.plane1, x, y, z, &[&self.plane2, &self.plane4]);
-        let plane_distance2 = ds.compute_plane_distance_xyz(pm, &self.plane2, x, y, z, &[&self.plane3, &self.plane1]);
-        let plane_distance3 = ds.compute_plane_distance_xyz(pm, &self.plane3, x, y, z, &[&self.plane4, &self.plane2]);
-        let plane_distance4 = ds.compute_plane_distance_xyz(pm, &self.plane4, x, y, z, &[&self.plane1, &self.plane3]);
+        let plane_distance1 =
+            ds.compute_plane_distance_xyz(pm, &self.plane1, x, y, z, &[&self.plane2, &self.plane4]);
+        let plane_distance2 =
+            ds.compute_plane_distance_xyz(pm, &self.plane2, x, y, z, &[&self.plane3, &self.plane1]);
+        let plane_distance3 =
+            ds.compute_plane_distance_xyz(pm, &self.plane3, x, y, z, &[&self.plane4, &self.plane2]);
+        let plane_distance4 =
+            ds.compute_plane_distance_xyz(pm, &self.plane4, x, y, z, &[&self.plane1, &self.plane3]);
         let point_distance1 = ds.compute_distance_xyz(&self.point1, x, y, z);
         let point_distance2 = ds.compute_distance_xyz(&self.point2, x, y, z);
         let point_distance3 = ds.compute_distance_xyz(&self.point3, x, y, z);
         let point_distance4 = ds.compute_distance_xyz(&self.point4, x, y, z);
         Ok(java_min(
-            java_min(java_min(plane_distance1, plane_distance2), java_min(plane_distance3, plane_distance4)),
-            java_min(java_min(point_distance1, point_distance2), java_min(point_distance3, point_distance4)),
+            java_min(
+                java_min(plane_distance1, plane_distance2),
+                java_min(plane_distance3, plane_distance4),
+            ),
+            java_min(
+                java_min(point_distance1, point_distance2),
+                java_min(point_distance3, point_distance4),
+            ),
         ))
     }
 
@@ -139,15 +154,27 @@ impl GeoS2Shape {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.point1.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.point2.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.point3.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.point4.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.point1.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.point2.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.point3.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.point4.java_hash_code());
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoS2Shape, "org.apache.lucene.spatial3d.geom.GeoS2Shape", geo_polygon);
+impl_geo_base_area_shape_common!(
+    GeoS2Shape,
+    "org.apache.lucene.spatial3d.geom.GeoS2Shape",
+    geo_polygon
+);
 impl_geo_base_area_relationship!(GeoS2Shape);
 
 impl GeoPolygon for GeoS2Shape {}
@@ -182,21 +209,64 @@ impl GeoShape for GeoS2Shape {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let pm = &self.planet_model;
-        p.intersects(pm, &self.plane1, notable_points, &self.plane1_points, bounds, &[&self.plane2, &self.plane4])
-            || p.intersects(pm, &self.plane2, notable_points, &self.plane2_points, bounds, &[&self.plane3, &self.plane1])
-            || p.intersects(pm, &self.plane3, notable_points, &self.plane3_points, bounds, &[&self.plane4, &self.plane2])
-            || p.intersects(pm, &self.plane4, notable_points, &self.plane4_points, bounds, &[&self.plane1, &self.plane3])
+        p.intersects(
+            pm,
+            &self.plane1,
+            notable_points,
+            &self.plane1_points,
+            bounds,
+            &[&self.plane2, &self.plane4],
+        ) || p.intersects(
+            pm,
+            &self.plane2,
+            notable_points,
+            &self.plane2_points,
+            bounds,
+            &[&self.plane3, &self.plane1],
+        ) || p.intersects(
+            pm,
+            &self.plane3,
+            notable_points,
+            &self.plane3_points,
+            bounds,
+            &[&self.plane4, &self.plane2],
+        ) || p.intersects(
+            pm,
+            &self.plane4,
+            notable_points,
+            &self.plane4_points,
+            bounds,
+            &[&self.plane1, &self.plane3],
+        )
     }
 }
 
 impl GeoAreaShape for GeoS2Shape {
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
-        geo_shape.intersects(&self.plane1, &self.plane1_points, &[&self.plane2, &self.plane4])
-            || geo_shape.intersects(&self.plane2, &self.plane2_points, &[&self.plane3, &self.plane1])
-            || geo_shape.intersects(&self.plane3, &self.plane3_points, &[&self.plane4, &self.plane2])
-            || geo_shape.intersects(&self.plane4, &self.plane4_points, &[&self.plane1, &self.plane3])
+        geo_shape.intersects(
+            &self.plane1,
+            &self.plane1_points,
+            &[&self.plane2, &self.plane4],
+        ) || geo_shape.intersects(
+            &self.plane2,
+            &self.plane2_points,
+            &[&self.plane3, &self.plane1],
+        ) || geo_shape.intersects(
+            &self.plane3,
+            &self.plane3_points,
+            &[&self.plane4, &self.plane2],
+        ) || geo_shape.intersects(
+            &self.plane4,
+            &self.plane4_points,
+            &[&self.plane1, &self.plane3],
+        )
     }
 }
 

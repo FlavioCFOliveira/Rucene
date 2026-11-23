@@ -24,8 +24,8 @@ use std::sync::Arc;
 use rucene::error::Result;
 use rucene::index::LeafReaderContext;
 use rucene::search::{
-    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier, IndexSearcher, Query,
-    QueryVisitor, ScoreMode, ScorerSupplier, SegmentCacheable, Weight,
+    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier,
+    IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, SegmentCacheable, Weight,
 };
 
 use crate::search_util::{share, ScorerDisi};
@@ -45,7 +45,10 @@ pub struct CompositeVerifyQuery {
 impl CompositeVerifyQuery {
     /// `CompositeVerifyQuery(Query indexQuery, ShapeValuesPredicate
     /// predicateValueSource)`.
-    pub fn new(index_query: Arc<dyn Query>, predicate_value_source: Arc<ShapeValuesPredicate>) -> Self {
+    pub fn new(
+        index_query: Arc<dyn Query>,
+        predicate_value_source: Arc<ShapeValuesPredicate>,
+    ) -> Self {
         Self {
             index_query,
             predicate_value_source,
@@ -62,7 +65,11 @@ struct CompositeVerifyWeight {
 }
 
 impl ConstantScoreWeightImpl for CompositeVerifyWeight {
-    fn scorer_supplier(&self, context: &LeafReaderContext, score: f32) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+        score: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let Some(index_query_scorer) = self.index_query_weight.scorer(context)? else {
             return Ok(None);
         };
@@ -106,9 +113,16 @@ impl Query for CompositeVerifyQuery {
         }
     }
 
-    fn create_weight(&self, searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         // scores aren't unsupported
-        let index_query_weight = self.index_query.create_weight(searcher, ScoreMode::COMPLETE_NO_SCORES, boost)?;
+        let index_query_weight =
+            self.index_query
+                .create_weight(searcher, ScoreMode::COMPLETE_NO_SCORES, boost)?;
         Ok(Arc::new(ConstantScoreWeight::new(
             Arc::new(self.clone()),
             boost,
@@ -121,15 +135,25 @@ impl Query for CompositeVerifyQuery {
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
-        other.as_any().downcast_ref::<CompositeVerifyQuery>().is_some_and(|o| {
-            self.index_query.query_eq(&*o.index_query) && self.predicate_value_source.predicate_eq(&o.predicate_value_source)
-        })
+        other
+            .as_any()
+            .downcast_ref::<CompositeVerifyQuery>()
+            .is_some_and(|o| {
+                self.index_query.query_eq(&*o.index_query)
+                    && self
+                        .predicate_value_source
+                        .predicate_eq(&o.predicate_value_source)
+            })
     }
 
     fn query_hash(&self) -> i32 {
         let mut result = self.class_hash();
-        result = result.wrapping_mul(31).wrapping_add(self.index_query.query_hash());
-        result = result.wrapping_mul(31).wrapping_add(self.predicate_value_source.predicate_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.index_query.query_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.predicate_value_source.predicate_hash());
         result
     }
 

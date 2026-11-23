@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoExactCircle.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -36,6 +35,7 @@ use super::geo_circle::GeoCircle;
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
 use super::geo_sizeable::GeoSizeable;
+use super::list_to_string;
 use super::membership::Membership;
 use super::plane::Plane;
 use super::planet_model::PlanetModel;
@@ -43,13 +43,17 @@ use super::serializable_object as so;
 use super::sided_plane::SidedPlane;
 use super::vector::Vector;
 use super::{d2s, iae};
-use super::list_to_string;
 
 /// Circular area with a center and radius, built from plane slices to an
 /// accuracy.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoExactCircle`.
-pub(crate) struct GeoExactCircle {
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct GeoExactCircle {
     planet_model: Arc<PlanetModel>,
     center: GeoPoint,
     radius: f64,
@@ -66,7 +70,15 @@ impl GeoExactCircle {
     ///
     /// `IllegalArgumentException` for out-of-bounds arguments or a circle
     /// that cannot be sliced.
-    pub fn new(planet_model: &Arc<PlanetModel>, lat: f64, lon: f64, radius: f64, accuracy: f64) -> Result<Self> {
+    // Java's late-assigned local.
+    #[allow(clippy::needless_late_init)]
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        lat: f64,
+        lon: f64,
+        radius: f64,
+        accuracy: f64,
+    ) -> Result<Self> {
         let pm = planet_model;
         if lat < -PI * 0.5 || lat > PI * 0.5 {
             return Err(iae("Latitude out of bounds"));
@@ -99,20 +111,60 @@ impl GeoExactCircle {
         let west_point = pm.surface_point_on_bearing(&center, radius, PI * 1.5)?;
         let edge_point;
         if pm.z_scaling > pm.xy_scaling {
-            slices.push(ApproximationSlice::new(&center, east_point.clone(), PI * 0.5, west_point.clone(), PI * -0.5, north_point.clone(), 0.0, true)?);
-            slices.push(ApproximationSlice::new(&center, west_point.clone(), PI * 1.5, east_point.clone(), PI * 0.5, south_point.clone(), PI, true)?);
+            slices.push(ApproximationSlice::new(
+                &center,
+                east_point.clone(),
+                PI * 0.5,
+                west_point.clone(),
+                PI * -0.5,
+                north_point.clone(),
+                0.0,
+                true,
+            )?);
+            slices.push(ApproximationSlice::new(
+                &center,
+                west_point.clone(),
+                PI * 1.5,
+                east_point.clone(),
+                PI * 0.5,
+                south_point.clone(),
+                PI,
+                true,
+            )?);
             edge_point = east_point;
         } else {
-            slices.push(ApproximationSlice::new(&center, north_point.clone(), 0.0, south_point.clone(), PI, east_point.clone(), PI * 0.5, true)?);
-            slices.push(ApproximationSlice::new(&center, south_point.clone(), PI, north_point.clone(), PI * 2.0, west_point.clone(), PI * 1.5, true)?);
+            slices.push(ApproximationSlice::new(
+                &center,
+                north_point.clone(),
+                0.0,
+                south_point.clone(),
+                PI,
+                east_point.clone(),
+                PI * 0.5,
+                true,
+            )?);
+            slices.push(ApproximationSlice::new(
+                &center,
+                south_point.clone(),
+                PI,
+                north_point.clone(),
+                PI * 2.0,
+                west_point.clone(),
+                PI * 1.5,
+                true,
+            )?);
             edge_point = north_point;
         }
         let mut circle_slices = Vec::new();
         while let Some(this_slice) = slices.pop() {
-            let interp_point1_bearing = (this_slice.point1_bearing + this_slice.middle_point_bearing) * 0.5;
-            let interp_point1 = pm.surface_point_on_bearing(&center, radius, interp_point1_bearing)?;
-            let interp_point2_bearing = (this_slice.point2_bearing + this_slice.middle_point_bearing) * 0.5;
-            let interp_point2 = pm.surface_point_on_bearing(&center, radius, interp_point2_bearing)?;
+            let interp_point1_bearing =
+                (this_slice.point1_bearing + this_slice.middle_point_bearing) * 0.5;
+            let interp_point1 =
+                pm.surface_point_on_bearing(&center, radius, interp_point1_bearing)?;
+            let interp_point2_bearing =
+                (this_slice.point2_bearing + this_slice.middle_point_bearing) * 0.5;
+            let interp_point2 =
+                pm.surface_point_on_bearing(&center, radius, interp_point2_bearing)?;
             if !this_slice.must_split
                 && this_slice.plane.evaluate(&interp_point1).abs() < actual_accuracy
                 && this_slice.plane.evaluate(&interp_point2).abs() < actual_accuracy
@@ -186,7 +238,12 @@ impl GeoExactCircle {
         Ok(self.distance(ds, x, y, z)? * 2.0)
     }
 
-    fn distance_bounds(&self, bounds: &mut dyn Bounds, _ds: &dyn DistanceStyle, _distance_value: f64) -> Result<()> {
+    fn distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        _ds: &dyn DistanceStyle,
+        _distance_value: f64,
+    ) -> Result<()> {
         self.get_bounds(bounds);
         Ok(())
     }
@@ -194,7 +251,14 @@ impl GeoExactCircle {
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         let mut outside_distance = f64::INFINITY;
         for slice in &self.circle_slices {
-            let distance = ds.compute_plane_distance_xyz(&self.planet_model, &slice.circle_plane, x, y, z, &[&slice.plane1, &slice.plane2]);
+            let distance = ds.compute_plane_distance_xyz(
+                &self.planet_model,
+                &slice.circle_plane,
+                x,
+                y,
+                z,
+                &[&slice.plane1, &slice.plane2],
+            );
             if distance < outside_distance {
                 outside_distance = distance;
             }
@@ -211,14 +275,24 @@ impl GeoExactCircle {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.center.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(super::dhash(self.radius));
-        result = result.wrapping_mul(31).wrapping_add(super::dhash(self.actual_accuracy));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.center.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.radius));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.actual_accuracy));
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoExactCircle, "org.apache.lucene.spatial3d.geom.GeoExactCircle", geo_circle);
+impl_geo_base_area_shape_common!(
+    GeoExactCircle,
+    "org.apache.lucene.spatial3d.geom.GeoExactCircle",
+    geo_circle
+);
 impl_geo_base_area_relationship!(GeoExactCircle);
 impl_geo_base_distance_shape!(GeoExactCircle);
 
@@ -241,7 +315,11 @@ impl Bounded for GeoExactCircle {
         GeoBaseBounds::get_bounds(self, &self.planet_model, bounds);
         bounds.add_point(&self.center);
         for slice in &self.circle_slices {
-            bounds.add_plane(&self.planet_model, &slice.circle_plane, &[&slice.plane1, &slice.plane2]);
+            bounds.add_plane(
+                &self.planet_model,
+                &slice.circle_plane,
+                &[&slice.plane1, &slice.plane2],
+            );
             for point in &slice.notable_edge_points {
                 bounds.add_point(point);
             }
@@ -254,7 +332,12 @@ impl GeoShape for GeoExactCircle {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         for slice in &self.circle_slices {
             if slice.circle_plane.intersects(
                 &self.planet_model,
@@ -274,7 +357,11 @@ impl GeoShape for GeoExactCircle {
 impl GeoAreaShape for GeoExactCircle {
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
         for slice in &self.circle_slices {
-            if geo_shape.intersects(&slice.circle_plane, &slice.notable_edge_points, &[&slice.plane1, &slice.plane2]) {
+            if geo_shape.intersects(
+                &slice.circle_plane,
+                &slice.notable_edge_points,
+                &[&slice.plane1, &slice.plane2],
+            ) {
                 return true;
             }
         }
@@ -349,9 +436,12 @@ impl ApproximationSlice {
         middle_point_bearing: f64,
         must_split: bool,
     ) -> Result<Self> {
-        let Some(plane) =
-            SidedPlane::construct_normalized_three_point_sided_plane(center, &end_point1, &end_point2, &middle_point)
-        else {
+        let Some(plane) = SidedPlane::construct_normalized_three_point_sided_plane(
+            center,
+            &end_point1,
+            &end_point2,
+            &middle_point,
+        ) else {
             return Err(iae(format!(
                 "Either circle is too small or accuracy is too high; could not construct a plane with endPoint1={} bearing {}, endPoint2={} bearing {}, middle={} bearing {}",
                 end_point1,

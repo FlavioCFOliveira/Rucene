@@ -28,7 +28,10 @@ pub struct OnePointsBuilder {
 impl OnePointsBuilder {
     /// `OnePointsBuilder(ShapeFactory shapeFactory)`.
     pub fn new(shape_factory: Arc<dyn ShapeFactory>) -> Self {
-        Self { shape_factory, point: None }
+        Self {
+            shape_factory,
+            point: None,
+        }
     }
 
     /// `getPoint()`; `None` (Java `null`) before a point was given.

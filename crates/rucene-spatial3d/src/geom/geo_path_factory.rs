@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoPathFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -48,9 +47,16 @@ impl GeoPathFactory {
         path_points: &[GeoPoint],
     ) -> Result<Arc<dyn GeoPath>> {
         if max_cutoff_angle < Vector::MINIMUM_ANGULAR_RESOLUTION {
-            return Ok(Arc::new(GeoDegeneratePath::new(planet_model, &Self::filter_points(path_points)?)?));
+            return Ok(Arc::new(GeoDegeneratePath::new(
+                planet_model,
+                &Self::filter_points(path_points)?,
+            )?));
         }
-        Ok(Arc::new(GeoStandardPath::new(planet_model, max_cutoff_angle, &Self::filter_points(path_points)?)?))
+        Ok(Arc::new(GeoStandardPath::new(
+            planet_model,
+            max_cutoff_angle,
+            &Self::filter_points(path_points)?,
+        )?))
     }
 
     /// `filterPoints(GeoPoint[])`: drops consecutive numerically identical

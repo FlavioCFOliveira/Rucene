@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoWideNorthRectangle.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -37,12 +37,12 @@ use super::geo_base_bounds::GeoBaseBounds;
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
 use super::geo_sizeable::GeoSizeable;
+use super::geo_wide_rectangle::GeoWideRectangle;
 use super::membership::Membership;
 use super::plane::Plane;
 use super::planet_model::PlanetModel;
 use super::serializable_object as so;
 use super::sided_plane::SidedPlane;
-use super::geo_wide_rectangle::GeoWideRectangle;
 use super::vector::Vector;
 use super::{d2s, iae, java_max, java_min};
 
@@ -78,7 +78,12 @@ impl GeoWideNorthRectangle {
     /// # Errors
     ///
     /// `IllegalArgumentException` for out-of-range or inconsistent bounds.
-    pub fn new(planet_model: &Arc<PlanetModel>, bottom_lat: f64, left_lon: f64, mut right_lon: f64) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        bottom_lat: f64,
+        left_lon: f64,
+        mut right_lon: f64,
+    ) -> Result<Self> {
         let pm = planet_model;
         if bottom_lat > PI * 0.5 || bottom_lat < -PI * 0.5 {
             return Err(iae("Bottom latitude out of range"));
@@ -97,24 +102,46 @@ impl GeoWideNorthRectangle {
             return Err(iae("Width of rectangle too small"));
         }
         let stored_right_lon = right_lon;
-        let sin_bottom_lat = bottom_lat.sin();
-        let cos_bottom_lat = bottom_lat.cos();
-        let sin_left_lon = left_lon.sin();
-        let cos_left_lon = left_lon.cos();
-        let sin_right_lon = right_lon.sin();
-        let cos_right_lon = right_lon.cos();
-        let lrhc = GeoPoint::new_sin_cos_lat_lon(pm, sin_bottom_lat, sin_right_lon, cos_bottom_lat, cos_right_lon, bottom_lat, right_lon)?;
-        let llhc = GeoPoint::new_sin_cos_lat_lon(pm, sin_bottom_lat, sin_left_lon, cos_bottom_lat, cos_left_lon, bottom_lat, left_lon)?;
+        let sin_bottom_lat = java_math::sin(bottom_lat);
+        let cos_bottom_lat = java_math::cos(bottom_lat);
+        let sin_left_lon = java_math::sin(left_lon);
+        let cos_left_lon = java_math::cos(left_lon);
+        let sin_right_lon = java_math::sin(right_lon);
+        let cos_right_lon = java_math::cos(right_lon);
+        let lrhc = GeoPoint::new_sin_cos_lat_lon(
+            pm,
+            sin_bottom_lat,
+            sin_right_lon,
+            cos_bottom_lat,
+            cos_right_lon,
+            bottom_lat,
+            right_lon,
+        )?;
+        let llhc = GeoPoint::new_sin_cos_lat_lon(
+            pm,
+            sin_bottom_lat,
+            sin_left_lon,
+            cos_bottom_lat,
+            cos_left_lon,
+            bottom_lat,
+            left_lon,
+        )?;
         let middle_lat = (PI * 0.5 + bottom_lat) * 0.5;
-        let sin_middle_lat = middle_lat.sin();
-        let cos_middle_lat = middle_lat.cos();
+        let sin_middle_lat = java_math::sin(middle_lat);
+        let cos_middle_lat = java_math::cos(middle_lat);
         while left_lon > right_lon {
             right_lon += PI * 2.0;
         }
         let middle_lon = (left_lon + right_lon) * 0.5;
-        let sin_middle_lon = middle_lon.sin();
-        let cos_middle_lon = middle_lon.cos();
-        let center_point = GeoPoint::new_sin_cos(pm, sin_middle_lat, sin_middle_lon, cos_middle_lat, cos_middle_lon);
+        let sin_middle_lon = java_math::sin(middle_lon);
+        let cos_middle_lon = java_math::cos(middle_lon);
+        let center_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_middle_lat,
+            sin_middle_lon,
+            cos_middle_lat,
+            cos_middle_lon,
+        );
         let bottom_plane = SidedPlane::new_horizontal(&center_point, pm, sin_bottom_lat)?;
         let left_plane = SidedPlane::new_vertical(&center_point, cos_left_lon, sin_left_lon)?;
         let right_plane = SidedPlane::new_vertical(&center_point, cos_right_lon, sin_right_lon)?;
@@ -160,9 +187,12 @@ impl GeoWideNorthRectangle {
 
     fn outside_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
         let pm = &self.planet_model;
-        let bottom_distance = ds.compute_plane_distance_xyz(pm, &self.bottom_plane, x, y, z, &[&self.either_bound]);
-        let left_distance = ds.compute_plane_distance_xyz(pm, &self.left_plane, x, y, z, &[&self.bottom_plane]);
-        let right_distance = ds.compute_plane_distance_xyz(pm, &self.right_plane, x, y, z, &[&self.bottom_plane]);
+        let bottom_distance =
+            ds.compute_plane_distance_xyz(pm, &self.bottom_plane, x, y, z, &[&self.either_bound]);
+        let left_distance =
+            ds.compute_plane_distance_xyz(pm, &self.left_plane, x, y, z, &[&self.bottom_plane]);
+        let right_distance =
+            ds.compute_plane_distance_xyz(pm, &self.right_plane, x, y, z, &[&self.bottom_plane]);
         let lrhc_distance = ds.compute_distance_xyz(&self.lrhc, x, y, z);
         let llhc_distance = ds.compute_distance_xyz(&self.llhc, x, y, z);
         Ok(java_min(
@@ -179,13 +209,21 @@ impl GeoWideNorthRectangle {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.llhc.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.lrhc.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.llhc.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.lrhc.java_hash_code());
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoWideNorthRectangle, "org.apache.lucene.spatial3d.geom.GeoWideNorthRectangle", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoWideNorthRectangle,
+    "org.apache.lucene.spatial3d.geom.GeoWideNorthRectangle",
+    geo_b_box
+);
 impl_geo_base_area_relationship!(GeoWideNorthRectangle);
 
 impl Membership for GeoWideNorthRectangle {
@@ -201,10 +239,20 @@ impl Bounded for GeoWideNorthRectangle {
         GeoBaseBounds::get_bounds(self, pm, bounds);
         bounds
             .is_wide()
-            .add_horizontal_plane(pm, self.bottom_lat, &self.bottom_plane, &[&self.either_bound])
+            .add_horizontal_plane(
+                pm,
+                self.bottom_lat,
+                &self.bottom_plane,
+                &[&self.either_bound],
+            )
             .add_vertical_plane(pm, self.left_lon, &self.left_plane, &[&self.bottom_plane])
             .add_vertical_plane(pm, self.right_lon, &self.right_plane, &[&self.bottom_plane])
-            .add_intersection(pm, &self.left_plane, &self.right_plane, &[&self.bottom_plane])
+            .add_intersection(
+                pm,
+                &self.left_plane,
+                &self.right_plane,
+                &[&self.bottom_plane],
+            )
             .add_point(&self.llhc)
             .add_point(&self.lrhc)
             .add_point(&pm.north_pole);
@@ -216,25 +264,60 @@ impl GeoShape for GeoWideNorthRectangle {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let pm = &self.planet_model;
-        p.intersects(pm, &self.bottom_plane, notable_points, &self.bottom_plane_points, bounds, &[&self.either_bound])
-            || p.intersects(pm, &self.left_plane, notable_points, &self.left_plane_points, bounds, &[&self.bottom_plane])
-            || p.intersects(pm, &self.right_plane, notable_points, &self.right_plane_points, bounds, &[&self.bottom_plane])
+        p.intersects(
+            pm,
+            &self.bottom_plane,
+            notable_points,
+            &self.bottom_plane_points,
+            bounds,
+            &[&self.either_bound],
+        ) || p.intersects(
+            pm,
+            &self.left_plane,
+            notable_points,
+            &self.left_plane_points,
+            bounds,
+            &[&self.bottom_plane],
+        ) || p.intersects(
+            pm,
+            &self.right_plane,
+            notable_points,
+            &self.right_plane_points,
+            bounds,
+            &[&self.bottom_plane],
+        )
     }
 }
 
 impl GeoAreaShape for GeoWideNorthRectangle {
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
-        geo_shape.intersects(&self.bottom_plane, &self.bottom_plane_points, &[&self.either_bound])
-            || geo_shape.intersects(&self.left_plane, &self.left_plane_points, &[&self.bottom_plane])
-            || geo_shape.intersects(&self.right_plane, &self.right_plane_points, &[&self.bottom_plane])
+        geo_shape.intersects(
+            &self.bottom_plane,
+            &self.bottom_plane_points,
+            &[&self.either_bound],
+        ) || geo_shape.intersects(
+            &self.left_plane,
+            &self.left_plane_points,
+            &[&self.bottom_plane],
+        ) || geo_shape.intersects(
+            &self.right_plane,
+            &self.right_plane_points,
+            &[&self.bottom_plane],
+        )
     }
 }
 
 impl GeoSizeable for GeoWideNorthRectangle {
     fn get_radius(&self) -> f64 {
-        let center_angle = (self.right_lon - (self.right_lon + self.left_lon) * 0.5) * self.cos_middle_lat;
+        let center_angle =
+            (self.right_lon - (self.right_lon + self.left_lon) * 0.5) * self.cos_middle_lat;
         let bottom_angle = self.center_point.arc_distance(&self.llhc);
         java_max(center_angle, bottom_angle)
     }
@@ -258,7 +341,13 @@ impl GeoBBox for GeoWideNorthRectangle {
             new_left_lon = -PI;
             new_right_lon = PI;
         }
-        GeoBBoxFactory::make_geo_bbox(&self.planet_model, new_top_lat, new_bottom_lat, new_left_lon, new_right_lon)
+        GeoBBoxFactory::make_geo_bbox(
+            &self.planet_model,
+            new_top_lat,
+            new_bottom_lat,
+            new_left_lon,
+            new_right_lon,
+        )
     }
 }
 

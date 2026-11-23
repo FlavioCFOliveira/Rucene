@@ -41,7 +41,9 @@ pub trait S2ShapeFactory: ShapeFactory {
 /// interface query ([`ShapeFactory::as_interface`]) for
 /// `TypeId::of::<dyn S2ShapeFactory>()` with itself, so any implementation is
 /// recognised, as Java's `instanceof` recognises it.
-pub fn as_s2_shape_factory(shape_factory: &Arc<dyn ShapeFactory>) -> Option<Arc<dyn S2ShapeFactory>> {
+pub fn as_s2_shape_factory(
+    shape_factory: &Arc<dyn ShapeFactory>,
+) -> Option<Arc<dyn S2ShapeFactory>> {
     Arc::clone(shape_factory)
         .as_interface(TypeId::of::<dyn S2ShapeFactory>())
         .and_then(|view| view.downcast::<Arc<dyn S2ShapeFactory>>().ok())

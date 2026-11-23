@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `XdYZSolid.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -27,6 +26,7 @@ use rucene::error::Result;
 
 use super::base_planet_object::BasePlanetObject;
 use super::base_xyz_solid::BaseXYZSolid;
+use super::base_xyz_solid::{X_UNIT_VECTOR, Y_UNIT_VECTOR, Y_VERTICAL_PLANE, Z_UNIT_VECTOR};
 use super::geo_area::{self, GeoArea};
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
@@ -38,7 +38,6 @@ use super::sided_plane::SidedPlane;
 use super::vector::Vector;
 use super::xyz_solid::XYZSolid;
 use super::{iae, npe};
-use super::base_xyz_solid::{X_UNIT_VECTOR, Y_UNIT_VECTOR, Z_UNIT_VECTOR, Y_VERTICAL_PLANE};
 
 /// 3D rectangle, bounded on six sides by X,Y,Z limits, degenerate in Y.
 ///
@@ -67,7 +66,14 @@ impl XdYZSolid {
     ///
     /// `IllegalArgumentException` when values are in the wrong order or
     /// identical.
-    pub fn new(planet_model: &Arc<PlanetModel>, min_x: f64, max_x: f64, y: f64, min_z: f64, max_z: f64) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        min_x: f64,
+        max_x: f64,
+        y: f64,
+        min_z: f64,
+        max_z: f64,
+    ) -> Result<Self> {
         let pm = planet_model;
         if max_x - min_x < Vector::MINIMUM_RESOLUTION {
             return Err(iae("X values in wrong order or identical"));
@@ -82,10 +88,26 @@ impl XdYZSolid {
         let y_plane = Plane::new_vector_d(&Y_UNIT_VECTOR, -y);
         let min_z_plane = SidedPlane::new_xyz_vector_d(0.0, 0.0, max_z, &Z_UNIT_VECTOR, -min_z)?;
         let max_z_plane = SidedPlane::new_xyz_vector_d(0.0, 0.0, min_z, &Z_UNIT_VECTOR, -max_z)?;
-        let min_xy = min_x_plane.find_intersections(pm, &y_plane, &[&max_x_plane, &min_z_plane, &max_z_plane]).unwrap_or_else(|| npe());
-        let max_xy = max_x_plane.find_intersections(pm, &y_plane, &[&min_x_plane, &min_z_plane, &max_z_plane]).unwrap_or_else(|| npe());
-        let ymin_z = y_plane.find_intersections(pm, &min_z_plane, &[&max_z_plane, &min_x_plane, &max_x_plane]).unwrap_or_else(|| npe());
-        let ymax_z = y_plane.find_intersections(pm, &max_z_plane, &[&min_z_plane, &min_x_plane, &max_x_plane]).unwrap_or_else(|| npe());
+        let min_xy = min_x_plane
+            .find_intersections(pm, &y_plane, &[&max_x_plane, &min_z_plane, &max_z_plane])
+            .unwrap_or_else(|| npe());
+        let max_xy = max_x_plane
+            .find_intersections(pm, &y_plane, &[&min_x_plane, &min_z_plane, &max_z_plane])
+            .unwrap_or_else(|| npe());
+        let ymin_z = y_plane
+            .find_intersections(
+                pm,
+                &min_z_plane,
+                &[&max_z_plane, &min_x_plane, &max_x_plane],
+            )
+            .unwrap_or_else(|| npe());
+        let ymax_z = y_plane
+            .find_intersections(
+                pm,
+                &max_z_plane,
+                &[&min_z_plane, &min_x_plane, &max_x_plane],
+            )
+            .unwrap_or_else(|| npe());
         let notable_y_points = BaseXYZSolid::glue_together(&[&min_xy, &max_xy, &ymin_z, &ymax_z]);
         let f_min_x_y_min_z = pm.point_outside_xyz(min_x, y, min_z);
         let f_min_x_y_max_z = pm.point_outside_xyz(min_x, y, max_z);
@@ -109,7 +131,8 @@ impl XdYZSolid {
         } else {
             Vec::new()
         };
-        let edge_points = BaseXYZSolid::glue_together(&[&min_xy, &max_xy, &ymin_z, &ymax_z, &y_edges]);
+        let edge_points =
+            BaseXYZSolid::glue_together(&[&min_xy, &max_xy, &ymin_z, &ymax_z, &y_edges]);
         Ok(Self {
             planet_model: pm.clone(),
             min_x,
@@ -168,16 +191,30 @@ impl XdYZSolid {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(self.min_x_plane.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.max_x_plane.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.y_plane.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.min_z_plane.java_hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.max_z_plane.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.min_x_plane.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.max_x_plane.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.y_plane.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.min_z_plane.java_hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.max_z_plane.java_hash_code());
         result
     }
 }
 
-impl_serializable_object!(XdYZSolid, "org.apache.lucene.spatial3d.geom.XdYZSolid", planet_object);
+impl_serializable_object!(
+    XdYZSolid,
+    "org.apache.lucene.spatial3d.geom.XdYZSolid",
+    planet_object
+);
 impl_planet_object!(XdYZSolid);
 impl XYZSolid for XdYZSolid {}
 
@@ -201,10 +238,20 @@ impl GeoArea for XdYZSolid {
         if inside_shape == BaseXYZSolid::SOME_INSIDE {
             return Ok(geo_area::OVERLAPS);
         }
-        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE {
+        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE
+        {
             return Ok(geo_area::OVERLAPS);
         }
-        if path.intersects(&self.y_plane, &self.notable_y_points, &[&self.min_x_plane, &self.max_x_plane, &self.min_z_plane, &self.max_z_plane]) {
+        if path.intersects(
+            &self.y_plane,
+            &self.notable_y_points,
+            &[
+                &self.min_x_plane,
+                &self.max_x_plane,
+                &self.min_z_plane,
+                &self.max_z_plane,
+            ],
+        ) {
             return Ok(geo_area::OVERLAPS);
         }
         if inside_rectangle == BaseXYZSolid::ALL_INSIDE {

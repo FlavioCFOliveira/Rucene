@@ -28,7 +28,9 @@ use rucene::util::Bits;
 use spatial4j::shape::shape::Shape;
 
 use crate::prefix::abstract_prefix_tree_query::{BaseTermsEnumTraverser, TreeDocIdSet};
-use crate::prefix::abstract_visiting_prefix_tree_query::{AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate};
+use crate::prefix::abstract_visiting_prefix_tree_query::{
+    AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate,
+};
 use crate::prefix::prefix_tree_strategy::PrefixTreeStrategy;
 use crate::prefix::tree::cell::CellRef;
 
@@ -65,7 +67,9 @@ struct LeafAcceptDocs<'a> {
 
 impl fmt::Debug for LeafAcceptDocs<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LeafAcceptDocs").field("doc_base", &self.doc_base).finish()
+        f.debug_struct("LeafAcceptDocs")
+            .field("doc_base", &self.doc_base)
+            .finish()
     }
 }
 
@@ -130,7 +134,14 @@ pub fn compute(
                 max_doc: leaf_ctx.leaf_reader().max_doc(),
             })),
         };
-        compute_leaf_bits(strategy, &leaf_ctx, leaf_accept_docs.as_ref(), query_shape, facet_level, facet_visitor)?;
+        compute_leaf_bits(
+            strategy,
+            &leaf_ctx,
+            leaf_accept_docs.as_ref(),
+            query_shape,
+            facet_level,
+            facet_visitor,
+        )?;
     }
     Ok(())
 }
@@ -152,7 +163,14 @@ pub fn compute_leaf(
     facet_visitor: &mut dyn FacetVisitor,
 ) -> Result<()> {
     let bits = accept_docs.map(LeafBits::Live);
-    compute_leaf_bits(strategy, context, bits.as_ref(), query_shape, facet_level, facet_visitor)
+    compute_leaf_bits(
+        strategy,
+        context,
+        bits.as_ref(),
+        query_shape,
+        facet_level,
+        facet_visitor,
+    )
 }
 
 fn compute_leaf_bits(
@@ -247,7 +265,12 @@ impl VisitorHooks for FacetHooks<'_, '_> {
         Ok(None) // unused;
     }
 
-    fn visit_prefix(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<bool> {
+    fn visit_prefix(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<bool> {
         // At facetLevel...
         if cell.get_level() == self.facet_level {
             // Count docs
@@ -272,7 +295,12 @@ impl VisitorHooks for FacetHooks<'_, '_> {
         Ok(true)
     }
 
-    fn visit_leaf(&mut self, t: &mut BaseTermsEnumTraverser, _q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<()> {
+    fn visit_leaf(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        _q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<()> {
         let count = self.count_docs_at_this_term(t)?;
         if count > 0 {
             self.facet_visitor.visit(cell, count);

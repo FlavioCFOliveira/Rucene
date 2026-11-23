@@ -30,8 +30,8 @@ use rucene::index::{BinaryDocValues, IndexableField, LeafReaderContext};
 use rucene::search::doc_id_set_iterator;
 use rucene::search::double_values_source::DoubleValuesSource;
 use rucene::search::{
-    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier, IndexSearcher, Query,
-    QueryVisitor, ScoreMode, ScorerSupplier, SegmentCacheable, Weight,
+    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier,
+    IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, SegmentCacheable, Weight,
 };
 use rucene::util::BytesRef;
 use spatial4j::context::spatial_context::SpatialContext;
@@ -79,7 +79,10 @@ impl SerializedDVStrategy {
     /// `makeShapeValueSource()`: provides access to each shape per document.
     pub fn make_shape_value_source(&self) -> Arc<dyn ShapeValuesSource> {
         // TODO raise to SpatialStrategy
-        Arc::new(ShapeDocValueSource::new(self.get_field_name(), self.base.ctx.get_binary_codec()))
+        Arc::new(ShapeDocValueSource::new(
+            self.get_field_name(),
+            self.base.ctx.get_binary_codec(),
+        ))
     }
 }
 
@@ -94,9 +97,13 @@ impl SpatialStrategy for SerializedDVStrategy {
         &self.base
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         // 50% headroom over last
-        let buf_size = 128.max((f64::from(self.index_last_buf_size.load(Ordering::Relaxed)) * 1.5) as i32);
+        let buf_size =
+            128.max((f64::from(self.index_last_buf_size.load(Ordering::Relaxed)) * 1.5) as i32);
         let mut byte_stream: Vec<u8> = Vec::with_capacity(buf_size as usize);
         self.base
             .ctx
@@ -104,11 +111,19 @@ impl SpatialStrategy for SerializedDVStrategy {
             .write_shape(&mut byte_stream, &**shape)
             .map_err(LuceneError::runtime_exception)?;
         let bytes_ref = BytesRef::new(byte_stream); // receiver of byteStream's bytes
-        self.index_last_buf_size.store(bytes_ref.length as i32, Ordering::Relaxed); // cache heuristic
-        Ok(vec![Arc::new(BinaryDocValuesField::new(self.get_field_name().to_string(), bytes_ref))])
+        self.index_last_buf_size
+            .store(bytes_ref.length as i32, Ordering::Relaxed); // cache heuristic
+        Ok(vec![Arc::new(BinaryDocValuesField::new(
+            self.get_field_name().to_string(),
+            bytes_ref,
+        ))])
     }
 
-    fn make_distance_value_source(&self, query_point: &Arc<dyn Point>, multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
+    fn make_distance_value_source(
+        &self,
+        query_point: &Arc<dyn Point>,
+        multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
         // TODO if makeShapeValueSource gets lifted to the top; this could become a generic impl.
         Ok(Arc::new(DistanceToShapeValueSource::new(
             self.make_shape_value_source(),
@@ -124,7 +139,9 @@ impl SpatialStrategy for SerializedDVStrategy {
         let shape_value_source = self.make_shape_value_source();
         let predicate_value_source =
             ShapeValuesPredicate::new(shape_value_source, args.get_operation(), args.get_shape());
-        Ok(Arc::new(PredicateValueSourceQuery::new(Arc::new(predicate_value_source))))
+        Ok(Arc::new(PredicateValueSourceQuery::new(Arc::new(
+            predicate_value_source,
+        ))))
     }
 }
 
@@ -140,7 +157,9 @@ pub(crate) struct PredicateValueSourceQuery {
 impl PredicateValueSourceQuery {
     /// `PredicateValueSourceQuery(ShapeValuesPredicate predicateValueSource)`.
     pub(crate) fn new(predicate_value_source: Arc<ShapeValuesPredicate>) -> Self {
-        Self { predicate_value_source }
+        Self {
+            predicate_value_source,
+        }
     }
 }
 
@@ -152,9 +171,15 @@ struct PredicateWeight {
 }
 
 impl ConstantScoreWeightImpl for PredicateWeight {
-    fn scorer_supplier(&self, context: &LeafReaderContext, score: f32) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+        score: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let approximation = doc_id_set_iterator::all(context.leaf_reader().max_doc())?;
-        let it = self.predicate_value_source.iterator(context, Box::new(approximation))?;
+        let it = self
+            .predicate_value_source
+            .iterator(context, Box::new(approximation))?;
         let scorer = ConstantScoreScorer::from_two_phase(score, self.score_mode, it);
         Ok(Some(Box::new(DefaultScorerSupplier::new(Box::new(scorer)))))
     }
@@ -177,7 +202,12 @@ impl Query for PredicateValueSourceQuery {
         self
     }
 
-    fn create_weight(&self, _searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         Ok(Arc::new(ConstantScoreWeight::new(
             Arc::new(self.clone()),
             boost,
@@ -192,7 +222,10 @@ impl Query for PredicateValueSourceQuery {
         other
             .as_any()
             .downcast_ref::<PredicateValueSourceQuery>()
-            .is_some_and(|o| self.predicate_value_source.predicate_eq(&o.predicate_value_source))
+            .is_some_and(|o| {
+                self.predicate_value_source
+                    .predicate_eq(&o.predicate_value_source)
+            })
     }
 
     fn query_hash(&self) -> i32 {
@@ -243,7 +276,8 @@ impl ShapeValues for DocValueShapes {
 
     fn value(&mut self) -> Result<Arc<dyn Shape>> {
         let bytes_ref = self.doc_values.binary_value()?;
-        let mut data_input = &bytes_ref.bytes[bytes_ref.offset..bytes_ref.offset + bytes_ref.length];
+        let mut data_input =
+            &bytes_ref.bytes[bytes_ref.offset..bytes_ref.offset + bytes_ref.length];
         self.binary_codec.read_shape(&mut data_input)
     }
 }

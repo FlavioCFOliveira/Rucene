@@ -69,7 +69,11 @@ pub trait FieldHighlighterOverrides: Send + Sync {
 
     /// Equivalent to an override of the protected
     /// `getSummaryPassagesNoHighlight(int)`.
-    fn get_summary_passages_no_highlight(&self, this: &mut FieldHighlighter, max_passages: i32) -> Vec<Passage> {
+    fn get_summary_passages_no_highlight(
+        &self,
+        this: &mut FieldHighlighter,
+        max_passages: i32,
+    ) -> Vec<Passage> {
         this.super_get_summary_passages_no_highlight(max_passages)
     }
 
@@ -79,7 +83,11 @@ pub trait FieldHighlighterOverrides: Send + Sync {
     /// # Errors
     ///
     /// Propagates I/O errors.
-    fn highlight_offsets_enums(&self, this: &mut FieldHighlighter, off: &mut dyn OffsetsEnum) -> Result<Vec<Passage>> {
+    fn highlight_offsets_enums(
+        &self,
+        this: &mut FieldHighlighter,
+        off: &mut dyn OffsetsEnum,
+    ) -> Result<Vec<Passage>> {
         this.super_highlight_offsets_enums(off)
     }
 }
@@ -329,14 +337,18 @@ impl FieldHighlighter {
     ///
     /// Propagates I/O errors; `IllegalArgumentException` for a field indexed
     /// without offsets.
-    pub fn super_highlight_offsets_enums(&mut self, off: &mut dyn OffsetsEnum) -> Result<Vec<Passage>> {
+    pub fn super_highlight_offsets_enums(
+        &mut self,
+        off: &mut dyn OffsetsEnum,
+    ) -> Result<Vec<Passage>> {
         let content_length = self.break_iterator.get_text().get_end_index();
 
         if !off.next_position()? {
             return Ok(Vec::new());
         }
 
-        let mut passage_queue: JavaPriorityQueue<Passage> = JavaPriorityQueue::new(passage_queue_order);
+        let mut passage_queue: JavaPriorityQueue<Passage> =
+            JavaPriorityQueue::new(passage_queue_order);
         let mut passage = Passage::new(); // the current passage in-progress.  Will either get reset or added to queue.
         let mut last_passage_end = 0;
 
@@ -355,22 +367,26 @@ impl FieldHighlighter {
                 }
                 // See if this term should be part of a new passage.
                 if start >= passage.get_end_offset() {
-                    passage = self.maybe_add_passage(&mut passage_queue, passage, content_length)?;
+                    passage =
+                        self.maybe_add_passage(&mut passage_queue, passage, content_length)?;
                     // if we exceed limit, we are done
                     if start >= content_length {
                         // `break` of the do-while
-                        let _ = self.maybe_add_passage(&mut passage_queue, passage, content_length)?;
+                        let _ =
+                            self.maybe_add_passage(&mut passage_queue, passage, content_length)?;
                         return self.finish(passage_queue);
                     }
                     // find fragment from the middle of the match, so the
                     // result's length may be closer to fragsize
                     let center = start + (end - start) / 2;
                     // advance breakIterator
-                    passage.set_start_offset(start.min(
-                        self.break_iterator
-                            .preceding((start + 1).max(center))?
-                            .max(last_passage_end),
-                    ));
+                    passage.set_start_offset(
+                        start.min(
+                            self.break_iterator
+                                .preceding((start + 1).max(center))?
+                                .max(last_passage_end),
+                        ),
+                    );
                     last_passage_end = end.max(
                         self.break_iterator
                             .following((end - 1).min(center))?
@@ -424,7 +440,9 @@ impl FieldHighlighter {
         } else {
             passage_queue.offer(passage)?;
             if passage_queue.len() as i64 > self.max_passages as i64 {
-                let mut polled = passage_queue.poll()?.expect("INVARIANT: the queue is not empty");
+                let mut polled = passage_queue
+                    .poll()?
+                    .expect("INVARIANT: the queue is not empty");
                 polled.reset();
                 Ok(polled)
             } else {

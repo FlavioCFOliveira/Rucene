@@ -92,7 +92,11 @@ impl Default for PassageSelector {
 }
 
 fn to_int_exact(v: i64) -> Result<i32> {
-    i32::try_from(v).map_err(|_| LuceneError::from(rucene::error::LuceneErrorKind::Arithmetic("integer overflow".to_string())))
+    i32::try_from(v).map_err(|_| {
+        LuceneError::from(rucene::error::LuceneErrorKind::Arithmetic(
+            "integer overflow".to_string(),
+        ))
+    })
 }
 
 impl PassageSelector {
@@ -168,7 +172,11 @@ impl PassageSelector {
         let mut pq: PriorityQueue<Passage, ScorerLessThan> =
             PriorityQueue::new(pq_size, ScorerLessThan(Arc::clone(&self.passage_scorer)))?;
 
-        let mut markers = Self::split_or_truncate_to_windows(markers, max_passage_window, permitted_passage_ranges);
+        let mut markers = Self::split_or_truncate_to_windows(
+            markers,
+            max_passage_window,
+            permitted_passage_ranges,
+        );
 
         // Sort markers by their start offset, shortest first.
         markers.sort_by(|a, b| a.from.cmp(&b.from).then(a.to.cmp(&b.to)));
@@ -255,10 +263,15 @@ impl PassageSelector {
             passages
         } else {
             // Handle the default, no highlighting markers case.
-            self.pick_default_passage(value, max_passage_window, max_passages, permitted_passage_ranges)
-                .into_iter()
-                .map(Some)
-                .collect()
+            self.pick_default_passage(
+                value,
+                max_passage_window,
+                max_passages,
+                permitted_passage_ranges,
+            )
+            .into_iter()
+            .map(Some)
+            .collect()
         };
 
         // Correct passage boundaries from maxExclusive window. Typically
@@ -372,14 +385,16 @@ impl PassageSelector {
             for w in permitted_passage_ranges.windows(2) {
                 let (previous, next) = (&w[0], &w[1]);
                 if previous.range_to() > next.range_from() {
-                    let list: Vec<String> =
-                        permitted_passage_ranges.iter().map(|r| r.to_string()).collect();
-                    return Err(LuceneError::from(rucene::error::LuceneErrorKind::AssertionError(
-                        format!(
+                    let list: Vec<String> = permitted_passage_ranges
+                        .iter()
+                        .map(|r| r.to_string())
+                        .collect();
+                    return Err(LuceneError::from(
+                        rucene::error::LuceneErrorKind::AssertionError(format!(
                             "Ranges must be sorted and non-overlapping: [{}]",
                             list.join(", ")
-                        ),
-                    )));
+                        )),
+                    ));
                 }
             }
         }

@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `PlanetModel.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::f64::consts::PI;
 use std::fmt;
@@ -118,7 +118,8 @@ impl PlanetModel {
         let inverse_xy_scaling = 1.0 / xy_scaling;
         let inverse_z_scaling = 1.0 / z_scaling;
         let scaled_flattening = (xy_scaling - z_scaling) * inverse_xy_scaling;
-        let square_ratio = (xy_scaling * xy_scaling - z_scaling * z_scaling) / (z_scaling * z_scaling);
+        let square_ratio =
+            (xy_scaling * xy_scaling - z_scaling * z_scaling) / (z_scaling * z_scaling);
         let inverse_xy_scaling_squared = inverse_xy_scaling * inverse_xy_scaling;
         let inverse_z_scaling_squared = inverse_z_scaling * inverse_z_scaling;
         // The pole latitudes and longitudes are all in range.
@@ -335,11 +336,11 @@ impl PlanetModel {
 
     /// `createSurfacePoint(double, double, double)`.
     pub fn create_surface_point_xyz(&self, x: f64, y: f64, z: f64) -> GeoPoint {
-        let t = (1.0
-            / (x * x * self.inverse_xy_scaling_squared
+        let t = java_math::sqrt(
+            1.0 / (x * x * self.inverse_xy_scaling_squared
                 + y * y * self.inverse_xy_scaling_squared
-                + z * z * self.inverse_z_scaling_squared))
-            .sqrt();
+                + z * z * self.inverse_z_scaling_squared),
+        );
         GeoPoint::new(t * x, t * y, t * z)
     }
 
@@ -354,19 +355,21 @@ impl PlanetModel {
         if denom < Vector::MINIMUM_RESOLUTION {
             return None;
         }
-        let t = (1.0 / denom).sqrt();
+        let t = java_math::sqrt(1.0 / denom);
         Some(GeoPoint::new(t * a0, t * b0, t * c0))
     }
 
     /// `surfaceDistance(GeoPoint, GeoPoint)`: Vincenty's inverse formula.
     pub fn surface_distance(&self, pt1: &GeoPoint, pt2: &GeoPoint) -> f64 {
         let l = pt2.get_longitude() - pt1.get_longitude();
-        let u1 = ((1.0 - self.scaled_flattening) * pt1.get_latitude().tan()).atan();
-        let u2 = ((1.0 - self.scaled_flattening) * pt2.get_latitude().tan()).atan();
-        let sin_u1 = u1.sin();
-        let cos_u1 = u1.cos();
-        let sin_u2 = u2.sin();
-        let cos_u2 = u2.cos();
+        let u1 =
+            java_math::atan((1.0 - self.scaled_flattening) * java_math::tan(pt1.get_latitude()));
+        let u2 =
+            java_math::atan((1.0 - self.scaled_flattening) * java_math::tan(pt2.get_latitude()));
+        let sin_u1 = java_math::sin(u1);
+        let cos_u1 = java_math::cos(u1);
+        let sin_u2 = java_math::sin(u2);
+        let cos_u2 = java_math::cos(u2);
         let d_cos_u1_cos_u2 = cos_u1 * cos_u2;
         let d_cos_u1_sin_u2 = cos_u1 * sin_u2;
         let d_sin_u1_sin_u2 = sin_u1 * sin_u2;
@@ -384,17 +387,18 @@ impl PlanetModel {
         let mut sin_lambda;
         let mut cos_lambda;
         loop {
-            sin_lambda = lambda.sin();
-            cos_lambda = lambda.cos();
-            sin_sigma = ((cos_u2 * sin_lambda) * (cos_u2 * sin_lambda)
-                + (d_cos_u1_sin_u2 - d_sin_u1_cos_u2 * cos_lambda)
-                    * (d_cos_u1_sin_u2 - d_sin_u1_cos_u2 * cos_lambda))
-                .sqrt();
+            sin_lambda = java_math::sin(lambda);
+            cos_lambda = java_math::cos(lambda);
+            sin_sigma = java_math::sqrt(
+                (cos_u2 * sin_lambda) * (cos_u2 * sin_lambda)
+                    + (d_cos_u1_sin_u2 - d_sin_u1_cos_u2 * cos_lambda)
+                        * (d_cos_u1_sin_u2 - d_sin_u1_cos_u2 * cos_lambda),
+            );
             if sin_sigma == 0.0 {
                 return 0.0;
             }
             cos_sigma = d_sin_u1_sin_u2 + d_cos_u1_cos_u2 * cos_lambda;
-            sigma = sin_sigma.atan2(cos_sigma);
+            sigma = java_math::atan2(sin_sigma, cos_sigma);
             sin_alpha = d_cos_u1_cos_u2 * sin_lambda / sin_sigma;
             cos_sq_alpha = 1.0 - sin_alpha * sin_alpha;
             cos2_sigma_m = cos_sigma - 2.0 * d_sin_u1_sin_u2 / cos_sq_alpha;
@@ -405,13 +409,14 @@ impl PlanetModel {
                 * cos_sq_alpha
                 * (4.0 + self.scaled_flattening * (4.0 - 3.0 * cos_sq_alpha));
             lambda_p = lambda;
-            lambda = l + (1.0 - c)
-                * self.scaled_flattening
-                * sin_alpha
-                * (sigma
-                    + c * sin_sigma
-                        * (cos2_sigma_m
-                            + c * cos_sigma * (-1.0 + 2.0 * cos2_sigma_m * cos2_sigma_m)));
+            lambda = l
+                + (1.0 - c)
+                    * self.scaled_flattening
+                    * sin_alpha
+                    * (sigma
+                        + c * sin_sigma
+                            * (cos2_sigma_m
+                                + c * cos_sigma * (-1.0 + 2.0 * cos2_sigma_m * cos2_sigma_m)));
             if !((lambda - lambda_p).abs() >= Vector::MINIMUM_RESOLUTION && {
                 iter_limit += 1;
                 iter_limit < 100
@@ -448,12 +453,12 @@ impl PlanetModel {
     ) -> Result<GeoPoint> {
         let lat = from.get_latitude();
         let lon = from.get_longitude();
-        let sinalpha1 = bearing.sin();
-        let cosalpha1 = bearing.cos();
-        let tan_u1 = (1.0 - self.scaled_flattening) * lat.tan();
-        let cos_u1 = 1.0 / (1.0 + tan_u1 * tan_u1).sqrt();
+        let sinalpha1 = java_math::sin(bearing);
+        let cosalpha1 = java_math::cos(bearing);
+        let tan_u1 = (1.0 - self.scaled_flattening) * java_math::tan(lat);
+        let cos_u1 = 1.0 / java_math::sqrt(1.0 + tan_u1 * tan_u1);
         let sin_u1 = tan_u1 * cos_u1;
-        let sigma1 = tan_u1.atan2(cosalpha1);
+        let sigma1 = java_math::atan2(tan_u1, cosalpha1);
         let sinalpha = cos_u1 * sinalpha1;
         let cos_sqalpha = 1.0 - sinalpha * sinalpha;
         let u_sq = cos_sqalpha * self.square_ratio;
@@ -467,9 +472,9 @@ impl PlanetModel {
         let mut sigmaprime;
         let mut iterations: f64 = 0.0;
         loop {
-            cos2sigma_m = (2.0 * sigma1 + sigma).cos();
-            sinsigma = sigma.sin();
-            cossigma = sigma.cos();
+            cos2sigma_m = java_math::cos(2.0 * sigma1 + sigma);
+            sinsigma = java_math::sin(sigma);
+            cossigma = java_math::cos(sigma);
             deltasigma = b_
                 * sinsigma
                 * (cos2sigma_m
@@ -489,9 +494,14 @@ impl PlanetModel {
             }
         }
         let x = sin_u1 * sinsigma - cos_u1 * cossigma * cosalpha1;
-        let phi2 = (sin_u1 * cossigma + cos_u1 * sinsigma * cosalpha1)
-            .atan2((1.0 - self.scaled_flattening) * (sinalpha * sinalpha + x * x).sqrt());
-        let lambda = (sinsigma * sinalpha1).atan2(cos_u1 * cossigma - sin_u1 * sinsigma * cosalpha1);
+        let phi2 = java_math::atan2(
+            sin_u1 * cossigma + cos_u1 * sinsigma * cosalpha1,
+            (1.0 - self.scaled_flattening) * java_math::sqrt(sinalpha * sinalpha + x * x),
+        );
+        let lambda = java_math::atan2(
+            sinsigma * sinalpha1,
+            cos_u1 * cossigma - sin_u1 * sinsigma * cosalpha1,
+        );
         let c = self.scaled_flattening / 16.0
             * cos_sqalpha
             * (4.0 + self.scaled_flattening * (4.0 - 3.0 * cos_sqalpha));
@@ -516,7 +526,8 @@ impl SerializableObject for PlanetModel {
         "org.apache.lucene.spatial3d.geom.PlanetModel"
     }
     fn java_equals(&self, o: &dyn Any) -> bool {
-        o.downcast_ref::<PlanetModel>().is_some_and(|other| self == other)
+        o.downcast_ref::<PlanetModel>()
+            .is_some_and(|other| self == other)
     }
     fn java_hash_code(&self) -> i32 {
         dhash(self.a).wrapping_add(dhash(self.b))

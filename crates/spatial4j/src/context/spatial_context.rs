@@ -23,8 +23,8 @@ use crate::io::legacy_shape_writer::LegacyShapeWriter;
 use crate::io::supported_formats::SupportedFormats;
 use crate::io::wkt_reader::WKTReader;
 use crate::shape::circle::Circle;
-use crate::shape::r#impl::rectangle_impl::RectangleImpl;
 use crate::shape::point::Point;
+use crate::shape::r#impl::rectangle_impl::RectangleImpl;
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::shape_collection::ShapeCollection;
@@ -82,12 +82,15 @@ pub struct SpatialContext {
 
 /// `SpatialContext.GEO`: a geo context with the default settings.
 static GEO: LazyLock<Arc<SpatialContext>> = LazyLock::new(|| {
-    SpatialContext::new(&mut SpatialContextFactory::new()).expect("the default SpatialContext builds")
+    SpatialContext::new(&mut SpatialContextFactory::new())
+        .expect("the default SpatialContext builds")
 });
 
 impl fmt::Debug for SpatialContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpatialContext").field("geo", &self.geo).finish_non_exhaustive()
+        f.debug_struct("SpatialContext")
+            .field("geo", &self.geo)
+            .finish_non_exhaustive()
     }
 }
 
@@ -108,7 +111,11 @@ impl SpatialContext {
         calculator: Option<Arc<dyn DistanceCalculator>>,
         world_bounds: Option<Arc<dyn Rectangle>>,
     ) -> Result<Arc<SpatialContext>> {
-        Self::new(&mut Self::init_from_legacy_constructor(geo, calculator, world_bounds))
+        Self::new(&mut Self::init_from_legacy_constructor(
+            geo,
+            calculator,
+            world_bounds,
+        ))
     }
 
     fn init_from_legacy_constructor(
@@ -215,17 +222,27 @@ impl SpatialContext {
 
     /// `getShapeFactory()`.
     pub fn get_shape_factory(&self) -> Arc<dyn ShapeFactory> {
-        Arc::clone(self.shape_factory.get().expect("the shape factory is made in the constructor"))
+        Arc::clone(
+            self.shape_factory
+                .get()
+                .expect("the shape factory is made in the constructor"),
+        )
     }
 
     /// `getFormats()`.
     pub fn get_formats(&self) -> &SupportedFormats {
-        self.formats.get().expect("the formats are made in the constructor")
+        self.formats
+            .get()
+            .expect("the formats are made in the constructor")
     }
 
     /// `getDistCalc()`.
     pub fn get_dist_calc(&self) -> Arc<dyn DistanceCalculator> {
-        Arc::clone(self.calculator.get().expect("the calculator is set in the constructor"))
+        Arc::clone(
+            self.calculator
+                .get()
+                .expect("the calculator is set in the constructor"),
+        )
     }
 
     /// `calcDistance(Point p, double x2, double y2)`.
@@ -240,8 +257,11 @@ impl SpatialContext {
 
     /// `getWorldBounds()`.
     pub fn get_world_bounds(&self) -> Arc<dyn Rectangle> {
-        let bounds: Arc<RectangleImpl> =
-            Arc::clone(self.world_bounds.get().expect("the world bounds are set in the constructor"));
+        let bounds: Arc<RectangleImpl> = Arc::clone(
+            self.world_bounds
+                .get()
+                .expect("the world bounds are set in the constructor"),
+        );
         bounds
     }
 
@@ -297,8 +317,13 @@ impl SpatialContext {
     /// # Errors
     ///
     /// `InvalidShapeException` for invalid coordinates.
-    pub fn make_rectangle_from_points(&self, lower_left: &dyn Point, upper_right: &dyn Point) -> Result<Arc<dyn Rectangle>> {
-        self.get_shape_factory().rect_from_points(lower_left, upper_right)
+    pub fn make_rectangle_from_points(
+        &self,
+        lower_left: &dyn Point,
+        upper_right: &dyn Point,
+    ) -> Result<Arc<dyn Rectangle>> {
+        self.get_shape_factory()
+            .rect_from_points(lower_left, upper_right)
     }
 
     /// `makeRectangle(double minX, double maxX, double minY, double maxY)`
@@ -307,7 +332,13 @@ impl SpatialContext {
     /// # Errors
     ///
     /// `InvalidShapeException` for invalid coordinates.
-    pub fn make_rectangle(&self, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> Result<Arc<dyn Rectangle>> {
+    pub fn make_rectangle(
+        &self,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    ) -> Result<Arc<dyn Rectangle>> {
         self.get_shape_factory().rect(min_x, max_x, min_y, max_y)
     }
 
@@ -343,7 +374,11 @@ impl SpatialContext {
     /// # Errors
     ///
     /// `InvalidShapeException` for invalid points.
-    pub fn make_buffered_line_string(&self, points: Vec<Arc<dyn Point>>, buf: f64) -> Result<Arc<dyn Shape>> {
+    pub fn make_buffered_line_string(
+        &self,
+        points: Vec<Arc<dyn Point>>,
+        buf: f64,
+    ) -> Result<Arc<dyn Shape>> {
         self.get_shape_factory().line_string_from(points, buf)
     }
 
@@ -370,7 +405,12 @@ impl SpatialContext {
         Arc::clone(&reader)
             .as_any_arc()
             .downcast::<WKTReader>()
-            .map_err(|_| LuceneError::unchecked("java.lang.ClassCastException", "the WKT reader is not a WKTReader"))
+            .map_err(|_| {
+                LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    "the WKT reader is not a WKTReader",
+                )
+            })
     }
 
     /// `readShapeFromWkt(String wkt)` (deprecated).
@@ -384,7 +424,11 @@ impl SpatialContext {
 
     /// `getBinaryCodec()`.
     pub fn get_binary_codec(&self) -> Arc<dyn BinaryCodec> {
-        Arc::clone(self.binary_codec.get().expect("the binary codec is made in the constructor"))
+        Arc::clone(
+            self.binary_codec
+                .get()
+                .expect("the binary codec is made in the constructor"),
+        )
     }
 
     /// `readShape(String value)` (deprecated): the first format that reads

@@ -71,7 +71,9 @@ impl SpatialPrefixTreeFactoryBase {
     ///
     /// Before `init` (Java's `NullPointerException`).
     pub fn ctx(&self) -> &Arc<SpatialContext> {
-        self.ctx.as_ref().expect("java.lang.NullPointerException: ctx is set by init()")
+        self.ctx
+            .as_ref()
+            .expect("java.lang.NullPointerException: ctx is set by init()")
     }
 }
 
@@ -149,7 +151,9 @@ pub trait SpatialPrefixTreeFactory: Send + Sync {
     fn init_version(&mut self) -> Result<()> {
         let version = match self.base().arg(VERSION)? {
             None => Version::LATEST,
-            Some(version_str) => Version::parse_leniently(&version_str).map_err(LuceneError::runtime_exception)?,
+            Some(version_str) => {
+                Version::parse_leniently(&version_str).map_err(LuceneError::runtime_exception)?
+            }
         };
         self.set_version(version);
         Ok(())
@@ -171,7 +175,10 @@ pub trait SpatialPrefixTreeFactory: Send + Sync {
                 if !self.base().ctx().is_geo() {
                     return Ok(()); // let default to max
                 }
-                DistanceUtils::dist2_degrees(DEFAULT_GEO_MAX_DETAIL_KM, DistanceUtils::EARTH_MEAN_RADIUS_KM)
+                DistanceUtils::dist2_degrees(
+                    DEFAULT_GEO_MAX_DETAIL_KM,
+                    DistanceUtils::EARTH_MEAN_RADIUS_KM,
+                )
             }
             Some(max_detail_dist_str) => parse_double(&max_detail_dist_str)?,
         };
@@ -228,13 +235,17 @@ pub const VERSION: &str = "version";
 ///
 /// `RuntimeException` when the factory class cannot be loaded; the errors of
 /// `init` and `newSPT`.
-pub fn make_spt(args: &Arc<dyn StringMap>, ctx: &Arc<SpatialContext>) -> Result<Arc<dyn SpatialPrefixTree>> {
+pub fn make_spt(
+    args: &Arc<dyn StringMap>,
+    ctx: &Arc<SpatialContext>,
+) -> Result<Arc<dyn SpatialPrefixTree>> {
     // TODO refactor to use Java SPI like how Lucene already does for codecs/postingsFormats, etc
     let cname = match args.get(PREFIX_TREE)? {
         Some(c) => c,
         None => (if ctx.is_geo() { "geohash" } else { "quad" }).to_string(),
     };
-    let mut instance: Box<dyn SpatialPrefixTreeFactory> = if "geohash".eq_ignore_ascii_case(&cname) {
+    let mut instance: Box<dyn SpatialPrefixTreeFactory> = if "geohash".eq_ignore_ascii_case(&cname)
+    {
         Box::new(geohash_prefix_tree::Factory::default())
     } else if "quad".eq_ignore_ascii_case(&cname) {
         Box::new(quad_prefix_tree::Factory::default())

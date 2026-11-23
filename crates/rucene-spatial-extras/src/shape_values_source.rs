@@ -34,7 +34,9 @@ use crate::shape_values::ShapeValues;
 /// Java's `equals(Object)`, `hashCode()` and `toString()` are
 /// [`source_eq`](Self::source_eq), [`source_hash`](Self::source_hash) and the
 /// [`fmt::Display`] implementation.
-pub trait ShapeValuesSource: SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync + Any {
+pub trait ShapeValuesSource:
+    SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync + Any
+{
     /// `getValues(LeafReaderContext ctx)`: get a [`ShapeValues`] instance
     /// for the given leaf reader context.
     ///

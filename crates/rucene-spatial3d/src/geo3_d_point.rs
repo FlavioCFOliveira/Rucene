@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Geo3DPoint.java`, of the Java package
 //! `org.apache.lucene.spatial3d`.
 
@@ -32,10 +31,10 @@ use rucene::search::Query;
 use rucene::util::{BytesRef, NumericUtils};
 
 use crate::geo3_d_util::Geo3DUtil;
+use crate::geom::d2s;
 use crate::geom::geo_point::GeoPoint;
 use crate::geom::geo_shape::GeoShape;
 use crate::geom::planet_model::{PlanetModel, WGS84};
-use crate::geom::d2s;
 use crate::point_in_geo3_d_shape_query::PointInGeo3DShapeQuery;
 
 /// Add this to a document to index lat/lon or x/y/z point, indexed as a 3D
@@ -94,7 +93,13 @@ impl Geo3DPoint {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a value out of the model.
-    pub fn new_xyz_with_model(name: &str, planet_model: &Arc<PlanetModel>, x: f64, y: f64, z: f64) -> Result<Self> {
+    pub fn new_xyz_with_model(
+        name: &str,
+        planet_model: &Arc<PlanetModel>,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Self> {
         Ok(Self {
             name: name.to_string(),
             field_type: Self::type_().clone(),
@@ -109,10 +114,19 @@ impl Geo3DPoint {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an invalid latitude or longitude.
-    pub fn new_lat_lon_with_model(name: &str, planet_model: &Arc<PlanetModel>, latitude: f64, longitude: f64) -> Result<Self> {
+    pub fn new_lat_lon_with_model(
+        name: &str,
+        planet_model: &Arc<PlanetModel>,
+        latitude: f64,
+        longitude: f64,
+    ) -> Result<Self> {
         GeoUtils::check_latitude(latitude)?;
         GeoUtils::check_longitude(longitude)?;
-        let point = GeoPoint::new_lat_lon(planet_model, Geo3DUtil::from_degrees(latitude), Geo3DUtil::from_degrees(longitude))?;
+        let point = GeoPoint::new_lat_lon(
+            planet_model,
+            Geo3DUtil::from_degrees(latitude),
+            Geo3DUtil::from_degrees(longitude),
+        )?;
         Ok(Self {
             name: name.to_string(),
             field_type: Self::type_().clone(),
@@ -150,7 +164,13 @@ impl Geo3DPoint {
         min_longitude: f64,
         max_longitude: f64,
     ) -> Result<Arc<dyn Query>> {
-        let shape = Geo3DUtil::from_box(planet_model, min_latitude, max_latitude, min_longitude, max_longitude)?;
+        let shape = Geo3DUtil::from_box(
+            planet_model,
+            min_latitude,
+            max_latitude,
+            min_longitude,
+            max_longitude,
+        )?;
         Ok(Self::new_shape_query(field, shape))
     }
 
@@ -159,7 +179,11 @@ impl Geo3DPoint {
     /// # Errors
     ///
     /// `IllegalArgumentException` for invalid polygons.
-    pub fn new_polygon_query(field: &str, planet_model: &Arc<PlanetModel>, polygons: &[Polygon]) -> Result<Arc<dyn Query>> {
+    pub fn new_polygon_query(
+        field: &str,
+        planet_model: &Arc<PlanetModel>,
+        polygons: &[Polygon],
+    ) -> Result<Arc<dyn Query>> {
         let shape = Geo3DUtil::from_polygon(planet_model, polygons)?;
         Ok(Self::new_shape_query(field, shape))
     }
@@ -169,7 +193,11 @@ impl Geo3DPoint {
     /// # Errors
     ///
     /// `IllegalArgumentException` for invalid polygons.
-    pub fn new_large_polygon_query(field: &str, planet_model: &Arc<PlanetModel>, polygons: &[Polygon]) -> Result<Arc<dyn Query>> {
+    pub fn new_large_polygon_query(
+        field: &str,
+        planet_model: &Arc<PlanetModel>,
+        polygons: &[Polygon],
+    ) -> Result<Arc<dyn Query>> {
         let shape = Geo3DUtil::from_large_polygon(planet_model, polygons)?;
         Ok(Self::new_shape_query(field, shape))
     }
@@ -186,7 +214,12 @@ impl Geo3DPoint {
         path_width_meters: f64,
         planet_model: &Arc<PlanetModel>,
     ) -> Result<Arc<dyn Query>> {
-        let shape = Geo3DUtil::from_path(planet_model, path_latitudes, path_longitudes, path_width_meters)?;
+        let shape = Geo3DUtil::from_path(
+            planet_model,
+            path_latitudes,
+            path_longitudes,
+            path_width_meters,
+        )?;
         Ok(Self::new_shape_query(field, shape))
     }
 
@@ -203,7 +236,12 @@ impl Geo3DPoint {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a value out of the model.
-    pub fn encode_dimension(value: f64, bytes: &mut [u8], offset: usize, planet_model: &PlanetModel) -> Result<()> {
+    pub fn encode_dimension(
+        value: f64,
+        bytes: &mut [u8],
+        offset: usize,
+        planet_model: &PlanetModel,
+    ) -> Result<()> {
         NumericUtils::int_to_sortable_bytes(planet_model.encode_value(value)?, bytes, offset);
         Ok(())
     }

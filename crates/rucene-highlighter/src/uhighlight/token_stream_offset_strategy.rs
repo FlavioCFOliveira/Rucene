@@ -71,7 +71,9 @@ impl TokenStreamOffsetStrategy {
         debug_assert!(!components.phrase_helper().has_position_sensitivity());
         let combined_automata = Self::convert_terms_to_matchers(
             components.terms().ok_or_else(LuceneError::null_pointer)?,
-            components.automata().ok_or_else(LuceneError::null_pointer)?,
+            components
+                .automata()
+                .ok_or_else(LuceneError::null_pointer)?,
         )?;
         Ok(Self {
             base: AnalysisOffsetStrategy::new(components, index_analyzer)?,
@@ -147,7 +149,10 @@ pub(crate) struct TokenStreamOffsetsEnum {
 }
 
 impl TokenStreamOffsetsEnum {
-    fn new(mut ts: Box<dyn TokenStream>, matchers: Arc<Vec<Arc<dyn CharArrayMatcher>>>) -> Result<Self> {
+    fn new(
+        mut ts: Box<dyn TokenStream>,
+        matchers: Arc<Vec<Arc<dyn CharArrayMatcher>>>,
+    ) -> Result<Self> {
         let match_descriptions = RefCell::new(vec![None; matchers.len()]);
         let char_term_att = AttributeHandle::add(ts.attribute_source_mut())?;
         let offset_att = AttributeHandle::add(ts.attribute_source_mut())?;
@@ -205,7 +210,10 @@ impl OffsetsEnum for TokenStreamOffsetsEnum {
         if index < 0 || index as usize >= self.matchers.len() {
             return Err(LuceneError::unchecked(
                 "java.lang.ArrayIndexOutOfBoundsException",
-                format!("Index {index} out of bounds for length {}", self.matchers.len()),
+                format!(
+                    "Index {index} out of bounds for length {}",
+                    self.matchers.len()
+                ),
             ));
         }
         let mut descriptions = self.match_descriptions.borrow_mut();

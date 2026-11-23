@@ -37,7 +37,9 @@ use crate::prefix::tree::cell_iterator::CellIterator;
 use crate::prefix::tree::legacy_cell::{self, LegacyCell, LegacyCellState};
 use crate::prefix::tree::legacy_prefix_tree::{self, LegacyPrefixTree};
 use crate::prefix::tree::spatial_prefix_tree::{SpatialPrefixTree, SpatialPrefixTreeBase};
-use crate::prefix::tree::spatial_prefix_tree_factory::{SpatialPrefixTreeFactory, SpatialPrefixTreeFactoryBase};
+use crate::prefix::tree::spatial_prefix_tree_factory::{
+    SpatialPrefixTreeFactory, SpatialPrefixTreeFactoryBase,
+};
 
 /// Equivalent to `org.apache.lucene.spatial.prefix.tree.QuadPrefixTree.Factory`
 /// (`public static class Factory extends SpatialPrefixTreeFactory`): factory
@@ -63,7 +65,9 @@ impl SpatialPrefixTreeFactory for Factory {
     fn new_spt(&self) -> Result<Arc<dyn SpatialPrefixTree>> {
         Ok(QuadPrefixTree::new(
             Arc::clone(self.base.ctx()),
-            self.base.max_levels.unwrap_or(QuadPrefixTree::MAX_LEVELS_POSSIBLE),
+            self.base
+                .max_levels
+                .unwrap_or(QuadPrefixTree::MAX_LEVELS_POSSIBLE),
         ))
     }
 }
@@ -98,7 +102,12 @@ impl QuadPrefixTree {
     /// The fields of `QuadPrefixTree(SpatialContext ctx, Rectangle bounds, int
     /// maxLevels)`, without the self reference (for `PackedQuadPrefixTree`,
     /// which makes its own cells).
-    pub(crate) fn fields(ctx: Arc<SpatialContext>, bounds: &dyn Rectangle, max_levels: i32, me: Weak<QuadPrefixTree>) -> Self {
+    pub(crate) fn fields(
+        ctx: Arc<SpatialContext>,
+        bounds: &dyn Rectangle,
+        max_levels: i32,
+        me: Weak<QuadPrefixTree>,
+    ) -> Self {
         let xmin = bounds.get_min_x();
         let xmax = bounds.get_max_x();
         let ymin = bounds.get_min_y();
@@ -135,7 +144,11 @@ impl QuadPrefixTree {
     }
 
     /// `QuadPrefixTree(SpatialContext ctx, Rectangle bounds, int maxLevels)`.
-    pub fn with_bounds(ctx: Arc<SpatialContext>, bounds: &dyn Rectangle, max_levels: i32) -> Arc<QuadPrefixTree> {
+    pub fn with_bounds(
+        ctx: Arc<SpatialContext>,
+        bounds: &dyn Rectangle,
+        max_levels: i32,
+    ) -> Arc<QuadPrefixTree> {
         Arc::new_cyclic(|me| Self::fields(ctx, bounds, max_levels, me.clone()))
     }
 
@@ -151,7 +164,9 @@ impl QuadPrefixTree {
     }
 
     fn me(&self) -> Arc<QuadPrefixTree> {
-        self.me.upgrade().expect("a QuadPrefixTree is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a QuadPrefixTree is shared as an Arc")
     }
 
     /// `printInfo(PrintStream out)`.
@@ -164,8 +179,13 @@ impl QuadPrefixTree {
         // (minimum and maximum) and at least 3 integer digits.
         let nf = DecimalFormat::new("#,000.00000")?;
         for i in 0..self.base.max_levels.max(0) as usize {
-            writeln!(out, "{i}]\t{}\t{}", nf.format(self.level_w[i]), nf.format(self.level_h[i]))
-                .map_err(LuceneError::from)?;
+            writeln!(
+                out,
+                "{i}]\t{}\t{}",
+                nf.format(self.level_w[i]),
+                nf.format(self.level_h[i])
+            )
+            .map_err(LuceneError::from)?;
         }
         Ok(())
     }
@@ -195,7 +215,11 @@ impl QuadPrefixTree {
         let xp = p.get_x();
         let yp = p.get_y();
         let mut str = BytesRef::with_capacity((max_levels + 1) as usize);
-        let level_limit = if level > max_levels { max_levels } else { level };
+        let level_limit = if level > max_levels {
+            max_levels
+        } else {
+            level
+        };
         for lvl in 0..level_limit.max(0) as usize {
             let c = self.battenberg(current_xmid, current_ymid, xp, yp);
             let half_width = self.level_w[lvl + 1];
@@ -246,10 +270,46 @@ impl QuadPrefixTree {
         let h = self.level_h[level as usize] / 2.0;
         // Z-Order
         // http://en.wikipedia.org/wiki/Z-order_%28curve%29
-        self.check_battenberg_not_robustly(b'A', x - w, y + h, level, matches, str, shape, max_level)?;
-        self.check_battenberg_not_robustly(b'B', x + w, y + h, level, matches, str, shape, max_level)?;
-        self.check_battenberg_not_robustly(b'C', x - w, y - h, level, matches, str, shape, max_level)?;
-        self.check_battenberg_not_robustly(b'D', x + w, y - h, level, matches, str, shape, max_level)
+        self.check_battenberg_not_robustly(
+            b'A',
+            x - w,
+            y + h,
+            level,
+            matches,
+            str,
+            shape,
+            max_level,
+        )?;
+        self.check_battenberg_not_robustly(
+            b'B',
+            x + w,
+            y + h,
+            level,
+            matches,
+            str,
+            shape,
+            max_level,
+        )?;
+        self.check_battenberg_not_robustly(
+            b'C',
+            x - w,
+            y - h,
+            level,
+            matches,
+            str,
+            shape,
+            max_level,
+        )?;
+        self.check_battenberg_not_robustly(
+            b'D',
+            x + w,
+            y - h,
+            level,
+            matches,
+            str,
+            shape,
+            max_level,
+        )
         // possibly consider hilbert curve
         // http://en.wikipedia.org/wiki/Hilbert_curve
         // http://blog.notdot.net/2009/11/Damn-Cool-Algorithms-Spatial-indexing-with-Quadtrees-and-Hilbert-Curves
@@ -279,12 +339,20 @@ impl QuadPrefixTree {
         let w = self.level_w[level as usize] / 2.0;
         let h = self.level_h[level as usize] / 2.0;
         let strlen = str.length;
-        let rectangle = self.base.ctx.get_shape_factory().rect(cx - w, cx + w, cy - h, cy + h)?;
+        let rectangle = self
+            .base
+            .ctx
+            .get_shape_factory()
+            .rect(cx - w, cx + w, cy - h, cy + h)?;
         let v = shape.relate(rectangle.as_shape());
         if SpatialRelation::Contains == v {
             push_byte(str, c); // append
-            // str.append(SpatialPrefixGrid.COVER);
-            matches.push(QuadCell::from_bytes_ref(&self.me(), &BytesRef::deep_copy_of(str), Some(v.transpose())));
+                               // str.append(SpatialPrefixGrid.COVER);
+            matches.push(QuadCell::from_bytes_ref(
+                &self.me(),
+                &BytesRef::deep_copy_of(str),
+                Some(v.transpose()),
+            ));
         } else if SpatialRelation::Disjoint == v {
             // nothing
         } else {
@@ -293,7 +361,11 @@ impl QuadPrefixTree {
             let next_level = level + 1;
             if next_level >= max_level {
                 // str.append(SpatialPrefixGrid.INTERSECTS);
-                matches.push(QuadCell::from_bytes_ref(&self.me(), &BytesRef::deep_copy_of(str), Some(v.transpose())));
+                matches.push(QuadCell::from_bytes_ref(
+                    &self.me(),
+                    &BytesRef::deep_copy_of(str),
+                    Some(v.transpose()),
+                ));
             } else {
                 self.build_not_robustly(cx, cy, next_level, matches, str, shape, max_level)?;
             }
@@ -361,7 +433,11 @@ impl SpatialPrefixTree for QuadPrefixTree {
         legacy_prefix_tree::legacy_read_cell(self, term, scratch)
     }
 
-    fn get_tree_cell_iterator(&self, shape: Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn get_tree_cell_iterator(
+        &self,
+        shape: Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         legacy_prefix_tree::legacy_get_tree_cell_iterator(self, shape, detail_level)
     }
 
@@ -388,7 +464,12 @@ pub struct QuadCell {
 
 impl QuadCell {
     /// `QuadCell(byte[] bytes, int off, int len)`.
-    pub(crate) fn new(tree: &Arc<QuadPrefixTree>, bytes: Vec<u8>, off: usize, len: usize) -> CellRef {
+    pub(crate) fn new(
+        tree: &Arc<QuadPrefixTree>,
+        bytes: Vec<u8>,
+        off: usize,
+        len: usize,
+    ) -> CellRef {
         let cell = QuadCell {
             tree: Arc::clone(tree),
             state: Mutex::new(LegacyCellState::new(bytes, off, len)),
@@ -398,7 +479,11 @@ impl QuadCell {
     }
 
     /// `QuadCell(BytesRef str, SpatialRelation shapeRel)`.
-    pub(crate) fn from_bytes_ref(tree: &Arc<QuadPrefixTree>, str: &BytesRef, shape_rel: Option<SpatialRelation>) -> CellRef {
+    pub(crate) fn from_bytes_ref(
+        tree: &Arc<QuadPrefixTree>,
+        str: &BytesRef,
+        shape_rel: Option<SpatialRelation>,
+    ) -> CellRef {
         let cell = QuadCell::new(tree, str.bytes.clone(), str.offset, str.length);
         cell.set_shape_rel(shape_rel);
         cell
@@ -408,7 +493,8 @@ impl QuadCell {
     pub(crate) fn concat(source: &BytesRef, b: u8) -> BytesRef {
         // +2 for new char + potential leaf
         let mut buffer = vec![0u8; source.length + 2];
-        buffer[..source.length].copy_from_slice(&source.bytes[source.offset..source.offset + source.length]);
+        buffer[..source.length]
+            .copy_from_slice(&source.bytes[source.offset..source.offset + source.length]);
         let mut target = BytesRef::new(buffer);
         target.length = source.length;
         target.bytes[target.length] = b;

@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoBaseCompositeShape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -106,7 +105,8 @@ impl<T: ?Sized + GeoShape> GeoBaseCompositeShape<T> {
     ///
     /// `IOException` from the stream.
     pub fn write(&self, output: &mut dyn Write) -> Result<()> {
-        let values: Vec<&dyn SerializableObject> = self.shapes.iter().map(|s| s.as_serializable()).collect();
+        let values: Vec<&dyn SerializableObject> =
+            self.shapes.iter().map(|s| s.as_serializable()).collect();
         so::write_heterogeneous_array(output, &values)
     }
 
@@ -130,7 +130,12 @@ impl<T: ?Sized + GeoShape> GeoBaseCompositeShape<T> {
     }
 
     /// `intersects(Plane, GeoPoint[], Membership...)`.
-    pub fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    pub fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         for shape in &self.shapes {
             if shape.intersects(p, notable_points, bounds) {
                 return true;

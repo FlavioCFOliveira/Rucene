@@ -27,15 +27,17 @@ use rucene::search::doc_id_set::DocIdSet;
 use rucene::search::doc_id_set_iterator::DocIdSetIterator;
 use rucene::search::two_phase_iterator::TwoPhaseIterator;
 use rucene::search::{
-    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier, IndexSearcher, Query,
-    QueryVisitor, ScoreMode, ScorerSupplier, SegmentCacheable, Weight,
+    ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl, DefaultScorerSupplier,
+    IndexSearcher, Query, QueryVisitor, ScoreMode, ScorerSupplier, SegmentCacheable, Weight,
 };
 use rucene::util::doc_id_set::DocIdSetBuilder;
 use spatial4j::shape::shape::Shape;
 use spatial4j::shape::spatial_relation::SpatialRelation;
 
 use crate::prefix::abstract_prefix_tree_query::{BaseTermsEnumTraverser, TreeDocIdSet};
-use crate::prefix::abstract_visiting_prefix_tree_query::{AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate};
+use crate::prefix::abstract_visiting_prefix_tree_query::{
+    AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate,
+};
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree;
 use crate::util::shape_values_predicate::{PredicateMatcher, ShapeValuesPredicate};
@@ -117,12 +119,16 @@ impl TwoPhaseIterator for VerifyTwoPhase {
 
     fn match_cost(&self) -> f32 {
         100.0 // TODO: use cost of exactIterator.advance() and
-        // predFuncValues.cost()
+              // predFuncValues.cost()
     }
 }
 
 impl ConstantScoreWeightImpl for IntersectsRPTVerifyWeight {
-    fn scorer_supplier(&self, context: &LeafReaderContext, score: f32) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+        score: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let result = self.intersects_diff_query.compute(context)?;
         let Some(approx_doc_id_set) = &result.approx_doc_id_set else {
             return Ok(None);
@@ -140,10 +146,16 @@ impl ConstantScoreWeightImpl for IntersectsRPTVerifyWeight {
         let two_phase_iterator = VerifyTwoPhase {
             approx_disi,
             exact_iterator,
-            pred_func_values: self.predicate_value_source.matcher(self.predicate_value_source.values(context)?),
+            pred_func_values: self
+                .predicate_value_source
+                .matcher(self.predicate_value_source.values(context)?),
         };
 
-        let scorer = ConstantScoreScorer::from_two_phase(score, self.score_mode, Box::new(two_phase_iterator));
+        let scorer = ConstantScoreScorer::from_two_phase(
+            score,
+            self.score_mode,
+            Box::new(two_phase_iterator),
+        );
         Ok(Some(Box::new(DefaultScorerSupplier::new(Box::new(scorer)))))
     }
 
@@ -165,7 +177,12 @@ impl Query for IntersectsRPTVerifyQuery {
         self
     }
 
-    fn create_weight(&self, _searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         Ok(Arc::new(ConstantScoreWeight::new(
             Arc::new(self.clone()),
             boost,
@@ -178,16 +195,26 @@ impl Query for IntersectsRPTVerifyQuery {
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
-        other.as_any().downcast_ref::<IntersectsRPTVerifyQuery>().is_some_and(|o| {
-            self.intersects_diff_query.query_eq(&o.intersects_diff_query)
-                && self.predicate_value_source.predicate_eq(&o.predicate_value_source)
-        })
+        other
+            .as_any()
+            .downcast_ref::<IntersectsRPTVerifyQuery>()
+            .is_some_and(|o| {
+                self.intersects_diff_query
+                    .query_eq(&o.intersects_diff_query)
+                    && self
+                        .predicate_value_source
+                        .predicate_eq(&o.predicate_value_source)
+            })
     }
 
     fn query_hash(&self) -> i32 {
         let mut result = self.class_hash();
-        result = result.wrapping_mul(31).wrapping_add(self.intersects_diff_query.query_hash());
-        result = result.wrapping_mul(31).wrapping_add(self.predicate_value_source.predicate_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.intersects_diff_query.query_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.predicate_value_source.predicate_hash());
         result
     }
 
@@ -219,13 +246,23 @@ impl IntersectsDifferentiatingQuery {
         prefix_grid_scan_level: i32,
     ) -> Self {
         Self {
-            avptq: AbstractVisitingPrefixTreeQuery::new(query_shape, field_name, grid, detail_level, prefix_grid_scan_level),
+            avptq: AbstractVisitingPrefixTreeQuery::new(
+                query_shape,
+                field_name,
+                grid,
+                detail_level,
+                prefix_grid_scan_level,
+            ),
         }
     }
 
     /// `compute(LeafReaderContext context)`.
     fn compute(&self, context: &LeafReaderContext) -> Result<IntersectsDifferentiatingVisitor> {
-        let mut template = VisitorTemplate::new(&self.avptq, context, IntersectsDifferentiatingVisitor::default())?;
+        let mut template = VisitorTemplate::new(
+            &self.avptq,
+            context,
+            IntersectsDifferentiatingVisitor::default(),
+        )?;
         template.get_doc_id_set()?; // computes
         Ok(template.hooks)
     }
@@ -235,7 +272,10 @@ impl IntersectsDifferentiatingQuery {
     /// # Errors
     ///
     /// Always `IllegalStateException`.
-    pub(crate) fn get_doc_id_set(&self, _context: &LeafReaderContext) -> Result<Option<TreeDocIdSet>> {
+    pub(crate) fn get_doc_id_set(
+        &self,
+        _context: &LeafReaderContext,
+    ) -> Result<Option<TreeDocIdSet>> {
         Err(LuceneError::illegal_state(String::new()))
     }
 
@@ -269,7 +309,10 @@ pub(crate) struct IntersectsDifferentiatingVisitor {
 
 impl VisitorHooks for IntersectsDifferentiatingVisitor {
     fn start(&mut self, t: &mut BaseTermsEnumTraverser) -> Result<()> {
-        let terms = t.terms.as_ref().expect("terms != null when termsEnum != null");
+        let terms = t
+            .terms
+            .as_ref()
+            .expect("terms != null when termsEnum != null");
         self.approx_builder = Some(DocIdSetBuilder::from_terms(t.max_doc, &**terms)?);
         self.exact_builder = Some(DocIdSetBuilder::from_terms(t.max_doc, &**terms)?);
         self.approx_is_empty = true;
@@ -296,7 +339,12 @@ impl VisitorHooks for IntersectsDifferentiatingVisitor {
         Ok(None) // unused in this weird re-use of AVPTQ
     }
 
-    fn visit_prefix(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<bool> {
+    fn visit_prefix(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<bool> {
         if cell.get_shape_rel() == Some(SpatialRelation::Within) {
             self.exact_is_empty = false;
             t.collect_docs_builder(self.exact_builder.as_mut().expect("set by start()"))?; // note: we'll add exact to approx on finish()
@@ -309,10 +357,16 @@ impl VisitorHooks for IntersectsDifferentiatingVisitor {
         Ok(true)
     }
 
-    fn visit_leaf(&mut self, t: &mut BaseTermsEnumTraverser, _q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<()> {
+    fn visit_leaf(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        _q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<()> {
         if cell.get_shape_rel() == Some(SpatialRelation::Within) {
             self.exact_is_empty = false;
-            t.collect_docs_builder(self.exact_builder.as_mut().expect("set by start()")) // note: we'll add exact to approx on finish()
+            t.collect_docs_builder(self.exact_builder.as_mut().expect("set by start()"))
+        // note: we'll add exact to approx on finish()
         } else {
             self.approx_is_empty = false;
             t.collect_docs_builder(self.approx_builder.as_mut().expect("set by start()"))

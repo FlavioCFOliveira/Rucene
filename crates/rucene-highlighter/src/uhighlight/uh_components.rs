@@ -56,7 +56,10 @@ impl fmt::Debug for UHComponents {
             .field("field", &self.field)
             .field("query", &self.query)
             .field("terms", &self.terms)
-            .field("has_unrecognized_query_part", &self.has_unrecognized_query_part)
+            .field(
+                "has_unrecognized_query_part",
+                &self.has_unrecognized_query_part,
+            )
             .field("highlight_flags", &self.highlight_flags)
             .finish_non_exhaustive()
     }

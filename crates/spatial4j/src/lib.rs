@@ -109,9 +109,8 @@ pub(crate) mod jdk {
         if s.trim_matches(|c: char| c <= ' ').is_empty() {
             return Err(LuceneError::number_format("empty String"));
         }
-        rucene::util::java_fmt::parse_double(s).ok_or_else(|| {
-            LuceneError::number_format(format!("For input string: \"{s}\""))
-        })
+        rucene::util::java_fmt::parse_double(s)
+            .ok_or_else(|| LuceneError::number_format(format!("For input string: \"{s}\"")))
     }
 
     /// `new <class>(message, cause)` for an unchecked Java exception.
@@ -140,7 +139,9 @@ pub(crate) mod jdk {
     /// `java.text.NumberFormat` as `LegacyShapeWriter.makeNumberFormat`
     /// builds it: `NumberFormat.getInstance(Locale.ROOT)` (`#,##0.###`)
     /// without grouping, at most `fraction_digits` fraction digits.
-    pub(crate) fn make_number_format(fraction_digits: usize) -> rucene::util::java_fmt::DecimalFormat {
+    pub(crate) fn make_number_format(
+        fraction_digits: usize,
+    ) -> rucene::util::java_fmt::DecimalFormat {
         let pattern = if fraction_digits == 0 {
             "0".to_string()
         } else {

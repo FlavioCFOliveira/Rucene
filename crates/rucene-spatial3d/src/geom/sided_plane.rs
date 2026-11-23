@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `SidedPlane.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -233,7 +232,8 @@ impl SidedPlane {
         upper_point: &Vector,
         lower_point: &Vector,
     ) -> Result<SidedPlane> {
-        let plane = Plane::construct_perpendicular_center_plane_two_points(upper_point, lower_point)?;
+        let plane =
+            Plane::construct_perpendicular_center_plane_two_points(upper_point, lower_point)?;
         SidedPlane::new_abcd(inside_point, plane.x, plane.y, plane.z, plane.d)
     }
 
@@ -247,8 +247,15 @@ impl SidedPlane {
         plane: &Plane,
         intersection_point: &Vector,
     ) -> Result<SidedPlane> {
-        let new_plane = Plane::construct_perpendicular_center_plane_one_point(plane, intersection_point)?;
-        SidedPlane::new_abcd(inside_point, new_plane.x, new_plane.y, new_plane.z, new_plane.d)
+        let new_plane =
+            Plane::construct_perpendicular_center_plane_one_point(plane, intersection_point)?;
+        SidedPlane::new_abcd(
+            inside_point,
+            new_plane.x,
+            new_plane.y,
+            new_plane.z,
+            new_plane.d,
+        )
     }
 
     /// `constructNormalizedThreePointSidedPlane(Vector, Vector, Vector,
@@ -259,7 +266,11 @@ impl SidedPlane {
         point2: &Vector,
         point3: &Vector,
     ) -> Option<SidedPlane> {
-        let attempt = |p1: &Vector, p2: &Vector, p3: &Vector, base: &Vector| -> Result<SidedPlane> {
+        let attempt = |p1: &Vector,
+                       p2: &Vector,
+                       p3: &Vector,
+                       base: &Vector|
+         -> Result<SidedPlane> {
             let plane_normal = Vector::new_cross_components(
                 p1.x - p2.x,
                 p1.y - p2.y,
@@ -298,7 +309,8 @@ impl SidedPlane {
     /// `SidedPlane.equals(Object)` against another sided plane.
     pub fn java_equals(&self, other: &SidedPlane) -> bool {
         std::ptr::eq(self, other)
-            || (self.plane.java_equals(&other.plane) && double_compare_eq(other.sig_num, self.sig_num))
+            || (self.plane.java_equals(&other.plane)
+                && double_compare_eq(other.sig_num, self.sig_num))
     }
 
     /// `SidedPlane.hashCode()`.

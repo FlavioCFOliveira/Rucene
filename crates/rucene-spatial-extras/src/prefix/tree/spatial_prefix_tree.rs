@@ -51,7 +51,10 @@ impl SpatialPrefixTreeBase {
     /// `toString()`: `getClass().getSimpleName() + "(maxLevels:" + maxLevels
     /// + ",ctx:" + ctx + ")"`, for the class named `simple_name`.
     pub fn to_string_named(&self, simple_name: &str) -> String {
-        format!("{simple_name}(maxLevels:{},ctx:{})", self.max_levels, self.ctx)
+        format!(
+            "{simple_name}(maxLevels:{},ctx:{})",
+            self.max_levels, self.ctx
+        )
     }
 }
 
@@ -101,7 +104,11 @@ pub trait SpatialPrefixTree: Send + Sync + fmt::Display + fmt::Debug + Any {
     /// # Errors
     ///
     /// `IllegalArgumentException` when `detail_level > maxLevels`.
-    fn get_tree_cell_iterator(&self, shape: Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn get_tree_cell_iterator(
+        &self,
+        shape: Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         default_get_tree_cell_iterator(self, shape, detail_level)
     }
 
@@ -129,5 +136,9 @@ pub fn default_get_tree_cell_iterator<T: SpatialPrefixTree + ?Sized>(
     if detail_level > tree.get_max_levels() {
         return Err(LuceneError::illegal_argument("detailLevel > maxLevels"));
     }
-    Ok(Box::new(TreeCellIterator::new(Some(shape), detail_level, tree.get_world_cell())))
+    Ok(Box::new(TreeCellIterator::new(
+        Some(shape),
+        detail_level,
+        tree.get_world_cell(),
+    )))
 }

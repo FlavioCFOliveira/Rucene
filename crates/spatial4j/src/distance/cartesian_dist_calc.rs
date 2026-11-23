@@ -9,6 +9,7 @@
 //! The types declared in `CartesianDistCalc.java`, of the Java package
 //! `org.locationtech.spatial4j.distance`.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -54,7 +55,14 @@ impl CartesianDistCalc {
 
     /// `distanceToLineSegment(Point point, double vX, double vY, double wX,
     /// double wY)`.
-    pub fn distance_to_line_segment(&self, point: &dyn Point, v_x: f64, v_y: f64, w_x: f64, w_y: f64) -> f64 {
+    pub fn distance_to_line_segment(
+        &self,
+        point: &dyn Point,
+        v_x: f64,
+        v_y: f64,
+        w_x: f64,
+        w_y: f64,
+    ) -> f64 {
         // Translated from: http://bl.ocks.org/mbostock/4218871
         let d = Self::distance_squared(v_x, v_y, w_x, w_y);
         let (to_x, to_y);
@@ -81,11 +89,12 @@ impl CartesianDistCalc {
 
 impl DistanceCalculator for CartesianDistCalc {
     fn distance_xy(&self, from: &dyn Point, to_x: f64, to_y: f64) -> f64 {
-        let x_squared_plus_y_squared = Self::distance_squared(from.get_x(), from.get_y(), to_x, to_y);
+        let x_squared_plus_y_squared =
+            Self::distance_squared(from.get_x(), from.get_y(), to_x, to_y);
         if self.squared {
             return x_squared_plus_y_squared;
         }
-        x_squared_plus_y_squared.sqrt()
+        java_math::sqrt(x_squared_plus_y_squared)
     }
 
     fn within(&self, from: &dyn Point, to_x: f64, to_y: f64, distance: f64) -> bool {
@@ -110,8 +119,8 @@ impl DistanceCalculator for CartesianDistCalc {
             return Ok(reuse);
         }
         let bearing_rad = DistanceUtils::to_radians(bearing_deg);
-        let x = from.get_x() + bearing_rad.sin() * dist_deg;
-        let y = from.get_y() + bearing_rad.cos() * dist_deg;
+        let x = from.get_x() + java_math::sin(bearing_rad) * dist_deg;
+        let y = from.get_y() + java_math::cos(bearing_rad) * dist_deg;
         match reuse {
             None => ctx.make_point(x, y),
             Some(reuse) => {
@@ -141,7 +150,12 @@ impl DistanceCalculator for CartesianDistCalc {
         }
     }
 
-    fn calc_box_by_dist_from_pt_y_horiz_axis_deg(&self, from: &dyn Point, _dist_deg: f64, _ctx: &SpatialContext) -> f64 {
+    fn calc_box_by_dist_from_pt_y_horiz_axis_deg(
+        &self,
+        from: &dyn Point,
+        _dist_deg: f64,
+        _ctx: &SpatialContext,
+    ) -> f64 {
         from.get_y()
     }
 

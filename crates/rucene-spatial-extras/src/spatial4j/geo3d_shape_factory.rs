@@ -47,8 +47,8 @@ use spatial4j::shape::rectangle::Rectangle;
 use spatial4j::shape::shape::Shape;
 use spatial4j::shape::shape_collection::ShapeCollection;
 use spatial4j::shape::shape_factory::{
-    HoleBuilder, LineStringBuilder, MultiLineStringBuilder, MultiPointBuilder, MultiPolygonBuilder, MultiShapeBuilder,
-    PointsBuilder, PolygonBuilder, ShapeFactory,
+    HoleBuilder, LineStringBuilder, MultiLineStringBuilder, MultiPointBuilder, MultiPolygonBuilder,
+    MultiShapeBuilder, PointsBuilder, PolygonBuilder, ShapeFactory,
 };
 
 use crate::jdk::unsupported;
@@ -93,7 +93,10 @@ impl Geo3dShapeFactory {
     ///
     /// `ClassCastException` when `factory` is not a
     /// `Geo3dSpatialContextFactory`.
-    pub fn new(context: &Arc<SpatialContext>, factory: &dyn SpatialContextFactoryOps) -> Result<Self> {
+    pub fn new(
+        context: &Arc<SpatialContext>,
+        factory: &dyn SpatialContextFactoryOps,
+    ) -> Result<Self> {
         Ok(Self {
             context: Arc::downgrade(context),
             planet_model: geo3d_factory(factory)?.planet_model(),
@@ -105,7 +108,8 @@ impl Geo3dShapeFactory {
     /// `setCircleAccuracy(double circleAccuracy)`: set the accuracy for
     /// geo3d circles.
     pub fn set_circle_accuracy(&self, circle_accuracy: f64) {
-        self.circle_accuracy.store(circle_accuracy.to_bits(), Ordering::Relaxed);
+        self.circle_accuracy
+            .store(circle_accuracy.to_bits(), Ordering::Relaxed);
     }
 
     fn circle_accuracy(&self) -> f64 {
@@ -113,12 +117,15 @@ impl Geo3dShapeFactory {
     }
 
     fn ctx(&self) -> Arc<SpatialContext> {
-        self.context.upgrade().expect("the SpatialContext of a Geo3dShapeFactory is alive")
+        self.context
+            .upgrade()
+            .expect("the SpatialContext of a Geo3dShapeFactory is alive")
     }
 
     /// `getGeoPoint(S2Point point)`.
     fn get_geo_point(&self, point: &S2Point) -> GeoPoint {
-        self.planet_model.create_surface_point_xyz(point.get(0), point.get(1), point.get(2))
+        self.planet_model
+            .create_surface_point_xyz(point.get(0), point.get(1), point.get(2))
     }
 
     fn builder(&self) -> Geo3dPointBuilder {
@@ -195,13 +202,20 @@ impl ShapeFactory for Geo3dShapeFactory {
 
     fn point_xyz(&self, x: f64, y: f64, z: f64) -> Result<Arc<dyn Point>> {
         let point = GeoPoint::new(x, y, z);
-        let point_shape =
-            GeoPointShapeFactory::make_geo_point_shape(&self.planet_model, point.get_latitude(), point.get_longitude())?;
+        let point_shape = GeoPointShapeFactory::make_geo_point_shape(
+            &self.planet_model,
+            point.get_latitude(),
+            point.get_longitude(),
+        )?;
         Ok(Geo3dPointShape::new(point_shape, self.ctx()))
         // throw new UnsupportedOperationException();
     }
 
-    fn rect_from_points(&self, point: &dyn Point, point1: &dyn Point) -> Result<Arc<dyn Rectangle>> {
+    fn rect_from_points(
+        &self,
+        point: &dyn Point,
+        point1: &dyn Point,
+    ) -> Result<Arc<dyn Rectangle>> {
         self.rect(point.get_x(), point1.get_x(), point.get_y(), point1.get_y())
     }
 
@@ -213,7 +227,14 @@ impl ShapeFactory for Geo3dShapeFactory {
             min_x * DistanceUtils::DEGREES_TO_RADIANS,
             max_x * DistanceUtils::DEGREES_TO_RADIANS,
         )?;
-        Ok(Geo3dRectangleShape::with_bounds(b_box, self.ctx(), min_x, max_x, min_y, max_y))
+        Ok(Geo3dRectangleShape::with_bounds(
+            b_box,
+            self.ctx(),
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        ))
     }
 
     fn circle(&self, x: f64, y: f64, distance: f64) -> Result<Arc<dyn Circle>> {
@@ -277,7 +298,9 @@ impl ShapeFactory for Geo3dShapeFactory {
     }
 
     fn multi_point(&self) -> Box<dyn MultiPointBuilder> {
-        Box::new(Geo3dMultiPointBuilder { points: self.builder() })
+        Box::new(Geo3dMultiPointBuilder {
+            points: self.builder(),
+        })
     }
 
     fn multi_line_string(&self) -> Box<dyn MultiLineStringBuilder> {
@@ -311,9 +334,14 @@ impl S2ShapeFactory for Geo3dShapeFactory {
         let point2 = self.get_geo_point(&cell.get_vertex_raw(1));
         let point3 = self.get_geo_point(&cell.get_vertex_raw(2));
         let point4 = self.get_geo_point(&cell.get_vertex_raw(3));
-        let shape: Arc<dyn GeoAreaShape> =
-            GeoS2ShapeFactory::make_geo_s2_shape(&self.planet_model, point1, point2, point3, point4)
-                .unwrap_or_else(|e| panic!("{e}"));
+        let shape: Arc<dyn GeoAreaShape> = GeoS2ShapeFactory::make_geo_s2_shape(
+            &self.planet_model,
+            point1,
+            point2,
+            point3,
+            point4,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         Arc::new(Geo3dShape::new(shape, self.ctx()))
     }
 }
@@ -381,9 +409,16 @@ impl LineStringBuilder for Geo3dLineStringBuilder {
     }
 
     fn build(&mut self) -> Result<Arc<dyn Shape>> {
-        let path = GeoPathFactory::make_geo_path(&self.points.planet_model, self.distance, &self.points.points)?;
+        let path = GeoPathFactory::make_geo_path(
+            &self.points.planet_model,
+            self.distance,
+            &self.points.points,
+        )?;
         let shape: Arc<dyn GeoAreaShape> = path;
-        Ok(Arc::new(Geo3dShape::new(shape, Arc::clone(&self.points.context))))
+        Ok(Arc::new(Geo3dShape::new(
+            shape,
+            Arc::clone(&self.points.context),
+        )))
     }
 }
 
@@ -420,7 +455,9 @@ impl PointsBuilder for Geo3dHoleBuilder<'_> {
 impl HoleBuilder for Geo3dHoleBuilder<'_> {
     fn end_hole(self: Box<Self>) -> Result<()> {
         let this = *self;
-        this.polygon.poly_holes.push(PolygonDescription::new(this.points.points));
+        this.polygon
+            .poly_holes
+            .push(PolygonDescription::new(this.points.points));
         Ok(())
     }
 }
@@ -432,17 +469,29 @@ impl PolygonBuilder for Geo3dPolygonBuilder {
             context: Arc::clone(&self.points.context),
             points: Vec::new(),
         };
-        Box::new(Geo3dHoleBuilder { points, polygon: self })
+        Box::new(Geo3dHoleBuilder {
+            points,
+            polygon: self,
+        })
     }
 
     fn build(&mut self) -> Result<Arc<dyn Shape>> {
-        let description = PolygonDescription::with_holes(self.points.points.clone(), self.poly_holes.clone());
-        let polygon = GeoPolygonFactory::make_geo_polygon_from_description(&self.points.planet_model, &description)?;
+        let description =
+            PolygonDescription::with_holes(self.points.points.clone(), self.poly_holes.clone());
+        let polygon = GeoPolygonFactory::make_geo_polygon_from_description(
+            &self.points.planet_model,
+            &description,
+        )?;
         let Some(polygon) = polygon else {
-            return Err(InvalidShapeException::error("Invalid polygon, all points are coplanar"));
+            return Err(InvalidShapeException::error(
+                "Invalid polygon, all points are coplanar",
+            ));
         };
         let shape: Arc<dyn GeoAreaShape> = polygon;
-        Ok(Arc::new(Geo3dShape::new(shape, Arc::clone(&self.points.context))))
+        Ok(Arc::new(Geo3dShape::new(
+            shape,
+            Arc::clone(&self.points.context),
+        )))
     }
 
     fn build_or_rect(&mut self) -> Result<Arc<dyn Shape>> {
@@ -465,12 +514,18 @@ impl MultiPointBuilder for Geo3dMultiPointBuilder {
         let planet_model = &self.points.planet_model;
         let mut area_shape = GeoCompositeAreaShape::new(planet_model);
         for point in &self.points.points {
-            let point_shape =
-                GeoPointShapeFactory::make_geo_point_shape(planet_model, point.get_latitude(), point.get_longitude())?;
+            let point_shape = GeoPointShapeFactory::make_geo_point_shape(
+                planet_model,
+                point.get_latitude(),
+                point.get_longitude(),
+            )?;
             let shape: Arc<dyn GeoAreaShape> = point_shape;
             area_shape.add_shape(shape)?;
         }
-        Ok(Arc::new(Geo3dShape::new(Arc::new(area_shape), Arc::clone(&self.points.context))))
+        Ok(Arc::new(Geo3dShape::new(
+            Arc::new(area_shape),
+            Arc::clone(&self.points.context),
+        )))
     }
 }
 
@@ -521,7 +576,10 @@ impl MultiLineStringBuilder for Geo3dMultiLineBuilder {
         for shape in &self.shapes {
             area_shape.add_shape(Arc::clone(shape))?;
         }
-        Ok(Arc::new(Geo3dShape::new(Arc::new(area_shape), Arc::clone(&self.factory.context))))
+        Ok(Arc::new(Geo3dShape::new(
+            Arc::new(area_shape),
+            Arc::clone(&self.factory.context),
+        )))
     }
 }
 
@@ -560,7 +618,10 @@ impl MultiPolygonBuilder for Geo3dMultiPolygonBuilder {
         for shape in &self.shapes {
             area_shape.add_shape(Arc::clone(shape))?;
         }
-        Ok(Arc::new(Geo3dShape::new(Arc::new(area_shape), Arc::clone(&self.factory.context))))
+        Ok(Arc::new(Geo3dShape::new(
+            Arc::new(area_shape),
+            Arc::clone(&self.factory.context),
+        )))
     }
 }
 
@@ -576,13 +637,21 @@ pub(crate) struct Geo3dMultiShapeBuilder {
 impl MultiShapeBuilder for Geo3dMultiShapeBuilder {
     fn add(&mut self, shape: Arc<dyn Shape>) {
         let area_shape = wrapped(&*shape).unwrap_or_else(|e| panic!("{e}"));
-        self.composite.add_shape(area_shape).unwrap_or_else(|e| panic!("{e}"));
+        self.composite
+            .add_shape(area_shape)
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 
     fn build(&mut self) -> Result<Arc<dyn Shape>> {
         let planet_model = Arc::clone(self.planet_model());
-        let composite = std::mem::replace(&mut self.composite, GeoCompositeAreaShape::new(&planet_model));
-        Ok(Arc::new(Geo3dShape::new(Arc::new(composite), Arc::clone(&self.context))))
+        let composite = std::mem::replace(
+            &mut self.composite,
+            GeoCompositeAreaShape::new(&planet_model),
+        );
+        Ok(Arc::new(Geo3dShape::new(
+            Arc::new(composite),
+            Arc::clone(&self.context),
+        )))
     }
 }
 

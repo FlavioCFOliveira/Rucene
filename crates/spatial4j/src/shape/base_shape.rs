@@ -37,6 +37,7 @@ impl BaseShape {
     /// The context, which the caller requires to be non-null (Java would
     /// throw `NullPointerException` dereferencing it).
     pub fn ctx(&self) -> Arc<SpatialContext> {
-        self.get_context().expect("java.lang.NullPointerException: the shape's context is null")
+        self.get_context()
+            .expect("java.lang.NullPointerException: the shape's context is null")
     }
 }

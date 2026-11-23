@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoCircleFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -49,9 +48,18 @@ impl GeoCircleFactory {
         cutoff_angle: f64,
     ) -> Result<Arc<dyn GeoCircle>> {
         if cutoff_angle < Vector::MINIMUM_ANGULAR_RESOLUTION {
-            return Ok(Arc::new(GeoDegeneratePoint::new(planet_model, latitude, longitude)?));
+            return Ok(Arc::new(GeoDegeneratePoint::new(
+                planet_model,
+                latitude,
+                longitude,
+            )?));
         }
-        Ok(Arc::new(GeoStandardCircle::new(planet_model, latitude, longitude, cutoff_angle)?))
+        Ok(Arc::new(GeoStandardCircle::new(
+            planet_model,
+            latitude,
+            longitude,
+            cutoff_angle,
+        )?))
     }
 
     /// `makeExactGeoCircle(PlanetModel, double latitude, double longitude,
@@ -68,8 +76,18 @@ impl GeoCircleFactory {
         accuracy: f64,
     ) -> Result<Arc<dyn GeoCircle>> {
         if radius < Vector::MINIMUM_ANGULAR_RESOLUTION {
-            return Ok(Arc::new(GeoDegeneratePoint::new(planet_model, latitude, longitude)?));
+            return Ok(Arc::new(GeoDegeneratePoint::new(
+                planet_model,
+                latitude,
+                longitude,
+            )?));
         }
-        Ok(Arc::new(GeoExactCircle::new(planet_model, latitude, longitude, radius, accuracy)?))
+        Ok(Arc::new(GeoExactCircle::new(
+            planet_model,
+            latitude,
+            longitude,
+            radius,
+            accuracy,
+        )?))
     }
 }

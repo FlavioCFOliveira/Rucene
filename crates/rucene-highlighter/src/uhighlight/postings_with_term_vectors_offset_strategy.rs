@@ -57,7 +57,10 @@ impl FieldOffsetStrategy for PostingsWithTermVectorsOffsetStrategy {
         _content: &str,
     ) -> Result<Box<dyn OffsetsEnum>> {
         let leaf_reader = leaf_reader.ok_or_else(LuceneError::null_pointer)?;
-        let Some(doc_terms) = leaf_reader.term_vectors()?.get_field(doc_id, self.get_field()?)? else {
+        let Some(doc_terms) = leaf_reader
+            .term_vectors()?
+            .get_field(doc_id, self.get_field()?)?
+        else {
             return Ok(empty());
         };
         let leaf_reader: Arc<dyn LeafReader> = Arc::new(TermVectorFilteredLeafReader::new(

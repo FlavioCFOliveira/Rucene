@@ -34,7 +34,8 @@ use spatial4j::shape::shape::Shape;
 
 use crate::prefix::cell_to_bytes_ref_iterator::CellToBytesRefIterator;
 use crate::prefix::prefix_tree_strategy::{
-    prefix_create_indexable_fields, prefix_make_distance_value_source, PrefixTreeStrategy, PrefixTreeStrategyBase,
+    prefix_create_indexable_fields, prefix_make_distance_value_source, PrefixTreeStrategy,
+    PrefixTreeStrategyBase,
 };
 use crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree;
 use crate::query::spatial_args::SpatialArgs;
@@ -67,7 +68,10 @@ impl TermQueryPrefixTreeStrategy {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an empty field name.
-    pub fn new(grid: Arc<dyn SpatialPrefixTree>, field_name: &str) -> Result<Arc<TermQueryPrefixTreeStrategy>> {
+    pub fn new(
+        grid: Arc<dyn SpatialPrefixTree>,
+        field_name: &str,
+    ) -> Result<Arc<TermQueryPrefixTreeStrategy>> {
         let base = PrefixTreeStrategyBase::new(grid, field_name)?;
         Ok(Arc::new_cyclic(|me| TermQueryPrefixTreeStrategy {
             base,
@@ -79,7 +83,12 @@ impl TermQueryPrefixTreeStrategy {
 
 impl fmt::Display for TermQueryPrefixTreeStrategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.base.strategy.to_string_named("TermQueryPrefixTreeStrategy"))
+        f.write_str(
+            &self
+                .base
+                .strategy
+                .to_string_named("TermQueryPrefixTreeStrategy"),
+        )
     }
 }
 
@@ -88,12 +97,23 @@ impl SpatialStrategy for TermQueryPrefixTreeStrategy {
         &self.base.strategy
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         prefix_create_indexable_fields(self, shape)
     }
 
-    fn make_distance_value_source(&self, query_point: &Arc<dyn Point>, multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
-        Ok(prefix_make_distance_value_source(self, query_point, multiplier))
+    fn make_distance_value_source(
+        &self,
+        query_point: &Arc<dyn Point>,
+        multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(prefix_make_distance_value_source(
+            self,
+            query_point,
+            multiplier,
+        ))
     }
 
     fn make_query(&self, args: &SpatialArgs) -> Result<Arc<dyn Query>> {
@@ -104,7 +124,9 @@ impl SpatialStrategy for TermQueryPrefixTreeStrategy {
 
         let shape = &args.get_shape();
         let grid = &self.base.grid;
-        let detail_level = grid.get_level_for_distance(args.resolve_dist_err(&self.base.strategy.ctx, self.get_dist_err_pct())?);
+        let detail_level = grid.get_level_for_distance(
+            args.resolve_dist_err(&self.base.strategy.ctx, self.get_dist_err_pct())?,
+        );
 
         // --get a List of BytesRef for each term we want (no parents, no leaf bytes))
         let guess_num_terms = if shape.as_point().is_some() {
@@ -120,13 +142,18 @@ impl SpatialStrategy for TermQueryPrefixTreeStrategy {
                 continue;
             }
             let term = cell.get_token_bytes_no_leaf(None); // null because we want a new BytesRef
-            // We copy out the bytes because it may be re-used across the iteration. Java appends
-            // them all to one shared byte array; each term here holds its own copy of the same bytes.
-            terms.push(BytesRef::new(term.bytes[term.offset..term.offset + term.length].to_vec()));
+                                                           // We copy out the bytes because it may be re-used across the iteration. Java appends
+                                                           // them all to one shared byte array; each term here holds its own copy of the same bytes.
+            terms.push(BytesRef::new(
+                term.bytes[term.offset..term.offset + term.length].to_vec(),
+            ));
         }
         // unfortunately TermsQuery will needlessly sort & dedupe
         // TODO an automatonQuery might be faster?
-        Ok(Arc::new(TermInSetQuery::new(self.get_field_name().to_string(), terms)?))
+        Ok(Arc::new(TermInSetQuery::new(
+            self.get_field_name().to_string(),
+            terms,
+        )?))
     }
 }
 
@@ -136,7 +163,9 @@ impl PrefixTreeStrategy for TermQueryPrefixTreeStrategy {
     }
 
     fn me_prefix(&self) -> Arc<dyn PrefixTreeStrategy> {
-        self.me.upgrade().expect("a TermQueryPrefixTreeStrategy is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a TermQueryPrefixTreeStrategy is shared as an Arc")
     }
 
     fn as_any(&self) -> &dyn Any {

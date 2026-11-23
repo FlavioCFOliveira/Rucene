@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `XYZSolid.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 

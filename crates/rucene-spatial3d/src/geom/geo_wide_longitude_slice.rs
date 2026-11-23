@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoWideLongitudeSlice.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -37,13 +37,13 @@ use super::geo_base_bounds::GeoBaseBounds;
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
 use super::geo_sizeable::GeoSizeable;
+use super::geo_wide_rectangle::GeoWideRectangle;
 use super::membership::Membership;
 use super::plane::Plane;
 use super::planet_model::PlanetModel;
 use super::serializable_object as so;
 use super::sided_plane::SidedPlane;
 use super::{d2s, iae, java_max, java_min};
-use super::geo_wide_rectangle::GeoWideRectangle;
 
 /// Bounding box wider than PI but limited on left and right sides (left lon,
 /// right lon).
@@ -83,10 +83,10 @@ impl GeoWideLongitudeSlice {
             return Err(iae("Width of rectangle too small"));
         }
         let stored_right_lon = right_lon;
-        let sin_left_lon = left_lon.sin();
-        let cos_left_lon = left_lon.cos();
-        let sin_right_lon = right_lon.sin();
-        let cos_right_lon = right_lon.cos();
+        let sin_left_lon = java_math::sin(left_lon);
+        let cos_left_lon = java_math::cos(left_lon);
+        let sin_right_lon = java_math::sin(right_lon);
+        let cos_right_lon = java_math::cos(right_lon);
         while left_lon > right_lon {
             right_lon += PI * 2.0;
         }
@@ -137,7 +137,10 @@ impl GeoWideLongitudeSlice {
         let right_distance = ds.compute_plane_distance_xyz(pm, &self.right_plane, x, y, z, &[]);
         let north_distance = ds.compute_distance_xyz(&pm.north_pole, x, y, z);
         let south_distance = ds.compute_distance_xyz(&pm.south_pole, x, y, z);
-        Ok(java_min(java_min(left_distance, right_distance), java_min(north_distance, south_distance)))
+        Ok(java_min(
+            java_min(left_distance, right_distance),
+            java_min(north_distance, south_distance),
+        ))
     }
 
     fn equals_impl(&self, other: &Self) -> bool {
@@ -148,13 +151,21 @@ impl GeoWideLongitudeSlice {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(super::dhash(self.left_lon));
-        result = result.wrapping_mul(31).wrapping_add(super::dhash(self.right_lon));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.left_lon));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.right_lon));
         result
     }
 }
 
-impl_geo_base_area_shape_common!(GeoWideLongitudeSlice, "org.apache.lucene.spatial3d.geom.GeoWideLongitudeSlice", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoWideLongitudeSlice,
+    "org.apache.lucene.spatial3d.geom.GeoWideLongitudeSlice",
+    geo_b_box
+);
 impl_geo_base_area_relationship!(GeoWideLongitudeSlice);
 
 impl Membership for GeoWideLongitudeSlice {
@@ -182,10 +193,28 @@ impl GeoShape for GeoWideLongitudeSlice {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         let pm = &self.planet_model;
-        p.intersects(pm, &self.left_plane, notable_points, &self.plane_points, bounds, &[])
-            || p.intersects(pm, &self.right_plane, notable_points, &self.plane_points, bounds, &[])
+        p.intersects(
+            pm,
+            &self.left_plane,
+            notable_points,
+            &self.plane_points,
+            bounds,
+            &[],
+        ) || p.intersects(
+            pm,
+            &self.right_plane,
+            notable_points,
+            &self.plane_points,
+            bounds,
+            &[],
+        )
     }
 }
 
@@ -222,7 +251,13 @@ impl GeoBBox for GeoWideLongitudeSlice {
             new_left_lon = -PI;
             new_right_lon = PI;
         }
-        GeoBBoxFactory::make_geo_bbox(&self.planet_model, PI * 0.5, -PI * 0.5, new_left_lon, new_right_lon)
+        GeoBBoxFactory::make_geo_bbox(
+            &self.planet_model,
+            PI * 0.5,
+            -PI * 0.5,
+            new_left_lon,
+            new_right_lon,
+        )
     }
 }
 

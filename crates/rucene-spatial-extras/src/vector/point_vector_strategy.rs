@@ -22,17 +22,18 @@ use std::any::Any;
 use std::fmt;
 use std::sync::{Arc, LazyLock, Weak};
 
-use rucene::error::{LuceneError, Result};
 use rucene::document::{DoubleDocValuesField, DoublePoint, FieldType, NumericValue, StoredField};
+use rucene::error::{LuceneError, Result};
 use rucene::index::{DocValuesType, IndexableField, IndexableFieldType, LeafReaderContext};
+use rucene::search::doc_id_set_iterator::DocIdSetIterator;
 use rucene::search::double_values::DoubleValues;
 use rucene::search::double_values_source::DoubleValuesSource;
 use rucene::search::two_phase_iterator::TwoPhaseIterator;
 use rucene::search::{
-    BooleanQueryBuilder, ConstantScoreQuery, ConstantScoreScorer, ConstantScoreWeight, ConstantScoreWeightImpl,
-    DefaultScorerSupplier, IndexSearcher, Occur, Query, QueryVisitor, ScoreMode, ScorerSupplier, Weight,
+    BooleanQueryBuilder, ConstantScoreQuery, ConstantScoreScorer, ConstantScoreWeight,
+    ConstantScoreWeightImpl, DefaultScorerSupplier, IndexSearcher, Occur, Query, QueryVisitor,
+    ScoreMode, ScorerSupplier, Weight,
 };
-use rucene::search::doc_id_set_iterator::DocIdSetIterator;
 use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::shape::point::Point;
 use spatial4j::shape::rectangle::Rectangle;
@@ -51,7 +52,9 @@ pub static DEFAULT_FIELDTYPE: LazyLock<FieldType> = LazyLock::new(|| {
     // Default: pointValues + docValues
     let field_type = FieldType::new();
     field_type.set_dimensions(1, 8).expect("unfrozen"); // pointValues (assume Double)
-    field_type.set_doc_values_type(DocValuesType::NUMERIC).expect("unfrozen"); // docValues
+    field_type
+        .set_doc_values_type(DocValuesType::NUMERIC)
+        .expect("unfrozen"); // docValues
     field_type.set_stored(false).expect("unfrozen");
     field_type.freeze();
     field_type
@@ -93,7 +96,10 @@ impl PointVectorStrategy {
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub fn new_instance(ctx: Arc<SpatialContext>, field_name_prefix: &str) -> Result<Arc<PointVectorStrategy>> {
+    pub fn new_instance(
+        ctx: Arc<SpatialContext>,
+        field_name_prefix: &str,
+    ) -> Result<Arc<PointVectorStrategy>> {
         Self::new(ctx, field_name_prefix, &DEFAULT_FIELDTYPE)
     }
 
@@ -105,7 +111,11 @@ impl PointVectorStrategy {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an empty field name.
-    pub fn new(ctx: Arc<SpatialContext>, field_name_prefix: &str, field_type: &FieldType) -> Result<Arc<PointVectorStrategy>> {
+    pub fn new(
+        ctx: Arc<SpatialContext>,
+        field_name_prefix: &str,
+        field_type: &FieldType,
+    ) -> Result<Arc<PointVectorStrategy>> {
         let base = SpatialStrategyBase::new(ctx, field_name_prefix)?;
         let mut num_pairs = 0;
         let has_stored = field_type.stored();
@@ -133,7 +143,9 @@ impl PointVectorStrategy {
     }
 
     fn me(&self) -> Arc<PointVectorStrategy> {
-        self.me.upgrade().expect("a PointVectorStrategy is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a PointVectorStrategy is shared as an Arc")
     }
 
     /// `getFieldNameX()`.
@@ -151,19 +163,40 @@ impl PointVectorStrategy {
     /// # Errors
     ///
     /// The errors of the field constructors.
-    pub fn create_indexable_fields_point(&self, point: &dyn Point) -> Result<Vec<Arc<dyn IndexableField>>> {
+    pub fn create_indexable_fields_point(
+        &self,
+        point: &dyn Point,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         let mut fields: Vec<Arc<dyn IndexableField>> = Vec::with_capacity(self.fields_len);
         if self.has_stored {
-            fields.push(Arc::new(StoredField::new_number(self.field_name_x.clone(), NumericValue::Double(point.get_x()))?));
-            fields.push(Arc::new(StoredField::new_number(self.field_name_y.clone(), NumericValue::Double(point.get_y()))?));
+            fields.push(Arc::new(StoredField::new_number(
+                self.field_name_x.clone(),
+                NumericValue::Double(point.get_x()),
+            )?));
+            fields.push(Arc::new(StoredField::new_number(
+                self.field_name_y.clone(),
+                NumericValue::Double(point.get_y()),
+            )?));
         }
         if self.has_doc_vals {
-            fields.push(Arc::new(DoubleDocValuesField::new(self.field_name_x.clone(), point.get_x())));
-            fields.push(Arc::new(DoubleDocValuesField::new(self.field_name_y.clone(), point.get_y())));
+            fields.push(Arc::new(DoubleDocValuesField::new(
+                self.field_name_x.clone(),
+                point.get_x(),
+            )));
+            fields.push(Arc::new(DoubleDocValuesField::new(
+                self.field_name_y.clone(),
+                point.get_y(),
+            )));
         }
         if self.has_point_vals {
-            fields.push(Arc::new(DoublePoint::new(self.field_name_x.clone(), &[point.get_x()])?));
-            fields.push(Arc::new(DoublePoint::new(self.field_name_y.clone(), &[point.get_y()])?));
+            fields.push(Arc::new(DoublePoint::new(
+                self.field_name_x.clone(),
+                &[point.get_x()],
+            )?));
+            fields.push(Arc::new(DoublePoint::new(
+                self.field_name_y.clone(),
+                &[point.get_y()],
+            )?));
         }
         debug_assert_eq!(fields.len(), self.fields_len);
         Ok(fields)
@@ -176,27 +209,54 @@ impl PointVectorStrategy {
         let must = Occur::MUST;
         if bbox.get_crosses_date_line() {
             // use null as performance trick since no data will be beyond the world bounds
-            bq.add(self.range_query(&self.field_name_x, None, Some(bbox.get_max_x()))?, Occur::SHOULD)?;
-            bq.add(self.range_query(&self.field_name_x, Some(bbox.get_min_x()), None)?, Occur::SHOULD)?;
+            bq.add(
+                self.range_query(&self.field_name_x, None, Some(bbox.get_max_x()))?,
+                Occur::SHOULD,
+            )?;
+            bq.add(
+                self.range_query(&self.field_name_x, Some(bbox.get_min_x()), None)?,
+                Occur::SHOULD,
+            )?;
             bq.set_minimum_number_should_match(1); // must match at least one of the SHOULD
         } else {
-            bq.add(self.range_query(&self.field_name_x, Some(bbox.get_min_x()), Some(bbox.get_max_x()))?, must)?;
+            bq.add(
+                self.range_query(
+                    &self.field_name_x,
+                    Some(bbox.get_min_x()),
+                    Some(bbox.get_max_x()),
+                )?,
+                must,
+            )?;
         }
-        bq.add(self.range_query(&self.field_name_y, Some(bbox.get_min_y()), Some(bbox.get_max_y()))?, must)?;
+        bq.add(
+            self.range_query(
+                &self.field_name_y,
+                Some(bbox.get_min_y()),
+                Some(bbox.get_max_y()),
+            )?,
+            must,
+        )?;
         Ok(Arc::new(bq.build()))
     }
 
     /// `rangeQuery(String fieldName, Double min, Double max)`: returns a
     /// numeric range query based on FieldType `DoublePoint` is used if
     /// field type indexes point values.
-    fn range_query(&self, field_name: &str, min: Option<f64>, max: Option<f64>) -> Result<Arc<dyn Query>> {
+    fn range_query(
+        &self,
+        field_name: &str,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) -> Result<Arc<dyn Query>> {
         if self.has_point_vals {
             let min = min.unwrap_or(f64::NEG_INFINITY);
             let max = max.unwrap_or(f64::INFINITY);
             return DoublePoint::new_range_query(field_name, &[min], &[max]);
         }
         // TODO try doc-value range query?
-        Err(LuceneError::unsupported_operation("An index is required for this operation."))
+        Err(LuceneError::unsupported_operation(
+            "An index is required for this operation.",
+        ))
     }
 }
 
@@ -211,19 +271,35 @@ impl SpatialStrategy for PointVectorStrategy {
         &self.base
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         if let Some(point) = shape.as_point() {
             return self.create_indexable_fields_point(point);
         }
-        Err(LuceneError::unsupported_operation(format!("Can only index Point, not {shape}")))
+        Err(LuceneError::unsupported_operation(format!(
+            "Can only index Point, not {shape}"
+        )))
     }
 
-    fn make_distance_value_source(&self, query_point: &Arc<dyn Point>, multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
-        Ok(Arc::new(DistanceValueSource::new(self.me(), Arc::clone(query_point), multiplier)))
+    fn make_distance_value_source(
+        &self,
+        query_point: &Arc<dyn Point>,
+        multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(Arc::new(DistanceValueSource::new(
+            self.me(),
+            Arc::clone(query_point),
+            multiplier,
+        )))
     }
 
     fn make_query(&self, args: &SpatialArgs) -> Result<Arc<dyn Query>> {
-        if !SpatialOperation::is(args.get_operation(), &[SpatialOperation::Intersects, SpatialOperation::IsWithin]) {
+        if !SpatialOperation::is(
+            args.get_operation(),
+            &[SpatialOperation::Intersects, SpatialOperation::IsWithin],
+        ) {
             return Err(UnsupportedSpatialOperation::new(args.get_operation()));
         }
         let shape = &args.get_shape();
@@ -256,7 +332,11 @@ pub(crate) struct DistanceRangeQuery {
 }
 
 impl DistanceRangeQuery {
-    fn new(inner: Arc<dyn Query>, distance_source: Arc<dyn DoubleValuesSource>, limit: f64) -> Self {
+    fn new(
+        inner: Arc<dyn Query>,
+        distance_source: Arc<dyn DoubleValuesSource>,
+        limit: f64,
+    ) -> Self {
         Self {
             inner,
             distance_source,
@@ -301,18 +381,24 @@ impl TwoPhaseIterator for DistanceTwoPhase {
 }
 
 impl ConstantScoreWeightImpl for DistanceRangeWeight {
-    fn scorer_supplier(&self, context: &LeafReaderContext, score: f32) -> Result<Option<Box<dyn ScorerSupplier>>> {
+    fn scorer_supplier(
+        &self,
+        context: &LeafReaderContext,
+        score: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
         let Some(scorer) = self.w.scorer(context)? else {
             return Ok(None);
         };
         let scorer = share(scorer);
-        let v = Arc::clone(&self.distance_source).get_values(context, Some(Box::new(ScorerScores(scorer.clone()))))?;
+        let v = Arc::clone(&self.distance_source)
+            .get_values(context, Some(Box::new(ScorerScores(scorer.clone()))))?;
         let two_phase = DistanceTwoPhase {
             approximation: ScorerDisi(scorer),
             v,
             limit: self.limit,
         };
-        let scorer = ConstantScoreScorer::from_two_phase(score, self.score_mode, Box::new(two_phase));
+        let scorer =
+            ConstantScoreScorer::from_two_phase(score, self.score_mode, Box::new(two_phase));
         Ok(Some(Box::new(DefaultScorerSupplier::new(Box::new(scorer)))))
     }
 
@@ -350,7 +436,12 @@ impl Query for DistanceRangeQuery {
         }
     }
 
-    fn create_weight(&self, searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         let w = self.inner.create_weight(searcher, score_mode, 1.0)?;
         Ok(Arc::new(ConstantScoreWeight::new(
             Arc::new(self.clone()),
@@ -368,15 +459,23 @@ impl Query for DistanceRangeQuery {
         let Some(that) = other.as_any().downcast_ref::<DistanceRangeQuery>() else {
             return false;
         };
-        self.inner.query_eq(&*that.inner) && self.distance_source.source_eq(&*that.distance_source) && self.limit == that.limit
+        self.inner.query_eq(&*that.inner)
+            && self.distance_source.source_eq(&*that.distance_source)
+            && self.limit == that.limit
     }
 
     /// `Objects.hash(inner, distanceSource, limit)`.
     fn query_hash(&self) -> i32 {
         let mut result = 1i32;
-        result = result.wrapping_mul(31).wrapping_add(self.inner.query_hash());
-        result = result.wrapping_mul(31).wrapping_add(self.distance_source.source_hash());
-        result = result.wrapping_mul(31).wrapping_add(hash_double(self.limit));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.inner.query_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.distance_source.source_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(hash_double(self.limit));
         result
     }
 

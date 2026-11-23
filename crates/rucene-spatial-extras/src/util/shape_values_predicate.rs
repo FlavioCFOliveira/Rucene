@@ -51,7 +51,11 @@ pub struct ShapeValuesPredicate {
 impl ShapeValuesPredicate {
     /// `ShapeValuesPredicate(ShapeValuesSource shapeValuesource,
     /// SpatialOperation op, Shape queryShape)`.
-    pub fn new(shape_valuesource: Arc<dyn ShapeValuesSource>, op: SpatialOperation, query_shape: Arc<dyn Shape>) -> Self {
+    pub fn new(
+        shape_valuesource: Arc<dyn ShapeValuesSource>,
+        op: SpatialOperation,
+        query_shape: Arc<dyn Shape>,
+    ) -> Self {
         Self {
             shape_valuesource,
             op,
@@ -64,7 +68,11 @@ impl ShapeValuesPredicate {
     /// # Errors
     ///
     /// The errors of `getValues`.
-    pub fn iterator(&self, ctx: &LeafReaderContext, approximation: Box<dyn DocIdSetIterator>) -> Result<Box<dyn TwoPhaseIterator>> {
+    pub fn iterator(
+        &self,
+        ctx: &LeafReaderContext,
+        approximation: Box<dyn DocIdSetIterator>,
+    ) -> Result<Box<dyn TwoPhaseIterator>> {
         let shape_values = self.shape_valuesource.get_values(ctx)?;
         Ok(Box::new(PredicateTwoPhase {
             approximation,
@@ -105,14 +113,20 @@ impl ShapeValuesPredicate {
     pub fn predicate_hash(&self) -> i32 {
         let mut result = self.shape_valuesource.source_hash();
         result = result.wrapping_mul(31).wrapping_add(self.op.hash_code());
-        result = result.wrapping_mul(31).wrapping_add(self.query_shape.hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.query_shape.hash_code());
         result
     }
 }
 
 impl fmt::Display for ShapeValuesPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}", self.shape_valuesource, self.op, self.query_shape)
+        write!(
+            f,
+            "{} {} {}",
+            self.shape_valuesource, self.op, self.query_shape
+        )
     }
 }
 
@@ -133,7 +147,10 @@ pub(crate) struct PredicateMatcher {
 impl PredicateMatcher {
     /// `matches()` for the approximation positioned on `doc`.
     pub(crate) fn matches(&mut self, doc: i32) -> Result<bool> {
-        Ok(self.shape_values.advance_exact(doc)? && self.op.evaluate(&*self.shape_values.value()?, &*self.query_shape))
+        Ok(self.shape_values.advance_exact(doc)?
+            && self
+                .op
+                .evaluate(&*self.shape_values.value()?, &*self.query_shape))
     }
 }
 

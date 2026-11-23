@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoDegeneratePath.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
@@ -100,7 +100,8 @@ impl GeoDegeneratePath {
         if self.is_done {
             return Err(ise("Can't call addPoint() if done() already called"));
         }
-        self.points.push(GeoPoint::new_lat_lon(&self.planet_model, lat, lon)?);
+        self.points
+            .push(GeoPoint::new_lat_lon(&self.planet_model, lat, lon)?);
         Ok(())
     }
 
@@ -125,7 +126,8 @@ impl GeoDegeneratePath {
         for end in &self.points {
             if let Some(lp) = last_point {
                 let normalized_connecting_plane = Plane::new_cross(lp, end)?;
-                let seg = PathSegment::new(&pm, lp.clone(), end.clone(), normalized_connecting_plane)?;
+                let seg =
+                    PathSegment::new(&pm, lp.clone(), end.clone(), normalized_connecting_plane)?;
                 self.segments.as_mut().unwrap_or_else(|| npe()).push(seg);
             }
             last_point = Some(end);
@@ -141,7 +143,11 @@ impl GeoDegeneratePath {
         for i in 0..segments.len() {
             let current_segment = &segments[i];
             if i == 0 {
-                end_points.push(SegmentEndpoint::new_one(&pm, current_segment.start.clone(), &current_segment.start_cutoff_plane));
+                end_points.push(SegmentEndpoint::new_one(
+                    &pm,
+                    current_segment.start.clone(),
+                    &current_segment.start_cutoff_plane,
+                ));
                 self.edge_points = Some(vec![current_segment.start.clone()]);
                 continue;
             }
@@ -153,7 +159,11 @@ impl GeoDegeneratePath {
             ));
         }
         let last_segment = &segments[segments.len() - 1];
-        end_points.push(SegmentEndpoint::new_one(&pm, last_segment.end.clone(), &last_segment.end_cutoff_plane));
+        end_points.push(SegmentEndpoint::new_one(
+            &pm,
+            last_segment.end.clone(),
+            &last_segment.end_cutoff_plane,
+        ));
         Ok(())
     }
 
@@ -185,20 +195,27 @@ impl GeoDegeneratePath {
         for segment in self.segs() {
             let distance = segment.path_distance(ds, x, y, z)?;
             if distance != f64::INFINITY {
-                return Ok(ds.from_aggregation_form(ds.aggregate_distances(&[current_distance, distance])));
+                return Ok(
+                    ds.from_aggregation_form(ds.aggregate_distances(&[current_distance, distance]))
+                );
             }
-            current_distance = ds.aggregate_distances(&[current_distance, segment.full_path_distance(ds)]);
+            current_distance =
+                ds.aggregate_distances(&[current_distance, segment.full_path_distance(ds)]);
         }
         let mut segment_index = 0;
         current_distance = 0.0;
         for endpoint in self.eps() {
             let distance = endpoint.path_distance(ds, x, y, z);
             if distance != f64::INFINITY {
-                return Ok(ds.from_aggregation_form(ds.aggregate_distances(&[current_distance, distance])));
+                return Ok(
+                    ds.from_aggregation_form(ds.aggregate_distances(&[current_distance, distance]))
+                );
             }
             if segment_index < self.segs().len() {
-                current_distance =
-                    ds.aggregate_distances(&[current_distance, self.segs()[segment_index].full_path_distance(ds)]);
+                current_distance = ds.aggregate_distances(&[
+                    current_distance,
+                    self.segs()[segment_index].full_path_distance(ds),
+                ]);
                 segment_index += 1;
             }
         }
@@ -209,7 +226,12 @@ impl GeoDegeneratePath {
         Ok(0.0)
     }
 
-    fn distance_bounds(&self, bounds: &mut dyn Bounds, _ds: &dyn DistanceStyle, _distance_value: f64) -> Result<()> {
+    fn distance_bounds(
+        &self,
+        bounds: &mut dyn Bounds,
+        _ds: &dyn DistanceStyle,
+        _distance_value: f64,
+    ) -> Result<()> {
         self.get_bounds(bounds);
         Ok(())
     }
@@ -232,7 +254,8 @@ impl GeoDegeneratePath {
     }
 
     fn equals_impl(&self, other: &Self) -> bool {
-        BasePlanetObject::equals(&self.planet_model, &other.planet_model) && self.points == other.points
+        BasePlanetObject::equals(&self.planet_model, &other.planet_model)
+            && self.points == other.points
     }
 
     fn hash_code_impl(&self) -> i32 {
@@ -243,12 +266,21 @@ impl GeoDegeneratePath {
     }
 }
 
-impl_geo_base_area_shape_common!(GeoDegeneratePath, "org.apache.lucene.spatial3d.geom.GeoDegeneratePath");
+impl_geo_base_area_shape_common!(
+    GeoDegeneratePath,
+    "org.apache.lucene.spatial3d.geom.GeoDegeneratePath"
+);
 impl_geo_base_area_relationship!(GeoDegeneratePath);
 impl_geo_base_distance_shape!(GeoDegeneratePath);
 
 impl GeoPath for GeoDegeneratePath {
-    fn compute_path_center_distance_xyz(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn compute_path_center_distance_xyz(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         let mut closest_distance = f64::INFINITY;
         for segment in self.segs() {
             let segment_distance = segment.path_center_distance(ds, x, y, z)?;
@@ -265,7 +297,13 @@ impl GeoPath for GeoDegeneratePath {
         Ok(closest_distance)
     }
 
-    fn compute_nearest_distance_xyz(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
+    fn compute_nearest_distance_xyz(
+        &self,
+        ds: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
         let mut current_distance = 0.0;
         let mut min_path_center_distance = f64::INFINITY;
         let mut best_distance = f64::INFINITY;
@@ -283,9 +321,13 @@ impl GeoPath for GeoDegeneratePath {
                 let segment_path_center_distance = segment.path_center_distance(ds, x, y, z)?;
                 if segment_path_center_distance < min_path_center_distance {
                     min_path_center_distance = segment_path_center_distance;
-                    best_distance = ds.aggregate_distances(&[current_distance, segment.nearest_path_distance(ds, x, y, z)?]);
+                    best_distance = ds.aggregate_distances(&[
+                        current_distance,
+                        segment.nearest_path_distance(ds, x, y, z)?,
+                    ]);
                 }
-                current_distance = ds.aggregate_distances(&[current_distance, segment.full_path_distance(ds)]);
+                current_distance =
+                    ds.aggregate_distances(&[current_distance, segment.full_path_distance(ds)]);
             }
         }
         Ok(ds.from_aggregation_form(best_distance))
@@ -325,7 +367,12 @@ impl GeoShape for GeoDegeneratePath {
         self.edge_points.clone().unwrap_or_else(|| npe())
     }
 
-    fn intersects(&self, plane: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        plane: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         if self.eps().len() == 1 {
             return self.eps()[0].intersects(plane, notable_points, bounds);
         }
@@ -385,7 +432,11 @@ impl SegmentEndpoint {
         }
     }
 
-    fn new_one(planet_model: &Arc<PlanetModel>, point: GeoPoint, cutoff_plane: &SidedPlane) -> Self {
+    fn new_one(
+        planet_model: &Arc<PlanetModel>,
+        point: GeoPoint,
+        cutoff_plane: &SidedPlane,
+    ) -> Self {
         Self {
             planet_model: planet_model.clone(),
             point,
@@ -393,11 +444,19 @@ impl SegmentEndpoint {
         }
     }
 
-    fn new_two(planet_model: &Arc<PlanetModel>, point: GeoPoint, cutoff_plane1: &SidedPlane, cutoff_plane2: &SidedPlane) -> Self {
+    fn new_two(
+        planet_model: &Arc<PlanetModel>,
+        point: GeoPoint,
+        cutoff_plane1: &SidedPlane,
+        cutoff_plane2: &SidedPlane,
+    ) -> Self {
         Self {
             planet_model: planet_model.clone(),
             point,
-            cutoff_planes: vec![SidedPlane::new_inverse(cutoff_plane1), SidedPlane::new_inverse(cutoff_plane2)],
+            cutoff_planes: vec![
+                SidedPlane::new_inverse(cutoff_plane1),
+                SidedPlane::new_inverse(cutoff_plane2),
+            ],
         }
     }
 
@@ -429,7 +488,12 @@ impl SegmentEndpoint {
         ds.to_aggregation_form(ds.compute_distance_xyz(&self.point, x, y, z))
     }
 
-    fn intersects(&self, p: &Plane, _notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        _notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         if !p.evaluate_is_zero(&self.point) {
             return false;
         }
@@ -501,7 +565,12 @@ pub(crate) struct PathSegment {
 }
 
 impl PathSegment {
-    fn new(planet_model: &Arc<PlanetModel>, start: GeoPoint, end: GeoPoint, normalized_connecting_plane: Plane) -> Result<Self> {
+    fn new(
+        planet_model: &Arc<PlanetModel>,
+        start: GeoPoint,
+        end: GeoPoint,
+        normalized_connecting_plane: Plane,
+    ) -> Result<Self> {
         let start_cutoff_plane = SidedPlane::new_cross(&end, &normalized_connecting_plane, &start)?;
         debug_assert!(start_cutoff_plane.is_within(&end));
         debug_assert!(start_cutoff_plane.is_within(&start));
@@ -523,12 +592,25 @@ impl PathSegment {
     /// `fullPathDistance(DistanceStyle)`.
     fn full_path_distance(&self, ds: &dyn DistanceStyle) -> f64 {
         let key = style_key(ds);
-        let cached = self.full_distance_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied();
+        let cached = self
+            .full_distance_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .copied();
         match cached {
             Some(d) => d,
             None => {
-                let dist = ds.to_aggregation_form(ds.compute_distance_xyz(&self.start, self.end.x, self.end.y, self.end.z));
-                self.full_distance_cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, dist);
+                let dist = ds.to_aggregation_form(ds.compute_distance_xyz(
+                    &self.start,
+                    self.end.x,
+                    self.end.y,
+                    self.end.z,
+                ));
+                self.full_distance_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key, dist);
                 dist
             }
         }
@@ -536,26 +618,54 @@ impl PathSegment {
 
     /// `isWithinSection(double, double, double)`.
     fn is_within_section(&self, x: f64, y: f64, z: f64) -> bool {
-        self.start_cutoff_plane.is_within_xyz(x, y, z) && self.end_cutoff_plane.is_within_xyz(x, y, z)
+        self.start_cutoff_plane.is_within_xyz(x, y, z)
+            && self.end_cutoff_plane.is_within_xyz(x, y, z)
     }
 
     /// The point of the connecting plane nearest the given point, shared by
     /// the three distance methods.
-    fn the_point(&self, x: f64, y: f64, z: f64, magnitude: f64, perp_x: f64, perp_y: f64, perp_z: f64) -> Result<GeoPoint> {
+    // Java's branches, kept as written. Java's method signature.
+    #[allow(clippy::if_same_then_else, clippy::too_many_arguments)]
+    fn the_point(
+        &self,
+        x: f64,
+        y: f64,
+        z: f64,
+        magnitude: f64,
+        perp_x: f64,
+        perp_y: f64,
+        perp_z: f64,
+    ) -> Result<GeoPoint> {
         let norm_factor = 1.0 / magnitude;
-        let normalized_perp_plane = Plane::new(perp_x * norm_factor, perp_y * norm_factor, perp_z * norm_factor, 0.0);
+        let normalized_perp_plane = Plane::new(
+            perp_x * norm_factor,
+            perp_y * norm_factor,
+            perp_z * norm_factor,
+            0.0,
+        );
         let intersection_points = self
             .normalized_connecting_plane
             .find_intersections(&self.planet_model, &normalized_perp_plane, NO_BOUNDS)
             .unwrap_or_else(|| npe());
-        let world = || rte(format!("Can't find world intersection for point x={} y={} z={}", d2s(x), d2s(y), d2s(z)));
+        let world = || {
+            rte(format!(
+                "Can't find world intersection for point x={} y={} z={}",
+                d2s(x),
+                d2s(y),
+                d2s(z)
+            ))
+        };
         if intersection_points.is_empty() {
             Err(world())
         } else if intersection_points.len() == 1 {
             Ok(intersection_points[0].clone())
-        } else if self.start_cutoff_plane.is_within(&intersection_points[0]) && self.end_cutoff_plane.is_within(&intersection_points[0]) {
+        } else if self.start_cutoff_plane.is_within(&intersection_points[0])
+            && self.end_cutoff_plane.is_within(&intersection_points[0])
+        {
             Ok(intersection_points[0].clone())
-        } else if self.start_cutoff_plane.is_within(&intersection_points[1]) && self.end_cutoff_plane.is_within(&intersection_points[1]) {
+        } else if self.start_cutoff_plane.is_within(&intersection_points[1])
+            && self.end_cutoff_plane.is_within(&intersection_points[1])
+        {
             Ok(intersection_points[1].clone())
         } else {
             Err(world())
@@ -567,7 +677,7 @@ impl PathSegment {
         let perp_x = p.y * z - p.z * y;
         let perp_y = p.z * x - p.x * z;
         let perp_z = p.x * y - p.y * x;
-        let magnitude = (perp_x * perp_x + perp_y * perp_y + perp_z * perp_z).sqrt();
+        let magnitude = java_math::sqrt(perp_x * perp_x + perp_y * perp_y + perp_z * perp_z);
         (perp_x, perp_y, perp_z, magnitude)
     }
 
@@ -592,7 +702,12 @@ impl PathSegment {
             return Ok(ds.to_aggregation_form(0.0));
         }
         let the_point = self.the_point(x, y, z, magnitude, perp_x, perp_y, perp_z)?;
-        Ok(ds.to_aggregation_form(ds.compute_distance_xyz(&self.start, the_point.x, the_point.y, the_point.z)))
+        Ok(ds.to_aggregation_form(ds.compute_distance_xyz(
+            &self.start,
+            the_point.x,
+            the_point.y,
+            the_point.z,
+        )))
     }
 
     fn path_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
@@ -606,7 +721,12 @@ impl PathSegment {
         let the_point = self.the_point(x, y, z, magnitude, perp_x, perp_y, perp_z)?;
         Ok(ds.aggregate_distances(&[
             ds.to_aggregation_form(ds.compute_distance_xyz(&the_point, x, y, z)),
-            ds.to_aggregation_form(ds.compute_distance_xyz(&self.start, the_point.x, the_point.y, the_point.z)),
+            ds.to_aggregation_form(ds.compute_distance_xyz(
+                &self.start,
+                the_point.x,
+                the_point.y,
+                the_point.z,
+            )),
         ]))
     }
 
@@ -624,7 +744,12 @@ impl PathSegment {
         java_min(java_min(start_distance, end_distance), distance)
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         self.normalized_connecting_plane.intersects(
             &self.planet_model,
             p,
@@ -648,7 +773,11 @@ impl PathSegment {
         bounds
             .add_point(&self.start)
             .add_point(&self.end)
-            .add_plane(&self.planet_model, &self.normalized_connecting_plane, &[&self.start_cutoff_plane, &self.end_cutoff_plane]);
+            .add_plane(
+                &self.planet_model,
+                &self.normalized_connecting_plane,
+                &[&self.start_cutoff_plane, &self.end_cutoff_plane],
+            );
     }
 }
 
@@ -656,7 +785,9 @@ impl Membership for PathSegment {
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
         self.start_cutoff_plane.is_within_xyz(x, y, z)
             && self.end_cutoff_plane.is_within_xyz(x, y, z)
-            && self.normalized_connecting_plane.evaluate_is_zero_xyz(x, y, z)
+            && self
+                .normalized_connecting_plane
+                .evaluate_is_zero_xyz(x, y, z)
     }
 }
 

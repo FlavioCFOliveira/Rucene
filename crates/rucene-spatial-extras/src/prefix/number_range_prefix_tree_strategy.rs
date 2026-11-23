@@ -32,14 +32,18 @@ use spatial4j::shape::shape::Shape;
 
 use crate::jdk::unsupported;
 use crate::prefix::prefix_tree_facet_counter::{self, FacetVisitor};
-use crate::prefix::prefix_tree_strategy::{prefix_create_indexable_fields, PrefixTreeStrategy, PrefixTreeStrategyBase};
+use crate::prefix::prefix_tree_strategy::{
+    prefix_create_indexable_fields, PrefixTreeStrategy, PrefixTreeStrategyBase,
+};
 use crate::prefix::recursive_prefix_tree_strategy::{
-    rpt_create_cell_iterator_to_index, rpt_make_query, rpt_to_string, RecursivePrefixTreeStrategyBase,
-    RecursivePrefixTreeStrategyOps,
+    rpt_create_cell_iterator_to_index, rpt_make_query, rpt_to_string,
+    RecursivePrefixTreeStrategyBase, RecursivePrefixTreeStrategyOps,
 };
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::cell_iterator::CellIterator;
-use crate::prefix::tree::number_range_prefix_tree::{as_unit_nr_shape, NumberRangePrefixTreeImpl, UnitNRShape};
+use crate::prefix::tree::number_range_prefix_tree::{
+    as_unit_nr_shape, NumberRangePrefixTreeImpl, UnitNRShape,
+};
 use crate::query::spatial_args::SpatialArgs;
 use crate::spatial_strategy::{SpatialStrategy, SpatialStrategyBase};
 
@@ -67,8 +71,12 @@ impl NumberRangePrefixTreeStrategy {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an empty field name.
-    pub fn new(prefix_tree: Arc<dyn NumberRangePrefixTreeImpl>, field_name: &str) -> Result<Arc<NumberRangePrefixTreeStrategy>> {
-        let grid: Arc<dyn crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree> = prefix_tree.clone();
+    pub fn new(
+        prefix_tree: Arc<dyn NumberRangePrefixTreeImpl>,
+        field_name: &str,
+    ) -> Result<Arc<NumberRangePrefixTreeStrategy>> {
+        let grid: Arc<dyn crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree> =
+            prefix_tree.clone();
         let base = RecursivePrefixTreeStrategyBase::new(grid, field_name)?;
         let strategy = Arc::new_cyclic(|me| NumberRangePrefixTreeStrategy {
             base,
@@ -134,7 +142,14 @@ impl NumberRangePrefixTreeStrategy {
             parent_facet: None,
             parent_shape: None,
         };
-        prefix_tree_facet_counter::compute(self, context, top_accept_docs, facet_range, level, &mut visitor)?;
+        prefix_tree_facet_counter::compute(
+            self,
+            context,
+            top_accept_docs,
+            facet_range,
+            level,
+            &mut visitor,
+        )?;
         Ok(facets)
     }
 }
@@ -162,7 +177,9 @@ impl NrFacetVisitor<'_> {
                     child_counts_len: self.grid.get_num_sub_cells(&*parent_shape),
                     child_counts: None,
                 };
-                self.facets.parents.insert(insert_at, (Arc::clone(&parent_shape), parent_facet));
+                self.facets
+                    .parents
+                    .insert(insert_at, (Arc::clone(&parent_shape), parent_facet));
                 insert_at
             }
         };
@@ -207,7 +224,9 @@ impl FacetVisitor for NrFacetVisitor<'_> {
             let parent_facet = &mut self.facets.parents[idx].1;
             // lazy init childCounts
             let len = parent_facet.child_counts_len.max(0) as usize;
-            let child_counts = parent_facet.child_counts.get_or_insert_with(|| vec![0; len]);
+            let child_counts = parent_facet
+                .child_counts
+                .get_or_insert_with(|| vec![0; len]);
             child_counts[unit_shape.get_val_at_level(cell.get_level()) as usize] += count;
         }
     }
@@ -250,7 +269,8 @@ impl Facets {
     /// The position of `key` in `parents` (`Ok`), or where it would be
     /// inserted (`Err`), by `UnitNRShape.compareTo`.
     fn find(&self, key: &dyn UnitNRShape) -> std::result::Result<usize, usize> {
-        self.parents.binary_search_by(|(k, _)| k.compare_to(key).cmp(&0))
+        self.parents
+            .binary_search_by(|(k, _)| k.compare_to(key).cmp(&0))
     }
 }
 
@@ -315,11 +335,18 @@ impl SpatialStrategy for NumberRangePrefixTreeStrategy {
         &self.base.prefix.strategy
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         prefix_create_indexable_fields(self, shape)
     }
 
-    fn make_distance_value_source(&self, _query_point: &Arc<dyn Point>, _multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
+    fn make_distance_value_source(
+        &self,
+        _query_point: &Arc<dyn Point>,
+        _multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
         Err(unsupported())
     }
 
@@ -334,14 +361,20 @@ impl PrefixTreeStrategy for NumberRangePrefixTreeStrategy {
     }
 
     fn me_prefix(&self) -> Arc<dyn PrefixTreeStrategy> {
-        self.me.upgrade().expect("a NumberRangePrefixTreeStrategy is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a NumberRangePrefixTreeStrategy is shared as an Arc")
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn create_cell_iterator_to_index(&self, shape: &Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn create_cell_iterator_to_index(
+        &self,
+        shape: &Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         rpt_create_cell_iterator_to_index(self, shape, detail_level)
     }
 

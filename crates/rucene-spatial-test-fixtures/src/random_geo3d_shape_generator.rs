@@ -34,6 +34,7 @@
 //! `RandomizedTest.randomDouble()` draws from that context random directly, so
 //! the port consumes the context random in exactly Java's sequence.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -220,11 +221,11 @@ impl RandomGeo3dShapeGenerator {
         while iterations < MAX_POINT_ITERATIONS {
             let mut lat = RandomizedTest::random_double() * PI / 2.0;
             if Self::random().next_boolean() {
-                lat = (-1.0) * lat;
+                lat = -lat;
             }
             let mut lon = RandomizedTest::random_double() * PI;
             if Self::random().next_boolean() {
-                lon = (-1.0) * lon;
+                lon = -lon;
             }
             iterations += 1;
             let point = GeoPoint::new_lat_lon(planet_model, lat, lon)?;
@@ -334,15 +335,18 @@ impl RandomGeo3dShapeGenerator {
             Self::COMPLEX_POLYGON => {
                 Self::complex_polygon(planet_model, constraints)?.map(area_of_polygon)
             }
-            Self::CIRCLE => Self::circle(planet_model, constraints)?
-                .map(|s| -> Arc<dyn GeoAreaShape> { s }),
-            Self::RECTANGLE => Self::rectangle(planet_model, constraints)?
-                .map(|s| -> Arc<dyn GeoAreaShape> { s }),
+            Self::CIRCLE => {
+                Self::circle(planet_model, constraints)?.map(|s| -> Arc<dyn GeoAreaShape> { s })
+            }
+            Self::RECTANGLE => {
+                Self::rectangle(planet_model, constraints)?.map(|s| -> Arc<dyn GeoAreaShape> { s })
+            }
             Self::PATH => {
                 Self::path(planet_model, constraints)?.map(|s| -> Arc<dyn GeoAreaShape> { s })
             }
-            Self::COLLECTION => Self::collection(planet_model, constraints)?
-                .map(|s| -> Arc<dyn GeoAreaShape> { s }),
+            Self::COLLECTION => {
+                Self::collection(planet_model, constraints)?.map(|s| -> Arc<dyn GeoAreaShape> { s })
+            }
             Self::POINT => {
                 Self::point(planet_model, constraints)?.map(|s| -> Arc<dyn GeoAreaShape> { s })
             }
@@ -442,7 +446,7 @@ impl RandomGeo3dShapeGenerator {
             };
             let radius = Self::random_cutoff_angle();
             let pow = Self::random().next_int_bound(10) + 3;
-            let accuracy = Self::random().next_double() * 10f64.powf(f64::from((-1) * pow));
+            let accuracy = Self::random().next_double() * java_math::pow(10.0, f64::from(-pow));
             let circle = try_or_continue!((|| -> Result<Option<Arc<dyn GeoCircle>>> {
                 let circle = GeoCircleFactory::make_exact_geo_circle(
                     planet_model,
@@ -488,8 +492,13 @@ impl RandomGeo3dShapeGenerator {
             let max_lon = java_max(point1.get_longitude(), point2.get_longitude());
 
             let bbox = try_or_continue!((|| -> Result<Option<Arc<dyn GeoBBox>>> {
-                let bbox =
-                    GeoBBoxFactory::make_geo_bbox(planet_model, max_lat, min_lat, min_lon, max_lon)?;
+                let bbox = GeoBBoxFactory::make_geo_bbox(
+                    planet_model,
+                    max_lat,
+                    min_lat,
+                    min_lon,
+                    max_lon,
+                )?;
                 if !constraints.valid(Some(bbox.as_geo_shape()))? {
                     return Ok(None);
                 }
@@ -713,7 +722,8 @@ impl RandomGeo3dShapeGenerator {
                 continue;
             }
             let mut geo_points = Self::order_points(&geo_points);
-            let inverse_polygon = GeoPolygonFactory::make_geo_polygon(planet_model, geo_points.clone())?;
+            let inverse_polygon =
+                GeoPolygonFactory::make_geo_polygon(planet_model, geo_points.clone())?;
             // The convex polygon must be within
             match &inverse_polygon {
                 None => continue,
@@ -869,7 +879,8 @@ impl RandomGeo3dShapeGenerator {
                 pol_description.push(PolygonDescription::new(geo_points));
             }
             let polygon = try_or_continue!((|| -> Result<Option<Arc<dyn GeoPolygon>>> {
-                let polygon = GeoPolygonFactory::make_large_geo_polygon(planet_model, &pol_description)?;
+                let polygon =
+                    GeoPolygonFactory::make_large_geo_polygon(planet_model, &pol_description)?;
                 if !constraints.valid(Some(polygon.as_geo_shape()))? {
                     return Ok(None);
                 }
@@ -899,7 +910,8 @@ impl RandomGeo3dShapeGenerator {
             }
             let points = Self::order_points(&points);
             let polygon = try_or_continue!((|| -> Result<Option<Arc<dyn GeoPolygon>>> {
-                let polygon = GeoPolygonFactory::make_geo_convex_polygon(planet_model, points.clone())?;
+                let polygon =
+                    GeoPolygonFactory::make_geo_convex_polygon(planet_model, points.clone())?;
                 if !constraints.valid(Some(polygon.as_geo_shape()))?
                     || Self::is_concave_polygon(planet_model, &*polygon)
                 {
@@ -958,7 +970,8 @@ impl RandomGeo3dShapeGenerator {
     ) -> Result<Vec<GeoPoint>> {
         let mut geo_points = Vec::with_capacity(count.max(0) as usize);
         for _ in 0..count {
-            if let Some(point) = Self::random_geo_point_with_constraints(planet_model, constraints)? {
+            if let Some(point) = Self::random_geo_point_with_constraints(planet_model, constraints)?
+            {
                 geo_points.push(point);
             }
         }
@@ -1012,14 +1025,16 @@ impl RandomGeo3dShapeGenerator {
                 y / f64::from(size),
                 z / f64::from(size),
             );
-            let cs = center.get_latitude().sin() * point.get_latitude().sin()
-                + center.get_latitude().cos()
-                    * point.get_latitude().cos()
-                    * (point.get_longitude() - center.get_longitude()).cos();
-            let pos_ang = (center.get_latitude().cos()
-                * point.get_latitude().cos()
-                * (point.get_longitude() - center.get_longitude()).sin())
-            .atan2(point.get_latitude().sin() - center.get_latitude().sin() * cs);
+            let cs = java_math::sin(center.get_latitude()) * java_math::sin(point.get_latitude())
+                + java_math::cos(center.get_latitude())
+                    * java_math::cos(point.get_latitude())
+                    * java_math::cos(point.get_longitude() - center.get_longitude());
+            let pos_ang = java_math::atan2(
+                java_math::cos(center.get_latitude())
+                    * java_math::cos(point.get_latitude())
+                    * java_math::sin(point.get_longitude() - center.get_longitude()),
+                java_math::sin(point.get_latitude()) - java_math::sin(center.get_latitude()) * cs,
+            );
             // `HashMap.put`: `Double.equals` compares `doubleToLongBits`.
             match point_with_angle
                 .iter_mut()
@@ -1032,7 +1047,10 @@ impl RandomGeo3dShapeGenerator {
         // order points
         point_with_angle.sort_by(|a, b| java_double_compare(a.0, b.0));
         point_with_angle.reverse();
-        point_with_angle.into_iter().map(|(_, point)| point).collect()
+        point_with_angle
+            .into_iter()
+            .map(|(_, point)| point)
+            .collect()
     }
 }
 
@@ -1403,6 +1421,8 @@ fn table_size_for(cap: i32) -> i32 {
 /// `HashMap`'s key match `(k = p.key) == key || key.equals(k)`, with `key`
 /// the probing key and `existing` the stored one.
 fn same_key(key: &dyn GeoAreaShape, existing: &dyn GeoAreaShape) -> bool {
-    std::ptr::addr_eq(key as *const dyn GeoAreaShape, existing as *const dyn GeoAreaShape)
-        || key.java_equals(existing.as_any() as &dyn Any)
+    std::ptr::addr_eq(
+        key as *const dyn GeoAreaShape,
+        existing as *const dyn GeoAreaShape,
+    ) || key.java_equals(existing.as_any() as &dyn Any)
 }

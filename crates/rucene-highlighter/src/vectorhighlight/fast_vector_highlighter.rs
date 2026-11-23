@@ -345,8 +345,11 @@ impl FastVectorHighlighter {
         frag_char_size: i32,
     ) -> Result<Box<dyn FieldFragList>> {
         let mut field_term_stack = FieldTermStack::new(reader, doc_id, matched_field, field_query)?;
-        let field_phrase_list =
-            FieldPhraseList::with_phrase_limit(&mut field_term_stack, field_query, self.phrase_limit);
+        let field_phrase_list = FieldPhraseList::with_phrase_limit(
+            &mut field_term_stack,
+            field_query,
+            self.phrase_limit,
+        );
         frag_list_builder.create_field_frag_list(&field_phrase_list, frag_char_size)
     }
 
@@ -374,7 +377,8 @@ impl FastVectorHighlighter {
                 self.phrase_limit,
             ));
         }
-        frag_list_builder.create_field_frag_list(&FieldPhraseList::from_merge(&to_merge), frag_char_size)
+        frag_list_builder
+            .create_field_frag_list(&FieldPhraseList::from_merge(&to_merge), frag_char_size)
     }
 
     /// return whether phraseHighlight or not.

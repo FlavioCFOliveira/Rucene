@@ -73,7 +73,9 @@ impl PointImpl {
     /// `hashCode(Point thiz)`.
     pub fn hash_code_point(thiz: &dyn Point) -> i32 {
         let mut result = hash_double(thiz.get_x());
-        result = 31i32.wrapping_mul(result).wrapping_add(hash_double(thiz.get_y()));
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(thiz.get_y()));
         result
     }
 
@@ -174,6 +176,11 @@ impl Shape for PointImpl {
 impl fmt::Display for PointImpl {
     /// `toString()`: `Pt(x=..,y=..)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Pt(x={},y={})", double_to_string(self.get_x()), double_to_string(self.get_y()))
+        write!(
+            f,
+            "Pt(x={},y={})",
+            double_to_string(self.get_x()),
+            double_to_string(self.get_y())
+        )
     }
 }

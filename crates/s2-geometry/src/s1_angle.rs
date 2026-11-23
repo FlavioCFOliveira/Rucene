@@ -41,7 +41,9 @@ impl S1Angle {
 
     /// `S1Angle(S2Point x, S2Point y)`: the angle between two points.
     pub fn between(x: &S2Point, y: &S2Point) -> Self {
-        Self { radians: x.angle(y) }
+        Self {
+            radians: x.angle(y),
+        }
     }
 
     /// `radians()`.

@@ -18,6 +18,7 @@
 //! The types declared in `HeatmapFacetCounter.java`, of the Java package
 //! `org.apache.lucene.spatial.prefix`.
 
+use rucene::util::java_math;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -84,7 +85,13 @@ impl Heatmap {
 
 impl fmt::Display for Heatmap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Heatmap{{{}x{} {}}}", self.columns, self.rows, self.region.as_shape())
+        write!(
+            f,
+            "Heatmap{{{}x{} {}}}",
+            self.columns,
+            self.rows,
+            self.region.as_shape()
+        )
     }
 }
 
@@ -118,7 +125,10 @@ pub fn calc_facets(
     facet_level: i32,
     max_cells: i32,
 ) -> Result<Heatmap> {
-    debug_assert_eq!(MAX_ROWS_OR_COLUMNS, (f64::from(ArrayUtil::MAX_ARRAY_LENGTH as i32)).sqrt() as i32);
+    debug_assert_eq!(
+        MAX_ROWS_OR_COLUMNS,
+        java_math::sqrt(f64::from(ArrayUtil::MAX_ARRAY_LENGTH as i32)) as i32
+    );
     if i64::from(max_cells) > i64::from(MAX_ROWS_OR_COLUMNS) * i64::from(MAX_ROWS_OR_COLUMNS) {
         return Err(LuceneError::illegal_argument(format!(
             "maxCells ({max_cells}) should be <= {MAX_ROWS_OR_COLUMNS}"
@@ -132,14 +142,21 @@ pub fn calc_facets(
     // First get the rect of the cell at the bottom-left at depth facetLevel
     let grid = strategy.get_grid();
     let ctx = grid.get_spatial_context();
-    let corner_pt = ctx.get_shape_factory().point_xy(input_rect.get_min_x(), input_rect.get_min_y())?;
+    let corner_pt = ctx
+        .get_shape_factory()
+        .point_xy(input_rect.get_min_x(), input_rect.get_min_y())?;
     let mut cell_iterator = grid.get_tree_cell_iterator(corner_pt, facet_level)?;
     let mut corner_cell: Option<CellRef> = None;
     while cell_iterator.has_next() {
         corner_cell = Some(cell_iterator.next());
     }
-    let corner_cell = corner_cell.unwrap_or_else(|| panic!("java.lang.NullPointerException: Cell not at target level"));
-    debug_assert_eq!(corner_cell.get_level(), facet_level, "Cell not at target level: {corner_cell}");
+    let corner_cell = corner_cell
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: Cell not at target level"));
+    debug_assert_eq!(
+        corner_cell.get_level(),
+        facet_level,
+        "Cell not at target level: {corner_cell}"
+    );
     let corner_shape = corner_cell.get_shape();
     let corner_rect = corner_shape.as_rectangle().unwrap_or_else(|| {
         panic!("java.lang.ClassCastException: {corner_shape} cannot be cast to Rectangle")
@@ -166,7 +183,10 @@ pub fn calc_facets(
         world_rect.get_height(),
     );
     debug_assert!(rows > 0 && columns > 0);
-    if columns > MAX_ROWS_OR_COLUMNS || rows > MAX_ROWS_OR_COLUMNS || columns.wrapping_mul(rows) > max_cells {
+    if columns > MAX_ROWS_OR_COLUMNS
+        || rows > MAX_ROWS_OR_COLUMNS
+        || columns.wrapping_mul(rows) > max_cells
+    {
         return Err(LuceneError::illegal_argument(format!(
             "Too many cells ({columns} x {rows}) for level {facet_level} shape {}",
             input_rect.as_shape()
@@ -197,7 +217,8 @@ pub fn calc_facets(
     let mut heatmap = Heatmap::new(
         columns,
         rows,
-        ctx.get_shape_factory().rect(heat_min_x, heat_max_x, heat_min_y, heat_max_y)?,
+        ctx.get_shape_factory()
+            .rect(heat_min_x, heat_max_x, heat_min_y, heat_max_y)?,
     );
     if top_accept_docs.is_some_and(is_match_no_bits) {
         return Ok(heatmap); // short-circuit
@@ -216,7 +237,14 @@ pub fn calc_facets(
         ancestors: AncestorMap::default(),
     };
     // Now lets count some facets!
-    prefix_tree_facet_counter::compute(strategy, context, top_accept_docs, &input_shape, facet_level, &mut visitor)?;
+    prefix_tree_facet_counter::compute(
+        strategy,
+        context,
+        top_accept_docs,
+        &input_shape,
+        facet_level,
+        &mut visitor,
+    )?;
     let all_cells_ancestor_count = visitor.all_cells_ancestor_count;
     let ancestors = std::mem::take(&mut visitor.ancestors);
 
@@ -243,12 +271,28 @@ pub fn calc_facets(
         // from a cell (thus doesn't cross DL)
         // note: we approach this in a way that eliminates int overflow/underflow (think huge cell,
         // tiny heatmap)
-        intersect_interval(heat_min_y, heat_max_y, cell_height, rows, rect.get_min_y(), rect.get_max_y(), &mut pair);
+        intersect_interval(
+            heat_min_y,
+            heat_max_y,
+            cell_height,
+            rows,
+            rect.get_min_y(),
+            rect.get_max_y(),
+            &mut pair,
+        );
         let start_row = pair[0];
         let end_row = pair[1];
 
         if !heatmap.region.get_crosses_date_line() {
-            intersect_interval(heat_min_x, heat_max_x, cell_width, columns, rect.get_min_x(), rect.get_max_x(), &mut pair);
+            intersect_interval(
+                heat_min_x,
+                heat_max_x,
+                cell_width,
+                columns,
+                rect.get_min_x(),
+                rect.get_max_x(),
+                &mut pair,
+            );
             let start_col = pair[0];
             let end_col = pair[1];
             increment_range(&mut heatmap, start_col, end_col, start_row, end_row, count);
@@ -259,14 +303,30 @@ pub fn calc_facets(
             let right_columns = heatmap.columns - left_columns;
             // left half of dateline:
             if rect.get_max_x() > heat_min_x {
-                intersect_interval(heat_min_x, 180.0, cell_width, left_columns, rect.get_min_x(), rect.get_max_x(), &mut pair);
+                intersect_interval(
+                    heat_min_x,
+                    180.0,
+                    cell_width,
+                    left_columns,
+                    rect.get_min_x(),
+                    rect.get_max_x(),
+                    &mut pair,
+                );
                 let start_col = pair[0];
                 let end_col = pair[1];
                 increment_range(&mut heatmap, start_col, end_col, start_row, end_row, count);
             }
             // right half of dateline
             if rect.get_min_x() < heat_max_x {
-                intersect_interval(-180.0, heat_max_x, cell_width, right_columns, rect.get_min_x(), rect.get_max_x(), &mut pair);
+                intersect_interval(
+                    -180.0,
+                    heat_max_x,
+                    cell_width,
+                    right_columns,
+                    rect.get_min_x(),
+                    rect.get_max_x(),
+                    &mut pair,
+                );
                 let start_col = pair[0] + left_columns;
                 let end_col = pair[1] + left_columns;
                 increment_range(&mut heatmap, start_col, end_col, start_row, end_row, count);
@@ -279,7 +339,8 @@ pub fn calc_facets(
 
 /// `topAcceptDocs instanceof Bits.MatchNoBits` (`HeatmapFacetCounter.java:174`).
 fn is_match_no_bits(bits: &dyn Bits) -> bool {
-    bits.bits_as_any().is_some_and(|any| any.is::<MatchNoBits>())
+    bits.bits_as_any()
+        .is_some_and(|any| any.is::<MatchNoBits>())
 }
 
 /// `Map<Rectangle, Integer> ancestors`: a `HashMap` keyed by
@@ -302,7 +363,11 @@ impl AncestorMap {
     }
 
     fn entries(&self) -> Vec<(Arc<dyn Rectangle>, i32)> {
-        self.buckets.values().flatten().map(|(r, c)| (Arc::clone(r), *c)).collect()
+        self.buckets
+            .values()
+            .flatten()
+            .map(|(r, c)| (Arc::clone(r), *c))
+            .collect()
     }
 }
 
@@ -324,9 +389,9 @@ impl FacetVisitor for HeatmapVisitor<'_> {
     fn visit(&mut self, cell: &CellRef, count: i32) {
         let heat_min_x = self.heatmap.region.get_min_x();
         let shape = cell.get_shape();
-        let rect = shape
-            .as_rectangle()
-            .unwrap_or_else(|| panic!("java.lang.ClassCastException: {shape} cannot be cast to Rectangle"));
+        let rect = shape.as_rectangle().unwrap_or_else(|| {
+            panic!("java.lang.ClassCastException: {shape} cannot be cast to Rectangle")
+        });
         if cell.get_level() == self.facet_level {
             // heatmap level; count it directly
             // convert to col & row
@@ -382,7 +447,14 @@ fn intersect_interval(
 
 /// `incrementRange(Heatmap heatmap, int startColumn, int endColumn, int
 /// startRow, int endRow, int count)`.
-fn increment_range(heatmap: &mut Heatmap, mut start_column: i32, mut end_column: i32, mut start_row: i32, mut end_row: i32, count: i32) {
+fn increment_range(
+    heatmap: &mut Heatmap,
+    mut start_column: i32,
+    mut end_column: i32,
+    mut start_row: i32,
+    mut end_row: i32,
+    count: i32,
+) {
     // startColumn & startRow are not necessarily within the heatmap range; likewise numRows/columns
     // may overlap.
     if start_column < 0 {
@@ -408,7 +480,13 @@ fn increment_range(heatmap: &mut Heatmap, mut start_column: i32, mut end_column:
 
 /// `calcRowsOrCols(double cellRange, double cellMin, double requestRange,
 /// double requestMin, double worldRange)`.
-fn calc_rows_or_cols(cell_range: f64, cell_min: f64, request_range: f64, request_min: f64, world_range: f64) -> i32 {
+fn calc_rows_or_cols(
+    cell_range: f64,
+    cell_min: f64,
+    request_range: f64,
+    request_min: f64,
+    world_range: f64,
+) -> i32 {
     debug_assert!(request_min >= cell_min);
     // Idealistically this wouldn't be so complicated but we concern ourselves with overflow and
     // edge cases

@@ -78,8 +78,8 @@ impl ContainsPrefixTreeQuery {
 pub(crate) struct ContainsVisitor<'q> {
     t: BaseTermsEnumTraverser,
     q: &'q ContainsPrefixTreeQuery,
-    seek_term: BytesRef,        // temp; see seek()
-    this_term: Option<BytesRef>, // current term in termsEnum
+    seek_term: BytesRef,           // temp; see seek()
+    this_term: Option<BytesRef>,   // current term in termsEnum
     indexed_cell: Option<CellRef>, // the cell wrapper around thisTerm
 }
 
@@ -105,7 +105,11 @@ impl<'q> ContainsVisitor<'q> {
 
     /// `visit(Cell cell, Bits acceptContains)`: this is the primary
     /// algorithm; recursive. Returns null if finds none.
-    fn visit(&mut self, cell: &CellRef, accept_contains: Option<Rc<SmallDocSet>>) -> Result<Option<Rc<SmallDocSet>>> {
+    fn visit(
+        &mut self,
+        cell: &CellRef,
+        accept_contains: Option<Rc<SmallDocSet>>,
+    ) -> Result<Option<Rc<SmallDocSet>>> {
         if self.this_term.is_none() {
             // signals all done
             return Ok(None);
@@ -115,12 +119,16 @@ impl<'q> ContainsVisitor<'q> {
         // Get the AND of all child results (into combinedSubResults)
         let mut combined_sub_results: Option<Rc<SmallDocSet>> = None;
         //   Optimization: use null subCellsFilter when we know cell is within the query shape.
-        let mut sub_cells_filter: Option<Arc<dyn Shape>> = Some(Arc::clone(&self.q.base.query_shape));
+        let mut sub_cells_filter: Option<Arc<dyn Shape>> =
+            Some(Arc::clone(&self.q.base.query_shape));
         if cell.get_level() != 0
-            && (cell.get_shape_rel().is_none() || cell.get_shape_rel() == Some(SpatialRelation::Within))
+            && (cell.get_shape_rel().is_none()
+                || cell.get_shape_rel() == Some(SpatialRelation::Within))
         {
             sub_cells_filter = None;
-            debug_assert!(cell.get_shape().relate(&*self.q.base.query_shape) == SpatialRelation::Within);
+            debug_assert!(
+                cell.get_shape().relate(&*self.q.base.query_shape) == SpatialRelation::Within
+            );
         }
         let mut sub_cells = cell.get_next_level_cells(sub_cells_filter);
         while sub_cells.has_next() {
@@ -129,7 +137,9 @@ impl<'q> ContainsVisitor<'q> {
                 combined_sub_results = None;
             } else if sub_cell.get_level() == self.q.base.detail_level {
                 combined_sub_results = self.get_docs(&sub_cell, accept_contains.as_deref())?;
-            } else if !self.q.multi_overlapping_indexed_shapes && sub_cell.get_shape_rel() == Some(SpatialRelation::Within) {
+            } else if !self.q.multi_overlapping_indexed_shapes
+                && sub_cell.get_shape_rel() == Some(SpatialRelation::Within)
+            {
                 combined_sub_results = self.get_leaf_docs(&sub_cell, accept_contains.as_deref())?;
             } else {
                 // OR the leaf docs with all child results
@@ -172,13 +182,18 @@ impl<'q> ContainsVisitor<'q> {
             if seek_status == SeekStatus::FOUND {
                 return Ok(true);
             }
-            Ok(self.indexed_cell().is_leaf() && self.indexed_cell().compare_to_no_leaf(&**cell) == 0)
+            Ok(self.indexed_cell().is_leaf()
+                && self.indexed_cell().compare_to_no_leaf(&**cell) == 0)
         }
     }
 
     /// `getDocs(Cell cell, Bits acceptContains)`: get prefix & leaf docs at
     /// this cell.
-    fn get_docs(&mut self, cell: &CellRef, accept_contains: Option<&SmallDocSet>) -> Result<Option<Rc<SmallDocSet>>> {
+    fn get_docs(
+        &mut self,
+        cell: &CellRef,
+        accept_contains: Option<&SmallDocSet>,
+    ) -> Result<Option<Rc<SmallDocSet>>> {
         debug_assert_eq!(self.indexed_cell().compare_to_no_leaf(&**cell), 0);
         // called when we've reached detailLevel.
         if self.indexed_cell().is_leaf() {
@@ -192,7 +207,8 @@ impl<'q> ContainsVisitor<'q> {
                 return Ok(docs_at_prefix);
             }
             // collect leaf too
-            if self.indexed_cell().is_leaf() && self.indexed_cell().compare_to_no_leaf(&**cell) == 0 {
+            if self.indexed_cell().is_leaf() && self.indexed_cell().compare_to_no_leaf(&**cell) == 0
+            {
                 let docs_at_leaf = self.collect_docs(accept_contains)?;
                 self.next_term()?;
                 Ok(Self::union(docs_at_prefix, docs_at_leaf))
@@ -204,7 +220,11 @@ impl<'q> ContainsVisitor<'q> {
 
     /// `getLeafDocs(Cell cell, Bits acceptContains)`: gets docs on the leaf
     /// of the given cell, `None` if there aren't any.
-    fn get_leaf_docs(&mut self, cell: &CellRef, accept_contains: Option<&SmallDocSet>) -> Result<Option<Rc<SmallDocSet>>> {
+    fn get_leaf_docs(
+        &mut self,
+        cell: &CellRef,
+        accept_contains: Option<&SmallDocSet>,
+    ) -> Result<Option<Rc<SmallDocSet>>> {
         debug_assert_eq!(self.indexed_cell().compare_to_no_leaf(&**cell), 0);
         // Advance past prefix if we're at a prefix; return null if no leaf
         if !self.indexed_cell().is_leaf()
@@ -240,7 +260,10 @@ impl<'q> ContainsVisitor<'q> {
 
     /// `union(SmallDocSet aSet, SmallDocSet bSet)`: `None` (Java `null`)
     /// args are treated as an empty set.
-    fn union(a_set: Option<Rc<SmallDocSet>>, b_set: Option<Rc<SmallDocSet>>) -> Option<Rc<SmallDocSet>> {
+    fn union(
+        a_set: Option<Rc<SmallDocSet>>,
+        b_set: Option<Rc<SmallDocSet>>,
+    ) -> Option<Rc<SmallDocSet>> {
         match b_set {
             Some(b_set) => match a_set {
                 None => Some(b_set),
@@ -251,11 +274,19 @@ impl<'q> ContainsVisitor<'q> {
     }
 
     /// `collectDocs(Bits acceptContains)`: returns null if no docs.
-    fn collect_docs(&mut self, accept_contains: Option<&SmallDocSet>) -> Result<Option<Rc<SmallDocSet>>> {
+    fn collect_docs(
+        &mut self,
+        accept_contains: Option<&SmallDocSet>,
+    ) -> Result<Option<Rc<SmallDocSet>>> {
         let mut set: Option<SmallDocSet> = None;
         self.t.postings()?;
         loop {
-            let docid = self.t.postings_enum.as_mut().expect("set by postings()").next_doc()?;
+            let docid = self
+                .t
+                .postings_enum
+                .as_mut()
+                .expect("set by postings()")
+                .next_doc()?;
             if docid == NO_MORE_DOCS {
                 break;
             }
@@ -352,7 +383,11 @@ impl SmallDocSet {
         // sort them
         docs.sort_unstable();
         let size = docs.len();
-        Ok(Some(Box::new(SmallDocSetIterator { docs, size, idx: -1 })))
+        Ok(Some(Box::new(SmallDocSetIterator {
+            docs,
+            size,
+            idx: -1,
+        })))
     }
 }
 
@@ -368,7 +403,8 @@ impl Bits for SmallDocSet {
 
 impl Accountable for SmallDocSet {
     fn ram_bytes_used(&self) -> i64 {
-        RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_REF + 4) + self.int_set.ram_bytes_used()
+        RamUsageEstimator::align_object_size(RamUsageEstimator::NUM_BYTES_OBJECT_REF + 4)
+            + self.int_set.ram_bytes_used()
     }
 }
 
@@ -390,7 +426,11 @@ impl DocIdSet for SmallDocSet {
     /// `bits()`: if the # of docids is super small, return null since
     /// iteration is going to be faster.
     fn bits(&self) -> Result<Option<Box<dyn Bits>>> {
-        Ok(if self.size() > 4 { Some(Box::new(self.clone())) } else { None })
+        Ok(if self.size() > 4 {
+            Some(Box::new(self.clone()))
+        } else {
+            None
+        })
     }
 }
 
@@ -440,7 +480,8 @@ impl PrefixTreeQuery for ContainsPrefixTreeQuery {
         let mut visitor = ContainsVisitor::new(self, context)?;
         let world = self.base.grid.get_world_cell();
         let result = visitor.visit(&world, None)?;
-        Ok(result.map(|set| TreeDocIdSet::Small(Rc::try_unwrap(set).unwrap_or_else(|rc| (*rc).clone()))))
+        Ok(result
+            .map(|set| TreeDocIdSet::Small(Rc::try_unwrap(set).unwrap_or_else(|rc| (*rc).clone()))))
     }
 }
 
@@ -461,20 +502,34 @@ impl Query for ContainsPrefixTreeQuery {
         self
     }
 
-    fn create_weight(&self, _searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         Ok(create_weight(self, score_mode, boost))
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
-        other.as_any().downcast_ref::<ContainsPrefixTreeQuery>().is_some_and(|that| {
-            self.base.equals_to(&that.base) && self.multi_overlapping_indexed_shapes == that.multi_overlapping_indexed_shapes
-        })
+        other
+            .as_any()
+            .downcast_ref::<ContainsPrefixTreeQuery>()
+            .is_some_and(|that| {
+                self.base.equals_to(&that.base)
+                    && self.multi_overlapping_indexed_shapes
+                        == that.multi_overlapping_indexed_shapes
+            })
     }
 
     fn query_hash(&self) -> i32 {
-        self.base
-            .hash_code(self.class_hash())
-            .wrapping_add(if self.multi_overlapping_indexed_shapes { 1 } else { 0 })
+        self.base.hash_code(self.class_hash()).wrapping_add(
+            if self.multi_overlapping_indexed_shapes {
+                1
+            } else {
+                0
+            },
+        )
     }
 
     fn java_class_name(&self) -> &'static str {

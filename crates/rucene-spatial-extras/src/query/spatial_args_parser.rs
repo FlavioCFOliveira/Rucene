@@ -85,8 +85,14 @@ impl SpatialArgsParser {
     /// parameters.
     pub fn parse(&self, v: &str, ctx: &SpatialContext) -> Result<SpatialArgs> {
         let units: Vec<u16> = v.encode_utf16().collect();
-        let idx = units.iter().position(|&u| u == u16::from(b'(')).map_or(-1, |i| i as i32);
-        let edx = units.iter().rposition(|&u| u == u16::from(b')')).map_or(-1, |i| i as i32);
+        let idx = units
+            .iter()
+            .position(|&u| u == u16::from(b'('))
+            .map_or(-1, |i| i as i32);
+        let edx = units
+            .iter()
+            .rposition(|&u| u == u16::from(b')'))
+            .map_or(-1, |i| i as i32);
         if idx < 0 || idx > edx {
             return Err(ParseException::error(format!("missing parens: {v}"), -1));
         }
@@ -95,7 +101,10 @@ impl SpatialArgsParser {
         let body = sub(idx + 1, edx);
         let body = java_trim(&body);
         if body.is_empty() {
-            return Err(ParseException::error(format!("missing body : {v}"), idx + 1));
+            return Err(ParseException::error(
+                format!("missing body : {v}"),
+                idx + 1,
+            ));
         }
         let shape = self.parse_shape(body, ctx)?;
         let args = self.new_spatial_args(op, shape);
@@ -127,9 +136,17 @@ impl SpatialArgsParser {
     /// # Errors
     ///
     /// `NumberFormatException` for a value that is not a number.
-    pub fn read_name_value_pairs(&self, args: &SpatialArgs, name_val_pairs: &mut JavaHashMap<String>) -> Result<()> {
-        args.set_dist_err_pct(Self::read_double(name_val_pairs.remove(Self::DIST_ERR_PCT).as_deref())?);
-        args.set_dist_err(Self::read_double(name_val_pairs.remove(Self::DIST_ERR).as_deref())?);
+    pub fn read_name_value_pairs(
+        &self,
+        args: &SpatialArgs,
+        name_val_pairs: &mut JavaHashMap<String>,
+    ) -> Result<()> {
+        args.set_dist_err_pct(Self::read_double(
+            name_val_pairs.remove(Self::DIST_ERR_PCT).as_deref(),
+        )?);
+        args.set_dist_err(Self::read_double(
+            name_val_pairs.remove(Self::DIST_ERR).as_deref(),
+        )?);
         Ok(())
     }
 

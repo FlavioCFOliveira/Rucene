@@ -91,8 +91,13 @@ impl DistanceCalculator for Geo3dDistanceCalculator {
                 from.get_x() * DistanceUtils::DEGREES_TO_RADIANS,
             ),
         };
-        let to_geo_point = self.geo_point(to_y * DistanceUtils::DEGREES_TO_RADIANS, to_x * DistanceUtils::DEGREES_TO_RADIANS);
-        self.planet_model.surface_distance(&from_geo_point, &to_geo_point) * DistanceUtils::RADIANS_TO_DEGREES
+        let to_geo_point = self.geo_point(
+            to_y * DistanceUtils::DEGREES_TO_RADIANS,
+            to_x * DistanceUtils::DEGREES_TO_RADIANS,
+        );
+        self.planet_model
+            .surface_distance(&from_geo_point, &to_geo_point)
+            * DistanceUtils::RADIANS_TO_DEGREES
     }
 
     fn within(&self, from: &dyn Point, to_x: f64, to_y: f64, distance: f64) -> bool {
@@ -107,16 +112,25 @@ impl DistanceCalculator for Geo3dDistanceCalculator {
         ctx: &SpatialContext,
         reuse: Option<Arc<dyn Point>>,
     ) -> Result<Arc<dyn Point>> {
-        let geo_from = from.as_any().downcast_ref::<Geo3dPointShape>().ok_or_else(|| {
-            LuceneError::unchecked(
-                "java.lang.ClassCastException",
-                format!("class {} cannot be cast to class {}", from.java_class_name(), "org.apache.lucene.spatial.spatial4j.Geo3dPointShape"),
-            )
-        })?;
+        let geo_from = from
+            .as_any()
+            .downcast_ref::<Geo3dPointShape>()
+            .ok_or_else(|| {
+                LuceneError::unchecked(
+                    "java.lang.ClassCastException",
+                    format!(
+                        "class {} cannot be cast to class {}",
+                        from.java_class_name(),
+                        "org.apache.lucene.spatial.spatial4j.Geo3dPointShape"
+                    ),
+                )
+            })?;
         let point = geo_from.point_shape().get_center();
         let dist = DistanceUtils::DEGREES_TO_RADIANS * dist_deg;
         let bearing = DistanceUtils::DEGREES_TO_RADIANS * bearing_deg;
-        let new_point = self.planet_model.surface_point_on_bearing(&point, dist, bearing)?;
+        let new_point = self
+            .planet_model
+            .surface_point_on_bearing(&point, dist, bearing)?;
         let new_lat = new_point.get_latitude() * DistanceUtils::RADIANS_TO_DEGREES;
         let new_lon = new_point.get_longitude() * DistanceUtils::RADIANS_TO_DEGREES;
         match reuse {
@@ -136,11 +150,18 @@ impl DistanceCalculator for Geo3dDistanceCalculator {
         _reuse: Option<Arc<dyn Rectangle>>,
     ) -> Result<Arc<dyn Rectangle>> {
         // `ctx.getShapeFactory().circle(from, distDEG)`, which reads the point's x and y
-        let circle = ctx.get_shape_factory().circle(from.get_x(), from.get_y(), dist_deg)?;
+        let circle = ctx
+            .get_shape_factory()
+            .circle(from.get_x(), from.get_y(), dist_deg)?;
         Ok(circle.get_bounding_box())
     }
 
-    fn calc_box_by_dist_from_pt_y_horiz_axis_deg(&self, _from: &dyn Point, _dist_deg: f64, _ctx: &SpatialContext) -> f64 {
+    fn calc_box_by_dist_from_pt_y_horiz_axis_deg(
+        &self,
+        _from: &dyn Point,
+        _dist_deg: f64,
+        _ctx: &SpatialContext,
+    ) -> f64 {
         panic_unsupported()
     }
 

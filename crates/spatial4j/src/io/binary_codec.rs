@@ -109,7 +109,11 @@ pub trait BinaryCodec: Send + Sync + Any {
     /// # Errors
     ///
     /// `IOException`.
-    fn read_shape_by_type_if_supported(&self, data_input: &mut dyn Read, type_: i8) -> Result<Option<Arc<dyn Shape>>> {
+    fn read_shape_by_type_if_supported(
+        &self,
+        data_input: &mut dyn Read,
+        type_: i8,
+    ) -> Result<Option<Arc<dyn Shape>>> {
         Ok(match type_ {
             BinaryCodecBase::TYPE_POINT => Some(self.read_point(data_input)?),
             BinaryCodecBase::TYPE_RECT => Some(self.read_rect(data_input)?),
@@ -124,7 +128,11 @@ pub trait BinaryCodec: Send + Sync + Any {
     /// # Errors
     ///
     /// `IOException`.
-    fn write_shape_by_type_if_supported(&self, data_output: &mut dyn Write, s: &dyn Shape) -> Result<bool> {
+    fn write_shape_by_type_if_supported(
+        &self,
+        data_output: &mut dyn Write,
+        s: &dyn Shape,
+    ) -> Result<bool> {
         let type_ = self.type_for_shape(s);
         write_byte(data_output, type_)?;
         self.write_shape_by_type_if_supported_typed(data_output, s, type_)
@@ -135,7 +143,12 @@ pub trait BinaryCodec: Send + Sync + Any {
     /// # Errors
     ///
     /// `IOException`.
-    fn write_shape_by_type_if_supported_typed(&self, data_output: &mut dyn Write, s: &dyn Shape, type_: i8) -> Result<bool> {
+    fn write_shape_by_type_if_supported_typed(
+        &self,
+        data_output: &mut dyn Write,
+        s: &dyn Shape,
+        type_: i8,
+    ) -> Result<bool> {
         let cast = |what: &str| {
             LuceneError::unchecked(
                 "java.lang.ClassCastException",
@@ -146,15 +159,17 @@ pub trait BinaryCodec: Send + Sync + Any {
             BinaryCodecBase::TYPE_POINT => {
                 self.write_point(data_output, s.as_point().ok_or_else(|| cast("Point"))?)?
             }
-            BinaryCodecBase::TYPE_RECT => {
-                self.write_rect(data_output, s.as_rectangle().ok_or_else(|| cast("Rectangle"))?)?
-            }
+            BinaryCodecBase::TYPE_RECT => self.write_rect(
+                data_output,
+                s.as_rectangle().ok_or_else(|| cast("Rectangle"))?,
+            )?,
             BinaryCodecBase::TYPE_CIRCLE => {
                 self.write_circle(data_output, s.as_circle().ok_or_else(|| cast("Circle"))?)?
             }
             BinaryCodecBase::TYPE_COLL => self.write_collection(
                 data_output,
-                s.as_shape_collection().ok_or_else(|| cast("ShapeCollection"))?,
+                s.as_shape_collection()
+                    .ok_or_else(|| cast("ShapeCollection"))?,
             )?,
             _ => return Ok(false),
         }
@@ -276,7 +291,9 @@ pub trait BinaryCodec: Send + Sync + Any {
             } else {
                 let s = self.read_shape_by_type_if_supported(data_input, type_)?;
                 let Some(s) = s else {
-                    return Err(InvalidShapeException::error(format!("Unsupported shape byte {type_}")));
+                    return Err(InvalidShapeException::error(format!(
+                        "Unsupported shape byte {type_}"
+                    )));
                 };
                 shapes.push(s);
             }
@@ -299,7 +316,8 @@ pub trait BinaryCodec: Send + Sync + Any {
             if type_ == 0 {
                 self.write_shape(data_output, &**s)?;
             } else {
-                let written = self.write_shape_by_type_if_supported_typed(data_output, &**s, type_)?;
+                let written =
+                    self.write_shape_by_type_if_supported_typed(data_output, &**s, type_)?;
                 if !written {
                     return Err(LuceneError::illegal_argument(format!(
                         "Unsupported shape type class {}",
@@ -334,7 +352,9 @@ impl BinaryCodecBase {
 
     /// `BinaryCodec(SpatialContext ctx, SpatialContextFactory factory)`.
     pub fn new(ctx: &Arc<SpatialContext>, _factory: &dyn SpatialContextFactoryOps) -> Self {
-        Self { ctx: Arc::downgrade(ctx) }
+        Self {
+            ctx: Arc::downgrade(ctx),
+        }
     }
 
     /// The context, for a subclass.
@@ -345,7 +365,9 @@ impl BinaryCodecBase {
 
 impl BinaryCodec for BinaryCodecBase {
     fn ctx(&self) -> Arc<SpatialContext> {
-        self.ctx.upgrade().expect("the SpatialContext of a BinaryCodec is alive")
+        self.ctx
+            .upgrade()
+            .expect("the SpatialContext of a BinaryCodec is alive")
     }
 
     fn as_any(&self) -> &dyn Any {

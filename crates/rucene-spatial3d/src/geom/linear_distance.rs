@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `LinearDistance.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -90,11 +89,19 @@ impl DistanceStyle for LinearDistance {
         Err(ise(NO_REVERSE))
     }
 
-    fn find_minimum_arc_distance(&self, _planet_model: &PlanetModel, _distance_value: f64) -> Result<f64> {
+    fn find_minimum_arc_distance(
+        &self,
+        _planet_model: &PlanetModel,
+        _distance_value: f64,
+    ) -> Result<f64> {
         Err(ise(NO_REVERSE))
     }
 
-    fn find_maximum_arc_distance(&self, _planet_model: &PlanetModel, _distance_value: f64) -> Result<f64> {
+    fn find_maximum_arc_distance(
+        &self,
+        _planet_model: &PlanetModel,
+        _distance_value: f64,
+    ) -> Result<f64> {
         Err(ise(NO_REVERSE))
     }
 }

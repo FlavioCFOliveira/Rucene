@@ -26,7 +26,11 @@ impl InvalidShapeException {
     /// `new InvalidShapeException(String reason)`; `None` stands for a
     /// `null` reason.
     pub fn new(reason: Option<String>) -> LuceneError {
-        LuceneError::from(LuceneErrorKind::Unchecked { class: Self::CLASS, message: reason, cause: None })
+        LuceneError::from(LuceneErrorKind::Unchecked {
+            class: Self::CLASS,
+            message: reason,
+            cause: None,
+        })
     }
 
     /// `new InvalidShapeException(String reason)` with a non-null reason.

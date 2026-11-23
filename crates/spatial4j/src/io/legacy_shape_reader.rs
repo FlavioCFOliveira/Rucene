@@ -35,7 +35,9 @@ struct StringTokenizer<'a> {
 impl<'a> StringTokenizer<'a> {
     fn new(s: &'a str) -> Self {
         let not_empty: fn(&&str) -> bool = |t| !t.is_empty();
-        Self { tokens: s.split(' ').filter(not_empty).peekable() }
+        Self {
+            tokens: s.split(' ').filter(not_empty).peekable(),
+        }
     }
 
     /// `nextToken()`: `NoSuchElementException` when there is none.
@@ -62,11 +64,15 @@ pub struct LegacyShapeReader {
 impl LegacyShapeReader {
     /// `LegacyShapeReader(SpatialContext ctx, SpatialContextFactory factory)`.
     pub fn new(ctx: &Arc<SpatialContext>, _factory: &dyn SpatialContextFactoryOps) -> Self {
-        Self { ctx: Arc::downgrade(ctx) }
+        Self {
+            ctx: Arc::downgrade(ctx),
+        }
     }
 
     fn ctx(&self) -> Arc<SpatialContext> {
-        self.ctx.upgrade().expect("the SpatialContext of a LegacyShapeReader is alive")
+        self.ctx
+            .upgrade()
+            .expect("the SpatialContext of a LegacyShapeReader is alive")
     }
 
     /// `readShapeOrNull(String str, SpatialContext ctx)`: `None` (Java
@@ -102,7 +108,9 @@ impl LegacyShapeReader {
                             if k == "d" || k == "distance" {
                                 parse_double(&arg[idx + 1..])?
                             } else {
-                                return Err(InvalidShapeException::error(format!("unknown arg: {k} :: {str}")));
+                                return Err(InvalidShapeException::error(format!(
+                                    "unknown arg: {k} :: {str}"
+                                )));
                             }
                         }
                         None => parse_double(arg)?,
@@ -157,7 +165,10 @@ impl ShapeReader for LegacyShapeReader {
         let ctx = self.ctx();
         let shape = Self::read_shape_or_null(value, &ctx)?;
         if shape.is_none() {
-            return Err(ParseException::error(format!("unable to read shape: {value}"), 0));
+            return Err(ParseException::error(
+                format!("unable to read shape: {value}"),
+                0,
+            ));
         }
         // Java reads the value a second time for the result.
         Self::read_shape_or_null(value, &ctx)

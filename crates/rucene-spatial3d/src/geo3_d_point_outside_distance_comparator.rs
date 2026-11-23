@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Geo3DPointOutsideDistanceComparator.java`, of the Java package
 //! `org.apache.lucene.spatial3d`.
 
@@ -66,13 +65,20 @@ pub struct Geo3DPointOutsideDistanceComparator {
 
 impl fmt::Debug for Geo3DPointOutsideDistanceComparator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Geo3DPointOutsideDistanceComparator").field("field", &self.field).finish_non_exhaustive()
+        f.debug_struct("Geo3DPointOutsideDistanceComparator")
+            .field("field", &self.field)
+            .finish_non_exhaustive()
     }
 }
 
 impl Geo3DPointOutsideDistanceComparator {
     /// `new Geo3DPointOutsideDistanceComparator(String field, PlanetModel, GeoOutsideDistance, int numHits)`.
-    pub fn new(field: &str, planet_model: &Arc<PlanetModel>, distance_shape: Arc<dyn GeoMembershipShape>, num_hits: usize) -> Self {
+    pub fn new(
+        field: &str,
+        planet_model: &Arc<PlanetModel>,
+        distance_shape: Arc<dyn GeoMembershipShape>,
+        num_hits: usize,
+    ) -> Self {
         Self {
             field: field.to_string(),
             distance_shape,
@@ -103,7 +109,11 @@ impl Geo3DPointOutsideDistanceComparator {
     /// # Errors
     ///
     /// Whatever reading the doc values or the distance raises.
-    pub fn compare_bottom_doc(&mut self, current_docs: &mut dyn SortedNumericDocValues, doc: i32) -> Result<i32> {
+    pub fn compare_bottom_doc(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<i32> {
         if doc > current_docs.doc_id() {
             current_docs.advance(doc)?;
         }
@@ -119,7 +129,11 @@ impl Geo3DPointOutsideDistanceComparator {
             let x = encoder.decode_x_value(encoded);
             let y = encoder.decode_y_value(encoded);
             let z = encoder.decode_z_value(encoded);
-            cmp = cmp.max(dcmp(self.bottom_distance, self.distance_shape.compute_outside_distance_xyz(&ARC, x, y, z)?));
+            cmp = cmp.max(dcmp(
+                self.bottom_distance,
+                self.distance_shape
+                    .compute_outside_distance_xyz(&ARC, x, y, z)?,
+            ));
         }
         Ok(cmp)
     }
@@ -129,7 +143,12 @@ impl Geo3DPointOutsideDistanceComparator {
     /// # Errors
     ///
     /// Whatever reading the doc values or the distance raises.
-    pub fn copy_doc(&mut self, current_docs: &mut dyn SortedNumericDocValues, slot: usize, doc: i32) -> Result<()> {
+    pub fn copy_doc(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        slot: usize,
+        doc: i32,
+    ) -> Result<()> {
         self.values[slot] = self.compute_minimum_distance(current_docs, doc)?;
         Ok(())
     }
@@ -139,7 +158,10 @@ impl Geo3DPointOutsideDistanceComparator {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an incompatible field; reader errors.
-    pub fn get_leaf_comparator(&mut self, reader: &dyn LeafReader) -> Result<Box<dyn SortedNumericDocValues>> {
+    pub fn get_leaf_comparator(
+        &mut self,
+        reader: &dyn LeafReader,
+    ) -> Result<Box<dyn SortedNumericDocValues>> {
         let field_infos = reader.get_field_infos();
         if let Some(info) = field_infos.field_info(&self.field) {
             Geo3DDocValuesField::check_compatible(info)?;
@@ -157,12 +179,23 @@ impl Geo3DPointOutsideDistanceComparator {
     /// # Errors
     ///
     /// Whatever reading the doc values or the distance raises.
-    pub fn compare_top_doc(&mut self, current_docs: &mut dyn SortedNumericDocValues, doc: i32) -> Result<i32> {
-        Ok(dcmp(self.top_value, self.compute_minimum_distance(current_docs, doc)?))
+    pub fn compare_top_doc(
+        &mut self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<i32> {
+        Ok(dcmp(
+            self.top_value,
+            self.compute_minimum_distance(current_docs, doc)?,
+        ))
     }
 
     /// `computeMinimumDistance(int)`.
-    fn compute_minimum_distance(&self, current_docs: &mut dyn SortedNumericDocValues, doc: i32) -> Result<f64> {
+    fn compute_minimum_distance(
+        &self,
+        current_docs: &mut dyn SortedNumericDocValues,
+        doc: i32,
+    ) -> Result<f64> {
         if doc > current_docs.doc_id() {
             current_docs.advance(doc)?;
         }
@@ -212,15 +245,31 @@ impl SlotComparator for Geo3DPointOutsideDistanceComparator {
         self.set_bottom_slot(slot as usize)
     }
 
-    fn compare_bottom(&mut self, leaf: &mut Self::Leaf, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+    fn compare_bottom(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
         self.compare_bottom_doc(leaf.as_mut(), doc)
     }
 
-    fn compare_top(&mut self, leaf: &mut Self::Leaf, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+    fn compare_top(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<i32> {
         self.compare_top_doc(leaf.as_mut(), doc)
     }
 
-    fn copy(&mut self, leaf: &mut Self::Leaf, slot: i32, doc: i32, _scorer: &mut dyn Scorable) -> Result<()> {
+    fn copy(
+        &mut self,
+        leaf: &mut Self::Leaf,
+        slot: i32,
+        doc: i32,
+        _scorer: &mut dyn Scorable,
+    ) -> Result<()> {
         self.copy_doc(leaf.as_mut(), slot as usize, doc)
     }
 

@@ -33,8 +33,8 @@ use spatial4j::shape::shape::Shape;
 use crate::prefix::contains_prefix_tree_query::ContainsPrefixTreeQuery;
 use crate::prefix::intersects_prefix_tree_query::IntersectsPrefixTreeQuery;
 use crate::prefix::prefix_tree_strategy::{
-    prefix_create_cell_iterator_to_index, prefix_create_indexable_fields, prefix_make_distance_value_source,
-    PrefixTreeStrategy, PrefixTreeStrategyBase,
+    prefix_create_cell_iterator_to_index, prefix_create_indexable_fields,
+    prefix_make_distance_value_source, PrefixTreeStrategy, PrefixTreeStrategyBase,
 };
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::cell_iterator::{CellIterator, ListCellIterator};
@@ -90,7 +90,9 @@ pub trait RecursivePrefixTreeStrategyOps: PrefixTreeStrategy {
 
     /// `getPrefixGridScanLevel()`.
     fn get_prefix_grid_scan_level(&self) -> i32 {
-        self.rpt_base().prefix_grid_scan_level.load(Ordering::Relaxed)
+        self.rpt_base()
+            .prefix_grid_scan_level
+            .load(Ordering::Relaxed)
     }
 
     /// `setPrefixGridScanLevel(int prefixGridScanLevel)`: sets the grid
@@ -106,7 +108,9 @@ pub trait RecursivePrefixTreeStrategyOps: PrefixTreeStrategy {
 
     /// `isMultiOverlappingIndexedShapes()`.
     fn is_multi_overlapping_indexed_shapes(&self) -> bool {
-        self.rpt_base().multi_overlapping_indexed_shapes.load(Ordering::Relaxed)
+        self.rpt_base()
+            .multi_overlapping_indexed_shapes
+            .load(Ordering::Relaxed)
     }
 
     /// `setMultiOverlappingIndexedShapes(boolean
@@ -127,7 +131,9 @@ pub trait RecursivePrefixTreeStrategyOps: PrefixTreeStrategy {
     /// all of a cell's children are leaves (which is true for
     /// `CellCanPrune` cells).
     fn set_prune_leafy_branches(&self, prune_leafy_branches: bool) {
-        self.rpt_base().prune_leafy_branches.store(prune_leafy_branches, Ordering::Relaxed);
+        self.rpt_base()
+            .prune_leafy_branches
+            .store(prune_leafy_branches, Ordering::Relaxed);
     }
 
     /// `isGridAlignedShape(Shape shape)`: a quick check of the shape to see
@@ -146,12 +152,16 @@ pub trait RecursivePrefixTreeStrategyOps: PrefixTreeStrategy {
     /// # Errors
     ///
     /// The errors of `getTreeCellIterator`.
-    fn make_grid_shape_intersects_query(&self, grid_shape: &Arc<dyn Shape>) -> Result<Arc<dyn Query>> {
+    fn make_grid_shape_intersects_query(
+        &self,
+        grid_shape: &Arc<dyn Shape>,
+    ) -> Result<Arc<dyn Query>> {
         debug_assert!(self.is_grid_aligned_shape(&**grid_shape));
         let grid = self.get_grid();
         if self.is_points_only() {
             // Awesome; this will be equivalent to a TermQuery.
-            let mut cell_iterator = grid.get_tree_cell_iterator(Arc::clone(grid_shape), grid.get_max_levels())?;
+            let mut cell_iterator =
+                grid.get_tree_cell_iterator(Arc::clone(grid_shape), grid.get_max_levels())?;
             // get last cell
             let mut cell = cell_iterator.next();
             while cell_iterator.has_next() {
@@ -193,7 +203,10 @@ pub fn rpt_to_string<S: RecursivePrefixTreeStrategyOps + ?Sized>(s: &S) -> Strin
         str.push_str(",pruneLeafyBranches");
     }
     if s.get_prefix_grid_scan_level() != s.get_grid().get_max_levels() - 4 {
-        str.push_str(&format!(",prefixGridScanLevel:{}", s.get_prefix_grid_scan_level()));
+        str.push_str(&format!(
+            ",prefixGridScanLevel:{}",
+            s.get_prefix_grid_scan_level()
+        ));
     }
     if !s.is_multi_overlapping_indexed_shapes() {
         str.push_str(",!multiOverlappingIndexedShapes");
@@ -216,14 +229,24 @@ pub fn rpt_create_cell_iterator_to_index<S: RecursivePrefixTreeStrategyOps + ?Si
         return prefix_create_cell_iterator_to_index(s, shape, detail_level);
     }
     let mut cells: Vec<CellRef> = Vec::with_capacity(4096);
-    recursive_traverse_and_prune(s.get_grid().get_world_cell(), shape, detail_level, &mut cells);
+    recursive_traverse_and_prune(
+        s.get_grid().get_world_cell(),
+        shape,
+        detail_level,
+        &mut cells,
+    );
     Ok(Box::new(ListCellIterator::new(cells)))
 }
 
 /// `recursiveTraverseAndPrune(Cell cell, Shape shape, int detailLevel,
 /// List<Cell> result)`: returns true if cell was added as a leaf. If it
 /// wasn't it recursively descends.
-fn recursive_traverse_and_prune(cell: CellRef, shape: &Arc<dyn Shape>, detail_level: i32, result: &mut Vec<CellRef>) -> bool {
+fn recursive_traverse_and_prune(
+    cell: CellRef,
+    shape: &Arc<dyn Shape>,
+    detail_level: i32,
+    result: &mut Vec<CellRef>,
+) -> bool {
     if cell.get_level() == detail_level {
         cell.set_leaf(); // FYI might already be a leaf
     }
@@ -275,12 +298,16 @@ fn recursive_traverse_and_prune(cell: CellRef, shape: &Arc<dyn Shape>, detail_le
 ///
 /// `UnsupportedSpatialOperation` for an operation other than `Intersects`,
 /// `IsWithin` and `Contains`; the errors of `resolveDistErr`.
-pub fn rpt_make_query<S: RecursivePrefixTreeStrategyOps + ?Sized>(s: &S, args: &SpatialArgs) -> Result<Arc<dyn Query>> {
+pub fn rpt_make_query<S: RecursivePrefixTreeStrategyOps + ?Sized>(
+    s: &S,
+    args: &SpatialArgs,
+) -> Result<Arc<dyn Query>> {
     let op = args.get_operation();
     let shape = &args.get_shape();
     let grid = s.get_grid();
     let ctx = s.get_spatial_context();
-    let detail_level = grid.get_level_for_distance(args.resolve_dist_err(&ctx, s.get_dist_err_pct())?);
+    let detail_level =
+        grid.get_level_for_distance(args.resolve_dist_err(&ctx, s.get_dist_err_pct())?);
 
     if op == SpatialOperation::Intersects {
         if s.is_grid_aligned_shape(&*args.get_shape()) {
@@ -335,9 +362,15 @@ impl RecursivePrefixTreeStrategy {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an empty field name.
-    pub fn new(grid: Arc<dyn SpatialPrefixTree>, field_name: &str) -> Result<Arc<RecursivePrefixTreeStrategy>> {
+    pub fn new(
+        grid: Arc<dyn SpatialPrefixTree>,
+        field_name: &str,
+    ) -> Result<Arc<RecursivePrefixTreeStrategy>> {
         let base = RecursivePrefixTreeStrategyBase::new(grid, field_name)?;
-        Ok(Arc::new_cyclic(|me| RecursivePrefixTreeStrategy { base, me: me.clone() }))
+        Ok(Arc::new_cyclic(|me| RecursivePrefixTreeStrategy {
+            base,
+            me: me.clone(),
+        }))
     }
 }
 
@@ -352,12 +385,23 @@ impl SpatialStrategy for RecursivePrefixTreeStrategy {
         &self.base.prefix.strategy
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         prefix_create_indexable_fields(self, shape)
     }
 
-    fn make_distance_value_source(&self, query_point: &Arc<dyn Point>, multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
-        Ok(prefix_make_distance_value_source(self, query_point, multiplier))
+    fn make_distance_value_source(
+        &self,
+        query_point: &Arc<dyn Point>,
+        multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
+        Ok(prefix_make_distance_value_source(
+            self,
+            query_point,
+            multiplier,
+        ))
     }
 
     fn make_query(&self, args: &SpatialArgs) -> Result<Arc<dyn Query>> {
@@ -371,14 +415,20 @@ impl PrefixTreeStrategy for RecursivePrefixTreeStrategy {
     }
 
     fn me_prefix(&self) -> Arc<dyn PrefixTreeStrategy> {
-        self.me.upgrade().expect("a RecursivePrefixTreeStrategy is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a RecursivePrefixTreeStrategy is shared as an Arc")
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn create_cell_iterator_to_index(&self, shape: &Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn create_cell_iterator_to_index(
+        &self,
+        shape: &Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         rpt_create_cell_iterator_to_index(self, shape, detail_level)
     }
 }

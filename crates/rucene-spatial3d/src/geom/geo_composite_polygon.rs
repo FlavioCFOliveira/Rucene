@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoCompositePolygon.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -108,7 +107,14 @@ impl GeoCompositePolygon {
     }
 }
 
-impl_serializable_object!(GeoCompositePolygon, "org.apache.lucene.spatial3d.geom.GeoCompositePolygon", planet_object, geo_membership_shape, geo_area_shape, geo_polygon);
+impl_serializable_object!(
+    GeoCompositePolygon,
+    "org.apache.lucene.spatial3d.geom.GeoCompositePolygon",
+    planet_object,
+    geo_membership_shape,
+    geo_area_shape,
+    geo_polygon
+);
 
 impl super::planet_object::PlanetObject for GeoCompositePolygon {
     fn get_planet_model(&self) -> &Arc<PlanetModel> {
@@ -135,14 +141,31 @@ impl GeoShape for GeoCompositePolygon {
         self.base.get_edge_points()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         self.base.intersects(p, notable_points, bounds)
     }
 }
 
 impl GeoOutsideDistance for GeoCompositePolygon {
-    fn compute_outside_distance_xyz(&self, distance_style: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        GeoBaseCompositeMembershipShape::compute_outside_distance_xyz(&self.base, distance_style, x, y, z)
+    fn compute_outside_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
+        GeoBaseCompositeMembershipShape::compute_outside_distance_xyz(
+            &self.base,
+            distance_style,
+            x,
+            y,
+            z,
+        )
     }
 }
 
@@ -162,7 +185,11 @@ impl GeoAreaShape for GeoCompositePolygon {
 
 impl fmt::Display for GeoCompositePolygon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GeoCompositePolygon: {{{}}}", list_to_string(&self.base.shapes))
+        write!(
+            f,
+            "GeoCompositePolygon: {{{}}}",
+            list_to_string(&self.base.shapes)
+        )
     }
 }
 impl GeoPolygon for GeoCompositePolygon {}

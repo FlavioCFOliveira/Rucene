@@ -104,7 +104,8 @@ impl CompositeSpatialStrategy {
     /// NOT use optimized search predicates that avoid checking the geometry
     /// sometimes. Only useful for benchmarking.
     pub fn set_optimize_predicates(&self, optimize_predicates: bool) {
-        self.optimize_predicates.store(optimize_predicates, Ordering::Relaxed);
+        self.optimize_predicates
+            .store(optimize_predicates, Ordering::Relaxed);
     }
 }
 
@@ -119,13 +120,20 @@ impl SpatialStrategy for CompositeSpatialStrategy {
         &self.base
     }
 
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>> {
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>> {
         let mut fields = self.index_strategy.create_indexable_fields(shape)?;
         fields.extend(self.geometry_strategy.create_indexable_fields(shape)?);
         Ok(fields)
     }
 
-    fn make_distance_value_source(&self, _query_point: &Arc<dyn Point>, _multiplier: f64) -> Result<Arc<dyn DoubleValuesSource>> {
+    fn make_distance_value_source(
+        &self,
+        _query_point: &Arc<dyn Point>,
+        _multiplier: f64,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
         // TODO consider indexing center-point in DV?  Guarantee contained by the shape, which could
         // then be used for
         // other purposes like faster WITHIN predicate?
@@ -160,7 +168,8 @@ impl SpatialStrategy for CompositeSpatialStrategy {
 
             let grid = self.index_strategy.get_grid();
             // default to max precision
-            let detail_level = grid.get_level_for_distance(args.resolve_dist_err(&self.base.ctx, 0.0)?);
+            let detail_level =
+                grid.get_level_for_distance(args.resolve_dist_err(&self.base.ctx, 0.0)?);
             Ok(Arc::new(IntersectsRPTVerifyQuery::new(
                 args.get_shape(),
                 self.index_strategy.get_field_name(),
@@ -190,7 +199,10 @@ impl SpatialStrategy for CompositeSpatialStrategy {
             }
 
             let index_query = self.index_strategy.make_query(index_args)?;
-            Ok(Arc::new(CompositeVerifyQuery::new(index_query, predicate_value_source)))
+            Ok(Arc::new(CompositeVerifyQuery::new(
+                index_query,
+                predicate_value_source,
+            )))
         }
     }
 }

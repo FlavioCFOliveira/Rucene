@@ -80,7 +80,13 @@ impl DoubleValues for PointDistanceValues {
 
 impl SegmentCacheable for DistanceValueSource {
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
-        DocValues::is_cacheable(ctx, &[self.strategy.get_field_name_x(), self.strategy.get_field_name_y()])
+        DocValues::is_cacheable(
+            ctx,
+            &[
+                self.strategy.get_field_name_x(),
+                self.strategy.get_field_name_y(),
+            ],
+        )
     }
 }
 

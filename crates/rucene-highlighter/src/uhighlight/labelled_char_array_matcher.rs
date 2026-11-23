@@ -114,7 +114,12 @@ fn utf16_to_utf8(chars: &[u16]) -> Vec<u8> {
                 let utf32 = chars[i] as u32;
                 // confirm valid low surrogate and write pair
                 if (0xDC00..=0xDFFF).contains(&utf32) {
-                    let utf32 = (code << 10) + utf32 + (0x10000 - (0xD800 << 10) - 0xDC00);
+                    // Java's `int` arithmetic: the constant is negative and the
+                    // sum wraps back into the supplementary range.
+                    let utf32 = ((code as i32) << 10)
+                        .wrapping_add(utf32 as i32)
+                        .wrapping_add(0x10000 - (0xD800 << 10) - 0xDC00)
+                        as u32;
                     i += 1;
                     out.push((0xF0 | (utf32 >> 18)) as u8);
                     out.push((0x80 | ((utf32 >> 12) & 0x3F)) as u8);

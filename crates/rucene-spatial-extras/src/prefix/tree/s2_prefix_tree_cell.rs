@@ -18,6 +18,7 @@
 //! The types declared in `S2PrefixTreeCell.java`, of the Java package
 //! `org.apache.lucene.spatial.prefix.tree`.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::fmt;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
@@ -51,10 +52,10 @@ const LEAF: u8 = b'+';
 
 /// `TOKENS`.
 const TOKENS: [u8; 64] = [
-    b'.', b'/', b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'A', b'B', b'C', b'D', b'E', b'F', b'G',
-    b'H', b'I', b'J', b'K', b'L', b'M', b'N', b'O', b'P', b'Q', b'R', b'S', b'T', b'U', b'V', b'W', b'X', b'Y', b'Z',
-    b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j', b'k', b'l', b'm', b'n', b'o', b'p', b'q', b'r', b's',
-    b't', b'u', b'v', b'w', b'x', b'y', b'z',
+    b'.', b'/', b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'A', b'B', b'C', b'D',
+    b'E', b'F', b'G', b'H', b'I', b'J', b'K', b'L', b'M', b'N', b'O', b'P', b'Q', b'R', b'S', b'T',
+    b'U', b'V', b'W', b'X', b'Y', b'Z', b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j',
+    b'k', b'l', b'm', b'n', b'o', b'p', b'q', b'r', b's', b't', b'u', b'v', b'w', b'x', b'y', b'z',
 ];
 
 /// `PIXELS.get(b)`: the position of `b` in [`TOKENS`].
@@ -161,9 +162,9 @@ impl S2PrefixTreeCell {
             let this_level = (i - r.offset) as i32;
             let pos = i64::from(pixels(r.bytes[i]));
             // first child at level
-            id = id
-                .wrapping_sub(id & id.wrapping_neg())
-                .wrapping_add(1i64.wrapping_shl((2 * (S2CellId::MAX_LEVEL - this_level * arity)) as u32));
+            id = id.wrapping_sub(id & id.wrapping_neg()).wrapping_add(
+                1i64.wrapping_shl((2 * (S2CellId::MAX_LEVEL - this_level * arity)) as u32),
+            );
             // next until pos
             id = id.wrapping_add(pos.wrapping_mul((id & id.wrapping_neg()).wrapping_shl(1)));
         }
@@ -215,7 +216,7 @@ impl CellCanPrune for S2PrefixTreeCell {
             // root node
             return 6;
         }
-        4f64.powi(s.tree.arity) as i32
+        java_math::pow(4.0, f64::from(s.tree.arity)) as i32
     }
 }
 
@@ -270,7 +271,7 @@ impl Cell for S2PrefixTreeCell {
         let children: Vec<S2CellId> = match cell_id {
             None => FACES.to_vec(), // this is the world cell
             Some(cell_id) => {
-                let n_children = 4f64.powi(tree.arity) as usize;
+                let n_children = java_math::pow(4.0, f64::from(tree.arity)) as usize;
                 let mut children = Vec::with_capacity(n_children);
                 children.push(cell_id.child_begin_at(cell_id.level() + tree.arity));
                 for i in 1..n_children {
@@ -284,7 +285,10 @@ impl Cell for S2PrefixTreeCell {
             .into_iter()
             .map(|pixel| Arc::new(S2PrefixTreeCell::new(&tree, Some(pixel))) as CellRef)
             .collect();
-        Box::new(FilterCellIterator::new(Box::new(ListCellIterator::new(cells)), shape_filter))
+        Box::new(FilterCellIterator::new(
+            Box::new(ListCellIterator::new(cells)),
+            shape_filter,
+        ))
     }
 
     fn get_shape(&self) -> Arc<dyn Shape> {
@@ -333,7 +337,9 @@ impl Cell for S2PrefixTreeCell {
     fn cell_hash_code(&self) -> i32 {
         match &self.lock().cell_id {
             // `System.identityHashCode(this)`: the core's identity-hash stand-in.
-            None => crate::jdk::identity_hash("org.apache.lucene.spatial.prefix.tree.S2PrefixTreeCell"),
+            None => {
+                crate::jdk::identity_hash("org.apache.lucene.spatial.prefix.tree.S2PrefixTreeCell")
+            }
             Some(cell_id) => cell_id.hash_code(),
         }
     }
@@ -351,5 +357,7 @@ impl Cell for S2PrefixTreeCell {
 fn cast(c: &dyn Cell) -> &S2PrefixTreeCell {
     c.as_any()
         .downcast_ref::<S2PrefixTreeCell>()
-        .unwrap_or_else(|| panic!("java.lang.ClassCastException: {c:?} cannot be cast to S2PrefixTreeCell"))
+        .unwrap_or_else(|| {
+            panic!("java.lang.ClassCastException: {c:?} cannot be cast to S2PrefixTreeCell")
+        })
 }

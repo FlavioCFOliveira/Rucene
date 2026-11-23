@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoBaseCompositeAreaShape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -45,7 +44,10 @@ impl GeoBaseCompositeAreaShape {
     pub(crate) const NONE_INSIDE: i32 = 2;
 
     /// `intersects(GeoShape)`.
-    pub(crate) fn intersects<T: ?Sized + GeoAreaShape>(base: &GeoBaseCompositeShape<T>, geo_shape: &dyn GeoShape) -> bool {
+    pub(crate) fn intersects<T: ?Sized + GeoAreaShape>(
+        base: &GeoBaseCompositeShape<T>,
+        geo_shape: &dyn GeoShape,
+    ) -> bool {
         for geo_area_shape in &base.shapes {
             if geo_area_shape.intersects_shape(geo_shape) {
                 return true;

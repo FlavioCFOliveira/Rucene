@@ -34,7 +34,9 @@ use crate::jdk::shapes_equal;
 use crate::prefix::abstract_prefix_tree_query::{
     create_weight, AbstractPrefixTreeQuery, BaseTermsEnumTraverser, PrefixTreeQuery, TreeDocIdSet,
 };
-use crate::prefix::abstract_visiting_prefix_tree_query::{AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate};
+use crate::prefix::abstract_visiting_prefix_tree_query::{
+    AbstractVisitingPrefixTreeQuery, VisitorHooks, VisitorTemplate,
+};
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::cell_iterator::CellIterator;
 use crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree;
@@ -72,11 +74,21 @@ impl WithinPrefixTreeQuery {
         prefix_grid_scan_level: i32,
         query_buffer: f64,
     ) -> Result<Self> {
-        let avptq = AbstractVisitingPrefixTreeQuery::new(query_shape, field_name, grid, detail_level, prefix_grid_scan_level);
+        let avptq = AbstractVisitingPrefixTreeQuery::new(
+            query_shape,
+            field_name,
+            grid,
+            detail_level,
+            prefix_grid_scan_level,
+        );
         let buffered_query_shape = if query_buffer == -1.0 {
             None
         } else {
-            Some(Self::buffer_shape(&avptq.base, &avptq.base.query_shape, query_buffer)?)
+            Some(Self::buffer_shape(
+                &avptq.base,
+                &avptq.base.query_shape,
+                query_buffer,
+            )?)
         };
         Ok(Self {
             avptq,
@@ -86,20 +98,28 @@ impl WithinPrefixTreeQuery {
 
     /// `bufferShape(Shape shape, double distErr)`: returns a new shape that
     /// is larger than shape by at distErr.
-    fn buffer_shape(base: &AbstractPrefixTreeQuery, shape: &Arc<dyn Shape>, dist_err: f64) -> Result<Arc<dyn Shape>> {
+    fn buffer_shape(
+        base: &AbstractPrefixTreeQuery,
+        shape: &Arc<dyn Shape>,
+        dist_err: f64,
+    ) -> Result<Arc<dyn Shape>> {
         // TODO move this generic code elsewhere?  Spatial4j?
         if dist_err <= 0.0 {
             return Err(LuceneError::illegal_argument("distErr must be > 0"));
         }
         let ctx = base.grid.get_spatial_context();
         if let Some(point) = shape.as_point() {
-            Ok(ctx.get_shape_factory().circle(point.get_x(), point.get_y(), dist_err)?)
+            Ok(ctx
+                .get_shape_factory()
+                .circle(point.get_x(), point.get_y(), dist_err)?)
         } else if let Some(circle) = shape.as_circle() {
             let mut new_dist = circle.get_radius() + dist_err;
             if ctx.is_geo() && new_dist > 180.0 {
                 new_dist = 180.0;
             }
-            Ok(ctx.get_shape_factory().circle_at(circle.get_center(), new_dist)?)
+            Ok(ctx
+                .get_shape_factory()
+                .circle_at(circle.get_center(), new_dist)?)
         } else {
             let bbox = shape.get_bounding_box();
             let mut new_min_x = bbox.get_min_x() - dist_err;
@@ -113,7 +133,10 @@ impl WithinPrefixTreeQuery {
                 if new_max_y > 90.0 {
                     new_max_y = 90.0;
                 }
-                if new_min_y == -90.0 || new_max_y == 90.0 || bbox.get_width() + 2.0 * dist_err > 360.0 {
+                if new_min_y == -90.0
+                    || new_max_y == 90.0
+                    || bbox.get_width() + 2.0 * dist_err > 360.0
+                {
                     new_min_x = -180.0;
                     new_max_x = 180.0;
                 } else {
@@ -128,7 +151,9 @@ impl WithinPrefixTreeQuery {
                 new_min_y = new_min_y.max(world.get_min_y());
                 new_max_y = new_max_y.min(world.get_max_y());
             }
-            Ok(ctx.get_shape_factory().rect(new_min_x, new_max_x, new_min_y, new_max_y)?)
+            Ok(ctx
+                .get_shape_factory()
+                .rect(new_min_x, new_max_x, new_min_y, new_max_y)?)
         }
     }
 }
@@ -180,20 +205,35 @@ impl VisitorHooks for WithinVisitor<'_> {
         let mut inside = self.inside.take().expect("set by start()");
         let outside = self.outside.take().expect("set by start()");
         inside.and_not(&outside);
-        Ok(Some(TreeDocIdSet::Core(Arc::new(BitDocIdSet::from_set(Arc::new(inside))?))))
+        Ok(Some(TreeDocIdSet::Core(Arc::new(BitDocIdSet::from_set(
+            Arc::new(inside),
+        )?))))
     }
 
-    fn find_sub_cells_to_visit(&mut self, _q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Box<dyn CellIterator> {
+    fn find_sub_cells_to_visit(
+        &mut self,
+        _q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Box<dyn CellIterator> {
         // use buffered query shape instead of orig.  Works with null too.
         cell.get_next_level_cells(self.buffered_query_shape.clone())
     }
 
-    fn visit_prefix(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<bool> {
+    fn visit_prefix(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<bool> {
         // cell.relate is based on the bufferedQueryShape; we need to examine what
         // the relation is against the queryShape
         let visit_relation = cell.get_shape().relate(&*q.base.query_shape);
         if cell.get_level() == q.base.detail_level {
-            let set = if visit_relation.intersects() { &mut self.inside } else { &mut self.outside };
+            let set = if visit_relation.intersects() {
+                &mut self.inside
+            } else {
+                &mut self.outside
+            };
             t.collect_docs_bit_set(set.as_mut().expect("set by start()"))?;
             return Ok(false);
         } else if visit_relation == SpatialRelation::Within {
@@ -206,7 +246,12 @@ impl VisitorHooks for WithinVisitor<'_> {
         Ok(true)
     }
 
-    fn visit_leaf(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<()> {
+    fn visit_leaf(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<()> {
         if Self::all_cells_intersect_query(q, cell) {
             t.collect_docs_bit_set(self.inside.as_mut().expect("set by start()"))
         } else {
@@ -214,7 +259,12 @@ impl VisitorHooks for WithinVisitor<'_> {
         }
     }
 
-    fn visit_scanned(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<()> {
+    fn visit_scanned(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<()> {
         self.visit_leaf(t, q, cell)
         // collects as we want, even if not a leaf
         //        if (cell.isLeaf()) {
@@ -257,23 +307,36 @@ impl Query for WithinPrefixTreeQuery {
         self
     }
 
-    fn create_weight(&self, _searcher: &IndexSearcher, score_mode: ScoreMode, boost: f32) -> Result<Arc<dyn Weight>> {
+    fn create_weight(
+        &self,
+        _searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
         Ok(create_weight(self, score_mode, boost))
     }
 
     fn query_eq(&self, other: &dyn Query) -> bool {
         // checks getClass == o.getClass & instanceof
-        other.as_any().downcast_ref::<WithinPrefixTreeQuery>().is_some_and(|that| {
-            self.avptq.base.equals_to(&that.avptq.base)
-                && shapes_equal(self.buffered_query_shape.as_ref(), that.buffered_query_shape.as_ref())
-        })
+        other
+            .as_any()
+            .downcast_ref::<WithinPrefixTreeQuery>()
+            .is_some_and(|that| {
+                self.avptq.base.equals_to(&that.avptq.base)
+                    && shapes_equal(
+                        self.buffered_query_shape.as_ref(),
+                        that.buffered_query_shape.as_ref(),
+                    )
+            })
     }
 
     fn query_hash(&self) -> i32 {
         let mut result = self.avptq.base.hash_code(self.class_hash());
-        result = result
-            .wrapping_mul(31)
-            .wrapping_add(self.buffered_query_shape.as_ref().map_or(0, |s| s.hash_code()));
+        result = result.wrapping_mul(31).wrapping_add(
+            self.buffered_query_shape
+                .as_ref()
+                .map_or(0, |s| s.hash_code()),
+        );
         result
     }
 

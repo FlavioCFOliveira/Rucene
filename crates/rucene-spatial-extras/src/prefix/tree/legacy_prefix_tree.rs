@@ -18,6 +18,7 @@
 //! The types declared in `LegacyPrefixTree.java`, of the Java package
 //! `org.apache.lucene.spatial.prefix.tree`.
 
+use rucene::util::java_math;
 use std::sync::Arc;
 
 use rucene::error::{LuceneError, Result};
@@ -47,9 +48,14 @@ pub(crate) trait LegacyPrefixTree: SpatialPrefixTree {
 /// # Errors
 ///
 /// `IllegalArgumentException("Level must be in 1 to maxLevels range")`.
-pub(crate) fn legacy_get_distance_for_level<T: LegacyPrefixTree + ?Sized>(tree: &T, level: i32) -> Result<f64> {
+pub(crate) fn legacy_get_distance_for_level<T: LegacyPrefixTree + ?Sized>(
+    tree: &T,
+    level: i32,
+) -> Result<f64> {
     if level < 1 || level > tree.get_max_levels() {
-        return Err(LuceneError::illegal_argument("Level must be in 1 to maxLevels range"));
+        return Err(LuceneError::illegal_argument(
+            "Level must be in 1 to maxLevels range",
+        ));
     }
     // TODO cache for each level
     let center = tree.get_spatial_context().get_world_bounds().get_center();
@@ -59,11 +65,15 @@ pub(crate) fn legacy_get_distance_for_level<T: LegacyPrefixTree + ?Sized>(tree: 
     let height = bbox.get_height();
     // Use standard cartesian hypotenuse. For geospatial, this answer is larger
     // than the correct one but it's okay to over-estimate.
-    Ok((width * width + height * height).sqrt())
+    Ok(java_math::sqrt(width * width + height * height))
 }
 
 /// The body of `LegacyPrefixTree.readCell(BytesRef term, Cell scratch)`.
-pub(crate) fn legacy_read_cell<T: LegacyPrefixTree + ?Sized>(tree: &T, term: &BytesRef, scratch: Option<CellRef>) -> CellRef {
+pub(crate) fn legacy_read_cell<T: LegacyPrefixTree + ?Sized>(
+    tree: &T,
+    term: &BytesRef,
+    scratch: Option<CellRef>,
+) -> CellRef {
     let cell = scratch.unwrap_or_else(|| tree.get_world_cell());
     as_legacy_cell(&*cell).read_cell(term);
     cell
@@ -97,5 +107,8 @@ pub(crate) fn legacy_get_tree_cell_iterator<T: LegacyPrefixTree + ?Sized>(
         cells.push(parent_cell);
     }
     cells.push(cell);
-    Ok(Box::new(FilterCellIterator::new(Box::new(ListCellIterator::new(cells)), None))) // null filter
+    Ok(Box::new(FilterCellIterator::new(
+        Box::new(ListCellIterator::new(cells)),
+        None,
+    ))) // null filter
 }

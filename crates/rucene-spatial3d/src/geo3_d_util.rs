@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Geo3DUtil.java`, of the Java package
 //! `org.apache.lucene.spatial3d`.
 
@@ -41,15 +40,20 @@ use crate::geom::planet_model::PlanetModel;
 /// Utilities for the spatial3d point field and queries.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.Geo3DUtil`.
-pub(crate) struct Geo3DUtil;
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct Geo3DUtil;
 
 impl Geo3DUtil {
     /// How many radians are in one degree.
-    pub(crate) const RADIANS_PER_DEGREE: f64 = PI / 180.0;
+    pub const RADIANS_PER_DEGREE: f64 = PI / 180.0;
 
     /// `decodeValueFloor(int, PlanetModel)`: the lowest value an encoded value
     /// can stand for.
-    pub(crate) fn decode_value_floor(x: i32, planet_model: &PlanetModel) -> f64 {
+    pub fn decode_value_floor(x: i32, planet_model: &PlanetModel) -> f64 {
         debug_assert!(x <= planet_model.max_encoded_value && x >= planet_model.min_encoded_value);
         if x == planet_model.min_encoded_value {
             return -planet_model.max_value;
@@ -59,7 +63,7 @@ impl Geo3DUtil {
 
     /// `decodeValueCeil(int, PlanetModel)`: the highest value an encoded value
     /// can stand for.
-    pub(crate) fn decode_value_ceil(x: i32, planet_model: &PlanetModel) -> f64 {
+    pub fn decode_value_ceil(x: i32, planet_model: &PlanetModel) -> f64 {
         debug_assert!(x <= planet_model.max_encoded_value && x >= planet_model.min_encoded_value);
         if x == planet_model.max_encoded_value {
             return planet_model.max_value;
@@ -69,7 +73,7 @@ impl Geo3DUtil {
     }
 
     /// `fromDegrees(double)`.
-    pub(crate) fn from_degrees(degrees: f64) -> f64 {
+    pub fn from_degrees(degrees: f64) -> f64 {
         degrees * Self::RADIANS_PER_DEGREE
     }
 
@@ -78,7 +82,10 @@ impl Geo3DUtil {
     /// # Errors
     ///
     /// `IllegalArgumentException` for no polygon or an illegal one.
-    pub(crate) fn from_polygon(planet_model: &Arc<PlanetModel>, polygons: &[Polygon]) -> Result<Arc<dyn GeoPolygon>> {
+    pub(crate) fn from_polygon(
+        planet_model: &Arc<PlanetModel>,
+        polygons: &[Polygon],
+    ) -> Result<Arc<dyn GeoPolygon>> {
         if polygons.is_empty() {
             return Err(LuceneError::illegal_argument("need at least one polygon"));
         }
@@ -104,11 +111,17 @@ impl Geo3DUtil {
     /// # Errors
     ///
     /// `IllegalArgumentException` for no polygon or an illegal one.
-    pub(crate) fn from_large_polygon(planet_model: &Arc<PlanetModel>, polygons: &[Polygon]) -> Result<Arc<dyn GeoPolygon>> {
+    pub(crate) fn from_large_polygon(
+        planet_model: &Arc<PlanetModel>,
+        polygons: &[Polygon],
+    ) -> Result<Arc<dyn GeoPolygon>> {
         if polygons.is_empty() {
             return Err(LuceneError::illegal_argument("need at least one polygon"));
         }
-        GeoPolygonFactory::make_large_geo_polygon(planet_model, &Self::convert_to_description(planet_model, polygons)?)
+        GeoPolygonFactory::make_large_geo_polygon(
+            planet_model,
+            &Self::convert_to_description(planet_model, polygons)?,
+        )
     }
 
     /// `fromPath(PlanetModel, double[], double[], double)`.
@@ -134,9 +147,14 @@ impl Geo3DUtil {
             let longitude = path_longitudes[i];
             GeoUtils::check_latitude(latitude)?;
             GeoUtils::check_longitude(longitude)?;
-            points.push(GeoPoint::new_lat_lon(planet_model, Self::from_degrees(latitude), Self::from_degrees(longitude))?);
+            points.push(GeoPoint::new_lat_lon(
+                planet_model,
+                Self::from_degrees(latitude),
+                Self::from_degrees(longitude),
+            )?);
         }
-        let radius_radians = path_width_meters / (planet_model.get_mean_radius() * planet_model.xy_scaling);
+        let radius_radians =
+            path_width_meters / (planet_model.get_mean_radius() * planet_model.xy_scaling);
         GeoPathFactory::make_geo_path(planet_model, radius_radians, &points)
     }
 
@@ -154,7 +172,12 @@ impl Geo3DUtil {
         GeoUtils::check_latitude(latitude)?;
         GeoUtils::check_longitude(longitude)?;
         let radius_radians = radius_meters / planet_model.get_mean_radius();
-        GeoCircleFactory::make_geo_circle(planet_model, Self::from_degrees(latitude), Self::from_degrees(longitude), radius_radians)
+        GeoCircleFactory::make_geo_circle(
+            planet_model,
+            Self::from_degrees(latitude),
+            Self::from_degrees(longitude),
+            radius_radians,
+        )
     }
 
     /// `fromBox(PlanetModel, double, double, double, double)`.
@@ -184,7 +207,10 @@ impl Geo3DUtil {
 
     /// The private `fromPolygon(PlanetModel, Polygon)`: `None` when the
     /// polygon is degenerate.
-    fn from_single_polygon(planet_model: &Arc<PlanetModel>, polygon: &Polygon) -> Result<Option<Arc<dyn GeoPolygon>>> {
+    fn from_single_polygon(
+        planet_model: &Arc<PlanetModel>,
+        polygon: &Polygon,
+    ) -> Result<Option<Arc<dyn GeoPolygon>>> {
         let the_holes = polygon.get_holes();
         let mut hole_list: Vec<Arc<dyn GeoPolygon>> = Vec::with_capacity(the_holes.len());
         for hole in the_holes {
@@ -198,7 +224,10 @@ impl Geo3DUtil {
 
     /// The polygon's vertices without the closing one, in reverse order, as
     /// both `fromPolygon` and `convertToDescription` build them.
-    fn reversed_points(planet_model: &Arc<PlanetModel>, polygon: &Polygon) -> Result<Vec<GeoPoint>> {
+    fn reversed_points(
+        planet_model: &Arc<PlanetModel>,
+        polygon: &Polygon,
+    ) -> Result<Vec<GeoPoint>> {
         let poly_lats = polygon.get_polylats();
         let poly_lons = polygon.get_polylons();
         let n = poly_lats.len() as i64;
@@ -217,7 +246,10 @@ impl Geo3DUtil {
     }
 
     /// `convertToDescription(PlanetModel, Polygon...)`.
-    fn convert_to_description(planet_model: &Arc<PlanetModel>, polygons: &[Polygon]) -> Result<Vec<PolygonDescription>> {
+    fn convert_to_description(
+        planet_model: &Arc<PlanetModel>,
+        polygons: &[Polygon],
+    ) -> Result<Vec<PolygonDescription>> {
         let mut descriptions = Vec::with_capacity(polygons.len());
         for polygon in polygons {
             let holes = Self::convert_to_description(planet_model, polygon.get_holes())?;

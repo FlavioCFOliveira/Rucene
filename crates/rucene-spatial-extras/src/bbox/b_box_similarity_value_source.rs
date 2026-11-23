@@ -59,7 +59,12 @@ pub trait BBoxSimilarityValueSource: DoubleValuesSource {
 
 /// `BBoxSimilarityValueSource.toString()`.
 pub fn similarity_to_string<S: BBoxSimilarityValueSource + ?Sized>(s: &S) -> String {
-    format!("{}({},{})", s.simple_name(), s.bbox_value_source(), s.similarity_description())
+    format!(
+        "{}({},{})",
+        s.simple_name(),
+        s.bbox_value_source(),
+        s.similarity_description()
+    )
 }
 
 /// The anonymous `DoubleValues` of `getValues`.
@@ -100,12 +105,21 @@ pub fn similarity_get_values<'a, S: BBoxSimilarityValueSource + 'static>(
     reader_context: &LeafReaderContext,
 ) -> Result<Box<dyn DoubleValues + 'a>> {
     let shape_values = s.bbox_value_source().get_values(reader_context)?;
-    Ok(Box::new(with_default(SimilarityValues { source: s, shape_values }, 0.0)))
+    Ok(Box::new(with_default(
+        SimilarityValues {
+            source: s,
+            shape_values,
+        },
+        0.0,
+    )))
 }
 
 /// `BBoxSimilarityValueSource.equals(Object o)`: same class and equal
 /// `bboxValueSource`.
-pub fn similarity_eq<S: BBoxSimilarityValueSource + 'static>(s: &S, other: &dyn DoubleValuesSource) -> bool {
+pub fn similarity_eq<S: BBoxSimilarityValueSource + 'static>(
+    s: &S,
+    other: &dyn DoubleValuesSource,
+) -> bool {
     match other.as_any().downcast_ref::<S>() {
         Some(that) => {
             std::ptr::eq(s, that) || s.bbox_value_source().source_eq(&**that.bbox_value_source())

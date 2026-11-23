@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoBaseAreaShape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -45,7 +44,10 @@ impl GeoBaseAreaShape {
     pub const NONE_INSIDE: i32 = 2;
 
     /// `isShapeInsideGeoAreaShape(GeoShape)`.
-    pub fn is_shape_inside_geo_area_shape(this: &dyn GeoAreaShape, geo_shape: &dyn GeoShape) -> i32 {
+    pub fn is_shape_inside_geo_area_shape(
+        this: &dyn GeoAreaShape,
+        geo_shape: &dyn GeoShape,
+    ) -> i32 {
         let mut found_outside = false;
         let mut found_inside = false;
         for p in geo_shape.get_edge_points() {

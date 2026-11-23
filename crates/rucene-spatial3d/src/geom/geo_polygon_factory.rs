@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoPolygonFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::fmt;
@@ -119,7 +119,10 @@ impl GeoPolygonFactory {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an illegal polygon.
-    pub fn make_geo_concave_polygon(planet_model: &Arc<PlanetModel>, point_list: Vec<GeoPoint>) -> Result<Arc<dyn GeoPolygon>> {
+    pub fn make_geo_concave_polygon(
+        planet_model: &Arc<PlanetModel>,
+        point_list: Vec<GeoPoint>,
+    ) -> Result<Arc<dyn GeoPolygon>> {
         Ok(Arc::new(GeoConcavePolygon::new(planet_model, point_list)?))
     }
 
@@ -128,7 +131,10 @@ impl GeoPolygonFactory {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an illegal polygon.
-    pub fn make_geo_convex_polygon(planet_model: &Arc<PlanetModel>, point_list: Vec<GeoPoint>) -> Result<Arc<dyn GeoPolygon>> {
+    pub fn make_geo_convex_polygon(
+        planet_model: &Arc<PlanetModel>,
+        point_list: Vec<GeoPoint>,
+    ) -> Result<Arc<dyn GeoPolygon>> {
         Ok(Arc::new(GeoConvexPolygon::new(planet_model, point_list)?))
     }
 
@@ -142,7 +148,11 @@ impl GeoPolygonFactory {
         point_list: Vec<GeoPoint>,
         holes: Option<Vec<Arc<dyn GeoPolygon>>>,
     ) -> Result<Arc<dyn GeoPolygon>> {
-        Ok(Arc::new(GeoConcavePolygon::new_with_holes(planet_model, point_list, holes)?))
+        Ok(Arc::new(GeoConcavePolygon::new_with_holes(
+            planet_model,
+            point_list,
+            holes,
+        )?))
     }
 
     /// `makeGeoConvexPolygon(PlanetModel, List<GeoPoint>, List<GeoPolygon>)`.
@@ -155,7 +165,11 @@ impl GeoPolygonFactory {
         point_list: Vec<GeoPoint>,
         holes: Option<Vec<Arc<dyn GeoPolygon>>>,
     ) -> Result<Arc<dyn GeoPolygon>> {
-        Ok(Arc::new(GeoConvexPolygon::new_with_holes(planet_model, point_list, holes)?))
+        Ok(Arc::new(GeoConvexPolygon::new_with_holes(
+            planet_model,
+            point_list,
+            holes,
+        )?))
     }
 
     /// `makeGeoPolygon(PlanetModel, PolygonDescription)`.
@@ -183,7 +197,12 @@ impl GeoPolygonFactory {
         let holes: Holes = if !description.holes.is_empty() {
             let mut holes: Vec<Arc<dyn GeoPolygon>> = Vec::with_capacity(description.holes.len());
             for hole_description in &description.holes {
-                let Some(gp) = Self::make_geo_polygon_from_description_with_leniency(planet_model, hole_description, leniency_value)? else {
+                let Some(gp) = Self::make_geo_polygon_from_description_with_leniency(
+                    planet_model,
+                    hole_description,
+                    leniency_value,
+                )?
+                else {
                     return Ok(None);
                 };
                 holes.push(gp);
@@ -197,7 +216,9 @@ impl GeoPolygonFactory {
             let Some(first_filtered_point_list) = Self::filter_points(&input) else {
                 return Ok(None);
             };
-            let Some(filtered_point_list) = Self::filter_edges(&first_filtered_point_list, leniency_value)? else {
+            let Some(filtered_point_list) =
+                Self::filter_edges(&first_filtered_point_list, leniency_value)?
+            else {
                 return Ok(None);
             };
             match Self::find_and_generate(planet_model, &filtered_point_list, &holes) {
@@ -212,16 +233,38 @@ impl GeoPolygonFactory {
 
     /// The body shared by the two `makeGeoPolygon` forms: center of mass, then
     /// random poles, then `IllegalArgumentException`.
-    fn find_and_generate(planet_model: &Arc<PlanetModel>, filtered_point_list: &[Pt], holes: &Holes) -> FResult<Arc<dyn GeoPolygon>> {
+    fn find_and_generate(
+        planet_model: &Arc<PlanetModel>,
+        filtered_point_list: &[Pt],
+        holes: &Holes,
+    ) -> FResult<Arc<dyn GeoPolygon>> {
         let center_of_mass = Arc::new(Self::get_center_of_mass(planet_model, filtered_point_list));
-        if let Some(is_center_of_mass_inside) = Self::is_inside_polygon(&center_of_mass, filtered_point_list) {
-            return Self::generate_geo_polygon(planet_model, filtered_point_list, holes, &center_of_mass, is_center_of_mass_inside);
+        if let Some(is_center_of_mass_inside) =
+            Self::is_inside_polygon(&center_of_mass, filtered_point_list)
+        {
+            return Self::generate_geo_polygon(
+                planet_model,
+                filtered_point_list,
+                holes,
+                &center_of_mass,
+                is_center_of_mass_inside,
+            );
         }
         let mut generator = JavaRandom::new(1234);
         for _ in 0..1_000_000 {
-            let pole = Arc::new(Self::pick_pole(&mut generator, planet_model, filtered_point_list)?);
+            let pole = Arc::new(Self::pick_pole(
+                &mut generator,
+                planet_model,
+                filtered_point_list,
+            )?);
             if let Some(is_pole_inside) = Self::is_inside_polygon(&pole, filtered_point_list) {
-                return Self::generate_geo_polygon(planet_model, filtered_point_list, holes, &pole, is_pole_inside);
+                return Self::generate_geo_polygon(
+                    planet_model,
+                    filtered_point_list,
+                    holes,
+                    &pole,
+                    is_pole_inside,
+                );
             }
         }
         Err(FactoryError::Other(iae(format!(
@@ -235,7 +278,10 @@ impl GeoPolygonFactory {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an illegal polygon.
-    pub fn make_geo_polygon(planet_model: &Arc<PlanetModel>, point_list: Vec<GeoPoint>) -> Result<Option<Arc<dyn GeoPolygon>>> {
+    pub fn make_geo_polygon(
+        planet_model: &Arc<PlanetModel>,
+        point_list: Vec<GeoPoint>,
+    ) -> Result<Option<Arc<dyn GeoPolygon>>> {
         Self::make_geo_polygon_with_holes(planet_model, point_list, None)
     }
 
@@ -268,7 +314,9 @@ impl GeoPolygonFactory {
         let Some(first_filtered_point_list) = Self::filter_points(&input) else {
             return Ok(None);
         };
-        let Some(filtered_point_list) = Self::filter_edges(&first_filtered_point_list, leniency_value)? else {
+        let Some(filtered_point_list) =
+            Self::filter_edges(&first_filtered_point_list, leniency_value)?
+        else {
             return Ok(None);
         };
         match Self::find_and_generate(planet_model, &filtered_point_list, &holes) {
@@ -279,7 +327,10 @@ impl GeoPolygonFactory {
                     return Err(iae(e.message));
                 }
                 let description = vec![PolygonDescription::new(point_list)];
-                Ok(Some(Self::make_large_geo_polygon(planet_model, &description)?))
+                Ok(Some(Self::make_large_geo_polygon(
+                    planet_model,
+                    &description,
+                )?))
             }
         }
     }
@@ -301,28 +352,46 @@ impl GeoPolygonFactory {
     /// # Errors
     ///
     /// `IllegalArgumentException` when no in-set determination is possible.
-    pub fn make_large_geo_polygon(planet_model: &Arc<PlanetModel>, shapes_list: &[PolygonDescription]) -> Result<Arc<dyn GeoPolygon>> {
+    pub fn make_large_geo_polygon(
+        planet_model: &Arc<PlanetModel>,
+        shapes_list: &[PolygonDescription],
+    ) -> Result<Arc<dyn GeoPolygon>> {
         let mut points_list: Vec<Vec<Pt>> = Vec::new();
         let mut test_point_shape: Option<BestShape> = None;
         for shape in shapes_list {
-            test_point_shape = Self::convert_polygon(&mut points_list, shape, test_point_shape, true);
+            test_point_shape =
+                Self::convert_polygon(&mut points_list, shape, test_point_shape, true);
         }
         let Some(test_point_shape) = test_point_shape else {
-            return Err(iae("couldn't find a non-degenerate polygon for in-set determination"));
+            return Err(iae(
+                "couldn't find a non-degenerate polygon for in-set determination",
+            ));
         };
-        let plain_points_list: Vec<Vec<GeoPoint>> = points_list.iter().map(|l| to_points(l)).collect();
+        let plain_points_list: Vec<Vec<GeoPoint>> =
+            points_list.iter().map(|l| to_points(l)).collect();
         let center_of_mass = Self::get_center_of_mass(planet_model, &test_point_shape.points);
-        if let Some(com_rval) = test_point_shape.create_geo_complex_polygon(planet_model, &plain_points_list, &center_of_mass)? {
+        if let Some(com_rval) = test_point_shape.create_geo_complex_polygon(
+            planet_model,
+            &plain_points_list,
+            &center_of_mass,
+        )? {
             return Ok(Arc::new(com_rval));
         }
         let mut generator = JavaRandom::new(1234);
         for _ in 0..1_000_000 {
             let pole = Self::pick_pole(&mut generator, planet_model, &test_point_shape.points)?;
-            if let Some(rval) = test_point_shape.create_geo_complex_polygon(planet_model, &plain_points_list, &pole)? {
+            if let Some(rval) = test_point_shape.create_geo_complex_polygon(
+                planet_model,
+                &plain_points_list,
+                &pole,
+            )? {
                 return Ok(Arc::new(rval));
             }
         }
-        Err(iae(format!("cannot find a point that is inside the polygon {}", test_point_shape)))
+        Err(iae(format!(
+            "cannot find a point that is inside the polygon {}",
+            test_point_shape
+        )))
     }
 
     fn convert_polygon(
@@ -335,12 +404,17 @@ impl GeoPolygonFactory {
         let Some(filtered_points) = Self::filter_points(&input) else {
             return test_point_shape;
         };
-        if shape.holes.is_empty() && test_point_shape.as_ref().is_none_or(|t| t.points.len() > filtered_points.len()) {
+        if shape.holes.is_empty()
+            && test_point_shape
+                .as_ref()
+                .is_none_or(|t| t.points.len() > filtered_points.len())
+        {
             test_point_shape = Some(BestShape::new(filtered_points.clone(), must_be_inside));
         }
         points_list.push(filtered_points);
         for hole in &shape.holes {
-            test_point_shape = Self::convert_polygon(points_list, hole, test_point_shape, !must_be_inside);
+            test_point_shape =
+                Self::convert_polygon(points_list, hole, test_point_shape, !must_be_inside);
         }
         test_point_shape
     }
@@ -354,7 +428,8 @@ impl GeoPolygonFactory {
         test_point: &Pt,
         test_point_inside: bool,
     ) -> FResult<Arc<dyn GeoPolygon>> {
-        let initial_plane = SidedPlane::new_cross(test_point, &filtered_point_list[0], &filtered_point_list[1])?;
+        let initial_plane =
+            SidedPlane::new_cross(test_point, &filtered_point_list[0], &filtered_point_list[1])?;
         let mut rval = GeoCompositePolygon::new(planet_model);
         let mut seen_concave = MutableBoolean::default();
         if !Self::build_polygon_shape(
@@ -423,6 +498,95 @@ impl GeoPolygonFactory {
         }
     }
 
+    /// `filterPoints(List<? extends GeoPoint>)` over a list of points: the
+    /// filtered points, `None` for Java's `null`.
+    ///
+    /// Java's method is package-private, reached by the same package's tests;
+    /// Rust's integration tests are another crate, so the port exposes it
+    /// (hidden from the documentation) over [`GeoPoint`] lists rather than the
+    /// shared points the factory works on internally.
+    #[doc(hidden)]
+    pub fn filter_points_for_test(input: &[GeoPoint]) -> Option<Vec<GeoPoint>> {
+        let pts: Vec<Pt> = input.iter().cloned().map(Arc::new).collect();
+        Self::filter_points(&pts).map(|v| to_points(&v))
+    }
+
+    /// `filterEdges(List<GeoPoint>, double)` over a list of points: the
+    /// filtered points, `None` for Java's `null`.
+    ///
+    /// Java's method is package-private, reached by the same package's tests
+    /// (hidden from the documentation, as
+    /// [`filter_points_for_test`](Self::filter_points_for_test)).
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` when `no_identical_points` is `None` (Java's
+    /// `null` list), and the unchecked exceptions of the filtering.
+    #[doc(hidden)]
+    pub fn filter_edges_for_test(
+        no_identical_points: Option<Vec<GeoPoint>>,
+        leniency_value: f64,
+    ) -> Result<Option<Vec<GeoPoint>>> {
+        let Some(points) = no_identical_points else {
+            return Err(LuceneError::null_pointer());
+        };
+        let pts: Vec<Pt> = points.into_iter().map(Arc::new).collect();
+        Ok(Self::filter_edges(&pts, leniency_value)?.map(|v| to_points(&v)))
+    }
+
+    /// `buildPolygonShape(GeoCompositePolygon, MutableBoolean, PlanetModel,
+    /// List<GeoPoint>, BitSet, int, int, SidedPlane, List<GeoPolygon>,
+    /// GeoPoint)` over a list of points.
+    ///
+    /// Java's method is package-private, reached by the same package's tests
+    /// (hidden from the documentation, as
+    /// [`filter_points_for_test`](Self::filter_points_for_test)).
+    ///
+    /// # Errors
+    ///
+    /// Java's checked `TileException` (class
+    /// `org.apache.lucene.spatial3d.geom.GeoPolygonFactory$TileException`) and
+    /// the unchecked exceptions of the tiling.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_polygon_shape_for_test(
+        rval: &mut GeoCompositePolygon,
+        seen_concave: &mut MutableBoolean,
+        planet_model: &Arc<PlanetModel>,
+        points_list: &[GeoPoint],
+        internal_edges: &JavaBitSet,
+        start_point_index: usize,
+        end_point_index: usize,
+        starting_edge: SidedPlane,
+        holes: Option<Vec<Arc<dyn GeoPolygon>>>,
+        test_point: Option<&GeoPoint>,
+    ) -> Result<bool> {
+        let pts: Vec<Pt> = points_list.iter().cloned().map(Arc::new).collect();
+        let test_point = test_point.map(|p| Arc::new(p.clone()));
+        match Self::build_polygon_shape(
+            rval,
+            seen_concave,
+            planet_model,
+            &pts,
+            internal_edges,
+            start_point_index,
+            end_point_index,
+            starting_edge,
+            &holes,
+            test_point.as_ref(),
+        ) {
+            Ok(v) => Ok(v),
+            Err(FactoryError::Other(e)) => Err(e),
+            Err(FactoryError::Tile(t)) => Err(LuceneError::from(
+                rucene::error::LuceneErrorKind::Unchecked {
+                    class: "org.apache.lucene.spatial3d.geom.GeoPolygonFactory$TileException",
+                    message: Some(t.message),
+                    cause: None,
+                },
+            )),
+        }
+    }
+
     /// `filterPoints(List<? extends GeoPoint>)`: `None` when the polygon is
     /// degenerate.
     fn filter_points(input: &[Pt]) -> Option<Vec<Pt>> {
@@ -475,7 +639,9 @@ impl GeoPolygonFactory {
     /// degenerate.
     fn filter_edges(no_identical_points: &[Pt], leniency_value: f64) -> Result<Option<Vec<Pt>>> {
         for i in 0..no_identical_points.len() {
-            if let Some(result_path) = Self::find_safe_path(no_identical_points, i as i64, leniency_value)? {
+            if let Some(result_path) =
+                Self::find_safe_path(no_identical_points, i as i64, leniency_value)?
+            {
                 if result_path.previous.is_some() {
                     let mut rval = Vec::with_capacity(no_identical_points.len());
                     result_path.fill_in_list(&mut rval);
@@ -486,7 +652,11 @@ impl GeoPolygonFactory {
         Ok(None)
     }
 
-    fn find_safe_path(points: &[Pt], start_index: i64, _leniency_value: f64) -> Result<Option<Box<SafePath>>> {
+    fn find_safe_path(
+        points: &[Pt],
+        start_index: i64,
+        _leniency_value: f64,
+    ) -> Result<Option<Box<SafePath>>> {
         let size = points.len() as i64;
         let mut safe_path: Option<Box<SafePath>> = None;
         let mut i = start_index;
@@ -519,13 +689,22 @@ impl GeoPolygonFactory {
                 break;
             }
             let current_plane = Plane::new_cross(start_point, end_point)?;
-            safe_path = Some(Box::new(SafePath::new(safe_path, end_point.clone(), end_point_index, current_plane)));
+            safe_path = Some(Box::new(SafePath::new(
+                safe_path,
+                end_point.clone(),
+                end_point_index,
+                current_plane,
+            )));
             i += 1;
         }
         Ok(safe_path)
     }
 
-    fn pick_pole(generator: &mut JavaRandom, planet_model: &PlanetModel, points: &[Pt]) -> Result<GeoPoint> {
+    fn pick_pole(
+        generator: &mut JavaRandom,
+        planet_model: &PlanetModel,
+        points: &[Pt],
+    ) -> Result<GeoPoint> {
         // `generator.nextInt(points.size())`: Java's `Random.nextInt(int)`
         // throws `IllegalArgumentException` for a bound that is not positive.
         let bound = points.len() as i32;
@@ -541,14 +720,14 @@ impl GeoPolygonFactory {
             max_arc_distance = trial_arc_distance;
         }
         let arc_distance = max_arc_distance - generator.next_double() * max_arc_distance;
-        let x = arc_distance.cos();
-        let sin_arc_distance = arc_distance.sin();
-        let y = angle.cos() * sin_arc_distance;
-        let z = angle.sin() * sin_arc_distance;
-        let sin_latitude = close_point.get_latitude().sin();
-        let cos_latitude = close_point.get_latitude().cos();
-        let sin_longitude = close_point.get_longitude().sin();
-        let cos_longitude = close_point.get_longitude().cos();
+        let x = java_math::cos(arc_distance);
+        let sin_arc_distance = java_math::sin(arc_distance);
+        let y = java_math::cos(angle) * sin_arc_distance;
+        let z = java_math::sin(angle) * sin_arc_distance;
+        let sin_latitude = java_math::sin(close_point.get_latitude());
+        let cos_latitude = java_math::cos(close_point.get_latitude());
+        let sin_longitude = java_math::sin(close_point.get_longitude());
+        let cos_longitude = java_math::cos(close_point.get_longitude());
         let x1 = x * cos_latitude - z * sin_latitude;
         let y1 = y;
         let z1 = x * sin_latitude + z * cos_latitude;
@@ -562,14 +741,20 @@ impl GeoPolygonFactory {
     fn is_inside_polygon(point: &GeoPoint, poly_points: &[Pt]) -> Option<bool> {
         let latitude = point.get_latitude();
         let longitude = point.get_longitude();
-        let sin_latitude = latitude.sin();
-        let cos_latitude = latitude.cos();
-        let sin_longitude = longitude.sin();
-        let cos_longitude = longitude.cos();
+        let sin_latitude = java_math::sin(latitude);
+        let cos_latitude = java_math::cos(latitude);
+        let sin_longitude = java_math::sin(longitude);
+        let cos_longitude = java_math::cos(longitude);
         let mut arc_distance = 0.0;
         let mut prev_angle: Option<f64> = None;
         for poly_point in poly_points {
-            let angle = Self::compute_angle(poly_point, sin_latitude, cos_latitude, sin_longitude, cos_longitude)?;
+            let angle = Self::compute_angle(
+                poly_point,
+                sin_latitude,
+                cos_latitude,
+                sin_longitude,
+                cos_longitude,
+            )?;
             if let Some(prev) = prev_angle {
                 let mut angle_delta = angle - prev;
                 if angle_delta < -PI {
@@ -586,7 +771,13 @@ impl GeoPolygonFactory {
             prev_angle = Some(angle);
         }
         if let Some(prev) = prev_angle {
-            let last_angle = Self::compute_angle(&poly_points[0], sin_latitude, cos_latitude, sin_longitude, cos_longitude)?;
+            let last_angle = Self::compute_angle(
+                &poly_points[0],
+                sin_latitude,
+                cos_latitude,
+                sin_longitude,
+                cos_longitude,
+            )?;
             let mut angle_delta = last_angle - prev;
             if angle_delta < -PI {
                 angle_delta += PI * 2.0;
@@ -605,16 +796,22 @@ impl GeoPolygonFactory {
         Some(arc_distance > 0.0)
     }
 
-    fn compute_angle(point: &GeoPoint, sin_latitude: f64, cos_latitude: f64, sin_longitude: f64, cos_longitude: f64) -> Option<f64> {
+    fn compute_angle(
+        point: &GeoPoint,
+        sin_latitude: f64,
+        cos_latitude: f64,
+        sin_longitude: f64,
+        cos_longitude: f64,
+    ) -> Option<f64> {
         let x1 = point.x * cos_longitude + point.y * sin_longitude;
         let y1 = -point.x * sin_longitude + point.y * cos_longitude;
         let z1 = point.z;
         let y2 = y1;
         let z2 = -x1 * sin_latitude + z1 * cos_latitude;
-        if (y2 * y2 + z2 * z2).sqrt() < Vector::MINIMUM_RESOLUTION {
+        if java_math::sqrt(y2 * y2 + z2 * z2) < Vector::MINIMUM_RESOLUTION {
             return None;
         }
-        Some(z2.atan2(y2))
+        Some(java_math::atan2(z2, y2))
     }
 
     /// `buildPolygonShape(...)`.
@@ -631,11 +828,25 @@ impl GeoPolygonFactory {
         holes: &Holes,
         test_point: Option<&Pt>,
     ) -> FResult<bool> {
-        let mut edge_buffer = EdgeBuffer::new(points_list, internal_edges, start_point_index, end_point_index, starting_edge)?;
+        let mut edge_buffer = EdgeBuffer::new(
+            points_list,
+            internal_edges,
+            start_point_index,
+            end_point_index,
+            starting_edge,
+        )?;
         let mut stopping_point = edge_buffer.pick_one();
         let mut current_edge = stopping_point;
         while let Some(ce) = current_edge {
-            let Some(found_it) = Self::find_convex_polygon(planet_model, ce, rval, &mut edge_buffer, holes, test_point)? else {
+            let Some(found_it) = Self::find_convex_polygon(
+                planet_model,
+                ce,
+                rval,
+                &mut edge_buffer,
+                holes,
+                test_point,
+            )?
+            else {
                 return Ok(false);
             };
             if found_it {
@@ -679,7 +890,11 @@ impl GeoPolygonFactory {
                 if Plane::are_points_coplanar(&ce.start_point, &ce.end_point, &the_point)? {
                     continue;
                 }
-                let third_part_points = vec![ce.start_point.clone(), ce.end_point.clone(), the_point.clone()];
+                let third_part_points = vec![
+                    ce.start_point.clone(),
+                    ce.end_point.clone(),
+                    the_point.clone(),
+                ];
                 let mut third_part_internal = JavaBitSet::new();
                 third_part_internal.set_value(0, ce.is_internal);
                 third_part_internal.set_value(1, true);
@@ -695,7 +910,9 @@ impl GeoPolygonFactory {
                     true,
                 )?;
                 rval.add_shape(Arc::new(convex_part))?;
-                let mut loop_edge = edge_buffer.get_previous(check_edge).unwrap_or_else(|| npe());
+                let mut loop_edge = edge_buffer
+                    .get_previous(check_edge)
+                    .unwrap_or_else(|| npe());
                 let mut first_part_points: Vec<Pt> = Vec::new();
                 let mut first_part_internal = JavaBitSet::new();
                 let mut i = 0;
@@ -719,7 +936,12 @@ impl GeoPolygonFactory {
                     &first_part_internal,
                     first_len - 1,
                     0,
-                    SidedPlane::new_cross_on_side(&ce.end_point, false, &ce.start_point, &the_point)?,
+                    SidedPlane::new_cross_on_side(
+                        &ce.end_point,
+                        false,
+                        &ce.start_point,
+                        &the_point,
+                    )?,
                     holes,
                     test_point,
                 )? {
@@ -749,7 +971,12 @@ impl GeoPolygonFactory {
                     &second_part_internal,
                     second_len - 1,
                     0,
-                    SidedPlane::new_cross_on_side(&ce.start_point, false, &ce.end_point, &the_point)?,
+                    SidedPlane::new_cross_on_side(
+                        &ce.start_point,
+                        false,
+                        &ce.end_point,
+                        &the_point,
+                    )?,
                     holes,
                     test_point,
                 )? {
@@ -761,7 +988,14 @@ impl GeoPolygonFactory {
         if found_bad_edge {
             return Err(TileException::new("Could not tile polygon; found a pathological coplanarity that couldn't be addressed").into());
         }
-        if !Self::make_concave_polygon(planet_model, rval, seen_concave, &edge_buffer, holes, test_point)? {
+        if !Self::make_concave_polygon(
+            planet_model,
+            rval,
+            seen_concave,
+            &edge_buffer,
+            holes,
+            test_point,
+        )? {
             return Ok(false);
         }
         Ok(true)
@@ -801,12 +1035,24 @@ impl GeoPolygonFactory {
         }
         let mut attempt = || -> Result<bool> {
             if let (Some(tp), true) = (test_point, holes_size(holes) > 0) {
-                let test_polygon = GeoConcavePolygon::new_with_holes_and_flags(planet_model, points.clone(), None, internal_edges.clone(), is_internal)?;
+                let test_polygon = GeoConcavePolygon::new_with_holes_and_flags(
+                    planet_model,
+                    points.clone(),
+                    None,
+                    internal_edges.clone(),
+                    is_internal,
+                )?;
                 if test_polygon.is_within(tp) {
                     return Ok(false);
                 }
             }
-            let real_polygon = GeoConcavePolygon::new_with_holes_and_flags(planet_model, points.clone(), holes.clone(), internal_edges.clone(), is_internal)?;
+            let real_polygon = GeoConcavePolygon::new_with_holes_and_flags(
+                planet_model,
+                points.clone(),
+                holes.clone(),
+                internal_edges.clone(),
+                is_internal,
+            )?;
             if let (Some(tp), true) = (test_point, holes_size(holes) == 0) {
                 if real_polygon.is_within(tp) {
                     return Ok(false);
@@ -854,11 +1100,19 @@ impl GeoPolygonFactory {
             if Self::is_within_set(&nle.end_point, &included_edges, edge_buffer) {
                 let return_boundary = if !Arc::ptr_eq(&fe.start_point, &nle.end_point) {
                     if Plane::are_points_coplanar(&fe.end_point, &fe.start_point, &nle.end_point)?
-                        || Plane::are_points_coplanar(&fe.start_point, &nle.end_point, &nle.start_point)?
+                        || Plane::are_points_coplanar(
+                            &fe.start_point,
+                            &nle.end_point,
+                            &nle.start_point,
+                        )?
                     {
                         break;
                     }
-                    Some(SidedPlane::new_cross(&fe.end_point, &fe.start_point, &nle.end_point)?)
+                    Some(SidedPlane::new_cross(
+                        &fe.end_point,
+                        &fe.start_point,
+                        &nle.end_point,
+                    )?)
                 } else {
                     None
                 };
@@ -867,13 +1121,25 @@ impl GeoPolygonFactory {
                     if !included_edges.contains(&edge) && edge != new_last_edge {
                         let e = edge_buffer.edge(edge);
                         if !Arc::ptr_eq(&e.start_point, &nle.end_point)
-                            && Self::is_within_ext(&e.start_point, &included_edges, edge_buffer, new_last_edge, return_boundary.as_ref())
+                            && Self::is_within_ext(
+                                &e.start_point,
+                                &included_edges,
+                                edge_buffer,
+                                new_last_edge,
+                                return_boundary.as_ref(),
+                            )
                         {
                             found_point_inside = true;
                             break;
                         }
                         if !Arc::ptr_eq(&e.end_point, &fe.start_point)
-                            && Self::is_within_ext(&e.end_point, &included_edges, edge_buffer, new_last_edge, return_boundary.as_ref())
+                            && Self::is_within_ext(
+                                &e.end_point,
+                                &included_edges,
+                                edge_buffer,
+                                new_last_edge,
+                                return_boundary.as_ref(),
+                            )
                         {
                             found_point_inside = true;
                             break;
@@ -894,7 +1160,9 @@ impl GeoPolygonFactory {
             if Arc::ptr_eq(&fe.start_point, &le.end_point) {
                 break;
             }
-            let new_first_edge = edge_buffer.get_previous(first_edge).unwrap_or_else(|| npe());
+            let new_first_edge = edge_buffer
+                .get_previous(first_edge)
+                .unwrap_or_else(|| npe());
             let nfe = edge_buffer.edge(new_first_edge).clone();
             if Plane::are_points_coplanar(&nfe.start_point, &nfe.end_point, &fe.end_point)? {
                 break;
@@ -905,11 +1173,19 @@ impl GeoPolygonFactory {
             if Self::is_within_set(&nfe.start_point, &included_edges, edge_buffer) {
                 let return_boundary = if !Arc::ptr_eq(&nfe.start_point, &le.end_point) {
                     if Plane::are_points_coplanar(&le.start_point, &le.end_point, &nfe.start_point)?
-                        || Plane::are_points_coplanar(&le.end_point, &nfe.start_point, &nfe.end_point)?
+                        || Plane::are_points_coplanar(
+                            &le.end_point,
+                            &nfe.start_point,
+                            &nfe.end_point,
+                        )?
                     {
                         break;
                     }
-                    Some(SidedPlane::new_cross(&le.start_point, &le.end_point, &nfe.start_point)?)
+                    Some(SidedPlane::new_cross(
+                        &le.start_point,
+                        &le.end_point,
+                        &nfe.start_point,
+                    )?)
                 } else {
                     None
                 };
@@ -918,13 +1194,25 @@ impl GeoPolygonFactory {
                     if !included_edges.contains(&edge) && edge != new_first_edge {
                         let e = edge_buffer.edge(edge);
                         if !Arc::ptr_eq(&e.start_point, &le.end_point)
-                            && Self::is_within_ext(&e.start_point, &included_edges, edge_buffer, new_first_edge, return_boundary.as_ref())
+                            && Self::is_within_ext(
+                                &e.start_point,
+                                &included_edges,
+                                edge_buffer,
+                                new_first_edge,
+                                return_boundary.as_ref(),
+                            )
                         {
                             found_point_inside = true;
                             break;
                         }
                         if !Arc::ptr_eq(&e.end_point, &nfe.start_point)
-                            && Self::is_within_ext(&e.end_point, &included_edges, edge_buffer, new_first_edge, return_boundary.as_ref())
+                            && Self::is_within_ext(
+                                &e.end_point,
+                                &included_edges,
+                                edge_buffer,
+                                new_first_edge,
+                                return_boundary.as_ref(),
+                            )
                         {
                             found_point_inside = true;
                             break;
@@ -970,9 +1258,21 @@ impl GeoPolygonFactory {
             return_is_internal = le.is_internal;
             edge_buffer.clear();
         } else {
-            let return_sided_plane = SidedPlane::new_cross_on_side(&fe.end_point, false, &fe.start_point, &le.end_point)?;
-            let return_edge = Edge::new(fe.start_point.clone(), le.end_point.clone(), return_sided_plane, true);
-            if return_edge.plane.is_functionally_identical(&le.plane) || return_edge.plane.is_functionally_identical(&fe.plane) {
+            let return_sided_plane = SidedPlane::new_cross_on_side(
+                &fe.end_point,
+                false,
+                &fe.start_point,
+                &le.end_point,
+            )?;
+            let return_edge = Edge::new(
+                fe.start_point.clone(),
+                le.end_point.clone(),
+                return_sided_plane,
+                true,
+            );
+            if return_edge.plane.is_functionally_identical(&le.plane)
+                || return_edge.plane.is_functionally_identical(&fe.plane)
+            {
                 return Err(TileException::new(parallel).into());
             }
             let mut edges: Vec<usize> = Vec::with_capacity(included_edges.len());
@@ -995,12 +1295,24 @@ impl GeoPolygonFactory {
         }
         let mut attempt = || -> Result<Option<bool>> {
             if let (Some(tp), true) = (test_point, holes_size(holes) > 0) {
-                let test_polygon = GeoConvexPolygon::new_with_holes_and_flags(planet_model, points.clone(), None, internal_edges.clone(), return_is_internal)?;
+                let test_polygon = GeoConvexPolygon::new_with_holes_and_flags(
+                    planet_model,
+                    points.clone(),
+                    None,
+                    internal_edges.clone(),
+                    return_is_internal,
+                )?;
                 if test_polygon.is_within(tp) {
                     return Ok(None);
                 }
             }
-            let real_polygon = GeoConvexPolygon::new_with_holes_and_flags(planet_model, points.clone(), holes.clone(), internal_edges.clone(), return_is_internal)?;
+            let real_polygon = GeoConvexPolygon::new_with_holes_and_flags(
+                planet_model,
+                points.clone(),
+                holes.clone(),
+                internal_edges.clone(),
+                return_is_internal,
+            )?;
             if let (Some(tp), true) = (test_point, holes_size(holes) == 0) {
                 if real_polygon.is_within(tp) {
                     return Ok(None);
@@ -1038,7 +1350,11 @@ impl GeoPolygonFactory {
     }
 
     /// `isWithin(GeoPoint, Set<Edge>)`.
-    fn is_within_set(point: &GeoPoint, edge_set: &HashSet<usize>, edge_buffer: &EdgeBuffer) -> bool {
+    fn is_within_set(
+        point: &GeoPoint,
+        edge_set: &HashSet<usize>,
+        edge_buffer: &EdgeBuffer,
+    ) -> bool {
         for &edge in edge_set {
             if !edge_buffer.edge(edge).plane.is_within(point) {
                 return false;
@@ -1069,7 +1385,10 @@ pub(crate) struct BestShape {
 
 impl BestShape {
     fn new(points: Vec<Pt>, pole_must_be_inside: bool) -> Self {
-        Self { points, pole_must_be_inside }
+        Self {
+            points,
+            pole_must_be_inside,
+        }
     }
 
     /// `createGeoComplexPolygon(PlanetModel, List<List<GeoPoint>>, GeoPoint)`:
@@ -1080,11 +1399,18 @@ impl BestShape {
         points_list: &[Vec<GeoPoint>],
         test_point: &GeoPoint,
     ) -> Result<Option<GeoComplexPolygon>> {
-        let Some(is_test_point_inside) = GeoPolygonFactory::is_inside_polygon(test_point, &self.points) else {
+        let Some(is_test_point_inside) =
+            GeoPolygonFactory::is_inside_polygon(test_point, &self.points)
+        else {
             return Ok(None);
         };
         let r = if is_test_point_inside == self.pole_must_be_inside {
-            GeoComplexPolygon::new(planet_model, points_list.to_vec(), test_point.clone(), is_test_point_inside)
+            GeoComplexPolygon::new(
+                planet_model,
+                points_list.to_vec(),
+                test_point.clone(),
+                is_test_point_inside,
+            )
         } else {
             GeoComplexPolygon::new(
                 planet_model,
@@ -1108,7 +1434,9 @@ impl fmt::Display for BestShape {
         write!(
             f,
             "org.apache.lucene.spatial3d.geom.GeoPolygonFactory$BestShape@{:x}",
-            rucene::util::java_collections::java_identity_hash_code_stand_in("org.apache.lucene.spatial3d.geom.GeoPolygonFactory$BestShape") as u32
+            rucene::util::java_collections::java_identity_hash_code_stand_in(
+                "org.apache.lucene.spatial3d.geom.GeoPolygonFactory$BestShape"
+            ) as u32
         )
     }
 }
@@ -1218,7 +1546,10 @@ impl EdgeBuffer {
         let mut start_index;
         let mut end_index = start_plane_end_index;
         loop {
-            if Arc::ptr_eq(&s.arena[current_edge].end_point, &s.arena[start_edge].start_point) {
+            if Arc::ptr_eq(
+                &s.arena[current_edge].end_point,
+                &s.arena[start_edge].start_point,
+            ) {
                 s.previous_edges.insert(start_edge, current_edge);
                 s.next_edges.insert(current_edge, start_edge);
                 s.edges.insert(start_edge);
@@ -1232,7 +1563,12 @@ impl EdgeBuffer {
             let new_point = &point_list[end_index];
             let is_new_point_within = s.arena[current_edge].plane.is_within(new_point);
             let point_to_present = s.arena[current_edge].start_point.clone();
-            let new_plane = SidedPlane::new_cross_on_side(&point_to_present, is_new_point_within, &point_list[start_index], new_point)?;
+            let new_plane = SidedPlane::new_cross_on_side(
+                &point_to_present,
+                is_new_point_within,
+                &point_list[start_index],
+                new_point,
+            )?;
             let new_edge = s.add(Edge::new(
                 point_list[start_index].clone(),
                 point_list[end_index].clone(),
@@ -1267,8 +1603,16 @@ impl EdgeBuffer {
 
     fn replace(&mut self, remove_list: &[usize], new_edge: Edge) {
         let new_edge = self.add(new_edge);
-        let previous = self.previous_edges.get(&remove_list[0]).copied().unwrap_or_else(|| npe());
-        let next = self.next_edges.get(&remove_list[remove_list.len() - 1]).copied().unwrap_or_else(|| npe());
+        let previous = self
+            .previous_edges
+            .get(&remove_list[0])
+            .copied()
+            .unwrap_or_else(|| npe());
+        let next = self
+            .next_edges
+            .get(&remove_list[remove_list.len() - 1])
+            .copied()
+            .unwrap_or_else(|| npe());
         self.edges.insert(new_edge);
         self.previous_edges.insert(new_edge, previous);
         self.next_edges.insert(previous, new_edge);
@@ -1313,8 +1657,16 @@ pub(crate) struct SafePath {
 }
 
 impl SafePath {
-    fn new(previous: Option<Box<SafePath>>, last_point: Pt, _last_point_index: i64, _last_plane: Plane) -> Self {
-        Self { last_point, previous }
+    fn new(
+        previous: Option<Box<SafePath>>,
+        last_point: Pt,
+        _last_point_index: i64,
+        _last_plane: Plane,
+    ) -> Self {
+        Self {
+            last_point,
+            previous,
+        }
     }
 
     /// `fillInList(List<GeoPoint>)`.
@@ -1332,8 +1684,13 @@ impl SafePath {
 /// Class used to track a boolean that can be modified.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPolygonFactory.MutableBoolean`.
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
 #[derive(Default)]
-pub(crate) struct MutableBoolean {
+pub struct MutableBoolean {
     /// The value.
     pub value: bool,
 }
@@ -1349,12 +1706,18 @@ pub(crate) struct TileException {
 
 impl TileException {
     fn new(msg: impl Into<String>) -> Self {
-        Self { message: msg.into() }
+        Self {
+            message: msg.into(),
+        }
     }
 }
 
 impl fmt::Display for TileException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "org.apache.lucene.spatial3d.geom.GeoPolygonFactory$TileException: {}", self.message)
+        write!(
+            f,
+            "org.apache.lucene.spatial3d.geom.GeoPolygonFactory$TileException: {}",
+            self.message
+        )
     }
 }

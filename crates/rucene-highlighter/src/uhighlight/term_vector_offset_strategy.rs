@@ -61,7 +61,10 @@ impl FieldOffsetStrategy for TermVectorOffsetStrategy {
         _content: &str,
     ) -> Result<Box<dyn OffsetsEnum>> {
         let reader = reader.ok_or_else(LuceneError::null_pointer)?;
-        let Some(tv_terms) = reader.term_vectors()?.get_field(doc_id, self.get_field()?)? else {
+        let Some(tv_terms) = reader
+            .term_vectors()?
+            .get_field(doc_id, self.get_field()?)?
+        else {
             return Ok(empty());
         };
 

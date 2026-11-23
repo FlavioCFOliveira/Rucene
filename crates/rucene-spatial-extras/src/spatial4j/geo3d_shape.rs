@@ -145,7 +145,9 @@ impl Geo3dShape {
                 }
             }
             geo_area::WITHIN => SpatialRelation::Contains,
-            _ => panic!("java.lang.RuntimeException: Undetermined shape relationship: {relationship}"),
+            _ => panic!(
+                "java.lang.RuntimeException: Undetermined shape relationship: {relationship}"
+            ),
         }
     }
 
@@ -189,15 +191,20 @@ impl Geo3dShape {
         let shape = self.shape();
         let mut bounds = LatLonBounds::new();
         shape.get_bounds(&mut bounds);
-        let geo_b_box = GeoBBoxFactory::make_geo_bbox_from_bounds(shape.get_planet_model(), &bounds)
-            .unwrap_or_else(|e| panic!("{e}"));
-        let b: Arc<dyn Rectangle> = Geo3dRectangleShape::new(geo_b_box, Arc::clone(&self.spatialcontext));
+        let geo_b_box =
+            GeoBBoxFactory::make_geo_bbox_from_bounds(shape.get_planet_model(), &bounds)
+                .unwrap_or_else(|e| panic!("{e}"));
+        let b: Arc<dyn Rectangle> =
+            Geo3dRectangleShape::new(geo_b_box, Arc::clone(&self.spatialcontext));
         *bbox = Some(Arc::clone(&b));
         b
     }
 
     /// `getCenter()`, over the given `getBoundingBox()`.
-    pub(crate) fn center_with(&self, get_bounding_box: impl FnOnce() -> Arc<dyn Rectangle>) -> Arc<dyn Point> {
+    pub(crate) fn center_with(
+        &self,
+        get_bounding_box: impl FnOnce() -> Arc<dyn Rectangle>,
+    ) -> Arc<dyn Point> {
         if let Some(c) = &*lock(&self.center) {
             // volatile read once
             return Arc::clone(c);

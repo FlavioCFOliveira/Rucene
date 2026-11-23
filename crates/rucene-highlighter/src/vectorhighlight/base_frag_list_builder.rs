@@ -96,6 +96,15 @@ impl BaseFragListBuilder {
         })
     }
 
+    /// The package-private field `minFragCharSize`, read by the same
+    /// package's tests (`TestSimpleFragListBuilder`); Rust's integration
+    /// tests are another crate, so the port exposes it (hidden from the
+    /// documentation).
+    #[doc(hidden)]
+    pub fn min_frag_char_size(&self) -> i32 {
+        self.min_frag_char_size
+    }
+
     /// Installs a subclass's overrides (Java: constructing the subclass).
     pub fn set_overrides(&mut self, overrides: Arc<dyn BaseFragListBuilderOverrides>) {
         self.overrides = Some(overrides);
@@ -195,7 +204,12 @@ impl BaseFragListBuilder {
     ///
     /// Equivalent to the protected `acceptPhrase(WeightedPhraseInfo, int,
     /// int)`.
-    pub fn accept_phrase(&self, info: &WeightedPhraseInfo, match_length: i32, frag_char_size: i32) -> bool {
+    pub fn accept_phrase(
+        &self,
+        info: &WeightedPhraseInfo,
+        match_length: i32,
+        frag_char_size: i32,
+    ) -> bool {
         match &self.overrides {
             Some(o) => o.accept_phrase(self, info, match_length, frag_char_size),
             None => self.super_accept_phrase(info, match_length, frag_char_size),
@@ -203,7 +217,12 @@ impl BaseFragListBuilder {
     }
 
     /// The base class's `acceptPhrase(WeightedPhraseInfo, int, int)`.
-    pub fn super_accept_phrase(&self, info: &WeightedPhraseInfo, match_length: i32, frag_char_size: i32) -> bool {
+    pub fn super_accept_phrase(
+        &self,
+        info: &WeightedPhraseInfo,
+        match_length: i32,
+        frag_char_size: i32,
+    ) -> bool {
         info.get_terms_offsets().len() <= 1 || match_length <= frag_char_size
     }
 }

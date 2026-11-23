@@ -21,11 +21,11 @@
 use std::any::Any;
 use std::fmt;
 
+use rucene::analysis::tokenattributes::BytesTermAttribute;
 use rucene::analysis::{default_token_attribute_factory, BytesTermAttributeImpl, TokenStream};
 use rucene::error::{LuceneError, Result};
 use rucene::util::attribute::AttributeSource;
 use rucene::util::BytesRefIterator;
-use rucene::analysis::tokenattributes::BytesTermAttribute;
 
 /// The iterator a [`BytesRefIteratorTokenStream`] reads; a token stream is
 /// shared between threads, so the iterator must be too.
@@ -62,7 +62,10 @@ impl BytesRefIteratorTokenStream {
         source
             .add_attribute::<BytesTermAttributeImpl>()
             .expect("the default factory makes a BytesTermAttribute");
-        Self { source, bytes_iter: None }
+        Self {
+            source,
+            bytes_iter: None,
+        }
     }
 
     /// `getBytesRefIterator()`.

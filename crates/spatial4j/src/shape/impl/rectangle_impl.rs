@@ -19,8 +19,8 @@ use crate::context::spatial_context::{SpatialContext, SpatialContextRef};
 use crate::distance::distance_utils::DistanceUtils;
 use crate::jdk::{double_compare_ne, hash_double, AtomicF64};
 use crate::shape::base_shape::BaseShape;
-use crate::shape::r#impl::point_impl::PointImpl;
 use crate::shape::point::Point;
+use crate::shape::r#impl::point_impl::PointImpl;
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::spatial_relation::SpatialRelation;
@@ -78,7 +78,13 @@ impl RectangleImpl {
 
     /// `RectangleImpl(Rectangle r, SpatialContext ctx)`.
     pub fn from_rect(r: &dyn Rectangle, ctx: Option<SpatialContextRef>) -> Arc<RectangleImpl> {
-        Self::new(r.get_min_x(), r.get_max_x(), r.get_min_y(), r.get_max_y(), ctx)
+        Self::new(
+            r.get_min_x(),
+            r.get_max_x(),
+            r.get_min_y(),
+            r.get_max_y(),
+            ctx,
+        )
     }
 
     fn ctx(&self) -> Arc<SpatialContext> {
@@ -199,9 +205,15 @@ impl RectangleImpl {
     /// `hashCode(Rectangle thiz)`.
     pub fn hash_code_rect(thiz: &dyn Rectangle) -> i32 {
         let mut result = hash_double(thiz.get_min_x());
-        result = 31i32.wrapping_mul(result).wrapping_add(hash_double(thiz.get_max_x()));
-        result = 31i32.wrapping_mul(result).wrapping_add(hash_double(thiz.get_min_y()));
-        result = 31i32.wrapping_mul(result).wrapping_add(hash_double(thiz.get_max_y()));
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(thiz.get_max_x()));
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(thiz.get_min_y()));
+        result = 31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(thiz.get_max_y()));
         result
     }
 }
@@ -322,7 +334,10 @@ impl Shape for RectangleImpl {
     fn get_center(&self) -> Arc<dyn Point> {
         let min_x = self.min_x.get();
         if min_x.is_nan() {
-            return self.ctx().make_point(f64::NAN, f64::NAN).unwrap_or_else(|e| panic!("{e}"));
+            return self
+                .ctx()
+                .make_point(f64::NAN, f64::NAN)
+                .unwrap_or_else(|e| panic!("{e}"));
         }
         let y = self.get_height() / 2.0 + self.min_y.get();
         let mut x = self.get_width() / 2.0 + min_x;
@@ -334,8 +349,12 @@ impl Shape for RectangleImpl {
     }
 
     fn get_buffered(&self, distance: f64, ctx: &SpatialContext) -> Result<Arc<dyn Shape>> {
-        let (min_x, max_x, min_y, max_y) =
-            (self.min_x.get(), self.max_x.get(), self.min_y.get(), self.max_y.get());
+        let (min_x, max_x, min_y, max_y) = (
+            self.min_x.get(),
+            self.max_x.get(),
+            self.min_y.get(),
+            self.max_y.get(),
+        );
         let rect = if ctx.is_geo() {
             if max_y + distance >= 90.0 {
                 ctx.make_rectangle(-180.0, 180.0, (-90.0f64).max(min_y - distance), 90.0)?
@@ -343,9 +362,16 @@ impl Shape for RectangleImpl {
                 ctx.make_rectangle(-180.0, 180.0, -90.0, 90.0f64.min(max_y + distance))?
             } else {
                 let lat_distance = distance;
-                let closest_to_pole_y = if max_y.abs() > min_y.abs() { max_y } else { min_y };
-                let lon_distance =
-                    DistanceUtils::calc_box_by_dist_from_pt_delta_lon_deg(closest_to_pole_y, min_x, distance); //lat,lon order
+                let closest_to_pole_y = if max_y.abs() > min_y.abs() {
+                    max_y
+                } else {
+                    min_y
+                };
+                let lon_distance = DistanceUtils::calc_box_by_dist_from_pt_delta_lon_deg(
+                    closest_to_pole_y,
+                    min_x,
+                    distance,
+                ); //lat,lon order
                 if lon_distance * 2.0 + self.get_width() >= 360.0 {
                     ctx.make_rectangle(-180.0, 180.0, min_y - lat_distance, max_y + lat_distance)?
                 } else {

@@ -30,8 +30,8 @@ use rucene::search::{IndexSearcher, SegmentCacheable};
 use spatial4j::shape::rectangle::Rectangle;
 
 use crate::bbox::b_box_similarity_value_source::{
-    similarity_eq, similarity_explain, similarity_get_values, similarity_hash, similarity_to_string,
-    BBoxSimilarityValueSource,
+    similarity_eq, similarity_explain, similarity_get_values, similarity_hash,
+    similarity_to_string, BBoxSimilarityValueSource,
 };
 use crate::jdk::{d2s, double_compare, hash_double};
 use crate::shape_values_source::ShapeValuesSource;
@@ -83,10 +83,16 @@ impl BBoxOverlapRatioValueSource {
         query_target_proportion: f64,
         min_side_length: f64,
     ) -> Result<Self> {
-        let query_area = Self::calc_area_with(min_side_length, query_extent.get_width(), query_extent.get_height());
+        let query_area = Self::calc_area_with(
+            min_side_length,
+            query_extent.get_width(),
+            query_extent.get_height(),
+        );
         debug_assert!(query_area >= 0.0);
         if !(0.0..=1.0).contains(&query_target_proportion) {
-            return Err(LuceneError::illegal_argument("queryTargetProportion must be >= 0 and <= 1"));
+            return Err(LuceneError::illegal_argument(
+                "queryTargetProportion must be >= 0 and <= 1",
+            ));
         }
         Ok(Self {
             bbox_value_source: rect_value_source,
@@ -106,7 +112,10 @@ impl BBoxOverlapRatioValueSource {
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub fn with_defaults(rect_value_source: Arc<dyn ShapeValuesSource>, query_extent: Arc<dyn Rectangle>) -> Result<Self> {
+    pub fn with_defaults(
+        rect_value_source: Arc<dyn ShapeValuesSource>,
+        query_extent: Arc<dyn Rectangle>,
+    ) -> Result<Self> {
         Self::new(rect_value_source, true, query_extent, 0.25, 0.0)
     }
 
@@ -130,7 +139,11 @@ impl BBoxSimilarityValueSource for BBoxOverlapRatioValueSource {
     }
 
     fn similarity_description(&self) -> String {
-        format!("{},{}", self.query_extent, d2s(self.query_target_proportion))
+        format!(
+            "{},{}",
+            self.query_extent,
+            d2s(self.query_target_proportion)
+        )
     }
 
     fn score(&self, target: &dyn Rectangle, exp: Option<&mut Option<Explanation>>) -> f64 {
@@ -254,7 +267,11 @@ impl BBoxSimilarityValueSource for BBoxOverlapRatioValueSource {
                         vec![
                             Explanation::matched(width as f32, "width", Vec::new()),
                             Explanation::matched(height as f32, "height", Vec::new()),
-                            Explanation::matched(self.query_target_proportion as f32, "queryTargetProportion", Vec::new()),
+                            Explanation::matched(
+                                self.query_target_proportion as f32,
+                                "queryTargetProportion",
+                                Vec::new(),
+                            ),
                         ],
                     ),
                     Explanation::matched(
@@ -320,7 +337,10 @@ impl DoubleValuesSource for BBoxOverlapRatioValueSource {
         if !similarity_eq(self, other) {
             return false;
         }
-        let that = other.as_any().downcast_ref::<BBoxOverlapRatioValueSource>().expect("same class");
+        let that = other
+            .as_any()
+            .downcast_ref::<BBoxOverlapRatioValueSource>()
+            .expect("same class");
         if double_compare(that.min_side_length, self.min_side_length) != 0 {
             return false;
         }
@@ -332,9 +352,15 @@ impl DoubleValuesSource for BBoxOverlapRatioValueSource {
 
     fn source_hash(&self) -> i32 {
         let mut result = similarity_hash(self);
-        result = result.wrapping_mul(31).wrapping_add(self.query_extent.hash_code());
-        result = result.wrapping_mul(31).wrapping_add(hash_double(self.min_side_length));
-        result = result.wrapping_mul(31).wrapping_add(hash_double(self.query_target_proportion));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.query_extent.hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(hash_double(self.min_side_length));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(hash_double(self.query_target_proportion));
         result
     }
 
@@ -342,7 +368,12 @@ impl DoubleValuesSource for BBoxOverlapRatioValueSource {
         similarity_to_string(self)
     }
 
-    fn explain(self: Arc<Self>, ctx: &LeafReaderContext, doc_id: i32, score_explanation: &Explanation) -> Result<Explanation> {
+    fn explain(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        doc_id: i32,
+        score_explanation: &Explanation,
+    ) -> Result<Explanation> {
         similarity_explain(self, ctx, doc_id, score_explanation)
     }
 }

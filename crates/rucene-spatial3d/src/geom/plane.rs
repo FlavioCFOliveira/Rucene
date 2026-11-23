@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Plane.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -168,7 +168,10 @@ impl Plane {
     /// # Errors
     ///
     /// `IllegalArgumentException` when no perpendicular plane exists.
-    pub fn construct_perpendicular_center_plane_one_point(plane: &Plane, m: &Vector) -> Result<Plane> {
+    pub fn construct_perpendicular_center_plane_one_point(
+        plane: &Plane,
+        m: &Vector,
+    ) -> Result<Plane> {
         debug_assert!(plane.evaluate_is_zero(m));
         let a0 = plane.x;
         let b0 = plane.y;
@@ -209,9 +212,12 @@ impl Plane {
         } else {
             return Err(iae("Cannot find perpendicular plane as requested"));
         }
-        let norm_factor = 1.0 / (a1 * a1 + b1 * b1 + c1 * c1).sqrt();
+        let norm_factor = 1.0 / java_math::sqrt(a1 * a1 + b1 * b1 + c1 * c1);
         let v = Vector::new(a1 * norm_factor, b1 * norm_factor, c1 * norm_factor);
-        Ok(Plane::new_vector_d(&v, -(v.x * m.x + v.y * m.y + v.z * m.z)))
+        Ok(Plane::new_vector_d(
+            &v,
+            -(v.x * m.x + v.y * m.y + v.z * m.z),
+        ))
     }
 
     /// `constructPerpendicularCenterPlaneTwoPoints(Vector, Vector)`.
@@ -220,7 +226,10 @@ impl Plane {
     ///
     /// `IllegalArgumentException` when the points are identical or the
     /// equation is unsolvable.
-    pub fn construct_perpendicular_center_plane_two_points(m: &Vector, n: &Vector) -> Result<Plane> {
+    pub fn construct_perpendicular_center_plane_two_points(
+        m: &Vector,
+        n: &Vector,
+    ) -> Result<Plane> {
         let center_plane = Plane::new_cross(m, n)?;
         let a0 = center_plane.x;
         let b0 = center_plane.y;
@@ -267,7 +276,7 @@ impl Plane {
         } else {
             return Err(iae("Equation appears to be unsolveable"));
         }
-        let norm_factor = 1.0 / (a1 * a1 + b1 * b1 + c1 * c1).sqrt();
+        let norm_factor = 1.0 / java_math::sqrt(a1 * a1 + b1 * b1 + c1 * c1);
         let v = Vector::new(a1 * norm_factor, b1 * norm_factor, c1 * norm_factor);
         let rval = Plane::new_vector_d(&v, -(v.x * m.x + v.y * m.y + v.z * m.z));
         debug_assert!(rval.evaluate_is_zero(n));
@@ -329,7 +338,7 @@ impl Plane {
         if x.abs() < MINIMUM_RESOLUTION && y.abs() < MINIMUM_RESOLUTION {
             return None;
         }
-        let denom = 1.0 / (x * x + y * y).sqrt();
+        let denom = 1.0 / java_math::sqrt(x * x + y * y);
         Some(Plane::new(y * denom, -x * denom, 0.0, 0.0))
     }
 
@@ -338,7 +347,7 @@ impl Plane {
         if x.abs() < MINIMUM_RESOLUTION && z.abs() < MINIMUM_RESOLUTION {
             return None;
         }
-        let denom = 1.0 / (x * x + z * z).sqrt();
+        let denom = 1.0 / java_math::sqrt(x * x + z * z);
         Some(Plane::new(z * denom, 0.0, -x * denom, d_value))
     }
 
@@ -347,7 +356,7 @@ impl Plane {
         if y.abs() < MINIMUM_RESOLUTION && z.abs() < MINIMUM_RESOLUTION {
             return None;
         }
-        let denom = 1.0 / (y * y + z * z).sqrt();
+        let denom = 1.0 / java_math::sqrt(y * y + z * z);
         Some(Plane::new(0.0, z * denom, -y * denom, d_value))
     }
 
@@ -382,7 +391,12 @@ impl Plane {
     }
 
     /// `arcDistance(PlanetModel, GeoPoint, Membership...)`.
-    pub fn arc_distance(&self, planet_model: &PlanetModel, v: &Vector, bounds: &[&dyn Membership]) -> f64 {
+    pub fn arc_distance(
+        &self,
+        planet_model: &PlanetModel,
+        v: &Vector,
+        bounds: &[&dyn Membership],
+    ) -> f64 {
         self.arc_distance_xyz(planet_model, v.x, v.y, v.z, bounds)
     }
 
@@ -534,6 +548,8 @@ impl Plane {
     /// # Errors
     ///
     /// `IllegalArgumentException` when a point is not on the plane.
+    // Java's late-assigned local.
+    #[allow(clippy::needless_late_init)]
     pub fn interpolate(
         &self,
         planet_model: &PlanetModel,
@@ -557,7 +573,7 @@ impl Plane {
             a *= denom;
             b *= denom;
             c *= denom;
-            let xy_magnitude = (a * a + b * b).sqrt();
+            let xy_magnitude = java_math::sqrt(a * a + b * b);
             if xy_magnitude >= MINIMUM_RESOLUTION {
                 let xy_denom = 1.0 / xy_magnitude;
                 cos_ra = a * xy_denom;
@@ -574,8 +590,12 @@ impl Plane {
             cos_ha = 1.0;
             sin_ha = 0.0;
         }
-        let modified_start = Self::modify(start, trans_x, trans_y, trans_z, sin_ra, cos_ra, sin_ha, cos_ha);
-        let modified_end = Self::modify(end, trans_x, trans_y, trans_z, sin_ra, cos_ra, sin_ha, cos_ha);
+        let modified_start = Self::modify(
+            start, trans_x, trans_y, trans_z, sin_ra, cos_ra, sin_ha, cos_ha,
+        );
+        let modified_end = Self::modify(
+            end, trans_x, trans_y, trans_z, sin_ra, cos_ra, sin_ha, cos_ha,
+        );
         if modified_start.z.abs() >= MINIMUM_RESOLUTION {
             return Err(iae(format!(
                 "Start point was not on plane: {}",
@@ -588,10 +608,11 @@ impl Plane {
                 d2s(modified_end.z)
             )));
         }
-        let start_angle = modified_start.y.atan2(modified_start.x);
-        let end_angle = modified_end.y.atan2(modified_end.x);
-        let start_magnitude =
-            (modified_start.x * modified_start.x + modified_start.y * modified_start.y).sqrt();
+        let start_angle = java_math::atan2(modified_start.y, modified_start.x);
+        let end_angle = java_math::atan2(modified_end.y, modified_end.x);
+        let start_magnitude = java_math::sqrt(
+            modified_start.x * modified_start.x + modified_start.y * modified_start.y,
+        );
         let delta;
         let mut new_end_angle = end_angle;
         while new_end_angle < start_angle {
@@ -609,8 +630,8 @@ impl Plane {
         let mut return_values = Vec::with_capacity(proportions.len());
         for proportion in proportions {
             let new_angle = start_angle + proportion * delta;
-            let sin_new_angle = new_angle.sin();
-            let cos_new_angle = new_angle.cos();
+            let sin_new_angle = java_math::sin(new_angle);
+            let cos_new_angle = java_math::cos(new_angle);
             let new_vector = Vector::new(
                 cos_new_angle * start_magnitude,
                 sin_new_angle * start_magnitude,
@@ -710,6 +731,8 @@ impl Plane {
 
     /// The setup common to the intersection computations: `None` where Java
     /// returns early.
+    // Java's late-assigned local.
+    #[allow(clippy::needless_late_init)]
     fn line_with(&self, q: &Plane) -> Option<Line> {
         let line_vector_x = self.y * q.z - self.z * q.y;
         let line_vector_y = self.z * q.x - self.x * q.z;
@@ -827,7 +850,7 @@ impl Plane {
             vec![GeoPoint::new(point_x, point_y, point_z)]
         } else if bsquared_minus > 0.0 {
             let inverse2_a = 1.0 / (2.0 * a);
-            let sqrt_term = bsquared_minus.sqrt();
+            let sqrt_term = java_math::sqrt(bsquared_minus);
             let t1 = (-b + sqrt_term) * inverse2_a;
             let t2 = (-b - sqrt_term) * inverse2_a;
             let point1_x = l.vx * t1 + l.x0;
@@ -875,7 +898,7 @@ impl Plane {
             Vec::new()
         } else if bsquared_minus > 0.0 {
             let inverse2_a = 1.0 / (2.0 * a);
-            let sqrt_term = bsquared_minus.sqrt();
+            let sqrt_term = java_math::sqrt(bsquared_minus);
             let t1 = (-b + sqrt_term) * inverse2_a;
             let t2 = (-b - sqrt_term) * inverse2_a;
             let point1_x = l.vx * t1 + l.x0;
@@ -1032,8 +1055,15 @@ impl Plane {
         z0: f64,
         bounds: &[&dyn Membership],
     ) {
-        let (a, b, c) =
-            Self::quadratic(planet_model, line_vector_x, line_vector_y, line_vector_z, x0, y0, z0);
+        let (a, b, c) = Self::quadratic(
+            planet_model,
+            line_vector_x,
+            line_vector_y,
+            line_vector_z,
+            x0,
+            y0,
+            z0,
+        );
         let bsquared_minus = b * b - 4.0 * a * c;
         if bsquared_minus.abs() < MINIMUM_RESOLUTION_SQUARED {
             let inverse2_a = 1.0 / (2.0 * a);
@@ -1049,7 +1079,7 @@ impl Plane {
             bounds_info.add_point(&GeoPoint::new(point_x, point_y, point_z));
         } else if bsquared_minus > 0.0 {
             let inverse2_a = 1.0 / (2.0 * a);
-            let sqrt_term = bsquared_minus.sqrt();
+            let sqrt_term = java_math::sqrt(bsquared_minus);
             let t1 = (-b + sqrt_term) * inverse2_a;
             let t2 = (-b - sqrt_term) * inverse2_a;
             let point1_x = line_vector_x * t1 + x0;
@@ -1093,21 +1123,36 @@ impl Plane {
         let b_ = self.y;
         let c_ = self.z;
         let d_ = self.d;
-        if !bounds_info.is_smallest_min_z(planet_model) || !bounds_info.is_largest_max_z(planet_model) {
+        if !bounds_info.is_smallest_min_z(planet_model)
+            || !bounds_info.is_largest_max_z(planet_model)
+        {
             if a_.abs() >= MINIMUM_RESOLUTION || b_.abs() >= MINIMUM_RESOLUTION {
                 let normalized_z_plane =
                     Self::construct_normalized_z_plane(a_, b_).unwrap_or_else(|| npe());
-                let points = self.find_intersections_with(planet_model, &normalized_z_plane, bounds, NO_BOUNDS);
+                let points = self.find_intersections_with(
+                    planet_model,
+                    &normalized_z_plane,
+                    bounds,
+                    NO_BOUNDS,
+                );
                 for point in &points {
                     debug_assert!(planet_model.point_on_surface(point));
                     Self::add_point(bounds_info, bounds, point);
                 }
             } else {
-                let mut points =
-                    self.find_intersections_with(planet_model, &NORMAL_Y_PLANE, NO_BOUNDS, NO_BOUNDS);
+                let mut points = self.find_intersections_with(
+                    planet_model,
+                    &NORMAL_Y_PLANE,
+                    NO_BOUNDS,
+                    NO_BOUNDS,
+                );
                 if points.is_empty() {
-                    points =
-                        self.find_intersections_with(planet_model, &NORMAL_X_PLANE, NO_BOUNDS, NO_BOUNDS);
+                    points = self.find_intersections_with(
+                        planet_model,
+                        &NORMAL_X_PLANE,
+                        NO_BOUNDS,
+                        NO_BOUNDS,
+                    );
                 }
                 if points.is_empty() {
                     bounds_info.add_z_value(&GeoPoint::new(0.0, 0.0, -self.z));
@@ -1129,7 +1174,9 @@ impl Plane {
         let cc_squared = c_ * c_;
         let r = 2.0 * d_ * k;
         let r_squared = r * r;
-        if !bounds_info.is_smallest_min_x(planet_model) || !bounds_info.is_largest_max_x(planet_model) {
+        if !bounds_info.is_smallest_min_x(planet_model)
+            || !bounds_info.is_largest_max_x(planet_model)
+        {
             let q = a_ * ab_squared * k;
             let q_squared = q * q;
             let a = a_squared * ab_squared * r_squared
@@ -1164,7 +1211,7 @@ impl Plane {
                         bounds_info.add_x_value_f64(-d_ / a_);
                     }
                 } else if sqrt_term > 0.0 {
-                    let sqrt_result = sqrt_term.sqrt();
+                    let sqrt_result = java_math::sqrt(sqrt_term);
                     let common_denom = 0.5 / a;
                     let m1 = (-b + sqrt_result) * common_denom;
                     debug_assert!((a * m1 * m1 + b * m1 + c).abs() < MINIMUM_RESOLUTION);
@@ -1191,7 +1238,9 @@ impl Plane {
                 Self::add_point(bounds_info, bounds, &the_point);
             }
         }
-        if !bounds_info.is_smallest_min_y(planet_model) || !bounds_info.is_largest_max_y(planet_model) {
+        if !bounds_info.is_smallest_min_y(planet_model)
+            || !bounds_info.is_largest_max_y(planet_model)
+        {
             let q = b_ * ab_squared * k;
             let q_squared = q * q;
             let a = a_squared * ab_squared * r_squared
@@ -1224,7 +1273,7 @@ impl Plane {
                         bounds_info.add_y_value_f64(-d_ / b_);
                     }
                 } else if sqrt_term > 0.0 {
-                    let sqrt_result = sqrt_term.sqrt();
+                    let sqrt_result = java_math::sqrt(sqrt_term);
                     let common_denom = 0.5 / a;
                     let m1 = (-b + sqrt_result) * common_denom;
                     debug_assert!((a * m1 * m1 + b * m1 + c).abs() < MINIMUM_RESOLUTION);
@@ -1275,19 +1324,31 @@ impl Plane {
         let b_ = self.y;
         let c_ = self.z;
         let d_ = self.d;
-        if !bounds_info.check_no_top_latitude_bound() || !bounds_info.check_no_bottom_latitude_bound() {
+        if !bounds_info.check_no_top_latitude_bound()
+            || !bounds_info.check_no_bottom_latitude_bound()
+        {
             if a_.abs() >= MINIMUM_RESOLUTION || b_.abs() >= MINIMUM_RESOLUTION {
-                let vertical_plane = Self::construct_normalized_z_plane(a_, b_).unwrap_or_else(|| npe());
-                let points = self.find_intersections_with(planet_model, &vertical_plane, bounds, NO_BOUNDS);
+                let vertical_plane =
+                    Self::construct_normalized_z_plane(a_, b_).unwrap_or_else(|| npe());
+                let points =
+                    self.find_intersections_with(planet_model, &vertical_plane, bounds, NO_BOUNDS);
                 for point in &points {
                     Self::add_point(bounds_info, bounds, point);
                 }
             } else {
-                let mut points =
-                    self.find_intersections_with(planet_model, &NORMAL_X_PLANE, NO_BOUNDS, NO_BOUNDS);
+                let mut points = self.find_intersections_with(
+                    planet_model,
+                    &NORMAL_X_PLANE,
+                    NO_BOUNDS,
+                    NO_BOUNDS,
+                );
                 if points.is_empty() {
-                    points =
-                        self.find_intersections_with(planet_model, &NORMAL_Y_PLANE, NO_BOUNDS, NO_BOUNDS);
+                    points = self.find_intersections_with(
+                        planet_model,
+                        &NORMAL_Y_PLANE,
+                        NO_BOUNDS,
+                        NO_BOUNDS,
+                    );
                 }
                 if points.is_empty() {
                     bounds_info.add_z_value(&GeoPoint::new(0.0, 0.0, -self.z));
@@ -1314,7 +1375,7 @@ impl Plane {
                             let z0 = 0.0;
                             Self::add_point(bounds_info, bounds, &GeoPoint::new(x0, y0, z0));
                         } else if sqrt_clause > 0.0 {
-                            let sqrt_result = sqrt_clause.sqrt();
+                            let sqrt_result = java_math::sqrt(sqrt_clause);
                             let denom = 1.0 / (2.0 * a);
                             let hdenom = 1.0 / a_;
                             let y0a = (-b + sqrt_result) * denom;
@@ -1338,7 +1399,7 @@ impl Plane {
                             let z0 = 0.0;
                             Self::add_point(bounds_info, bounds, &GeoPoint::new(x0, y0, z0));
                         } else if sqrt_clause > 0.0 {
-                            let sqrt_result = sqrt_clause.sqrt();
+                            let sqrt_result = java_math::sqrt(sqrt_clause);
                             let denom = 1.0 / (2.0 * a);
                             let idenom = 1.0 / b_;
                             let x0a = (-b + sqrt_result) * denom;
@@ -1373,7 +1434,7 @@ impl Plane {
                             let z0 = (-a_ * x0 - b_ * y0 - d_) / c_;
                             Self::add_point(bounds_info, bounds, &GeoPoint::new(x0, y0, z0));
                         } else if sqrt_clause > 0.0 {
-                            let sqrt_result = sqrt_clause.sqrt();
+                            let sqrt_result = java_math::sqrt(sqrt_clause);
                             let denom = 1.0 / (2.0 * a);
                             let hdenom = 1.0 / h;
                             let cdenom = 1.0 / c_;
@@ -1397,7 +1458,7 @@ impl Plane {
                             let z0 = (-a_ * x0 - b_ * y0 - d_) / c_;
                             Self::add_point(bounds_info, bounds, &GeoPoint::new(x0, y0, z0));
                         } else if sqrt_clause > 0.0 {
-                            let sqrt_result = sqrt_clause.sqrt();
+                            let sqrt_result = java_math::sqrt(sqrt_clause);
                             let denom = 1.0 / (2.0 * a);
                             let idenom = 1.0 / i;
                             let cdenom = 1.0 / c_;
@@ -1464,7 +1525,7 @@ impl Plane {
                 && Self::within_all(more_bounds, point_x, point_y, point_z)
         } else if bsquared_minus > 0.0 {
             let inverse2_a = 1.0 / (2.0 * a);
-            let sqrt_term = bsquared_minus.sqrt();
+            let sqrt_term = java_math::sqrt(bsquared_minus);
             let t1 = (-b + sqrt_term) * inverse2_a;
             let t2 = (-b - sqrt_term) * inverse2_a;
             let point1_x = l.vx * t1 + l.x0;
@@ -1518,7 +1579,7 @@ impl Plane {
             false
         } else if bsquared_minus > 0.0 {
             let inverse2_a = 1.0 / (2.0 * a);
-            let sqrt_term = bsquared_minus.sqrt();
+            let sqrt_term = java_math::sqrt(bsquared_minus);
             let t1 = (-b + sqrt_term) * inverse2_a;
             let t2 = (-b - sqrt_term) * inverse2_a;
             let point1_x = l.vx * t1 + l.x0;
@@ -1584,19 +1645,22 @@ impl Plane {
         if !self.evaluate_is_zero(start_point) {
             return Err(iae("Start point is not on plane"));
         }
-        let azimuth_magnitude = (self.x * self.x + self.y * self.y).sqrt();
+        let azimuth_magnitude = java_math::sqrt(self.x * self.x + self.y * self.y);
         let cos_plane_altitude = self.z;
         let sin_plane_altitude = azimuth_magnitude;
         let cos_plane_azimuth = self.x / azimuth_magnitude;
         let sin_plane_azimuth = self.y / azimuth_magnitude;
         debug_assert!(
-            (sin_plane_altitude * sin_plane_altitude + cos_plane_altitude * cos_plane_altitude - 1.0).abs()
+            (sin_plane_altitude * sin_plane_altitude + cos_plane_altitude * cos_plane_altitude
+                - 1.0)
+                .abs()
                 < MINIMUM_RESOLUTION,
             "Improper sin/cos of altitude: {}",
             d2s(sin_plane_altitude * sin_plane_altitude + cos_plane_altitude * cos_plane_altitude)
         );
         debug_assert!(
-            (sin_plane_azimuth * sin_plane_azimuth + cos_plane_azimuth * cos_plane_azimuth - 1.0).abs()
+            (sin_plane_azimuth * sin_plane_azimuth + cos_plane_azimuth * cos_plane_azimuth - 1.0)
+                .abs()
                 < MINIMUM_RESOLUTION,
             "Improper sin/cos of azimuth: {}",
             d2s(sin_plane_azimuth * sin_plane_azimuth + cos_plane_azimuth * cos_plane_azimuth)
@@ -1615,14 +1679,14 @@ impl Plane {
             "Rotation should have put startpoint on x-y plane, instead has value {}",
             d2s(z2)
         );
-        let start_angle = y2.atan2(x2);
+        let start_angle = java_math::atan2(y2, x2);
         let point1_angle = start_angle + arc_distance_value;
         let point2_angle = start_angle - arc_distance_value;
-        let point1x2 = point1_angle.cos();
-        let point1y2 = point1_angle.sin();
+        let point1x2 = java_math::cos(point1_angle);
+        let point1y2 = java_math::sin(point1_angle);
         let point1z2 = 0.0;
-        let point2x2 = point2_angle.cos();
-        let point2y2 = point2_angle.sin();
+        let point2x2 = java_math::cos(point2_angle);
+        let point2y2 = java_math::sin(point2_angle);
         let point2z2 = 0.0;
         let point1x1 = point1x2 * cos_plane_altitude + point1z2 * sin_plane_altitude;
         let point1y1 = point1y2;
@@ -1671,7 +1735,11 @@ impl Plane {
     }
 
     /// `getSampleIntersectionPoint(PlanetModel, Plane)`.
-    pub fn get_sample_intersection_point(&self, planet_model: &PlanetModel, q: &Plane) -> Option<GeoPoint> {
+    pub fn get_sample_intersection_point(
+        &self,
+        planet_model: &PlanetModel,
+        q: &Plane,
+    ) -> Option<GeoPoint> {
         let intersections = self.find_intersections_with(planet_model, q, NO_BOUNDS, NO_BOUNDS);
         intersections.into_iter().next()
     }
@@ -1683,7 +1751,10 @@ impl Plane {
 
     /// `Plane.hashCode()`.
     pub fn java_hash_code(&self) -> i32 {
-        self.v.java_hash_code().wrapping_mul(31).wrapping_add(dhash(self.d))
+        self.v
+            .java_hash_code()
+            .wrapping_mul(31)
+            .wrapping_add(dhash(self.d))
     }
 }
 

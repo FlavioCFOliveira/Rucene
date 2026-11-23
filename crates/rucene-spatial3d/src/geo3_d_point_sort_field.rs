@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Geo3DPointSortField.java`, of the Java package
 //! `org.apache.lucene.spatial3d`.
 
@@ -54,7 +53,11 @@ impl Geo3DPointSortField {
     /// # Errors
     ///
     /// `IllegalArgumentException` from the `SortField` constructor.
-    pub fn new(field: &str, planet_model: &Arc<PlanetModel>, distance_shape: Arc<dyn GeoDistanceShape>) -> Result<Self> {
+    pub fn new(
+        field: &str,
+        planet_model: &Arc<PlanetModel>,
+        distance_shape: Arc<dyn GeoDistanceShape>,
+    ) -> Result<Self> {
         Ok(Self {
             sort_field: SortField::with_kind(
                 Some(field.to_string()),
@@ -79,7 +82,11 @@ impl Geo3DPointSortField {
     }
 
     /// `getComparator(int numHits, Pruning pruning)`.
-    pub fn get_comparator(&self, num_hits: usize, _pruning: Pruning) -> Geo3DPointDistanceComparator {
+    pub fn get_comparator(
+        &self,
+        num_hits: usize,
+        _pruning: Pruning,
+    ) -> Geo3DPointDistanceComparator {
         Geo3DPointDistanceComparator::new(
             self.get_field().unwrap_or_else(|| crate::geom::npe()),
             &self.planet_model,
@@ -129,10 +136,16 @@ impl Geo3DPointSortField {
             .wrapping_add(self.sort_field.field().map_or(0, java_string_hash_code));
         super_hash = super_hash
             .wrapping_mul(31)
-            .wrapping_add(java_identity_hash_code_stand_in("org.apache.lucene.search.SortField$Type.CUSTOM"));
+            .wrapping_add(java_identity_hash_code_stand_in(
+                "org.apache.lucene.search.SortField$Type.CUSTOM",
+            ));
         super_hash = super_hash
             .wrapping_mul(31)
-            .wrapping_add(if self.sort_field.reverse() { 1231 } else { 1237 });
+            .wrapping_add(if self.sort_field.reverse() {
+                1231
+            } else {
+                1237
+            });
         super_hash = super_hash.wrapping_mul(31);
         super_hash = super_hash
             .wrapping_mul(31)
@@ -149,7 +162,9 @@ impl Geo3DPointSortField {
     pub fn java_equals(&self, other: &Self) -> bool {
         std::ptr::eq(self, other)
             || (self.sort_field == other.sort_field
-                && self.distance_shape.java_equals(other.distance_shape.as_any()))
+                && self
+                    .distance_shape
+                    .java_equals(other.distance_shape.as_any()))
     }
 }
 
@@ -200,7 +215,11 @@ impl fmt::Display for Geo3DPointSortField {
         )?;
         let missing = self.get_missing_value();
         if missing != Some(f64::INFINITY) {
-            write!(f, " missingValue={}", missing_value_to_string(self.sort_field.missing_value()))?;
+            write!(
+                f,
+                " missingValue={}",
+                missing_value_to_string(self.sort_field.missing_value())
+            )?;
         }
         f.write_str(">")
     }

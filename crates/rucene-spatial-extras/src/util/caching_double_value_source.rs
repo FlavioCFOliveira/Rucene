@@ -107,7 +107,9 @@ impl DoubleValuesSource for CachingDoubleValueSource {
     }
 
     fn rewrite(self: Arc<Self>, searcher: &IndexSearcher) -> Result<Arc<dyn DoubleValuesSource>> {
-        Ok(Arc::new(CachingDoubleValueSource::new(Arc::clone(&self.source).rewrite(searcher)?)))
+        Ok(Arc::new(CachingDoubleValueSource::new(
+            Arc::clone(&self.source).rewrite(searcher)?,
+        )))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -129,7 +131,12 @@ impl DoubleValuesSource for CachingDoubleValueSource {
         format!("Cached[{}]", self.source.to_source_string())
     }
 
-    fn explain(self: Arc<Self>, ctx: &LeafReaderContext, doc_id: i32, score_explanation: &Explanation) -> Result<Explanation> {
+    fn explain(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        doc_id: i32,
+        score_explanation: &Explanation,
+    ) -> Result<Explanation> {
         Arc::clone(&self.source).explain(ctx, doc_id, score_explanation)
     }
 }

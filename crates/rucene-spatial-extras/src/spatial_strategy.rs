@@ -107,7 +107,10 @@ pub trait SpatialStrategy: fmt::Display + Send + Sync {
     ///
     /// `UnsupportedOperationException` if it can't use the shape;
     /// `IllegalArgumentException` and the errors of computing the fields.
-    fn create_indexable_fields(&self, shape: &Arc<dyn Shape>) -> Result<Vec<Arc<dyn IndexableField>>>;
+    fn create_indexable_fields(
+        &self,
+        shape: &Arc<dyn Shape>,
+    ) -> Result<Vec<Arc<dyn IndexableField>>>;
 
     /// `makeDistanceValueSource(Point queryPoint)`: see
     /// [`make_distance_value_source`](Self::make_distance_value_source)
@@ -116,7 +119,10 @@ pub trait SpatialStrategy: fmt::Display + Send + Sync {
     /// # Errors
     ///
     /// As [`make_distance_value_source`](Self::make_distance_value_source).
-    fn make_distance_value_source_default(&self, query_point: &Arc<dyn Point>) -> Result<Arc<dyn DoubleValuesSource>> {
+    fn make_distance_value_source_default(
+        &self,
+        query_point: &Arc<dyn Point>,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
         self.make_distance_value_source(query_point, 1.0)
     }
 
@@ -157,14 +163,24 @@ pub trait SpatialStrategy: fmt::Display + Send + Sync {
     /// # Errors
     ///
     /// The errors of the shape factory and of `makeDistanceValueSource`.
-    fn make_recip_distance_value_source(&self, query_shape: &dyn Shape) -> Result<Arc<dyn DoubleValuesSource>> {
+    fn make_recip_distance_value_source(
+        &self,
+        query_shape: &dyn Shape,
+    ) -> Result<Arc<dyn DoubleValuesSource>> {
         let ctx = &self.strategy_base().ctx;
         let bbox = query_shape.get_bounding_box();
-        let corner = ctx.get_shape_factory().point_xy(bbox.get_min_x(), bbox.get_min_y())?;
-        let diagonal_dist = ctx.get_dist_calc().distance_xy(&*corner, bbox.get_max_x(), bbox.get_max_y());
+        let corner = ctx
+            .get_shape_factory()
+            .point_xy(bbox.get_min_x(), bbox.get_min_y())?;
+        let diagonal_dist =
+            ctx.get_dist_calc()
+                .distance_xy(&*corner, bbox.get_max_x(), bbox.get_max_y());
         let dist_to_edge = diagonal_dist * 0.5;
         let c = (dist_to_edge as f32) * 0.1f32; // one tenth
         let distance = self.make_distance_value_source(&query_shape.get_center(), 1.0)?;
-        Ok(Arc::new(ReciprocalDoubleValuesSource::new(f64::from(c), distance)))
+        Ok(Arc::new(ReciprocalDoubleValuesSource::new(
+            f64::from(c),
+            distance,
+        )))
     }
 }

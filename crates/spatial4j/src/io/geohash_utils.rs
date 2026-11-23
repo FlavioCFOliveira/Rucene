@@ -27,8 +27,8 @@ use crate::shape::point::Point;
 use crate::shape::rectangle::Rectangle;
 
 const BASE_32: [char; 32] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'j', 'k', 'm', 'n',
-    'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'j', 'k',
+    'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ]; //note: this is sorted
 
 /// `BASE_32_IDX`: sparse array of indexes from '0' to 'z'.
@@ -168,7 +168,10 @@ impl GeohashUtils {
     /// `getSubGeohashes(String baseGeohash)`: the 32 geohashes one level
     /// below, sorted.
     pub fn get_sub_geohashes(base_geohash: &str) -> Vec<String> {
-        BASE_32.iter().map(|c| format!("{base_geohash}{c}")).collect()
+        BASE_32
+            .iter()
+            .map(|c| format!("{base_geohash}{c}"))
+            .collect()
     }
 
     /// `lookupDegreesSizeForHashLen(int hashLen)`: `[latHeight, lonWidth]`.

@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Geo3DDocValuesField.java`, of the Java package
 //! `org.apache.lucene.spatial3d`.
 
@@ -81,7 +80,11 @@ impl Geo3DDocValuesField {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a point out of the model.
-    pub fn new_point(name: &str, point: &GeoPoint, planet_model: &Arc<PlanetModel>) -> Result<Self> {
+    pub fn new_point(
+        name: &str,
+        point: &GeoPoint,
+        planet_model: &Arc<PlanetModel>,
+    ) -> Result<Self> {
         let s = Self::with_name(name, planet_model);
         s.set_location_value(point)?;
         Ok(s)
@@ -93,7 +96,13 @@ impl Geo3DDocValuesField {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a value out of the model.
-    pub fn new_xyz(name: &str, x: f64, y: f64, z: f64, planet_model: &Arc<PlanetModel>) -> Result<Self> {
+    pub fn new_xyz(
+        name: &str,
+        x: f64,
+        y: f64,
+        z: f64,
+        planet_model: &Arc<PlanetModel>,
+    ) -> Result<Self> {
         let s = Self::with_name(name, planet_model);
         s.set_location_value_xyz(x, y, z)?;
         Ok(s)
@@ -105,7 +114,10 @@ impl Geo3DDocValuesField {
     ///
     /// `IllegalArgumentException` for a point out of the model.
     pub fn set_location_value(&self, point: &GeoPoint) -> Result<()> {
-        let v = self.planet_model.get_doc_value_encoder().encode_point(point)?;
+        let v = self
+            .planet_model
+            .get_doc_value_encoder()
+            .encode_point(point)?;
         self.fields_data.store(v, Ordering::Relaxed);
         Ok(())
     }
@@ -116,7 +128,10 @@ impl Geo3DDocValuesField {
     ///
     /// `IllegalArgumentException` for a value out of the model.
     pub fn set_location_value_xyz(&self, x: f64, y: f64, z: f64) -> Result<()> {
-        let v = self.planet_model.get_doc_value_encoder().encode_point_xyz(x, y, z)?;
+        let v = self
+            .planet_model
+            .get_doc_value_encoder()
+            .encode_point_xyz(x, y, z)?;
         self.fields_data.store(v, Ordering::Relaxed);
         Ok(())
     }
@@ -168,7 +183,12 @@ impl Geo3DDocValuesField {
         path_width_meters: f64,
         planet_model: &Arc<PlanetModel>,
     ) -> Result<Geo3DPointSortField> {
-        let shape = Geo3DUtil::from_path(planet_model, path_latitudes, path_longitudes, path_width_meters)?;
+        let shape = Geo3DUtil::from_path(
+            planet_model,
+            path_latitudes,
+            path_longitudes,
+            path_width_meters,
+        )?;
         Geo3DPointSortField::new(field, planet_model, shape)
     }
 
@@ -201,7 +221,13 @@ impl Geo3DDocValuesField {
         max_longitude: f64,
         planet_model: &Arc<PlanetModel>,
     ) -> Result<Geo3DPointOutsideSortField> {
-        let shape = Geo3DUtil::from_box(planet_model, min_latitude, max_latitude, min_longitude, max_longitude)?;
+        let shape = Geo3DUtil::from_box(
+            planet_model,
+            min_latitude,
+            max_latitude,
+            min_longitude,
+            max_longitude,
+        )?;
         Geo3DPointOutsideSortField::new(field, planet_model, shape)
     }
 
@@ -245,7 +271,12 @@ impl Geo3DDocValuesField {
         path_width_meters: f64,
         planet_model: &Arc<PlanetModel>,
     ) -> Result<Geo3DPointOutsideSortField> {
-        let shape = Geo3DUtil::from_path(planet_model, path_latitudes, path_longitudes, path_width_meters)?;
+        let shape = Geo3DUtil::from_path(
+            planet_model,
+            path_latitudes,
+            path_longitudes,
+            path_width_meters,
+        )?;
         Geo3DPointOutsideSortField::new(field, planet_model, shape)
     }
 

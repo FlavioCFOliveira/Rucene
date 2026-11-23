@@ -95,10 +95,13 @@ impl FieldPhraseList {
         let field = field_term_stack.get_field_name().to_string();
 
         let mut phrase_candidate: Vec<TermInfo> = Vec::new();
-        while !field_term_stack.is_empty() && (this.phrase_list.len() as i64) < phrase_limit as i64 {
+        while !field_term_stack.is_empty() && (this.phrase_list.len() as i64) < phrase_limit as i64
+        {
             phrase_candidate.clear();
 
-            let mut ti = field_term_stack.pop().expect("INVARIANT: the stack is not empty");
+            let mut ti = field_term_stack
+                .pop()
+                .expect("INVARIANT: the stack is not empty");
             let first = ti.clone();
             let mut curr_map: Option<&QueryPhraseMap> =
                 field_query.get_field_term_map(&field, ti.get_text());
@@ -175,8 +178,10 @@ impl FieldPhraseList {
     pub fn from_merge(to_merge: &[FieldPhraseList]) -> Self {
         // Merge all overlapping WeightedPhraseInfos
         // Step 1.  Sort by startOffset, endOffset, and boost, in that order.
-        let all_infos: Vec<&[WeightedPhraseInfo]> =
-            to_merge.iter().map(|fpl| fpl.phrase_list.as_slice()).collect();
+        let all_infos: Vec<&[WeightedPhraseInfo]> = to_merge
+            .iter()
+            .map(|fpl| fpl.phrase_list.as_slice())
+            .collect();
         let itr = merged(&all_infos, WeightedPhraseInfo::compare_to);
         // Step 2.  Walk the sorted list merging infos that overlap
         let mut phrase_list = Vec::new();
@@ -210,7 +215,8 @@ impl FieldPhraseList {
             phrase_list.push(work.pop().expect("INVARIANT: one element"));
         } else {
             phrase_list.push(
-                WeightedPhraseInfo::from_merge(&work).expect("INVARIANT: the work list is not empty"),
+                WeightedPhraseInfo::from_merge(&work)
+                    .expect("INVARIANT: the work list is not empty"),
             );
             work.clear();
         }
@@ -225,7 +231,9 @@ impl FieldPhraseList {
                 // of, for example, hyphenated words (social-economics). The
                 // result is that all informations in TermInfo are lost and
                 // not available for further operations.
-                exist_wpi.terms_infos.extend(wpi.terms_infos.iter().cloned());
+                exist_wpi
+                    .terms_infos
+                    .extend(wpi.terms_infos.iter().cloned());
                 exist_wpi.boost += wpi.get_boost(); // Accumulate boost
                 return;
             }
@@ -405,7 +413,9 @@ impl WeightedPhraseInfo {
 
     /// Equivalent to `compareTo(WeightedPhraseInfo)`.
     pub fn compare_to(&self, other: &WeightedPhraseInfo) -> i32 {
-        let diff = self.get_start_offset().wrapping_sub(other.get_start_offset());
+        let diff = self
+            .get_start_offset()
+            .wrapping_sub(other.get_start_offset());
         if diff != 0 {
             return diff;
         }
@@ -427,8 +437,12 @@ impl WeightedPhraseInfo {
     pub fn hash_code(&self) -> i32 {
         let prime = 31i32;
         let mut result = 1i32;
-        result = prime.wrapping_mul(result).wrapping_add(self.get_start_offset());
-        result = prime.wrapping_mul(result).wrapping_add(self.get_end_offset());
+        result = prime
+            .wrapping_mul(result)
+            .wrapping_add(self.get_start_offset());
+        result = prime
+            .wrapping_mul(result)
+            .wrapping_add(self.get_end_offset());
         let b = java_double_to_long_bits(self.get_boost() as f64);
         prime
             .wrapping_mul(result)
@@ -513,7 +527,9 @@ impl Toffs {
 
     /// Equivalent to `compareTo(Toffs)`.
     pub fn compare_to(&self, other: &Toffs) -> i32 {
-        let diff = self.get_start_offset().wrapping_sub(other.get_start_offset());
+        let diff = self
+            .get_start_offset()
+            .wrapping_sub(other.get_start_offset());
         if diff != 0 {
             return diff;
         }
@@ -524,8 +540,12 @@ impl Toffs {
     pub fn hash_code(&self) -> i32 {
         let prime = 31i32;
         let mut result = 1i32;
-        result = prime.wrapping_mul(result).wrapping_add(self.get_start_offset());
-        prime.wrapping_mul(result).wrapping_add(self.get_end_offset())
+        result = prime
+            .wrapping_mul(result)
+            .wrapping_add(self.get_start_offset());
+        prime
+            .wrapping_mul(result)
+            .wrapping_add(self.get_end_offset())
     }
 }
 

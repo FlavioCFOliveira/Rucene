@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoNorthLatitudeZone.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -29,6 +29,7 @@ use rucene::error::Result;
 use super::base_planet_object::BasePlanetObject;
 use super::bounded::Bounded;
 use super::bounds::Bounds;
+use super::d2s;
 use super::distance_style::DistanceStyle;
 use super::geo_area_shape::GeoAreaShape;
 use super::geo_b_box::GeoBBox;
@@ -42,7 +43,6 @@ use super::plane::Plane;
 use super::planet_model::PlanetModel;
 use super::serializable_object as so;
 use super::sided_plane::SidedPlane;
-use super::d2s;
 
 /// This GeoBBox represents an area rectangle limited only in bottom latitude (including the north pole).
 ///
@@ -65,12 +65,24 @@ impl GeoNorthLatitudeZone {
     /// `IllegalArgumentException` when the plane cannot be sided.
     pub fn new(planet_model: &Arc<PlanetModel>, bottom_lat: f64) -> Result<Self> {
         let pm = planet_model;
-        let sin_bottom_lat = bottom_lat.sin();
-        let cos_bottom_lat = bottom_lat.cos();
+        let sin_bottom_lat = java_math::sin(bottom_lat);
+        let cos_bottom_lat = java_math::cos(bottom_lat);
         let middle_lat = (PI * 0.5 + bottom_lat) * 0.5;
-        let sin_middle_lat = middle_lat.sin();
-        let interior_point = GeoPoint::new_sin_cos(pm, sin_middle_lat, 0.0, (1.0 - sin_middle_lat * sin_middle_lat).sqrt(), 1.0);
-        let bottom_boundary_point = GeoPoint::new_sin_cos(pm, sin_bottom_lat, 0.0, (1.0 - sin_bottom_lat * sin_bottom_lat).sqrt(), 1.0);
+        let sin_middle_lat = java_math::sin(middle_lat);
+        let interior_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_middle_lat,
+            0.0,
+            java_math::sqrt(1.0 - sin_middle_lat * sin_middle_lat),
+            1.0,
+        );
+        let bottom_boundary_point = GeoPoint::new_sin_cos(
+            pm,
+            sin_bottom_lat,
+            0.0,
+            java_math::sqrt(1.0 - sin_bottom_lat * sin_bottom_lat),
+            1.0,
+        );
         let bottom_plane = SidedPlane::new_horizontal(&interior_point, pm, sin_bottom_lat)?;
         Ok(Self {
             planet_model: pm.clone(),
@@ -109,11 +121,17 @@ impl GeoNorthLatitudeZone {
 
     fn hash_code_impl(&self) -> i32 {
         let result = BasePlanetObject::hash_code(&self.planet_model);
-        result.wrapping_mul(31).wrapping_add(self.bottom_boundary_point.java_hash_code())
+        result
+            .wrapping_mul(31)
+            .wrapping_add(self.bottom_boundary_point.java_hash_code())
     }
 }
 
-impl_geo_base_area_shape_common!(GeoNorthLatitudeZone, "org.apache.lucene.spatial3d.geom.GeoNorthLatitudeZone", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoNorthLatitudeZone,
+    "org.apache.lucene.spatial3d.geom.GeoNorthLatitudeZone",
+    geo_b_box
+);
 impl_geo_base_area_relationship!(GeoNorthLatitudeZone);
 
 impl Membership for GeoNorthLatitudeZone {
@@ -135,8 +153,20 @@ impl GeoShape for GeoNorthLatitudeZone {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
-        p.intersects(&self.planet_model, &self.bottom_plane, notable_points, &[], bounds, &[])
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        p.intersects(
+            &self.planet_model,
+            &self.bottom_plane,
+            notable_points,
+            &[],
+            bounds,
+            &[],
+        )
     }
 }
 

@@ -17,6 +17,7 @@
 //! The types declared in `S2Cap.java`, of the Java package
 //! `com.google.common.geometry`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -25,7 +26,7 @@ use rucene::util::java_fmt::double_to_string;
 use crate::r1_interval::R1Interval;
 use crate::s1_angle::S1Angle;
 use crate::s1_interval::S1Interval;
-use crate::s2::{double_to_long_bits, ieee_remainder, S2};
+use crate::s2::{double_to_long_bits, S2};
 use crate::s2_cell::S2Cell;
 use crate::s2_lat_lng::S2LatLng;
 use crate::s2_lat_lng_rect::S2LatLngRect;
@@ -55,7 +56,7 @@ impl S2Cap {
 
     /// `fromAxisAngle(S2Point, S1Angle)`.
     pub fn from_axis_angle(axis: S2Point, angle: &S1Angle) -> S2Cap {
-        let d = (0.5 * angle.radians()).sin();
+        let d = java_math::sin(0.5 * angle.radians());
         S2Cap::new(axis, 2.0 * d * d)
     }
 
@@ -94,7 +95,7 @@ impl S2Cap {
         if self.is_empty() {
             return S1Angle::from_radians(-1.0);
         }
-        S1Angle::from_radians(2.0 * (0.5 * self.height).sqrt().asin())
+        S1Angle::from_radians(2.0 * java_math::asin(java_math::sqrt(0.5 * self.height)))
     }
 
     /// `isValid()`.
@@ -114,7 +115,11 @@ impl S2Cap {
 
     /// `complement()`.
     pub fn complement(&self) -> S2Cap {
-        let c_height = if self.is_full() { -1.0 } else { 2.0 - self.height.max(0.0) };
+        let c_height = if self.is_full() {
+            -1.0
+        } else {
+            2.0 - self.height.max(0.0)
+        };
         S2Cap::from_axis_height(S2Point::neg(&self.axis), c_height)
     }
 
@@ -156,7 +161,7 @@ impl S2Cap {
             if angle >= S2::M_PI {
                 S2Cap::new(self.axis, 2.0) // Full cap
             } else {
-                let d = (0.5 * angle).sin();
+                let d = java_math::sin(0.5 * angle);
                 let new_height = self.height.max(Self::ROUND_UP * 2.0 * d * d);
                 S2Cap::new(self.axis, new_height)
             }
@@ -207,7 +212,9 @@ impl S2Cap {
             return 37;
         }
         let mut result: i32 = 17;
-        result = 37i32.wrapping_mul(result).wrapping_add(self.axis.hash_code());
+        result = 37i32
+            .wrapping_mul(result)
+            .wrapping_add(self.axis.hash_code());
         let height_bits = double_to_long_bits(self.height);
         result = 37i32
             .wrapping_mul(result)
@@ -218,7 +225,8 @@ impl S2Cap {
     /// `approxEquals(S2Cap, double)` (package-private).
     #[allow(dead_code)] // Package-private in Java; no caller in this subset.
     pub(crate) fn approx_equals_with(&self, other: &S2Cap, max_error: f64) -> bool {
-        (self.axis.aequal(&other.axis, max_error) && (self.height - other.height).abs() <= max_error)
+        (self.axis.aequal(&other.axis, max_error)
+            && (self.height - other.height).abs() <= max_error)
             || (self.is_empty() && other.height <= max_error)
             || (other.is_empty() && self.height <= max_error)
             || (self.is_full() && other.height >= 2.0 - max_error)
@@ -259,15 +267,24 @@ impl S2Region for S2Cap {
             all_longitudes = true;
         }
         if !all_longitudes {
-            let sin_a = (self.height * (2.0 - self.height)).sqrt();
-            let sin_c = axis_lat_lng.lat().radians().cos();
+            let sin_a = java_math::sqrt(self.height * (2.0 - self.height));
+            let sin_c = java_math::cos(axis_lat_lng.lat().radians());
             if sin_a <= sin_c {
-                let angle_a = (sin_a / sin_c).asin();
-                lng[0] = ieee_remainder(axis_lat_lng.lng().radians() - angle_a, 2.0 * S2::M_PI);
-                lng[1] = ieee_remainder(axis_lat_lng.lng().radians() + angle_a, 2.0 * S2::M_PI);
+                let angle_a = java_math::asin(sin_a / sin_c);
+                lng[0] = java_math::ieee_remainder(
+                    axis_lat_lng.lng().radians() - angle_a,
+                    2.0 * S2::M_PI,
+                );
+                lng[1] = java_math::ieee_remainder(
+                    axis_lat_lng.lng().radians() + angle_a,
+                    2.0 * S2::M_PI,
+                );
             }
         }
-        S2LatLngRect::new(R1Interval::new(lat[0], lat[1]), S1Interval::new(lng[0], lng[1]))
+        S2LatLngRect::new(
+            R1Interval::new(lat[0], lat[1]),
+            S1Interval::new(lng[0], lng[1]),
+        )
     }
 
     /// `contains(S2Cell)`.
@@ -313,6 +330,11 @@ impl Hash for S2Cap {
 impl fmt::Display for S2Cap {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[Point = {} Height = {}]", self.axis, double_to_string(self.height))
+        write!(
+            f,
+            "[Point = {} Height = {}]",
+            self.axis,
+            double_to_string(self.height)
+        )
     }
 }

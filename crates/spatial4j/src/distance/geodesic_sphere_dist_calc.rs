@@ -9,6 +9,7 @@
 //! The types declared in `GeodesicSphereDistCalc.java`, of the Java package
 //! `org.locationtech.spatial4j.distance`.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
@@ -92,7 +93,13 @@ macro_rules! geodesic_sphere_dist_calc {
                 ctx: &SpatialContext,
                 reuse: Option<Arc<dyn Rectangle>>,
             ) -> Result<Arc<dyn Rectangle>> {
-                DistanceUtils::calc_box_by_dist_from_pt_deg(from.get_y(), from.get_x(), dist_deg, ctx, reuse)
+                DistanceUtils::calc_box_by_dist_from_pt_deg(
+                    from.get_y(),
+                    from.get_x(),
+                    dist_deg,
+                    ctx,
+                    reuse,
+                )
             }
 
             fn calc_box_by_dist_from_pt_y_horiz_axis_deg(
@@ -101,21 +108,31 @@ macro_rules! geodesic_sphere_dist_calc {
                 dist_deg: f64,
                 _ctx: &SpatialContext,
             ) -> f64 {
-                DistanceUtils::calc_box_by_dist_from_pt_lat_horiz_axis_deg(from.get_y(), from.get_x(), dist_deg)
+                DistanceUtils::calc_box_by_dist_from_pt_lat_horiz_axis_deg(
+                    from.get_y(),
+                    from.get_x(),
+                    dist_deg,
+                )
             }
 
             fn area_rect(&self, rect: &dyn Rectangle) -> f64 {
                 //From http://mathforum.org/library/drmath/view/63767.html
                 let lat1 = DistanceUtils::to_radians(rect.get_min_y());
                 let lat2 = DistanceUtils::to_radians(rect.get_max_y());
-                std::f64::consts::PI / 180.0 * radius_deg() * radius_deg() * (lat1.sin() - lat2.sin()).abs()
+                std::f64::consts::PI / 180.0
+                    * radius_deg()
+                    * radius_deg()
+                    * (java_math::sin(lat1) - java_math::sin(lat2)).abs()
                     * rect.get_width()
             }
 
             fn area_circle(&self, circle: &dyn Circle) -> f64 {
                 //formula is a simplified case of area(rect).
                 let lat = DistanceUtils::to_radians(90.0 - circle.get_radius());
-                2.0 * std::f64::consts::PI * radius_deg() * radius_deg() * (1.0 - lat.sin())
+                2.0 * std::f64::consts::PI
+                    * radius_deg()
+                    * radius_deg()
+                    * (1.0 - java_math::sin(lat))
             }
 
             /// `equals(Object)`: same class.

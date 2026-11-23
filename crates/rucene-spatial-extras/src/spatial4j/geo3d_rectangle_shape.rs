@@ -82,7 +82,10 @@ impl Geo3dRectangleShape {
 
     /// `Geo3dRectangleShape(GeoBBox shape, SpatialContext spatialcontext)`:
     /// the bounds are those of the shape (`setBoundsFromshape()`).
-    pub fn new(shape: Arc<dyn GeoBBox>, spatialcontext: Arc<SpatialContext>) -> Arc<Geo3dRectangleShape> {
+    pub fn new(
+        shape: Arc<dyn GeoBBox>,
+        spatialcontext: Arc<SpatialContext>,
+    ) -> Arc<Geo3dRectangleShape> {
         let mut bounds = LatLonBounds::new();
         shape.get_bounds(&mut bounds);
         let min_x = if bounds.check_no_longitude_bound() {
@@ -114,7 +117,9 @@ impl Geo3dRectangleShape {
     }
 
     fn me(&self) -> Arc<Geo3dRectangleShape> {
-        self.me.upgrade().expect("a Geo3dRectangleShape is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a Geo3dRectangleShape is shared as an Arc")
     }
 }
 
@@ -206,7 +211,9 @@ impl Rectangle for Geo3dRectangleShape {
 }
 
 impl Shape for Geo3dRectangleShape {
-    spatial4j::spatial4j_shape_boilerplate!("org.apache.lucene.spatial.spatial4j.Geo3dRectangleShape");
+    spatial4j::spatial4j_shape_boilerplate!(
+        "org.apache.lucene.spatial.spatial4j.Geo3dRectangleShape"
+    );
 
     fn relate(&self, other: &dyn Shape) -> SpatialRelation {
         self.base.relate_shape(other)
@@ -232,16 +239,26 @@ impl Shape for Geo3dRectangleShape {
         let shape = self.bbox_shape();
         let point = shape.get_center();
         let center: Arc<dyn Point> = Geo3dPointShape::new(
-            GeoPointShapeFactory::make_geo_point_shape(shape.get_planet_model(), point.get_latitude(), point.get_longitude())
-                .unwrap_or_else(|e| panic!("{e}")),
+            GeoPointShapeFactory::make_geo_point_shape(
+                shape.get_planet_model(),
+                point.get_latitude(),
+                point.get_longitude(),
+            )
+            .unwrap_or_else(|e| panic!("{e}")),
             Arc::clone(&self.base.spatialcontext),
         );
         *lock(&self.base.center) = Some(Arc::clone(&center));
         center
     }
 
-    fn get_buffered(&self, distance: f64, spatial_context: &SpatialContext) -> Result<Arc<dyn Shape>> {
-        let b_box = self.bbox_shape().expand(distance * DistanceUtils::DEGREES_TO_RADIANS)?;
+    fn get_buffered(
+        &self,
+        distance: f64,
+        spatial_context: &SpatialContext,
+    ) -> Result<Arc<dyn Shape>> {
+        let b_box = self
+            .bbox_shape()
+            .expand(distance * DistanceUtils::DEGREES_TO_RADIANS)?;
         Ok(Geo3dRectangleShape::new(b_box, spatial_context.self_arc()))
     }
 

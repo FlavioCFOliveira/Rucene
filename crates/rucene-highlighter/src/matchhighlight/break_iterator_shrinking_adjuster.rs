@@ -105,7 +105,8 @@ impl PassageAdjuster for BreakIteratorShrinkingAdjuster {
 
         let mut to = passage.to;
         if to != value_length {
-            while !bi.is_boundary(to)? || (to > 0 && is_whitespace(value[(to - 1) as usize] as i32)) {
+            while !bi.is_boundary(to)? || (to > 0 && is_whitespace(value[(to - 1) as usize] as i32))
+            {
                 to = bi.preceding(to)?;
                 if to == DONE {
                     to = passage.to;

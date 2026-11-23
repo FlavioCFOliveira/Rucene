@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Membership.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 

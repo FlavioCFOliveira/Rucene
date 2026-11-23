@@ -13,9 +13,11 @@ publish = false
 name = "rucene_spatial_test_fixtures"
 
 # Lucene's `lucene/spatial-test-fixtures/build.gradle`: `moduleImplementation`
-# of `:lucene:test-framework` and `:lucene:spatial3d`.
+# of `:lucene:test-framework` and `:lucene:spatial3d`. The port draws its
+# randomness from randomizedtesting's context directly (the only part of
+# test-framework the Java class uses, through `LuceneTestCase.random()`), so
+# test-framework itself is not a dependency.
 [dependencies]
-rucene-test-framework = { path = "../rucene-test-framework" }
 rucene-spatial3d = { path = "../rucene-spatial3d" }
 # Reached in Java through test-framework's `api` dependency on
 # randomizedtesting and spatial3d's on lucene-core.

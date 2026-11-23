@@ -18,6 +18,7 @@
 //! `com.google.common.geometry`.
 
 use rucene::error::{LuceneError, Result};
+use rucene::util::java_math;
 
 use crate::r1_interval::R1Interval;
 use crate::s1_angle::S1Angle;
@@ -110,7 +111,12 @@ impl S2EdgeUtil {
     /// # Errors
     ///
     /// `IllegalArgumentException` when the edges do not truly cross.
-    pub fn get_intersection(a0: &S2Point, a1: &S2Point, b0: &S2Point, b1: &S2Point) -> Result<S2Point> {
+    pub fn get_intersection(
+        a0: &S2Point,
+        a1: &S2Point,
+        b0: &S2Point,
+        b1: &S2Point,
+    ) -> Result<S2Point> {
         if Self::robust_crossing(a0, a1, b0, b1) <= 0 {
             return Err(LuceneError::illegal_argument(
                 "Input edges a0a1 and b0b1 muct have a true robustCrossing.",
@@ -182,10 +188,14 @@ impl S2EdgeUtil {
         }
         if S2::simple_ccw(a_cross_b, a, x) && S2::simple_ccw(x, b, a_cross_b) {
             let sin_dist = x.dot_prod(a_cross_b).abs() / a_cross_b.norm();
-            return Ok(S1Angle::from_radians(1.0f64.min(sin_dist).asin()));
+            return Ok(S1Angle::from_radians(java_math::asin(1.0f64.min(sin_dist))));
         }
-        let linear_dist2 = S2Point::minus(x, a).norm2().min(S2Point::minus(x, b).norm2());
-        Ok(S1Angle::from_radians(2.0 * 1.0f64.min(0.5 * linear_dist2.sqrt()).asin()))
+        let linear_dist2 = S2Point::minus(x, a)
+            .norm2()
+            .min(S2Point::minus(x, b).norm2());
+        Ok(S1Angle::from_radians(
+            2.0 * java_math::asin(1.0f64.min(0.5 * java_math::sqrt(linear_dist2))),
+        ))
     }
 
     /// `getClosestPoint(S2Point x, S2Point a, S2Point b)`.
@@ -206,7 +216,13 @@ impl S2EdgeUtil {
         if S2::simple_ccw(&cross_prod, a, &p) && S2::simple_ccw(&p, b, &cross_prod) {
             return Ok(S2Point::normalize(&p));
         }
-        Ok(if S2Point::minus(x, a).norm2() <= S2Point::minus(x, b).norm2() { *a } else { *b })
+        Ok(
+            if S2Point::minus(x, a).norm2() <= S2Point::minus(x, b).norm2() {
+                *a
+            } else {
+                *b
+            },
+        )
     }
 }
 
@@ -226,7 +242,13 @@ impl EdgeCrosser {
     /// `EdgeCrosser(S2Point a, S2Point b, S2Point c)`.
     pub fn new(a: S2Point, b: S2Point, c: S2Point) -> Self {
         let a_cross_b = S2Point::cross_prod(&a, &b);
-        let mut crosser = Self { a, b, a_cross_b, c, acb: 0 };
+        let mut crosser = Self {
+            a,
+            b,
+            a_cross_b,
+            c,
+            acb: 0,
+        };
         crosser.restart_at(c);
         crosser
     }
@@ -298,7 +320,11 @@ impl Default for RectBounder {
 impl RectBounder {
     /// `RectBounder()`.
     pub fn new() -> Self {
-        Self { a: None, a_lat_lng: None, bound: S2LatLngRect::empty() }
+        Self {
+            a: None,
+            a_lat_lng: None,
+            bound: S2LatLngRect::empty(),
+        }
     }
 
     /// `addPoint(S2Point)`.
@@ -308,14 +334,18 @@ impl RectBounder {
             self.bound = self.bound.add_lat_lng(&b_lat_lng);
         } else {
             let a = self.a.expect("java.lang.NullPointerException: a is null");
-            let a_lat_lng = self.a_lat_lng.expect("java.lang.NullPointerException: aLatLng is null");
-            self.bound = self.bound.union(&S2LatLngRect::from_point_pair(&a_lat_lng, &b_lat_lng));
+            let a_lat_lng = self
+                .a_lat_lng
+                .expect("java.lang.NullPointerException: aLatLng is null");
+            self.bound = self
+                .bound
+                .union(&S2LatLngRect::from_point_pair(&a_lat_lng, &b_lat_lng));
             let a_cross_b = S2::robust_cross_prod(&a, &b);
             let dir = S2Point::cross_prod(&a_cross_b, &S2Point::new(0.0, 0.0, 1.0));
             let da = dir.dot_prod(&a);
             let db = dir.dot_prod(&b);
             if da * db < 0.0 {
-                let abs_lat = (a_cross_b.get(2) / a_cross_b.norm()).abs().acos();
+                let abs_lat = java_math::acos((a_cross_b.get(2) / a_cross_b.norm()).abs());
                 let mut lat = self.bound.lat();
                 if da < 0.0 {
                     lat = R1Interval::new(lat.lo(), abs_lat.max(self.bound.lat().hi()));
@@ -374,8 +404,7 @@ impl XYZPruner {
         self.xmax = self.xmax.max(to.x.max(from.x));
         self.ymax = self.ymax.max(to.y.max(from.y));
         self.zmax = self.zmax.max(to.z.max(from.z));
-        let approx_arc_len =
-            (from.x - to.x).abs() + (from.y - to.y).abs() + (from.z - to.z).abs();
+        let approx_arc_len = (from.x - to.x).abs() + (from.y - to.y).abs() + (from.z - to.z).abs();
         if approx_arc_len < 0.025 {
             // less than 2 degrees
             self.max_deformation = self.max_deformation.max(approx_arc_len * 0.0025);
@@ -400,7 +429,9 @@ impl XYZPruner {
 
     /// `intersects(S2Point)`.
     pub fn intersects(&mut self, v1: S2Point) -> bool {
-        let last = self.last_vertex.expect("java.lang.NullPointerException: lastVertex is null");
+        let last = self
+            .last_vertex
+            .expect("java.lang.NullPointerException: lastVertex is null");
         let mut result = true;
         if (v1.x < self.xmin && last.x < self.xmin) || (v1.x > self.xmax && last.x > self.xmax) {
             result = false;
@@ -430,13 +461,18 @@ pub struct LongitudePruner {
 impl LongitudePruner {
     /// `LongitudePruner(S1Interval interval, S2Point v0)`.
     pub fn new(interval: S1Interval, v0: &S2Point) -> Self {
-        Self { interval, lng0: S2LatLng::longitude(v0).radians() }
+        Self {
+            interval,
+            lng0: S2LatLng::longitude(v0).radians(),
+        }
     }
 
     /// `intersects(S2Point)`.
     pub fn intersects(&mut self, v1: &S2Point) -> bool {
         let lng1 = S2LatLng::longitude(v1).radians();
-        let result = self.interval.intersects(&S1Interval::from_point_pair(self.lng0, lng1));
+        let result = self
+            .interval
+            .intersects(&S1Interval::from_point_pair(self.lng0, lng1));
         self.lng0 = lng1;
         result
     }
@@ -489,7 +525,11 @@ pub struct WedgeContainsOrIntersects;
 impl WedgeRelation for WedgeContainsOrIntersects {
     fn test(&self, a0: &S2Point, ab1: &S2Point, a2: &S2Point, b0: &S2Point, b2: &S2Point) -> i32 {
         if S2::ordered_ccw(a0, a2, b2, ab1) {
-            return if S2::ordered_ccw(b2, b0, a0, ab1) { 1 } else { -1 }; // Case 1 vs. 2,5,6.
+            return if S2::ordered_ccw(b2, b0, a0, ab1) {
+                1
+            } else {
+                -1
+            }; // Case 1 vs. 2,5,6.
         }
         if !S2::ordered_ccw(a2, b0, b2, ab1) {
             return 0; // Case 3.

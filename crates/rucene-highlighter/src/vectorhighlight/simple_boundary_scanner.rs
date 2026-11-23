@@ -99,10 +99,7 @@ impl BoundaryScanner for SimpleBoundaryScanner {
         let mut count = self.max_scan;
         while offset > 0 && count > 0 {
             // found?
-            if self
-                .boundary_chars
-                .contains(&buffer[(offset - 1) as usize])
-            {
+            if self.boundary_chars.contains(&buffer[(offset - 1) as usize]) {
                 return offset;
             }
             offset -= 1;

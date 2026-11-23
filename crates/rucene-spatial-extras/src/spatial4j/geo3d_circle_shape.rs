@@ -51,7 +51,10 @@ pub struct Geo3dCircleShape {
 
 impl Geo3dCircleShape {
     /// `Geo3dCircleShape(GeoCircle shape, SpatialContext spatialcontext)`.
-    pub fn new(shape: Arc<dyn GeoCircle>, spatialcontext: Arc<SpatialContext>) -> Arc<Geo3dCircleShape> {
+    pub fn new(
+        shape: Arc<dyn GeoCircle>,
+        spatialcontext: Arc<SpatialContext>,
+    ) -> Arc<Geo3dCircleShape> {
         let area: Arc<dyn GeoAreaShape> = shape.clone();
         Arc::new(Geo3dCircleShape {
             base: Geo3dShape::new(area, spatialcontext),

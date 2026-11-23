@@ -75,12 +75,17 @@ impl Geo3dBinaryCodec {
 
 /// `"...: " + serializableObject.getClass()`.
 fn not_supported(what: &str, o: &dyn SerializableObject) -> LuceneError {
-    LuceneError::illegal_argument(format!("trying to read a not supported {what}: class {}", o.class_name()))
+    LuceneError::illegal_argument(format!(
+        "trying to read a not supported {what}: class {}",
+        o.class_name()
+    ))
 }
 
 impl BinaryCodec for Geo3dBinaryCodec {
     fn ctx(&self) -> Arc<SpatialContext> {
-        self.ctx.upgrade().expect("the SpatialContext of a Geo3dBinaryCodec is alive")
+        self.ctx
+            .upgrade()
+            .expect("the SpatialContext of a Geo3dBinaryCodec is alive")
     }
 
     fn as_any(&self) -> &dyn Any {

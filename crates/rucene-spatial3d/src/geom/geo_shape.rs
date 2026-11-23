@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoShape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -32,8 +31,12 @@ pub trait GeoShape: GeoBounds + AsGeoShape {
     fn get_edge_points(&self) -> Vec<GeoPoint>;
 
     /// `intersects(Plane, GeoPoint[], Membership...)`.
-    fn intersects(&self, plane: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership])
-        -> bool;
+    fn intersects(
+        &self,
+        plane: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool;
 }
 
 /// The upcast of any [`GeoShape`] to `&dyn GeoShape`, for generic code.

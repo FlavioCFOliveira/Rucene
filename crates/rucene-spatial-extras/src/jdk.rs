@@ -175,7 +175,8 @@ impl AtomicF64 {
     }
 
     pub(crate) fn set(&self, v: f64) {
-        self.0.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.0
+            .store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 }
 

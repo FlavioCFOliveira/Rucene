@@ -25,7 +25,9 @@ use rucene::index::{LeafReaderContext, SeekStatus};
 use rucene::util::BytesRef;
 use spatial4j::shape::shape::Shape;
 
-use crate::prefix::abstract_prefix_tree_query::{AbstractPrefixTreeQuery, BaseTermsEnumTraverser, TreeDocIdSet};
+use crate::prefix::abstract_prefix_tree_query::{
+    AbstractPrefixTreeQuery, BaseTermsEnumTraverser, TreeDocIdSet,
+};
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::cell_iterator::CellIterator;
 use crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree;
@@ -93,7 +95,12 @@ pub trait VisitorHooks {
     /// # Errors
     ///
     /// The I/O errors of collecting documents.
-    fn visit_prefix(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<bool>;
+    fn visit_prefix(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<bool>;
 
     /// `visitLeaf(Cell cell)`: visit an indexed leaf cell. Implementations
     /// usually collect the documents.
@@ -101,7 +108,12 @@ pub trait VisitorHooks {
     /// # Errors
     ///
     /// The I/O errors of collecting documents.
-    fn visit_leaf(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<()>;
+    fn visit_leaf(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<()>;
 
     /// `visitScanned(Cell cell)`: the cell is either indexed as a leaf or
     /// is the last level of detail. It might not even intersect the query
@@ -111,7 +123,12 @@ pub trait VisitorHooks {
     /// # Errors
     ///
     /// The I/O errors of collecting documents.
-    fn visit_scanned(&mut self, t: &mut BaseTermsEnumTraverser, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Result<()> {
+    fn visit_scanned(
+        &mut self,
+        t: &mut BaseTermsEnumTraverser,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Result<()> {
         let relate = cell.get_shape().relate(&*q.base.query_shape);
         if relate.intersects() {
             cell.set_shape_rel(Some(relate)); // just being pedantic
@@ -128,7 +145,11 @@ pub trait VisitorHooks {
     /// conquer to find the next intersecting cells of the query shape that
     /// are beneath `cell`. `cell` is guaranteed to have an intersection and
     /// thus this must return some number of nodes.
-    fn find_sub_cells_to_visit(&mut self, q: &AbstractVisitingPrefixTreeQuery, cell: &CellRef) -> Box<dyn CellIterator> {
+    fn find_sub_cells_to_visit(
+        &mut self,
+        q: &AbstractVisitingPrefixTreeQuery,
+        cell: &CellRef,
+    ) -> Box<dyn CellIterator> {
         cell.get_next_level_cells(Some(Arc::clone(&q.base.query_shape)))
     }
 
@@ -237,7 +258,11 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
     /// # Errors
     ///
     /// The I/O errors of reading the terms.
-    pub fn new(query: &'q AbstractVisitingPrefixTreeQuery, context: &LeafReaderContext, hooks: H) -> Result<Self> {
+    pub fn new(
+        query: &'q AbstractVisitingPrefixTreeQuery,
+        context: &LeafReaderContext,
+        hooks: H,
+    ) -> Result<Self> {
         Ok(Self {
             traverser: BaseTermsEnumTraverser::new(context, &query.base.field_name)?,
             query,
@@ -340,7 +365,10 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
                 //      Seek !
                 let reuse = std::mem::replace(&mut self.cur_v_node_term, BytesRef::new(Vec::new()));
                 self.cur_v_node_term = cur_cell.get_token_bytes_no_leaf(Some(reuse));
-                let seek_status = self.traverser.terms_enum().seek_ceil(&self.cur_v_node_term)?;
+                let seek_status = self
+                    .traverser
+                    .terms_enum()
+                    .seek_ceil(&self.cur_v_node_term)?;
                 if seek_status == SeekStatus::END {
                     break; // all done
                 }
@@ -348,7 +376,9 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
                 self.read_this_term(term);
                 if seek_status == SeekStatus::NOT_FOUND {
                     // Did we find a leaf of the cell we were looking for or something after?
-                    if !self.indexed_cell().is_leaf() || self.indexed_cell().compare_to_no_leaf(&*cur_cell) != 0 {
+                    if !self.indexed_cell().is_leaf()
+                        || self.indexed_cell().compare_to_no_leaf(&*cur_cell) != 0
+                    {
                         continue; // The indexed cell is after; continue loop to next query cell
                     }
                 }
@@ -360,7 +390,8 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
             // continue
             if self.indexed_cell().is_leaf() {
                 let indexed_cell = Arc::clone(self.indexed_cell());
-                self.hooks.visit_leaf(&mut self.traverser, self.query, &indexed_cell)?; // TODO or query cell? Though shouldn't matter.
+                self.hooks
+                    .visit_leaf(&mut self.traverser, self.query, &indexed_cell)?; // TODO or query cell? Though shouldn't matter.
                 if !self.next_term()? {
                     break;
                 }
@@ -368,14 +399,19 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
             }
             // If a prefix (non-leaf) then visit; see if we descend.
             // need to use curVNode.cell not indexedCell
-            let descend = self.hooks.visit_prefix(&mut self.traverser, self.query, &cur_cell)?;
+            let descend = self
+                .hooks
+                .visit_prefix(&mut self.traverser, self.query, &cur_cell)?;
             if !self.next_term()? {
                 break;
             }
             // Check for adjacent leaf with the same prefix
-            if self.indexed_cell().is_leaf() && self.indexed_cell().get_level() == cur_cell.get_level() {
+            if self.indexed_cell().is_leaf()
+                && self.indexed_cell().get_level() == cur_cell.get_level()
+            {
                 let indexed_cell = Arc::clone(self.indexed_cell());
-                self.hooks.visit_leaf(&mut self.traverser, self.query, &indexed_cell)?; // TODO or query cell? Though shouldn't matter.
+                self.hooks
+                    .visit_leaf(&mut self.traverser, self.query, &indexed_cell)?; // TODO or query cell? Though shouldn't matter.
                 if !self.next_term()? {
                     break;
                 }
@@ -446,7 +482,8 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
             if indexed_cell.get_level() == scan_detail_level
                 || (indexed_cell.get_level() < scan_detail_level && indexed_cell.is_leaf())
             {
-                self.hooks.visit_scanned(&mut self.traverser, self.query, &indexed_cell)?;
+                self.hooks
+                    .visit_scanned(&mut self.traverser, self.query, &indexed_cell)?;
             }
             // advance
             if !self.next_term()? {

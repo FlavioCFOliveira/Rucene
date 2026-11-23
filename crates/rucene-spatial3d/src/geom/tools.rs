@@ -15,23 +15,21 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `Tools.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
 /// Static methods globally useful for 3d geometric work.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.Tools`.
+use rucene::util::java_math;
+
 pub struct Tools;
 
 impl Tools {
     /// `safeAcos(double)`: `acos` of the value clamped to `[-1, 1]`.
-    pub fn safe_acos(mut value: f64) -> f64 {
-        if value > 1.0 {
-            value = 1.0;
-        } else if value < -1.0 {
-            value = -1.0;
-        }
-        value.acos()
+    pub fn safe_acos(value: f64) -> f64 {
+        // Java's `if (value > 1.0) value = 1.0; else if (value < -1.0) value = -1.0;`,
+        // which keeps a NaN as `f64::clamp` does.
+        java_math::acos(value.clamp(-1.0, 1.0))
     }
 }

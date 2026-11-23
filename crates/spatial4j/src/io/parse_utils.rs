@@ -39,7 +39,11 @@ impl ParseUtils {
     ///
     /// `InvalidShapeException` when the value does not hold `dimension`
     /// values.
-    pub fn parse_point(out: Option<Vec<String>>, external_val: &str, dimension: usize) -> Result<Vec<String>> {
+    pub fn parse_point(
+        out: Option<Vec<String>>,
+        external_val: &str,
+        dimension: usize,
+    ) -> Result<Vec<String>> {
         let mut out = match out {
             Some(o) if o.len() == dimension => o,
             _ => vec![String::new(); dimension],
@@ -68,7 +72,9 @@ impl ParseUtils {
                 }
                 out[i] = external_val[start as usize..end as usize].to_string();
                 start = idx + 1;
-                end = external_val[start as usize..].find(',').map_or(-1, |p| p as isize + start);
+                end = external_val[start as usize..]
+                    .find(',')
+                    .map_or(-1, |p| p as isize + start);
                 idx = end;
                 if end == -1 {
                     end = external_val.len() as isize;
@@ -90,7 +96,11 @@ impl ParseUtils {
     ///
     /// `InvalidShapeException` when the value does not hold `dimension`
     /// values; `NumberFormatException` for a value that is not a number.
-    pub fn parse_point_double(out: Option<Vec<f64>>, external_val: &str, dimension: usize) -> Result<Vec<f64>> {
+    pub fn parse_point_double(
+        out: Option<Vec<f64>>,
+        external_val: &str,
+        dimension: usize,
+    ) -> Result<Vec<f64>> {
         let mut out = match out {
             Some(o) if o.len() == dimension => o,
             _ => vec![0.0; dimension],
@@ -120,7 +130,9 @@ impl ParseUtils {
                 }
                 out[i] = parse_double(&external_val[start as usize..end as usize])?;
                 start = idx + 1;
-                end = external_val[start as usize..].find(',').map_or(-1, |p| p as isize + start);
+                end = external_val[start as usize..]
+                    .find(',')
+                    .map_or(-1, |p| p as isize + start);
                 idx = end;
                 if end == -1 {
                     end = external_val.len() as isize;
@@ -150,7 +162,10 @@ impl ParseUtils {
     /// # Errors
     ///
     /// `InvalidShapeException` for a malformed value or one out of range.
-    pub fn parse_latitude_longitude_into(out_lat_lon: Option<Vec<f64>>, lat_lon_str: &str) -> Result<Vec<f64>> {
+    pub fn parse_latitude_longitude_into(
+        out_lat_lon: Option<Vec<f64>>,
+        lat_lon_str: &str,
+    ) -> Result<Vec<f64>> {
         let out_lat_lon = Self::parse_point_double(out_lat_lon, lat_lon_str, 2)?;
         if out_lat_lon[0] < -90.0 || out_lat_lon[0] > 90.0 {
             return Err(InvalidShapeException::error(format!(

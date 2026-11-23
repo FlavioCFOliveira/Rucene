@@ -39,7 +39,10 @@ pub(crate) struct FilterCellIterator {
 
 impl FilterCellIterator {
     /// `FilterCellIterator(Iterator<Cell> baseIter, Shape shapeFilter)`.
-    pub(crate) fn new(base_iter: Box<dyn CellIterator>, shape_filter: Option<Arc<dyn Shape>>) -> Self {
+    pub(crate) fn new(
+        base_iter: Box<dyn CellIterator>,
+        shape_filter: Option<Arc<dyn Shape>>,
+    ) -> Self {
         Self {
             base: CellIteratorBase::default(),
             base_iter,

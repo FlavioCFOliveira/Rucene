@@ -46,9 +46,14 @@ impl R2Vector {
     /// `IllegalStateException` when `coord` does not hold exactly 2 values.
     pub fn from_coords(coord: &[f64]) -> Result<Self> {
         if coord.len() != 2 {
-            return Err(LuceneError::illegal_state("Points must have exactly 2 coordinates"));
+            return Err(LuceneError::illegal_state(
+                "Points must have exactly 2 coordinates",
+            ));
         }
-        Ok(Self { x: coord[0], y: coord[1] })
+        Ok(Self {
+            x: coord[0],
+            y: coord[1],
+        })
     }
 
     /// `x()`.
@@ -120,10 +125,16 @@ impl R2Vector {
     /// `hashCode()`: ignores the sign of the coordinates.
     pub fn hash_code(&self) -> i32 {
         let mut value: i64 = 17;
-        value = value
-            .wrapping_add(37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.x.abs())));
-        value = value
-            .wrapping_add(37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.y.abs())));
+        value = value.wrapping_add(
+            37i64
+                .wrapping_mul(value)
+                .wrapping_add(double_to_long_bits(self.x.abs())),
+        );
+        value = value.wrapping_add(
+            37i64
+                .wrapping_mul(value)
+                .wrapping_add(double_to_long_bits(self.y.abs())),
+        );
         (value ^ ((value as u64) >> 32) as i64) as i32
     }
 }
@@ -144,6 +155,11 @@ impl Hash for R2Vector {
 impl fmt::Display for R2Vector {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({}, {})", double_to_string(self.x), double_to_string(self.y))
+        write!(
+            f,
+            "({}, {})",
+            double_to_string(self.x),
+            double_to_string(self.y)
+        )
     }
 }

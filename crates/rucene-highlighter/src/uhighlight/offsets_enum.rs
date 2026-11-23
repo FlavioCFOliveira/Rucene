@@ -241,7 +241,11 @@ impl OfPostings {
     /// # Errors
     ///
     /// What the postings' `freq()` raises.
-    pub fn with_freq(term: BytesRef, freq: i32, postings_enum: Box<dyn PostingsEnum>) -> Result<Self> {
+    pub fn with_freq(
+        term: BytesRef,
+        freq: i32,
+        postings_enum: Box<dyn PostingsEnum>,
+    ) -> Result<Self> {
         let pos_counter = postings_enum.freq()?;
         Ok(Self {
             term,
@@ -394,9 +398,8 @@ impl OfMatchesIteratorWithSubs {
     pub fn new(matches_iterator: Box<dyn MatchesIterator>) -> Result<Self> {
         let query_to_term_map = Arc::new(Mutex::new(QueryToTermMap::default()));
         let map = Arc::clone(&query_to_term_map);
-        let supplier: TermSupplier = Arc::new(move |mi: &dyn MatchesIterator| {
-            query_to_term(&map, mi.get_query())
-        });
+        let supplier: TermSupplier =
+            Arc::new(move |mi: &dyn MatchesIterator| query_to_term(&map, mi.get_query()));
         let mut pending_queue = JavaPriorityQueue::new(compare_pending as fn(&_, &_) -> _);
         pending_queue.offer(PendingOE::MatchesIterator(OfMatchesIterator::new(
             matches_iterator,
@@ -422,7 +425,8 @@ impl OfMatchesIteratorWithSubs {
             }; // remove
             self.enqueue_cached_matches(Some(sub_matches))?;
             if mi_oe.next_position()? {
-                self.pending_queue.offer(PendingOE::MatchesIterator(mi_oe))?;
+                self.pending_queue
+                    .offer(PendingOE::MatchesIterator(mi_oe))?;
             }
         } // else has no subMatches.  It will stay enqueued.
         Ok(())
@@ -434,15 +438,20 @@ impl OfMatchesIteratorWithSubs {
         if let Some(sub_matches) = sub_matches {
             self.enqueue_cached_matches(Some(sub_matches))?;
             if mi_oe.next_position()? {
-                self.pending_queue.offer(PendingOE::MatchesIterator(mi_oe))?;
+                self.pending_queue
+                    .offer(PendingOE::MatchesIterator(mi_oe))?;
             }
         } else {
-            self.pending_queue.offer(PendingOE::MatchesIterator(mi_oe))?;
+            self.pending_queue
+                .offer(PendingOE::MatchesIterator(mi_oe))?;
         }
         Ok(())
     }
 
-    fn enqueue_cached_matches(&mut self, this_mi: Option<Box<dyn MatchesIterator>>) -> Result<bool> {
+    fn enqueue_cached_matches(
+        &mut self,
+        this_mi: Option<Box<dyn MatchesIterator>>,
+    ) -> Result<bool> {
         let Some(mut this_mi) = this_mi else {
             return Ok(false);
         };
@@ -697,7 +706,10 @@ impl OffsetsEnum for MultiOffsetsEnum {
             return Ok(self.queue.len() > 0);
         }
         if self.queue.len() > 0 {
-            let mut top = self.queue.poll()?.expect("INVARIANT: the queue is not empty");
+            let mut top = self
+                .queue
+                .poll()?
+                .expect("INVARIANT: the queue is not empty");
             if top.next_position()? {
                 self.queue.offer(top)?;
                 return Ok(true);

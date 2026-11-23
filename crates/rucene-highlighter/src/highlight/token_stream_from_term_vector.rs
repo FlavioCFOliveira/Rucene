@@ -56,7 +56,7 @@ pub struct TokenStreamFromTermVector {
     max_start_offset: i32,
     offset_attribute: Option<AttributeHandle<dyn OffsetAttribute>>, // maybe null
     payload_attribute: Option<AttributeHandle<dyn PayloadAttribute>>, // maybe null
-    term_chars_builder: Vec<char>, // term data here
+    term_chars_builder: Vec<char>,                                  // term data here
     payloads_bytes_ref_array: Option<BytesRefArray>, // only used when payloadAttribute is non-null
     /// The nodes of the token linked lists; `TokenLL.next` is an index here.
     tokens: Vec<TokenLL>,
@@ -160,8 +160,9 @@ impl TokenStreamFromTermVector {
             };
             // Grab the term (in same way as BytesRef.utf8ToString() but we
             // don't want a String obj)
-            let term_chars: Vec<char> =
-                String::from_utf8_lossy(term_bytes_ref.slice()).chars().collect();
+            let term_chars: Vec<char> = String::from_utf8_lossy(term_bytes_ref.slice())
+                .chars()
+                .collect();
             let term_chars_len = term_chars.len() as i32;
             let term_chars_off = self.term_chars_builder.len() as i32;
             self.term_chars_builder.extend_from_slice(&term_chars);
@@ -215,8 +216,9 @@ impl TokenStreamFromTermVector {
                 }
                 let index = self.tokens.len();
                 self.tokens.push(token);
-                positioned_tokens[pos as usize] =
-                    Some(self.insert_into_sorted_linked_list(index, positioned_tokens[pos as usize]));
+                positioned_tokens[pos as usize] = Some(
+                    self.insert_into_sorted_linked_list(index, positioned_tokens[pos as usize]),
+                );
 
                 last_position = last_position.max(pos);
             }
@@ -282,7 +284,8 @@ impl TokenStreamFromTermVector {
         // Take the smaller of the two estimates, but no smaller than 64
         Ok(vec![
             None;
-            64.max(original_position_estimate.min(offset_limit_position_estimate)) as usize
+            64.max(original_position_estimate.min(offset_limit_position_estimate))
+                as usize
         ])
     }
 

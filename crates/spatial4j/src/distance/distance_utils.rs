@@ -18,6 +18,7 @@
 //! The types declared in `DistanceUtils.java`, of the Java package
 //! `org.locationtech.spatial4j.distance`.
 
+use rucene::util::java_math;
 use std::sync::Arc;
 
 use rucene::error::Result;
@@ -64,18 +65,28 @@ impl DistanceUtils {
     /// `EARTH_MEAN_RADIUS_MI`.
     pub const EARTH_MEAN_RADIUS_MI: f64 = Self::EARTH_MEAN_RADIUS_KM * Self::KM_TO_MILES;
     /// `EARTH_EQUATORIAL_RADIUS_MI`.
-    pub const EARTH_EQUATORIAL_RADIUS_MI: f64 = Self::EARTH_EQUATORIAL_RADIUS_KM * Self::KM_TO_MILES;
+    pub const EARTH_EQUATORIAL_RADIUS_MI: f64 =
+        Self::EARTH_EQUATORIAL_RADIUS_KM * Self::KM_TO_MILES;
 
     /// `vectorDistance(double[] vec1, double[] vec2, double power)`
     /// (deprecated).
     pub fn vector_distance(vec1: &[f64], vec2: &[f64], power: f64) -> f64 {
-        let one_over_power = if power == 0.0 || power == 1.0 || power == 2.0 { f64::NAN } else { 1.0 / power };
+        let one_over_power = if power == 0.0 || power == 1.0 || power == 2.0 {
+            f64::NAN
+        } else {
+            1.0 / power
+        };
         Self::vector_distance_with(vec1, vec2, power, one_over_power)
     }
 
     /// `vectorDistance(double[] vec1, double[] vec2, double power, double
     /// oneOverPower)` (deprecated).
-    pub fn vector_distance_with(vec1: &[f64], vec2: &[f64], power: f64, one_over_power: f64) -> f64 {
+    pub fn vector_distance_with(
+        vec1: &[f64],
+        vec2: &[f64],
+        power: f64,
+        one_over_power: f64,
+    ) -> f64 {
         let mut result = 0.0;
         if power == 0.0 {
             for i in 0..vec1.len() {
@@ -88,7 +99,7 @@ impl DistanceUtils {
             }
         } else if power == 2.0 {
             // Cartesian
-            result = Self::dist_squared_cartesian(vec1, vec2).sqrt();
+            result = java_math::sqrt(Self::dist_squared_cartesian(vec1, vec2));
         } else if power == f64::from(i32::MAX) || power.is_infinite() {
             //infinite norm?
             for i in 0..vec1.len() {
@@ -96,16 +107,21 @@ impl DistanceUtils {
             }
         } else {
             for i in 0..vec1.len() {
-                result += (vec1[i] - vec2[i]).powf(power);
+                result += java_math::pow(vec1[i] - vec2[i], power);
             }
-            result = result.powf(one_over_power);
+            result = java_math::pow(result, one_over_power);
         }
         result
     }
 
     /// `vectorBoxCorner(double[] center, double[] result, double distance,
     /// boolean upperRight)` (deprecated).
-    pub fn vector_box_corner(center: &[f64], result: Option<Vec<f64>>, mut distance: f64, upper_right: bool) -> Vec<f64> {
+    pub fn vector_box_corner(
+        center: &[f64],
+        result: Option<Vec<f64>>,
+        mut distance: f64,
+        upper_right: bool,
+    ) -> Vec<f64> {
         let mut result = match result {
             Some(r) if r.len() == center.len() => r,
             _ => vec![0.0; center.len()],
@@ -142,14 +158,18 @@ impl DistanceUtils {
           lat2 = asin(sin(lat1)*cos(d/R) + cos(lat1)*sin(d/R)*cos(θ))
           lon2 = lon1 + atan2(sin(θ)*sin(d/R)*cos(lat1), cos(d/R)−sin(lat1)*sin(lat2))
         */
-        let cos_ang_dist = distance_rad.cos();
-        let cos_start_lat = start_lat.cos();
-        let sin_ang_dist = distance_rad.sin();
-        let sin_start_lat = start_lat.sin();
-        let sin_lat2 = sin_start_lat * cos_ang_dist + cos_start_lat * sin_ang_dist * bearing_rad.cos();
-        let mut lat2 = sin_lat2.asin();
+        let cos_ang_dist = java_math::cos(distance_rad);
+        let cos_start_lat = java_math::cos(start_lat);
+        let sin_ang_dist = java_math::sin(distance_rad);
+        let sin_start_lat = java_math::sin(start_lat);
+        let sin_lat2 = sin_start_lat * cos_ang_dist
+            + cos_start_lat * sin_ang_dist * java_math::cos(bearing_rad);
+        let mut lat2 = java_math::asin(sin_lat2);
         let mut lon2 = start_lon
-            + (bearing_rad.sin() * sin_ang_dist * cos_start_lat).atan2(cos_ang_dist - sin_start_lat * sin_lat2);
+            + java_math::atan2(
+                java_math::sin(bearing_rad) * sin_ang_dist * cos_start_lat,
+                cos_ang_dist - sin_start_lat * sin_lat2,
+            );
 
         // normalize lon first
         if lon2 > Self::DEG_180_AS_RADS {
@@ -259,7 +279,8 @@ impl DistanceUtils {
                 max_x = hi_x;
             } else {
                 //--calc longitude bounds
-                let lon_delta_deg = Self::calc_box_by_dist_from_pt_delta_lon_deg(lat, lon, dist_deg);
+                let lon_delta_deg =
+                    Self::calc_box_by_dist_from_pt_delta_lon_deg(lat, lon, dist_deg);
                 min_x = Self::norm_lon_deg(lon - lon_delta_deg);
                 max_x = Self::norm_lon_deg(lon + lon_delta_deg);
             }
@@ -282,7 +303,7 @@ impl DistanceUtils {
         }
         let lat_rad = Self::to_radians(lat);
         let dist_rad = Self::to_radians(dist_deg);
-        let result_rad = (dist_rad.sin() / lat_rad.cos()).asin();
+        let result_rad = java_math::asin(java_math::sin(dist_rad) / java_math::cos(lat_rad));
         if !result_rad.is_nan() {
             return Self::to_degrees(result_rad);
         }
@@ -302,7 +323,7 @@ impl DistanceUtils {
         }
         let lat_rad = Self::to_radians(lat);
         let dist_rad = Self::to_radians(dist_deg);
-        let result_rad = (lat_rad.sin() / dist_rad.cos()).asin();
+        let result_rad = java_math::asin(java_math::sin(lat_rad) / java_math::cos(dist_rad));
         if !result_rad.is_nan() {
             return Self::to_degrees(result_rad);
         }
@@ -327,12 +348,15 @@ impl DistanceUtils {
         let distance_rad = Self::to_radians(dist);
         let start_lat = Self::to_radians(lat);
 
-        let cos_ang_dist = distance_rad.cos();
-        let cos_start_lat = start_lat.cos();
-        let sin_ang_dist = distance_rad.sin();
-        let sin_start_lat = start_lat.sin();
+        let cos_ang_dist = java_math::cos(distance_rad);
+        let cos_start_lat = java_math::cos(start_lat);
+        let sin_ang_dist = java_math::sin(distance_rad);
+        let sin_start_lat = java_math::sin(start_lat);
 
-        let lon_delta = (sin_ang_dist * cos_start_lat).atan2(cos_ang_dist * (1.0 - sin_start_lat * sin_start_lat));
+        let lon_delta = java_math::atan2(
+            sin_ang_dist * cos_start_lat,
+            cos_ang_dist * (1.0 - sin_start_lat * sin_start_lat),
+        );
 
         Self::to_degrees(lon_delta)
     }
@@ -355,14 +379,15 @@ impl DistanceUtils {
         if lat1 == lat2 && lon1 == lon2 {
             return 0.0;
         }
-        let hsin_x = ((lon1 - lon2) * 0.5).sin();
-        let hsin_y = ((lat1 - lat2) * 0.5).sin();
-        let mut h = hsin_y * hsin_y + (lat1.cos() * lat2.cos() * hsin_x * hsin_x);
+        let hsin_x = java_math::sin((lon1 - lon2) * 0.5);
+        let hsin_y = java_math::sin((lat1 - lat2) * 0.5);
+        let mut h =
+            hsin_y * hsin_y + (java_math::cos(lat1) * java_math::cos(lat2) * hsin_x * hsin_x);
         if h > 1.0 {
             //numeric robustness issue. If we didn't check, the answer would be NaN!
             h = 1.0;
         }
-        2.0 * h.sqrt().atan2((1.0 - h).sqrt())
+        2.0 * java_math::atan2(java_math::sqrt(h), java_math::sqrt(1.0 - h))
     }
 
     /// `distLawOfCosinesRAD(double lat1, double lon1, double lat2, double
@@ -380,7 +405,8 @@ impl DistanceUtils {
         // crossing dateline since cos(x) = cos(-x)
         let d_lon = lon2 - lon1;
 
-        let cos_b = (lat1.sin() * lat2.sin()) + (lat1.cos() * lat2.cos() * d_lon.cos());
+        let cos_b = (java_math::sin(lat1) * java_math::sin(lat2))
+            + (java_math::cos(lat1) * java_math::cos(lat2) * java_math::cos(d_lon));
 
         // Find angle subtended (with some bounds checking) in radians
         if cos_b < -1.0 {
@@ -388,7 +414,7 @@ impl DistanceUtils {
         } else if cos_b >= 1.0 {
             0.0
         } else {
-            cos_b.acos()
+            java_math::acos(cos_b)
         }
     }
 
@@ -399,19 +425,19 @@ impl DistanceUtils {
             return 0.0;
         }
 
-        let cos_lat1 = lat1.cos();
-        let cos_lat2 = lat2.cos();
-        let sin_lat1 = lat1.sin();
-        let sin_lat2 = lat2.sin();
+        let cos_lat1 = java_math::cos(lat1);
+        let cos_lat2 = java_math::cos(lat2);
+        let sin_lat1 = java_math::sin(lat1);
+        let sin_lat2 = java_math::sin(lat2);
         let d_lon = lon2 - lon1;
-        let cos_d_lon = d_lon.cos();
-        let sin_d_lon = d_lon.sin();
+        let cos_d_lon = java_math::cos(d_lon);
+        let sin_d_lon = java_math::sin(d_lon);
 
         let a = cos_lat2 * sin_d_lon;
         let b = cos_lat1 * sin_lat2 - sin_lat1 * cos_lat2 * cos_d_lon;
         let c = sin_lat1 * sin_lat2 + cos_lat1 * cos_lat2 * cos_d_lon;
 
-        (a * a + b * b).sqrt().atan2(c)
+        java_math::atan2(java_math::sqrt(a * a + b * b), c)
     }
 
     /// `dist2Degrees(double dist, double radius)`.

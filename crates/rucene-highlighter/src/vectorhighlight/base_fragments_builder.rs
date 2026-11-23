@@ -146,7 +146,10 @@ impl BaseFragmentsBuilder {
     }
 
     /// Equivalent to `setDiscreteMultiValueHighlighting(boolean)`.
-    pub fn set_discrete_multi_value_highlighting(&mut self, discrete_multi_value_highlighting: bool) {
+    pub fn set_discrete_multi_value_highlighting(
+        &mut self,
+        discrete_multi_value_highlighting: bool,
+    ) {
         self.discrete_multi_value_highlighting = discrete_multi_value_highlighting;
     }
 
@@ -228,7 +231,12 @@ pub trait BaseFragmentsBuilderImpl: Debug + Send + Sync {
     /// # Errors
     ///
     /// Propagates I/O errors.
-    fn get_fields(&self, reader: &dyn IndexReader, doc_id: i32, field_name: &str) -> Result<Vec<Field>> {
+    fn get_fields(
+        &self,
+        reader: &dyn IndexReader,
+        doc_id: i32,
+        field_name: &str,
+    ) -> Result<Vec<Field>> {
         // according to javadoc, doc.getFields(fieldName) cannot be used with
         // lazy loaded field???
         let mut visitor = FieldsVisitor {
@@ -279,13 +287,19 @@ pub trait BaseFragmentsBuilderImpl: Debug + Send + Sync {
                     src_index,
                     to.get_start_offset() - modified_start_offset,
                 )?));
-                fragment.push_str(BaseFragmentsBuilder::get_pre_tag_of(pre_tags, sub_info.seqnum()));
+                fragment.push_str(BaseFragmentsBuilder::get_pre_tag_of(
+                    pre_tags,
+                    sub_info.seqnum(),
+                ));
                 fragment.push_str(&encoder.encode_text(&substring(
                     &src,
                     to.get_start_offset() - modified_start_offset,
                     to.get_end_offset() - modified_start_offset,
                 )?));
-                fragment.push_str(BaseFragmentsBuilder::get_post_tag_of(post_tags, sub_info.seqnum()));
+                fragment.push_str(BaseFragmentsBuilder::get_post_tag_of(
+                    post_tags,
+                    sub_info.seqnum(),
+                ));
                 src_index = to.get_end_offset() - modified_start_offset;
             }
         }
@@ -333,7 +347,9 @@ pub trait BaseFragmentsBuilderImpl: Debug + Send + Sync {
         } else {
             base.boundary_scanner.find_end_offset(buffer, end_offset)
         };
-        *modified_start_offset = base.boundary_scanner.find_start_offset(buffer, start_offset);
+        *modified_start_offset = base
+            .boundary_scanner
+            .find_start_offset(buffer, start_offset);
         substring(buffer, *modified_start_offset, eo)
     }
 
@@ -432,12 +448,16 @@ pub trait BaseFragmentsBuilderImpl: Debug + Send + Sync {
                 }
 
                 let mut frag_start = field_start;
-                if frag_info.get_start_offset() > field_start && frag_info.get_start_offset() < field_end {
+                if frag_info.get_start_offset() > field_start
+                    && frag_info.get_start_offset() < field_end
+                {
                     frag_start = frag_info.get_start_offset();
                 }
 
                 let mut frag_end = field_end;
-                if frag_info.get_end_offset() > field_start && frag_info.get_end_offset() < field_end {
+                if frag_info.get_end_offset() > field_start
+                    && frag_info.get_end_offset() < field_end
+                {
                     frag_end = frag_info.get_end_offset();
                 }
 
@@ -496,7 +516,8 @@ pub trait BaseFragmentsBuilderImpl: Debug + Send + Sync {
                         s += 1;
                     }
                 }
-                let weighted_frag_info = WeightedFragInfo::new(frag_start, frag_end, sub_infos, boost);
+                let weighted_frag_info =
+                    WeightedFragInfo::new(frag_start, frag_end, sub_infos, boost);
                 let i = list_of(&mut field_name_to_frag_infos, field.name());
                 field_name_to_frag_infos[i].1.push(weighted_frag_info);
             }

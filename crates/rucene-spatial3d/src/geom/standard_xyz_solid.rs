@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `StandardXYZSolid.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -27,6 +26,9 @@ use rucene::error::Result;
 
 use super::base_planet_object::BasePlanetObject;
 use super::base_xyz_solid::BaseXYZSolid;
+use super::base_xyz_solid::{
+    X_UNIT_VECTOR, X_VERTICAL_PLANE, Y_UNIT_VECTOR, Y_VERTICAL_PLANE, Z_UNIT_VECTOR,
+};
 use super::geo_area::{self, GeoArea};
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
@@ -38,13 +40,17 @@ use super::sided_plane::SidedPlane;
 use super::vector::Vector;
 use super::xyz_solid::XYZSolid;
 use super::{iae, npe};
-use super::base_xyz_solid::{X_UNIT_VECTOR, X_VERTICAL_PLANE, Y_UNIT_VECTOR, Y_VERTICAL_PLANE, Z_UNIT_VECTOR};
 
 /// 3D rectangle, bounded on six sides by X,Y,Z limits.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.StandardXYZSolid`. Java's
 /// `null` planes and point arrays of the whole-world solid are `None`.
-pub(crate) struct StandardXYZSolid {
+///
+/// Java's class is package-private, reached by the same package's tests;
+/// Rust's integration tests are another crate, so the port makes it public
+/// (hidden from the documentation).
+#[doc(hidden)]
+pub struct StandardXYZSolid {
     planet_model: Arc<PlanetModel>,
     min_x: f64,
     max_x: f64,
@@ -154,20 +160,69 @@ impl StandardXYZSolid {
         let min_z_plane = SidedPlane::new_xyz_vector_d(0.0, 0.0, max_z, &Z_UNIT_VECTOR, -min_z)?;
         let max_z_plane = SidedPlane::new_xyz_vector_d(0.0, 0.0, min_z, &Z_UNIT_VECTOR, -max_z)?;
         let fi = |a: &SidedPlane, q: &SidedPlane, b: [&SidedPlane; 4]| -> Vec<GeoPoint> {
-            a.find_intersections(pm, q, &[b[0], b[1], b[2], b[3]]).unwrap_or_else(|| npe())
+            a.find_intersections(pm, q, &[b[0], b[1], b[2], b[3]])
+                .unwrap_or_else(|| npe())
         };
-        let min_xmin_y = fi(&min_x_plane, &min_y_plane, [&max_x_plane, &max_y_plane, &min_z_plane, &max_z_plane]);
-        let min_xmax_y = fi(&min_x_plane, &max_y_plane, [&max_x_plane, &min_y_plane, &min_z_plane, &max_z_plane]);
-        let min_xmin_z = fi(&min_x_plane, &min_z_plane, [&max_x_plane, &max_z_plane, &min_y_plane, &max_y_plane]);
-        let min_xmax_z = fi(&min_x_plane, &max_z_plane, [&max_x_plane, &min_z_plane, &min_y_plane, &max_y_plane]);
-        let max_xmin_y = fi(&max_x_plane, &min_y_plane, [&min_x_plane, &max_y_plane, &min_z_plane, &max_z_plane]);
-        let max_xmax_y = fi(&max_x_plane, &max_y_plane, [&min_x_plane, &min_y_plane, &min_z_plane, &max_z_plane]);
-        let max_xmin_z = fi(&max_x_plane, &min_z_plane, [&min_x_plane, &max_z_plane, &min_y_plane, &max_y_plane]);
-        let max_xmax_z = fi(&max_x_plane, &max_z_plane, [&min_x_plane, &min_z_plane, &min_y_plane, &max_y_plane]);
-        let min_ymin_z = fi(&min_y_plane, &min_z_plane, [&max_y_plane, &max_z_plane, &min_x_plane, &max_x_plane]);
-        let min_ymax_z = fi(&min_y_plane, &max_z_plane, [&max_y_plane, &min_z_plane, &min_x_plane, &max_x_plane]);
-        let max_ymin_z = fi(&max_y_plane, &min_z_plane, [&min_y_plane, &max_z_plane, &min_x_plane, &max_x_plane]);
-        let max_ymax_z = fi(&max_y_plane, &max_z_plane, [&min_y_plane, &min_z_plane, &min_x_plane, &max_x_plane]);
+        let min_xmin_y = fi(
+            &min_x_plane,
+            &min_y_plane,
+            [&max_x_plane, &max_y_plane, &min_z_plane, &max_z_plane],
+        );
+        let min_xmax_y = fi(
+            &min_x_plane,
+            &max_y_plane,
+            [&max_x_plane, &min_y_plane, &min_z_plane, &max_z_plane],
+        );
+        let min_xmin_z = fi(
+            &min_x_plane,
+            &min_z_plane,
+            [&max_x_plane, &max_z_plane, &min_y_plane, &max_y_plane],
+        );
+        let min_xmax_z = fi(
+            &min_x_plane,
+            &max_z_plane,
+            [&max_x_plane, &min_z_plane, &min_y_plane, &max_y_plane],
+        );
+        let max_xmin_y = fi(
+            &max_x_plane,
+            &min_y_plane,
+            [&min_x_plane, &max_y_plane, &min_z_plane, &max_z_plane],
+        );
+        let max_xmax_y = fi(
+            &max_x_plane,
+            &max_y_plane,
+            [&min_x_plane, &min_y_plane, &min_z_plane, &max_z_plane],
+        );
+        let max_xmin_z = fi(
+            &max_x_plane,
+            &min_z_plane,
+            [&min_x_plane, &max_z_plane, &min_y_plane, &max_y_plane],
+        );
+        let max_xmax_z = fi(
+            &max_x_plane,
+            &max_z_plane,
+            [&min_x_plane, &min_z_plane, &min_y_plane, &max_y_plane],
+        );
+        let min_ymin_z = fi(
+            &min_y_plane,
+            &min_z_plane,
+            [&max_y_plane, &max_z_plane, &min_x_plane, &max_x_plane],
+        );
+        let min_ymax_z = fi(
+            &min_y_plane,
+            &max_z_plane,
+            [&max_y_plane, &min_z_plane, &min_x_plane, &max_x_plane],
+        );
+        let max_ymin_z = fi(
+            &max_y_plane,
+            &min_z_plane,
+            [&min_y_plane, &max_z_plane, &min_x_plane, &max_x_plane],
+        );
+        let max_ymax_z = fi(
+            &max_y_plane,
+            &max_z_plane,
+            [&min_y_plane, &min_z_plane, &min_x_plane, &max_x_plane],
+        );
         let glue = BaseXYZSolid::glue_together;
         s.notable_min_x_points = glue(&[&min_xmin_y, &min_xmax_y, &min_xmin_z, &min_xmax_z]);
         s.notable_max_x_points = glue(&[&max_xmin_y, &max_xmax_y, &max_xmin_z, &max_xmax_z]);
@@ -286,9 +341,24 @@ impl StandardXYZSolid {
         s.min_z_plane_intersects = s.notable_min_z_points.len() + min_z_edges.len() > 0;
         s.max_z_plane_intersects = s.notable_max_z_points.len() + max_z_edges.len() > 0;
         s.edge_points = Some(glue(&[
-            &min_xmin_y, &min_xmax_y, &min_xmin_z, &min_xmax_z, &max_xmin_y, &max_xmax_y, &max_xmin_z, &max_xmax_z,
-            &min_ymin_z, &min_ymax_z, &max_ymin_z, &max_ymax_z, &min_x_edges, &max_x_edges, &min_y_edges,
-            &max_y_edges, &min_z_edges, &max_z_edges,
+            &min_xmin_y,
+            &min_xmax_y,
+            &min_xmin_z,
+            &min_xmax_z,
+            &max_xmin_y,
+            &max_xmax_y,
+            &max_xmin_z,
+            &max_xmax_z,
+            &min_ymin_z,
+            &min_ymax_z,
+            &max_ymin_z,
+            &max_ymax_z,
+            &min_x_edges,
+            &max_x_edges,
+            &min_y_edges,
+            &max_y_edges,
+            &min_z_edges,
+            &max_z_edges,
         ]));
         s.planes = Some(SolidPlanes {
             min_x_plane,
@@ -353,20 +423,38 @@ impl StandardXYZSolid {
 
     fn hash_code_impl(&self) -> i32 {
         let mut result = BasePlanetObject::hash_code(&self.planet_model);
-        result = result.wrapping_mul(31).wrapping_add(if self.is_whole_world { 1 } else { 0 });
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(if self.is_whole_world { 1 } else { 0 });
         if let Some(p) = &self.planes {
-            result = result.wrapping_mul(31).wrapping_add(p.min_x_plane.java_hash_code());
-            result = result.wrapping_mul(31).wrapping_add(p.max_x_plane.java_hash_code());
-            result = result.wrapping_mul(31).wrapping_add(p.min_y_plane.java_hash_code());
-            result = result.wrapping_mul(31).wrapping_add(p.max_y_plane.java_hash_code());
-            result = result.wrapping_mul(31).wrapping_add(p.min_z_plane.java_hash_code());
-            result = result.wrapping_mul(31).wrapping_add(p.max_z_plane.java_hash_code());
+            result = result
+                .wrapping_mul(31)
+                .wrapping_add(p.min_x_plane.java_hash_code());
+            result = result
+                .wrapping_mul(31)
+                .wrapping_add(p.max_x_plane.java_hash_code());
+            result = result
+                .wrapping_mul(31)
+                .wrapping_add(p.min_y_plane.java_hash_code());
+            result = result
+                .wrapping_mul(31)
+                .wrapping_add(p.max_y_plane.java_hash_code());
+            result = result
+                .wrapping_mul(31)
+                .wrapping_add(p.min_z_plane.java_hash_code());
+            result = result
+                .wrapping_mul(31)
+                .wrapping_add(p.max_z_plane.java_hash_code());
         }
         result
     }
 }
 
-impl_serializable_object!(StandardXYZSolid, "org.apache.lucene.spatial3d.geom.StandardXYZSolid", planet_object);
+impl_serializable_object!(
+    StandardXYZSolid,
+    "org.apache.lucene.spatial3d.geom.StandardXYZSolid",
+    planet_object
+);
 impl_planet_object!(StandardXYZSolid);
 impl XYZSolid for StandardXYZSolid {}
 
@@ -396,25 +484,87 @@ impl GeoArea for StandardXYZSolid {
         if inside_rectangle == BaseXYZSolid::SOME_INSIDE {
             return Ok(geo_area::OVERLAPS);
         }
-        let inside_shape = BaseXYZSolid::is_area_inside_shape(self.edge_points().unwrap_or_else(|| npe()), path);
+        let inside_shape =
+            BaseXYZSolid::is_area_inside_shape(self.edge_points().unwrap_or_else(|| npe()), path);
         if inside_shape == BaseXYZSolid::SOME_INSIDE {
             return Ok(geo_area::OVERLAPS);
         }
-        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE {
+        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE
+        {
             return Ok(geo_area::OVERLAPS);
         }
         if (self.min_x_plane_intersects
-            && path.intersects(&p.min_x_plane, &self.notable_min_x_points, &[&p.max_x_plane, &p.min_y_plane, &p.max_y_plane, &p.min_z_plane, &p.max_z_plane]))
+            && path.intersects(
+                &p.min_x_plane,
+                &self.notable_min_x_points,
+                &[
+                    &p.max_x_plane,
+                    &p.min_y_plane,
+                    &p.max_y_plane,
+                    &p.min_z_plane,
+                    &p.max_z_plane,
+                ],
+            ))
             || (self.max_x_plane_intersects
-                && path.intersects(&p.max_x_plane, &self.notable_max_x_points, &[&p.min_x_plane, &p.min_y_plane, &p.max_y_plane, &p.min_z_plane, &p.max_z_plane]))
+                && path.intersects(
+                    &p.max_x_plane,
+                    &self.notable_max_x_points,
+                    &[
+                        &p.min_x_plane,
+                        &p.min_y_plane,
+                        &p.max_y_plane,
+                        &p.min_z_plane,
+                        &p.max_z_plane,
+                    ],
+                ))
             || (self.min_y_plane_intersects
-                && path.intersects(&p.min_y_plane, &self.notable_min_y_points, &[&p.max_y_plane, &p.min_x_plane, &p.max_x_plane, &p.min_z_plane, &p.max_z_plane]))
+                && path.intersects(
+                    &p.min_y_plane,
+                    &self.notable_min_y_points,
+                    &[
+                        &p.max_y_plane,
+                        &p.min_x_plane,
+                        &p.max_x_plane,
+                        &p.min_z_plane,
+                        &p.max_z_plane,
+                    ],
+                ))
             || (self.max_y_plane_intersects
-                && path.intersects(&p.max_y_plane, &self.notable_max_y_points, &[&p.min_y_plane, &p.min_x_plane, &p.max_x_plane, &p.min_z_plane, &p.max_z_plane]))
+                && path.intersects(
+                    &p.max_y_plane,
+                    &self.notable_max_y_points,
+                    &[
+                        &p.min_y_plane,
+                        &p.min_x_plane,
+                        &p.max_x_plane,
+                        &p.min_z_plane,
+                        &p.max_z_plane,
+                    ],
+                ))
             || (self.min_z_plane_intersects
-                && path.intersects(&p.min_z_plane, &self.notable_min_z_points, &[&p.max_z_plane, &p.min_x_plane, &p.max_x_plane, &p.min_y_plane, &p.max_y_plane]))
+                && path.intersects(
+                    &p.min_z_plane,
+                    &self.notable_min_z_points,
+                    &[
+                        &p.max_z_plane,
+                        &p.min_x_plane,
+                        &p.max_x_plane,
+                        &p.min_y_plane,
+                        &p.max_y_plane,
+                    ],
+                ))
             || (self.max_z_plane_intersects
-                && path.intersects(&p.max_z_plane, &self.notable_max_z_points, &[&p.min_z_plane, &p.min_x_plane, &p.max_x_plane, &p.min_y_plane, &p.max_y_plane]))
+                && path.intersects(
+                    &p.max_z_plane,
+                    &self.notable_max_z_points,
+                    &[
+                        &p.min_z_plane,
+                        &p.min_x_plane,
+                        &p.max_x_plane,
+                        &p.min_y_plane,
+                        &p.max_y_plane,
+                    ],
+                ))
         {
             return Ok(geo_area::OVERLAPS);
         }

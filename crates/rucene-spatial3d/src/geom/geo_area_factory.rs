@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoAreaFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -47,7 +46,13 @@ impl GeoAreaFactory {
         left_lon: f64,
         right_lon: f64,
     ) -> Result<Arc<dyn GeoArea>> {
-        Ok(GeoBBoxFactory::make_geo_bbox(planet_model, top_lat, bottom_lat, left_lon, right_lon)?)
+        Ok(GeoBBoxFactory::make_geo_bbox(
+            planet_model,
+            top_lat,
+            bottom_lat,
+            left_lon,
+            right_lon,
+        )?)
     }
 
     /// `makeGeoArea(PlanetModel, double minX, double maxX, double minY, double
@@ -66,6 +71,14 @@ impl GeoAreaFactory {
         min_z: f64,
         max_z: f64,
     ) -> Result<Arc<dyn GeoArea>> {
-        Ok(XYZSolidFactory::make_xyz_solid(planet_model, min_x, max_x, min_y, max_y, min_z, max_z)?)
+        Ok(XYZSolidFactory::make_xyz_solid(
+            planet_model,
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            min_z,
+            max_z,
+        )?)
     }
 }

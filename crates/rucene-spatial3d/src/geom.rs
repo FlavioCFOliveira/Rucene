@@ -484,14 +484,20 @@ pub(crate) fn list_hash_code<T>(items: &[T], hash: impl Fn(&T) -> i32) -> i32 {
 
 /// The subset of `java.util.BitSet` the package uses: `get`, `set`,
 /// `toByteArray`, `valueOf(byte[])`, `equals` and `hashCode`.
+///
+/// It is public because the public constructors `GeoConvexPolygon(PlanetModel,
+/// List<GeoPoint>, BitSet, boolean)` and their `GeoConcavePolygon`
+/// counterparts take a `java.util.BitSet`, as the package's tests do (hidden
+/// from the documentation).
+#[doc(hidden)]
 #[derive(Clone, Debug, Default)]
-pub(crate) struct JavaBitSet {
+pub struct JavaBitSet {
     words: Vec<u64>,
 }
 
 impl JavaBitSet {
     /// `new BitSet()`.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self { words: Vec::new() }
     }
 
@@ -504,13 +510,13 @@ impl JavaBitSet {
     }
 
     /// `BitSet.get(int)`.
-    pub(crate) fn get(&self, index: usize) -> bool {
+    pub fn get(&self, index: usize) -> bool {
         let w = index >> 6;
         w < self.words.len() && (self.words[w] & (1u64 << (index & 63))) != 0
     }
 
     /// `BitSet.set(int)`.
-    pub(crate) fn set(&mut self, index: usize) {
+    pub fn set(&mut self, index: usize) {
         let w = index >> 6;
         if w >= self.words.len() {
             self.words.resize(w + 1, 0);
@@ -519,7 +525,7 @@ impl JavaBitSet {
     }
 
     /// `BitSet.set(int, boolean)`.
-    pub(crate) fn set_value(&mut self, index: usize, value: bool) {
+    pub fn set_value(&mut self, index: usize, value: bool) {
         if value {
             self.set(index);
         } else {

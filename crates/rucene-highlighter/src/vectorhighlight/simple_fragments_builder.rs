@@ -20,7 +20,9 @@
 
 use std::ops::{Deref, DerefMut};
 
-use crate::vectorhighlight::base_fragments_builder::{BaseFragmentsBuilder, BaseFragmentsBuilderImpl};
+use crate::vectorhighlight::base_fragments_builder::{
+    BaseFragmentsBuilder, BaseFragmentsBuilderImpl,
+};
 use crate::vectorhighlight::boundary_scanner::BoundaryScanner;
 use crate::vectorhighlight::field_frag_list::WeightedFragInfo;
 

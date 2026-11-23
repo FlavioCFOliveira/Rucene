@@ -39,7 +39,9 @@ use crate::prefix::tree::legacy_cell::{self, LegacyCell, LegacyCellState};
 use crate::prefix::tree::legacy_prefix_tree::{self, LegacyPrefixTree};
 use crate::prefix::tree::quad_prefix_tree::QuadPrefixTree;
 use crate::prefix::tree::spatial_prefix_tree::{SpatialPrefixTree, SpatialPrefixTreeBase};
-use crate::prefix::tree::spatial_prefix_tree_factory::{SpatialPrefixTreeFactory, SpatialPrefixTreeFactoryBase};
+use crate::prefix::tree::spatial_prefix_tree_factory::{
+    SpatialPrefixTreeFactory, SpatialPrefixTreeFactoryBase,
+};
 
 /// `QUAD`.
 const QUAD: [u8; 4] = [0x00, 0x01, 0x02, 0x03];
@@ -69,7 +71,9 @@ impl SpatialPrefixTreeFactory for Factory {
     fn new_spt(&self) -> Result<Arc<dyn SpatialPrefixTree>> {
         Ok(PackedQuadPrefixTree::new(
             Arc::clone(self.base.ctx()),
-            self.base.max_levels.unwrap_or(PackedQuadPrefixTree::MAX_LEVELS_POSSIBLE),
+            self.base
+                .max_levels
+                .unwrap_or(PackedQuadPrefixTree::MAX_LEVELS_POSSIBLE),
         )?)
     }
 }
@@ -130,7 +134,9 @@ impl PackedQuadPrefixTree {
     }
 
     fn me(&self) -> Arc<PackedQuadPrefixTree> {
-        self.me.upgrade().expect("a PackedQuadPrefixTree is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a PackedQuadPrefixTree is shared as an Arc")
     }
 
     fn max_levels(&self) -> i32 {
@@ -144,7 +150,11 @@ impl PackedQuadPrefixTree {
         let xp = p.get_x();
         let yp = p.get_y();
         let mut term: i64 = 0;
-        let level_limit = if level > self.max_levels() { self.max_levels() } else { level };
+        let level_limit = if level > self.max_levels() {
+            self.max_levels()
+        } else {
+            level
+        };
         for lvl in 0..level_limit.max(0) {
             let quad = q.battenberg(current_xmid, current_ymid, xp, yp);
             let half_width = q.level_w[(lvl + 1) as usize];
@@ -197,10 +207,46 @@ impl PackedQuadPrefixTree {
         let h = self.quad.level_h[level as usize] / 2.0;
         // Z-Order
         // http://en.wikipedia.org/wiki/Z-order_%28curve%29
-        self.check_battenberg_not_robustly(QUAD[0], x - w, y + h, level, matches, term, shape, max_level)?;
-        self.check_battenberg_not_robustly(QUAD[1], x + w, y + h, level, matches, term, shape, max_level)?;
-        self.check_battenberg_not_robustly(QUAD[2], x - w, y - h, level, matches, term, shape, max_level)?;
-        self.check_battenberg_not_robustly(QUAD[3], x + w, y - h, level, matches, term, shape, max_level)
+        self.check_battenberg_not_robustly(
+            QUAD[0],
+            x - w,
+            y + h,
+            level,
+            matches,
+            term,
+            shape,
+            max_level,
+        )?;
+        self.check_battenberg_not_robustly(
+            QUAD[1],
+            x + w,
+            y + h,
+            level,
+            matches,
+            term,
+            shape,
+            max_level,
+        )?;
+        self.check_battenberg_not_robustly(
+            QUAD[2],
+            x - w,
+            y - h,
+            level,
+            matches,
+            term,
+            shape,
+            max_level,
+        )?;
+        self.check_battenberg_not_robustly(
+            QUAD[3],
+            x + w,
+            y - h,
+            level,
+            matches,
+            term,
+            shape,
+            max_level,
+        )
     }
 
     /// `checkBattenbergNotRobustly(byte quad, double cx, double cy, int level,
@@ -227,7 +273,12 @@ impl PackedQuadPrefixTree {
         }
         let w = self.quad.level_w[level as usize] / 2.0;
         let h = self.quad.level_h[level as usize] / 2.0;
-        let rect = self.quad.base.ctx.get_shape_factory().rect(cx - w, cx + w, cy - h, cy + h)?;
+        let rect = self
+            .quad
+            .base
+            .ctx
+            .get_shape_factory()
+            .rect(cx - w, cx + w, cy - h, cy + h)?;
         let v = shape.relate(rect.as_shape());
         if SpatialRelation::Disjoint == v {
             return Ok(());
@@ -238,7 +289,11 @@ impl PackedQuadPrefixTree {
         // increment level
         term = ((((term as u64) >> 1) as i64).wrapping_add(1)).wrapping_shl(1);
         if SpatialRelation::Contains == v || (level >= max_level) {
-            matches.push(PackedQuadCell::with_rel(&self.me(), term, Some(v.transpose())));
+            matches.push(PackedQuadCell::with_rel(
+                &self.me(),
+                term,
+                Some(v.transpose()),
+            ));
         } else {
             // SpatialRelation.WITHIN, SpatialRelation.INTERSECTS
             self.build_not_robustly(cx, cy, level, matches, term, shape, max_level)?;
@@ -256,7 +311,8 @@ impl PackedQuadPrefixTree {
     /// memory efficient and only applies to the detailLevel, where it has
     /// the most effect.
     pub fn set_prune_leafy_branches(&self, prune_leafy_branches: bool) {
-        self.leafy_prune.store(prune_leafy_branches, Ordering::Relaxed);
+        self.leafy_prune
+            .store(prune_leafy_branches, Ordering::Relaxed);
     }
 }
 
@@ -294,19 +350,29 @@ impl SpatialPrefixTree for PackedQuadPrefixTree {
         let packed = cell
             .as_any()
             .downcast_ref::<PackedQuadCell>()
-            .unwrap_or_else(|| panic!("java.lang.ClassCastException: {cell:?} cannot be cast to PackedQuadCell"));
+            .unwrap_or_else(|| {
+                panic!("java.lang.ClassCastException: {cell:?} cannot be cast to PackedQuadCell")
+            });
         packed.read_cell(term);
         cell
     }
 
-    fn get_tree_cell_iterator(&self, shape: Arc<dyn Shape>, detail_level: i32) -> Result<Box<dyn CellIterator>> {
+    fn get_tree_cell_iterator(
+        &self,
+        shape: Arc<dyn Shape>,
+        detail_level: i32,
+    ) -> Result<Box<dyn CellIterator>> {
         if detail_level > self.max_levels() {
             return Err(LuceneError::illegal_argument(format!(
                 "detailLevel:{detail_level} exceed max: {}",
                 self.max_levels()
             )));
         }
-        Ok(Box::new(PrefixTreeIterator::new(self, shape, detail_level as i16)))
+        Ok(Box::new(PrefixTreeIterator::new(
+            self,
+            shape,
+            detail_level as i16,
+        )))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -370,7 +436,11 @@ impl PackedQuadCell {
     }
 
     /// `PackedQuadCell(long term, SpatialRelation shapeRel)`.
-    fn with_rel(tree: &Arc<PackedQuadPrefixTree>, term: i64, shape_rel: Option<SpatialRelation>) -> CellRef {
+    fn with_rel(
+        tree: &Arc<PackedQuadPrefixTree>,
+        term: i64,
+        shape_rel: Option<SpatialRelation>,
+    ) -> CellRef {
         let cell = Self::build(tree, term);
         cell.state().shape_rel = shape_rel;
         Arc::new(cell)
@@ -401,7 +471,9 @@ impl PackedQuadCell {
         let shift = Self::get_shift_for_level(level);
         let max_levels = self.tree.max_levels();
         // base case: can't go further
-        if (!descend && self.is_end(level, shift)) || self.is_end(max_levels, Self::get_shift_for_level(max_levels)) {
+        if (!descend && self.is_end(level, shift))
+            || self.is_end(max_levels, Self::get_shift_for_level(max_levels))
+        {
             return None;
         }
         let term = self.term();
@@ -418,7 +490,8 @@ impl PackedQuadCell {
             if ((term as u64).wrapping_shr(shift as u32) & 0x3) == 0x3 {
                 // adjust level for number popping up
                 let tz = ((t as u64).wrapping_shr(shift as u32)).trailing_zeros() as i64;
-                t = (((t as u64 >> 1) as i64).wrapping_sub(((tz as u64) >> 1) as i64)).wrapping_shl(1);
+                t = (((t as u64 >> 1) as i64).wrapping_sub(((tz as u64) >> 1) as i64))
+                    .wrapping_shl(1);
             }
             new_term = t;
         }
@@ -428,14 +501,17 @@ impl PackedQuadCell {
     /// `isInternalPrefix(PackedQuadCell c)`.
     fn is_internal_prefix(&self, c: &PackedQuadCell) -> bool {
         let shift = 64 - (self.get_level() << 1);
-        ((self.term() as u64).wrapping_shr(shift as u32)).wrapping_sub((c.term() as u64).wrapping_shr(shift as u32)) == 0x0
+        ((self.term() as u64).wrapping_shr(shift as u32))
+            .wrapping_sub((c.term() as u64).wrapping_shr(shift as u32))
+            == 0x0
     }
 
     /// `concat(byte postfix)`.
     pub fn concat(&self, postfix: u8) -> i64 {
         // extra leaf bit
         self.term()
-            | (i64::from(postfix)).wrapping_shl((((self.get_max_levels() - self.get_level()) << 1) + 6) as u32)
+            | (i64::from(postfix))
+                .wrapping_shl((((self.get_max_levels() - self.get_level()) << 1) + 6) as u32)
     }
 
     /// `makeShape()`.
@@ -463,7 +539,10 @@ impl PackedQuadCell {
             i += 1;
         }
         let (width, height) = if level > 0 {
-            (q.level_w[(level - 1) as usize], q.level_h[(level - 1) as usize])
+            (
+                q.level_w[(level - 1) as usize],
+                q.level_h[(level - 1) as usize],
+            )
         } else {
             (q.grid_w, q.grid_h)
         };
@@ -515,7 +594,10 @@ impl LegacyCell for PackedQuadCell {
             s.bytes = bytes.bytes.clone();
             s.b_off = bytes.offset;
             s.b_len = bytes.length as i16 as u16 as usize; // (short) bytes.length
-            self.term.store(long_from_byte_array(&s.bytes, bytes.offset), Ordering::Relaxed);
+            self.term.store(
+                long_from_byte_array(&s.bytes, bytes.offset),
+                Ordering::Relaxed,
+            );
         }
         self.read_leaf_adjust();
     }
@@ -537,7 +619,10 @@ impl LegacyCell for PackedQuadCell {
 
     fn get_sub_cells(&self) -> Vec<CellRef> {
         let term = self.term();
-        let start = PackedQuadCell::build(&self.tree, if (term & 0x1) == 0x1 { term - 1 } else { term });
+        let start = PackedQuadCell::build(
+            &self.tree,
+            if (term & 0x1) == 0x1 { term - 1 } else { term },
+        );
         let mut cells: Vec<CellRef> = Vec::with_capacity(4);
         let mut pqc = start.next_cell(true).expect("a sub-cell");
         for _ in 0..3 {
@@ -599,7 +684,9 @@ impl Cell for PackedQuadCell {
         let cell = c
             .as_any()
             .downcast_ref::<PackedQuadCell>()
-            .unwrap_or_else(|| panic!("java.lang.ClassCastException: {c:?} cannot be cast to PackedQuadCell"));
+            .unwrap_or_else(|| {
+                panic!("java.lang.ClassCastException: {c:?} cannot be cast to PackedQuadCell")
+            });
         (self.term() == 0x0) || self.is_internal_prefix(cell)
     }
 
@@ -607,12 +694,20 @@ impl Cell for PackedQuadCell {
         let b = from_cell
             .as_any()
             .downcast_ref::<PackedQuadCell>()
-            .unwrap_or_else(|| panic!("java.lang.ClassCastException: {from_cell:?} cannot be cast to PackedQuadCell"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "java.lang.ClassCastException: {from_cell:?} cannot be cast to PackedQuadCell"
+                )
+            });
         // TODO clear last bit without the condition
         let term = self.term();
         let b_term = b.term();
         let this_term = if (0x1 & term) == 0x1 { term - 1 } else { term };
-        let from_term = if (0x1 & b_term) == 0x1 { b_term - 1 } else { b_term };
+        let from_term = if (0x1 & b_term) == 0x1 {
+            b_term - 1
+        } else {
+            b_term
+        };
         match (this_term as u64).cmp(&(from_term as u64)) {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
@@ -658,7 +753,10 @@ impl PrefixTreeIterator {
     }
 
     fn pruned(&mut self, rel: SpatialRelation) -> bool {
-        if rel == SpatialRelation::Intersects && self.leafy_prune && self.level == self.detail_level - 1 {
+        if rel == SpatialRelation::Intersects
+            && self.leafy_prune
+            && self.level == self.detail_level - 1
+        {
             let this_cell = self.this_cell.as_ref().expect("thisCell is set");
             let mut prune_iter = this_cell.get_next_level_cells(Some(Arc::clone(&self.shape)));
             let mut leaves = 0;

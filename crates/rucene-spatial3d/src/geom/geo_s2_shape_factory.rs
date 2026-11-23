@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoS2ShapeFactory.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -46,6 +45,12 @@ impl GeoS2ShapeFactory {
         point3: GeoPoint,
         point4: GeoPoint,
     ) -> Result<Arc<dyn GeoPolygon>> {
-        Ok(Arc::new(GeoS2Shape::new(planet_model, point1, point2, point3, point4)?))
+        Ok(Arc::new(GeoS2Shape::new(
+            planet_model,
+            point1,
+            point2,
+            point3,
+            point4,
+        )?))
     }
 }

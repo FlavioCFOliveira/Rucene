@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `XYZBounds.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -151,7 +150,9 @@ impl XYZBounds {
             Some(one_max_y),
             Some(one_min_z),
             Some(one_max_z),
-        ) = (one.min_x, one.max_x, one.min_y, one.max_y, one.min_z, one.max_z)
+        ) = (
+            one.min_x, one.max_x, one.min_y, one.max_y, one.min_z, one.max_z,
+        )
         else {
             return false;
         };

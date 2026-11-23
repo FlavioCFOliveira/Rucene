@@ -34,7 +34,13 @@ type TestPredicate = Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
 
 /// The `format` body of an [`AbstractFieldValueHighlighter`].
 type FormatFn = Arc<
-    dyn Fn(&str, &[String], &str, &[OffsetRange], Option<&[QueryOffsetRange]>) -> Result<Option<Vec<String>>>
+    dyn Fn(
+            &str,
+            &[String],
+            &str,
+            &[OffsetRange],
+            Option<&[QueryOffsetRange]>,
+        ) -> Result<Option<Vec<String>>>
         + Send
         + Sync,
 >;
@@ -95,11 +101,22 @@ impl FieldValueHighlighters {
         let always: Vec<String> = fields.iter().cloned().collect();
         Arc::new(AbstractFieldValueHighlighter {
             test_predicate: Arc::new(move |field, _has_matches| fields.contains(field)),
-            format: Arc::new(move |_field, _values, contiguous_value, value_ranges, _match_offsets| {
-                let best_passages = passage_selector
-                    .pick_best_in_ranges(contiguous_value, &[], max_leading_characters, 1, value_ranges)?;
-                Ok(Some(passage_formatter.format(contiguous_value, &best_passages, value_ranges)?))
-            }),
+            format: Arc::new(
+                move |_field, _values, contiguous_value, value_ranges, _match_offsets| {
+                    let best_passages = passage_selector.pick_best_in_ranges(
+                        contiguous_value,
+                        &[],
+                        max_leading_characters,
+                        1,
+                        value_ranges,
+                    )?;
+                    Ok(Some(passage_formatter.format(
+                        contiguous_value,
+                        &best_passages,
+                        value_ranges,
+                    )?))
+                },
+            ),
             always_fetched_fields: always,
         })
     }
@@ -129,20 +146,28 @@ impl FieldValueHighlighters {
         let passage_selector = Self::default_passage_selector();
         Arc::new(AbstractFieldValueHighlighter {
             test_predicate: Arc::new(move |field, has_matches| match_fields(field) && has_matches),
-            format: Arc::new(move |_field, _values, contiguous_value, value_ranges, match_offsets| {
-                let match_offsets = match_offsets.ok_or_else(rucene::error::LuceneError::null_pointer)?;
-                let markers: Vec<OffsetRange> =
-                    match_offsets.iter().map(QueryOffsetRange::as_offset_range).collect();
-                let best_passages = passage_selector
-                    .pick_best_in_ranges(
+            format: Arc::new(
+                move |_field, _values, contiguous_value, value_ranges, match_offsets| {
+                    let match_offsets =
+                        match_offsets.ok_or_else(rucene::error::LuceneError::null_pointer)?;
+                    let markers: Vec<OffsetRange> = match_offsets
+                        .iter()
+                        .map(QueryOffsetRange::as_offset_range)
+                        .collect();
+                    let best_passages = passage_selector.pick_best_in_ranges(
                         contiguous_value,
                         &markers,
                         max_passage_window,
                         max_passages,
                         value_ranges,
                     )?;
-                Ok(Some(passage_formatter.format(contiguous_value, &best_passages, value_ranges)?))
-            }),
+                    Ok(Some(passage_formatter.format(
+                        contiguous_value,
+                        &best_passages,
+                        value_ranges,
+                    )?))
+                },
+            ),
             always_fetched_fields: Vec::new(),
         })
     }
@@ -152,14 +177,17 @@ impl FieldValueHighlighters {
     ///
     /// Equivalent to the static `verbatimValue(String, String...)`.
     pub fn verbatim_value(field: &str, more_fields: &[&str]) -> Arc<dyn FieldValueHighlighter> {
-        let mut match_fields: HashSet<String> = more_fields.iter().map(|f| (*f).to_string()).collect();
+        let mut match_fields: HashSet<String> =
+            more_fields.iter().map(|f| (*f).to_string()).collect();
         match_fields.insert(field.to_string());
         let always: Vec<String> = match_fields.iter().cloned().collect();
         Arc::new(AbstractFieldValueHighlighter {
             test_predicate: Arc::new(move |fld, _has_matches| match_fields.contains(fld)),
-            format: Arc::new(|_field, values, _contiguous_value, _value_ranges, _match_offsets| {
-                Ok(Some(values.to_vec()))
-            }),
+            format: Arc::new(
+                |_field, values, _contiguous_value, _value_ranges, _match_offsets| {
+                    Ok(Some(values.to_vec()))
+                },
+            ),
             always_fetched_fields: always,
         })
     }
@@ -171,7 +199,9 @@ impl FieldValueHighlighters {
     pub fn skip_remaining() -> Arc<dyn FieldValueHighlighter> {
         Arc::new(AbstractFieldValueHighlighter {
             test_predicate: Arc::new(|_field, _has_matches| true),
-            format: Arc::new(|_field, _values, _contiguous_value, _value_ranges, _match_offsets| Ok(None)),
+            format: Arc::new(
+                |_field, _values, _contiguous_value, _value_ranges, _match_offsets| Ok(None),
+            ),
             always_fetched_fields: Vec::new(),
         })
     }

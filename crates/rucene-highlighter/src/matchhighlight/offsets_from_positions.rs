@@ -115,9 +115,11 @@ impl OffsetsFromPositions {
             let ts = self.analyzer.token_stream_from_str(&self.field, value)?;
             let mut ts = ts.borrow_mut();
             let offset_attr: AttributeHandle<dyn OffsetAttribute> =
-                AttributeHandle::get(ts.attribute_source()).ok_or_else(LuceneError::null_pointer)?;
+                AttributeHandle::get(ts.attribute_source())
+                    .ok_or_else(LuceneError::null_pointer)?;
             let pos_attr: AttributeHandle<dyn PositionIncrementAttribute> =
-                AttributeHandle::get(ts.attribute_source()).ok_or_else(LuceneError::null_pointer)?;
+                AttributeHandle::get(ts.attribute_source())
+                    .ok_or_else(LuceneError::null_pointer)?;
             ts.reset()?;
             while ts.increment_token()? {
                 position += pos_attr.borrow().get_position_increment();

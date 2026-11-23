@@ -65,7 +65,6 @@ pub trait PassageScorerOverrides: Send + Sync {
 pub struct PassageScorer {
     // TODO: this formula is completely made up. It might not provide
     // relevant snippets!
-
     /// BM25 k1 parameter, controls term frequency normalization
     pub(crate) k1: f32,
     /// BM25 b parameter, controls length normalization.
@@ -121,7 +120,12 @@ impl PassageScorer {
 
     /// Equivalent to `new PassageScorer(float, float, float)` of a subclass
     /// whose overrides are `overrides`.
-    pub fn with_overrides(k1: f32, b: f32, pivot: f32, overrides: Arc<dyn PassageScorerOverrides>) -> Self {
+    pub fn with_overrides(
+        k1: f32,
+        b: f32,
+        pivot: f32,
+        overrides: Arc<dyn PassageScorerOverrides>,
+    ) -> Self {
         Self {
             k1,
             b,

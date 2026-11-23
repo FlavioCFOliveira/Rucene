@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoCompositeAreaShape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -108,7 +107,13 @@ impl GeoCompositeAreaShape {
     }
 }
 
-impl_serializable_object!(GeoCompositeAreaShape, "org.apache.lucene.spatial3d.geom.GeoCompositeAreaShape", planet_object, geo_membership_shape, geo_area_shape);
+impl_serializable_object!(
+    GeoCompositeAreaShape,
+    "org.apache.lucene.spatial3d.geom.GeoCompositeAreaShape",
+    planet_object,
+    geo_membership_shape,
+    geo_area_shape
+);
 
 impl super::planet_object::PlanetObject for GeoCompositeAreaShape {
     fn get_planet_model(&self) -> &Arc<PlanetModel> {
@@ -135,14 +140,31 @@ impl GeoShape for GeoCompositeAreaShape {
         self.base.get_edge_points()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         self.base.intersects(p, notable_points, bounds)
     }
 }
 
 impl GeoOutsideDistance for GeoCompositeAreaShape {
-    fn compute_outside_distance_xyz(&self, distance_style: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        GeoBaseCompositeMembershipShape::compute_outside_distance_xyz(&self.base, distance_style, x, y, z)
+    fn compute_outside_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
+        GeoBaseCompositeMembershipShape::compute_outside_distance_xyz(
+            &self.base,
+            distance_style,
+            x,
+            y,
+            z,
+        )
     }
 }
 
@@ -162,6 +184,10 @@ impl GeoAreaShape for GeoCompositeAreaShape {
 
 impl fmt::Display for GeoCompositeAreaShape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GeoCompositeAreaShape: {{{}}}", list_to_string(&self.base.shapes))
+        write!(
+            f,
+            "GeoCompositeAreaShape: {{{}}}",
+            list_to_string(&self.base.shapes)
+        )
     }
 }

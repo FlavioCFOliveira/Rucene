@@ -9,6 +9,7 @@
 //! The types declared in `GeoCircle.java`, of the Java package
 //! `org.locationtech.spatial4j.shape.impl`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
@@ -20,8 +21,8 @@ use rucene::util::java_fmt::format_fixed;
 
 use crate::jdk::AtomicF64;
 use crate::shape::circle::Circle;
-use crate::shape::r#impl::circle_impl::{CircleImpl, CircleOverrides, CircleState};
 use crate::shape::point::Point;
+use crate::shape::r#impl::circle_impl::{CircleImpl, CircleOverrides, CircleState};
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::spatial_relation::SpatialRelation;
@@ -47,7 +48,7 @@ fn ulp(d: f64) -> f64 {
         return f64::INFINITY;
     }
     if d == f64::MAX {
-        return 2f64.powi(971);
+        return java_math::pow(2.0, 971.0);
     }
     let next = f64::from_bits(d.to_bits() + 1);
     next - d
@@ -67,11 +68,17 @@ impl GeoCircle {
     }
 
     fn inverse(&self) -> Option<Arc<GeoCircle>> {
-        self.inverse_circle.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.inverse_circle
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn set_inverse(&self, c: Option<Arc<GeoCircle>>) {
-        *self.inverse_circle.write().unwrap_or_else(|e| e.into_inner()) = c;
+        *self
+            .inverse_circle
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = c;
     }
 
     fn init(&self) {
@@ -89,7 +96,9 @@ impl GeoCircle {
                 if let Some(inverse) = self.inverse() {
                     inverse.reset(back_x, back_y, back_radius);
                 } else {
-                    let point = ctx.make_point(back_x, back_y).unwrap_or_else(|e| panic!("{e}"));
+                    let point = ctx
+                        .make_point(back_x, back_y)
+                        .unwrap_or_else(|e| panic!("{e}"));
                     self.set_inverse(Some(GeoCircle::new(point, back_radius, &ctx)));
                 }
             } else {
@@ -98,11 +107,9 @@ impl GeoCircle {
             self.horiz_axis_y.set(self.get_center().get_y()); //although probably not used
         } else {
             self.set_inverse(None);
-            let horiz_axis_y = ctx.get_dist_calc().calc_box_by_dist_from_pt_y_horiz_axis_deg(
-                &*self.get_center(),
-                radius_deg,
-                &ctx,
-            );
+            let horiz_axis_y = ctx
+                .get_dist_calc()
+                .calc_box_by_dist_from_pt_y_horiz_axis_deg(&*self.get_center(), radius_deg, &ctx);
             if horiz_axis_y > enclosing_box.get_max_y() {
                 self.horiz_axis_y.set(enclosing_box.get_max_y());
             } else if horiz_axis_y < enclosing_box.get_min_y() {
@@ -150,7 +157,11 @@ impl GeoCircle {
         let front_x = self.get_center().get_x();
         if corners_intersect == 4 {
             //all
-            let back_x = if front_x <= 0.0 { front_x + 180.0 } else { front_x - 180.0 };
+            let back_x = if front_x <= 0.0 {
+                front_x + 180.0
+            } else {
+                front_x - 180.0
+            };
             if r.relate_x_range(back_x, back_x).intersects() {
                 SpatialRelation::Intersects
             } else {
@@ -211,7 +222,11 @@ impl CircleOverrides for GeoCircle {
         self.horiz_axis_y.get()
     }
 
-    fn relate_rectangle_phase2(&self, r: &dyn Rectangle, bbox_sect: SpatialRelation) -> SpatialRelation {
+    fn relate_rectangle_phase2(
+        &self,
+        r: &dyn Rectangle,
+        bbox_sect: SpatialRelation,
+    ) -> SpatialRelation {
         if let Some(inverse) = self.inverse() {
             return inverse.relate(r.as_shape()).inverse();
         }
@@ -227,7 +242,8 @@ impl CircleOverrides for GeoCircle {
         }
         let corners_intersect = self.num_corners_intersect(r);
         if corners_intersect == 4 {
-            let x_intersect = r.relate_x_range(enclosing_box.get_min_x(), enclosing_box.get_max_x());
+            let x_intersect =
+                r.relate_x_range(enclosing_box.get_min_x(), enclosing_box.get_max_x());
             if x_intersect == SpatialRelation::Within {
                 return SpatialRelation::Contains;
             }
@@ -241,7 +257,9 @@ impl CircleOverrides for GeoCircle {
         {
             return SpatialRelation::Intersects;
         }
-        if r.relate_x_range(self.get_x_axis(), self.get_x_axis()).intersects() {
+        if r.relate_x_range(self.get_x_axis(), self.get_x_axis())
+            .intersects()
+        {
             // at x horizontal
             let radius_deg = self.state.radius_deg.get();
             let y_top = self.get_center().get_y() + radius_deg;
@@ -290,7 +308,10 @@ impl Shape for GeoCircle {
     }
 
     fn get_buffered(&self, distance: f64, ctx: &SpatialContext) -> Result<Arc<dyn Shape>> {
-        let c = ctx.make_circle_at(Arc::clone(&self.state.point), distance + self.state.radius_deg.get())?;
+        let c = ctx.make_circle_at(
+            Arc::clone(&self.state.point),
+            distance + self.state.radius_deg.get(),
+        )?;
         Ok(c)
     }
 

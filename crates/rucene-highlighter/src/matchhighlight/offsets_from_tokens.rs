@@ -83,7 +83,9 @@ impl OffsetsRetrievalStrategy for OffsetsFromTokens {
 
         let mut match_terms: HashSet<BytesRef> = HashSet::new();
         while matches_iterator.next()? {
-            let q = matches_iterator.get_query().ok_or_else(LuceneError::null_pointer)?;
+            let q = matches_iterator
+                .get_query()
+                .ok_or_else(LuceneError::null_pointer)?;
             q.visit(&mut MatchTermsVisitor {
                 field: &self.field,
                 match_terms: &mut match_terms,
@@ -96,9 +98,11 @@ impl OffsetsRetrievalStrategy for OffsetsFromTokens {
             let ts = self.analyzer.token_stream_from_str(&self.field, value)?;
             let mut ts = ts.borrow_mut();
             let offset_attr: AttributeHandle<dyn OffsetAttribute> =
-                AttributeHandle::get(ts.attribute_source()).ok_or_else(LuceneError::null_pointer)?;
+                AttributeHandle::get(ts.attribute_source())
+                    .ok_or_else(LuceneError::null_pointer)?;
             let term_attr: AttributeHandle<dyn TermToBytesRefAttribute> =
-                AttributeHandle::get(ts.attribute_source()).ok_or_else(LuceneError::null_pointer)?;
+                AttributeHandle::get(ts.attribute_source())
+                    .ok_or_else(LuceneError::null_pointer)?;
             ts.reset()?;
             while ts.increment_token()? {
                 if match_terms.contains(&term_attr.borrow().get_bytes_ref()) {

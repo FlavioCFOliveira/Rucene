@@ -43,7 +43,8 @@ use crate::prefix::tree::spatial_prefix_tree::{SpatialPrefixTree, SpatialPrefixT
 static DUMMY_CTX: LazyLock<Arc<SpatialContext>> = LazyLock::new(|| {
     let mut factory = SpatialContextFactory::new();
     factory.geo = false;
-    let world: Arc<dyn Rectangle> = RectangleImpl::new(f64::NEG_INFINITY, f64::INFINITY, 0.0, 0.0, None);
+    let world: Arc<dyn Rectangle> =
+        RectangleImpl::new(f64::NEG_INFINITY, f64::INFINITY, 0.0, 0.0, None);
     factory.world_bounds = Some(world);
     SpatialContext::new(&mut factory).expect("the dummy SpatialContext builds")
 });
@@ -112,7 +113,10 @@ pub fn as_span_units_nr_shape(shape: &dyn Shape) -> Option<&SpanUnitsNRShape> {
 /// level of a shared cell stack, so two handles are the same Java object
 /// when they name the same level of the same stack.
 fn same_shape(a: &dyn Shape, b: &dyn Shape) -> bool {
-    match (a.as_any().downcast_ref::<NRCell>(), b.as_any().downcast_ref::<NRCell>()) {
+    match (
+        a.as_any().downcast_ref::<NRCell>(),
+        b.as_any().downcast_ref::<NRCell>(),
+    ) {
         (Some(a), Some(b)) => a.same(b),
         _ => addr(a) == addr(b),
     }
@@ -186,7 +190,7 @@ impl NumberRangePrefixTree {
             term_len_by_level[level] = term_len_by_level[level - 1] + if two_bytes { 2 } else { 1 };
         }
         let max_term_len = term_len_by_level[max_levels as usize] + 1; // + 1 for leaf byte
-        // Fill levelByTermLen
+                                                                       // Fill levelByTermLen
         let mut level_by_term_len = vec![0i32; max_term_len as usize];
         for level in 1..term_len_by_level.len() {
             let term_len = term_len_by_level[level] as usize;
@@ -283,13 +287,17 @@ pub trait NumberRangePrefixTreeImpl: SpatialPrefixTree {
     ///
     /// `IllegalArgumentException("Wrong order: ...")` when the arguments
     /// are not in order.
-    fn to_range_shape(&self, start_unit: Arc<dyn UnitNRShape>, end_unit: Arc<dyn UnitNRShape>) -> Result<Arc<dyn NRShape>> {
+    fn to_range_shape(
+        &self,
+        start_unit: Arc<dyn UnitNRShape>,
+        end_unit: Arc<dyn UnitNRShape>,
+    ) -> Result<Arc<dyn NRShape>> {
         // note: this normalization/optimization process is actually REQUIRED based on assumptions
         // elsewhere.
         // Normalize start & end
         let start_unit = start_unit.get_shape_at_level(self.truncate_start_vals(&*start_unit, 0)); // chops off trailing min-vals (zeroes)
         let end_unit = end_unit.get_shape_at_level(self.truncate_end_vals(&*end_unit, 0)); // chops off trailing max-vals
-        // Optimize to just start or end if it's equivalent, e.g. April to April 1st is April 1st.
+                                                                                           // Optimize to just start or end if it's equivalent, e.g. April to April 1st is April 1st.
         let cmp = compare_prefix(&*start_unit, &*end_unit);
         if cmp > 0 {
             return Err(LuceneError::illegal_argument(format!(
@@ -303,18 +311,26 @@ pub trait NumberRangePrefixTreeImpl: SpatialPrefixTree {
                 return Ok(start_unit);
             } else if end_unit.get_unit_level() > start_unit.get_unit_level() {
                 // e.g. April to April 1st
-                if self.truncate_start_vals(&*end_unit, start_unit.get_unit_level()) == start_unit.get_unit_level() {
+                if self.truncate_start_vals(&*end_unit, start_unit.get_unit_level())
+                    == start_unit.get_unit_level()
+                {
                     return Ok(end_unit);
                 }
             } else {
                 // minLV level > maxLV level
                 // e.g. April 30 to April
-                if self.truncate_end_vals(&*start_unit, end_unit.get_unit_level()) == end_unit.get_unit_level() {
+                if self.truncate_end_vals(&*start_unit, end_unit.get_unit_level())
+                    == end_unit.get_unit_level()
+                {
                     return Ok(start_unit);
                 }
             }
         }
-        Ok(Arc::new(SpanUnitsNRShape::new(self.me_nr(), start_unit, end_unit)))
+        Ok(Arc::new(SpanUnitsNRShape::new(
+            self.me_nr(),
+            start_unit,
+            end_unit,
+        )))
     }
 
     /// `truncateStartVals(UnitNRShape lv, int endLevel)`: returns the
@@ -372,9 +388,15 @@ pub trait NumberRangePrefixTreeImpl: SpatialPrefixTree {
             };
             let left_str = &str[1..middle];
             let right_str = &str[middle + " TO ".len()..str.len() - 1];
-            self.to_range_shape(self.parse_unit_shape(left_str)?, self.parse_unit_shape(right_str)?)
+            self.to_range_shape(
+                self.parse_unit_shape(left_str)?,
+                self.parse_unit_shape(right_str)?,
+            )
         } else if str.starts_with('{') {
-            Err(ParseException::error(format!("Exclusive ranges not supported; got {str}"), 0))
+            Err(ParseException::error(
+                format!("Exclusive ranges not supported; got {str}"),
+                0,
+            ))
         } else {
             Ok(self.parse_unit_shape(str)?)
         }
@@ -401,11 +423,18 @@ pub trait NumberRangePrefixTreeImpl: SpatialPrefixTree {
         // reverse lookup term length to the level and hence the cell
         let cells_by_level = Arc::clone(&nr_cell(&*scratch).stack);
         let is_leaf = term.bytes[term.offset + term.length - 1] == 0;
-        let len_no_leaf = if is_leaf { term.length - 1 } else { term.length };
+        let len_no_leaf = if is_leaf {
+            term.length - 1
+        } else {
+            term.length
+        };
         let level = self.nr().level_by_term_len[len_no_leaf];
-        let result = NRCell::handle(&cells_by_level, usize::try_from(level).unwrap_or_else(|_| {
-            panic!("java.lang.ArrayIndexOutOfBoundsException: Index {level} out of bounds")
-        }));
+        let result = NRCell::handle(
+            &cells_by_level,
+            usize::try_from(level).unwrap_or_else(|_| {
+                panic!("java.lang.ArrayIndexOutOfBoundsException: Index {level} out of bounds")
+            }),
+        );
         {
             let mut st = cells_by_level.lock();
             if st.term_buf.is_none() {
@@ -450,7 +479,11 @@ pub struct SpanUnitsNRShape {
 impl SpanUnitsNRShape {
     /// `SpanUnitsNRShape(UnitNRShape minLV, UnitNRShape maxLV)`: don't call
     /// directly; see `toRangeShape`.
-    fn new(tree: Arc<dyn NumberRangePrefixTreeImpl>, min_lv: Arc<dyn UnitNRShape>, max_lv: Arc<dyn UnitNRShape>) -> Self {
+    fn new(
+        tree: Arc<dyn NumberRangePrefixTreeImpl>,
+        min_lv: Arc<dyn UnitNRShape>,
+        max_lv: Arc<dyn UnitNRShape>,
+    ) -> Self {
         // calc lastLevelInCommon
         let mut level = 1;
         while level <= min_lv.get_unit_level() && level <= max_lv.get_unit_level() {
@@ -495,16 +528,20 @@ impl SpanUnitsNRShape {
         let ext_min_int_min = compare_prefix(&**ext.get_min_unit(), &**self.get_min_unit());
         let ext_max_int_max = compare_prefix(&**ext.get_max_unit(), &**self.get_max_unit());
         if (ext_min_int_min > 0
-            || ext_min_int_min == 0 && ext.get_min_unit().get_unit_level() >= self.get_min_unit().get_unit_level())
+            || ext_min_int_min == 0
+                && ext.get_min_unit().get_unit_level() >= self.get_min_unit().get_unit_level())
             && (ext_max_int_max < 0
-                || ext_max_int_max == 0 && ext.get_max_unit().get_unit_level() >= self.get_max_unit().get_unit_level())
+                || ext_max_int_max == 0
+                    && ext.get_max_unit().get_unit_level() >= self.get_max_unit().get_unit_level())
         {
             return SpatialRelation::Contains;
         }
         if (ext_min_int_min < 0
-            || ext_min_int_min == 0 && ext.get_min_unit().get_unit_level() <= self.get_min_unit().get_unit_level())
+            || ext_min_int_min == 0
+                && ext.get_min_unit().get_unit_level() <= self.get_min_unit().get_unit_level())
             && (ext_max_int_max > 0
-                || ext_max_int_max == 0 && ext.get_max_unit().get_unit_level() <= self.get_max_unit().get_unit_level())
+                || ext_max_int_max == 0
+                    && ext.get_max_unit().get_unit_level() <= self.get_max_unit().get_unit_level())
         {
             return SpatialRelation::Within;
         }
@@ -513,7 +550,11 @@ impl SpanUnitsNRShape {
 
     /// `clone()`.
     pub fn clone_span(&self) -> SpanUnitsNRShape {
-        SpanUnitsNRShape::new(Arc::clone(&self.tree), self.min_lv.clone_unit(), self.max_lv.clone_unit())
+        SpanUnitsNRShape::new(
+            Arc::clone(&self.tree),
+            self.min_lv.clone_unit(),
+            self.max_lv.clone_unit(),
+        )
     }
 }
 
@@ -536,13 +577,17 @@ impl fmt::Display for SpanUnitsNRShape {
 
 impl NRShape for SpanUnitsNRShape {
     fn round_to_level(&self, target_level: i32) -> Result<Arc<dyn NRShape>> {
-        self.tree
-            .to_range_shape(self.min_lv.round_to_unit_level(target_level), self.max_lv.round_to_unit_level(target_level))
+        self.tree.to_range_shape(
+            self.min_lv.round_to_unit_level(target_level),
+            self.max_lv.round_to_unit_level(target_level),
+        )
     }
 }
 
 impl Shape for SpanUnitsNRShape {
-    spatial4j::spatial4j_shape_boilerplate!("org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree$SpanUnitsNRShape");
+    spatial4j::spatial4j_shape_boilerplate!(
+        "org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree$SpanUnitsNRShape"
+    );
 
     fn relate(&self, shape: &dyn Shape) -> SpatialRelation {
         //      if (shape instanceof UnitNRShape)
@@ -595,7 +640,9 @@ impl Shape for SpanUnitsNRShape {
 
     fn hash_code(&self) -> i32 {
         let mut result = self.min_lv.hash_code();
-        result = result.wrapping_mul(31).wrapping_add(self.max_lv.hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.max_lv.hash_code());
         result
     }
 
@@ -635,7 +682,7 @@ struct NRCellState {
 /// cell 0's `termBuf`).
 #[derive(Debug)]
 struct NRStackState {
-    term: TermRef,           // AKA the token
+    term: TermRef,             // AKA the token
     term_buf: Option<Vec<u8>>, // see ensureOwnTermBytes(), only for cell0
     cells: Vec<NRCellState>,
 }
@@ -649,7 +696,9 @@ struct NRStack {
 
 impl fmt::Debug for NRStack {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NRStack").field("state", &self.state).finish_non_exhaustive()
+        f.debug_struct("NRStack")
+            .field("state", &self.state)
+            .finish_non_exhaustive()
     }
 }
 
@@ -753,7 +802,13 @@ impl NRCell {
         Self::reset_with(&mut st, self.level, cell_number, term_len, two_bytes);
     }
 
-    fn reset_with(st: &mut NRStackState, level: usize, cell_number: i32, term_len: usize, two_bytes: bool) {
+    fn reset_with(
+        st: &mut NRStackState,
+        level: usize,
+        cell_number: i32,
+        term_len: usize,
+        two_bytes: bool,
+    ) {
         // reset()
         st.cells[level].cell_is_leaf = false;
         st.cells[level].cell_shape_rel = None;
@@ -796,7 +851,10 @@ impl NRCell {
                 i32::from(st.term.bytes[off + term_len - 1]) - 1
             };
             st.cells[level].cell_number = cell_number;
-            debug_assert!(cell_number >= 0, "Illegal state; ensureDecoded() wasn't called");
+            debug_assert!(
+                cell_number >= 0,
+                "Illegal state; ensureDecoded() wasn't called"
+            );
         }
     }
 
@@ -862,8 +920,9 @@ impl NRCell {
             max_lv = Arc::clone(span_shape.get_max_unit());
             last_level_in_common = span_shape.get_levels_in_common();
         } else {
-            min_lv = as_unit_nr_shape(&*filter)
-                .unwrap_or_else(|| panic!("java.lang.ClassCastException: {filter} cannot be cast to UnitNRShape"));
+            min_lv = as_unit_nr_shape(&*filter).unwrap_or_else(|| {
+                panic!("java.lang.ClassCastException: {filter} cannot be cast to UnitNRShape")
+            });
             max_lv = Arc::clone(&min_lv);
             last_level_in_common = min_lv.get_unit_level();
         }
@@ -879,20 +938,30 @@ impl NRCell {
             set(first, first_is, last, last_is);
         };
         // fast path optimization that is usually true, but never first level
-        if p_filter.as_ref().is_some_and(|pf| same_shape(&*filter, &**pf))
+        if p_filter
+            .as_ref()
+            .is_some_and(|pf| same_shape(&*filter, &**pf))
             && (my_level <= last_level_in_common || p_first != p_last)
         {
             // TODO benchmark if this optimization pays off. We avoid two comparePrefixLV calls.
-            let (first, first_is) = if p_first_is && p_cell_number == p_first && min_lv.get_unit_level() >= my_level {
-                (min_lv.get_val_at_level(my_level), min_lv.get_unit_level() > my_level)
-            } else {
-                (0, false)
-            };
-            let (last, last_is) = if p_last_is && p_cell_number == p_last && max_lv.get_unit_level() >= my_level {
-                (max_lv.get_val_at_level(my_level), max_lv.get_unit_level() > my_level)
-            } else {
-                (self.tree().get_num_sub_cells(&parent) - 1, false)
-            };
+            let (first, first_is) =
+                if p_first_is && p_cell_number == p_first && min_lv.get_unit_level() >= my_level {
+                    (
+                        min_lv.get_val_at_level(my_level),
+                        min_lv.get_unit_level() > my_level,
+                    )
+                } else {
+                    (0, false)
+                };
+            let (last, last_is) =
+                if p_last_is && p_cell_number == p_last && max_lv.get_unit_level() >= my_level {
+                    (
+                        max_lv.get_val_at_level(my_level),
+                        max_lv.get_unit_level() > my_level,
+                    )
+                } else {
+                    (self.tree().get_num_sub_cells(&parent) - 1, false)
+                };
             first_last(first, first_is, last, last_is);
             return;
         }
@@ -913,13 +982,19 @@ impl NRCell {
             // start comes before...
             (0, false)
         } else {
-            (min_lv.get_val_at_level(my_level), min_lv.get_unit_level() > my_level)
+            (
+                min_lv.get_val_at_level(my_level),
+                min_lv.get_unit_level() > my_level,
+            )
         };
         let (last, last_is) = if end_cmp > 0 || max_lv.get_unit_level() < my_level {
             // end comes after...
             (self.tree().get_num_sub_cells(&parent) - 1, false)
         } else {
-            (max_lv.get_val_at_level(my_level), max_lv.get_unit_level() > my_level)
+            (
+                max_lv.get_val_at_level(my_level),
+                max_lv.get_unit_level() > my_level,
+            )
         };
         first_last(first, first_is, last, last_is);
     }
@@ -927,9 +1002,12 @@ impl NRCell {
     /// `getShapeAtLevel(int level)` as the cell.
     fn get_shape_at_level_cell(&self, level: i32) -> NRCell {
         debug_assert!(level as usize <= self.level);
-        NRCell::handle(&self.stack, usize::try_from(level).unwrap_or_else(|_| {
-            panic!("java.lang.ArrayIndexOutOfBoundsException: Index {level} out of bounds")
-        }))
+        NRCell::handle(
+            &self.stack,
+            usize::try_from(level).unwrap_or_else(|_| {
+                panic!("java.lang.ArrayIndexOutOfBoundsException: Index {level} out of bounds")
+            }),
+        )
     }
 
     /// `relate(UnitNRShape lv)`.
@@ -943,7 +1021,7 @@ impl NRCell {
             return SpatialRelation::Within;
         }
         SpatialRelation::Contains // or equals
-        // no INTERSECTS; that won't happen.
+                                  // no INTERSECTS; that won't happen.
     }
 
     /// `relate(SpanUnitsNRShape spanShape)`.
@@ -980,7 +1058,10 @@ impl NRCell {
         }
         while nr_max_level < level {
             if self.get_val_at_level(nr_max_level + 1)
-                != self.tree().get_num_sub_cells(&self.get_shape_at_level_cell(nr_max_level)) - 1
+                != self
+                    .tree()
+                    .get_num_sub_cells(&self.get_shape_at_level_cell(nr_max_level))
+                    - 1
             {
                 return SpatialRelation::Intersects;
             }
@@ -995,7 +1076,11 @@ impl NRCell {
         if self.level == 0 {
             return pretty;
         }
-        format!("{}{} {pretty}", to_string_unit_raw(self), if self.is_leaf() { "\u{2022}" } else { "" })
+        format!(
+            "{}{} {pretty}",
+            to_string_unit_raw(self),
+            if self.is_leaf() { "\u{2022}" } else { "" }
+        )
     }
 
     /// `term.compareTo(other)` over the two prefixes: `Arrays.compareUnsigned`.
@@ -1204,7 +1289,9 @@ impl UnitNRShape for NRCell {
 
     fn clone_unit(&self) -> Arc<dyn UnitNRShape> {
         // no leaf distinction; this is purely based on UnitNRShape
-        let cell = self.tree().nr_read_cell(&self.get_token_bytes_no_leaf(None), None);
+        let cell = self
+            .tree()
+            .nr_read_cell(&self.get_token_bytes_no_leaf(None), None);
         let cell = nr_cell(&*cell);
         NRCell::ensure_own_term_bytes(&mut cell.stack.lock());
         cell.ensure_decoded();
@@ -1224,7 +1311,9 @@ impl UnitNRShape for NRCell {
 }
 
 impl Shape for NRCell {
-    spatial4j::spatial4j_shape_boilerplate!("org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree$NRCell");
+    spatial4j::spatial4j_shape_boilerplate!(
+        "org.apache.lucene.spatial.prefix.tree.NumberRangePrefixTree$NRCell"
+    );
 
     fn relate(&self, shape: &dyn Shape) -> SpatialRelation {
         self.assert_decoded();

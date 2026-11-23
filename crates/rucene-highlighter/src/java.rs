@@ -47,7 +47,9 @@ pub(crate) fn substring(units: &[u16], begin: i32, end: i32) -> Result<String> {
             format!("begin {begin}, end {end}, length {length}"),
         )));
     }
-    Ok(String::from_utf16_lossy(&units[begin as usize..end as usize]))
+    Ok(String::from_utf16_lossy(
+        &units[begin as usize..end as usize],
+    ))
 }
 
 /// `termAtt.toString()`: the term text of a `CharTermAttribute`.
@@ -85,8 +87,16 @@ pub(crate) fn float_compare(a: f32, b: f32) -> std::cmp::Ordering {
     } else if a > b {
         Ordering::Greater
     } else {
-        let a_bits = if a.is_nan() { 0x7fc0_0000 } else { a.to_bits() as i32 };
-        let b_bits = if b.is_nan() { 0x7fc0_0000 } else { b.to_bits() as i32 };
+        let a_bits = if a.is_nan() {
+            0x7fc0_0000
+        } else {
+            a.to_bits() as i32
+        };
+        let b_bits = if b.is_nan() {
+            0x7fc0_0000
+        } else {
+            b.to_bits() as i32
+        };
         a_bits.cmp(&b_bits)
     }
 }

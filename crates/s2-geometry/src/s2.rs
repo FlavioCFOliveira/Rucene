@@ -18,6 +18,7 @@
 //! `com.google.common.geometry`.
 
 use rucene::error::{LuceneError, Result};
+use rucene::util::java_math;
 
 use crate::r2_vector::R2Vector;
 use crate::s2_cell_id::S2CellId;
@@ -177,15 +178,12 @@ impl S2 {
                 }
             }
         }
-        4.0 * (0.0f64
-            .max(
-                (0.5 * s).tan()
-                    * (0.5 * (s - sa)).tan()
-                    * (0.5 * (s - sb)).tan()
-                    * (0.5 * (s - sc)).tan(),
-            )
-            .sqrt())
-        .atan()
+        4.0 * java_math::atan(java_math::sqrt(0.0f64.max(
+            java_math::tan(0.5 * s)
+                * java_math::tan(0.5 * (s - sa))
+                * java_math::tan(0.5 * (s - sb))
+                * java_math::tan(0.5 * (s - sc)),
+        )))
     }
 
     /// `girardArea(S2Point, S2Point, S2Point)`.
@@ -215,9 +213,21 @@ impl S2 {
         let sina = S2Point::cross_prod(b, c).norm();
         let sinb = S2Point::cross_prod(c, a).norm();
         let sinc = S2Point::cross_prod(a, b).norm();
-        let ra = if sina == 0.0 { 1.0 } else { sina.asin() / sina };
-        let rb = if sinb == 0.0 { 1.0 } else { sinb.asin() / sinb };
-        let rc = if sinc == 0.0 { 1.0 } else { sinc.asin() / sinc };
+        let ra = if sina == 0.0 {
+            1.0
+        } else {
+            java_math::asin(sina) / sina
+        };
+        let rb = if sinb == 0.0 {
+            1.0
+        } else {
+            java_math::asin(sinb) / sinb
+        };
+        let rc = if sinc == 0.0 {
+            1.0
+        } else {
+            java_math::asin(sinc) / sinc
+        };
         let x = S2Point::new(a.x, b.x, c.x);
         let y = S2Point::new(a.y, b.y, c.y);
         let z = S2Point::new(a.z, b.z, c.z);
@@ -240,7 +250,12 @@ impl S2 {
     }
 
     /// `robustCCW(S2Point, S2Point, S2Point, S2Point aCrossB)`.
-    pub fn robust_ccw_with_cross(a: &S2Point, b: &S2Point, c: &S2Point, a_cross_b: &S2Point) -> i32 {
+    pub fn robust_ccw_with_cross(
+        a: &S2Point,
+        b: &S2Point,
+        c: &S2Point,
+        a_cross_b: &S2Point,
+    ) -> i32 {
         let k_min_abs_value = 1.6e-15; // 2 * 14 * 2**-54
         let det = a_cross_b.dot_prod(c);
         if det > k_min_abs_value {
@@ -466,50 +481,6 @@ pub(crate) fn scalb(d: f64, scale_factor: i32) -> f64 {
         scale -= scale_increment;
     }
     d
-}
-
-/// `java.lang.Math.IEEEremainder(double, double)` (fdlibm
-/// `__ieee754_remainder`): `x - y * n` where `n` is the integer nearest the
-/// exact quotient `x / y`, ties to even.
-pub(crate) fn ieee_remainder(x: f64, p: f64) -> f64 {
-    if p.is_nan() || x.is_nan() || x.is_infinite() || p == 0.0 {
-        return f64::NAN;
-    }
-    if p.is_infinite() {
-        return x;
-    }
-    let sx = x.is_sign_negative();
-    let p = p.abs();
-    let mut x = x;
-    if p <= f64::MAX / 2.0 {
-        // fmod is exact.
-        x %= p + p;
-    }
-    if x.abs() == p {
-        return 0.0 * x;
-    }
-    x = x.abs();
-    if p < 2.0 * f64::MIN_POSITIVE {
-        if x + x > p {
-            x -= p;
-            if x + x >= p {
-                x -= p;
-            }
-        }
-    } else {
-        let p_half = 0.5 * p;
-        if x > p_half {
-            x -= p;
-            if x >= p_half {
-                x -= p;
-            }
-        }
-    }
-    if sx {
-        -x
-    } else {
-        x
-    }
 }
 
 /// `java.lang.Math.round(double)`: the closest `long`, ties toward positive

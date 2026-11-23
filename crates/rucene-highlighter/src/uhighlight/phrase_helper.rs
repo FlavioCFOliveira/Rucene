@@ -208,7 +208,11 @@ impl WeightedSpanTermExtractorOverrides for ExtractorOverrides {
         Ok(())
     }
 
-    fn must_rewrite_query(&self, this: &WeightedSpanTermExtractor, span_query: &dyn SpanQuery) -> bool {
+    fn must_rewrite_query(
+        &self,
+        this: &WeightedSpanTermExtractor,
+        span_query: &dyn SpanQuery,
+    ) -> bool {
         match (self.rewrite_query_pred)(span_query) {
             // allow to override
             Some(rewrite_q) => rewrite_q,
@@ -326,10 +330,9 @@ impl PhraseHelper {
         doc_id: i32,
         results: &mut Vec<Box<dyn OffsetsEnum>>,
     ) -> Result<()> {
-        let leaf_reader: Arc<dyn LeafReader> = Arc::new(SingleFieldWithOffsetsFilterLeafReader::new(
-            Arc::clone(leaf_reader),
-            &self.field_name,
-        )?);
+        let leaf_reader: Arc<dyn LeafReader> = Arc::new(
+            SingleFieldWithOffsetsFilterLeafReader::new(Arc::clone(leaf_reader), &self.field_name)?,
+        );
         // TODO avoid searcher and do what it does to rewrite & get weight?
         let mut searcher = IndexSearcher::new(Arc::clone(&leaf_reader).as_index_reader())?;
         searcher.set_query_cache(None);
@@ -354,7 +357,8 @@ impl PhraseHelper {
                     ),
                 )
             })?;
-            let weight = span_query.create_span_weight(&searcher, ScoreMode::COMPLETE_NO_SCORES, 1.0)?;
+            let weight =
+                span_query.create_span_weight(&searcher, ScoreMode::COMPLETE_NO_SCORES, 1.0)?;
             let Some(mut scorer) = weight.span_scorer(&context)? else {
                 continue;
             };
@@ -575,7 +579,12 @@ pub(crate) struct OffsetSpanCollector<'a> {
 }
 
 impl SpanCollector for OffsetSpanCollector<'_> {
-    fn collect_leaf(&mut self, postings: &dyn PostingsEnum, _position: i32, term: &Term) -> Result<()> {
+    fn collect_leaf(
+        &mut self,
+        postings: &dyn PostingsEnum,
+        _position: i32,
+        term: &Term,
+    ) -> Result<()> {
         if !term.field_opt().is_some_and(|f| (self.field_matcher)(f)) {
             return Ok(());
         }

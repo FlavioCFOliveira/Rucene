@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `DistanceStyle.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -84,6 +83,8 @@ pub trait DistanceStyle: Any + Send + Sync {
     }
 
     /// `fromAggregationForm(double)`.
+    // Java's method name `fromAggregationForm`.
+    #[allow(clippy::wrong_self_convention)]
     fn from_aggregation_form(&self, aggregate_distance: f64) -> f64 {
         aggregate_distance
     }
@@ -108,14 +109,22 @@ pub trait DistanceStyle: Any + Send + Sync {
     /// # Errors
     ///
     /// `IllegalStateException` when the style has no reverse mapping.
-    fn find_minimum_arc_distance(&self, planet_model: &PlanetModel, distance_value: f64) -> Result<f64>;
+    fn find_minimum_arc_distance(
+        &self,
+        planet_model: &PlanetModel,
+        distance_value: f64,
+    ) -> Result<f64>;
 
     /// `findMaximumArcDistance(PlanetModel, double)`.
     ///
     /// # Errors
     ///
     /// `IllegalStateException` when the style has no reverse mapping.
-    fn find_maximum_arc_distance(&self, planet_model: &PlanetModel, distance_value: f64) -> Result<f64>;
+    fn find_maximum_arc_distance(
+        &self,
+        planet_model: &PlanetModel,
+        distance_value: f64,
+    ) -> Result<f64>;
 }
 
 /// `DistanceStyle.ARC`: arc distance calculator.

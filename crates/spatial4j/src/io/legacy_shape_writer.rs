@@ -79,7 +79,9 @@ impl ShapeIO for LegacyShapeWriter {
 
 impl ShapeWriter for LegacyShapeWriter {
     fn write(&self, output: &mut dyn std::fmt::Write, shape: &dyn Shape) -> Result<()> {
-        output.write_str(&Self::write_shape(shape)).map_err(io_error)
+        output
+            .write_str(&Self::write_shape(shape))
+            .map_err(io_error)
     }
 
     fn to_string_of(&self, shape: &dyn Shape) -> String {

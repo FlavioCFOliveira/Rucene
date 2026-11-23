@@ -61,7 +61,12 @@ pub struct WeightedFragInfo {
 
 impl WeightedFragInfo {
     /// Equivalent to `new WeightedFragInfo(int, int, List, float)`.
-    pub fn new(start_offset: i32, end_offset: i32, sub_infos: Vec<SubInfo>, total_boost: f32) -> Self {
+    pub fn new(
+        start_offset: i32,
+        end_offset: i32,
+        sub_infos: Vec<SubInfo>,
+        total_boost: f32,
+    ) -> Self {
         Self {
             sub_infos,
             total_boost,

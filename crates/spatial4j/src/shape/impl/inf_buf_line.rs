@@ -9,6 +9,7 @@
 //! The types declared in `InfBufLine.java`, of the Java package
 //! `org.locationtech.spatial4j.shape.impl`.
 
+use rucene::util::java_math;
 use std::fmt;
 
 use rucene::util::java_fmt::double_to_string;
@@ -38,13 +39,26 @@ impl InfBufLine {
         let (intercept, dist_denom_inv) = if slope.is_infinite() {
             (point.get_x(), f64::NAN)
         } else {
-            (point.get_y() - slope * point.get_x(), 1.0 / (slope * slope + 1.0).sqrt())
+            (
+                point.get_y() - slope * point.get_x(),
+                1.0 / java_math::sqrt(slope * slope + 1.0),
+            )
         };
-        Self { slope, intercept, buf, dist_denom_inv }
+        Self {
+            slope,
+            intercept,
+            buf,
+            dist_denom_inv,
+        }
     }
 
     /// `relate(Rectangle r, Point prC, Point scratch)` (package-private).
-    pub(crate) fn relate(&self, r: &dyn Rectangle, pr_c: &dyn Point, scratch: &dyn Point) -> SpatialRelation {
+    pub(crate) fn relate(
+        &self,
+        r: &dyn Rectangle,
+        pr_c: &dyn Point,
+        scratch: &dyn Point,
+    ) -> SpatialRelation {
         debug_assert!(r.get_center().equals(pr_c.as_shape()));
         let c_quad = self.quadrant(pr_c);
         let nearest_p = scratch;
@@ -103,8 +117,16 @@ impl InfBufLine {
 
     /// `cornerByQuadrant(Rectangle r, int cornerQuad, Point out)`.
     pub fn corner_by_quadrant(r: &dyn Rectangle, corner_quad: i32, out: &dyn Point) {
-        let x = if corner_quad == 1 || corner_quad == 4 { r.get_max_x() } else { r.get_min_x() };
-        let y = if corner_quad == 1 || corner_quad == 2 { r.get_max_y() } else { r.get_min_y() };
+        let x = if corner_quad == 1 || corner_quad == 4 {
+            r.get_max_x()
+        } else {
+            r.get_min_x()
+        };
+        let y = if corner_quad == 1 || corner_quad == 2 {
+            r.get_max_y()
+        } else {
+            r.get_min_y()
+        };
         out.reset(x, y);
     }
 

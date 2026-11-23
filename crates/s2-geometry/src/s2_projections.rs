@@ -20,6 +20,7 @@
 use crate::r2_vector::R2Vector;
 use crate::s2::{Metric, S2};
 use crate::s2_point::S2Point;
+use rucene::util::java_math;
 
 /// Equivalent to `com.google.common.geometry.S2Projections.Projections`
 /// (`public enum`): the cube-face projections the library knows.
@@ -64,8 +65,10 @@ impl S2Projections {
         ),
     );
     /// `MAX_AREA`.
-    pub const MAX_AREA: Metric =
-        Metric::new(2, select(1.0, S2::M_PI * S2::M_PI / 16.0, 0.65894981424079037));
+    pub const MAX_AREA: Metric = Metric::new(
+        2,
+        select(1.0, S2::M_PI * S2::M_PI / 16.0, 0.65894981424079037),
+    );
     /// `AVG_AREA`.
     pub const AVG_AREA: Metric = Metric::new(2, S2::M_PI / 6.0);
     /// `MIN_ANGLE_SPAN`.
@@ -78,35 +81,57 @@ impl S2Projections {
     /// `MIN_WIDTH`.
     pub const MIN_WIDTH: Metric = Metric::new(
         1,
-        select(1.0 / SQRT_6, S2::M_PI / (4.0 * S2::M_SQRT2), S2::M_SQRT2 / 3.0),
+        select(
+            1.0 / SQRT_6,
+            S2::M_PI / (4.0 * S2::M_SQRT2),
+            S2::M_SQRT2 / 3.0,
+        ),
     );
     /// `MAX_WIDTH`: `MAX_ANGLE_SPAN.deriv()`.
     pub const MAX_WIDTH: Metric = Metric::new(1, select(1.0, S2::M_PI / 4.0, 0.85244858959960922));
     /// `AVG_WIDTH`.
     pub const AVG_WIDTH: Metric = Metric::new(
         1,
-        select(0.70572967292222848, 0.71865931946258044, 0.71726183644304969),
+        select(
+            0.70572967292222848,
+            0.71865931946258044,
+            0.71726183644304969,
+        ),
     );
     /// `MIN_EDGE`.
     pub const MIN_EDGE: Metric = Metric::new(
         1,
-        select(S2::M_SQRT2 / 3.0, S2::M_PI / (4.0 * S2::M_SQRT2), S2::M_SQRT2 / 3.0),
+        select(
+            S2::M_SQRT2 / 3.0,
+            S2::M_PI / (4.0 * S2::M_SQRT2),
+            S2::M_SQRT2 / 3.0,
+        ),
     );
     /// `MAX_EDGE`: `MAX_ANGLE_SPAN.deriv()`.
     pub const MAX_EDGE: Metric = Metric::new(1, select(1.0, S2::M_PI / 4.0, 0.85244858959960922));
     /// `AVG_EDGE`.
     pub const AVG_EDGE: Metric = Metric::new(
         1,
-        select(0.72001709647780182, 0.73083351627336963, 0.72960687319305303),
+        select(
+            0.72001709647780182,
+            0.73083351627336963,
+            0.72960687319305303,
+        ),
     );
     /// `MIN_DIAG`.
     pub const MIN_DIAG: Metric = Metric::new(
         1,
-        select(S2::M_SQRT2 / 3.0, S2::M_PI / (3.0 * S2::M_SQRT2), 4.0 * S2::M_SQRT2 / 9.0),
+        select(
+            S2::M_SQRT2 / 3.0,
+            S2::M_PI / (3.0 * S2::M_SQRT2),
+            4.0 * S2::M_SQRT2 / 9.0,
+        ),
     );
     /// `MAX_DIAG`.
-    pub const MAX_DIAG: Metric =
-        Metric::new(1, select(S2::M_SQRT2, S2::M_PI / SQRT_6, 1.2193272972170106));
+    pub const MAX_DIAG: Metric = Metric::new(
+        1,
+        select(S2::M_SQRT2, S2::M_PI / SQRT_6, 1.2193272972170106),
+    );
     /// `AVG_DIAG`.
     pub const AVG_DIAG: Metric = Metric::new(
         1,
@@ -122,7 +147,7 @@ impl S2Projections {
         match S2_PROJECTION {
             Projections::S2LinearProjection => s,
             Projections::S2TanProjection => {
-                let s = (S2::M_PI_4 * s).tan();
+                let s = java_math::tan(S2::M_PI_4 * s);
                 s + (1.0 / (1u64 << 53) as f64) * s
             }
             Projections::S2QuadraticProjection => {
@@ -139,12 +164,12 @@ impl S2Projections {
     pub fn uv_to_st(u: f64) -> f64 {
         match S2_PROJECTION {
             Projections::S2LinearProjection => u,
-            Projections::S2TanProjection => (4.0 * S2::M_1_PI) * u.atan(),
+            Projections::S2TanProjection => (4.0 * S2::M_1_PI) * java_math::atan(u),
             Projections::S2QuadraticProjection => {
                 if u >= 0.0 {
-                    (1.0 + 3.0 * u).sqrt() - 1.0
+                    java_math::sqrt(1.0 + 3.0 * u) - 1.0
                 } else {
-                    1.0 - (1.0 - 3.0 * u).sqrt()
+                    1.0 - java_math::sqrt(1.0 - 3.0 * u)
                 }
             }
         }

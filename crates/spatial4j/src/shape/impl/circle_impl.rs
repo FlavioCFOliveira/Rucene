@@ -43,7 +43,8 @@ impl CircleState {
         let enclosing_box = if p.is_empty() {
             ctx.make_rectangle(f64::NAN, f64::NAN, f64::NAN, f64::NAN)
         } else {
-            ctx.get_dist_calc().calc_box_by_dist_from_pt(&*p, radius_deg, ctx, None)
+            ctx.get_dist_calc()
+                .calc_box_by_dist_from_pt(&*p, radius_deg, ctx, None)
         }
         .unwrap_or_else(|e| panic!("{e}"));
         Self {
@@ -79,12 +80,17 @@ impl CircleState {
             .get_dist_calc()
             .calc_box_by_dist_from_pt(&*self.point, radius_deg, &ctx, Some(reuse))
             .unwrap_or_else(|e| panic!("{e}"));
-        *self.enclosing_box.write().unwrap_or_else(|e| e.into_inner()) = new_box;
+        *self
+            .enclosing_box
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = new_box;
     }
 
     /// `contains(double x, double y)`.
     pub fn contains(&self, x: f64, y: f64) -> bool {
-        self.ctx().get_dist_calc().within(&*self.point, x, y, self.radius_deg.get())
+        self.ctx()
+            .get_dist_calc()
+            .within(&*self.point, x, y, self.radius_deg.get())
     }
 }
 
@@ -105,7 +111,11 @@ pub trait CircleOverrides: Circle {
     }
 
     /// `relateRectanglePhase2(Rectangle r, SpatialRelation bboxSect)`.
-    fn relate_rectangle_phase2(&self, r: &dyn Rectangle, bbox_sect: SpatialRelation) -> SpatialRelation {
+    fn relate_rectangle_phase2(
+        &self,
+        r: &dyn Rectangle,
+        bbox_sect: SpatialRelation,
+    ) -> SpatialRelation {
         CircleImpl::relate_rectangle_phase2_impl(self, r, bbox_sect)
     }
 }
@@ -121,7 +131,9 @@ pub struct CircleImpl {
 impl CircleImpl {
     /// `CircleImpl(Point p, double radiusDEG, SpatialContext ctx)`.
     pub fn new(p: Arc<dyn Point>, radius_deg: f64, ctx: &Arc<SpatialContext>) -> Arc<CircleImpl> {
-        Arc::new(CircleImpl { state: CircleState::new(p, radius_deg, ctx) })
+        Arc::new(CircleImpl {
+            state: CircleState::new(p, radius_deg, ctx),
+        })
     }
 
     /// `contains(double x, double y)`.
@@ -131,7 +143,10 @@ impl CircleImpl {
 
     /// `relate(Shape)` of `CircleImpl`, dispatching to the overridable
     /// phases of `circle`.
-    pub fn relate_impl<C: CircleOverrides + ?Sized>(circle: &C, other: &dyn Shape) -> SpatialRelation {
+    pub fn relate_impl<C: CircleOverrides + ?Sized>(
+        circle: &C,
+        other: &dyn Shape,
+    ) -> SpatialRelation {
         if circle.is_empty() || other.is_empty() {
             return SpatialRelation::Disjoint;
         }
@@ -148,7 +163,10 @@ impl CircleImpl {
     }
 
     /// `relate(Point point)`.
-    pub fn relate_point_impl<C: CircleOverrides + ?Sized>(circle: &C, point: &dyn Point) -> SpatialRelation {
+    pub fn relate_point_impl<C: CircleOverrides + ?Sized>(
+        circle: &C,
+        point: &dyn Point,
+    ) -> SpatialRelation {
         if circle.state().contains(point.get_x(), point.get_y()) {
             SpatialRelation::Contains
         } else {
@@ -157,7 +175,10 @@ impl CircleImpl {
     }
 
     /// `relate(Rectangle r)`.
-    pub fn relate_rect_impl<C: CircleOverrides + ?Sized>(circle: &C, r: &dyn Rectangle) -> SpatialRelation {
+    pub fn relate_rect_impl<C: CircleOverrides + ?Sized>(
+        circle: &C,
+        r: &dyn Rectangle,
+    ) -> SpatialRelation {
         let enclosing_box = circle.state().enclosing_box();
         let bbox_sect = enclosing_box.relate(r.as_shape());
         if bbox_sect == SpatialRelation::Disjoint || bbox_sect == SpatialRelation::Within {
@@ -219,7 +240,11 @@ impl CircleImpl {
         }
         if state.point.get_y() != circle.get_y_axis() && y_axis == closest_y {
             //geodetic; r crosses north to south over x axis (confusing)
-            let other_y = if farthest_y == r.get_max_y() { r.get_min_y() } else { r.get_max_y() };
+            let other_y = if farthest_y == r.get_max_y() {
+                r.get_min_y()
+            } else {
+                r.get_max_y()
+            };
             if !state.contains(farthest_x, other_y) {
                 return SpatialRelation::Intersects;
             }
@@ -228,9 +253,15 @@ impl CircleImpl {
     }
 
     /// `relate(Circle circle)`.
-    pub fn relate_circle_impl<C: CircleOverrides + ?Sized>(this: &C, circle: &dyn Circle) -> SpatialRelation {
+    pub fn relate_circle_impl<C: CircleOverrides + ?Sized>(
+        this: &C,
+        circle: &dyn Circle,
+    ) -> SpatialRelation {
         let state = this.state();
-        let cross_dist = state.ctx().get_dist_calc().distance(&*state.point, &*circle.get_center());
+        let cross_dist = state
+            .ctx()
+            .get_dist_calc()
+            .distance(&*state.point, &*circle.get_center());
         let a_dist = state.radius_deg.get();
         let b_dist = circle.get_radius();
         if cross_dist > a_dist + b_dist {
@@ -265,11 +296,17 @@ impl CircleImpl {
     /// `hashCode(Circle thiz)`.
     pub fn hash_code_circle(thiz: &dyn Circle) -> i32 {
         let result = thiz.get_center().hash_code();
-        31i32.wrapping_mul(result).wrapping_add(hash_double(thiz.get_radius()))
+        31i32
+            .wrapping_mul(result)
+            .wrapping_add(hash_double(thiz.get_radius()))
     }
 
     /// `getArea(SpatialContext)` of `CircleImpl`.
-    pub(crate) fn get_area_impl(circle: &dyn Circle, radius_deg: f64, ctx: Option<&SpatialContext>) -> f64 {
+    pub(crate) fn get_area_impl(
+        circle: &dyn Circle,
+        radius_deg: f64,
+        ctx: Option<&SpatialContext>,
+    ) -> f64 {
         match ctx {
             None => std::f64::consts::PI * radius_deg * radius_deg,
             Some(ctx) => ctx.get_dist_calc().area_circle(circle),
@@ -318,7 +355,10 @@ impl Shape for CircleImpl {
     /// `getBuffered(double, SpatialContext)`: `ctx.makeCircle(point, distance
     /// + radiusDEG)`.
     fn get_buffered(&self, distance: f64, ctx: &SpatialContext) -> Result<Arc<dyn Shape>> {
-        let c = ctx.make_circle_at(Arc::clone(&self.state.point), distance + self.state.radius_deg.get())?;
+        let c = ctx.make_circle_at(
+            Arc::clone(&self.state.point),
+            distance + self.state.radius_deg.get(),
+        )?;
         Ok(c)
     }
 

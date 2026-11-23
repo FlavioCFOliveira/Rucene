@@ -17,12 +17,13 @@
 //! The types declared in `S1Interval.java`, of the Java package
 //! `com.google.common.geometry`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use rucene::util::java_fmt::double_to_string;
 
-use crate::s2::{double_to_long_bits, ieee_remainder, S2};
+use crate::s2::{double_to_long_bits, S2};
 
 /// Equivalent to `com.google.common.geometry.S1Interval` (`public final
 /// strictfp class S1Interval implements Cloneable`): a closed interval on the
@@ -41,7 +42,10 @@ impl S1Interval {
 
     /// `S1Interval(S1Interval)`: a copy.
     pub fn copy_of(interval: &S1Interval) -> Self {
-        Self { lo: interval.lo, hi: interval.hi }
+        Self {
+            lo: interval.lo,
+            hi: interval.hi,
+        }
     }
 
     fn new_checked(lo: f64, hi: f64, checked: bool) -> Self {
@@ -55,7 +59,10 @@ impl S1Interval {
                 new_hi = S2::M_PI;
             }
         }
-        Self { lo: new_lo, hi: new_hi }
+        Self {
+            lo: new_lo,
+            hi: new_hi,
+        }
     }
 
     /// `empty()`.
@@ -277,8 +284,8 @@ impl S1Interval {
         if self.get_length() + 2.0 * radius >= 2.0 * S2::M_PI - 1e-15 {
             return Self::full();
         }
-        let mut low = ieee_remainder(self.lo() - radius, 2.0 * S2::M_PI);
-        let high = ieee_remainder(self.hi() + radius, 2.0 * S2::M_PI);
+        let mut low = java_math::ieee_remainder(self.lo() - radius, 2.0 * S2::M_PI);
+        let high = java_math::ieee_remainder(self.hi() + radius, 2.0 * S2::M_PI);
         if low == -S2::M_PI {
             low = S2::M_PI;
         }
@@ -345,8 +352,8 @@ impl S1Interval {
         if y.is_empty() {
             return self.get_length() <= max_error;
         }
-        (ieee_remainder(y.lo() - self.lo(), 2.0 * S2::M_PI).abs()
-            + ieee_remainder(y.hi() - self.hi(), 2.0 * S2::M_PI).abs())
+        (java_math::ieee_remainder(y.lo() - self.lo(), 2.0 * S2::M_PI).abs()
+            + java_math::ieee_remainder(y.hi() - self.hi(), 2.0 * S2::M_PI).abs())
             <= max_error
     }
 
@@ -358,8 +365,12 @@ impl S1Interval {
     /// `hashCode()`.
     pub fn hash_code(&self) -> i32 {
         let mut value: i64 = 17;
-        value = 37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.lo()));
-        value = 37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(self.hi()));
+        value = 37i64
+            .wrapping_mul(value)
+            .wrapping_add(double_to_long_bits(self.lo()));
+        value = 37i64
+            .wrapping_mul(value)
+            .wrapping_add(double_to_long_bits(self.hi()));
         (((value as u64) >> 32) as i64 ^ value) as i32
     }
 
@@ -389,6 +400,11 @@ impl Hash for S1Interval {
 impl fmt::Display for S1Interval {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}, {}]", double_to_string(self.lo()), double_to_string(self.hi()))
+        write!(
+            f,
+            "[{}, {}]",
+            double_to_string(self.lo()),
+            double_to_string(self.hi())
+        )
     }
 }

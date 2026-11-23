@@ -103,7 +103,7 @@ impl MemoryIndexOffsetStrategy {
                 )
             })?
             .leaf_reader(); // appears to be re-usable
-        // preFilter for MemoryIndex
+                            // preFilter for MemoryIndex
         let pre_mem_index_filter_automaton = Self::build_combined_automaton(&components)?;
         Ok(Self {
             base: AnalysisOffsetStrategy::new(components, analyzer)?,
@@ -114,7 +114,9 @@ impl MemoryIndexOffsetStrategy {
     }
 
     /// Build one `CharArrayMatcher` matching any term the query might match.
-    fn build_combined_automaton(components: &UHComponents) -> Result<Option<Arc<dyn CharArrayMatcher>>> {
+    fn build_combined_automaton(
+        components: &UHComponents,
+    ) -> Result<Option<Arc<dyn CharArrayMatcher>>> {
         // We don't know enough about the query to do this confidently
         let (Some(terms), Some(automata)) = (components.terms(), components.automata()) else {
             return Ok(None);
@@ -164,12 +166,15 @@ impl MemoryIndexOffsetStrategy {
     ) -> Result<Box<dyn TokenStream>> {
         // it'd be nice to use KeepWordFilter but it demands a CharArraySet.
         // TODO make KeepWordFilter accept a CharArrayMatcher
-        Ok(Box::new(new_filtering_token_filter_with(token_stream, |source| {
-            Ok(KeepWordLogic {
-                char_att: AttributeHandle::add(source)?,
-                matcher,
-            })
-        })?))
+        Ok(Box::new(new_filtering_token_filter_with(
+            token_stream,
+            |source| {
+                Ok(KeepWordLogic {
+                    char_att: AttributeHandle::add(source)?,
+                    matcher,
+                })
+            },
+        )?))
     }
 }
 
@@ -223,7 +228,8 @@ impl FieldOffsetStrategy for MemoryIndexOffsetStrategy {
         {
             let mut memory_index = lock(&self.memory_index);
             memory_index.reset();
-            memory_index.add_field_token_stream(self.get_field()?, &mut *token_stream)?; // note: calls tokenStream.reset() & close()
+            memory_index.add_field_token_stream(self.get_field()?, &mut *token_stream)?;
+            // note: calls tokenStream.reset() & close()
         }
 
         match reader {

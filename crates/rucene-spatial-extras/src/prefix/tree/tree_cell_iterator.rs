@@ -36,15 +36,20 @@ pub(crate) struct TreeCellIterator {
     base: CellIteratorBase,
     shape_filter: Option<Arc<dyn Shape>>, // possibly null
     iter_stack: Vec<Option<Box<dyn CellIterator>>>, // starts at level 1
-    stack_idx: i32,                                 // -1 when done
+    stack_idx: i32,                       // -1 when done
     descend: bool,
 }
 
 impl TreeCellIterator {
     /// `TreeCellIterator(Shape shapeFilter, int detailLevel, Cell parentCell)`.
-    pub(crate) fn new(shape_filter: Option<Arc<dyn Shape>>, detail_level: i32, parent_cell: CellRef) -> Self {
+    pub(crate) fn new(
+        shape_filter: Option<Arc<dyn Shape>>,
+        detail_level: i32,
+        parent_cell: CellRef,
+    ) -> Self {
         debug_assert_eq!(parent_cell.get_level(), 0);
-        let mut iter_stack: Vec<Option<Box<dyn CellIterator>>> = (0..detail_level.max(0)).map(|_| None).collect();
+        let mut iter_stack: Vec<Option<Box<dyn CellIterator>>> =
+            (0..detail_level.max(0)).map(|_| None).collect();
         iter_stack[0] = Some(parent_cell.get_next_level_cells(shape_filter.clone()));
         Self {
             base: CellIteratorBase::default(),
@@ -57,7 +62,9 @@ impl TreeCellIterator {
     }
 
     fn iter(&mut self, idx: i32) -> &mut Box<dyn CellIterator> {
-        self.iter_stack[idx as usize].as_mut().expect("iterStack[stackIdx] is non-null")
+        self.iter_stack[idx as usize]
+            .as_mut()
+            .expect("iterStack[stackIdx] is non-null")
     }
 }
 
@@ -88,7 +95,10 @@ impl CellIterator for TreeCellIterator {
                 let next_cell = self.iter(idx).next();
                 // at detailLevel
                 if self.stack_idx == len - 1
-                    && !self.shape_filter.as_ref().is_some_and(|s| s.as_point().is_some())
+                    && !self
+                        .shape_filter
+                        .as_ref()
+                        .is_some_and(|s| s.as_point().is_some())
                 {
                     // point check is a kludge
                     next_cell.set_leaf(); // because at bottom

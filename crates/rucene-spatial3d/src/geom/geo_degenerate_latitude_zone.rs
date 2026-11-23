@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoDegenerateLatitudeZone.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::f64::consts::PI;
 use std::fmt;
 use std::io::{Read, Write};
@@ -29,7 +29,9 @@ use rucene::error::Result;
 use super::base_planet_object::BasePlanetObject;
 use super::bounded::Bounded;
 use super::bounds::Bounds;
+use super::d2s;
 use super::distance_style::DistanceStyle;
+use super::geo_area::{self, GeoArea};
 use super::geo_area_shape::GeoAreaShape;
 use super::geo_b_box::GeoBBox;
 use super::geo_b_box_factory::GeoBBoxFactory;
@@ -41,8 +43,6 @@ use super::membership::Membership;
 use super::plane::Plane;
 use super::planet_model::PlanetModel;
 use super::serializable_object as so;
-use super::d2s;
-use super::geo_area::{self, GeoArea};
 
 /// This GeoBBox represents an area rectangle of one specific latitude with
 /// no longitude bounds.
@@ -65,8 +65,8 @@ impl GeoDegenerateLatitudeZone {
     /// Never; the `Result` keeps the constructors uniform.
     pub fn new(planet_model: &Arc<PlanetModel>, latitude: f64) -> Result<Self> {
         let pm = planet_model;
-        let sin_latitude = latitude.sin();
-        let cos_latitude = latitude.cos();
+        let sin_latitude = java_math::sin(latitude);
+        let cos_latitude = java_math::cos(latitude);
         let plane = Plane::new_horizontal(pm, sin_latitude);
         let interior_point = GeoPoint::new_sin_cos(pm, sin_latitude, 0.0, cos_latitude, 1.0);
         Ok(Self {
@@ -98,16 +98,23 @@ impl GeoDegenerateLatitudeZone {
     }
 
     fn equals_impl(&self, other: &Self) -> bool {
-        BasePlanetObject::equals(&self.planet_model, &other.planet_model) && other.latitude == self.latitude
+        BasePlanetObject::equals(&self.planet_model, &other.planet_model)
+            && other.latitude == self.latitude
     }
 
     fn hash_code_impl(&self) -> i32 {
         let result = BasePlanetObject::hash_code(&self.planet_model);
-        result.wrapping_mul(31).wrapping_add(super::dhash(self.latitude))
+        result
+            .wrapping_mul(31)
+            .wrapping_add(super::dhash(self.latitude))
     }
 }
 
-impl_geo_base_area_shape_common!(GeoDegenerateLatitudeZone, "org.apache.lucene.spatial3d.geom.GeoDegenerateLatitudeZone", geo_b_box);
+impl_geo_base_area_shape_common!(
+    GeoDegenerateLatitudeZone,
+    "org.apache.lucene.spatial3d.geom.GeoDegenerateLatitudeZone",
+    geo_b_box
+);
 
 impl GeoArea for GeoDegenerateLatitudeZone {
     fn get_relationship(&self, path: &dyn GeoShape) -> Result<i32> {
@@ -142,8 +149,20 @@ impl GeoShape for GeoDegenerateLatitudeZone {
         self.edge_points.to_vec()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
-        p.intersects(&self.planet_model, &self.plane, notable_points, &[], bounds, &[])
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
+        p.intersects(
+            &self.planet_model,
+            &self.plane,
+            notable_points,
+            &[],
+            bounds,
+            &[],
+        )
     }
 }
 

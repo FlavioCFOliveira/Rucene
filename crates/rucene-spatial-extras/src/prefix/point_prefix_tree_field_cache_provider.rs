@@ -27,7 +27,9 @@ use spatial4j::shape::point::Point;
 use crate::jdk::identity_hash;
 use crate::prefix::tree::cell::CellRef;
 use crate::prefix::tree::spatial_prefix_tree::SpatialPrefixTree;
-use crate::util::shape_field_cache_provider::{ShapeFieldCacheProvider, ShapeFieldCacheProviderBase};
+use crate::util::shape_field_cache_provider::{
+    ShapeFieldCacheProvider, ShapeFieldCacheProviderBase,
+};
 
 const CLASS_NAME: &str = "org.apache.lucene.spatial.prefix.PointPrefixTreeFieldCacheProvider";
 

@@ -86,7 +86,8 @@ impl AnalysisOffsetStrategy {
         let field = self.components.field();
         // If there is no splitChar in content then we needn't wrap:
         let content_units = units(content);
-        let Some(split_char_idx) = content_units.iter().position(|&c| c == MULTIVAL_SEP_CHAR) else {
+        let Some(split_char_idx) = content_units.iter().position(|&c| c == MULTIVAL_SEP_CHAR)
+        else {
             return Ok(Box::new(SharedTokenStream::new(
                 self.analyzer.token_stream_from_str(field, content)?,
             )));

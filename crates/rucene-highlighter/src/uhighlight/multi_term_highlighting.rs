@@ -32,7 +32,9 @@ use rucene::search::wildcard_query::WildcardQuery;
 use rucene::util::automaton::byte_run_automaton::ByteRunAutomaton;
 use rucene_queries::spans::span_query::as_span_query;
 
-use crate::uhighlight::labelled_char_array_matcher::{wrap_byte_run_automaton, LabelledCharArrayMatcher};
+use crate::uhighlight::labelled_char_array_matcher::{
+    wrap_byte_run_automaton, LabelledCharArrayMatcher,
+};
 use crate::uhighlight::uh_components::FieldMatcher;
 
 /// Support for highlighting multi-term queries.
@@ -101,7 +103,11 @@ impl QueryVisitor for AutomataCollector {
         (self.field_matcher)(field)
     }
 
-    fn get_sub_visitor<'a>(&'a mut self, occur: Occur, parent: &dyn Query) -> Box<dyn QueryVisitor + 'a>
+    fn get_sub_visitor<'a>(
+        &'a mut self,
+        occur: Occur,
+        parent: &dyn Query,
+    ) -> Box<dyn QueryVisitor + 'a>
     where
         Self: 'a,
     {
@@ -121,7 +127,9 @@ impl QueryVisitor for AutomataCollector {
         _field: &str,
         automaton: &dyn Fn() -> ByteRunAutomaton,
     ) {
-        self.run_automata
-            .push(wrap_byte_run_automaton(&query.to_query_string(""), automaton()));
+        self.run_automata.push(wrap_byte_run_automaton(
+            &query.to_query_string(""),
+            automaton(),
+        ));
     }
 }

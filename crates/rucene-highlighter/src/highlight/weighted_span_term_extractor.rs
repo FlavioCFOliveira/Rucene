@@ -196,7 +196,10 @@ pub trait WeightedSpanTermExtractorOverrides: fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// As [`WeightedSpanTermExtractor::super_get_leaf_context`].
-    fn get_leaf_context(&self, this: &mut WeightedSpanTermExtractor) -> Result<Arc<LeafReaderContext>> {
+    fn get_leaf_context(
+        &self,
+        this: &mut WeightedSpanTermExtractor,
+    ) -> Result<Arc<LeafReaderContext>> {
         this.super_get_leaf_context()
     }
 
@@ -211,7 +214,11 @@ pub trait WeightedSpanTermExtractorOverrides: fmt::Debug + Send + Sync {
     }
 
     /// Equivalent to the protected `mustRewriteQuery(SpanQuery)`.
-    fn must_rewrite_query(&self, this: &WeightedSpanTermExtractor, span_query: &dyn SpanQuery) -> bool {
+    fn must_rewrite_query(
+        &self,
+        this: &WeightedSpanTermExtractor,
+        span_query: &dyn SpanQuery,
+    ) -> bool {
         this.super_must_rewrite_query(span_query)
     }
 }
@@ -320,7 +327,11 @@ impl WeightedSpanTermExtractor {
     ) -> Result<()> {
         let any = query.as_any();
         if let Some(boost_query) = any.downcast_ref::<BoostQuery>() {
-            self.extract(&boost_query.get_query(), boost * boost_query.get_boost(), terms)?;
+            self.extract(
+                &boost_query.get_query(),
+                boost * boost_query.get_boost(),
+                terms,
+            )?;
         } else if let Some(boolean_query) = any.downcast_ref::<BooleanQuery>() {
             for clause in boolean_query.clauses() {
                 if !clause.is_prohibited() {
@@ -356,7 +367,8 @@ impl WeightedSpanTermExtractor {
                 // if original slop is 0 then require inOrder
                 let inorder = phrase_query.get_slop() == 0;
 
-                let sp = SpanNearQuery::new(clauses, phrase_query.get_slop() + position_gaps, inorder)?;
+                let sp =
+                    SpanNearQuery::new(clauses, phrase_query.get_slop() + position_gaps, inorder)?;
                 self.extract_weighted_span_terms(terms, Arc::new(sp), boost)?;
             }
         } else if let Some(iodv) = any.downcast_ref::<IndexOrDocValuesQuery>() {
@@ -515,7 +527,9 @@ impl WeightedSpanTermExtractor {
         boost: f32,
     ) -> Result<()> {
         match self.overrides.clone() {
-            Some(overrides) => overrides.extract_weighted_span_terms(self, terms, span_query, boost),
+            Some(overrides) => {
+                overrides.extract_weighted_span_terms(self, terms, span_query, boost)
+            }
             None => self.super_extract_weighted_span_terms(terms, span_query, boost),
         }
     }
@@ -674,7 +688,8 @@ impl WeightedSpanTermExtractor {
     pub fn super_field_name_comparator(&self, field_name_to_check: Option<&str>) -> bool {
         self.field_name.is_none()
             || self.field_name.as_deref() == field_name_to_check
-            || (self.default_field.is_some() && self.default_field.as_deref() == field_name_to_check)
+            || (self.default_field.is_some()
+                && self.default_field.as_deref() == field_name_to_check)
     }
 
     /// Equivalent to the protected `getLeafContext()`.
@@ -730,13 +745,12 @@ impl WeightedSpanTermExtractor {
                         .token_stream
                         .take()
                         .ok_or_else(LuceneError::null_pointer)?;
-                    let mut caching = CachingTokenFilter::new(Box::new(OffsetLimitTokenFilter::new(
-                        token_stream,
-                        self.max_doc_chars_to_analyze,
-                    )));
+                    let mut caching = CachingTokenFilter::new(Box::new(
+                        OffsetLimitTokenFilter::new(token_stream, self.max_doc_chars_to_analyze),
+                    ));
                     self.cached_token_stream = true;
-                    let added =
-                        indexer.add_field_token_stream(DelegatingLeafReader::FIELD_NAME, &mut caching);
+                    let added = indexer
+                        .add_field_token_stream(DelegatingLeafReader::FIELD_NAME, &mut caching);
                     self.token_stream = Some(Box::new(caching));
                     added?;
                 } else {
@@ -748,7 +762,8 @@ impl WeightedSpanTermExtractor {
                         Box::new(BorrowedTokenStream(token_stream)),
                         self.max_doc_chars_to_analyze,
                     );
-                    indexer.add_field_token_stream(DelegatingLeafReader::FIELD_NAME, &mut filter)?;
+                    indexer
+                        .add_field_token_stream(DelegatingLeafReader::FIELD_NAME, &mut filter)?;
                 }
                 let searcher = indexer.create_searcher()?;
                 // MEM index has only atomic ctx
@@ -764,17 +779,11 @@ impl WeightedSpanTermExtractor {
             }
 
             // Now wrap it so we always use a common field.
-            let inner = self
-                .internal_reader
-                .take()
-                .expect("INVARIANT: set above");
+            let inner = self.internal_reader.take().expect("INVARIANT: set above");
             self.internal_reader = Some(Arc::new(DelegatingLeafReader::new(inner)?));
         }
 
-        let reader = self
-            .internal_reader
-            .as_ref()
-            .expect("INVARIANT: set above");
+        let reader = self.internal_reader.as_ref().expect("INVARIANT: set above");
         Arc::clone(reader)
             .as_index_reader()
             .get_context()?
@@ -1060,7 +1069,8 @@ impl DelegatingLeafReader {
 
 impl fmt::Debug for DelegatingLeafReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DelegatingLeafReader").finish_non_exhaustive()
+        f.debug_struct("DelegatingLeafReader")
+            .finish_non_exhaustive()
     }
 }
 

@@ -17,6 +17,7 @@
 //! The types declared in `S2Point.java`, of the Java package
 //! `com.google.common.geometry`.
 
+use rucene::util::java_math;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -74,7 +75,7 @@ impl S2Point {
 
     /// `norm()`.
     pub fn norm(&self) -> f64 {
-        self.norm2().sqrt()
+        java_math::sqrt(self.norm2())
     }
 
     /// `crossProd(S2Point, S2Point)`.
@@ -167,7 +168,7 @@ impl S2Point {
 
     /// `angle(S2Point)`: the angle between two vectors in radians.
     pub fn angle(&self, va: &S2Point) -> f64 {
-        Self::cross_prod(self, va).norm().atan2(self.dot_prod(va))
+        java_math::atan2(Self::cross_prod(self, va).norm(), self.dot_prod(va))
     }
 
     /// `aequal(S2Point, double)` (package-private).
@@ -220,8 +221,11 @@ impl S2Point {
     pub fn hash_code(&self) -> i32 {
         let mut value: i64 = 17;
         for c in [self.x, self.y, self.z] {
-            value = value
-                .wrapping_add(37i64.wrapping_mul(value).wrapping_add(double_to_long_bits(c.abs())));
+            value = value.wrapping_add(
+                37i64
+                    .wrapping_mul(value)
+                    .wrapping_add(double_to_long_bits(c.abs())),
+            );
         }
         (value ^ ((value as u64) >> 32) as i64) as i32
     }

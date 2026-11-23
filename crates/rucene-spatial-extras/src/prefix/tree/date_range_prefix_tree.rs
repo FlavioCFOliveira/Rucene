@@ -18,6 +18,7 @@
 //! The types declared in `DateRangePrefixTree.java`, of the Java package
 //! `org.apache.lucene.spatial.prefix.tree`.
 
+use rucene::util::java_math;
 use std::any::Any;
 use std::fmt;
 use std::sync::{Arc, LazyLock, OnceLock, Weak};
@@ -26,7 +27,8 @@ use rucene::error::{LuceneError, Result};
 use rucene::util::extra::ParseException;
 use rucene::util::BytesRef;
 use rucene_queryparser::jdk::calendar::{
-    Calendar, CalendarKind, DAY_OF_MONTH, ERA, HOUR_OF_DAY, MILLISECOND, MINUTE, MONDAY, MONTH, SECOND, YEAR,
+    Calendar, CalendarKind, DAY_OF_MONTH, ERA, HOUR_OF_DAY, MILLISECOND, MINUTE, MONDAY, MONTH,
+    SECOND, YEAR,
 };
 use rucene_queryparser::jdk::date::Date;
 use rucene_queryparser::jdk::locale::Locale;
@@ -47,7 +49,8 @@ fn utc() -> TimeZone {
 /// `DEFAULT_CAL`: the Java platform default `Calendar` with UTC & ROOT
 /// Locale. Generally a `GregorianCalendar`. Do *not* modify this!
 pub static DEFAULT_CAL: LazyLock<Calendar> = LazyLock::new(|| {
-    let mut cal = Calendar::get_instance(&utc(), &Locale::root()).expect("Calendar.getInstance(UTC, ROOT)");
+    let mut cal =
+        Calendar::get_instance(&utc(), &Locale::root()).expect("Calendar.getInstance(UTC, ROOT)");
     cal.clear();
     cal
 });
@@ -57,7 +60,8 @@ pub static DEFAULT_CAL: LazyLock<Calendar> = LazyLock::new(|| {
 /// Do *not* modify this!
 pub static JAVA_UTIL_TIME_COMPAT_CAL: LazyLock<Calendar> = LazyLock::new(|| {
     // see source of GregorianCalendar.from(ZonedDateTime)
-    let mut cal = Calendar::new_gregorian(&utc(), &Locale::root()).expect("new GregorianCalendar(UTC, ROOT)");
+    let mut cal =
+        Calendar::new_gregorian(&utc(), &Locale::root()).expect("new GregorianCalendar(UTC, ROOT)");
     cal.set_gregorian_change(Date::new(i64::MIN).get_time());
     cal.set_first_day_of_week(MONDAY); // might not matter?
     cal.set_minimal_days_in_first_week(4); // might not matter
@@ -130,7 +134,9 @@ pub struct DateRangePrefixTree {
 
 impl fmt::Debug for DateRangePrefixTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DateRangePrefixTree").field("nr", &self.nr).finish_non_exhaustive()
+        f.debug_struct("DateRangePrefixTree")
+            .field("nr", &self.nr)
+            .finish_non_exhaustive()
     }
 }
 
@@ -193,8 +199,10 @@ impl DateRangePrefixTree {
         let max_lv = tree.to_shape(&mut tree.maxcal.clone())?;
         let min_lv = tree.to_shape(&mut tree.mincal.clone())?;
         // `MAXCAL instanceof GregorianCalendar` (a BuddhistCalendar is one too)
-        let gregorian_change_date_lv = if matches!(tree.maxcal.kind(), CalendarKind::Gregorian | CalendarKind::Buddhist)
-        {
+        let gregorian_change_date_lv = if matches!(
+            tree.maxcal.kind(),
+            CalendarKind::Gregorian | CalendarKind::Buddhist
+        ) {
             let mut date = Date::new(tree.maxcal.get_gregorian_change());
             Some(tree.to_unit_shape(&mut date)?)
         } else {
@@ -213,7 +221,9 @@ impl DateRangePrefixTree {
     }
 
     fn me(&self) -> Arc<DateRangePrefixTree> {
-        self.me.upgrade().expect("a DateRangePrefixTree is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a DateRangePrefixTree is shared as an Arc")
     }
 
     /// `fastSubCells(UnitNRShape lv)`.
@@ -254,8 +264,11 @@ impl DateRangePrefixTree {
         // somewhat heavyweight op; ideally should be stored on UnitNRShape somehow
         let cal = self.to_calendar(lv).unwrap_or_else(|e| panic!("{e}"));
         let field = field as usize;
-        cal.get_actual_maximum(field).unwrap_or_else(|e| panic!("{e}"))
-            - cal.get_actual_minimum(field).unwrap_or_else(|e| panic!("{e}"))
+        cal.get_actual_maximum(field)
+            .unwrap_or_else(|e| panic!("{e}"))
+            - cal
+                .get_actual_minimum(field)
+                .unwrap_or_else(|e| panic!("{e}"))
             + 1
     }
 
@@ -281,7 +294,9 @@ impl DateRangePrefixTree {
                 return Ok(-(i as i32));
             }
         }
-        Err(LuceneError::illegal_argument(format!("Bad calendar field?: {cal_field}")))
+        Err(LuceneError::illegal_argument(format!(
+            "Bad calendar field?: {cal_field}"
+        )))
     }
 
     /// `getCalPrecisionField(Calendar cal)`: Calendar utility method: gets
@@ -352,7 +367,8 @@ impl DateRangePrefixTree {
                     if field > cal_prec_field {
                         break;
                     }
-                    val_stack[len] = cal.get(field as usize)? - cal.get_actual_minimum(field as usize)?;
+                    val_stack[len] =
+                        cal.get(field as usize)? - cal.get_actual_minimum(field as usize)?;
                     len += 1;
                 }
             }
@@ -518,7 +534,11 @@ impl DateRangePrefixTree {
     fn parse_calendar_fields(units: &[u16], cal: &mut Calendar, offset: &mut i32) -> Result<()> {
         let len = units.len() as i32;
         // year & era:
-        let last_offset = if units[units.len() - 1] == u16::from(b'Z') { len - 1 } else { len };
+        let last_offset = if units[units.len() - 1] == u16::from(b'Z') {
+            len - 1
+        } else {
+            len
+        };
         let mut hyphen_idx = index_of(units, u16::from(b'-'), 1); // look past possible leading hyphen
         if hyphen_idx < 0 {
             hyphen_idx = last_offset;
@@ -576,9 +596,9 @@ impl DateRangePrefixTree {
         check_delimeter(units, *offset - 1, '.')?;
         // ms:
         let max_offset = last_offset - *offset; // assume remaining is all digits to compute milliseconds
-        // we truncate off > millisecond precision (3 digits only)
+                                                // we truncate off > millisecond precision (3 digits only)
         let digits = parse_int(&substring(units, *offset, *offset + max_offset)?)?;
-        let millis = (f64::from(digits) / 10f64.powf(f64::from(max_offset - 3))) as i32;
+        let millis = (f64::from(digits) / java_math::pow(10.0, f64::from(max_offset - 3))) as i32;
         cal.set(MILLISECOND, millis);
         Ok(())
     }
@@ -605,7 +625,9 @@ fn substring(units: &[u16], begin: i32, end: i32) -> Result<String> {
             format!("begin {begin}, end {end}, length {len}"),
         ));
     }
-    Ok(String::from_utf16_lossy(&units[begin as usize..end as usize]))
+    Ok(String::from_utf16_lossy(
+        &units[begin as usize..end as usize],
+    ))
 }
 
 /// `String.charAt(int index)` over UTF-16 units, with Java's
@@ -662,7 +684,7 @@ impl SpatialPrefixTree for DateRangePrefixTree {
         // note: it might be useful to compute which level has a raw width (counted in
         // bottom units, e.g. milliseconds), that covers the provided dist in those units?
         self.nr.base.max_levels // thus always use full precision. We don't do approximations in this tree/strategy.
-        // throw new UnsupportedOperationException("Not applicable.");
+                                // throw new UnsupportedOperationException("Not applicable.");
     }
 
     /// `NumberRangePrefixTree.getDistanceForLevel(int level)`.
@@ -719,7 +741,11 @@ impl NumberRangePrefixTreeImpl for DateRangePrefixTree {
         // TODO consider also doing fast-path if field is <= hours even if before greg change date
         if cmp >= 0 {
             let result = self.fast_sub_cells(lv);
-            debug_assert_eq!(result, self.slow_sub_cells(lv), "fast/slow numSubCells inconsistency");
+            debug_assert_eq!(
+                result,
+                self.slow_sub_cells(lv),
+                "fast/slow numSubCells inconsistency"
+            );
             result
         } else {
             self.slow_sub_cells(lv)
@@ -747,7 +773,8 @@ impl NumberRangePrefixTreeImpl for DateRangePrefixTree {
 
     fn to_string_unit(&self, lv: &dyn UnitNRShape) -> String {
         let mut cal = self.to_calendar(lv).unwrap_or_else(|e| panic!("{e}"));
-        self.to_string_calendar(&mut cal).unwrap_or_else(|e| panic!("{e}"))
+        self.to_string_calendar(&mut cal)
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 
     fn parse_unit_shape(&self, str: &str) -> Result<Arc<dyn UnitNRShape>> {

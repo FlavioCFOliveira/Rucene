@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `XdYdZSolid.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -27,6 +26,7 @@ use rucene::error::Result;
 
 use super::base_planet_object::BasePlanetObject;
 use super::base_xyz_solid::BaseXYZSolid;
+use super::base_xyz_solid::{X_UNIT_VECTOR, Y_UNIT_VECTOR, Z_UNIT_VECTOR};
 use super::geo_area::{self, GeoArea};
 use super::geo_point::GeoPoint;
 use super::geo_shape::GeoShape;
@@ -38,7 +38,6 @@ use super::sided_plane::SidedPlane;
 use super::vector::Vector;
 use super::xyz_solid::XYZSolid;
 use super::{iae, npe};
-use super::base_xyz_solid::{X_UNIT_VECTOR, Y_UNIT_VECTOR, Z_UNIT_VECTOR};
 
 /// 3D rectangle, bounded on six sides by X,Y,Z limits, degenerate in Y and Z.
 ///
@@ -60,7 +59,13 @@ impl XdYdZSolid {
     /// # Errors
     ///
     /// `IllegalArgumentException` when the X values are in the wrong order.
-    pub fn new(planet_model: &Arc<PlanetModel>, min_x: f64, max_x: f64, y: f64, z: f64) -> Result<Self> {
+    pub fn new(
+        planet_model: &Arc<PlanetModel>,
+        min_x: f64,
+        max_x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<Self> {
         let pm = planet_model;
         if max_x - min_x < Vector::MINIMUM_RESOLUTION {
             return Err(iae("X values in wrong order or identical"));
@@ -114,7 +119,10 @@ impl XdYdZSolid {
         {
             return false;
         }
-        self.surface_points.iter().zip(&other.surface_points).all(|(a, b)| a == b)
+        self.surface_points
+            .iter()
+            .zip(&other.surface_points)
+            .all(|(a, b)| a == b)
     }
 
     fn hash_code_impl(&self) -> i32 {
@@ -126,7 +134,11 @@ impl XdYdZSolid {
     }
 }
 
-impl_serializable_object!(XdYdZSolid, "org.apache.lucene.spatial3d.geom.XdYdZSolid", planet_object);
+impl_serializable_object!(
+    XdYdZSolid,
+    "org.apache.lucene.spatial3d.geom.XdYdZSolid",
+    planet_object
+);
 impl_planet_object!(XdYdZSolid);
 impl XYZSolid for XdYdZSolid {}
 
@@ -151,7 +163,8 @@ impl GeoArea for XdYdZSolid {
         if inside_shape == BaseXYZSolid::SOME_INSIDE {
             return Ok(geo_area::OVERLAPS);
         }
-        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE {
+        if inside_rectangle == BaseXYZSolid::ALL_INSIDE && inside_shape == BaseXYZSolid::ALL_INSIDE
+        {
             return Ok(geo_area::OVERLAPS);
         }
         if inside_rectangle == BaseXYZSolid::ALL_INSIDE {
@@ -172,6 +185,10 @@ impl fmt::Display for XdYdZSolid {
             sb.push_str(&p.to_string());
             sb.push(' ');
         }
-        write!(f, "XdYdZSolid: {{planetmodel={}, {}}}", self.planet_model, sb)
+        write!(
+            f,
+            "XdYdZSolid: {{planetmodel={}, {}}}",
+            self.planet_model, sb
+        )
     }
 }

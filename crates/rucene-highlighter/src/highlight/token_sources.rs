@@ -40,7 +40,11 @@ pub struct TokenSources {
     _private: (),
 }
 
-fn analyzer_stream(analyzer: &dyn Analyzer, field: &str, text: &str) -> Result<Box<dyn TokenStream>> {
+fn analyzer_stream(
+    analyzer: &dyn Analyzer,
+    field: &str,
+    text: &str,
+) -> Result<Box<dyn TokenStream>> {
     Ok(Box::new(SharedTokenStream::new(
         analyzer.token_stream_from_str(field, text)?,
     )))

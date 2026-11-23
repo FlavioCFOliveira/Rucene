@@ -67,7 +67,11 @@ pub trait ShapeFactory: Send + Sync + Any {
     fn point_xyz(&self, x: f64, y: f64, z: f64) -> Result<Arc<dyn Point>>;
 
     /// `rect(Point lowerLeft, Point upperRight)`.
-    fn rect_from_points(&self, lower_left: &dyn Point, upper_right: &dyn Point) -> Result<Arc<dyn Rectangle>>;
+    fn rect_from_points(
+        &self,
+        lower_left: &dyn Point,
+        upper_right: &dyn Point,
+    ) -> Result<Arc<dyn Rectangle>>;
 
     /// `rect(double minX, double maxX, double minY, double maxY)`.
     fn rect(&self, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> Result<Arc<dyn Rectangle>>;

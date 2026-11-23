@@ -64,7 +64,13 @@ impl Passage {
     }
 
     /// Equivalent to `addMatch(int, int, BytesRef, int)`.
-    pub fn add_match(&mut self, start_offset: i32, end_offset: i32, term: BytesRef, term_freq_in_doc: i32) {
+    pub fn add_match(
+        &mut self,
+        start_offset: i32,
+        end_offset: i32,
+        term: BytesRef,
+        term_freq_in_doc: i32,
+    ) {
         debug_assert!(start_offset >= self.start_offset && start_offset <= self.end_offset);
         if self.num_matches as usize == self.match_starts.len() {
             let new_length = ArrayUtil::oversize(self.num_matches as usize + 1, 8);
@@ -183,9 +189,9 @@ impl fmt::Display for Passage {
             if i != 0 {
                 f.write_str(",")?;
             }
-            let term = self.match_terms[i]
-                .utf8_to_string()
-                .unwrap_or_else(|_| String::from_utf8_lossy(self.match_terms[i].slice()).into_owned());
+            let term = self.match_terms[i].utf8_to_string().unwrap_or_else(|_| {
+                String::from_utf8_lossy(self.match_terms[i].slice()).into_owned()
+            });
             write!(
                 f,
                 "{}[{}-{}]",

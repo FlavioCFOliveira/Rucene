@@ -806,3 +806,694 @@ impl StrictMath {
         from_words(ix0, ix1)
     }
 }
+
+/// `__kernel_tan(x, y, iy)` (fdlibm `k_tan.c`): the tangent on
+/// `[-pi/4, pi/4]` of `x + y`, where `y` is the tail of `x`; `iy == 1`
+/// returns `tan`, `iy == -1` returns `-1/tan`.
+fn kernel_tan(mut x: f64, mut y: f64, iy: i32) -> f64 {
+    const T: [f64; 13] = [
+        f64::from_bits(0x3FD55555_55555563), // 3.33333333333334091986e-01
+        f64::from_bits(0x3FC11111_1110FE7A), // 1.33333333333201242699e-01
+        f64::from_bits(0x3FABA1BA_1BB341FE), // 5.39682539762260521377e-02
+        f64::from_bits(0x3F9664F4_8406D637), // 2.18694882948595424599e-02
+        f64::from_bits(0x3F8226E3_E96E8493), // 8.86323982359930005737e-03
+        f64::from_bits(0x3F6D6D22_C9560328), // 3.59207910759131235356e-03
+        f64::from_bits(0x3F57DBC8_FEE08315), // 1.45620945432529025516e-03
+        f64::from_bits(0x3F4344D8_F2F26501), // 5.88041240820264096874e-04
+        f64::from_bits(0x3F3026F7_1A8D1068), // 2.46463134818469906812e-04
+        f64::from_bits(0x3F147E88_A03792A6), // 7.81794442939557092300e-05
+        f64::from_bits(0x3F12B80F_32F0A7E9), // 7.14072491382608190305e-05
+        f64::from_bits(0xBEF375CB_DB605373), // -1.85586374855275456654e-05
+        f64::from_bits(0x3EFB2A70_74BF7AD4), // 2.59073051863633712884e-05
+    ];
+    const ONE: f64 = 1.0;
+    const PIO4: f64 = f64::from_bits(0x3FE921FB_54442D18); // 7.85398163397448278999e-01
+    const PIO4LO: f64 = f64::from_bits(0x3C81A626_33145C07); // 3.06161699786838301793e-17
+
+    let hx = hi(x); // high word of x
+    let ix = hx & 0x7fff_ffff; // high word of |x|
+    if ix < 0x3e30_0000 {
+        // x < 2**-28
+        if x as i32 == 0 {
+            // generate inexact
+            if ((ix as u32 | lo(x)) | (iy + 1) as u32) == 0 {
+                return ONE / x.abs();
+            } else if iy == 1 {
+                return x;
+            } else {
+                // compute -1 / (x+y) carefully
+                let w = x + y;
+                let z = from_words(hi(w), 0);
+                let v = y - (z - x);
+                let a = -ONE / w;
+                let t = from_words(hi(a), 0);
+                let s = ONE + t * z;
+                return t + a * (s + t * v);
+            }
+        }
+    }
+    if ix >= 0x3FE5_9428 {
+        // |x| >= 0.6744
+        if hx < 0 {
+            x = -x;
+            y = -y;
+        }
+        let z = PIO4 - x;
+        let w = PIO4LO - y;
+        x = z + w;
+        y = 0.0;
+    }
+    let z = x * x;
+    let w = z * z;
+    // Break x^5*(T[1]+x^2*T[2]+...) into
+    // x^5(T[1]+x^4*T[3]+...+x^20*T[11]) +
+    // x^5(x^2*(T[2]+x^4*T[4]+...+x^22*[T12]))
+    let mut r = T[1] + w * (T[3] + w * (T[5] + w * (T[7] + w * (T[9] + w * T[11]))));
+    let v = z * (T[2] + w * (T[4] + w * (T[6] + w * (T[8] + w * (T[10] + w * T[12])))));
+    let s = z * x;
+    r = y + z * (s * (r + v) + y);
+    r += T[0] * s;
+    let w = x + r;
+    if ix >= 0x3FE5_9428 {
+        let v = f64::from(iy);
+        return f64::from(1 - ((hx >> 30) & 2)) * (v - 2.0 * (x - (w * w / (w + v) - r)));
+    }
+    if iy == 1 {
+        w
+    } else {
+        // compute -1.0 / (x+r) accurately
+        let z = from_words(hi(w), 0);
+        let v = r - (z - x); // z+v = r+x
+        let a = -1.0 / w; // a = -1.0/w
+        let t = from_words(hi(a), 0);
+        let s = 1.0 + t * z;
+        t + a * (s + t * v)
+    }
+}
+
+/// The fdlibm functions the spatial modules (`spatial3d`, `spatial4j`,
+/// `s2-geometry`, `spatial-extras`) reach through `java.lang.Math`.
+impl StrictMath {
+    /// The tangent of `x`, from fdlibm `s_tan.c` (with `k_tan.c` and
+    /// `e_rem_pio2.c`).
+    ///
+    /// Equivalent to `java.lang.StrictMath.tan(double)`.
+    pub fn tan(x: f64) -> f64 {
+        let mut y = [0.0f64; 2];
+        let z = 0.0;
+
+        // High word of x.
+        let mut ix = hi(x);
+
+        // |x| ~< pi/4
+        ix &= 0x7fff_ffff;
+        if ix <= 0x3fe9_21fb {
+            kernel_tan(x, z, 1)
+        } else if ix >= 0x7ff0_0000 {
+            // tan(Inf or NaN) is NaN
+            x - x
+        } else {
+            // argument reduction needed
+            let n = ieee754_rem_pio2(x, &mut y);
+            // 1 -- n even, -1 -- n odd
+            kernel_tan(y[0], y[1], 1 - ((n & 1) << 1))
+        }
+    }
+
+    /// The arc cosine of `x`, from fdlibm `e_acos.c`.
+    ///
+    /// Equivalent to `java.lang.StrictMath.acos(double)`.
+    pub fn acos(x: f64) -> f64 {
+        const ONE: f64 = 1.0;
+        const PI: f64 = f64::from_bits(0x400921FB_54442D18); // 3.14159265358979311600e+00
+        const PIO2_HI: f64 = f64::from_bits(0x3FF921FB_54442D18); // 1.57079632679489655800e+00
+        const PIO2_LO: f64 = f64::from_bits(0x3C91A626_33145C07); // 6.12323399573676603587e-17
+        const PS0: f64 = f64::from_bits(0x3FC55555_55555555); // 1.66666666666666657415e-01
+        const PS1: f64 = f64::from_bits(0xBFD4D612_03EB6F7D); // -3.25565818622400915405e-01
+        const PS2: f64 = f64::from_bits(0x3FC9C155_0E884455); // 2.01212532134862925881e-01
+        const PS3: f64 = f64::from_bits(0xBFA48228_B5688F3B); // -4.00555345006794114027e-02
+        const PS4: f64 = f64::from_bits(0x3F49EFE0_7501B288); // 7.91534994289814532176e-04
+        const PS5: f64 = f64::from_bits(0x3F023DE1_0DFDF709); // 3.47933107596021167570e-05
+        const QS1: f64 = f64::from_bits(0xC0033A27_1C8A2D4B); // -2.40339491173441421878e+00
+        const QS2: f64 = f64::from_bits(0x40002AE5_9C598AC8); // 2.02094576023350569471e+00
+        const QS3: f64 = f64::from_bits(0xBFE6066C_1B8D0159); // -6.88283971605453293030e-01
+        const QS4: f64 = f64::from_bits(0x3FB3B8C5_B12E9282); // 7.70381505559019352791e-02
+
+        let hx = hi(x);
+        let ix = hx & 0x7fff_ffff;
+        if ix >= 0x3ff0_0000 {
+            // |x| >= 1
+            if ((ix - 0x3ff0_0000) as u32 | lo(x)) == 0 {
+                // |x|==1
+                if hx > 0 {
+                    return 0.0; // acos(1) = 0
+                } else {
+                    return PI + 2.0 * PIO2_LO; // acos(-1)= pi
+                }
+            }
+            return (x - x) / (x - x); // acos(|x|>1) is NaN
+        }
+        if ix < 0x3fe0_0000 {
+            // |x| < 0.5
+            if ix <= 0x3c60_0000 {
+                return PIO2_HI + PIO2_LO; // if|x|<2**-57
+            }
+            let z = x * x;
+            let p = z * (PS0 + z * (PS1 + z * (PS2 + z * (PS3 + z * (PS4 + z * PS5)))));
+            let q = ONE + z * (QS1 + z * (QS2 + z * (QS3 + z * QS4)));
+            let r = p / q;
+            PIO2_HI - (x - (PIO2_LO - x * r))
+        } else if hx < 0 {
+            // x < -0.5
+            let z = (ONE + x) * 0.5;
+            let p = z * (PS0 + z * (PS1 + z * (PS2 + z * (PS3 + z * (PS4 + z * PS5)))));
+            let q = ONE + z * (QS1 + z * (QS2 + z * (QS3 + z * QS4)));
+            let s = Self::sqrt(z);
+            let r = p / q;
+            let w = r * s - PIO2_LO;
+            PI - 2.0 * (s + w)
+        } else {
+            // x > 0.5
+            let z = (ONE - x) * 0.5;
+            let s = Self::sqrt(z);
+            let df = from_words(hi(s), 0);
+            let c = (z - df * df) / (s + df);
+            let p = z * (PS0 + z * (PS1 + z * (PS2 + z * (PS3 + z * (PS4 + z * PS5)))));
+            let q = ONE + z * (QS1 + z * (QS2 + z * (QS3 + z * QS4)));
+            let r = p / q;
+            let w = r * s + c;
+            2.0 * (df + w)
+        }
+    }
+
+    /// The arc tangent of `x`, from fdlibm `s_atan.c`.
+    ///
+    /// Equivalent to `java.lang.StrictMath.atan(double)`.
+    pub fn atan(mut x: f64) -> f64 {
+        const ATANHI: [f64; 4] = [
+            f64::from_bits(0x3FDDAC67_0561BB4F), // atan(0.5)hi 4.63647609000806093515e-01
+            f64::from_bits(0x3FE921FB_54442D18), // atan(1.0)hi 7.85398163397448278999e-01
+            f64::from_bits(0x3FEF730B_D281F69B), // atan(1.5)hi 9.82793723247329054082e-01
+            f64::from_bits(0x3FF921FB_54442D18), // atan(inf)hi 1.57079632679489655800e+00
+        ];
+        const ATANLO: [f64; 4] = [
+            f64::from_bits(0x3C7A2B7F_222F65E2), // atan(0.5)lo 2.26987774529616870924e-17
+            f64::from_bits(0x3C81A626_33145C07), // atan(1.0)lo 3.06161699786838301793e-17
+            f64::from_bits(0x3C700788_7AF0CBBD), // atan(1.5)lo 1.39033110312309984516e-17
+            f64::from_bits(0x3C91A626_33145C07), // atan(inf)lo 6.12323399573676603587e-17
+        ];
+        const AT: [f64; 11] = [
+            f64::from_bits(0x3FD55555_5555550D), // 3.33333333333329318027e-01
+            f64::from_bits(0xBFC99999_9998EBC4), // -1.99999999998764832476e-01
+            f64::from_bits(0x3FC24924_920083FF), // 1.42857142725034663711e-01
+            f64::from_bits(0xBFBC71C6_FE231671), // -1.11111104054623557880e-01
+            f64::from_bits(0x3FB745CD_C54C206E), // 9.09088713343650656196e-02
+            f64::from_bits(0xBFB3B0F2_AF749A6D), // -7.69187620504482999495e-02
+            f64::from_bits(0x3FB10D66_A0D03D51), // 6.66107313738753120669e-02
+            f64::from_bits(0xBFADDE2D_52DEFD9A), // -5.83357013379057348645e-02
+            f64::from_bits(0x3FA97B4B_24760DEB), // 4.97687799461593236017e-02
+            f64::from_bits(0xBFA2B444_2C6A6C2F), // -3.65315727442169155270e-02
+            f64::from_bits(0x3F90AD3A_E322DA11), // 1.62858201153657823623e-02
+        ];
+        const ONE: f64 = 1.0;
+        const HUGE: f64 = 1.0e300;
+
+        let hx = hi(x);
+        let ix = hx & 0x7fff_ffff;
+        let id: i32;
+        if ix >= 0x4410_0000 {
+            // if |x| >= 2^66
+            if ix > 0x7ff0_0000 || (ix == 0x7ff0_0000 && lo(x) != 0) {
+                return x + x; // NaN
+            }
+            if hx > 0 {
+                return ATANHI[3] + ATANLO[3];
+            } else {
+                return -ATANHI[3] - ATANLO[3];
+            }
+        }
+        if ix < 0x3fdc_0000 {
+            // |x| < 0.4375
+            if ix < 0x3e20_0000 {
+                // |x| < 2^-29
+                if HUGE + x > ONE {
+                    return x; // raise inexact
+                }
+            }
+            id = -1;
+        } else {
+            x = x.abs();
+            if ix < 0x3ff3_0000 {
+                // |x| < 1.1875
+                if ix < 0x3fe6_0000 {
+                    // 7/16 <=|x|<11/16
+                    id = 0;
+                    x = (2.0 * x - ONE) / (2.0 + x);
+                } else {
+                    // 11/16<=|x|< 19/16
+                    id = 1;
+                    x = (x - ONE) / (x + ONE);
+                }
+            } else if ix < 0x4003_8000 {
+                // |x| < 2.4375
+                id = 2;
+                x = (x - 1.5) / (ONE + 1.5 * x);
+            } else {
+                // 2.4375 <= |x| < 2^66
+                id = 3;
+                x = -1.0 / x;
+            }
+        }
+        // end of argument reduction
+        let z = x * x;
+        let w = z * z;
+        // break sum from i=0 to 10 aT[i]z**(i+1) into odd and even poly
+        let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))));
+        let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))));
+        if id < 0 {
+            x - x * (s1 + s2)
+        } else {
+            let id = id as usize;
+            let z = ATANHI[id] - ((x * (s1 + s2) - ATANLO[id]) - x);
+            if hx < 0 {
+                -z
+            } else {
+                z
+            }
+        }
+    }
+
+    /// The angle of the point `(x, y)`, from fdlibm `e_atan2.c`.
+    ///
+    /// Equivalent to `java.lang.StrictMath.atan2(double, double)`.
+    pub fn atan2(y: f64, x: f64) -> f64 {
+        const TINY: f64 = 1.0e-300;
+        const ZERO: f64 = 0.0;
+        const PI_O_4: f64 = f64::from_bits(0x3FE921FB_54442D18); // 7.8539816339744827900E-01
+        const PI_O_2: f64 = f64::from_bits(0x3FF921FB_54442D18); // 1.5707963267948965580E+00
+        const PI: f64 = f64::from_bits(0x400921FB_54442D18); // 3.1415926535897931160E+00
+        const PI_LO: f64 = f64::from_bits(0x3CA1A626_33145C07); // 1.2246467991473531772E-16
+
+        let hx = hi(x);
+        let ix = hx & 0x7fff_ffff;
+        let lx = lo(x);
+        let hy = hi(y);
+        let iy = hy & 0x7fff_ffff;
+        let ly = lo(y);
+        if (ix as u32 | ((lx | lx.wrapping_neg()) >> 31)) > 0x7ff0_0000
+            || (iy as u32 | ((ly | ly.wrapping_neg()) >> 31)) > 0x7ff0_0000
+        {
+            // x or y is NaN
+            return x + y;
+        }
+        if (hx.wrapping_sub(0x3ff0_0000) as u32 | lx) == 0 {
+            return Self::atan(y); // x=1.0
+        }
+        let m = ((hy >> 31) & 1) | ((hx >> 30) & 2); // 2*sign(x)+sign(y)
+
+        // when y = 0
+        if (iy as u32 | ly) == 0 {
+            match m {
+                0 | 1 => return y, // atan(+-0,+anything)=+-0
+                2 => return PI + TINY, // atan(+0,-anything) = pi
+                _ => return -PI - TINY, // atan(-0,-anything) =-pi
+            }
+        }
+        // when x = 0
+        if (ix as u32 | lx) == 0 {
+            return if hy < 0 { -PI_O_2 - TINY } else { PI_O_2 + TINY };
+        }
+        // when x is INF
+        if ix == 0x7ff0_0000 {
+            if iy == 0x7ff0_0000 {
+                return match m {
+                    0 => PI_O_4 + TINY,        // atan(+INF,+INF)
+                    1 => -PI_O_4 - TINY,       // atan(-INF,+INF)
+                    2 => 3.0 * PI_O_4 + TINY,  // atan(+INF,-INF)
+                    _ => -3.0 * PI_O_4 - TINY, // atan(-INF,-INF)
+                };
+            } else {
+                return match m {
+                    0 => ZERO,       // atan(+...,+INF)
+                    1 => -ZERO,      // atan(-...,+INF)
+                    2 => PI + TINY,  // atan(+...,-INF)
+                    _ => -PI - TINY, // atan(-...,-INF)
+                };
+            }
+        }
+        // when y is INF
+        if iy == 0x7ff0_0000 {
+            return if hy < 0 { -PI_O_2 - TINY } else { PI_O_2 + TINY };
+        }
+
+        // compute y/x
+        let k = (iy - ix) >> 20;
+        let mut z = if k > 60 {
+            PI_O_2 + 0.5 * PI_LO // |y/x| >  2**60
+        } else if hx < 0 && k < -60 {
+            0.0 // |y|/x < -2**60
+        } else {
+            Self::atan((y / x).abs()) // safe to do y/x
+        };
+        match m {
+            0 => z, // atan(+,+)
+            1 => {
+                z = from_words(hi(z) ^ (0x8000_0000_u32 as i32), lo(z));
+                z // atan(-,+)
+            }
+            2 => PI - (z - PI_LO), // atan(+,-)
+            _ => (z - PI_LO) - PI, // atan(-,-)
+        }
+    }
+
+    /// `x` raised to the power `y`, from fdlibm `e_pow.c`.
+    ///
+    /// Equivalent to `java.lang.StrictMath.pow(double, double)`.
+    pub fn pow(x: f64, y: f64) -> f64 {
+        const BP: [f64; 2] = [1.0, 1.5];
+        const DP_H: [f64; 2] = [0.0, f64::from_bits(0x3FE2B803_40000000)]; // 5.84962487220764160156e-01
+        const DP_L: [f64; 2] = [0.0, f64::from_bits(0x3E4CFDEB_43CFD006)]; // 1.35003920212974897128e-08
+        const ZERO: f64 = 0.0;
+        const ONE: f64 = 1.0;
+        const TWO: f64 = 2.0;
+        const TWO53: f64 = f64::from_bits(0x43400000_00000000); // 9007199254740992.0
+        const HUGE: f64 = 1.0e300;
+        const TINY: f64 = 1.0e-300;
+        // poly coefs for (3/2)*(log(x)-2s-2/3*s**3
+        const L1: f64 = f64::from_bits(0x3FE33333_33333303); // 5.99999999999994648725e-01
+        const L2: f64 = f64::from_bits(0x3FDB6DB6_DB6FABFF); // 4.28571428578550184252e-01
+        const L3: f64 = f64::from_bits(0x3FD55555_518F264D); // 3.33333329818377432918e-01
+        const L4: f64 = f64::from_bits(0x3FD17460_A91D4101); // 2.72728123808534006489e-01
+        const L5: f64 = f64::from_bits(0x3FCD864A_93C9DB65); // 2.30660745775561754067e-01
+        const L6: f64 = f64::from_bits(0x3FCA7E28_4A454EEF); // 2.06975017800338417784e-01
+        const P1: f64 = f64::from_bits(0x3FC55555_5555553E); // 1.66666666666666019037e-01
+        const P2: f64 = f64::from_bits(0xBF66C16C_16BEBD93); // -2.77777777770155933842e-03
+        const P3: f64 = f64::from_bits(0x3F11566A_AF25DE2C); // 6.61375632143793436117e-05
+        const P4: f64 = f64::from_bits(0xBEBBBD41_C5D26BF1); // -1.65339022054652515390e-06
+        const P5: f64 = f64::from_bits(0x3E663769_72BEA4D0); // 4.13813679705723846039e-08
+        const LG2: f64 = f64::from_bits(0x3FE62E42_FEFA39EF); // 6.93147180559945286227e-01
+        const LG2_H: f64 = f64::from_bits(0x3FE62E43_00000000); // 6.93147182464599609375e-01
+        const LG2_L: f64 = f64::from_bits(0xBE205C61_0CA86C39); // -1.90465429995776804525e-09
+        const OVT: f64 = 8.008_566_259_537_294_437_2e-17; // -(1024-log2(ovfl+.5ulp))
+        const CP: f64 = f64::from_bits(0x3FEEC709_DC3A03FD); // 9.61796693925975554329e-01 =2/(3ln2)
+        const CP_H: f64 = f64::from_bits(0x3FEEC709_E0000000); // 9.61796700954437255859e-01 =(float)cp
+        const CP_L: f64 = f64::from_bits(0xBE3E2FE0_145B01F5); // -7.02846165095275826516e-09 =tail of cp_h
+        const IVLN2: f64 = f64::from_bits(0x3FF71547_652B82FE); // 1.44269504088896338700e+00 =1/ln2
+        const IVLN2_H: f64 = f64::from_bits(0x3FF71547_60000000); // 1.44269502162933349609e+00 =24b 1/ln2
+        const IVLN2_L: f64 = f64::from_bits(0x3E54AE0B_F85DDF44); // 1.92596299112661746887e-08 =1/ln2 tail
+
+        let hx = hi(x);
+        let lx = lo(x);
+        let hy = hi(y);
+        let ly = lo(y);
+        let mut ix = hx & 0x7fff_ffff;
+        let iy = hy & 0x7fff_ffff;
+
+        // y==zero: x**0 = 1
+        if (iy as u32 | ly) == 0 {
+            return ONE;
+        }
+
+        // +-NaN return x+y
+        if ix > 0x7ff0_0000
+            || (ix == 0x7ff0_0000 && lx != 0)
+            || iy > 0x7ff0_0000
+            || (iy == 0x7ff0_0000 && ly != 0)
+        {
+            return x + y;
+        }
+
+        // determine if y is an odd int when x < 0
+        // yisint = 0 ... y is not an integer
+        // yisint = 1 ... y is an odd int
+        // yisint = 2 ... y is an even int
+        let mut yisint = 0;
+        if hx < 0 {
+            if iy >= 0x4340_0000 {
+                yisint = 2; // even integer y
+            } else if iy >= 0x3ff0_0000 {
+                let k = (iy >> 20) - 0x3ff; // exponent
+                if k > 20 {
+                    let j = ly >> (52 - k);
+                    if (j << (52 - k)) == ly {
+                        yisint = 2 - (j & 1) as i32;
+                    }
+                } else if ly == 0 {
+                    let j = iy >> (20 - k);
+                    if (j << (20 - k)) == iy {
+                        yisint = 2 - (j & 1);
+                    }
+                }
+            }
+        }
+
+        // special value of y
+        if ly == 0 {
+            if iy == 0x7ff0_0000 {
+                // y is +-inf
+                if (ix.wrapping_sub(0x3ff0_0000) as u32 | lx) == 0 {
+                    return y - y; // inf**+-1 is NaN
+                } else if ix >= 0x3ff0_0000 {
+                    // (|x|>1)**+-inf = inf,0
+                    return if hy >= 0 { y } else { ZERO };
+                } else {
+                    // (|x|<1)**-,+inf = inf,0
+                    return if hy < 0 { -y } else { ZERO };
+                }
+            }
+            if iy == 0x3ff0_0000 {
+                // y is  +-1
+                return if hy < 0 { ONE / x } else { x };
+            }
+            if hy == 0x4000_0000 {
+                return x * x; // y is  2
+            }
+            if hy == 0x3fe0_0000 && hx >= 0 {
+                // y is  0.5, x >= +0
+                return Self::sqrt(x);
+            }
+        }
+
+        let mut ax = x.abs();
+        // special value of x
+        if lx == 0 && (ix == 0x7ff0_0000 || ix == 0 || ix == 0x3ff0_0000) {
+            let mut z = ax; // x is +-0,+-inf,+-1
+            if hy < 0 {
+                z = ONE / z; // z = (1/|x|)
+            }
+            if hx < 0 {
+                if (ix.wrapping_sub(0x3ff0_0000) | yisint) == 0 {
+                    z = (z - z) / (z - z); // (-1)**non-int is NaN
+                } else if yisint == 1 {
+                    z = -z; // (x<0)**odd = -(|x|**odd)
+                }
+            }
+            return z;
+        }
+
+        let mut n = (hx >> 31) + 1;
+
+        // (x<0)**(non-int) is NaN
+        if (n | yisint) == 0 {
+            return (x - x) / (x - x);
+        }
+
+        let mut s = ONE; // s (sign of result -ve**odd) = -1 else = 1
+        if (n | (yisint - 1)) == 0 {
+            s = -ONE; // (-ve)**(odd int)
+        }
+
+        let t1: f64;
+        let t2: f64;
+        // |y| is huge
+        if iy > 0x41e0_0000 {
+            // if |y| > 2**31
+            if iy > 0x43f0_0000 {
+                // if |y| > 2**64, must o/uflow
+                if ix <= 0x3fef_ffff {
+                    return if hy < 0 { HUGE * HUGE } else { TINY * TINY };
+                }
+                if ix >= 0x3ff0_0000 {
+                    return if hy > 0 { HUGE * HUGE } else { TINY * TINY };
+                }
+            }
+            // over/underflow if x is not close to one
+            if ix < 0x3fef_ffff {
+                return if hy < 0 { s * HUGE * HUGE } else { s * TINY * TINY };
+            }
+            if ix > 0x3ff0_0000 {
+                return if hy > 0 { s * HUGE * HUGE } else { s * TINY * TINY };
+            }
+            // now |1-x| is tiny <= 2**-20, suffice to compute
+            // log(x) by x-x^2/2+x^3/3-x^4/4
+            let t = ax - ONE; // t has 20 trailing zeros
+            let w = (t * t) * (0.5 - t * (0.333_333_333_333_333_333_333_3 - t * 0.25));
+            let u = IVLN2_H * t; // ivln2_h has 21 sig. bits
+            let v = t * IVLN2_L - w * IVLN2;
+            t1 = from_words(hi(u + v), 0);
+            t2 = v - (t1 - u);
+        } else {
+            n = 0;
+            // take care subnormal number
+            if ix < 0x0010_0000 {
+                ax *= TWO53;
+                n -= 53;
+                ix = hi(ax);
+            }
+            n += (ix >> 20) - 0x3ff;
+            let j = ix & 0x000f_ffff;
+            // determine interval
+            ix = j | 0x3ff0_0000; // normalize ix
+            let k: usize;
+            if j <= 0x3988E {
+                k = 0; // |x|<sqrt(3/2)
+            } else if j < 0xBB67A {
+                k = 1; // |x|<sqrt(3)
+            } else {
+                k = 0;
+                n += 1;
+                ix -= 0x0010_0000;
+            }
+            ax = from_words(ix, lo(ax));
+
+            // compute ss = s_h+s_l = (x-1)/(x+1) or (x-1.5)/(x+1.5)
+            let mut u = ax - BP[k]; // bp[0]=1.0, bp[1]=1.5
+            let mut v = ONE / (ax + BP[k]);
+            let ss = u * v;
+            let s_h = from_words(hi(ss), 0);
+            // t_h=ax+bp[k] High
+            let mut t_h = from_words(((ix >> 1) | 0x2000_0000) + 0x0008_0000 + ((k as i32) << 18), 0);
+            let mut t_l = ax - (t_h - BP[k]);
+            let s_l = v * ((u - s_h * t_h) - s_h * t_l);
+            // compute log(ax)
+            let mut s2 = ss * ss;
+            let mut r = s2 * s2 * (L1 + s2 * (L2 + s2 * (L3 + s2 * (L4 + s2 * (L5 + s2 * L6)))));
+            r += s_l * (s_h + ss);
+            s2 = s_h * s_h;
+            t_h = from_words(hi(3.0 + s2 + r), 0);
+            t_l = r - ((t_h - 3.0) - s2);
+            // u+v = ss*(1+...)
+            u = s_h * t_h;
+            v = s_l * t_h + t_l * ss;
+            // 2/(3log2)*(ss+...)
+            let p_h = from_words(hi(u + v), 0);
+            let p_l = v - (p_h - u);
+            let z_h = CP_H * p_h; // cp_h+cp_l = 2/(3*log2)
+            let z_l = CP_L * p_h + p_l * CP + DP_L[k];
+            // log2(ax) = (ss+..)*2/(3*log2) = n + dp_h + z_h + z_l
+            let t = f64::from(n);
+            t1 = from_words(hi(((z_h + z_l) + DP_H[k]) + t), 0);
+            t2 = z_l - (((t1 - t) - DP_H[k]) - z_h);
+        }
+
+        // split up y into y1+y2 and compute (y1+y2)*(t1+t2)
+        let y1 = from_words(hi(y), 0);
+        let p_l = (y - y1) * t1 + y * t2;
+        let mut p_h = y1 * t1;
+        let mut z = p_l + p_h;
+        let mut j = hi(z);
+        let i = lo(z) as i32;
+        if j >= 0x4090_0000 {
+            // z >= 1024
+            if (j.wrapping_sub(0x4090_0000) | i) != 0 {
+                return s * HUGE * HUGE; // overflow
+            } else if p_l + OVT > z - p_h {
+                return s * HUGE * HUGE; // overflow
+            }
+        } else if (j & 0x7fff_ffff) >= 0x4090_cc00 {
+            // z <= -1075
+            if (j.wrapping_sub(0xc090_cc00_u32 as i32) | i) != 0 {
+                return s * TINY * TINY; // underflow
+            } else if p_l <= z - p_h {
+                return s * TINY * TINY; // underflow
+            }
+        }
+
+        // compute 2**(p_h+p_l)
+        let i = j & 0x7fff_ffff;
+        let mut k = (i >> 20) - 0x3ff;
+        n = 0;
+        if i > 0x3fe0_0000 {
+            // if |z| > 0.5, set n = [z+0.5]
+            n = j + (0x0010_0000 >> (k + 1));
+            k = ((n & 0x7fff_ffff) >> 20) - 0x3ff; // new k for n
+            let t = from_words(n & !(0x000f_ffff >> k), 0);
+            n = ((n & 0x000f_ffff) | 0x0010_0000) >> (20 - k);
+            if j < 0 {
+                n = -n;
+            }
+            p_h -= t;
+        }
+        let t = from_words(hi(p_l + p_h), 0);
+        let u = t * LG2_H;
+        let v = (p_l - (t - p_h)) * LG2 + t * LG2_L;
+        z = u + v;
+        let w = v - (z - u);
+        let t = z * z;
+        let t1 = z - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+        let r = (z * t1) / (t1 - TWO) - (w + z * w);
+        z = ONE - (r - z);
+        j = hi(z);
+        j = j.wrapping_add(n << 20);
+        if (j >> 20) <= 0 {
+            z = scalbn(z, n); // subnormal output
+        } else {
+            z = from_words(hi(z).wrapping_add(n << 20), lo(z));
+        }
+        s * z
+    }
+
+    /// The IEEE 754 remainder of `x` and `p`, from fdlibm `e_remainder.c`.
+    /// Its `__ieee754_fmod` is the exact IEEE operation Rust's `%` computes
+    /// on `f64` (C `fmod`), so it is not translated.
+    ///
+    /// Equivalent to `java.lang.StrictMath.IEEEremainder(double, double)`.
+    pub fn ieee_remainder(mut x: f64, mut p: f64) -> f64 {
+        const ZERO: f64 = 0.0;
+
+        let mut hx = hi(x); // high word of x
+        let lx = lo(x); // low  word of x
+        let mut hp = hi(p); // high word of p
+        let lp = lo(p); // low  word of p
+        let sx = hx as u32 & 0x8000_0000;
+        hp &= 0x7fff_ffff;
+        hx &= 0x7fff_ffff;
+
+        // purge off exception values
+        if (hp as u32 | lp) == 0 {
+            return (x * p) / (x * p); // p = 0
+        }
+        if hx >= 0x7ff0_0000 // x not finite
+            || (hp >= 0x7ff0_0000 // p is NaN
+                && ((hp - 0x7ff0_0000) as u32 | lp) != 0)
+        {
+            return (x * p) / (x * p);
+        }
+
+        if hp <= 0x7fdf_ffff {
+            x %= p + p; // now x < 2p
+        }
+        if ((hx.wrapping_sub(hp)) as u32 | lx.wrapping_sub(lp)) == 0 {
+            return ZERO * x;
+        }
+        x = x.abs();
+        p = p.abs();
+        if hp < 0x0020_0000 {
+            if x + x > p {
+                x -= p;
+                if x + x >= p {
+                    x -= p;
+                }
+            }
+        } else {
+            let p_half = 0.5 * p;
+            if x > p_half {
+                x -= p;
+                if x >= p_half {
+                    x -= p;
+                }
+            }
+        }
+        from_words(hi(x) ^ sx as i32, lo(x))
+    }
+}

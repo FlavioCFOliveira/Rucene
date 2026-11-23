@@ -26,7 +26,7 @@
 /// `hashCode`); the port gives it no `PartialEq` either.
 #[derive(Debug, Clone)]
 pub struct WeightedTerm {
-    pub(crate) weight: f32, // multiplier
+    pub(crate) weight: f32,  // multiplier
     pub(crate) term: String, // stemmed form
 }
 

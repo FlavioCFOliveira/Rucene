@@ -18,6 +18,7 @@
 //! The types declared in `Vector.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -80,8 +81,7 @@ impl Vector {
     /// Angular version of minimum resolution.
     pub const MINIMUM_ANGULAR_RESOLUTION: f64 = std::f64::consts::PI * Self::MINIMUM_RESOLUTION;
     /// For squared quantities, the bound is squared too.
-    pub const MINIMUM_RESOLUTION_SQUARED: f64 =
-        Self::MINIMUM_RESOLUTION * Self::MINIMUM_RESOLUTION;
+    pub const MINIMUM_RESOLUTION_SQUARED: f64 = Self::MINIMUM_RESOLUTION * Self::MINIMUM_RESOLUTION;
     /// For cubed quantities, cube the bound.
     pub const MINIMUM_RESOLUTION_CUBED: f64 =
         Self::MINIMUM_RESOLUTION_SQUARED * Self::MINIMUM_RESOLUTION;
@@ -149,14 +149,14 @@ impl Vector {
                 } else {
                     (bx, by, bz, current_dot_prod_b)
                 };
-            normalize_x = normalize_x - current_dot_prod * cvx;
-            normalize_y = normalize_y - current_dot_prod * cvy;
-            normalize_z = normalize_z - current_dot_prod * cvz;
+            normalize_x -= current_dot_prod * cvx;
+            normalize_y -= current_dot_prod * cvy;
+            normalize_z -= current_dot_prod * cvz;
             let corrected_magnitude = Self::magnitude_of(normalize_x, normalize_y, normalize_z);
             let inverse_corrected_magnitude = 1.0 / corrected_magnitude;
-            normalize_x = normalize_x * inverse_corrected_magnitude;
-            normalize_y = normalize_y * inverse_corrected_magnitude;
-            normalize_z = normalize_z * inverse_corrected_magnitude;
+            normalize_x *= inverse_corrected_magnitude;
+            normalize_y *= inverse_corrected_magnitude;
+            normalize_z *= inverse_corrected_magnitude;
             let old = i;
             i += 1;
             if old > 10 {
@@ -180,7 +180,7 @@ impl Vector {
     /// `Vector.magnitude(double, double, double)`.
     #[inline]
     pub fn magnitude_of(x: f64, y: f64, z: f64) -> f64 {
-        (x * x + y * y + z * z).sqrt()
+        java_math::sqrt(x * x + y * y + z * z)
     }
 
     /// `normalize()`: `None` when the magnitude is too small.
@@ -229,14 +229,14 @@ impl Vector {
                 } else {
                     (b.x, b.y, b.z, current_dot_prod_b)
                 };
-            normalize_x = normalize_x - current_dot_prod * cvx;
-            normalize_y = normalize_y - current_dot_prod * cvy;
-            normalize_z = normalize_z - current_dot_prod * cvz;
+            normalize_x -= current_dot_prod * cvx;
+            normalize_y -= current_dot_prod * cvy;
+            normalize_z -= current_dot_prod * cvz;
             let corrected_magnitude = Self::magnitude_of(normalize_x, normalize_y, normalize_z);
             let inverse_corrected_magnitude = 1.0 / corrected_magnitude;
-            normalize_x = normalize_x * inverse_corrected_magnitude;
-            normalize_y = normalize_y * inverse_corrected_magnitude;
-            normalize_z = normalize_z * inverse_corrected_magnitude;
+            normalize_x *= inverse_corrected_magnitude;
+            normalize_y *= inverse_corrected_magnitude;
+            normalize_z *= inverse_corrected_magnitude;
             let old = i;
             i += 1;
             if old > 10 {
@@ -290,7 +290,7 @@ impl Vector {
 
     /// `rotateXY(double angle)`.
     pub fn rotate_xy(&self, angle: f64) -> Vector {
-        self.rotate_xy_sin_cos(angle.sin(), angle.cos())
+        self.rotate_xy_sin_cos(java_math::sin(angle), java_math::cos(angle))
     }
 
     /// `rotateXY(double sinAngle, double cosAngle)`.
@@ -304,7 +304,7 @@ impl Vector {
 
     /// `rotateXZ(double angle)`.
     pub fn rotate_xz(&self, angle: f64) -> Vector {
-        self.rotate_xz_sin_cos(angle.sin(), angle.cos())
+        self.rotate_xz_sin_cos(java_math::sin(angle), java_math::cos(angle))
     }
 
     /// `rotateXZ(double sinAngle, double cosAngle)`.
@@ -318,7 +318,7 @@ impl Vector {
 
     /// `rotateZY(double angle)`.
     pub fn rotate_zy(&self, angle: f64) -> Vector {
-        self.rotate_zy_sin_cos(angle.sin(), angle.cos())
+        self.rotate_zy_sin_cos(java_math::sin(angle), java_math::cos(angle))
     }
 
     /// `rotateZY(double sinAngle, double cosAngle)`.
@@ -348,12 +348,12 @@ impl Vector {
 
     /// `linearDistance(Vector)`.
     pub fn linear_distance(&self, v: &Vector) -> f64 {
-        self.linear_distance_squared(v).sqrt()
+        java_math::sqrt(self.linear_distance_squared(v))
     }
 
     /// `linearDistance(double, double, double)`.
     pub fn linear_distance_xyz(&self, x: f64, y: f64, z: f64) -> f64 {
-        self.linear_distance_squared_xyz(x, y, z).sqrt()
+        java_math::sqrt(self.linear_distance_squared_xyz(x, y, z))
     }
 
     /// `normalDistanceSquared(Vector)`.
@@ -376,12 +376,12 @@ impl Vector {
 
     /// `normalDistance(Vector)`.
     pub fn normal_distance(&self, v: &Vector) -> f64 {
-        self.normal_distance_squared(v).sqrt()
+        java_math::sqrt(self.normal_distance_squared(v))
     }
 
     /// `normalDistance(double, double, double)`.
     pub fn normal_distance_xyz(&self, x: f64, y: f64, z: f64) -> f64 {
-        self.normal_distance_squared_xyz(x, y, z).sqrt()
+        java_math::sqrt(self.normal_distance_squared_xyz(x, y, z))
     }
 
     /// `magnitude()`, with `GeoPoint`'s cached override for the vector part
@@ -405,8 +405,7 @@ impl Vector {
         let delta_x = self.x - other_x;
         let delta_y = self.y - other_y;
         let delta_z = self.z - other_z;
-        delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
-            < Self::MINIMUM_RESOLUTION_SQUARED
+        delta_x * delta_x + delta_y * delta_y + delta_z * delta_z < Self::MINIMUM_RESOLUTION_SQUARED
     }
 
     /// `isNumericallyIdentical(Vector)`.
@@ -414,8 +413,7 @@ impl Vector {
         let delta_x = self.x - other.x;
         let delta_y = self.y - other.y;
         let delta_z = self.z - other.z;
-        delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
-            < Self::MINIMUM_RESOLUTION_SQUARED
+        delta_x * delta_x + delta_y * delta_y + delta_z * delta_z < Self::MINIMUM_RESOLUTION_SQUARED
     }
 
     /// `isParallel(double, double, double)`.
@@ -441,17 +439,19 @@ impl Vector {
         y: f64,
         z: f64,
     ) -> f64 {
-        1.0 / (x * x * planet_model.inverse_xy_scaling_squared
-            + y * y * planet_model.inverse_xy_scaling_squared
-            + z * z * planet_model.inverse_z_scaling_squared)
-            .sqrt()
+        1.0 / java_math::sqrt(
+            x * x * planet_model.inverse_xy_scaling_squared
+                + y * y * planet_model.inverse_xy_scaling_squared
+                + z * z * planet_model.inverse_z_scaling_squared,
+        )
     }
 
     /// `computeDesiredEllipsoidMagnitude(PlanetModel, double)`.
     pub(crate) fn compute_desired_ellipsoid_magnitude_z(planet_model: &PlanetModel, z: f64) -> f64 {
-        1.0 / ((1.0 - z * z) * planet_model.inverse_xy_scaling_squared
-            + z * z * planet_model.inverse_z_scaling_squared)
-            .sqrt()
+        1.0 / java_math::sqrt(
+            (1.0 - z * z) * planet_model.inverse_xy_scaling_squared
+                + z * z * planet_model.inverse_z_scaling_squared,
+        )
     }
 
     /// `Vector.equals(Object)` against another vector.

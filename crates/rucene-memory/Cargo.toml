@@ -14,3 +14,14 @@ name = "rucene_memory"
 
 [dependencies]
 rucene = { path = "../.." }
+
+[dev-dependencies]
+# The ported Lucene tests run on lucene/test-framework (and its randomized
+# testing base); the sprint-17 Java-oracle harness (`tests/sprint17_oracle/`,
+# rmp #628) draws on `randomizedtesting`.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
+# `TestMemoryIndexAgainstDirectory` parses its queries with the classic
+# `QueryParser` and wraps a `RegexpQuery` in span queries.
+rucene-queries = { path = "../rucene-queries" }
+rucene-queryparser = { path = "../rucene-queryparser" }

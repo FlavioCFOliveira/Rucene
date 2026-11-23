@@ -14,3 +14,8 @@ name = "rucene_facet"
 
 [dependencies]
 rucene = { path = "../.." }
+
+[dev-dependencies]
+# The sprint-17 Java-oracle harness (`tests/sprint17_oracle/`, rmp #628)
+# draws on `randomizedtesting`.
+randomizedtesting = { path = "../randomizedtesting" }

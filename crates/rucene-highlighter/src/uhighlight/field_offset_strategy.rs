@@ -101,7 +101,10 @@ pub trait FieldOffsetStrategy: fmt::Debug {
         let mut offsets_enums: Vec<Box<dyn OffsetsEnum>> = Vec::new();
 
         // Handle Weight.matches approach
-        if components.highlight_flags().contains(&HighlightFlag::WEIGHT_MATCHES) {
+        if components
+            .highlight_flags()
+            .contains(&HighlightFlag::WEIGHT_MATCHES)
+        {
             self.create_offsets_enums_weight_matcher(leaf_reader, doc, &mut offsets_enums)?;
         } else {
             // classic approach
@@ -120,12 +123,21 @@ pub trait FieldOffsetStrategy: fmt::Debug {
                 terms.to_vec()
             };
             if !insensitive_terms.is_empty() {
-                self.create_offsets_enums_for_terms(&insensitive_terms, &terms_index, doc, &mut offsets_enums)?;
+                self.create_offsets_enums_for_terms(
+                    &insensitive_terms,
+                    &terms_index,
+                    doc,
+                    &mut offsets_enums,
+                )?;
             }
 
             // Handle spans
             if phrase_helper.has_position_sensitivity() {
-                phrase_helper.create_offsets_enums_for_spans(leaf_reader, doc, &mut offsets_enums)?;
+                phrase_helper.create_offsets_enums_for_spans(
+                    leaf_reader,
+                    doc,
+                    &mut offsets_enums,
+                )?;
             }
 
             // Handle automata
@@ -237,7 +249,9 @@ pub trait FieldOffsetStrategy: fmt::Debug {
         results: &mut Vec<Box<dyn OffsetsEnum>>,
     ) -> Result<()> {
         let components = self.components().ok_or_else(LuceneError::null_pointer)?;
-        let automata = components.automata().ok_or_else(LuceneError::null_pointer)?;
+        let automata = components
+            .automata()
+            .ok_or_else(LuceneError::null_pointer)?;
         let mut automata_postings: Vec<Vec<Box<dyn PostingsEnum>>> =
             (0..automata.len()).map(|_| Vec::new()).collect();
 
@@ -248,7 +262,9 @@ pub trait FieldOffsetStrategy: fmt::Debug {
                 None => break,
             };
             for (i, automaton) in automata.iter().enumerate() {
-                let chars: Vec<u16> = String::from_utf8_lossy(term.slice()).encode_utf16().collect();
+                let chars: Vec<u16> = String::from_utf8_lossy(term.slice())
+                    .encode_utf16()
+                    .collect();
                 if automaton.match_chars_ref(&chars) {
                     let mut postings = terms_enum
                         .postings(None, POSTINGS_ENUM_OFFSETS)?
@@ -293,7 +309,8 @@ struct FieldMatcherFilterLeafReader {
 
 impl fmt::Debug for FieldMatcherFilterLeafReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FieldOffsetStrategy$1").finish_non_exhaustive()
+        f.debug_struct("FieldOffsetStrategy$1")
+            .finish_non_exhaustive()
     }
 }
 

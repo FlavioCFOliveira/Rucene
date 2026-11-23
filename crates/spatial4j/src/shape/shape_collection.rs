@@ -15,8 +15,8 @@ use std::sync::Arc;
 use rucene::error::Result;
 
 use crate::context::spatial_context::{SpatialContext, SpatialContextRef};
-use crate::shape::r#impl::b_box_calculator::BBoxCalculator;
 use crate::shape::point::Point;
+use crate::shape::r#impl::b_box_calculator::BBoxCalculator;
 use crate::shape::rectangle::Rectangle;
 use crate::shape::shape::Shape;
 use crate::shape::spatial_relation::SpatialRelation;
@@ -43,13 +43,23 @@ pub struct ShapeCollection {
 
 impl ShapeCollection {
     /// `ShapeCollection(List<S> shapes, SpatialContext ctx)`.
-    pub fn new(shapes: Vec<Arc<dyn Shape>>, ctx: &Arc<SpatialContext>) -> Result<Arc<ShapeCollection>> {
+    pub fn new(
+        shapes: Vec<Arc<dyn Shape>>,
+        ctx: &Arc<SpatialContext>,
+    ) -> Result<Arc<ShapeCollection>> {
         let bbox = Self::compute_bounding_box(&shapes, ctx)?;
-        Ok(Arc::new(ShapeCollection { ctx: Some(SpatialContextRef::from(ctx)), shapes, bbox }))
+        Ok(Arc::new(ShapeCollection {
+            ctx: Some(SpatialContextRef::from(ctx)),
+            shapes,
+            bbox,
+        }))
     }
 
     /// `computeBoundingBox(Collection<? extends Shape>, SpatialContext)`.
-    pub fn compute_bounding_box(shapes: &[Arc<dyn Shape>], ctx: &Arc<SpatialContext>) -> Result<Arc<dyn Rectangle>> {
+    pub fn compute_bounding_box(
+        shapes: &[Arc<dyn Shape>],
+        ctx: &Arc<SpatialContext>,
+    ) -> Result<Arc<dyn Rectangle>> {
         if shapes.is_empty() {
             return ctx.make_rectangle(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
         }
@@ -189,7 +199,11 @@ impl Shape for ShapeCollection {
         };
         // `List.equals`: same size, pairwise `equals`.
         self.shapes.len() == that.shapes.len()
-            && self.shapes.iter().zip(&that.shapes).all(|(a, b)| a.equals(b.as_shape()))
+            && self
+                .shapes
+                .iter()
+                .zip(&that.shapes)
+                .all(|(a, b)| a.equals(b.as_shape()))
     }
 
     fn hash_code(&self) -> i32 {

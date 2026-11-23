@@ -50,7 +50,10 @@ pub struct Geo3dPointShape {
 
 impl Geo3dPointShape {
     /// `Geo3dPointShape(GeoPointShape shape, SpatialContext spatialcontext)`.
-    pub fn new(shape: Arc<dyn GeoPointShape>, spatialcontext: Arc<SpatialContext>) -> Arc<Geo3dPointShape> {
+    pub fn new(
+        shape: Arc<dyn GeoPointShape>,
+        spatialcontext: Arc<SpatialContext>,
+    ) -> Arc<Geo3dPointShape> {
         let area: Arc<dyn GeoAreaShape> = shape.clone();
         Arc::new_cyclic(|me| Geo3dPointShape {
             base: Geo3dShape::new(area, spatialcontext),
@@ -65,7 +68,9 @@ impl Geo3dPointShape {
     }
 
     fn me(&self) -> Arc<Geo3dPointShape> {
-        self.me.upgrade().expect("a Geo3dPointShape is shared as an Arc")
+        self.me
+            .upgrade()
+            .expect("a Geo3dPointShape is shared as an Arc")
     }
 }
 
@@ -117,7 +122,8 @@ impl Shape for Geo3dPointShape {
         if let Some(b) = &*bbox {
             return Arc::clone(b);
         }
-        let b: Arc<dyn Rectangle> = Geo3dRectangleShape::new(self.point_shape(), Arc::clone(&self.base.spatialcontext));
+        let b: Arc<dyn Rectangle> =
+            Geo3dRectangleShape::new(self.point_shape(), Arc::clone(&self.base.spatialcontext));
         *bbox = Some(Arc::clone(&b));
         b
     }
@@ -135,8 +141,15 @@ impl Shape for Geo3dPointShape {
         self.me()
     }
 
-    fn get_buffered(&self, distance: f64, spatial_context: &SpatialContext) -> Result<Arc<dyn Shape>> {
-        let circle: Arc<dyn Shape> = spatial_context.get_shape_factory().circle(self.get_x(), self.get_y(), distance)?;
+    fn get_buffered(
+        &self,
+        distance: f64,
+        spatial_context: &SpatialContext,
+    ) -> Result<Arc<dyn Shape>> {
+        let circle: Arc<dyn Shape> =
+            spatial_context
+                .get_shape_factory()
+                .circle(self.get_x(), self.get_y(), distance)?;
         Ok(circle)
     }
 

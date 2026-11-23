@@ -80,7 +80,8 @@ impl ShapeValues for BBoxShapeValues {
         let min_y_value = f64::from_bits(self.min_y.long_value()? as u64);
         let max_x_value = f64::from_bits(self.max_x.long_value()? as u64);
         let max_y_value = f64::from_bits(self.max_y.long_value()? as u64);
-        self.rect.reset(min_x_value, max_x_value, min_y_value, max_y_value);
+        self.rect
+            .reset(min_x_value, max_x_value, min_y_value, max_y_value);
         Ok(Arc::clone(&self.rect) as Arc<dyn Shape>)
     }
 }
@@ -88,7 +89,15 @@ impl ShapeValues for BBoxShapeValues {
 impl SegmentCacheable for BBoxValueSource {
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
         let s = &self.strategy;
-        DocValues::is_cacheable(ctx, &[&s.field_min_x, &s.field_min_y, &s.field_max_x, &s.field_max_y])
+        DocValues::is_cacheable(
+            ctx,
+            &[
+                &s.field_min_x,
+                &s.field_min_y,
+                &s.field_max_x,
+                &s.field_max_y,
+            ],
+        )
     }
 }
 
@@ -101,7 +110,10 @@ impl ShapeValuesSource for BBoxValueSource {
         let max_x = DocValues::get_numeric(&*reader, &s.field_max_x)?;
         let max_y = DocValues::get_numeric(&*reader, &s.field_max_y)?;
         // reused
-        let rect = s.get_spatial_context().get_shape_factory().rect(0.0, 0.0, 0.0, 0.0)?;
+        let rect = s
+            .get_spatial_context()
+            .get_shape_factory()
+            .rect(0.0, 0.0, 0.0, 0.0)?;
         Ok(Box::new(BBoxShapeValues {
             min_x,
             min_y,

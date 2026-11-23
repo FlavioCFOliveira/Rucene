@@ -43,7 +43,10 @@ impl ReciprocalDoubleValuesSource {
     /// `ReciprocalDoubleValuesSource(double distToEdge, DoubleValuesSource
     /// input)`: creates a `ReciprocalDoubleValuesSource`.
     pub fn new(dist_to_edge: f64, input: Arc<dyn DoubleValuesSource>) -> Self {
-        Self { dist_to_edge, input }
+        Self {
+            dist_to_edge,
+            input,
+        }
     }
 
     /// `recip(double in)`.
@@ -59,7 +62,10 @@ struct RecipValues<'a> {
 
 impl DoubleValues for RecipValues<'_> {
     fn double_value(&mut self) -> Result<f64> {
-        Ok(ReciprocalDoubleValuesSource::recip(self.dist_to_edge, self.input.double_value()?))
+        Ok(ReciprocalDoubleValuesSource::recip(
+            self.dist_to_edge,
+            self.input.double_value()?,
+        ))
     }
 
     fn advance_exact(&mut self, doc: i32) -> Result<bool> {
@@ -102,9 +108,13 @@ impl DoubleValuesSource for ReciprocalDoubleValuesSource {
     }
 
     fn source_eq(&self, other: &dyn DoubleValuesSource) -> bool {
-        match other.as_any().downcast_ref::<ReciprocalDoubleValuesSource>() {
+        match other
+            .as_any()
+            .downcast_ref::<ReciprocalDoubleValuesSource>()
+        {
             Some(that) => {
-                double_compare(that.dist_to_edge, self.dist_to_edge) == 0 && self.input.source_eq(&*that.input)
+                double_compare(that.dist_to_edge, self.dist_to_edge) == 0
+                    && self.input.source_eq(&*that.input)
             }
             None => false,
         }
@@ -113,19 +123,36 @@ impl DoubleValuesSource for ReciprocalDoubleValuesSource {
     /// `Objects.hash(distToEdge, input)`.
     fn source_hash(&self) -> i32 {
         let mut result = 1i32;
-        result = result.wrapping_mul(31).wrapping_add(hash_double(self.dist_to_edge));
-        result = result.wrapping_mul(31).wrapping_add(self.input.source_hash());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(hash_double(self.dist_to_edge));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.input.source_hash());
         result
     }
 
     fn to_source_string(&self) -> String {
-        format!("recip({}, {})", d2s(self.dist_to_edge), self.input.to_source_string())
+        format!(
+            "recip({}, {})",
+            d2s(self.dist_to_edge),
+            self.input.to_source_string()
+        )
     }
 
-    fn explain(self: Arc<Self>, ctx: &LeafReaderContext, doc_id: i32, score_explanation: &Explanation) -> Result<Explanation> {
+    fn explain(
+        self: Arc<Self>,
+        ctx: &LeafReaderContext,
+        doc_id: i32,
+        score_explanation: &Explanation,
+    ) -> Result<Explanation> {
         let expl = Arc::clone(&self.input).explain(ctx, doc_id, score_explanation)?;
         let value = Self::recip(self.dist_to_edge, expl.value().double_value());
         let d = d2s(self.dist_to_edge);
-        Ok(Explanation::matched(value, format!("{d} / (v + {d}), computed from:"), vec![expl]))
+        Ok(Explanation::matched(
+            value,
+            format!("{d} / (v + {d}), computed from:"),
+            vec![expl],
+        ))
     }
 }

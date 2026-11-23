@@ -59,7 +59,9 @@ pub struct SpatialOperation {
 impl SpatialOperation {
     /// `BBoxIntersects`: bounding box of the indexed shape, then
     /// `Intersects`.
-    pub const BBoxIntersects: SpatialOperation = SpatialOperation { op: Op::BBoxIntersects };
+    pub const BBoxIntersects: SpatialOperation = SpatialOperation {
+        op: Op::BBoxIntersects,
+    };
     /// `BBoxWithin`: bounding box of the indexed shape, then `IsWithin`
     /// (alias `BBoxCoveredBy`).
     pub const BBoxWithin: SpatialOperation = SpatialOperation { op: Op::BBoxWithin };
@@ -73,7 +75,9 @@ impl SpatialOperation {
     pub const IsEqualTo: SpatialOperation = SpatialOperation { op: Op::IsEqualTo };
     /// `IsDisjointTo` (name `Disjoint`, alias `IsDisjointTo`): meets the
     /// "Disjoint" OGC definition.
-    pub const IsDisjointTo: SpatialOperation = SpatialOperation { op: Op::IsDisjointTo };
+    pub const IsDisjointTo: SpatialOperation = SpatialOperation {
+        op: Op::IsDisjointTo,
+    };
     /// `IsWithin` (name `Within`, aliases `IsWithin` and `CoveredBy`): meets
     /// the "CoveredBy" OGC definition (boundary-neutral).
     pub const IsWithin: SpatialOperation = SpatialOperation { op: Op::IsWithin };
@@ -98,11 +102,11 @@ impl SpatialOperation {
     /// The aliases each constant's initializer `register`s.
     fn aliases(&self) -> &'static [&'static str] {
         match self.op {
-            Op::BBoxWithin => &["BBoxCoveredBy"],          // alias -- the better name
-            Op::Contains => &["Covers"],                   // alias -- the better name
-            Op::IsEqualTo => &["IsEqualTo"],               // alias (deprecated)
-            Op::IsDisjointTo => &["IsDisjointTo"],         // alias (deprecated)
-            Op::IsWithin => &["IsWithin", "CoveredBy"],    // alias (deprecated), and the more appropriate name.
+            Op::BBoxWithin => &["BBoxCoveredBy"], // alias -- the better name
+            Op::Contains => &["Covers"],          // alias -- the better name
+            Op::IsEqualTo => &["IsEqualTo"],      // alias (deprecated)
+            Op::IsDisjointTo => &["IsDisjointTo"], // alias (deprecated)
+            Op::IsWithin => &["IsWithin", "CoveredBy"], // alias (deprecated), and the more appropriate name.
             _ => &[],
         }
     }
@@ -143,19 +147,24 @@ impl SpatialOperation {
     /// satisfied by this operation.
     pub fn evaluate(&self, indexed_shape: &dyn Shape, query_shape: &dyn Shape) -> bool {
         match self.op {
-            Op::BBoxIntersects => indexed_shape.get_bounding_box().relate(query_shape).intersects(),
+            Op::BBoxIntersects => indexed_shape
+                .get_bounding_box()
+                .relate(query_shape)
+                .intersects(),
             Op::BBoxWithin => {
                 let bbox = indexed_shape.get_bounding_box();
                 bbox.relate(query_shape) == SpatialRelation::Within || bbox.equals(query_shape)
             }
             Op::Contains => {
-                indexed_shape.relate(query_shape) == SpatialRelation::Contains || indexed_shape.equals(query_shape)
+                indexed_shape.relate(query_shape) == SpatialRelation::Contains
+                    || indexed_shape.equals(query_shape)
             }
             Op::Intersects => indexed_shape.relate(query_shape).intersects(),
             Op::IsEqualTo => indexed_shape.equals(query_shape),
             Op::IsDisjointTo => !indexed_shape.relate(query_shape).intersects(),
             Op::IsWithin => {
-                indexed_shape.relate(query_shape) == SpatialRelation::Within || indexed_shape.equals(query_shape)
+                indexed_shape.relate(query_shape) == SpatialRelation::Within
+                    || indexed_shape.equals(query_shape)
             }
             // not Contains or Within or Disjoint
             Op::Overlaps => indexed_shape.relate(query_shape) == SpatialRelation::Intersects,
@@ -167,7 +176,9 @@ impl SpatialOperation {
     /// to `$8`).
     pub fn hash_code(&self) -> i32 {
         let n = Self::values().iter().position(|o| o == self).unwrap_or(0) + 1;
-        crate::jdk::identity_hash(&format!("org.apache.lucene.spatial.query.SpatialOperation${n}"))
+        crate::jdk::identity_hash(&format!(
+            "org.apache.lucene.spatial.query.SpatialOperation${n}"
+        ))
     }
 }
 

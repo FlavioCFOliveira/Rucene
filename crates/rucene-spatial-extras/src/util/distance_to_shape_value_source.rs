@@ -63,7 +63,11 @@ impl DistanceToShapeValueSource {
             query_point,
             multiplier,
             dist_calc: ctx.get_dist_calc(),
-            null_value: if ctx.is_geo() { 180.0 * multiplier } else { f64::MAX },
+            null_value: if ctx.is_geo() {
+                180.0 * multiplier
+            } else {
+                f64::MAX
+            },
         }
     }
 }
@@ -143,8 +147,12 @@ impl DoubleValuesSource for DistanceToShapeValueSource {
 
     fn source_hash(&self) -> i32 {
         let mut result = self.shape_value_source.source_hash();
-        result = result.wrapping_mul(31).wrapping_add(self.query_point.hash_code());
-        result = result.wrapping_mul(31).wrapping_add(hash_double(self.multiplier));
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(self.query_point.hash_code());
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(hash_double(self.multiplier));
         result
     }
 

@@ -18,15 +18,16 @@
 //! The types declared in `Geo3dSpatialContextFactory.java`, of the Java
 //! package `org.apache.lucene.spatial.spatial4j`.
 
-use std::any::Any;
 use spatial4j::java_map::StringMap;
+use std::any::Any;
 use std::sync::{Arc, LazyLock};
 
 use rucene::error::{LuceneError, Result};
 use rucene_spatial3d::geom::planet_model::{self, PlanetModel};
 use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::context::spatial_context_factory::{
-    init_calculator_default, init_default, JavaClass, JavaClassKind, SpatialContextFactory, SpatialContextFactoryOps,
+    init_calculator_default, init_default, JavaClass, JavaClassKind, SpatialContextFactory,
+    SpatialContextFactoryOps,
 };
 
 use crate::spatial4j::geo3d_binary_codec::Geo3dBinaryCodec;
@@ -34,7 +35,8 @@ use crate::spatial4j::geo3d_distance_calculator::Geo3dDistanceCalculator;
 use crate::spatial4j::geo3d_shape_factory::Geo3dShapeFactory;
 
 /// `DEFAULT_PLANET_MODEL`: the default planet model.
-static DEFAULT_PLANET_MODEL: LazyLock<Arc<PlanetModel>> = LazyLock::new(|| Arc::clone(&planet_model::SPHERE));
+static DEFAULT_PLANET_MODEL: LazyLock<Arc<PlanetModel>> =
+    LazyLock::new(|| Arc::clone(&planet_model::SPHERE));
 
 /// `Geo3dSpatialContextFactory.class`.
 pub const GEO3D_SPATIAL_CONTEXT_FACTORY_CLASS: JavaClass = JavaClass {
@@ -45,13 +47,17 @@ pub const GEO3D_SPATIAL_CONTEXT_FACTORY_CLASS: JavaClass = JavaClass {
 /// `Geo3dShapeFactory.class`.
 pub const GEO3D_SHAPE_FACTORY_CLASS: JavaClass = JavaClass {
     name: "org.apache.lucene.spatial.spatial4j.Geo3dShapeFactory",
-    kind: JavaClassKind::ShapeFactory(|ctx, factory| Ok(Arc::new(Geo3dShapeFactory::new(ctx, factory)?))),
+    kind: JavaClassKind::ShapeFactory(|ctx, factory| {
+        Ok(Arc::new(Geo3dShapeFactory::new(ctx, factory)?))
+    }),
 };
 
 /// `Geo3dBinaryCodec.class`.
 pub const GEO3D_BINARY_CODEC_CLASS: JavaClass = JavaClass {
     name: "org.apache.lucene.spatial.spatial4j.Geo3dBinaryCodec",
-    kind: JavaClassKind::BinaryCodec(|ctx, factory| Ok(Arc::new(Geo3dBinaryCodec::new(ctx, factory)?))),
+    kind: JavaClassKind::BinaryCodec(|ctx, factory| {
+        Ok(Arc::new(Geo3dBinaryCodec::new(ctx, factory)?))
+    }),
 };
 
 /// `(Geo3dSpatialContextFactory) factory`.
@@ -59,7 +65,9 @@ pub const GEO3D_BINARY_CODEC_CLASS: JavaClass = JavaClass {
 /// # Errors
 ///
 /// `ClassCastException` for another factory class.
-pub(crate) fn geo3d_factory(factory: &dyn SpatialContextFactoryOps) -> Result<&Geo3dSpatialContextFactory> {
+pub(crate) fn geo3d_factory(
+    factory: &dyn SpatialContextFactoryOps,
+) -> Result<&Geo3dSpatialContextFactory> {
     factory.as_any().downcast_ref::<Geo3dSpatialContextFactory>().ok_or_else(|| {
         LuceneError::unchecked(
             "java.lang.ClassCastException",
@@ -92,7 +100,10 @@ impl Geo3dSpatialContextFactory {
         let mut base = SpatialContextFactory::new();
         base.binary_codec_class = GEO3D_BINARY_CODEC_CLASS;
         base.shape_factory_class = GEO3D_SHAPE_FACTORY_CLASS;
-        Self { base, planet_model: None }
+        Self {
+            base,
+            planet_model: None,
+        }
     }
 
     /// `planetModel`, which `newSpatialContext()` defaults.
@@ -168,7 +179,8 @@ impl SpatialContextFactoryOps for Geo3dSpatialContextFactory {
         match calc_str {
             None => Ok(()),
             Some(calc_str) if calc_str == "geo3d" => {
-                self.base.dist_calc = Some(Arc::new(Geo3dDistanceCalculator::new(self.planet_model())));
+                self.base.dist_calc =
+                    Some(Arc::new(Geo3dDistanceCalculator::new(self.planet_model())));
                 Ok(())
             }
             Some(_) => init_calculator_default(self), // some other distance calculator

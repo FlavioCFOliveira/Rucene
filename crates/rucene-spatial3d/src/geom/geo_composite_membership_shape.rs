@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! The types declared in `GeoCompositeMembershipShape.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
@@ -108,7 +107,12 @@ impl GeoCompositeMembershipShape {
     }
 }
 
-impl_serializable_object!(GeoCompositeMembershipShape, "org.apache.lucene.spatial3d.geom.GeoCompositeMembershipShape", planet_object, geo_membership_shape);
+impl_serializable_object!(
+    GeoCompositeMembershipShape,
+    "org.apache.lucene.spatial3d.geom.GeoCompositeMembershipShape",
+    planet_object,
+    geo_membership_shape
+);
 
 impl super::planet_object::PlanetObject for GeoCompositeMembershipShape {
     fn get_planet_model(&self) -> &Arc<PlanetModel> {
@@ -135,22 +139,42 @@ impl GeoShape for GeoCompositeMembershipShape {
         self.base.get_edge_points()
     }
 
-    fn intersects(&self, p: &Plane, notable_points: &[GeoPoint], bounds: &[&dyn Membership]) -> bool {
+    fn intersects(
+        &self,
+        p: &Plane,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+    ) -> bool {
         self.base.intersects(p, notable_points, bounds)
     }
 }
 
 impl GeoOutsideDistance for GeoCompositeMembershipShape {
-    fn compute_outside_distance_xyz(&self, distance_style: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        GeoBaseCompositeMembershipShape::compute_outside_distance_xyz(&self.base, distance_style, x, y, z)
+    fn compute_outside_distance_xyz(
+        &self,
+        distance_style: &dyn DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> Result<f64> {
+        GeoBaseCompositeMembershipShape::compute_outside_distance_xyz(
+            &self.base,
+            distance_style,
+            x,
+            y,
+            z,
+        )
     }
 }
 
 impl GeoMembershipShape for GeoCompositeMembershipShape {}
 
-
 impl fmt::Display for GeoCompositeMembershipShape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GeoCompositeMembershipShape: {{{}}}", list_to_string(&self.base.shapes))
+        write!(
+            f,
+            "GeoCompositeMembershipShape: {{{}}}",
+            list_to_string(&self.base.shapes)
+        )
     }
 }

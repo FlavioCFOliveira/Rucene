@@ -79,7 +79,12 @@ impl BBoxCalculator {
 
     /// `expandRange(Rectangle rect)`.
     pub fn expand_range(&mut self, rect: &dyn Rectangle) {
-        self.expand_range_xy(rect.get_min_x(), rect.get_max_x(), rect.get_min_y(), rect.get_max_y());
+        self.expand_range_xy(
+            rect.get_min_x(),
+            rect.get_max_x(),
+            rect.get_min_y(),
+            rect.get_max_y(),
+        );
     }
 
     /// `expandRange(double minX, double maxX, double minY, double maxY)`.
@@ -133,7 +138,11 @@ impl BBoxCalculator {
             }
         } else {
             //entry does NOT contain maxX:
-            let new_min_x = if Self::range_contains(entry_min, entry_max, min_x) { entry_min } else { min_x };
+            let new_min_x = if Self::range_contains(entry_min, entry_max, min_x) {
+                entry_min
+            } else {
+                min_x
+            };
             let mut new_max_x = max_x;
             while Self::range_contains(new_min_x, new_max_x, entry_min) {
                 ranges.remove(&cursor); //remove entry!
@@ -172,7 +181,11 @@ impl BBoxCalculator {
             self.min_x = *v;
             self.max_x = k.0;
         } else {
-            let (mut prev_key, _) = ranges.iter().next_back().map(|(k, v)| (k.0, *v)).expect("entries");
+            let (mut prev_key, _) = ranges
+                .iter()
+                .next_back()
+                .map(|(k, v)| (k.0, *v))
+                .expect("entries");
             let mut biggest_gap = 0.0;
             let mut possible_remaining_gap = 360.0; //calculating this enables us to exit early; often on the first lap!
             for (k, v) in &ranges {
@@ -219,7 +232,8 @@ impl BBoxCalculator {
     /// The `InvalidShapeException` of `ctx.makeRectangle`.
     pub fn get_boundary(&mut self) -> Result<Arc<dyn Rectangle>> {
         let (min_x, max_x) = (self.get_min_x(), self.get_max_x());
-        self.ctx.make_rectangle(min_x, max_x, self.get_min_y(), self.get_max_y())
+        self.ctx
+            .make_rectangle(min_x, max_x, self.get_min_y(), self.get_max_y())
     }
 
     /// `getMinX()`.
