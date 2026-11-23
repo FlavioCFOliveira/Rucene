@@ -42,9 +42,12 @@
 //! HTTPS client in place of `java.net.URLConnection` (user decision on rmp
 //! #641, 2026-11-23). The request is the one `HttpURLConnection` sends for
 //! `GenerateUTR30DataFiles.openConnection`: method `GET`, `Cache-Control:
-//! no-cache` (`addRequestProperty`), `User-Agent: Java/<java.version>` of
+//! no-cache` (`addRequestProperty`), `Pragma: no-cache` (`setUseCaches(false)`),
+//! `User-Agent: Java/<java.version>` of
 //! the reference JDK 25, `Accept: */*` and no `Accept-Encoding`
-//! (`HttpURLConnection`'s defaults); redirects followed as
+//! (`HttpURLConnection`'s defaults); no proxy taken from the environment
+//! (`ProxySelector.getDefault()` reads only system properties, unset here);
+//! redirects followed as
 //! `HttpURLConnection.followRedirect()` follows them (same protocol only,
 //! a redirect to another protocol returning the redirect response, at most
 //! 20 times, `http.maxRedirects`); a status of 400 or above refused as
@@ -176,42 +179,113 @@ fn main() {
     }
 }
 
-/// `t.printStackTrace(System.err)`: the exception's `toString()`, its
-/// suppressed exceptions and its causes (a Rust error carries no JVM
-/// frames, so no `\tat` line is printed).
+/// `t.printStackTrace(System.err)`: `Throwable.printStackTrace` /
+/// `printEnclosedStackTrace` (JDK 25), each throwable printed as its
+/// `toString()` (the class, then `": " + getMessage()` when there is a
+/// message), its suppressed exceptions as `\tSuppressed: ` lines one tab
+/// deeper, and its cause as a `Caused by: ` line at the same depth.
+///
+/// **Divergence.** `printStackTrace` also prints each throwable's stack
+/// frames (`\tat ...`) and the `\t... n more` line of frames shared with
+/// the enclosing trace (`Throwable.java`, `printEnclosedStackTrace`); a Rust
+/// error carries no JVM frames, so only the throwable lines are printed. The
+/// `[CIRCULAR REFERENCE: ...]` line cannot occur: the causes and suppressed
+/// exceptions of a [`LuceneError`] are immutable shared values, which
+/// cannot form a cycle.
 fn print_stack_trace(t: &LuceneError) {
-    let mut out = rucene::util::concurrent::throwable_to_string(t);
-    out.push('\n');
-    for suppressed in t.get_suppressed() {
-        out.push_str("\tSuppressed: ");
-        out.push_str(&rucene::util::concurrent::throwable_to_string(suppressed));
-        out.push('\n');
-    }
-    // The causes of a JDK exception carried with its class (the `java.net`
-    // and `javax.net.ssl` exceptions of `open_connection`).
-    let mut t = t;
-    while let LuceneErrorKind::Throwable(throwable) = t.kind() {
-        let Some(cause) = throwable.get_cause() else {
-            break;
-        };
-        out.push_str("Caused by: ");
-        out.push_str(&rucene::util::concurrent::throwable_to_string(cause));
-        out.push('\n');
-        t = cause;
-    }
-    let mut cause = std::error::Error::source(t);
-    while let Some(current) = cause {
-        out.push_str("Caused by: ");
-        match current.downcast_ref::<LuceneError>() {
-            Some(lucene) => out.push_str(&rucene::util::concurrent::throwable_to_string(lucene)),
-            None => out.push_str(&current.to_string()),
-        }
-        out.push('\n');
-        cause = current.source();
-    }
+    let mut out = String::new();
+    print_enclosed_stack_trace(&mut out, ThrowableRef::Lucene(t), "", "");
     let mut err = std::io::stderr();
     let _ = err.write_all(out.as_bytes());
     let _ = err.flush();
+}
+
+/// `printEnclosedStackTrace(s, enclosingTrace, caption, prefix, dejaVu)`
+/// without frames: `prefix + caption + toString()`, then the suppressed
+/// exceptions (caption `Suppressed: `, prefix `prefix + "\t"`), then the
+/// cause (caption `Caused by: `, same prefix).
+fn print_enclosed_stack_trace(out: &mut String, t: ThrowableRef<'_>, caption: &str, prefix: &str) {
+    out.push_str(prefix);
+    out.push_str(caption);
+    out.push_str(&t.to_java_string());
+    out.push('\n');
+    let suppressed_prefix = format!("{prefix}\t");
+    for suppressed in t.get_suppressed() {
+        print_enclosed_stack_trace(out, suppressed, "Suppressed: ", &suppressed_prefix);
+    }
+    if let Some(cause) = t.get_cause() {
+        print_enclosed_stack_trace(out, cause, "Caused by: ", prefix);
+    }
+}
+
+/// A Java throwable as the port carries it: a [`LuceneError`], or a
+/// [`JavaIoException`] held among the suppressed exceptions of an
+/// `IOException`.
+#[derive(Clone, Copy)]
+enum ThrowableRef<'a> {
+    Lucene(&'a LuceneError),
+    Io(&'a JavaIoException),
+}
+
+impl<'a> ThrowableRef<'a> {
+    /// `Throwable.toString()`: the binary class name, then `": " +
+    /// getLocalizedMessage()` when the message is not `null`.
+    fn to_java_string(self) -> String {
+        match self {
+            ThrowableRef::Io(e) => match e.get_message() {
+                Some(message) => format!("{}: {message}", e.class_name()),
+                None => e.class_name().to_string(),
+            },
+            ThrowableRef::Lucene(t) => match t.kind() {
+                LuceneErrorKind::Io(e) => rucene::store::java_nio_file::java_to_string(e),
+                LuceneErrorKind::IllegalArgument { message, .. } => {
+                    format!("java.lang.IllegalArgumentException: {message}")
+                }
+                LuceneErrorKind::IllegalState { message, .. } => {
+                    format!("java.lang.IllegalStateException: {message}")
+                }
+                // `Throwable`, `Unchecked` and `AssertionError` display as
+                // Java's `toString()`.
+                _ => rucene::util::concurrent::throwable_to_string(t),
+            },
+        }
+    }
+
+    /// `getSuppressed()`.
+    fn get_suppressed(self) -> Vec<ThrowableRef<'a>> {
+        match self {
+            ThrowableRef::Io(e) => e.get_suppressed().iter().map(ThrowableRef::Io).collect(),
+            ThrowableRef::Lucene(t) => {
+                let mut suppressed: Vec<ThrowableRef<'a>> = Vec::new();
+                if let LuceneErrorKind::Io(e) = t.kind() {
+                    if let Some(exception) = rucene::store::java_nio_file::java_exception_of(e) {
+                        suppressed.extend(exception.get_suppressed().iter().map(ThrowableRef::Io));
+                    }
+                }
+                suppressed.extend(t.get_suppressed().iter().map(|s| ThrowableRef::Lucene(s.as_ref())));
+                suppressed
+            }
+        }
+    }
+
+    /// `getCause()`.
+    fn get_cause(self) -> Option<ThrowableRef<'a>> {
+        let ThrowableRef::Lucene(t) = self else {
+            return None;
+        };
+        let cause: Option<&'a LuceneError> = match t.kind() {
+            LuceneErrorKind::Io(e) => rucene::store::java_nio_file::java_cause_of(e),
+            LuceneErrorKind::Throwable(throwable) => throwable.get_cause().map(Arc::as_ref),
+            // The other kinds hold their Java cause as their `source()`, a
+            // `LuceneError` or an `Arc<LuceneError>`.
+            _ => std::error::Error::source(t).and_then(|source| {
+                source
+                    .downcast_ref::<LuceneError>()
+                    .or_else(|| source.downcast_ref::<Arc<LuceneError>>().map(Arc::as_ref))
+            }),
+        };
+        cause.map(ThrowableRef::Lucene)
+    }
 }
 
 /// `Files.list(Paths.get("."))`: the entries of the working directory, as
@@ -476,10 +550,11 @@ impl<R: std::io::Read> std::io::Read for SocketInputStream<R> {
 }
 
 /// Equivalent to `openConnection(URL)`: the connection is opened with no
-/// caching and `Cache-Control: no-cache`, and connected.
+/// caching (`Pragma: no-cache`) and `Cache-Control: no-cache`, and connected.
 ///
 /// The request is the one `HttpURLConnection` sends: method `GET`,
-/// `User-Agent: Java/<java.version>` ([`JAVA_VERSION`]), `Accept: */*`, no
+/// `Cache-Control: no-cache`, `Pragma: no-cache`, `User-Agent:
+/// Java/<java.version>` ([`JAVA_VERSION`]), `Accept: */*`, no
 /// `Accept-Encoding`. Redirects are followed as `HttpURLConnection.
 /// followRedirect()` follows them: only the statuses 300 to 307 other than
 /// 304 and 306, only with a `Location` header (its last value), only to
@@ -504,6 +579,10 @@ fn open_connection(uri: &Uri) -> Result<UrlConnection> {
         let response = agent
             .get(&url.request_url())
             .header("Cache-Control", "no-cache")
+            // `HttpURLConnection.writeRequests`: with `setUseCaches(false)`,
+            // `setIfNotSet("Cache-Control", "no-cache")` (already set by
+            // `addRequestProperty`) and `setIfNotSet("Pragma", "no-cache")`.
+            .header("Pragma", "no-cache")
             .call()
             .map_err(|e| transport_exception(e, &connect_host, url.protocol == "https"))?;
         let status = response.status().as_u16();
@@ -547,17 +626,23 @@ fn open_connection(uri: &Uri) -> Result<UrlConnection> {
 
 /// The `ureq` agent of one request: no redirect followed by `ureq` (they
 /// are followed by [`open_connection`]), statuses returned as responses,
-/// and `HttpURLConnection`'s default headers.
+/// `HttpURLConnection`'s default headers, and no proxy other than `proxy`.
+///
+/// `HttpURLConnection` picks its proxy through `ProxySelector.getDefault()`,
+/// which reads only the `http.proxyHost` / `https.proxyHost` system
+/// properties (unset for this tool) and never the `http_proxy` /
+/// `https_proxy` environment variables (`java.net.useSystemProxies` is
+/// `false` by default); `ureq`'s default configuration reads those
+/// variables (`Proxy::try_from_env`), so the agent's proxy is always set
+/// explicitly, `None` for a direct connection.
 fn new_agent(proxy: Option<ureq::Proxy>) -> ureq::Agent {
-    let mut builder = ureq::Agent::config_builder()
+    let builder = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(0)
         .user_agent(format!("Java/{JAVA_VERSION}"))
         .accept("*/*")
-        .accept_encoding(ureq::config::AutoHeaderValue::None);
-    if proxy.is_some() {
-        builder = builder.proxy(proxy);
-    }
+        .accept_encoding(ureq::config::AutoHeaderValue::None)
+        .proxy(proxy);
     ureq::Agent::with_parts(
         builder.build(),
         ureq::unversioned::transport::DefaultConnector::default(),
@@ -742,6 +827,17 @@ fn socket_exception_of(e: &std::io::Error) -> Option<(&'static str, String)> {
 /// in UTC, as the JDK does when its default zone is UTC, because the JDK's
 /// time-zone abbreviations (`TimeZone.getDisplayName`) have no counterpart
 /// here.
+///
+/// **Divergence.** For a certificate that is both expired and not issued
+/// by a trusted anchor, the JDK's `PKIXValidator` builds the path first and
+/// raises `(certificate_unknown) PKIX path building failed` (verified
+/// against JDK 25 with an expired self-signed certificate); rustls
+/// (`rustls-webpki` 0.103 `verify_cert.rs`, `build_chain_inner`) checks the
+/// certificate's validity period before it looks for a trust anchor and
+/// reports the expiry, so the port raises `(certificate_expired) PKIX path
+/// validation failed` for it. The order is fixed inside rustls, which
+/// reports only the first failure it finds, so the port cannot reorder
+/// the checks.
 fn certificate_exception(tls: &str, host: &str) -> Option<LuceneError> {
     const BUILD_FAILED: &str = "unable to find valid certification path to requested target";
     const VALIDITY_FAILED: &str = "validity check failed";
