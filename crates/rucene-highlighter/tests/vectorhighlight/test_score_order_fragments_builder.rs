@@ -49,8 +49,14 @@ pub fn class_def() -> Arc<Class> {
 
 fn test_3_frags(f: &mut Fixture) -> Result<()> {
     let mut query = BooleanQueryBuilder::new();
-    query.add(Arc::new(TermQuery::new(Term::from_text(F, "a"))), Occur::SHOULD)?;
-    query.add(Arc::new(TermQuery::new(Term::from_text(F, "c"))), Occur::SHOULD)?;
+    query.add(
+        Arc::new(TermQuery::new(Term::from_text(F, "a"))),
+        Occur::SHOULD,
+    )?;
+    query.add(
+        Arc::new(TermQuery::new(Term::from_text(F, "c"))),
+        Occur::SHOULD,
+    )?;
 
     let mut ffl = ffl(
         f,
@@ -63,13 +69,23 @@ fn test_3_frags(f: &mut Fixture) -> Result<()> {
         .expect("fragments");
     Assert::assert_equals(3, frags.len());
     // check score order
-    Assert::assert_equals("<b>c</b> <b>a</b> <b>a</b> b b".to_string(), frags[0].clone());
-    Assert::assert_equals("b b <b>a</b> b <b>a</b> b b b b b c".to_string(), frags[1].clone());
+    Assert::assert_equals(
+        "<b>c</b> <b>a</b> <b>a</b> b b".to_string(),
+        frags[0].clone(),
+    );
+    Assert::assert_equals(
+        "b b <b>a</b> b <b>a</b> b b b b b c".to_string(),
+        frags[1].clone(),
+    );
     Assert::assert_equals("<b>a</b> b b b b b b b b b b".to_string(), frags[2].clone());
     Ok(())
 }
 
-fn ffl(f: &mut Fixture, query: Arc<dyn Query>, index_value: &str) -> Result<Box<dyn FieldFragList>> {
+fn ffl(
+    f: &mut Fixture,
+    query: Arc<dyn Query>,
+    index_value: &str,
+) -> Result<Box<dyn FieldFragList>> {
     make1d1f_index(f, index_value)?;
     let fq = FieldQuery::without_reader(&query, true, true)?;
     let mut stack = FieldTermStack::new(f.reader(), 0, F, &fq)?;

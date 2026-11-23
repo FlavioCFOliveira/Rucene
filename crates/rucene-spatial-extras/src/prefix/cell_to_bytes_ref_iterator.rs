@@ -29,7 +29,8 @@ use crate::prefix::tree::cell_iterator::CellIterator;
 ///
 /// Java's `TermQueryPrefixTreeStrategy` overrides `next()` in an anonymous
 /// subclass to emit the bytes without the leaf; that subclass is
-/// [`no_leaf`](Self::no_leaf).
+/// [`no_leaf`](Self::no_leaf). Other subclasses (Lucene's test
+/// `CellToBytesRefIterator50`) implement [`CellToBytesRefIteratorOps`].
 pub struct CellToBytesRefIterator {
     /// `cellIter`.
     pub cell_iter: Option<Box<dyn CellIterator>>,
@@ -66,6 +67,21 @@ impl CellToBytesRefIterator {
     /// `reset(Iterator<Cell> cellIter)`.
     pub fn reset(&mut self, cell_iter: Box<dyn CellIterator>) {
         self.cell_iter = Some(cell_iter);
+    }
+}
+
+/// The overridable surface of `CellToBytesRefIterator` (Java's class, which
+/// `PrefixTreeStrategy.newCellToBytesRefIterator()` lets a subclass replace
+/// with a subclass of its own): `reset(Iterator<Cell>)` and the
+/// `BytesRefIterator.next()` a subclass overrides.
+pub trait CellToBytesRefIteratorOps: BytesRefIterator + Send + Sync {
+    /// `reset(Iterator<Cell> cellIter)`.
+    fn reset(&mut self, cell_iter: Box<dyn CellIterator>);
+}
+
+impl CellToBytesRefIteratorOps for CellToBytesRefIterator {
+    fn reset(&mut self, cell_iter: Box<dyn CellIterator>) {
+        CellToBytesRefIterator::reset(self, cell_iter);
     }
 }
 

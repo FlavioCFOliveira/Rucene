@@ -1114,14 +1114,18 @@ impl StrictMath {
         // when y = 0
         if (iy as u32 | ly) == 0 {
             match m {
-                0 | 1 => return y, // atan(+-0,+anything)=+-0
-                2 => return PI + TINY, // atan(+0,-anything) = pi
+                0 | 1 => return y,      // atan(+-0,+anything)=+-0
+                2 => return PI + TINY,  // atan(+0,-anything) = pi
                 _ => return -PI - TINY, // atan(-0,-anything) =-pi
             }
         }
         // when x = 0
         if (ix as u32 | lx) == 0 {
-            return if hy < 0 { -PI_O_2 - TINY } else { PI_O_2 + TINY };
+            return if hy < 0 {
+                -PI_O_2 - TINY
+            } else {
+                PI_O_2 + TINY
+            };
         }
         // when x is INF
         if ix == 0x7ff0_0000 {
@@ -1143,7 +1147,11 @@ impl StrictMath {
         }
         // when y is INF
         if iy == 0x7ff0_0000 {
-            return if hy < 0 { -PI_O_2 - TINY } else { PI_O_2 + TINY };
+            return if hy < 0 {
+                -PI_O_2 - TINY
+            } else {
+                PI_O_2 + TINY
+            };
         }
 
         // compute y/x
@@ -1169,6 +1177,13 @@ impl StrictMath {
     /// `x` raised to the power `y`, from fdlibm `e_pow.c`.
     ///
     /// Equivalent to `java.lang.StrictMath.pow(double, double)`.
+    // The translation keeps fdlibm's decimal constants, its repeated
+    // over/underflow branches and its late assignments of `t1`/`t2`.
+    #[allow(
+        clippy::excessive_precision,
+        clippy::if_same_then_else,
+        clippy::needless_late_init
+    )]
     pub fn pow(x: f64, y: f64) -> f64 {
         const BP: [f64; 2] = [1.0, 1.5];
         const DP_H: [f64; 2] = [0.0, f64::from_bits(0x3FE2B803_40000000)]; // 5.84962487220764160156e-01
@@ -1319,10 +1334,18 @@ impl StrictMath {
             }
             // over/underflow if x is not close to one
             if ix < 0x3fef_ffff {
-                return if hy < 0 { s * HUGE * HUGE } else { s * TINY * TINY };
+                return if hy < 0 {
+                    s * HUGE * HUGE
+                } else {
+                    s * TINY * TINY
+                };
             }
             if ix > 0x3ff0_0000 {
-                return if hy > 0 { s * HUGE * HUGE } else { s * TINY * TINY };
+                return if hy > 0 {
+                    s * HUGE * HUGE
+                } else {
+                    s * TINY * TINY
+                };
             }
             // now |1-x| is tiny <= 2**-20, suffice to compute
             // log(x) by x-x^2/2+x^3/3-x^4/4
@@ -1362,7 +1385,10 @@ impl StrictMath {
             let ss = u * v;
             let s_h = from_words(hi(ss), 0);
             // t_h=ax+bp[k] High
-            let mut t_h = from_words(((ix >> 1) | 0x2000_0000) + 0x0008_0000 + ((k as i32) << 18), 0);
+            let mut t_h = from_words(
+                ((ix >> 1) | 0x2000_0000) + 0x0008_0000 + ((k as i32) << 18),
+                0,
+            );
             let mut t_l = ax - (t_h - BP[k]);
             let s_l = v * ((u - s_h * t_h) - s_h * t_l);
             // compute log(ax)

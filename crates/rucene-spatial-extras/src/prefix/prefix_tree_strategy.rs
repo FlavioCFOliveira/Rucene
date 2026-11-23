@@ -37,7 +37,7 @@ use spatial4j::shape::shape::Shape;
 
 use crate::jdk::AtomicF64;
 use crate::prefix::bytes_ref_iterator_token_stream::BytesRefIteratorTokenStream;
-use crate::prefix::cell_to_bytes_ref_iterator::CellToBytesRefIterator;
+use crate::prefix::cell_to_bytes_ref_iterator::{CellToBytesRefIterator, CellToBytesRefIteratorOps};
 use crate::prefix::heatmap_facet_counter::{self, Heatmap};
 use crate::prefix::point_prefix_tree_field_cache_provider::PointPrefixTreeFieldCacheProvider;
 use crate::prefix::tree::cell_iterator::CellIterator;
@@ -204,7 +204,7 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
         let mut cell_to_bytes_ref_iterator = self.new_cell_to_bytes_ref_iterator();
         cell_to_bytes_ref_iterator.reset(cells);
         let mut token_stream = BytesRefIteratorTokenStream::new();
-        token_stream.set_bytes_ref_iterator(Box::new(cell_to_bytes_ref_iterator));
+        token_stream.set_bytes_ref_iterator(cell_to_bytes_ref_iterator);
         let token_stream: Arc<AtomicRefCell<dyn TokenStream>> =
             Arc::new(AtomicRefCell::new(token_stream));
         let field = Field::new_with_token_stream(
@@ -226,8 +226,8 @@ pub trait PrefixTreeStrategy: SpatialStrategy + Any {
 
     /// `newCellToBytesRefIterator()`: subclasses could return one that
     /// never emits leaves, or does both, or who knows.
-    fn new_cell_to_bytes_ref_iterator(&self) -> CellToBytesRefIterator {
-        CellToBytesRefIterator::new()
+    fn new_cell_to_bytes_ref_iterator(&self) -> Box<dyn CellToBytesRefIteratorOps> {
+        Box::new(CellToBytesRefIterator::new())
     }
 
     /// `createCellIteratorToIndex(Shape shape, int detailLevel,
@@ -378,8 +378,7 @@ impl ShapeTokenStream {
         let cells = s.create_cell_iterator_to_index(shape, detail_level)?;
         let mut cell_to_bytes_ref_iterator = s.new_cell_to_bytes_ref_iterator();
         cell_to_bytes_ref_iterator.reset(cells);
-        self.inner
-            .set_bytes_ref_iterator(Box::new(cell_to_bytes_ref_iterator));
+        self.inner.set_bytes_ref_iterator(cell_to_bytes_ref_iterator);
         Ok(())
     }
 }

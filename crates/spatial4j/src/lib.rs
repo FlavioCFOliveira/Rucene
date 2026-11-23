@@ -158,4 +158,5 @@ pub mod exception;
 pub mod io;
 pub mod java_map;
 pub mod shape;
+#[cfg(feature = "test-helpers")]
 pub mod test_log;

@@ -4,7 +4,9 @@ pub mod base_shape;
 pub mod circle;
 pub mod r#impl;
 pub mod point;
+#[cfg(feature = "test-helpers")]
 pub mod randomized_shape_test;
+#[cfg(feature = "test-helpers")]
 pub mod rect_intersection_test_helper;
 pub mod rectangle;
 pub mod shape;

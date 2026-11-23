@@ -20,14 +20,17 @@
 //! `setUp`/`tearDown` are [`set_up`]/[`tear_down`] (each subclass registers
 //! them), and its protected helpers are the free functions of this module.
 
+// The helpers of the abstract base each subclass uses a subset of.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Method};
 use randomizedtesting::junit::Assert;
 use rucene::analysis::tokenattributes::OffsetAttribute;
 use rucene::analysis::{
-    Analyzer, AnalyzerState, CharReader, GlobalReuseStrategy, TokenStreamComponents, Tokenizer,
-    TokenizerLogic,
+    Analyzer, AnalyzerState, CharReader, GlobalReuseStrategy, TokenStream, TokenStreamComponents,
+    Tokenizer, TokenizerLogic,
 };
 use rucene::document::{Document, Field, FieldType, TextField};
 use rucene::error::Result;
@@ -147,10 +150,8 @@ pub fn tq_f(field: &str, text: &str) -> Arc<dyn Query> {
 
 /// `tq(boost, field, text)`.
 pub fn tq_bft(boost: f32, field: &str, text: &str) -> Arc<dyn Query> {
-    let mut query: Arc<dyn Query> = Arc::new(TermQuery::new(Term::from_text(
-        field.to_string(),
-        text,
-    )));
+    let mut query: Arc<dyn Query> =
+        Arc::new(TermQuery::new(Term::from_text(field.to_string(), text)));
     if boost != 1.0 {
         query = Arc::new(BoostQuery::new(query, boost).expect("a valid boost"));
     }
@@ -222,7 +223,9 @@ pub fn analyze(text: &str, field: &str, analyzer: &dyn Analyzer) -> Result<Vec<B
     .expect("a TermToBytesRefAttribute");
     token_stream.reset()?;
     while token_stream.increment_token()? {
-        bytes_refs.push(BytesRef::deep_copy_of(&term_attribute.term_to_bytes_ref().get_bytes_ref()));
+        bytes_refs.push(BytesRef::deep_copy_of(
+            &term_attribute.term_to_bytes_ref().get_bytes_ref(),
+        ));
     }
     token_stream.end()?;
     token_stream.close()?;
@@ -251,7 +254,7 @@ impl Analyzer for BigramAnalyzer {
 
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(tokenizer_components(Arc::new(AtomicRefCell::new(
-            BasicNGramTokenizer::new(),
+            basic_ngram_tokenizer(),
         ))))
     }
 }
@@ -415,15 +418,14 @@ impl TokenizerLogic for BasicNGramLogic {
     }
 }
 
-impl BasicNGramTokenizer {
-    /// `new BasicNGramTokenizer()`.
-    pub fn new() -> Self {
-        let mut t = Tokenizer::new(BasicNGramLogic::new());
-        t.attribute_source_mut()
-            .add_attribute_interface::<dyn OffsetAttribute>()
-            .expect("the default factory implements OffsetAttribute");
-        t
-    }
+/// `new BasicNGramTokenizer()`: its `termAtt` and `offsetAtt` are added at
+/// construction.
+pub fn basic_ngram_tokenizer() -> BasicNGramTokenizer {
+    let mut t = Tokenizer::new(BasicNGramLogic::new());
+    t.attribute_source_mut()
+        .add_attribute_interface::<dyn OffsetAttribute>()
+        .expect("the default factory implements OffsetAttribute");
+    t
 }
 
 /// `make1d1fIndex(value)`.
@@ -463,7 +465,11 @@ pub fn tv_type(stored: bool) -> Result<Arc<FieldType>> {
 }
 
 /// `make1dmfIndex(analyzer, values...)`.
-pub fn make1dmf_index_with(f: &mut Fixture, analyzer: Arc<dyn Analyzer>, values: &[&str]) -> Result<()> {
+pub fn make1dmf_index_with(
+    f: &mut Fixture,
+    analyzer: Arc<dyn Analyzer>,
+    values: &[&str],
+) -> Result<()> {
     let config = IndexWriterConfig::with_analyzer(Some(analyzer));
     config.set_open_mode(OpenMode::CREATE)?;
     let writer = IndexWriter::new(f.dir(), config)?;

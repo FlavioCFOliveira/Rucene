@@ -29,6 +29,7 @@ use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::shape::point::Point;
 use spatial4j::shape::shape::Shape;
 
+use crate::prefix::recursive_prefix_tree_strategy::RecursivePrefixTreeStrategyOps;
 use crate::query::spatial_args::SpatialArgs;
 use crate::util::reciprocal_double_values_source::ReciprocalDoubleValuesSource;
 
@@ -88,6 +89,13 @@ impl SpatialStrategyBase {
 pub trait SpatialStrategy: fmt::Display + Send + Sync {
     /// The `SpatialStrategy` fields.
     fn strategy_base(&self) -> &SpatialStrategyBase;
+
+    /// `this instanceof RecursivePrefixTreeStrategy ?
+    /// (RecursivePrefixTreeStrategy) this : null`: overridden by
+    /// `RecursivePrefixTreeStrategy` and its subclasses.
+    fn as_recursive_prefix_tree_strategy(&self) -> Option<&dyn RecursivePrefixTreeStrategyOps> {
+        None
+    }
 
     /// `getSpatialContext()`.
     fn get_spatial_context(&self) -> Arc<SpatialContext> {

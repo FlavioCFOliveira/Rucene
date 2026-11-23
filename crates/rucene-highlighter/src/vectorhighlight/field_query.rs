@@ -638,6 +638,42 @@ impl FieldQuery {
     pub fn term_or_phrase_number(&self) -> i32 {
         self.term_or_phrase_number.load(Ordering::Relaxed)
     }
+
+    /// The package-private `expand(Collection<Query>)`, called by the same
+    /// package's tests (`TestFieldQuery`); Rust's integration tests are
+    /// another crate, so the port exposes it (hidden from the documentation).
+    ///
+    /// # Errors
+    ///
+    /// As `expand`.
+    #[doc(hidden)]
+    pub fn expand_for_tests(
+        &self,
+        flat_queries: Vec<Arc<dyn Query>>,
+    ) -> Result<Vec<Arc<dyn Query>>> {
+        self.expand(flat_queries)
+    }
+
+    /// The package-private `getRootMap(Query)` (`rootMaps.computeIfAbsent(getKey(query),
+    /// ...)`), called by the same package's tests (`TestFieldQuery`); exposed
+    /// as [`expand_for_tests`](Self::expand_for_tests) is.
+    ///
+    /// # Errors
+    ///
+    /// As `getKey`.
+    #[doc(hidden)]
+    pub fn get_root_map_for_tests(&mut self, query: &dyn Query) -> Result<&QueryPhraseMap> {
+        let counter = Arc::clone(&self.term_or_phrase_number);
+        Ok(&*self.get_root_map_for_query(query, counter)?)
+    }
+
+    /// The package-private `getTermSet(String)`, called by the same
+    /// package's tests (`TestFieldQuery`); exposed as
+    /// [`expand_for_tests`](Self::expand_for_tests) is.
+    #[doc(hidden)]
+    pub fn get_term_set_for_tests(&self, field: &str) -> Option<&HashSet<String>> {
+        self.get_term_set(field)
+    }
 }
 
 /// Java's `ClassCastException` of a cast of `query` to `class`.
@@ -757,6 +793,14 @@ impl QueryPhraseMap {
         self.slop = slop;
         self.boost = boost;
         self.term_or_phrase_number = self.field_query_counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The package-private field `subMap`, read by the same package's tests
+    /// (`TestFieldQuery`); Rust's integration tests are another crate, so the
+    /// port exposes it (hidden from the documentation).
+    #[doc(hidden)]
+    pub fn sub_map(&self) -> &HashMap<String, QueryPhraseMap> {
+        &self.sub_map
     }
 
     /// Equivalent to `isTerminal()`.

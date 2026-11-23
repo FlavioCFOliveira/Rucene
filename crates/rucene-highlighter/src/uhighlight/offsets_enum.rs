@@ -668,6 +668,9 @@ pub struct MultiOffsetsEnum {
     started: bool,
 }
 
+// The queue's comparator takes references to its element type, `Box<dyn
+// OffsetsEnum>`.
+#[allow(clippy::borrowed_box)]
 fn compare_boxed(a: &Box<dyn OffsetsEnum>, b: &Box<dyn OffsetsEnum>) -> Result<Ordering> {
     compare_offsets_enums(&**a, &**b)
 }
@@ -703,9 +706,9 @@ impl OffsetsEnum for MultiOffsetsEnum {
     fn next_position(&mut self) -> Result<bool> {
         if !self.started {
             self.started = true;
-            return Ok(self.queue.len() > 0);
+            return Ok(!self.queue.is_empty());
         }
-        if self.queue.len() > 0 {
+        if !self.queue.is_empty() {
             let mut top = self
                 .queue
                 .poll()?
@@ -716,7 +719,7 @@ impl OffsetsEnum for MultiOffsetsEnum {
             } else {
                 top.close()?;
             }
-            return Ok(self.queue.len() > 0);
+            return Ok(!self.queue.is_empty());
         }
         Ok(false)
     }

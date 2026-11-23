@@ -302,10 +302,10 @@ impl PassageSelector {
             if a.length() > 0 {
                 passages[last] = Some(a.clone());
                 last += 1;
-                for j in i + 1..passages.len() {
-                    if let Some(b) = &passages[j] {
+                for slot in passages.iter_mut().skip(i + 1) {
+                    if let Some(b) = slot {
                         if Self::adjecent_or_overlapping(&a, b) {
-                            passages[j] = None;
+                            *slot = None;
                         }
                     }
                 }
@@ -436,9 +436,9 @@ impl PassageSelector {
 
     fn adjecent_or_overlapping(a: &Passage, b: &Passage) -> bool {
         if a.from >= b.from {
-            a.from <= b.to - 1
+            a.from < b.to
         } else {
-            a.to - 1 >= b.from
+            a.to > b.from
         }
     }
 }

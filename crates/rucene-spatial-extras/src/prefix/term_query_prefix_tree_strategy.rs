@@ -32,7 +32,7 @@ use rucene::util::BytesRef;
 use spatial4j::shape::point::Point;
 use spatial4j::shape::shape::Shape;
 
-use crate::prefix::cell_to_bytes_ref_iterator::CellToBytesRefIterator;
+use crate::prefix::cell_to_bytes_ref_iterator::{CellToBytesRefIterator, CellToBytesRefIteratorOps};
 use crate::prefix::prefix_tree_strategy::{
     prefix_create_indexable_fields, prefix_make_distance_value_source, PrefixTreeStrategy,
     PrefixTreeStrategyBase,
@@ -172,8 +172,8 @@ impl PrefixTreeStrategy for TermQueryPrefixTreeStrategy {
         self
     }
 
-    fn new_cell_to_bytes_ref_iterator(&self) -> CellToBytesRefIterator {
+    fn new_cell_to_bytes_ref_iterator(&self) -> Box<dyn CellToBytesRefIteratorOps> {
         // Ensure we don't have leaves, as this strategy doesn't handle them.
-        CellToBytesRefIterator::no_leaf()
+        Box::new(CellToBytesRefIterator::no_leaf())
     }
 }

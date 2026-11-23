@@ -2647,8 +2647,9 @@ impl TermsEnum for MemoryTermsEnum {
     }
 
     fn term_state(&mut self) -> Result<Box<dyn TermState>> {
-        let mut ts = OrdTermState::default();
-        ts.ord = self.term_upto as i64;
+        let ts = OrdTermState {
+            ord: self.term_upto as i64,
+        };
         Ok(Box::new(ts))
     }
 

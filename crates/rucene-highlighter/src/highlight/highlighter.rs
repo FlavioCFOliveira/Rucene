@@ -432,15 +432,12 @@ impl Highlighter {
                         }
                         // merging required..
                         if let (Some(frag1), Some(frag2)) = (frag1, frag2) {
-                            let best_scoring_frag_num;
-                            let worst_scoring_frag_num;
-                            if frag1.get_score() > frag2.get_score() {
-                                best_scoring_frag_num = frag1_num;
-                                worst_scoring_frag_num = frag2_num;
-                            } else {
-                                best_scoring_frag_num = frag2_num;
-                                worst_scoring_frag_num = frag1_num;
-                            }
+                            let (best_scoring_frag_num, worst_scoring_frag_num) =
+                                if frag1.get_score() > frag2.get_score() {
+                                    (frag1_num, frag2_num)
+                                } else {
+                                    (frag2_num, frag1_num)
+                                };
                             frag1.merge(&frag2);
                             frag[worst_scoring_frag_num] = None;
                             merging_still_being_done = true;

@@ -266,6 +266,15 @@ impl Facets {
         }
     }
 
+    /// `parents.get(key)`, mutable (Java's `FacetParentVal` is a mutable
+    /// object the map holds by reference).
+    pub fn get_parent_mut(&mut self, key: &dyn UnitNRShape) -> Option<&mut FacetParentVal> {
+        match self.find(key) {
+            Ok(i) => Some(&mut self.parents[i].1),
+            Err(_) => None,
+        }
+    }
+
     /// The position of `key` in `parents` (`Ok`), or where it would be
     /// inserted (`Err`), by `UnitNRShape.compareTo`.
     fn find(&self, key: &dyn UnitNRShape) -> std::result::Result<usize, usize> {
@@ -331,6 +340,10 @@ impl fmt::Display for NumberRangePrefixTreeStrategy {
 }
 
 impl SpatialStrategy for NumberRangePrefixTreeStrategy {
+    fn as_recursive_prefix_tree_strategy(&self) -> Option<&dyn RecursivePrefixTreeStrategyOps> {
+        Some(self)
+    }
+
     fn strategy_base(&self) -> &SpatialStrategyBase {
         &self.base.prefix.strategy
     }

@@ -226,12 +226,12 @@ impl PassageFormatter {
                                 "Index -1 out of bounds",
                             )
                         })?;
-                    for k in marker_index..marker_stack.len() {
-                        b.extend((self.marker_end)(&marker_stack[k]).encode_utf16());
+                    for marker in &marker_stack[marker_index..] {
+                        b.extend((self.marker_end)(marker).encode_utf16());
                     }
                     marker_stack.remove(marker_index);
-                    for k in marker_index..marker_stack.len() {
-                        b.extend((self.marker_start)(&marker_stack[k]).encode_utf16());
+                    for marker in &marker_stack[marker_index..] {
+                        b.extend((self.marker_start)(marker).encode_utf16());
                     }
                 }
             }

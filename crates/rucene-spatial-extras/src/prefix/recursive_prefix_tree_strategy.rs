@@ -381,6 +381,10 @@ impl fmt::Display for RecursivePrefixTreeStrategy {
 }
 
 impl SpatialStrategy for RecursivePrefixTreeStrategy {
+    fn as_recursive_prefix_tree_strategy(&self) -> Option<&dyn RecursivePrefixTreeStrategyOps> {
+        Some(self)
+    }
+
     fn strategy_base(&self) -> &SpatialStrategyBase {
         &self.base.prefix.strategy
     }

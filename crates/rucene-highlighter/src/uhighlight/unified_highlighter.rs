@@ -1487,7 +1487,7 @@ impl UnifiedHighlighter {
         query: &Arc<dyn Query>,
         doc_ids_in: &[i32],
         max_passages_in: &[i32],
-    ) -> Result<HashMap<String, Vec<Option<Box<dyn FormattedPassages>>>>> {
+    ) -> Result<HighlightedFields> {
         if fields_in.is_empty() {
             return Err(LuceneError::illegal_argument("fieldsIn must not be empty"));
         }
@@ -2171,10 +2171,16 @@ impl UnifiedHighlighter {
 /// be no need for this.
 ///
 /// Equivalent to the private nested class
+/// The `(docId, termVectors)` pair `TermVectorReusingLeafReader` caches.
+type TermVectorCache = Arc<Mutex<(i32, Option<Arc<dyn Fields>>)>>;
+
+/// The highlights of `highlightFieldsAsObjects`: per field, per document.
+type HighlightedFields = HashMap<String, Vec<Option<Box<dyn FormattedPassages>>>>;
+
 /// `UnifiedHighlighter.TermVectorReusingLeafReader`.
 pub(crate) struct TermVectorReusingLeafReader {
     base: FilterLeafReader,
-    cache: Arc<Mutex<(i32, Option<Arc<dyn Fields>>)>>,
+    cache: TermVectorCache,
 }
 
 impl fmt::Debug for TermVectorReusingLeafReader {
@@ -2213,7 +2219,7 @@ impl TermVectorReusingLeafReader {
 /// The anonymous `TermVectors` of `termVectors()`.
 struct ReusingTermVectors {
     orig: Box<dyn TermVectors>,
-    cache: Arc<Mutex<(i32, Option<Arc<dyn Fields>>)>>,
+    cache: TermVectorCache,
 }
 
 impl fmt::Debug for ReusingTermVectors {
