@@ -16,10 +16,6 @@ use rucene::error::{LuceneError, Result};
 /// holds exactly when the values are equal; here a `VersionInfo` is the
 /// packed value itself, compared by value, which is the same relation, and
 /// the interning map has no counterpart.
-///
-/// The members `main(String[])` and `getTZDataVersion()` read the
-/// `zoneinfo64` resource bundle through `UResourceBundle` and `LocaleData`;
-/// they are ported with `UResourceBundle` (rmp task #644).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VersionInfo {
     /// `m_version_`: the packed version.
@@ -119,7 +115,6 @@ impl VersionInfo {
     pub const UCOL_TAILORINGS_VERSION: VersionInfo = VersionInfo::of(1, 0, 0, 0);
 
     /// `UNICODE_VERSION` (private): `UNICODE_16_0`.
-    #[allow(dead_code)] // read by `main`, ported with rmp task #644
     pub(crate) const UNICODE_VERSION: VersionInfo = Self::UNICODE_16_0;
 
     /// `LAST_BYTE_MASK_`.
@@ -296,6 +291,66 @@ impl VersionInfo {
         }
 
         Ok(ver_str)
+    }
+
+    /// `main(String[] args)`: prints the ICU, Unicode, CLDR and time zone
+    /// data versions (`System.out`), as the class's `main` method does.
+    ///
+    /// # Errors
+    ///
+    /// The errors of reading the CLDR and time zone data versions.
+    pub fn main(_args: &[String]) -> Result<()> {
+        let icu_version = Self::ICU_VERSION;
+        let icu_api_ver = if icu_version.get_major() <= 4 {
+            if icu_version.get_minor() % 2 != 0 {
+                // Development mile stone
+                let mut major = icu_version.get_major();
+                let mut minor = icu_version.get_minor() + 1;
+                if minor >= 10 {
+                    minor -= 10;
+                    major += 1;
+                }
+                format!("{}.{}M{}", major, minor, icu_version.get_milli())
+            } else {
+                icu_version.get_version_string(2, 2)?
+            }
+        } else if icu_version.get_minor() == 0 {
+            // Development mile stone
+            format!("{}M{}", icu_version.get_major(), icu_version.get_milli())
+        } else {
+            icu_version.get_version_string(2, 2)?
+        };
+
+        println!("International Components for Unicode for Java {icu_api_ver}");
+
+        println!();
+        println!("Implementation Version: {}", icu_version.get_version_string(2, 4)?);
+        println!("Unicode Data Version:   {}", Self::UNICODE_VERSION.get_version_string(2, 4)?);
+        println!(
+            "CLDR Data Version:      {}",
+            crate::util::locale_data::LocaleData::get_cldr_version()?.get_version_string(2, 4)?
+        );
+        println!("Time Zone Data Version: {}", Self::get_tz_data_version()?);
+        Ok(())
+    }
+
+    /// `getTZDataVersion()` (package-private): the `TZVersion` of the
+    /// `zoneinfo64` bundle, read once.
+    ///
+    /// # Errors
+    ///
+    /// `MissingResourceException` when the bundle or the key is missing.
+    pub(crate) fn get_tz_data_version() -> Result<String> {
+        static TZDATA_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        let mut v = TZDATA_VERSION.lock().unwrap_or_else(|e| e.into_inner());
+        if v.is_none() {
+            let tzbundle = crate::util::u_resource_bundle::UResourceBundle::get_bundle_instance(
+                Some(&format!("com/ibm/icu/impl/{}", crate::r#impl::icu_data::ICUData::ICU_BUNDLE)),
+                "zoneinfo64",
+            )?;
+            *v = Some(String::from_utf16_lossy(&tzbundle.get_string_by_key("TZVersion")?));
+        }
+        Ok(v.clone().expect("set above"))
     }
 
     /// `getInt(int major, int minor, int milli, int micro)` (private).

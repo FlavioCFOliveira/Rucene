@@ -59,23 +59,57 @@ pub mod r#impl {
     pub mod icu_config;
     pub mod icu_data;
     pub mod icu_debug;
+    pub mod icu_locale_service;
+    pub mod icu_notifier;
+    pub mod icu_resource_bundle;
+    pub mod icu_resource_bundle_impl;
+    pub mod icu_resource_bundle_reader;
+    pub mod icu_resource_table_access;
+    pub mod icu_service;
     pub mod icurw_lock;
     pub mod illegal_icu_argument_exception;
+    /// `com.ibm.icu.impl.locale`.
+    pub mod locale {
+        pub mod ascii_util;
+        pub mod base_locale;
+        pub mod extension;
+        pub mod internal_locale_builder;
+        pub mod key_type_data;
+        pub mod language_tag;
+        pub mod likely_subtags;
+        pub mod locale_extensions;
+        pub mod locale_object_cache;
+        pub mod locale_syntax_exception;
+        pub mod lsr;
+        pub mod parse_status;
+        pub mod string_token_iterator;
+        pub mod unicode_locale_extension;
+    }
+    pub mod locale_fallback_data;
+    pub mod locale_id_parser;
+    pub mod locale_ids;
+    pub mod locale_utility;
     pub mod normalizer2_impl;
     pub mod pattern_props;
     pub mod replaceable_u_character_iterator;
+    pub mod resource_bundle_wrapper;
     pub mod soft_cache;
     pub mod trie2;
     pub mod trie2_16;
     pub mod trie2_32;
     pub mod u_char_array_iterator;
     pub mod u_character_iterator_wrapper;
+    pub mod u_property_aliases;
+    pub mod u_resource;
+    pub mod url_handler;
     pub mod utility;
 }
 
 /// `com.ibm.icu.lang`.
 pub mod lang {
     pub mod u_character;
+    pub mod u_property;
+    pub mod u_script;
 }
 
 /// `com.ibm.icu.text`.
@@ -101,9 +135,16 @@ pub mod util {
     pub mod icu_clone_not_supported_exception;
     pub mod icu_exception;
     pub mod icu_unchecked_io_exception;
+    pub mod illformed_locale_exception;
+    pub mod locale_data;
     pub mod mutable_code_point_trie;
     pub mod output;
     pub mod output_int;
+    pub mod region;
     pub mod string_trie_builder;
+    pub mod u_locale;
+    pub mod u_resource_bundle;
+    pub mod u_resource_bundle_iterator;
+    pub mod u_resource_type_mismatch_exception;
     pub mod version_info;
 }

@@ -1042,3 +1042,120 @@ impl<'a> DataOutputStream<'a> {
         self.written
     }
 }
+
+// ---------------------------------------------------------------------------
+// java.net.URL and ClassLoader.getResources over the embedded resources
+// ---------------------------------------------------------------------------
+
+/// The location the embedded resources stand for: the `icu4j-77.1.jar` of
+/// the class path.
+pub const EMBEDDED_JAR: &str = "file:/icu4j-77.1.jar";
+
+/// A `java.net.URL` as ICU enumerates resources through it: its protocol,
+/// its path and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JavaUrl {
+    protocol: String,
+    path: String,
+    text: String,
+}
+
+impl JavaUrl {
+    /// `new URL(String spec)` for the `file:` and `jar:` forms ICU builds:
+    /// the protocol is the text before the first `:`, the path the rest
+    /// (for `jar:`, the whole `<url>!/<entry>` remainder, as
+    /// `URL.getPath()` returns it).
+    ///
+    /// # Errors
+    ///
+    /// `MalformedURLException("no protocol: <spec>")` when there is no
+    /// protocol.
+    pub fn new(spec: &str) -> Result<Self> {
+        match spec.find(':') {
+            Some(i) if i > 0 => Ok(Self {
+                protocol: spec[..i].to_string(),
+                path: spec[i + 1..].to_string(),
+                text: spec.to_string(),
+            }),
+            _ => Err(LuceneError::from(std::io::Error::other(format!(
+                "no protocol: {spec}"
+            )))),
+        }
+    }
+
+    /// `getProtocol()`.
+    pub fn get_protocol(&self) -> &str {
+        &self.protocol
+    }
+
+    /// `getPath()`.
+    pub fn get_path(&self) -> &str {
+        &self.path
+    }
+
+    /// The entries of the jar a `jar:` URL names, in the jar's order
+    /// (`JarURLConnection.getJarFile().entries()`), as `(name,
+    /// is_directory)`: the embedded resources and the directories that
+    /// contain them.
+    ///
+    /// # Errors
+    ///
+    /// `IOException` when the URL is not a `jar:` URL of the embedded jar.
+    pub fn jar_entries(&self) -> Result<Vec<(String, bool)>> {
+        let jar = self
+            .path
+            .find("!/")
+            .map(|i| &self.path[..i])
+            .filter(|j| *j == EMBEDDED_JAR);
+        if self.protocol != "jar" || jar.is_none() {
+            return Err(LuceneError::from(std::io::Error::other(format!(
+                "no jar file for {}",
+                self.text
+            ))));
+        }
+        let mut entries: Vec<(String, bool)> = Vec::new();
+        let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (name, _) in class_path_data::RESOURCES {
+            let mut end = 0;
+            while let Some(i) = name[end..].find('/') {
+                end += i + 1;
+                let dir = &name[..end];
+                if dirs.insert(dir.to_string()) {
+                    entries.push((dir.to_string(), true));
+                }
+            }
+            entries.push((name.to_string(), false));
+        }
+        Ok(entries)
+    }
+}
+
+/// `toString()`.
+impl std::fmt::Display for JavaUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl ClassLoader {
+    /// `getResources(String name)`: the URLs of the resource or directory
+    /// `name` on the class path, here the `jar:` URL into the embedded jar
+    /// when an embedded resource is `name` or lies below the directory
+    /// `name` (a name ending with `/`); the bootstrap loader finds none.
+    pub fn get_resources(&self, name: &str) -> Vec<JavaUrl> {
+        match self {
+            ClassLoader::Application => {
+                let found = class_path_data::RESOURCES
+                    .iter()
+                    .any(|(n, _)| *n == name || (name.ends_with('/') && n.starts_with(name)));
+                if found {
+                    vec![JavaUrl::new(&format!("jar:{EMBEDDED_JAR}!/{name}"))
+                        .expect("a jar URL has a protocol")]
+                } else {
+                    Vec::new()
+                }
+            }
+            ClassLoader::Bootstrap => Vec::new(),
+        }
+    }
+}
