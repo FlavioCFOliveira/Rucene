@@ -1,0 +1,109 @@
+// © 2016 and later: Unicode, Inc. and others.
+// License & terms of use: http://www.unicode.org/copyright.html
+
+//! This crate ports, from ICU4J 77.1 (`com.ibm.icu:icu4j:77.1`, tag
+//! `release-77-1`, Unicode License v3), the classes Apache Lucene 10.5.0
+//! `lucene/analysis/icu` reaches, whole files (user decision D1 on rmp task
+//! #640), together with every ICU data file those classes load statically,
+//! embedded byte-identical (decision D2). The full ICU `LICENSE`, including
+//! the notices of the break-iterator dictionaries, ships with the crate; each
+//! source file keeps the ICU copyright line.
+//!
+//! The module tree mirrors the Java packages below `com.ibm.icu`:
+//! `com.ibm.icu.impl` is the module [`r#impl`], `com.ibm.icu.text`
+//! [`text`], `com.ibm.icu.util` [`util`], `com.ibm.icu.lang` [`lang`].
+//! Each Java source file is one module, named in snake_case
+//! (`ICUBinary.java` is [`r#impl::icu_binary`]); a nested Java type is
+//! declared in the module of its source file.
+//!
+//! **Divergence.** Java's `String`, `CharSequence`, `StringBuilder`,
+//! `StringBuffer` and `char[]` are sequences of UTF-16 units; the port keeps
+//! that unit model, so that surrogates, offsets and lengths are those of
+//! Java: a text parameter is `&[u16]` (Rust has no overloading, so the
+//! `String`, `CharSequence` and `StringBuffer` overloads of one Java method
+//! that behave alike become one function), a returned `String` is
+//! `Vec<u16>`, and a `StringBuilder`, `StringBuffer` or `Appendable` that a
+//! method appends to is `&mut Vec<u16>` (appending to it cannot fail, so the
+//! `IOException` branches of `Appendable` callers have no counterpart). A
+//! `StringBuffer` that two objects share in Java (`ReplaceableString`) is an
+//! `Arc<Mutex<Vec<u16>>>`. Texts that only name things (resource paths,
+//! exception messages, hexadecimal renderings) are Rust strings.
+//!
+//! **Divergence.** Java's exceptions surface as
+//! [`rucene::error::LuceneError`] values in a `Result`, with one exception:
+//! the `IndexOutOfBoundsException` family (`ArrayIndexOutOfBoundsException`,
+//! `StringIndexOutOfBoundsException`), whether the JVM raises it on an
+//! access outside an array, string or buffer or ICU throws it after its own
+//! range check, is a Rust panic carrying the Java exception's text, as Rust
+//! indexing panics; ICU's main code never catches it (the one catch, inside
+//! `UTF16.newString`, is a local array growth the port does with an explicit
+//! check). Methods whose only exceptions are of that family keep their
+//! infallible Java signatures and document the panic. ICU's own exception
+//! classes are typed values in
+//! [`LuceneErrorKind::Throwable`](rucene::error::LuceneErrorKind::Throwable).
+//!
+//! Java `assert` statements are `debug_assert!`: they run in the debug
+//! builds the tests use, as Java's run under `-ea`.
+
+pub(crate) mod class_path_data;
+pub mod jdk;
+
+/// `com.ibm.icu.impl`.
+pub mod r#impl {
+    pub mod assert;
+    pub mod cache_base;
+    pub mod cache_value;
+    pub mod character_iterator_wrapper;
+    pub mod class_loader_util;
+    pub mod icu_binary;
+    pub mod icu_config;
+    pub mod icu_data;
+    pub mod icu_debug;
+    pub mod icurw_lock;
+    pub mod illegal_icu_argument_exception;
+    pub mod normalizer2_impl;
+    pub mod pattern_props;
+    pub mod replaceable_u_character_iterator;
+    pub mod soft_cache;
+    pub mod trie2;
+    pub mod trie2_16;
+    pub mod trie2_32;
+    pub mod u_char_array_iterator;
+    pub mod u_character_iterator_wrapper;
+    pub mod utility;
+}
+
+/// `com.ibm.icu.lang`.
+pub mod lang {
+    pub mod u_character;
+}
+
+/// `com.ibm.icu.text`.
+pub mod text {
+    pub mod edits;
+    pub mod replaceable;
+    pub mod replaceable_string;
+    pub mod string_transform;
+    pub mod transform;
+    pub mod u_character_iterator;
+    pub mod u_forward_character_iterator;
+    pub mod utf16;
+}
+
+/// `com.ibm.icu.util`.
+pub mod util {
+    pub mod byte_array_wrapper;
+    pub mod bytes_trie;
+    pub mod chars_trie;
+    pub mod chars_trie_builder;
+    pub mod code_point_map;
+    pub mod code_point_trie;
+    pub mod icu_clone_not_supported_exception;
+    pub mod icu_exception;
+    pub mod icu_unchecked_io_exception;
+    pub mod mutable_code_point_trie;
+    pub mod output;
+    pub mod output_int;
+    pub mod string_trie_builder;
+    pub mod version_info;
+}

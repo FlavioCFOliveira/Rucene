@@ -1,0 +1,26 @@
+[package]
+name = "icu4j"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+# The port is MIT; the translated ICU sources and the embedded ICU data stay
+# under the Unicode License v3, whose full text (with the third-party notices
+# of the break-iterator dictionaries) ships as `LICENSE` in this directory.
+license = "MIT AND Unicode-3.0"
+description = "Rust port of ICU4J 77.1, limited to the classes Apache Lucene 10.5.0 lucene/analysis/icu reaches, with the ICU data they load."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "icu4j"
+
+# icu4j 77.1 has no dependencies. The JDK behaviours the port reproduces come
+# from the workspace: the Java exception model and `java.util.regex`
+# (`rucene`), `java.text.CharacterIterator` and `java.lang.Character`
+# (`rucene-analysis-common`), and `java.util.MissingResourceException` and
+# `Properties.load` (`rucene-queryparser`).
+[dependencies]
+rucene = { path = "../.." }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+rucene-queryparser = { path = "../rucene-queryparser" }

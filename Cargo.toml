@@ -31,6 +31,9 @@ categories = ["database-implementations", "data-structures", "algorithms"]
 # that drives the public `rucene` API end to end (sprint 10); `rucene-cli-base`
 # is the second one, one index per Portal BASE entity with pt-PT analysis
 # (sprint 14).
+# `icu4j` ports the ICU4J 77.1 classes Lucene 10.5.0 `lucene/analysis/icu`
+# reaches, with the ICU data they load (user decisions on rmp #640,
+# 2026-11-23: whole files, all statically reachable data embedded).
 [workspace]
 members = [
     "crates/rucene-codecs",
@@ -52,6 +55,7 @@ members = [
     "crates/spatial4j",
     "crates/s2-geometry",
     "crates/nekohtml",
+    "crates/icu4j",
 ]
 
 [features]
