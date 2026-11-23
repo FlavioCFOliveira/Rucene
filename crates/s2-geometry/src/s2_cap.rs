@@ -290,9 +290,9 @@ impl S2Region for S2Cap {
     /// `contains(S2Cell)`.
     fn contains_cell(&self, cell: &S2Cell) -> bool {
         let mut vertices = [S2Point::default(); 4];
-        for k in 0..4 {
-            vertices[k] = cell.get_vertex(k as i32);
-            if !self.contains_point(&vertices[k]) {
+        for (k, vertex) in vertices.iter_mut().enumerate() {
+            *vertex = cell.get_vertex(k as i32);
+            if !self.contains_point(vertex) {
                 return false;
             }
         }
@@ -302,9 +302,9 @@ impl S2Region for S2Cap {
     /// `mayIntersect(S2Cell)`.
     fn may_intersect(&self, cell: &S2Cell) -> bool {
         let mut vertices = [S2Point::default(); 4];
-        for k in 0..4 {
-            vertices[k] = cell.get_vertex(k as i32);
-            if self.contains_point(&vertices[k]) {
+        for (k, vertex) in vertices.iter_mut().enumerate() {
+            *vertex = cell.get_vertex(k as i32);
+            if self.contains_point(vertex) {
                 return true;
             }
         }

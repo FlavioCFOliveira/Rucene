@@ -2,6 +2,9 @@
 //! `RandomGeo3dShapeGenerator`, the random `spatial3d` shapes the spatial tests
 //! draw.
 //!
+//! From the module's `overview.html`: internal test fixtures for spatial
+//! modules.
+//!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.spatial3d.tests`: the types of that package sit at the
 //! crate root. Each Java source file is one module, named in snake_case

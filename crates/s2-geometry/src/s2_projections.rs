@@ -17,6 +17,9 @@
 //! The types declared in `S2Projections.java`, of the Java package
 //! `com.google.common.geometry`.
 
+// The metric constants are s2-geometry-library-java's literals, kept verbatim.
+#![allow(clippy::excessive_precision)]
+
 use crate::r2_vector::R2Vector;
 use crate::s2::{Metric, S2};
 use crate::s2_point::S2Point;

@@ -477,12 +477,11 @@ impl PackedQuadCell {
             return None;
         }
         let term = self.term();
-        let new_term;
         let is_leaf = (term & 0x1) == 0x1;
         // if descend requested && we're not at the maxLevel
-        if (descend && !is_leaf && (level != max_levels)) || level == 0 {
+        let new_term = if (descend && !is_leaf && (level != max_levels)) || level == 0 {
             // simple case: increment level bits (next level)
-            new_term = (((term as u64 >> 1) as i64).wrapping_add(0x1)).wrapping_shl(1);
+            (((term as u64 >> 1) as i64).wrapping_add(0x1)).wrapping_shl(1)
         } else {
             // we're not descending or we can't descend
             let mut t = term.wrapping_add(1i64.wrapping_shl(shift as u32));
@@ -493,8 +492,8 @@ impl PackedQuadCell {
                 t = (((t as u64 >> 1) as i64).wrapping_sub(((tz as u64) >> 1) as i64))
                     .wrapping_shl(1);
             }
-            new_term = t;
-        }
+            t
+        };
         Some(Self::build(&self.tree, new_term))
     }
 
@@ -814,8 +813,7 @@ impl CellIterator for PrefixTreeIterator {
             panic!("java.util.NoSuchElementException");
         }
         // overriding since this implementation sets thisCell in hasNext
-        let temp = self.next_cell.take().expect("hasNext() set nextCell");
-        temp
+        self.next_cell.take().expect("hasNext() set nextCell")
     }
 
     fn this_cell(&self) -> CellRef {

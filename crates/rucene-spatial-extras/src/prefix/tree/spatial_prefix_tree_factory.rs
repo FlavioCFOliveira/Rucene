@@ -228,7 +228,7 @@ pub const VERSION: &str = "version";
 /// classLoader, SpatialContext ctx)`: the factory method to create a prefix
 /// tree based on the arguments. The `prefixTree` argument names `geohash`,
 /// `quad`, `packedQuad` or `s2` (default `geohash` for a geo context, else
-/// `quad`), or a factory class; see [`FACTORY_CLASSES`] for the class
+/// `quad`), or a factory class; see `FACTORY_CLASSES` for the class
 /// lookup.
 ///
 /// # Errors

@@ -23,8 +23,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.text.BreakIterator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.apache.lucene.analysis.util.CharArrayIterator;
 
 /**
@@ -33,7 +35,8 @@ import org.apache.lucene.analysis.util.CharArrayIterator;
  *
  * <ul>
  *   <li>{@code ops <file>}: each line {@code <kind> <text> <begin> <length> <ops>}; kind {@code w}
- *       (word, root locale), {@code s} (sentence, root locale) or {@code t} (word, Thai); text the
+ *       (word, root locale), {@code s} (sentence, root locale), {@code t} (word, Thai), {@code l} (line, root locale) or
+ *       {@code u} (line, Thai); text the
  *       UTF-16 units as 4-digit hex ({@code -} when empty); begin -1 for {@code setText(String)},
  *       otherwise the text is set as {@code CharArrayIterator.setText(chars, begin, length)}; ops
  *       comma-separated: F first, L last, N next, P previous, C current, X&lt;n&gt; next(n),
@@ -64,6 +67,10 @@ public class BreakIteratorOracle {
         return BreakIterator.getSentenceInstance(Locale.ROOT);
       case "t":
         return BreakIterator.getWordInstance(new Locale.Builder().setLanguageTag("th").build());
+      case "l":
+        return BreakIterator.getLineInstance(Locale.ROOT);
+      case "u":
+        return BreakIterator.getLineInstance(new Locale.Builder().setLanguageTag("th").build());
       default:
         throw new IllegalArgumentException(kind);
     }
@@ -113,11 +120,11 @@ public class BreakIteratorOracle {
             new BufferedWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8), 1 << 16));
     {
       List<String> lines = Files.readAllLines(Paths.get(args[1]), StandardCharsets.UTF_8);
-      BreakIterator w = instance("w"), s = instance("s"), t = instance("t");
+      Map<String, BreakIterator> instances = new HashMap<>();
       for (String line : lines) {
         if (line.isEmpty()) continue;
         String[] f = line.split(" ", -1);
-        BreakIterator bi = f[0].equals("w") ? w : f[0].equals("s") ? s : t;
+        BreakIterator bi = instances.computeIfAbsent(f[0], BreakIteratorOracle::instance);
         String text = unhex(f[1]);
         int begin = Integer.parseInt(f[2]);
         if (begin < 0) {

@@ -463,6 +463,7 @@ pub(crate) trait PathComponent: Send + Sync + fmt::Display {
     /// `isWithin(double, double, double)`.
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool;
     /// `isWithinSection(Vector)`.
+    #[allow(dead_code)] // Declared by Java's interface; no caller in Lucene.
     fn is_within_section(&self, point: &Vector) -> bool;
     /// `isWithinSection(double, double, double)`.
     fn is_within_section_xyz(&self, x: f64, y: f64, z: f64) -> bool;
@@ -698,6 +699,7 @@ impl fmt::Display for PathNode {
 /// Internal interface describing segment endpoint implementations.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoStandardPath.SegmentEndpoint`.
+#[allow(dead_code)] // Java's marker interface; nothing names it as a type.
 pub(crate) trait SegmentEndpoint: PathComponent {}
 
 /// Base implementation of SegmentEndpoint.

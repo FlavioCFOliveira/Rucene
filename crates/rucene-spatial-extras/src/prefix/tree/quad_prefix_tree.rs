@@ -80,8 +80,10 @@ impl SpatialPrefixTreeFactory for Factory {
 pub struct QuadPrefixTree {
     pub(crate) base: SpatialPrefixTreeBase,
     pub(crate) xmin: f64,
+    #[allow(dead_code)] // Java field, read by no method.
     pub(crate) xmax: f64,
     pub(crate) ymin: f64,
+    #[allow(dead_code)] // Java field, read by no method.
     pub(crate) ymax: f64,
     pub(crate) xmid: f64,
     pub(crate) ymid: f64,
@@ -255,6 +257,7 @@ impl QuadPrefixTree {
     ///
     /// The `InvalidShapeException` of the shape factory.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // Java's legacy private method; no caller in Lucene.
     fn build_not_robustly(
         &self,
         x: f64,
@@ -323,6 +326,7 @@ impl QuadPrefixTree {
     ///
     /// The `InvalidShapeException` of the shape factory.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // Java legacy method; only buildNotRobustly calls it.
     pub(crate) fn check_battenberg_not_robustly(
         &self,
         c: u8,
@@ -463,7 +467,9 @@ pub struct QuadCell {
 }
 
 impl QuadCell {
-    /// `QuadCell(byte[] bytes, int off, int len)`.
+    /// `QuadCell(byte[] bytes, int off, int len)`: the new cell, shared as
+    /// the trees share their cells.
+    #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new(
         tree: &Arc<QuadPrefixTree>,
         bytes: Vec<u8>,

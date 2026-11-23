@@ -289,8 +289,12 @@ impl S2Cell {
         self.level = id.level() as i8;
         let cell_size = 1 << (S2CellId::MAX_LEVEL - i32::from(self.level));
         for (d, ij_d) in ij.iter().enumerate() {
-            let sij_lo = (ij_d.int_value() & -cell_size) * 2 - MAX_CELL_SIZE;
-            let sij_hi = sij_lo + cell_size * 2;
+            // Java `int` arithmetic: at level 0 `cellSize * 2` is 2^31, which
+            // wraps (and `sijHi` wraps back to the face's upper bound).
+            let sij_lo = (ij_d.int_value() & -cell_size)
+                .wrapping_mul(2)
+                .wrapping_sub(MAX_CELL_SIZE);
+            let sij_hi = sij_lo.wrapping_add(cell_size.wrapping_mul(2));
             self.set_uv(
                 d,
                 0,

@@ -22,7 +22,7 @@
 //! `InputStream` and `OutputStream` are [`Read`] and [`Write`]; a `Class`
 //! object is its binary name, and the reflective constructor lookup of
 //! `readObject` is the closed table of the package's serializable classes
-//! (see [`StandardObjects`](super::standard_objects::StandardObjects)).
+//! (see `standard_objects::StandardObjects`).
 //!
 //! Java's `readClass` loads any class by name through
 //! `MethodHandles.lookup().findClass` and checks it is a `SerializableObject`

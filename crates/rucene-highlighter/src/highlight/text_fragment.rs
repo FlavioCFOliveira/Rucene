@@ -78,6 +78,8 @@ impl TextFragment {
         lock(&self.state).text_start_pos
     }
 
+    // Mirrors a package-private Java member that no Rust caller reaches.
+    #[allow(dead_code)]
     /// Equivalent to reading the package-private field `textEndPos`.
     pub(crate) fn text_end_pos(&self) -> i32 {
         lock(&self.state).text_end_pos

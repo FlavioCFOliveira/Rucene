@@ -171,10 +171,19 @@ mod tests {
     fn array_format_substitutes_and_escapes() {
         let a: LogArg = Arc::new("A");
         let b: LogArg = Arc::new(2);
-        assert_eq!(array_format("x {} y {}", &[a.clone(), b.clone()]), "x A y 2");
-        assert_eq!(array_format("x \\{} y {}", &[a.clone()]), "x {} y A");
-        assert_eq!(array_format("x \\\\{}", &[a.clone()]), "x \\A");
-        assert_eq!(array_format("no anchors", &[a.clone()]), "no anchors");
+        assert_eq!(
+            array_format("x {} y {}", &[a.clone(), b.clone()]),
+            "x A y 2"
+        );
+        assert_eq!(
+            array_format("x \\{} y {}", std::slice::from_ref(&a)),
+            "x {} y A"
+        );
+        assert_eq!(array_format("x \\\\{}", std::slice::from_ref(&a)), "x \\A");
+        assert_eq!(
+            array_format("no anchors", std::slice::from_ref(&a)),
+            "no anchors"
+        );
         assert_eq!(array_format("{} {} {}", &[a, b]), "A 2 {}");
     }
 }

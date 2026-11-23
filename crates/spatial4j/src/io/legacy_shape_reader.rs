@@ -27,9 +27,13 @@ use crate::jdk::parse_double;
 use crate::shape::point::Point;
 use crate::shape::shape::Shape;
 
+/// The space-separated, non-empty tokens of a string.
+type Tokens<'a> =
+    std::iter::Peekable<std::iter::Filter<std::str::Split<'a, char>, fn(&&str) -> bool>>;
+
 /// `java.util.StringTokenizer(str, " ")`: the tokens between spaces.
 struct StringTokenizer<'a> {
-    tokens: std::iter::Peekable<std::iter::Filter<std::str::Split<'a, char>, fn(&&str) -> bool>>,
+    tokens: Tokens<'a>,
 }
 
 impl<'a> StringTokenizer<'a> {

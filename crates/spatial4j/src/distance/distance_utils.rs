@@ -173,7 +173,7 @@ impl DistanceUtils {
 
         // normalize lon first
         if lon2 > Self::DEG_180_AS_RADS {
-            lon2 = -1.0 * (Self::DEG_180_AS_RADS - (lon2 - Self::DEG_180_AS_RADS));
+            lon2 = -(Self::DEG_180_AS_RADS - (lon2 - Self::DEG_180_AS_RADS)); // Java: -1 * (...)
         } else if lon2 < -Self::DEG_180_AS_RADS {
             lon2 = (lon2 + Self::DEG_180_AS_RADS) + Self::DEG_180_AS_RADS;
         }

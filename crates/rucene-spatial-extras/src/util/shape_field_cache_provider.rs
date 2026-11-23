@@ -29,6 +29,9 @@ use rucene::util::BytesRef;
 
 use crate::util::shape_field_cache::ShapeFieldCache;
 
+/// A cached reader (by identity, weakly held) and its cache.
+type CacheEntry<T> = (Weak<dyn LeafReader>, Arc<ShapeFieldCache<T>>);
+
 /// The fields of `ShapeFieldCacheProvider`.
 ///
 /// Java keys the caches by reader in a `WeakHashMap`; here a cache is kept
@@ -38,7 +41,7 @@ use crate::util::shape_field_cache::ShapeFieldCache;
 #[derive(Debug)]
 pub struct ShapeFieldCacheProviderBase<T: ?Sized> {
     // it may be a List<T> or T
-    sidx: Mutex<Vec<(Weak<dyn LeafReader>, Arc<ShapeFieldCache<T>>)>>,
+    sidx: Mutex<Vec<CacheEntry<T>>>,
     /// `defaultSize`.
     pub default_size: i32,
     /// `shapeField`.

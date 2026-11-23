@@ -51,12 +51,7 @@ static FACES: LazyLock<[S2CellId; 6]> = LazyLock::new(|| {
 const LEAF: u8 = b'+';
 
 /// `TOKENS`.
-const TOKENS: [u8; 64] = [
-    b'.', b'/', b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'A', b'B', b'C', b'D',
-    b'E', b'F', b'G', b'H', b'I', b'J', b'K', b'L', b'M', b'N', b'O', b'P', b'Q', b'R', b'S', b'T',
-    b'U', b'V', b'W', b'X', b'Y', b'Z', b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j',
-    b'k', b'l', b'm', b'n', b'o', b'p', b'q', b'r', b's', b't', b'u', b'v', b'w', b'x', b'y', b'z',
-];
+const TOKENS: [u8; 64] = *b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /// `PIXELS.get(b)`: the position of `b` in [`TOKENS`].
 ///
@@ -87,14 +82,18 @@ struct S2State {
 /// (package-private `class S2PrefixTreeCell implements CellCanPrune`): this
 /// class represents a S2 pixel in the RPT. A `None` cell id is the world
 /// cell.
+///
+/// Java's class, constructor, `readCell` and `cellId` are package-private;
+/// they are public here for the port of `TestS2PrefixTree`, which is in the
+/// same Java package.
 #[derive(Debug)]
-pub(crate) struct S2PrefixTreeCell {
+pub struct S2PrefixTreeCell {
     state: Mutex<S2State>,
 }
 
 impl S2PrefixTreeCell {
     /// `S2PrefixTreeCell(S2PrefixTree tree, S2CellId cellId)`.
-    pub(crate) fn new(tree: &Arc<S2PrefixTree>, cell_id: Option<S2CellId>) -> Self {
+    pub fn new(tree: &Arc<S2PrefixTree>, cell_id: Option<S2CellId>) -> Self {
         let cell = S2PrefixTreeCell {
             state: Mutex::new(S2State {
                 cell_id,
@@ -115,12 +114,17 @@ impl S2PrefixTreeCell {
         cell
     }
 
+    /// `cellId` (package-private field); `None` for the world cell.
+    pub fn cell_id(&self) -> Option<S2CellId> {
+        self.lock().cell_id
+    }
+
     fn lock(&self) -> MutexGuard<'_, S2State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// `readCell(S2PrefixTree tree, BytesRef ref)`.
-    pub(crate) fn read_cell(&self, tree: &Arc<S2PrefixTree>, r: &BytesRef) {
+    pub fn read_cell(&self, tree: &Arc<S2PrefixTree>, r: &BytesRef) {
         let mut s = self.lock();
         s.is_leaf = false;
         s.shape = None;

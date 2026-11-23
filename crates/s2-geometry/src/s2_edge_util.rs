@@ -428,6 +428,8 @@ impl XYZPruner {
     }
 
     /// `intersects(S2Point)`.
+    // The three tests are Java's separate `else if` branches with the same body.
+    #[allow(clippy::if_same_then_else)]
     pub fn intersects(&mut self, v1: S2Point) -> bool {
         let last = self
             .last_vertex

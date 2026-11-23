@@ -59,7 +59,7 @@ use crate::shape_values_source::ShapeValuesSource;
 /// should have smallest boxes up front.
 #[derive(Debug)]
 pub struct BBoxOverlapRatioValueSource {
-    bbox_value_source: Arc<dyn ShapeValuesSource>,
+    bbox_value_source: Option<Arc<dyn ShapeValuesSource>>,
     is_geo: bool, // -180/+180 degrees  (not part of identity; attached to parent strategy/field)
     query_extent: Arc<dyn Rectangle>,
     query_area: f64, // not part of identity
@@ -70,14 +70,15 @@ pub struct BBoxOverlapRatioValueSource {
 impl BBoxOverlapRatioValueSource {
     /// `BBoxOverlapRatioValueSource(ShapeValuesSource rectValueSource,
     /// boolean isGeo, Rectangle queryExtent, double queryTargetProportion,
-    /// double minSideLength)`.
+    /// double minSideLength)`; a `None` value source stands for `null`
+    /// (scoring with [`score`](BBoxSimilarityValueSource::score) needs none).
     ///
     /// # Errors
     ///
     /// `IllegalArgumentException("queryTargetProportion must be >= 0 and
     /// <= 1")`.
     pub fn new(
-        rect_value_source: Arc<dyn ShapeValuesSource>,
+        rect_value_source: Option<Arc<dyn ShapeValuesSource>>,
         is_geo: bool,
         query_extent: Arc<dyn Rectangle>,
         query_target_proportion: f64,
@@ -116,7 +117,7 @@ impl BBoxOverlapRatioValueSource {
         rect_value_source: Arc<dyn ShapeValuesSource>,
         query_extent: Arc<dyn Rectangle>,
     ) -> Result<Self> {
-        Self::new(rect_value_source, true, query_extent, 0.25, 0.0)
+        Self::new(Some(rect_value_source), true, query_extent, 0.25, 0.0)
     }
 
     /// `calcArea(double width, double height)`.
@@ -130,8 +131,8 @@ impl BBoxOverlapRatioValueSource {
 }
 
 impl BBoxSimilarityValueSource for BBoxOverlapRatioValueSource {
-    fn bbox_value_source(&self) -> &Arc<dyn ShapeValuesSource> {
-        &self.bbox_value_source
+    fn bbox_value_source(&self) -> Option<&Arc<dyn ShapeValuesSource>> {
+        self.bbox_value_source.as_ref()
     }
 
     fn simple_name(&self) -> &'static str {
@@ -308,7 +309,10 @@ impl BBoxSimilarityValueSource for BBoxOverlapRatioValueSource {
 
 impl SegmentCacheable for BBoxOverlapRatioValueSource {
     fn is_cacheable(&self, ctx: &LeafReaderContext) -> bool {
-        self.bbox_value_source.is_cacheable(ctx)
+        self.bbox_value_source
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: bboxValueSource is null"))
+            .is_cacheable(ctx)
     }
 }
 

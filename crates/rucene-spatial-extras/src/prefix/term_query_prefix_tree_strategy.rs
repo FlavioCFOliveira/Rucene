@@ -32,7 +32,9 @@ use rucene::util::BytesRef;
 use spatial4j::shape::point::Point;
 use spatial4j::shape::shape::Shape;
 
-use crate::prefix::cell_to_bytes_ref_iterator::{CellToBytesRefIterator, CellToBytesRefIteratorOps};
+use crate::prefix::cell_to_bytes_ref_iterator::{
+    CellToBytesRefIterator, CellToBytesRefIteratorOps,
+};
 use crate::prefix::prefix_tree_strategy::{
     prefix_create_indexable_fields, prefix_make_distance_value_source, PrefixTreeStrategy,
     PrefixTreeStrategyBase,

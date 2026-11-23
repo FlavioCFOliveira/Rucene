@@ -229,8 +229,9 @@ pub(crate) enum Instantiation {
     Created(Arc<dyn SerializableObject>),
     /// `NoSuchMethodException`: the class lacks the constructor.
     NoSuchConstructor,
-    /// `InvocationTargetException`: the constructor threw.
-    Failed(LuceneError),
+    /// `InvocationTargetException`: the constructor threw (its cause kept,
+    /// as Java's exception keeps it, though no caller reads it).
+    Failed(#[allow(dead_code)] LuceneError),
 }
 
 fn wrap<T: SerializableObject>(r: Result<T>) -> Instantiation {

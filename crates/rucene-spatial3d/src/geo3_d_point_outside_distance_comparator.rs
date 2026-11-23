@@ -29,12 +29,8 @@ use rucene::util::java_double_compare;
 use crate::geo3_d_doc_values_field::Geo3DDocValuesField;
 use crate::geom::distance_style::ARC;
 use crate::geom::geo_membership_shape::GeoMembershipShape;
+use crate::geom::java_min;
 use crate::geom::planet_model::PlanetModel;
-use crate::geom::{java_min, npe};
-
-fn ub(v: Option<f64>) -> f64 {
-    v.unwrap_or_else(|| npe())
-}
 
 fn dcmp(a: f64, b: f64) -> i32 {
     match java_double_compare(a, b) {

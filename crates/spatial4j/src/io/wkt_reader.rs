@@ -50,6 +50,28 @@ fn message_of(e: &LuceneError) -> Option<String> {
     }
 }
 
+/// `Throwable.toString()` of a Java exception: its class name, then
+/// `": " + getMessage()` when the message is not `null`.
+fn java_to_string(e: &LuceneError) -> String {
+    let with_message = |class: &str, message: Option<&str>| match message {
+        Some(m) => format!("{class}: {m}"),
+        None => class.to_string(),
+    };
+    match e.kind() {
+        LuceneErrorKind::UnsupportedOperation { message, .. } => {
+            with_message("java.lang.UnsupportedOperationException", Some(message))
+        }
+        LuceneErrorKind::IllegalArgument { message, .. } => {
+            with_message("java.lang.IllegalArgumentException", Some(message))
+        }
+        LuceneErrorKind::Unchecked { class, message, .. } => {
+            with_message(class, message.as_deref())
+        }
+        LuceneErrorKind::Throwable(t) => with_message(t.java_class(), t.get_message()),
+        _ => e.to_string(),
+    }
+}
+
 /// Equivalent to `org.locationtech.spatial4j.io.WKTReader` (`public class
 /// WKTReader implements ShapeReader`): reads shapes from Well Known Text,
 /// with spatial4j's extensions (`ENVELOPE`, `BUFFER`).
@@ -128,7 +150,8 @@ impl WKTReader {
                 return Err(InvalidShapeException::with_cause(message_of(&e), e));
             }
             Err(e) => {
-                let message = e.to_string();
+                // `new ParseException(e.toString(), state.offset)`
+                let message = java_to_string(&e);
                 return Err(ParseException::error_with_cause(
                     message,
                     state.offset as i32,
@@ -575,7 +598,13 @@ impl State {
         }
         let result = match parse_double(&self.substring(start_offset, self.offset)) {
             Ok(v) => v,
-            Err(e) => return Err(ParseException::error(e.to_string(), self.offset as i32)),
+            // `new ParseException(e.toString(), offset)`
+            Err(e) => {
+                return Err(ParseException::error(
+                    java_to_string(&e),
+                    self.offset as i32,
+                ))
+            }
         };
         self.next_if_whitespace();
         Ok(result)

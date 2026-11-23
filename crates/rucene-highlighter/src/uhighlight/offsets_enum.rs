@@ -169,10 +169,6 @@ impl<T> JavaPriorityQueue<T> {
         self.queue.first()
     }
 
-    pub(crate) fn peek_mut(&mut self) -> Option<&mut T> {
-        self.queue.first_mut()
-    }
-
     /// `offer(E)` / `add(E)`: `siftUpUsingComparator`.
     pub(crate) fn offer(&mut self, x: T) -> Result<()> {
         self.queue.push(x);

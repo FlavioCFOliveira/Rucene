@@ -64,9 +64,9 @@ impl RandomizedShapeTest {
 
     /// `ctx`, dereferenced: Java's `NullPointerException` when unset.
     pub fn ctx(&self) -> &Arc<SpatialContext> {
-        self.ctx.as_ref().unwrap_or_else(|| {
-            Throwable::new("java.lang.NullPointerException", "ctx").throw()
-        })
+        self.ctx
+            .as_ref()
+            .unwrap_or_else(|| Throwable::new("java.lang.NullPointerException", "ctx").throw())
     }
 
     /// `checkShapesImplementEquals(Class<?>[] classes)` (`public static`):
@@ -307,6 +307,7 @@ impl RandomizedShapeTest {
     }
 
     /// `randomGaussianZeroTo(double max)` (`private`; unused by spatial4j).
+    #[allow(dead_code)] // Java's private method has no caller either.
     fn random_gaussian_zero_to(max: f64) -> f64 {
         if max == 0.0 {
             return max;

@@ -4,7 +4,8 @@
 //! `lucene/benchmark` import and their transitive closure over the library's
 //! main code, plus the test helpers `lucene/spatial-extras`' tests import
 //! (`TestLog`, `shape::RandomizedShapeTest`,
-//! `shape::RectIntersectionTestHelper`). The rest of the library is out of scope
+//! `shape::RectIntersectionTestHelper`, from spatial4j's test sources), which
+//! only the `test-helpers` feature builds. The rest of the library is out of scope
 //! (user decision, sprint 17). Each file keeps its upstream copyright and
 //! license notice.
 //!
@@ -36,10 +37,6 @@
 //! is prefixed only when its own name is a name of the Rust prelude or the name
 //! of another item of that module, and the Java kind is appended when the
 //! prefixed name is itself taken.
-
-// Package-private and private Java types are `pub(crate)` skeletons that nothing
-// uses yet. This allowance goes away when the module is fully ported.
-#![allow(dead_code)]
 
 /// Reproductions of the JDK behaviours the port relies on.
 pub(crate) mod jdk {

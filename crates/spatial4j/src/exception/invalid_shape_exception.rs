@@ -25,6 +25,9 @@ impl InvalidShapeException {
 
     /// `new InvalidShapeException(String reason)`; `None` stands for a
     /// `null` reason.
+    // Java's constructor: the port returns the `LuceneError` that carries
+    // the exception, as every unchecked Java exception of the port is one.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(reason: Option<String>) -> LuceneError {
         LuceneError::from(LuceneErrorKind::Unchecked {
             class: Self::CLASS,

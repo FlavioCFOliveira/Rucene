@@ -26,6 +26,8 @@ mod highlighter_support;
 
 mod vectorhighlight {
     pub mod abstract_test_case;
+    pub mod test_break_iterator_boundary_scanner;
+    pub mod test_fast_vector_highlighter;
     pub mod test_field_phrase_list;
     pub mod test_field_query;
     pub mod test_field_term_stack;
@@ -52,6 +54,8 @@ macro_rules! suites {
 }
 
 suites!(
+    test_break_iterator_boundary_scanner,
+    test_fast_vector_highlighter,
     test_field_phrase_list,
     test_field_query,
     test_field_term_stack,

@@ -83,6 +83,7 @@ pub static DEFAULT_FIELDTYPE: LazyLock<FieldType> = LazyLock::new(|| {
 #[derive(Debug)]
 pub struct BBoxStrategy {
     base: SpatialStrategyBase,
+    #[allow(dead_code)] // Java's `field_bbox`: set, never read, as in Java.
     pub(crate) field_bbox: String,
     pub(crate) field_min_x: String,
     pub(crate) field_min_y: String,
@@ -299,7 +300,7 @@ impl BBoxStrategy {
         query_target_proportion: f64,
     ) -> Result<Arc<dyn DoubleValuesSource>> {
         Ok(Arc::new(BBoxOverlapRatioValueSource::new(
-            self.make_shape_value_source(),
+            Some(self.make_shape_value_source()),
             self.base.ctx.is_geo(),
             query_box,
             query_target_proportion,
@@ -388,7 +389,7 @@ impl BBoxStrategy {
 
                 let mut q_edge_dl: Option<Arc<dyn Query>> = None;
                 if bbox.get_min_x() == bbox.get_max_x() && bbox.get_min_x().abs() == 180.0 {
-                    let edge = bbox.get_min_x() * -1.0; // opposite dateline edge
+                    let edge = -bbox.get_min_x(); // opposite dateline edge (Java: minX * -1)
                     q_edge_dl = Some(self.make_query(
                         Occur::SHOULD,
                         &[
@@ -681,6 +682,7 @@ impl BBoxStrategy {
         let y_conditions = self.make_query(Occur::MUST, &[Some(q_min_y), Some(q_max_y)])?;
 
         // X conditions
+        #[allow(clippy::needless_late_init)] // declared before Java's if/else chain
         let x_conditions: Arc<dyn Query>;
 
         if self.base.ctx.is_geo() && bbox.get_min_x() == -180.0 && bbox.get_max_x() == 180.0 {

@@ -1,5 +1,14 @@
-//! This crate ports Apache Lucene 10.5.0 `lucene/memory` to Rust: `MemoryIndex`,
-//! the high-performance single-document main-memory index.
+//! This crate ports Apache Lucene 10.5.0 `lucene/memory` to Rust: a
+//! high-performance single-document main memory Apache Lucene fulltext search
+//! index (package `org.apache.lucene.index.memory`).
+//!
+//! [`MemoryIndex`] holds the fields of one document in memory and answers
+//! queries against it without a `Directory`: add fields (text through an
+//! analyzer, token streams, or indexable fields), then [`MemoryIndex::search`] for a
+//! relevance score, or [`MemoryIndex::create_searcher`] for an `IndexSearcher` over its
+//! single-document reader. It suits real-time matching of a stream of
+//! documents against stored queries, and transient indexes such as the one
+//! the highlighters build to find matches in a single text.
 //!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.index.memory`: the types of that package sit at the crate

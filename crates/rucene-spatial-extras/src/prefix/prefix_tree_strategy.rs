@@ -37,7 +37,9 @@ use spatial4j::shape::shape::Shape;
 
 use crate::jdk::AtomicF64;
 use crate::prefix::bytes_ref_iterator_token_stream::BytesRefIteratorTokenStream;
-use crate::prefix::cell_to_bytes_ref_iterator::{CellToBytesRefIterator, CellToBytesRefIteratorOps};
+use crate::prefix::cell_to_bytes_ref_iterator::{
+    CellToBytesRefIterator, CellToBytesRefIteratorOps,
+};
 use crate::prefix::heatmap_facet_counter::{self, Heatmap};
 use crate::prefix::point_prefix_tree_field_cache_provider::PointPrefixTreeFieldCacheProvider;
 use crate::prefix::tree::cell_iterator::CellIterator;
@@ -378,7 +380,8 @@ impl ShapeTokenStream {
         let cells = s.create_cell_iterator_to_index(shape, detail_level)?;
         let mut cell_to_bytes_ref_iterator = s.new_cell_to_bytes_ref_iterator();
         cell_to_bytes_ref_iterator.reset(cells);
-        self.inner.set_bytes_ref_iterator(cell_to_bytes_ref_iterator);
+        self.inner
+            .set_bytes_ref_iterator(cell_to_bytes_ref_iterator);
         Ok(())
     }
 }

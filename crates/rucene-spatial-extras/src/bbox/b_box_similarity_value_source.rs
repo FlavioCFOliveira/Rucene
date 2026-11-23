@@ -41,8 +41,9 @@ use crate::shape_values_source::ShapeValuesSource;
 /// are the `similarity_*` functions of this module, which an implementor's
 /// `DoubleValuesSource` implementation calls.
 pub trait BBoxSimilarityValueSource: DoubleValuesSource {
-    /// `bboxValueSource`.
-    fn bbox_value_source(&self) -> &Arc<dyn ShapeValuesSource>;
+    /// `bboxValueSource`; `None` stands for `null` (Java's constructor
+    /// accepts it, and only the methods dereferencing it fail).
+    fn bbox_value_source(&self) -> Option<&Arc<dyn ShapeValuesSource>>;
 
     /// `getClass().getSimpleName()`.
     fn simple_name(&self) -> &'static str;
@@ -57,12 +58,19 @@ pub trait BBoxSimilarityValueSource: DoubleValuesSource {
     fn score(&self, rect: &dyn Rectangle, exp: Option<&mut Option<Explanation>>) -> f64;
 }
 
+/// `bboxValueSource`, dereferenced: Java's `NullPointerException` for
+/// `null`.
+fn bbox_vs<S: BBoxSimilarityValueSource + ?Sized>(s: &S) -> &Arc<dyn ShapeValuesSource> {
+    s.bbox_value_source()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: bboxValueSource is null"))
+}
+
 /// `BBoxSimilarityValueSource.toString()`.
 pub fn similarity_to_string<S: BBoxSimilarityValueSource + ?Sized>(s: &S) -> String {
     format!(
         "{}({},{})",
         s.simple_name(),
-        s.bbox_value_source(),
+        bbox_vs(s),
         s.similarity_description()
     )
 }
@@ -104,7 +112,7 @@ pub fn similarity_get_values<'a, S: BBoxSimilarityValueSource + 'static>(
     s: Arc<S>,
     reader_context: &LeafReaderContext,
 ) -> Result<Box<dyn DoubleValues + 'a>> {
-    let shape_values = s.bbox_value_source().get_values(reader_context)?;
+    let shape_values = bbox_vs(&*s).get_values(reader_context)?;
     Ok(Box::new(with_default(
         SimilarityValues {
             source: s,
@@ -121,16 +129,14 @@ pub fn similarity_eq<S: BBoxSimilarityValueSource + 'static>(
     other: &dyn DoubleValuesSource,
 ) -> bool {
     match other.as_any().downcast_ref::<S>() {
-        Some(that) => {
-            std::ptr::eq(s, that) || s.bbox_value_source().source_eq(&**that.bbox_value_source())
-        }
+        Some(that) => std::ptr::eq(s, that) || bbox_vs(s).source_eq(&**bbox_vs(that)),
         None => false,
     }
 }
 
 /// `BBoxSimilarityValueSource.hashCode()`.
 pub fn similarity_hash<S: BBoxSimilarityValueSource + ?Sized>(s: &S) -> i32 {
-    s.bbox_value_source().source_hash()
+    bbox_vs(s).source_hash()
 }
 
 /// `BBoxSimilarityValueSource.explain(LeafReaderContext ctx, int docId,
@@ -149,7 +155,7 @@ pub fn similarity_explain<S: BBoxSimilarityValueSource + 'static>(
     let mut dv = Arc::clone(&s).get_values(ctx, Some(scores))?;
     if dv.advance_exact(doc_id)? {
         let mut explanation: Option<Explanation> = None;
-        let mut shape_values = s.bbox_value_source().get_values(ctx)?;
+        let mut shape_values = bbox_vs(&*s).get_values(ctx)?;
         if shape_values.advance_exact(doc_id)? {
             let shape = shape_values.value()?;
             s.score(as_rectangle(&*shape), Some(&mut explanation));

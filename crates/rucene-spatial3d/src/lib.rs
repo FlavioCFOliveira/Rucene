@@ -2,6 +2,17 @@
 //! the surface of a sphere or ellipsoid modelled with 3D planar geometry
 //! (`geom`), and the `Geo3DPoint` field, its doc values, sorts and queries.
 //!
+//! From the module's `overview.html`: the Spatial3D module provides APIs for
+//! planar spatial3d math. It is mostly comprised of computational geometry code
+//! in the `org.apache.lucene.spatial3d.geom` package (AKA "Geo3D").
+//!
+//! **Divergence.** Every `java.lang.Math` call (`sin`, `cos`, `tan`, `asin`,
+//! `acos`, `atan`, `atan2`, `pow`, `sqrt`, `IEEEremainder`) goes through
+//! [`rucene::util::java_math`], an fdlibm port bit-exact with JDK 25's
+//! `StrictMath`; HotSpot's x86_64 LIBM intrinsics for `Math` may differ in the
+//! last bit, so the port is bit-exact with a JVM run with
+//! `-XX:-UseLibmIntrinsic` (rmp #628).
+//!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.spatial3d`: the types of that package sit at the crate
 //! root and `org.apache.lucene.spatial3d.geom` is the module [`geom`]. Each Java
@@ -12,11 +23,6 @@
 //! the name of its enclosing type is prefixed only when its own name is a name
 //! of the Rust prelude or the name of another item of that module, and the Java
 //! kind is appended when the prefixed name is itself taken.
-
-// Package-private and private Java types are `pub(crate)`; some of their
-// members (Java's `equals`/`toString` of private helpers, for instance) have no
-// caller inside the crate.
-#![allow(dead_code)]
 
 pub mod geo3_d_doc_values_field;
 pub mod geo3_d_point;

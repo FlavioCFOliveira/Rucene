@@ -287,12 +287,9 @@ impl VisitorHooks for FacetHooks<'_, '_> {
         // due to "pulsing" in the codec.
         // TODO this opt should move to VisitorTemplate (which contains an optimization TODO to
         // this effect)
-        if (cell.get_level() == self.facet_level - 1 || t.terms_enum().doc_freq()? == 1)
-            && !self.has_docs_at_this_term(t)?
-        {
-            return Ok(false);
-        }
-        Ok(true)
+        let no_docs = (cell.get_level() == self.facet_level - 1 || t.terms_enum().doc_freq()? == 1)
+            && !self.has_docs_at_this_term(t)?;
+        Ok(!no_docs)
     }
 
     fn visit_leaf(

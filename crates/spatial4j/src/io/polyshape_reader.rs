@@ -72,7 +72,7 @@ impl PolyshapeReader {
         let mut shapes: Option<Vec<Arc<dyn Shape>>> = None;
         while !reader.is_done() {
             let event = reader.read_key();
-            if !('0'..='9').contains(&event) {
+            if !event.is_ascii_digit() {
                 if event == PolyshapeWriter::KEY_SEPERATOR {
                     continue; // read the next key
                 }

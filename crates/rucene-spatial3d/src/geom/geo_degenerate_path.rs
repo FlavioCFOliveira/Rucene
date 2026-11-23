@@ -96,6 +96,7 @@ impl GeoDegeneratePath {
     ///
     /// `IllegalStateException` after `done()`; `IllegalArgumentException` for
     /// an out-of-range point.
+    #[allow(dead_code)] // Java API of the package-private class; no caller in Lucene.
     pub fn add_point(&mut self, lat: f64, lon: f64) -> Result<()> {
         if self.is_done {
             return Err(ise("Can't call addPoint() if done() already called"));

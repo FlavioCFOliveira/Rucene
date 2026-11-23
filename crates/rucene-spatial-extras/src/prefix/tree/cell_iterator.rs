@@ -27,7 +27,7 @@ use crate::prefix::tree::cell::{Cell, CellRef};
 /// Java's protected fields `nextCell` and `thisCell` are the
 /// [`CellIteratorBase`] an implementation embeds; Java's `next()` is shared
 /// by every subclass that does not override it, which here is
-/// [`CellIteratorBase::next`] called by the implementation.
+/// `CellIteratorBase::next` called by the implementation.
 ///
 /// **Divergence.** `next()` past the end throws
 /// `java.util.NoSuchElementException` in Java (`CellIterator.java:66-71`);

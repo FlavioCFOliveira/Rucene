@@ -619,6 +619,8 @@ impl FieldQuery {
         self.root_maps.get(&key)
     }
 
+    // Mirrors a package-private Java member that no Rust caller reaches.
+    #[allow(dead_code)]
     /// Equivalent to the package-private `nextTermOrPhraseNumber()`.
     pub(crate) fn next_term_or_phrase_number(&self) -> i32 {
         self.term_or_phrase_number.fetch_add(1, Ordering::Relaxed)

@@ -139,7 +139,7 @@ impl SpatialOperation {
 
     /// `is(SpatialOperation op, SpatialOperation... tst)`.
     pub fn is(op: SpatialOperation, tst: &[SpatialOperation]) -> bool {
-        tst.iter().any(|t| op == *t)
+        tst.contains(&op)
     }
 
     /// `evaluate(Shape indexedShape, Shape queryShape)`: returns whether

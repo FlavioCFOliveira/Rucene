@@ -348,25 +348,6 @@ pub(crate) fn java_signum(d: f64) -> f64 {
     }
 }
 
-/// `Math.round(double)`: `floor(x + 0.5)` with Java's saturating `long` cast,
-/// computed the way the JDK does it to stay exact near the halfway points.
-#[inline]
-pub(crate) fn java_round(a: f64) -> i64 {
-    // JDK 25 `Math.round(double)` (bit-level algorithm).
-    let long_bits = a.to_bits() as i64;
-    let biased_exp = (long_bits & 0x7ff0_0000_0000_0000) >> 52;
-    let shift = (52 + 1023) - biased_exp;
-    if (shift & -64) == 0 {
-        let mut r = (long_bits & 0x000f_ffff_ffff_ffff) | (0x000f_ffff_ffff_ffff + 1);
-        if long_bits < 0 {
-            r = -r;
-        }
-        ((r >> shift) + 1) >> 1
-    } else {
-        a as i64
-    }
-}
-
 /// `Double.toString(double)`, the form Java string concatenation uses.
 #[inline]
 pub(crate) fn d2s(d: f64) -> String {
@@ -567,17 +548,6 @@ impl JavaBitSet {
     pub(crate) fn java_equals(&self, other: &JavaBitSet) -> bool {
         let n = self.words_in_use();
         n == other.words_in_use() && self.words[..n] == other.words[..n]
-    }
-
-    /// `BitSet.hashCode()`.
-    pub(crate) fn java_hash_code(&self) -> i32 {
-        let mut h: i64 = 1234;
-        let mut i = self.words_in_use();
-        while i > 0 {
-            i -= 1;
-            h ^= (self.words[i] as i64).wrapping_mul(i as i64 + 1);
-        }
-        ((h >> 32) ^ h) as i32
     }
 }
 

@@ -165,7 +165,11 @@ pub trait RectIntersectionTestHelper {
 
             TestLog::log(
                 "S-R Rel: {}, Shape {}, Rectangle {}",
-                vec![Arc::new(ic), Arc::new(Arc::clone(&s)), Arc::new(Arc::clone(&r))],
+                vec![
+                    Arc::new(ic),
+                    Arc::new(Arc::clone(&s)),
+                    Arc::new(Arc::clone(&r)),
+                ],
             );
 
             if ic != SpatialRelation::Disjoint {
@@ -241,14 +245,13 @@ pub trait RectIntersectionTestHelper {
                                 p
                             } else {
                                 if random_point_space.is_none() {
-                                    random_point_space = Some(
-                                        if point_r == Some(SpatialRelation::Disjoint) {
+                                    random_point_space =
+                                        Some(if point_r == Some(SpatialRelation::Disjoint) {
                                             intersect_rects(base, &*r, &*s.get_bounding_box())?
                                         } else {
                                             // CONTAINS
                                             Arc::clone(&r)
-                                        },
-                                    );
+                                        });
                                 }
                                 base.random_point_in_rect(
                                     &**random_point_space.as_ref().expect("set above"),
@@ -309,22 +312,34 @@ fn intersect_rects(
     if cfg!(debug_assertions) && !r1.relate(r2.as_shape()).intersects() {
         Assert::fail_without_message();
     }
-    let min_x = if r1.relate_x_range(r2.get_min_x(), r2.get_min_x()).intersects() {
+    let min_x = if r1
+        .relate_x_range(r2.get_min_x(), r2.get_min_x())
+        .intersects()
+    {
         r2.get_min_x()
     } else {
         r1.get_min_x()
     };
-    let max_x = if r1.relate_x_range(r2.get_max_x(), r2.get_max_x()).intersects() {
+    let max_x = if r1
+        .relate_x_range(r2.get_max_x(), r2.get_max_x())
+        .intersects()
+    {
         r2.get_max_x()
     } else {
         r1.get_max_x()
     };
-    let min_y = if r1.relate_y_range(r2.get_min_y(), r2.get_min_y()).intersects() {
+    let min_y = if r1
+        .relate_y_range(r2.get_min_y(), r2.get_min_y())
+        .intersects()
+    {
         r2.get_min_y()
     } else {
         r1.get_min_y()
     };
-    let max_y = if r1.relate_y_range(r2.get_max_y(), r2.get_max_y()).intersects() {
+    let max_y = if r1
+        .relate_y_range(r2.get_max_y(), r2.get_max_y())
+        .intersects()
+    {
         r2.get_max_y()
     } else {
         r1.get_max_y()

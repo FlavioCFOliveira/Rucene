@@ -348,8 +348,11 @@ fn is_match_no_bits(bits: &dyn Bits) -> bool {
 /// order of additions, which commute.
 #[derive(Default)]
 struct AncestorMap {
-    buckets: HashMap<i32, Vec<(Arc<dyn Rectangle>, i32)>>,
+    buckets: HashMap<i32, AncestorBucket>,
 }
+
+/// The `(rectangle, count)` entries of an [`AncestorMap`] hash bucket.
+type AncestorBucket = Vec<(Arc<dyn Rectangle>, i32)>;
 
 impl AncestorMap {
     /// `put(rect, count)` then, when there was an existing count, `put(rect,

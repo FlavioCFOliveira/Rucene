@@ -122,10 +122,15 @@ pub struct DateRangePrefixTree {
     cal_tmp: Calendar, // template
     mincal: Calendar,
     maxcal: Calendar,
+    #[allow(dead_code)] // Java field read by no method (only computed).
     bc_firstyear: i32,
+    #[allow(dead_code)] // Java field read by no method (only computed).
     bc_lastyear: i32,
+    #[allow(dead_code)] // Java field read by no method (only computed).
     bc_years: i32,
+    #[allow(dead_code)] // Java field read by no method (only computed).
     ad_firstyear: i32,
+    #[allow(dead_code)] // Java field read by no method (only computed).
     ad_lastyear: i32,
     ad_year_base: i32,
     lvs: OnceLock<Lvs>,
@@ -287,10 +292,10 @@ impl DateRangePrefixTree {
     ///
     /// `IllegalArgumentException("Bad calendar field?: ...")`.
     pub fn get_tree_level_for_calendar_field(&self, cal_field: i32) -> Result<i32> {
-        for i in YEAR_LEVEL as usize..FIELD_BY_LEVEL.len() {
-            if FIELD_BY_LEVEL[i] == cal_field {
+        for (i, &field) in FIELD_BY_LEVEL.iter().enumerate().skip(YEAR_LEVEL as usize) {
+            if field == cal_field {
                 return Ok(i as i32);
-            } else if FIELD_BY_LEVEL[i] > cal_field {
+            } else if field > cal_field {
                 return Ok(-(i as i32));
             }
         }
@@ -305,8 +310,7 @@ impl DateRangePrefixTree {
     /// no fields are set, it returns -1.
     pub fn get_cal_precision_field(&self, cal: &Calendar) -> i32 {
         let mut last_field = -1;
-        for level in YEAR_LEVEL as usize..FIELD_BY_LEVEL.len() {
-            let field = FIELD_BY_LEVEL[level];
+        for &field in FIELD_BY_LEVEL.iter().skip(YEAR_LEVEL as usize) {
             if !cal.is_set(field as usize) {
                 break;
             }
@@ -362,8 +366,7 @@ impl DateRangePrefixTree {
                 year_adj -= val_stack[len - 1] * 1000;
                 val_stack[len] = year_adj;
                 len += 1;
-                for level in (YEAR_LEVEL + 1) as usize..FIELD_BY_LEVEL.len() {
-                    let field = FIELD_BY_LEVEL[level];
+                for &field in FIELD_BY_LEVEL.iter().skip((YEAR_LEVEL + 1) as usize) {
                     if field > cal_prec_field {
                         break;
                     }
@@ -758,7 +761,7 @@ impl NumberRangePrefixTreeImpl for DateRangePrefixTree {
         }
         if let Some(date) = value.downcast_ref::<Date>() {
             let mut cal = self.new_cal();
-            cal.set_time(date.clone());
+            cal.set_time(*date);
             return self.to_shape(&mut cal);
         }
         Err(LuceneError::illegal_argument(format!(

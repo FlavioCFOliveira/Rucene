@@ -78,25 +78,3 @@ pub(crate) fn character_digit(code_point: i32, radix: i32) -> i32 {
         -1
     }
 }
-
-/// `Float.compare(a, b)`.
-pub(crate) fn float_compare(a: f32, b: f32) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    if a < b {
-        Ordering::Less
-    } else if a > b {
-        Ordering::Greater
-    } else {
-        let a_bits = if a.is_nan() {
-            0x7fc0_0000
-        } else {
-            a.to_bits() as i32
-        };
-        let b_bits = if b.is_nan() {
-            0x7fc0_0000
-        } else {
-            b.to_bits() as i32
-        };
-        a_bits.cmp(&b_bits)
-    }
-}

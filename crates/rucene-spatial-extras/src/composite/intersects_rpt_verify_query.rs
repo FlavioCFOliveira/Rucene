@@ -272,6 +272,7 @@ impl IntersectsDifferentiatingQuery {
     /// # Errors
     ///
     /// Always `IllegalStateException`.
+    #[allow(dead_code)] // Java's override that is never called this way.
     pub(crate) fn get_doc_id_set(
         &self,
         _context: &LeafReaderContext,

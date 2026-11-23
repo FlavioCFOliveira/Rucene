@@ -1,6 +1,27 @@
-//! This crate ports Apache Lucene 10.5.0 `lucene/highlighter` to Rust: the
-//! original highlighter, the fast vector highlighter, the unified highlighter
-//! and the match highlighter.
+//! This crate ports Apache Lucene 10.5.0 `lucene/highlighter` to Rust:
+//! "keyword in context" features, typically used to highlight search terms in
+//! the text of results pages. It holds four highlighters, one per Java
+//! package:
+//!
+//! * [`highlight`] (`org.apache.lucene.search.highlight`) — the original
+//!   `Highlighter`, which extracts the most interesting sections of a text and
+//!   highlights them with the help of a `Fragmenter`, a fragment `Scorer` and
+//!   a `Formatter`; `TokenSources` rebuilds the token stream from term vectors
+//!   or by re-analysis.
+//! * [`vectorhighlight`] (`org.apache.lucene.search.vectorhighlight`) — the
+//!   `FastVectorHighlighter`, based on term vectors with positions and
+//!   offsets: fast for large documents, phrase-unit highlighting with slop,
+//!   multi-term queries, boost/IDF-weighted fragment scoring, pluggable
+//!   `FragListBuilder` and `FragmentsBuilder`.
+//! * [`uhighlight`] (`org.apache.lucene.search.uhighlight`) — the
+//!   `UnifiedHighlighter`, a flexible highlighter that gets offsets from
+//!   postings, term vectors or analysis, and builds passages with a
+//!   `BreakIterator`.
+//! * [`matchhighlight`] (`org.apache.lucene.search.matchhighlight`) —
+//!   components to build a highlighter on top of the `Matches` API:
+//!   `MatchRegionRetriever` retrieves the hit areas of a query in documents,
+//!   `PassageSelector` selects passages around them and `PassageFormatter`
+//!   formats them; `MatchHighlighter` combines them.
 //!
 //! The module tree mirrors the Java packages below the package root
 //! `org.apache.lucene.search`: `org.apache.lucene.search.uhighlight` is the
@@ -14,10 +35,6 @@
 //! Java strings and character sequences are indexed by UTF-16 code units; the
 //! offsets of tokens, passages and fragments count UTF-16 units here as in
 //! Java, and the text they index is held as UTF-16 where they slice it.
-
-// Private Java members that only a subclass or a test reaches are kept even
-// when nothing in the crate calls them.
-#![allow(dead_code)]
 
 /// Forwards the named `LeafReader` methods to the field `$inner`, as a Java
 /// `FilterLeafReader` subclass inherits them.

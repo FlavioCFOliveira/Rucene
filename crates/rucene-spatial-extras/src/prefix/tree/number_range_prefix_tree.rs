@@ -405,8 +405,8 @@ pub trait NumberRangePrefixTreeImpl: SpatialPrefixTree {
     /// `toShape(int[] valStack, int len)`.
     fn to_shape_stack(&self, val_stack: &[i32], len: usize) -> Arc<dyn UnitNRShape> {
         let stack = NRCell::new_cell_stack(self.me_nr(), len);
-        for i in 0..len {
-            stack.cell(i + 1).reset_cell_with_cell_num(val_stack[i]);
+        for (i, &val) in val_stack[..len].iter().enumerate() {
+            stack.cell(i + 1).reset_cell_with_cell_num(val);
         }
         Arc::new(stack.cell(len))
     }

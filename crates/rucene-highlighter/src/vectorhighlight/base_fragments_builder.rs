@@ -115,6 +115,8 @@ impl BaseFragmentsBuilder {
         }
     }
 
+    // Mirrors a package-private Java member that no Rust caller reaches.
+    #[allow(dead_code)]
     /// Equivalent to the package-private static `checkTagsArgument(Object)`:
     /// `tags` must be a `String` or a `String[]` (`Vec<String>`).
     ///

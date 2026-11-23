@@ -53,11 +53,6 @@ pub(crate) fn d2s(v: f64) -> String {
     rucene::util::java_fmt::double_to_string(v)
 }
 
-/// `String.valueOf(float)`.
-pub(crate) fn f2s(v: f32) -> String {
-    rucene::util::java_fmt::float_to_string(v)
-}
-
 /// `String.hashCode()`.
 pub(crate) fn string_hash(s: &str) -> i32 {
     rucene::util::java_collections::java_string_hash_code(s)
@@ -92,12 +87,6 @@ pub(crate) fn shapes_equal(a: Option<&Arc<dyn Shape>>, b: Option<&Arc<dyn Shape>
         (Some(a), Some(b)) => a.equals(&**b),
         _ => false,
     }
-}
-
-/// `getClass().getSimpleName()` of a Java binary class name.
-pub(crate) fn simple_name(class_name: &str) -> &str {
-    let simple = class_name.rsplit('.').next().unwrap_or(class_name);
-    simple.rsplit('$').next().unwrap_or(simple)
 }
 
 /// The data pointer of a trait object, for Java's `==` reference identity.
