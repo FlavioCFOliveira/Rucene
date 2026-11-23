@@ -97,6 +97,36 @@ SPATIAL4J_ROOT_ENV = "SPATIAL4J_ROOT"
 DEFAULT_SPATIAL4J_ROOT = "/tmp/spatial4j-0.8"
 S2_ROOT_ENV = "S2_GEOMETRY_ROOT"
 DEFAULT_S2_ROOT = "/tmp/s2-geometry-1.0.0"
+# nekohtml 1.9.17, the HTML parser `lucene/benchmark`'s `DemoHTMLParser` uses,
+# ported with the Xerces-J 2.12.2 and SAX 2.0.2 types of its closure (user
+# decision on rmp #611, 2026-11-22; port: rmp #635). Lucene 10.5.0 pins the
+# versions (`gradle/libs.versions.toml`: `nekohtml = "1.9.17"`, `xerces =
+# "2.12.2"`; xml-apis 1.4.01 comes with xercesImpl). None of the three has a
+# tagged public git repository for those releases, so the root holds the three
+# Maven Central source jars, each unpacked into its own tree:
+#   <root>/neko     net.sourceforge.nekohtml:nekohtml:1.9.17:sources
+#                   (sha1 a458fc8c719ce250524b14772b284f41b9130587, Apache-2.0)
+#   <root>/xerces   xerces:xercesImpl:2.12.2:sources
+#                   (sha1 7d743949710f2d9cda30a80356ad5efcbdf4239a, Apache-2.0)
+#   <root>/xmlapis  xml-apis:xml-apis:1.4.01:sources
+#                   (sha1 5502da0c4c0a7916a604356ef19394ccfa30cd4b; SAX public domain)
+# e.g. `mkdir -p <root>/neko && (cd <root>/neko && unzip -q
+# nekohtml-1.9.17-sources.jar)`, from
+# https://repo1.maven.org/maven2/net/sourceforge/nekohtml/nekohtml/1.9.17/ and
+# the matching xercesImpl / xml-apis directories.
+NEKOHTML_PROJECT = "nekohtml 1.9.17"
+# icu4j 77.1 (Lucene 10.5.0 `versions.toml`: `icu4j = "77.1"`), the library
+# `lucene/analysis/icu` is built on, ported as the subset that module reaches
+# (user decisions on rmp #640, 2026-11-23). Obtain it with
+#   git clone --depth 1 --branch release-77-1 \
+#       https://github.com/unicode-org/icu.git <dir>       (457157a)
+# and point `ICU4J_ROOT` at `<dir>/icu4j`. Unicode License v3 (`Unicode-3.0`):
+# the notice ships with the crate.
+ICU4J_PROJECT = "icu4j 77.1"
+ICU4J_ROOT_ENV = "ICU4J_ROOT"
+DEFAULT_ICU4J_ROOT = "/tmp/icu4j-77.1"
+NEKOHTML_ROOT_ENV = "NEKOHTML_ROOT"
+DEFAULT_NEKOHTML_ROOT = "/tmp/nekohtml-1.9.17"
 # The external Java projects whose modules the port covers, beyond Lucene:
 # `(name, version, reference URL)`, each written as a `Project` by `--phase
 # modules`.
@@ -107,6 +137,10 @@ EXTERNAL_PROJECTS = (
      "https://github.com/locationtech/spatial4j/tree/spatial4j-0.8"),
     (S2_PROJECT, "1.0.0",
      "https://github.com/sgr-io/s2-geometry-library-java/tree/v1.0.0"),
+    (NEKOHTML_PROJECT, "1.9.17",
+     "https://repo1.maven.org/maven2/net/sourceforge/nekohtml/nekohtml/1.9.17/"),
+    (ICU4J_PROJECT, "77.1",
+     "https://github.com/unicode-org/icu/tree/release-77-1/icu4j"),
 )
 # randomizedtesting 2.8.1 is the runner Lucene 10.5.0 builds its test framework
 # on (`lucene/test-framework`'s descriptor: `requires transitive
@@ -395,8 +429,591 @@ PORT_MODULES = (
      "skeletons": "enforce",
      "role": "the S2 cell geometry that lucene/spatial-extras' S2 prefix tree uses "
              "(its closure); ported by sprint 17"},
+    # The closure of `org.cyberneko.html.parsers.SAXParser` as `DemoHTMLParser`
+    # configures it, over the main code of the three trees, plus the types
+    # reached by string reflection (`XercesBridge_2_3` -> `_2_2` ->
+    # `XercesBridge`, `org.apache.xerces.impl.Version`) and
+    # `org.xml.sax.helpers.DefaultHandler`, which `DemoHTMLParser` extends: 121
+    # files, one top-level type each -- 18 NekoHTML, 80 Xerces, 23 SAX (rmp #635).
+    # The crate mirrors the whole Java package (`org.cyberneko.html.parsers` ->
+    # `crates/nekohtml/src/org/cyberneko/html/parsers/`), so the package root is
+    # the empty package (`package_root`).
+    {"name": "nekohtml/nekohtml", "project": NEKOHTML_PROJECT,
+     "repo": "nekohtml", "sources": ("neko", "xerces", "xmlapis"),
+     "files": (
+               "neko/org/cyberneko/html/HTMLAugmentations.java",
+               "neko/org/cyberneko/html/HTMLComponent.java",
+               "neko/org/cyberneko/html/HTMLConfiguration.java",
+               "neko/org/cyberneko/html/HTMLElements.java",
+               "neko/org/cyberneko/html/HTMLEntities.java",
+               "neko/org/cyberneko/html/HTMLErrorReporter.java",
+               "neko/org/cyberneko/html/HTMLEventInfo.java",
+               "neko/org/cyberneko/html/HTMLScanner.java",
+               "neko/org/cyberneko/html/HTMLTagBalancer.java",
+               "neko/org/cyberneko/html/HTMLTagBalancingListener.java",
+               "neko/org/cyberneko/html/LostText.java",
+               "neko/org/cyberneko/html/Version.java",
+               "neko/org/cyberneko/html/filters/DefaultFilter.java",
+               "neko/org/cyberneko/html/filters/NamespaceBinder.java",
+               "neko/org/cyberneko/html/parsers/SAXParser.java",
+               "neko/org/cyberneko/html/xercesbridge/XercesBridge.java",
+               "neko/org/cyberneko/html/xercesbridge/XercesBridge_2_2.java",
+               "neko/org/cyberneko/html/xercesbridge/XercesBridge_2_3.java",
+               "xerces/org/apache/xerces/impl/Constants.java",
+               "xerces/org/apache/xerces/impl/ExternalSubsetResolver.java",
+               "xerces/org/apache/xerces/impl/Version.java",
+               "xerces/org/apache/xerces/impl/XMLEntityDescription.java",
+               "xerces/org/apache/xerces/parsers/AbstractSAXParser.java",
+               "xerces/org/apache/xerces/parsers/AbstractXMLDocumentParser.java",
+               "xerces/org/apache/xerces/parsers/XML11Configurable.java",
+               "xerces/org/apache/xerces/parsers/XMLParser.java",
+               "xerces/org/apache/xerces/util/AugmentationsImpl.java",
+               "xerces/org/apache/xerces/util/DefaultErrorHandler.java",
+               "xerces/org/apache/xerces/util/EncodingMap.java",
+               "xerces/org/apache/xerces/util/EntityResolver2Wrapper.java",
+               "xerces/org/apache/xerces/util/EntityResolverWrapper.java",
+               "xerces/org/apache/xerces/util/ErrorHandlerWrapper.java",
+               "xerces/org/apache/xerces/util/NamespaceSupport.java",
+               "xerces/org/apache/xerces/util/ParserConfigurationSettings.java",
+               "xerces/org/apache/xerces/util/PrimeNumberSequenceGenerator.java",
+               "xerces/org/apache/xerces/util/SAXMessageFormatter.java",
+               "xerces/org/apache/xerces/util/SymbolHash.java",
+               "xerces/org/apache/xerces/util/SymbolTable.java",
+               "xerces/org/apache/xerces/util/URI.java",
+               "xerces/org/apache/xerces/util/XMLAttributesImpl.java",
+               "xerces/org/apache/xerces/util/XMLResourceIdentifierImpl.java",
+               "xerces/org/apache/xerces/util/XMLStringBuffer.java",
+               "xerces/org/apache/xerces/util/XMLSymbols.java",
+               "xerces/org/apache/xerces/xni/Augmentations.java",
+               "xerces/org/apache/xerces/xni/NamespaceContext.java",
+               "xerces/org/apache/xerces/xni/QName.java",
+               "xerces/org/apache/xerces/xni/XMLAttributes.java",
+               "xerces/org/apache/xerces/xni/XMLDTDContentModelHandler.java",
+               "xerces/org/apache/xerces/xni/XMLDTDHandler.java",
+               "xerces/org/apache/xerces/xni/XMLDocumentHandler.java",
+               "xerces/org/apache/xerces/xni/XMLLocator.java",
+               "xerces/org/apache/xerces/xni/XMLResourceIdentifier.java",
+               "xerces/org/apache/xerces/xni/XMLString.java",
+               "xerces/org/apache/xerces/xni/XNIException.java",
+               "xerces/org/apache/xerces/xni/grammars/XMLDTDDescription.java",
+               "xerces/org/apache/xerces/xni/grammars/XMLGrammarDescription.java",
+               "xerces/org/apache/xerces/xni/parser/XMLComponent.java",
+               "xerces/org/apache/xerces/xni/parser/XMLComponentManager.java",
+               "xerces/org/apache/xerces/xni/parser/XMLConfigurationException.java",
+               "xerces/org/apache/xerces/xni/parser/XMLDTDContentModelSource.java",
+               "xerces/org/apache/xerces/xni/parser/XMLDTDSource.java",
+               "xerces/org/apache/xerces/xni/parser/XMLDocumentFilter.java",
+               "xerces/org/apache/xerces/xni/parser/XMLDocumentScanner.java",
+               "xerces/org/apache/xerces/xni/parser/XMLDocumentSource.java",
+               "xerces/org/apache/xerces/xni/parser/XMLEntityResolver.java",
+               "xerces/org/apache/xerces/xni/parser/XMLErrorHandler.java",
+               "xerces/org/apache/xerces/xni/parser/XMLInputSource.java",
+               "xerces/org/apache/xerces/xni/parser/XMLParseException.java",
+               "xerces/org/apache/xerces/xni/parser/XMLParserConfiguration.java",
+               "xerces/org/apache/xerces/xni/parser/XMLPullParserConfiguration.java",
+               "xerces/org/apache/xerces/xs/AttributePSVI.java",
+               "xerces/org/apache/xerces/xs/ElementPSVI.java",
+               "xerces/org/apache/xerces/xs/ItemPSVI.java",
+               "xerces/org/apache/xerces/xs/PSVIProvider.java",
+               "xerces/org/apache/xerces/xs/ShortList.java",
+               "xerces/org/apache/xerces/xs/StringList.java",
+               "xerces/org/apache/xerces/xs/XSAnnotation.java",
+               "xerces/org/apache/xerces/xs/XSAttributeDeclaration.java",
+               "xerces/org/apache/xerces/xs/XSAttributeGroupDefinition.java",
+               "xerces/org/apache/xerces/xs/XSComplexTypeDefinition.java",
+               "xerces/org/apache/xerces/xs/XSElementDeclaration.java",
+               "xerces/org/apache/xerces/xs/XSException.java",
+               "xerces/org/apache/xerces/xs/XSIDCDefinition.java",
+               "xerces/org/apache/xerces/xs/XSModel.java",
+               "xerces/org/apache/xerces/xs/XSModelGroup.java",
+               "xerces/org/apache/xerces/xs/XSModelGroupDefinition.java",
+               "xerces/org/apache/xerces/xs/XSNamedMap.java",
+               "xerces/org/apache/xerces/xs/XSNamespaceItem.java",
+               "xerces/org/apache/xerces/xs/XSNamespaceItemList.java",
+               "xerces/org/apache/xerces/xs/XSNotationDeclaration.java",
+               "xerces/org/apache/xerces/xs/XSObject.java",
+               "xerces/org/apache/xerces/xs/XSObjectList.java",
+               "xerces/org/apache/xerces/xs/XSParticle.java",
+               "xerces/org/apache/xerces/xs/XSSimpleTypeDefinition.java",
+               "xerces/org/apache/xerces/xs/XSTerm.java",
+               "xerces/org/apache/xerces/xs/XSTypeDefinition.java",
+               "xerces/org/apache/xerces/xs/XSValue.java",
+               "xerces/org/apache/xerces/xs/XSWildcard.java",
+               "xmlapis/org/xml/sax/AttributeList.java",
+               "xmlapis/org/xml/sax/Attributes.java",
+               "xmlapis/org/xml/sax/ContentHandler.java",
+               "xmlapis/org/xml/sax/DTDHandler.java",
+               "xmlapis/org/xml/sax/DocumentHandler.java",
+               "xmlapis/org/xml/sax/EntityResolver.java",
+               "xmlapis/org/xml/sax/ErrorHandler.java",
+               "xmlapis/org/xml/sax/InputSource.java",
+               "xmlapis/org/xml/sax/Locator.java",
+               "xmlapis/org/xml/sax/Parser.java",
+               "xmlapis/org/xml/sax/SAXException.java",
+               "xmlapis/org/xml/sax/SAXNotRecognizedException.java",
+               "xmlapis/org/xml/sax/SAXNotSupportedException.java",
+               "xmlapis/org/xml/sax/SAXParseException.java",
+               "xmlapis/org/xml/sax/XMLReader.java",
+               "xmlapis/org/xml/sax/ext/Attributes2.java",
+               "xmlapis/org/xml/sax/ext/DeclHandler.java",
+               "xmlapis/org/xml/sax/ext/EntityResolver2.java",
+               "xmlapis/org/xml/sax/ext/LexicalHandler.java",
+               "xmlapis/org/xml/sax/ext/Locator2.java",
+               "xmlapis/org/xml/sax/ext/Locator2Impl.java",
+               "xmlapis/org/xml/sax/helpers/DefaultHandler.java",
+               "xmlapis/org/xml/sax/helpers/LocatorImpl.java",
+     ),
+     "prefix": ("org.cyberneko.html", "org.apache.xerces", "org.xml.sax"),
+     "packageRoot": "",
+     # `org.xml.sax` is also the JDK's own package (module `java.xml`), and
+     # other crates emulate those JDK types under their `jdk/` modules with
+     # `Equivalent to `org.xml.sax.X`` docs: such a claim names the JDK's type,
+     # not this port of it, so only this crate's claims are ports of the
+     # module's types (`port_evidence_kg.load`).
+     "ownClaimsOnly": True,
+     "crate": "nekohtml", "cratePath": "crates/nekohtml",
+     # No descriptor: the automatic name the JDK derives from
+     # `nekohtml-1.9.17.jar` (version dropped).
+     "jpms": "nekohtml", "descriptor": None,
+     "scopeRule": "sprint-17-ports-listed-files",
+     "classRule": "sprint-17-listed-file-top-level",
+     "skeletons": "enforce",
+     "role": "the nekohtml 1.9.17 SAX HTML parser lucene/benchmark's DemoHTMLParser uses, "
+             "with the Xerces-J 2.12.2 and SAX 2.0.2 types of its closure; ported by sprint 17"},
+    # `lucene/analysis/icu` whole, its two build tools of `src/tools` included
+    # (user decision D4 on rmp #640); ported by #641 (`SCOPE_PLANS`).
+    {"name": "lucene/analysis/icu", "project": LUCENE, "repo": "lucene",
+     "sources": ("lucene/analysis/icu/src/java", "lucene/analysis/icu/src/tools/java"),
+     "prefix": "org.apache.lucene", "packageRoot": "org.apache.lucene.analysis.icu",
+     "crate": "rucene-analysis-icu", "cratePath": "crates/rucene-analysis-icu",
+     "jpms": "org.apache.lucene.analysis.icu",
+     "descriptor": "lucene/analysis/icu/src/java/module-info.java",
+     "scopeRule": "sprint-17-ports-the-module", "classRule": "sprint-17-module-top-level",
+     "skeletons": "report",
+     "role": "ICU analysis: normalization, folding, segmentation, transforms and ICU "
+             "collation keys, with the RBBI and UTR#30 data tools; ported by sprint 17"},
+    # The icu4j 77.1 closure `lucene/analysis/icu` reaches (FINDING 4694 on rmp
+    # #640): an RTA call graph over the icu4j jar from every method of the
+    # module's classes, the reflection seeds `BreakIteratorFactory` and
+    # `NullTransliterator`, and `Collator.getInstance` with
+    # `CollatorServiceShim`, then the type closure over descriptors and
+    # supertypes; checked against the 371 classes the module's tests initialise
+    # (all inside). 184 files of three Maven modules (`main/core` 136,
+    # `main/collate` 23, `main/translit` 25), ported whole (D1). The block task
+    # of each file is its `SCOPE_PLANS` entry.
+    {"name": "icu4j/icu4j", "project": ICU4J_PROJECT,
+     "repo": "icu4j", "sources": ("main/core/src/main/java", "main/collate/src/main/java",
+                                  "main/translit/src/main/java"),
+     "files": (
+               "main/core/src/main/java/com/ibm/icu/impl/Assert.java",
+               "main/core/src/main/java/com/ibm/icu/impl/BMPSet.java",
+               "main/core/src/main/java/com/ibm/icu/impl/CacheBase.java",
+               "main/core/src/main/java/com/ibm/icu/impl/CacheValue.java",
+               "main/core/src/main/java/com/ibm/icu/impl/CaseMapImpl.java",
+               "main/core/src/main/java/com/ibm/icu/impl/CharacterIteration.java",
+               "main/core/src/main/java/com/ibm/icu/impl/CharacterIteratorWrapper.java",
+               "main/core/src/main/java/com/ibm/icu/impl/CharacterPropertiesImpl.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ClassLoaderUtil.java",
+               "main/core/src/main/java/com/ibm/icu/impl/EmojiProps.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUBinary.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUConfig.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUData.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUDebug.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICULocaleService.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUNotifier.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICURWLock.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUResourceBundle.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUResourceBundleImpl.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUResourceBundleReader.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ICUService.java",
+               "main/core/src/main/java/com/ibm/icu/impl/IllegalIcuArgumentException.java",
+               "main/core/src/main/java/com/ibm/icu/impl/LocaleFallbackData.java",
+               "main/core/src/main/java/com/ibm/icu/impl/LocaleIDParser.java",
+               "main/core/src/main/java/com/ibm/icu/impl/LocaleIDs.java",
+               "main/core/src/main/java/com/ibm/icu/impl/LocaleUtility.java",
+               "main/core/src/main/java/com/ibm/icu/impl/Norm2AllModes.java",
+               "main/core/src/main/java/com/ibm/icu/impl/Normalizer2Impl.java",
+               "main/core/src/main/java/com/ibm/icu/impl/PatternProps.java",
+               "main/core/src/main/java/com/ibm/icu/impl/RBBIDataWrapper.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ReplaceableUCharacterIterator.java",
+               "main/core/src/main/java/com/ibm/icu/impl/ResourceBundleWrapper.java",
+               "main/core/src/main/java/com/ibm/icu/impl/RuleCharacterIterator.java",
+               "main/core/src/main/java/com/ibm/icu/impl/SimpleFilteredSentenceBreakIterator.java",
+               "main/core/src/main/java/com/ibm/icu/impl/SoftCache.java",
+               "main/core/src/main/java/com/ibm/icu/impl/SortedSetRelation.java",
+               "main/core/src/main/java/com/ibm/icu/impl/StringRange.java",
+               "main/core/src/main/java/com/ibm/icu/impl/Trie2.java",
+               "main/core/src/main/java/com/ibm/icu/impl/Trie2_16.java",
+               "main/core/src/main/java/com/ibm/icu/impl/Trie2_32.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UBiDiProps.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UCaseProps.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UCharacterName.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UCharacterNameReader.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UCharacterProperty.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UCharacterUtility.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UPropertyAliases.java",
+               "main/core/src/main/java/com/ibm/icu/impl/URLHandler.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UResource.java",
+               "main/core/src/main/java/com/ibm/icu/impl/USerializedSet.java",
+               "main/core/src/main/java/com/ibm/icu/impl/UnicodeSetStringSpan.java",
+               "main/core/src/main/java/com/ibm/icu/impl/Utility.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/BurmeseBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/BytesDictionaryMatcher.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/CharsDictionaryMatcher.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/CjkBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/DictionaryBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/DictionaryData.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/DictionaryMatcher.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/KhmerBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/LSTMBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/LanguageBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/LaoBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/MlBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/ThaiBreakEngine.java",
+               "main/core/src/main/java/com/ibm/icu/impl/breakiter/UnhandledBreakEngine.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/BOCSU.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/Collation.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationCompare.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationData.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationDataReader.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationFCD.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationFastLatin.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationIterator.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationKeys.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationLoader.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationRoot.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationSettings.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationTailoring.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/FCDUTF16CollationIterator.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/SharedObject.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/TailoredSet.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/UTF16CollationIterator.java",
+               "main/collate/src/main/java/com/ibm/icu/impl/coll/UVector32.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/AsciiUtil.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/BaseLocale.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/Extension.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/InternalLocaleBuilder.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/KeyTypeData.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/LSR.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/LanguageTag.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/LikelySubtags.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/LocaleExtensions.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/LocaleObjectCache.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/LocaleSyntaxException.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/ParseStatus.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/StringTokenIterator.java",
+               "main/core/src/main/java/com/ibm/icu/impl/locale/UnicodeLocaleExtension.java",
+               "main/core/src/main/java/com/ibm/icu/lang/CharSequences.java",
+               "main/core/src/main/java/com/ibm/icu/lang/CharacterProperties.java",
+               "main/core/src/main/java/com/ibm/icu/lang/UCharacter.java",
+               "main/core/src/main/java/com/ibm/icu/lang/UCharacterEnums.java",
+               "main/core/src/main/java/com/ibm/icu/lang/UScript.java",
+               "main/translit/src/main/java/com/ibm/icu/text/AnyTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/BreakIterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/BreakIteratorFactory.java",
+               "main/translit/src/main/java/com/ibm/icu/text/BreakTransliterator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/CaseFoldTransliterator.java",
+               "main/collate/src/main/java/com/ibm/icu/text/CollationKey.java",
+               "main/collate/src/main/java/com/ibm/icu/text/Collator.java",
+               "main/collate/src/main/java/com/ibm/icu/text/CollatorServiceShim.java",
+               "main/translit/src/main/java/com/ibm/icu/text/CompoundTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/Edits.java",
+               "main/translit/src/main/java/com/ibm/icu/text/EscapeTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/FilteredBreakIteratorBuilder.java",
+               "main/core/src/main/java/com/ibm/icu/text/FilteredNormalizer2.java",
+               "main/translit/src/main/java/com/ibm/icu/text/FunctionReplacer.java",
+               "main/translit/src/main/java/com/ibm/icu/text/LowercaseTransliterator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/NameUnicodeTransliterator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/NormalizationTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/Normalizer.java",
+               "main/core/src/main/java/com/ibm/icu/text/Normalizer2.java",
+               "main/translit/src/main/java/com/ibm/icu/text/NullTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/Quantifier.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBINode.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBIRuleBuilder.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBIRuleParseTable.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBIRuleScanner.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBISetBuilder.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBISymbolTable.java",
+               "main/core/src/main/java/com/ibm/icu/text/RBBITableBuilder.java",
+               "main/collate/src/main/java/com/ibm/icu/text/RawCollationKey.java",
+               "main/translit/src/main/java/com/ibm/icu/text/RemoveTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/Replaceable.java",
+               "main/core/src/main/java/com/ibm/icu/text/ReplaceableContextIterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/ReplaceableString.java",
+               "main/core/src/main/java/com/ibm/icu/text/RuleBasedBreakIterator.java",
+               "main/collate/src/main/java/com/ibm/icu/text/RuleBasedCollator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/RuleBasedTransliterator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/SourceTargetUtility.java",
+               "main/translit/src/main/java/com/ibm/icu/text/StringMatcher.java",
+               "main/translit/src/main/java/com/ibm/icu/text/StringReplacer.java",
+               "main/core/src/main/java/com/ibm/icu/text/StringTransform.java",
+               "main/core/src/main/java/com/ibm/icu/text/SymbolTable.java",
+               "main/translit/src/main/java/com/ibm/icu/text/TitlecaseTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/Transform.java",
+               "main/translit/src/main/java/com/ibm/icu/text/TransliterationRule.java",
+               "main/translit/src/main/java/com/ibm/icu/text/TransliterationRuleSet.java",
+               "main/translit/src/main/java/com/ibm/icu/text/Transliterator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/TransliteratorIDParser.java",
+               "main/translit/src/main/java/com/ibm/icu/text/TransliteratorParser.java",
+               "main/translit/src/main/java/com/ibm/icu/text/TransliteratorRegistry.java",
+               "main/core/src/main/java/com/ibm/icu/text/UCharacterIterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/UForwardCharacterIterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/UTF16.java",
+               "main/translit/src/main/java/com/ibm/icu/text/UnescapeTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/UnicodeFilter.java",
+               "main/core/src/main/java/com/ibm/icu/text/UnicodeMatcher.java",
+               "main/translit/src/main/java/com/ibm/icu/text/UnicodeNameTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/text/UnicodeReplacer.java",
+               "main/core/src/main/java/com/ibm/icu/text/UnicodeSet.java",
+               "main/core/src/main/java/com/ibm/icu/text/UnicodeSetIterator.java",
+               "main/translit/src/main/java/com/ibm/icu/text/UppercaseTransliterator.java",
+               "main/core/src/main/java/com/ibm/icu/util/ByteArrayWrapper.java",
+               "main/core/src/main/java/com/ibm/icu/util/BytesTrie.java",
+               "main/core/src/main/java/com/ibm/icu/util/CaseInsensitiveString.java",
+               "main/core/src/main/java/com/ibm/icu/util/CharsTrie.java",
+               "main/core/src/main/java/com/ibm/icu/util/CharsTrieBuilder.java",
+               "main/core/src/main/java/com/ibm/icu/util/CodePointMap.java",
+               "main/core/src/main/java/com/ibm/icu/util/CodePointTrie.java",
+               "main/core/src/main/java/com/ibm/icu/util/Freezable.java",
+               "main/core/src/main/java/com/ibm/icu/util/ICUCloneNotSupportedException.java",
+               "main/core/src/main/java/com/ibm/icu/util/ICUException.java",
+               "main/core/src/main/java/com/ibm/icu/util/ICUUncheckedIOException.java",
+               "main/core/src/main/java/com/ibm/icu/util/MutableCodePointTrie.java",
+               "main/core/src/main/java/com/ibm/icu/util/Output.java",
+               "main/core/src/main/java/com/ibm/icu/util/OutputInt.java",
+               "main/core/src/main/java/com/ibm/icu/util/Region.java",
+               "main/core/src/main/java/com/ibm/icu/util/StringTrieBuilder.java",
+               "main/core/src/main/java/com/ibm/icu/util/ULocale.java",
+               "main/core/src/main/java/com/ibm/icu/util/UResourceBundle.java",
+               "main/core/src/main/java/com/ibm/icu/util/UResourceBundleIterator.java",
+               "main/core/src/main/java/com/ibm/icu/util/UResourceTypeMismatchException.java",
+               "main/core/src/main/java/com/ibm/icu/util/VersionInfo.java",
+     ),
+     "prefix": "com.ibm.icu", "packageRoot": "com.ibm.icu",
+     "crate": "icu4j", "cratePath": "crates/icu4j",
+     # No descriptor: the jar's `Automatic-Module-Name`, the name
+     # `lucene/analysis/icu` and `lucene/benchmark` require.
+     "jpms": "com.ibm.icu", "descriptor": None,
+     "scopeRule": "sprint-17-ports-listed-files",
+     "classRule": "sprint-17-listed-file-top-level",
+     "skeletons": "report",
+     "role": "the icu4j 77.1 normalization, UnicodeSet, properties, break iteration, "
+             "collation and transliteration lucene/analysis/icu uses (its closure); "
+             "ported by sprint 17"},
 )
 BY_NAME = {m["name"]: m for m in PORT_MODULES}
+
+# The task planned to port each in-scope type of a module ported without Rust
+# skeletons (`PLANS_PORT` with `evidence: 'scope-plan'`, written by
+# `port_evidence_kg.load_skeletons` beside the skeletons' own): per module, a
+# task for every file, or a per-file map. `lucene/analysis/icu` is #641; the
+# icu4j files follow the seven blocks of rmp #640 (FINDING 4695, decision 4696):
+# #643 foundations, #644 resource bundles / ULocale / services, #645 character
+# properties, #646 UnicodeSet and normalization, #647 break iteration, #648
+# collation, #649 transliteration.
+SCOPE_PLANS = {
+    "lucene/analysis/icu": 641,
+    "icu4j/icu4j": {
+    "main/core/src/main/java/com/ibm/icu/impl/Assert.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/BMPSet.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/CacheBase.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/CacheValue.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/CaseMapImpl.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/CharacterIteration.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/CharacterIteratorWrapper.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/CharacterPropertiesImpl.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/ClassLoaderUtil.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/EmojiProps.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUBinary.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUConfig.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUData.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUDebug.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/ICULocaleService.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUNotifier.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/ICURWLock.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUResourceBundle.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUResourceBundleImpl.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUResourceBundleReader.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/ICUService.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/IllegalIcuArgumentException.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/LocaleFallbackData.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/LocaleIDParser.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/LocaleIDs.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/LocaleUtility.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/Norm2AllModes.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/Normalizer2Impl.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/PatternProps.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/RBBIDataWrapper.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/ReplaceableUCharacterIterator.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/ResourceBundleWrapper.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/RuleCharacterIterator.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/SimpleFilteredSentenceBreakIterator.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/SoftCache.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/SortedSetRelation.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/StringRange.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/Trie2.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/Trie2_16.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/Trie2_32.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/UBiDiProps.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/UCaseProps.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/UCharacterName.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/UCharacterNameReader.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/UCharacterProperty.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/UCharacterUtility.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/UPropertyAliases.java": 645,
+    "main/core/src/main/java/com/ibm/icu/impl/URLHandler.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/UResource.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/USerializedSet.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/UnicodeSetStringSpan.java": 646,
+    "main/core/src/main/java/com/ibm/icu/impl/Utility.java": 643,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/BurmeseBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/BytesDictionaryMatcher.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/CharsDictionaryMatcher.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/CjkBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/DictionaryBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/DictionaryData.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/DictionaryMatcher.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/KhmerBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/LSTMBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/LanguageBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/LaoBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/MlBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/ThaiBreakEngine.java": 647,
+    "main/core/src/main/java/com/ibm/icu/impl/breakiter/UnhandledBreakEngine.java": 647,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/BOCSU.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/Collation.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationCompare.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationData.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationDataReader.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationFCD.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationFastLatin.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationIterator.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationKeys.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationLoader.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationRoot.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationSettings.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/CollationTailoring.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/FCDUTF16CollationIterator.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/SharedObject.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/TailoredSet.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/UTF16CollationIterator.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/impl/coll/UVector32.java": 648,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/AsciiUtil.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/BaseLocale.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/Extension.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/InternalLocaleBuilder.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/KeyTypeData.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/LSR.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/LanguageTag.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/LikelySubtags.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/LocaleExtensions.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/LocaleObjectCache.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/LocaleSyntaxException.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/ParseStatus.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/StringTokenIterator.java": 644,
+    "main/core/src/main/java/com/ibm/icu/impl/locale/UnicodeLocaleExtension.java": 644,
+    "main/core/src/main/java/com/ibm/icu/lang/CharSequences.java": 645,
+    "main/core/src/main/java/com/ibm/icu/lang/CharacterProperties.java": 645,
+    "main/core/src/main/java/com/ibm/icu/lang/UCharacter.java": 645,
+    "main/core/src/main/java/com/ibm/icu/lang/UCharacterEnums.java": 645,
+    "main/core/src/main/java/com/ibm/icu/lang/UScript.java": 645,
+    "main/translit/src/main/java/com/ibm/icu/text/AnyTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/BreakIterator.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/BreakIteratorFactory.java": 647,
+    "main/translit/src/main/java/com/ibm/icu/text/BreakTransliterator.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/CaseFoldTransliterator.java": 649,
+    "main/collate/src/main/java/com/ibm/icu/text/CollationKey.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/text/Collator.java": 648,
+    "main/collate/src/main/java/com/ibm/icu/text/CollatorServiceShim.java": 648,
+    "main/translit/src/main/java/com/ibm/icu/text/CompoundTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/Edits.java": 643,
+    "main/translit/src/main/java/com/ibm/icu/text/EscapeTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/FilteredBreakIteratorBuilder.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/FilteredNormalizer2.java": 646,
+    "main/translit/src/main/java/com/ibm/icu/text/FunctionReplacer.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/LowercaseTransliterator.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/NameUnicodeTransliterator.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/NormalizationTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/Normalizer.java": 646,
+    "main/core/src/main/java/com/ibm/icu/text/Normalizer2.java": 646,
+    "main/translit/src/main/java/com/ibm/icu/text/NullTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/Quantifier.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/RBBINode.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/RBBIRuleBuilder.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/RBBIRuleParseTable.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/RBBIRuleScanner.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/RBBISetBuilder.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/RBBISymbolTable.java": 647,
+    "main/core/src/main/java/com/ibm/icu/text/RBBITableBuilder.java": 647,
+    "main/collate/src/main/java/com/ibm/icu/text/RawCollationKey.java": 648,
+    "main/translit/src/main/java/com/ibm/icu/text/RemoveTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/Replaceable.java": 643,
+    "main/core/src/main/java/com/ibm/icu/text/ReplaceableContextIterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/ReplaceableString.java": 643,
+    "main/core/src/main/java/com/ibm/icu/text/RuleBasedBreakIterator.java": 647,
+    "main/collate/src/main/java/com/ibm/icu/text/RuleBasedCollator.java": 648,
+    "main/translit/src/main/java/com/ibm/icu/text/RuleBasedTransliterator.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/SourceTargetUtility.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/StringMatcher.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/StringReplacer.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/StringTransform.java": 643,
+    "main/core/src/main/java/com/ibm/icu/text/SymbolTable.java": 646,
+    "main/translit/src/main/java/com/ibm/icu/text/TitlecaseTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/Transform.java": 643,
+    "main/translit/src/main/java/com/ibm/icu/text/TransliterationRule.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/TransliterationRuleSet.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/Transliterator.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/TransliteratorIDParser.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/TransliteratorParser.java": 649,
+    "main/translit/src/main/java/com/ibm/icu/text/TransliteratorRegistry.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/UCharacterIterator.java": 643,
+    "main/core/src/main/java/com/ibm/icu/text/UForwardCharacterIterator.java": 643,
+    "main/core/src/main/java/com/ibm/icu/text/UTF16.java": 643,
+    "main/translit/src/main/java/com/ibm/icu/text/UnescapeTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/UnicodeFilter.java": 646,
+    "main/core/src/main/java/com/ibm/icu/text/UnicodeMatcher.java": 646,
+    "main/translit/src/main/java/com/ibm/icu/text/UnicodeNameTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/UnicodeReplacer.java": 649,
+    "main/core/src/main/java/com/ibm/icu/text/UnicodeSet.java": 646,
+    "main/core/src/main/java/com/ibm/icu/text/UnicodeSetIterator.java": 646,
+    "main/translit/src/main/java/com/ibm/icu/text/UppercaseTransliterator.java": 649,
+    "main/core/src/main/java/com/ibm/icu/util/ByteArrayWrapper.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/BytesTrie.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/CaseInsensitiveString.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/CharsTrie.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/CharsTrieBuilder.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/CodePointMap.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/CodePointTrie.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/Freezable.java": 646,
+    "main/core/src/main/java/com/ibm/icu/util/ICUCloneNotSupportedException.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/ICUException.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/ICUUncheckedIOException.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/MutableCodePointTrie.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/Output.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/OutputInt.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/Region.java": 644,
+    "main/core/src/main/java/com/ibm/icu/util/StringTrieBuilder.java": 643,
+    "main/core/src/main/java/com/ibm/icu/util/ULocale.java": 644,
+    "main/core/src/main/java/com/ibm/icu/util/UResourceBundle.java": 644,
+    "main/core/src/main/java/com/ibm/icu/util/UResourceBundleIterator.java": 644,
+    "main/core/src/main/java/com/ibm/icu/util/UResourceTypeMismatchException.java": 644,
+    "main/core/src/main/java/com/ibm/icu/util/VersionInfo.java": 643,
+    },
+}
+
+
+def scope_plans():
+    """`{(module, java file): task}` for every planned file of `SCOPE_PLANS`; a
+    module planned whole maps each of its in-scope files, read off the graph's
+    `Class.file` by the caller (`file` is `None` here)."""
+    out = {}
+    for module, plan in SCOPE_PLANS.items():
+        if isinstance(plan, int):
+            out[(module, None)] = plan
+        else:
+            out.update({(module, f): t for f, t in plan.items()})
+    return out
 # The modules beyond `lucene/core`: surveyed by `--phase structure`, given the
 # mechanical nested `portState`, and the only ones a cycle-rule early port
 # (`PORTS_EARLY`) may belong to.
@@ -436,6 +1053,14 @@ DECISIONS = (
      "modules": ("lucene/memory", "lucene/facet", "lucene/highlighter", "lucene/spatial3d",
                  "lucene/spatial-extras", "lucene/spatial-test-fixtures", "lucene/benchmark",
                  "spatial4j/spatial4j", "s2-geometry/s2-geometry-library-java"),
+     "supersedes": None},
+    {"name": "Sprint 17 ports the nekohtml 1.9.17 subset DemoHTMLParser uses, with its Xerces-J 2.12.2 and SAX types",
+     "on": "2026-11-22",
+     "modules": ("nekohtml/nekohtml",),
+     "supersedes": None},
+    {"name": "Sprint 17 ports lucene/analysis/icu and the icu4j 77.1 subset it uses",
+     "on": "2026-11-23",
+     "modules": ("lucene/analysis/icu", "icu4j/icu4j"),
      "supersedes": None},
 )
 DECISION = DECISIONS[0]["name"]
@@ -531,20 +1156,24 @@ def early_query(module=None):
     return EARLY_QUERY.replace("RETURN ", f"WHERE c.module = {esc(module)} RETURN ", 1)
 
 
-def repo_roots(lucene_root=None, rt_root=None, spatial4j_root=None, s2_root=None):
+def repo_roots(lucene_root=None, rt_root=None, spatial4j_root=None, s2_root=None,
+               nekohtml_root=None):
     """`{repo: Path}` for the clones the modules live in.
 
-    The two sprint-17 libraries take their roots from the arguments, else the
-    environment (`SPATIAL4J_ROOT`, `S2_GEOMETRY_ROOT`), else the defaults, so
-    every caller that passes only the Lucene and randomizedtesting roots reaches
-    them unchanged.
+    The sprint-17 libraries take their roots from the arguments, else the
+    environment (`SPATIAL4J_ROOT`, `S2_GEOMETRY_ROOT`, `NEKOHTML_ROOT`), else the
+    defaults, so every caller that passes only the Lucene and randomizedtesting
+    roots reaches them unchanged.
     """
     return {"lucene": Path(lucene_root or DEFAULT_LUCENE_ROOT),
             "randomizedtesting": Path(rt_root or os.environ.get(RT_ROOT_ENV)
                                       or DEFAULT_RT_ROOT),
             "spatial4j": Path(spatial4j_root or os.environ.get(SPATIAL4J_ROOT_ENV)
                               or DEFAULT_SPATIAL4J_ROOT),
-            "s2-geometry": Path(s2_root or os.environ.get(S2_ROOT_ENV) or DEFAULT_S2_ROOT)}
+            "s2-geometry": Path(s2_root or os.environ.get(S2_ROOT_ENV) or DEFAULT_S2_ROOT),
+            "nekohtml": Path(nekohtml_root or os.environ.get(NEKOHTML_ROOT_ENV)
+                             or DEFAULT_NEKOHTML_ROOT),
+            "icu4j": Path(os.environ.get(ICU4J_ROOT_ENV) or DEFAULT_ICU4J_ROOT)}
 
 
 def source_dirs(roots, modules=PORT_MODULES):
@@ -583,10 +1212,25 @@ def module_of_file(path):
     return None
 
 
+def claim_crate_of(qualified_name):
+    """The `cratePath` whose claims alone may port the type `qualified_name`,
+    or `None` when any crate's claim may: set for a module with
+    `ownClaimsOnly`, whose Java packages other crates also name for another
+    type of the same name (the JDK's `org.xml.sax`)."""
+    for m in PORT_MODULES:
+        if m.get("ownClaimsOnly") and any(
+                qualified_name.startswith(p + ".") for p in as_tuple(m["prefix"])):
+            return m["cratePath"]
+    return None
+
+
 def package_root(module, package):
-    """The longest `packageRoot` of `module` that `package` lies under, or `None`."""
+    """The longest `packageRoot` of `module` that `package` lies under, or `None`.
+
+    The empty root `""` holds every package: the crate mirrors the whole Java
+    package (`nekohtml`), so the test for a hit is `is not None`, never truth."""
     hits = [r for r in as_tuple(BY_NAME[module]["packageRoot"])
-            if package == r or package.startswith(r + ".")]
+            if r == "" or package == r or package.startswith(r + ".")]
     return max(hits, key=len) if hits else None
 
 
@@ -676,7 +1320,8 @@ def survey_module(module, roots):
         with lucene_roots(base, source) as (el, en):
             el.CORE_PREFIX = as_tuple(m["prefix"])
             d = el.discover()
-            data["packages"].update(p for p in d["packages"] if package_root(module, p))
+            data["packages"].update(p for p in d["packages"]
+                                    if package_root(module, p) is not None)
             data["files"].extend(d["files"])
             data["types"].extend(d["types"])
             data["nested"].extend(en.extract_inner_classes())
@@ -692,7 +1337,7 @@ def survey_module(module, roots):
         data["members"] = {k: [x for x in v if x["parentQualifiedName"] in owners]
                            for k, v in data["members"].items()}
         data["packages"] = {f["package"] for f in data["files"]
-                            if package_root(module, f["package"])}
+                            if package_root(module, f["package"]) is not None}
     data["packages"] = sorted(data["packages"])
     return data
 
@@ -772,6 +1417,66 @@ def phase_modules(roadmap, roots, commit, date):
 
 def decision_text(decision):
     """`(summary, rationale, alternatives)` of one scope `Decision`."""
+    if decision["name"] == DECISIONS[5]["name"]:
+        return (
+            "On 2026-11-23 the user decided (rmp #640) that sprint 17 also ports Lucene "
+            "10.5.0's lucene/analysis/icu in full, as the crate rucene-analysis-icu "
+            "(crates/rucene-analysis-icu), its two build tools of src/tools "
+            "(RBBIRuleCompiler, GenerateUTR30DataFiles) included (D4), and of icu4j 77.1 "
+            "the closure that module reaches, as the crate icu4j (crates/icu4j) and the "
+            "Project 'icu4j 77.1': 184 files of main/core, main/collate and "
+            "main/translit (Module.scopeFiles), ported whole (D1), with every statically "
+            "reachable ICU data file embedded byte-identical (D2) and the LSTM/ML break "
+            "engines ported with their dictionary fallback (D3). Top-level types are "
+            "portScope='in' (portScopeRule 'sprint-17-module-top-level' for the module, "
+            "'sprint-17-listed-file-top-level' for icu4j), nested types portScope="
+            "'nested'. Both are ported without Rust skeletons (skeletons: 'report'); the "
+            "task planned for each type is PLANS_PORT with evidence 'scope-plan': #641 for "
+            "the module, #643-#649 for the seven icu4j blocks.",
+            "The benchmark's NewCollationAnalyzer(impl:icu) fails with "
+            "ClassNotFoundException without the module (user, 2026-11-23). The closure was "
+            "measured (rmp #640 FINDING 4694): an RTA call graph over the icu4j 77.1 jar "
+            "from the module's methods and reflection seeds, checked against the 371 icu4j "
+            "classes the module's 16 tests initialise, all inside it. CLAUDE.md 6.1 "
+            "requires the scope explicit in the graph, so the closure enters it as a file "
+            "list computed from the sources.",
+            "Reached members only, or whole files except reduced facades (rejected by the "
+            "user, D1). Test-exercised data only, or per-group cargo features (rejected, "
+            "D2). The dictionary fallback without the LSTM engines (rejected, D3). The "
+            "module without its build tools (rejected, D4). A Rust ICU crate instead of a "
+            "port (not taken: Lucene's behaviour is icu4j's).",
+        )
+    if decision["name"] == DECISIONS[4]["name"]:
+        return (
+            "On 2026-11-22 the user decided (rmp #611) that the HTML parser "
+            "lucene/benchmark's byTask.feeds.DemoHTMLParser uses, nekohtml 1.9.17, is "
+            "ported for exact equality rather than replaced by a crate, as the workspace "
+            "crate nekohtml (crates/nekohtml; port: rmp #635). The module "
+            "nekohtml/nekohtml, of the Project 'nekohtml 1.9.17', is narrowed by "
+            "Module.scopeFiles to the transitive closure of org.cyberneko.html.parsers."
+            "SAXParser as DemoHTMLParser configures it, over the main code of nekohtml "
+            "1.9.17, Xerces-J 2.12.2 (xercesImpl, the version Lucene 10.5.0 pins) and the "
+            "SAX 2.0.2 interfaces of xml-apis 1.4.01, plus the types reached by string "
+            "reflection and org.xml.sax.helpers.DefaultHandler, which DemoHTMLParser "
+            "extends: 121 files (18 NekoHTML, 80 Xerces, 23 SAX), each declaring one "
+            "top-level type, portScope='in' (portScopeRule "
+            "'sprint-17-listed-file-top-level'); nested types portScope='nested'. The "
+            "crate's module tree mirrors the whole Java package (packageRoot ''). Tracked "
+            "through Rust skeletons (skeletons: 'enforce').",
+            "Measured on rmp #611 against the Java oracle (nekohtml 1.9.17 + xercesImpl "
+            "2.12.2, 49 HTML inputs): html5ever matched 41/49 and lol_html 24/49; only a "
+            "port gives the equal TITLE/BODY/META strings DemoHTMLParser must produce. "
+            "CLAUDE.md 6.1 requires the port's scope to be explicit in the graph, so the "
+            "ported closure enters it as a file list computed from the sources. The "
+            "Xerces and SAX types are part of the same port and the same crate, so they "
+            "are one module of the nekohtml Project rather than Projects of their own.",
+            "Replacing nekohtml by html5ever (41/49, seven behavioural differences) or "
+            "lol_html (24/49) (rejected by the user, rmp #611). Porting nekohtml or "
+            "Xerces whole (rejected: types the parser never reaches would inflate the "
+            "denominator; the user scoped the port to the closure). Registering Xerces-J "
+            "and xml-apis as Projects and modules of their own (not taken: one crate and "
+            "one closure; the crate documentation names all three upstream releases).",
+        )
     if decision["name"] == DECISIONS[3]["name"]:
         return (
             "On 2026-11-22 the user decided that sprint 17 ('Port the benchmark module "
@@ -793,12 +1498,14 @@ def decision_text(decision):
             "'sprint-17-module-top-level'), those of the listed library files portScope="
             "'in' (portScopeRule 'sprint-17-listed-file-top-level'), nested types "
             "portScope='nested'. All nine are tracked through Rust skeletons "
-            "(skeletons: 'enforce'). commons-compress, icu4j and nekohtml, which "
-            "lucene/benchmark also uses, are replaced by Rust crates (rmp #611), not ported.",
+            "(skeletons: 'enforce'). Of the three other libraries lucene/benchmark uses, rmp "
+            "#611 settled commons-compress by the flate2 and bzip2 crates and icu4j by "
+            "porting its root spellout rule into rucene-benchmark; nekohtml is ported, by "
+            "the decision '" + DECISIONS[4]["name"] + "'.",
             "The user's decisions for sprint 17 (rmp sprint 17 comments, 2026-11-22): the "
             "dependency modules are ported in full, not only the parts lucene/benchmark "
             "uses; spatial4j and s2-geometry are ported (the subset used), the other three "
-            "libraries replaced by crates. CLAUDE.md 6.1 requires the graph to answer what "
+            "libraries settled by rmp #611. CLAUDE.md 6.1 requires the graph to answer what "
             "of the port's scope is ported and what is missing, against an explicit "
             "denominator, so the modules the work now covers enter the graph's scope, and "
             "the library narrowing is stated in the graph as a file list computed from the "

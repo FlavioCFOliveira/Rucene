@@ -34,6 +34,22 @@
         "crates/rucene-test-framework/tests/lucene_util_tests.rs: test_test_object_input_filter_factory declares that Java object serialization has no Rust counterpart"
       ],
       "decision": "rmp #508, DECISION comment 2906"
+    },
+    "org.locationtech.spatial4j.io.GeoJSONReader": {
+      "reason": "A ShapeReader that parses GeoJSON with the optional org.noggit JSON parser. spatial4j registers it only through SpatialContextFactory.addReaderIfNoggitExists, which loads org.noggit.JSONParser and adds the reader only when that class exists; noggit is not on Apache Lucene 10.5.0's classpath, so Lucene never registers or instantiates the reader. User decision on rmp task #621 (2026-11-22): noggit absent, as in Lucene's classpath; GeoJSONReader not applicable, noggit not ported.",
+      "lucene": [
+        "versions.lock and versions.toml:34,72: org.locationtech.spatial4j:spatial4j:0.8 is resolved, no org.noggit artifact",
+        "lucene/spatial-extras/build.gradle:30 (moduleApi deps.spatial4j)",
+        "spatial4j 0.8 pom.xml:104-109 (org.noggit:noggit 0.8 is <optional>true</optional>, so not transitive to Lucene)",
+        "spatial4j 0.8 SpatialContextFactory.java:250,263-268 (checkDefaultFormats calls addReaderIfNoggitExists(GeoJSONReader.class); readers.add is reached only after Class.forName(\"org.noggit.JSONParser\") succeeds)"
+      ],
+      "jdk": [
+        "java.lang.Class.forName(String) and forName(String, boolean, ClassLoader), JDK 25: throw ClassNotFoundException when the class cannot be located, which addReaderIfNoggitExists catches without adding the reader"
+      ],
+      "rucene": [
+        "crates/spatial4j/src/io/geo_json_reader.rs: module doc declares the type not applicable (rmp #621)",
+        "crates/spatial4j/src/context/spatial_context_factory.rs: add_reader_if_noggit_exists adds nothing, as org.noggit.JSONParser is not a class load_class finds"
+      ]
     }
   }
 }

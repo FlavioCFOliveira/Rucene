@@ -18,11 +18,11 @@
 //! The types declared in `Tools.java`, of the Java package
 //! `org.apache.lucene.spatial3d.geom`.
 
+use rucene::util::java_math;
+
 /// Static methods globally useful for 3d geometric work.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.Tools`.
-use rucene::util::java_math;
-
 pub struct Tools;
 
 impl Tools {

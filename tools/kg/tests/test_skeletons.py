@@ -60,7 +60,8 @@ def test_analysis_common_is_a_port_module_with_its_crate_and_rules():
         AC, "lucene/queries", "lucene/queryparser", "lucene/sandbox", "lucene/memory",
         "lucene/facet", "lucene/highlighter", "lucene/spatial3d", "lucene/spatial-extras",
         "lucene/spatial-test-fixtures", "lucene/benchmark", "spatial4j/spatial4j",
-        "s2-geometry/s2-geometry-library-java")
+        "s2-geometry/s2-geometry-library-java", "nekohtml/nekohtml", "lucene/analysis/icu",
+        "icu4j/icu4j")
     assert m["skeletons"] == "enforce"
     assert "org.tartarus.snowball" in pm.JAVA_PREFIXES
     assert [d["name"] for d in pm.DECISIONS][1] == "Sprint 12 ports lucene/analysis/common"

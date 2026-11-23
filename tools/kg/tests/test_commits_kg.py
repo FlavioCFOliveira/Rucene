@@ -185,6 +185,7 @@ def run(monkeypatch):
 
     monkeypatch.setattr(ck, "sh", fake_sh)
     monkeypatch.setattr(ck, "resolve_since", lambda rev: C)
+    monkeypatch.setattr(ck, "kg_read", lambda roadmap, q: [])
     monkeypatch.setattr(ck, "unwind_read", lambda roadmap, rows, body, batch: (
         [] if "<>" in body or "{id: row.task}" not in body
         else [{"hash": r["hash"], "task": r["task"]} for r in rows]))
@@ -242,16 +243,52 @@ def test_closes_and_references_write_their_own_edges(run):
     assert not any("MODIFIES" in body for body, _rows in w.values())
 
 
+def expected_changed_files(since, cwd):
+    """`{hash: [path, ...]}` for `since..HEAD`, from git one commit at a time.
+
+    Every commit of the range is listed -- after a merge, the range also holds
+    the commits its other parents bring in -- each with the files `git log`
+    names for it alone: none for a merge, whose changes belong to the commits
+    it merges (`commits_kg.py`'s contract)."""
+    def git(*args):
+        return subprocess.run(["git", *args], capture_output=True, text=True, cwd=cwd,
+                              check=True).stdout
+    return {h: sorted(set(git("log", "-1", "--no-renames", "--name-only", "--format=",
+                              h).split()))
+            for h in git("rev-list", f"{since}..HEAD").split()}
+
+
 def test_changed_files_against_this_repository(monkeypatch):
     monkeypatch.chdir(REPO)
+    assert ck.changed_files("HEAD~1") == expected_changed_files("HEAD~1", REPO)
+
+
+def test_changed_files_when_head_is_a_merge(monkeypatch, tmp_path):
+    """Regression (#636): at a merge HEAD, `HEAD~1..HEAD` is the merge plus the
+    commits of its second parent, and the merge lists no files."""
+    def git(*args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *args], capture_output=True,
+                              text=True, cwd=tmp_path, check=True).stdout.strip()
+    git("init", "-q", "-b", "main")
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    git("add", "a.txt")
+    git("commit", "-q", "-m", "base")
+    git("checkout", "-q", "-b", "side")
+    (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
+    git("add", "b.txt")
+    git("commit", "-q", "-m", "side")
+    side = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    (tmp_path / "c.txt").write_text("c\n", encoding="utf-8")
+    git("add", "c.txt")
+    git("commit", "-q", "-m", "main")
+    git("merge", "-q", "--no-ff", "-m", "merge side", "side")
+    merge = git("rev-parse", "HEAD")
+    monkeypatch.chdir(tmp_path)
     files = ck.changed_files("HEAD~1")
-    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
-                          text=True, check=True).stdout.strip()
-    want = subprocess.run(["git", "show", "--no-renames", "--name-only", "--format=",
-                           "HEAD"], capture_output=True, text=True,
-                          check=True).stdout.split()
-    assert list(files) == [head]
-    assert files[head] == sorted(set(want))
+    assert files == {merge: [], side: ["b.txt"]}
+    assert files == expected_changed_files("HEAD~1", tmp_path)
 
 
 def test_resolve_since_against_this_repository(monkeypatch):
@@ -479,6 +516,7 @@ def test_item3_main_writes_one_closing_per_message_task(monkeypatch, capsys):
         (B, "feat: wip", "2026-10-29T10:00:00+00:00", "Task #74 checkpoint: start\n"))
     writes, reads = [], []
     monkeypatch.setattr(ck, "sh", lambda *a: "" if "--name-only" in a else log)
+    monkeypatch.setattr(ck, "kg_read", lambda roadmap, q: [])
     monkeypatch.setattr(ck, "kg_unwind", lambda roadmap, mode, rows, body, label, batch:
                         writes.append((label, [dict(r) for r in rows])) or {})
     monkeypatch.setattr(ck, "unwind_read", lambda roadmap, rows, body, batch:
@@ -550,3 +588,32 @@ def test_main_since_retires_only_in_range(monkeypatch, capsys):
     assert (C, 137) in g.edges and (A, 137) not in g.edges
     assert g.edges[(B, 7)][0] == "CLOSES_TASK" and g.edges[(A, 192)][0] == "REFERENCES_TASK"
     assert "RETIRED CLOSES_TASK aaaaaaa -> task #137: not derived" in capsys.readouterr().err
+
+
+def test_commits_outside_the_history_are_retired(capsys):
+    deleted = []
+    stale = ck.retire_unreachable(
+        [row(A), row(B)], [A, B, C, None],
+        lambda mode, rows, body, label: deleted.append((mode, body, rows)))
+    assert stale == [C]
+    assert deleted == [("delete", "MATCH (c:Commit {hash: row.hash}) DETACH DELETE c",
+                        [{"hash": C}])]
+    err = capsys.readouterr().err
+    assert "RETIRED Commit ccccccc" in err and "1 deleted" in err
+
+
+def test_retiring_nothing_writes_nothing():
+    calls = []
+    assert ck.retire_unreachable([row(A)], [A], lambda *a: calls.append(a)) == []
+    assert calls == []
+
+
+def test_main_retires_unreachable_commits_only_over_the_whole_history(run, monkeypatch):
+    reads = []
+    monkeypatch.setattr(ck, "kg_read", lambda roadmap, q: reads.append(q) or [[C]])
+    _, w = run(["rucene"])
+    assert reads == ["MATCH (c:Commit) RETURN c.hash"]
+    assert w["unreachable Commit nodes"][1] == [{"hash": C}]
+    reads.clear()
+    _, w = run(["rucene", "--since", "HEAD~2"])
+    assert reads == []

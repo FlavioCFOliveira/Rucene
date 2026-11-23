@@ -80,6 +80,7 @@ import scipio  # noqa: E402
 from extract_rucene_kg import (base_type_name, blank_macro_bodies, load_workspace,  # noqa: E402
                                mask, member_of)
 from kgio import client, counters_of, esc, format_counters, kg_target, read, unwind_maps  # noqa: E402
+from kgcache import disk_memo  # noqa: E402
 
 EVIDENCE = "rust-analyzer-scip"
 # rust-analyzer emits no occurrence for code a `macro_rules!` body generates,
@@ -297,6 +298,7 @@ def _attrs_before(lines, line_no):
     return "\n".join(reversed(out))
 
 
+@disk_memo
 def scan_regions(text: str):
     """Line regions of one file: `impl` blocks, `use` declarations and
     `macro_rules!` bodies.
@@ -763,6 +765,11 @@ def load(roadmap, rows, commit, date, batch=250):
     write on the wrong relationship.
     """
     delete_owned(roadmap)
+    return _create(roadmap, rows, commit, date)
+
+
+def _create(roadmap, rows, commit, date):
+    """`CREATE` one `REFERENCES` edge per row; every row must match its pair."""
     groups = defaultdict(list)
     for r in rows:
         src, dst = tuple(r["src"]), tuple(r["dst"])
@@ -788,6 +795,51 @@ def load(roadmap, rows, commit, date, batch=250):
     return created
 
 
+def _key(r):
+    return (tuple(r["src"]), tuple(r["dst"]), r.get("evidence", EVIDENCE))
+
+
+def load_diff(roadmap, rows, previous, commit, date):
+    """Bring the owned `REFERENCES` from `previous` (the rows the graph holds,
+    those of the last recorded sync) to `rows`: delete the pairs gone, re-count
+    the pairs whose counts changed, create the new ones. The result is the
+    full replace's, with the edges the commit did not change left as they were,
+    stamped with the commit that last wrote them. `verify` checks it after."""
+    old = {_key(r): (r["prod"], r["test"]) for r in previous}
+    new = {_key(r): (r["prod"], r["test"]) for r in rows}
+    gone = [k for k in old if k not in new]
+    recount = [k for k in new if k in old and old[k] != new[k]]
+    added = [r for r in rows if _key(r) not in old]
+
+    def grouped(keys):
+        groups = defaultdict(list)
+        for k in keys:
+            groups[(k[0][0], k[1][0])].append(k)
+        return groups
+
+    for verb, keys in (("delete", gone), ("recount", recount)):
+        for (sl, dl), items in sorted(grouped(keys).items()):
+            maps, ms, md = [], "", ""
+            for src, dst, ev in items:
+                ms, ps = _match("a", src)
+                md, pd = _match("b", dst)
+                extra = {"p": new[(src, dst, ev)][0], "t": new[(src, dst, ev)][1]} \
+                    if verb == "recount" else {}
+                props = {**ps, **pd, "ev": ev, **extra}
+                maps.append("{" + ", ".join(f"{k}:{esc(v)}" for k, v in props.items()) + "}")
+            tail = ("DELETE e" if verb == "delete" else
+                    f"SET e.prodRefs = row.p, e.testRefs = row.t, "
+                    f"e.gitCommit = {esc(commit)}, e.gitDate = {esc(date)}")
+            body = f"{ms} {md} MATCH (a)-[e:REFERENCES]->(b) WHERE e.evidence = row.ev {tail}"
+            unwind_maps(roadmap, "delete" if verb == "delete" else "update", maps, body,
+                        f"REFERENCES {verb} {sl}->{dl}")
+    print(f"  REFERENCES diff from the recorded sync: {len(gone)} deleted, "
+          f"{len(recount)} re-counted, {len(added)} to create, "
+          f"{len(new) - len(added) - len(recount)} unchanged", file=sys.stderr)
+    if added:
+        _create(roadmap, added, commit, date)
+
+
 def verify(roadmap, rows):
     n = read(roadmap, f"MATCH ()-[e:REFERENCES]->() WHERE e.evidence IN {list(OWNED)} "
                       "RETURN count(e), sum(e.prodRefs), sum(e.testRefs)")[0]
@@ -808,6 +860,12 @@ def main():
     ap.add_argument("--work", default=str(kg_target() / "no_caller"))
     ap.add_argument("--scip", help="an existing SCIP index to read instead of running rust-analyzer")
     ap.add_argument("--refs", help="the extracted references (JSONL)")
+    ap.add_argument("--previous-refs",
+                    help="the references the graph holds (the last recorded sync's): "
+                         "`load` writes only the difference (`sync_plan.py`)")
+    ap.add_argument("--reuse-refs",
+                    help="the last recorded sync's references, taken as this commit's "
+                         "without indexing: only when no crate changed (`sync_plan.py`)")
     args = ap.parse_args()
 
     root = Path(args.source_root)
@@ -828,7 +886,20 @@ def main():
         tmp.replace(scip)
         return
 
-    if args.phase in ("extract", "all"):
+    if args.reuse_refs and args.phase in ("extract", "all"):
+        # No crate changed (`sync_plan.py`: empty index set), so neither the
+        # occurrences nor the items they resolve to did: the rows are the last
+        # sync's, restated for this commit.
+        with Path(args.reuse_refs).open() as src, refs.open("w") as fh:
+            n = 0
+            for line in src:
+                r = json.loads(line)
+                r["commit"] = commit
+                fh.write(json.dumps(r) + "\n")
+                n += 1
+        print(f"  no crate changed: {n} reference rows of {args.reuse_refs} reused, "
+              f"no index -> {refs}", file=sys.stderr)
+    elif args.phase in ("extract", "all"):
         source = prepare_source(root, commit, work)
         scip = Path(args.scip) if args.scip else work / f"index_{commit[:7]}.scip"
         if not args.scip:
@@ -861,6 +932,17 @@ def main():
         rows = [json.loads(line) for line in refs.open()]
         if rows and rows[0]["commit"] != commit:
             raise SystemExit(f"{refs} was extracted at {rows[0]['commit']}, not {commit}")
+        prev = Path(args.previous_refs) if args.previous_refs else None
+        if prev is not None and prev.is_file():
+            load_diff(args.roadmap, rows, [json.loads(line) for line in prev.open()],
+                      commit, date)
+            try:
+                verify(args.roadmap, rows)
+                return
+            except SystemExit as e:
+                # The graph did not hold the recorded rows (an endpoint re-created
+                # since): fall back to the full replace.
+                print(f"  {e}; falling back to the full replace", file=sys.stderr)
         load(args.roadmap, rows, commit, date)
         verify(args.roadmap, rows)
 

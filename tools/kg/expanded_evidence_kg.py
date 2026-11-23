@@ -185,6 +185,11 @@ def load(roadmap, claims, commit, date):
         if target is None:
             unresolved.add(c["lucene"])
             continue
+        # As `port_evidence_kg.load`: a type only its own crate ports
+        # (`ownClaimsOnly`) takes no claim from another crate.
+        own = pe.pm.claim_crate_of(target)
+        if own is not None and not c["file"].startswith(own + "/"):
+            continue
         rows.append({"name": c["name"], "file": c["file"], "label": c["label"],
                      "lucene": target, "note": c.get("note"),
                      "commit": commit, "date": date})

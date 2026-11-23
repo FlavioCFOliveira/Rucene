@@ -25,7 +25,10 @@ def pytest_configure(config):
 def _hermetic_library_roots(monkeypatch, tmp_path_factory):
     """Point the sprint-17 library clones (`port_modules_kg.repo_roots`) at empty
     directories, so a test that passes only the Lucene and randomizedtesting
-    roots never reads the real spatial4j / s2-geometry clones under `/tmp`."""
+    roots never reads the real spatial4j / s2-geometry / nekohtml sources under
+    `/tmp`."""
     base = tmp_path_factory.mktemp("libroots")
     monkeypatch.setenv("SPATIAL4J_ROOT", str(base / "spatial4j"))
     monkeypatch.setenv("S2_GEOMETRY_ROOT", str(base / "s2-geometry"))
+    monkeypatch.setenv("NEKOHTML_ROOT", str(base / "nekohtml"))
+    monkeypatch.setenv("ICU4J_ROOT", str(base / "icu4j"))

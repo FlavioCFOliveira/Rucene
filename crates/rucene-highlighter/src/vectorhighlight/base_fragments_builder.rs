@@ -64,9 +64,9 @@ pub const COLORED_PRE_TAGS: [&str; 20] = [
 /// Equivalent to `BaseFragmentsBuilder.COLORED_POST_TAGS`.
 pub const COLORED_POST_TAGS: [&str; 1] = ["</b>"];
 
-/// The state of the abstract class
-/// `org.apache.lucene.search.vectorhighlight.BaseFragmentsBuilder`; its
-/// behaviour is [`BaseFragmentsBuilderImpl`].
+/// Equivalent to the abstract class
+/// `org.apache.lucene.search.vectorhighlight.BaseFragmentsBuilder`: its state;
+/// its behaviour is [`BaseFragmentsBuilderImpl`].
 #[derive(Debug)]
 pub struct BaseFragmentsBuilder {
     /// Equivalent to the protected field `preTags`.

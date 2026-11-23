@@ -171,6 +171,10 @@ def skeleton_audit(q, check, source_root: Path):
           f"{sorted(have - want)[:3]}" if have - want else "")
     want_p = {(d["task"], exact[d["lucene"]]) for d in items
               if exact.get(d["lucene"]) in classes and d["task"] in tasks}
+    # and the plans the scope declares for the modules ported without skeletons
+    want_p |= {(r["task"], r["lucene"]) for r in pe.scope_plan_rows(
+        q("MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.qualifiedName, c.module, c.file"),
+        tasks)}
     have_p = {(t, c) for t, c in q(
         "MATCH (t:Task)-[:PLANS_PORT]->(c:Class) RETURN t.id, c.qualifiedName")}
     check("skeleton tasks without a PLANS_PORT", len(want_p - have_p), 0,
@@ -203,8 +207,12 @@ def skeleton_audit(q, check, source_root: Path):
         multi = sorted(c for c in mod if per_class.get(c, 0) > 1)
         check(f"{module} classes with more than one skeleton", len(multi), 0,
               f"{multi[:3]}" if multi else "")
+        # A skeleton stands for a port still owed. An `absorbed` nested type owes
+        # none (`nested_port_kg.py`: no independent Rust item, and none is owed),
+        # as a `notApplicable` class owes none, so neither is a gap.
         gap = sorted(c for c, (_sc, st) in mod.items()
-                     if per_class.get(c, 0) == 0 and st not in ("ported", "notApplicable"))
+                     if per_class.get(c, 0) == 0
+                     and st not in ("ported", "notApplicable", "absorbed"))
         gap_in = sum(1 for c in gap if mod[c][0] == "in")
         line = (f"   {module}: classes {len(mod)} (top-level "
                 f"{sum(1 for v in mod.values() if v[0] == 'in')}, nested "
