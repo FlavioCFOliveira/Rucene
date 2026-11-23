@@ -12,11 +12,34 @@
 //! writer throws when opened in a `MERGE` context, two one-document segments,
 //! `LogDocMergePolicy`, `forceMerge(1)`):
 //!
-//! * `ConcurrentMergeScheduler`: `IllegalStateException: this writer hit an
-//!   unrecoverable error; cannot complete forceMerge`, caused by the thrown
-//!   exception; the writer is closed and its tragic exception is it;
+//! * `ConcurrentMergeScheduler`: one of three failures, each caused by the
+//!   thrown exception, depending on how the `forceMerge` thread interleaves
+//!   with the merge thread; once the merge threads finished
+//!   (`ConcurrentMergeScheduler.sync()`), the writer is closed and its tragic
+//!   exception is the thrown one;
 //! * `SerialMergeScheduler`: the thrown exception itself, the writer closed
 //!   with it as its tragedy.
+//!
+//! The three `ConcurrentMergeScheduler` failures are Java's own (rmp #638),
+//! all observed against the jar, as the merge thread records the failure in
+//! `mergeExceptions` and wakes the waiters under the writer's lock but records
+//! the tragedy only after leaving it (`IndexWriter.java:4866-4891`):
+//!
+//! * the tragedy is set when the wait loop checks: `IllegalStateException:
+//!   this writer hit an unrecoverable error; cannot complete forceMerge`
+//!   (`IndexWriter.java:2246-2249`) — almost every run;
+//! * the wait loop runs between `addMergeException` and `onTragicEvent`:
+//!   `IOException: background merge hit exception: <segString>`
+//!   (`IndexWriter.java:2252-2261`);
+//! * the merge thread fails before `ConcurrentMergeScheduler.merge` loops back
+//!   to `maybeStall`: `hasPendingMerges` throws `IllegalStateException: this
+//!   writer hit an unrecoverable error; cannot merge`
+//!   (`IndexWriter.java:2518-2523`, `ConcurrentMergeScheduler.java:567-573`).
+//!
+//! In each case `forceMerge` may return before the merge thread closed the
+//! writer, so the test waits for the merge threads, as Lucene's own
+//! `TestIndexWriterExceptions.testForceMergeExceptions` accepts either an
+//! `IllegalStateException` or an `IOException` with a cause.
 //!
 //! Every wait is bounded, so a regression fails instead of hanging.
 
@@ -36,6 +59,7 @@ use rucene::index::merge_scheduler::{
     ConcurrentMergeScheduler, MergeScheduler, SerialMergeScheduler,
 };
 use rucene::index::segment_info::SegmentInfo;
+use rucene::store::java_nio_file::java_cause_of;
 use rucene::store::{ByteBuffersDirectory, Context, Directory, IOContext};
 
 /// The stored-fields format of the default codec, whose writer panics with
@@ -132,10 +156,9 @@ fn force_merge_with(
     (outcome, writer)
 }
 
-/// The tragedy the writer recorded, rendered as `class: message`.
-fn tragedy(writer: &IndexWriter) -> String {
-    let tragedy = writer.get_tragic_exception().expect("a tragic exception");
-    match &*tragedy {
+/// `error` rendered as a Java throwable's `toString()`, `class: message`.
+fn throwable(error: &LuceneError) -> String {
+    match error {
         LuceneError {
             kind: LuceneErrorKind::AssertionError(message),
             ..
@@ -144,37 +167,63 @@ fn tragedy(writer: &IndexWriter) -> String {
     }
 }
 
+/// The tragedy the writer recorded, rendered as `class: message`.
+fn tragedy(writer: &IndexWriter) -> String {
+    throwable(&writer.get_tragic_exception().expect("a tragic exception"))
+}
+
 #[test]
 fn a_panicking_merge_fails_force_merge_under_concurrent_merge_scheduler() {
     for thrown in [
         "java.lang.IllegalStateException: boom",
         "java.lang.AssertionError: boom",
     ] {
-        let (outcome, writer) = force_merge_with(Arc::new(ConcurrentMergeScheduler::new()), thrown);
+        let scheduler = Arc::new(ConcurrentMergeScheduler::new());
+        let (outcome, writer) = force_merge_with(Arc::clone(&scheduler) as _, thrown);
         let Outcome::Error(error) = outcome else {
             panic!("forceMerge panicked instead of failing");
         };
-        match &error {
+        // Java's three outcomes, by interleaving (see the module docs); each
+        // is caused by the thrown exception.
+        let cause = match &error {
             LuceneError {
                 kind: LuceneErrorKind::IllegalState { message, cause },
                 ..
             } => {
-                assert_eq!(
-                    message,
-                    "this writer hit an unrecoverable error; cannot complete forceMerge"
+                assert!(
+                    [
+                        "this writer hit an unrecoverable error; cannot complete forceMerge",
+                        "this writer hit an unrecoverable error; cannot merge",
+                    ]
+                    .contains(&message.as_str()),
+                    "unexpected IllegalStateException message: {message}"
                 );
-                let cause = cause.as_ref().expect("the tragedy as the cause");
-                let cause = match &**cause {
-                    LuceneError {
-                        kind: LuceneErrorKind::AssertionError(m),
-                        ..
-                    } => format!("java.lang.AssertionError: {m}"),
-                    other => other.to_string(),
-                };
-                assert_eq!(cause, thrown);
+                throwable(cause.as_ref().expect("the tragedy as the cause"))
             }
-            other => panic!("expected IllegalStateException, got {other:?}"),
-        }
+            LuceneError {
+                kind: LuceneErrorKind::Io(io),
+                ..
+            } => {
+                assert_eq!(
+                    io.to_string(),
+                    "background merge hit exception: _0(10.5.0):c1 _1(10.5.0):c1 into _2 \
+                     [maxNumSegments=1]"
+                );
+                throwable(java_cause_of(io).expect("the merge's exception as the cause"))
+            }
+            other => panic!("expected IllegalStateException or IOException, got {other:?}"),
+        };
+        assert_eq!(cause, thrown);
+        // `forceMerge` may return before the merge thread recorded the
+        // tragedy and closed the writer: wait for it, as
+        // `ConcurrentMergeScheduler.sync()` does, at most a minute.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            scheduler.sync();
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(60))
+            .expect("the merge thread did not finish within a minute");
         assert!(!writer.is_open());
         assert_eq!(tragedy(&writer), thrown);
     }
