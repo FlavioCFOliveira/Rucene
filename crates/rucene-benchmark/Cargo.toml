@@ -12,6 +12,30 @@ publish = false
 [lib]
 name = "rucene_benchmark"
 
+# The five `main` classes of `lucene/benchmark`, run as `java <Class> args`
+# runs them (rmp #639); `benchmark` is the `mainClass` of the module's
+# `gradle run` task.
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "query_driver"
+path = "src/bin/query_driver.rs"
+
+[[bin]]
+name = "quality_queries_finder"
+path = "src/bin/quality_queries_finder.rs"
+
+[[bin]]
+name = "extract_wikipedia"
+path = "src/bin/extract_wikipedia.rs"
+
+[[bin]]
+name = "sample"
+path = "src/bin/sample.rs"
+
 # Lucene's `lucene/benchmark/build.gradle` also uses commons-compress, icu4j and
 # nekohtml (user decisions on rmp #611, 2026-11-22): commons-compress's GZIP and
 # BZIP2 streams (`byTask.utils.StreamUtils`) are replaced by `flate2` on the

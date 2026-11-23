@@ -163,7 +163,13 @@ impl ExtractWikipedia {
             i += 1;
         }
 
-        let wikipedia = wikipedia.ok_or_else(rucene::error::LuceneError::null_pointer)?;
+        // `wikipedia.toAbsolutePath()` on a null `wikipedia` (no `--input`):
+        // the JVM's helpful NullPointerException.
+        let wikipedia = wikipedia.ok_or_else(|| {
+            rucene::error::LuceneError::null_pointer_with_message(
+                "Cannot invoke \"java.nio.file.Path.toAbsolutePath()\" because \"wikipedia\" is null",
+            )
+        })?;
         let mut properties = Properties::new();
         let absolute = std::path::absolute(&wikipedia).unwrap_or_else(|_| wikipedia.clone());
         properties.set_property("docs.file", absolute.to_string_lossy().into_owned());

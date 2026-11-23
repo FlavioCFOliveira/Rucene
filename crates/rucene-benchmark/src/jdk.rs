@@ -8,6 +8,7 @@
 //! | [`sax::SaxParser`] | the `SAXParser` of `SAXParserFactory.newDefaultInstance()` (streaming, not namespace aware) |
 //! | [`stream_tokenizer::StreamTokenizer`] | `java.io.StreamTokenizer` |
 //! | the functions below | `System`, `Thread`, `String`, `Integer`, `Double` and `Boolean` members |
+//! | [`run_main`] | the `java` launcher running a class's `main(String[])` |
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +18,94 @@ use rucene::error::{LuceneError, Result};
 pub mod properties;
 pub mod sax;
 pub mod stream_tokenizer;
+
+/// The `java` launcher running `main(String[] args)` of a class: the
+/// command-line arguments after the program name are passed to `main`; an
+/// exception thrown out of `main` is reported by the default uncaught
+/// exception handler of thread `main` ([`uncaught_in_main_text`] on
+/// `System.err`, [`system::err`]) and the JVM exits with status 1. A
+/// `System.exit(n)` inside `main` ends the process with its own status, as in
+/// Java. An argument that is not valid UTF-8 is decoded with replacement
+/// characters, as the launcher decodes it with the UTF-8 platform encoding.
+pub fn run_main(main: impl FnOnce(&[String]) -> Result<()>) -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    match main(&args) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            use std::io::Write;
+            let _ = system::out().flush();
+            let mut err = system::err();
+            let _ = err.write_all(uncaught_in_main_text(&e).as_bytes());
+            let _ = err.flush();
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
+/// What `ThreadGroup.uncaughtException` prints for an exception thrown out
+/// of `main`: `Exception in thread "main" ` followed by the
+/// `printStackTrace()` text of `error` — its `toString()`, one `\tat` line
+/// per stack frame, its suppressed exceptions (`\tSuppressed: `) and its
+/// causes (`Caused by: `).
+///
+/// The frames are those of [`LuceneError::get_stack_trace`] (Rust paths in
+/// place of Java classes), captured only when `RUST_BACKTRACE` or
+/// `RUST_LIB_BACKTRACE` enables backtraces; without them no `\tat` line is
+/// printed, as a Rust error carries no JVM frames.
+pub fn uncaught_in_main_text(error: &LuceneError) -> String {
+    let mut out = String::from("Exception in thread \"main\" ");
+    write_stack_trace(&mut out, error, "");
+    out
+}
+
+/// `Throwable.printStackTrace` of `error` into `out`, each line prefixed
+/// with `indent` (the enclosing trace's indentation for a suppressed
+/// exception).
+fn write_stack_trace(out: &mut String, error: &LuceneError, indent: &str) {
+    out.push_str(&rucene::util::concurrent::throwable_to_string(error));
+    out.push('\n');
+    write_frames(out, error, indent);
+    for suppressed in error.get_suppressed() {
+        out.push_str(indent);
+        out.push_str("\tSuppressed: ");
+        write_stack_trace(out, suppressed, &format!("{indent}\t"));
+    }
+    let mut cause = std::error::Error::source(error);
+    while let Some(current) = cause {
+        out.push_str(indent);
+        out.push_str("Caused by: ");
+        match current.downcast_ref::<LuceneError>() {
+            Some(lucene) => {
+                out.push_str(&rucene::util::concurrent::throwable_to_string(lucene));
+                out.push('\n');
+                write_frames(out, lucene, indent);
+            }
+            None => {
+                out.push_str(&current.to_string());
+                out.push('\n');
+            }
+        }
+        cause = current.source();
+    }
+}
+
+/// The `\tat` lines of the frames of `error`.
+fn write_frames(out: &mut String, error: &LuceneError, indent: &str) {
+    for frame in error.get_stack_trace() {
+        let location = match (&frame.file, frame.line) {
+            (Some(file), line) if line >= 0 => format!("{file}:{line}"),
+            (Some(file), _) => file.clone(),
+            (None, _) => "Unknown Source".to_string(),
+        };
+        out.push_str(&format!(
+            "{indent}\tat {}::{}({location})\n",
+            frame.path, frame.function
+        ));
+    }
+}
 
 /// `System.getProperty("line.separator")`.
 pub const NEW_LINE: &str = if cfg!(windows) { "\r\n" } else { "\n" };
