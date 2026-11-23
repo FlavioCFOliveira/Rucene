@@ -52,6 +52,9 @@ fn decoder_identity_hash_code(decoder: &LongToDoubleFunction) -> i32 {
 /// Base class for producing `MultiDoubleValues`.
 ///
 /// Equivalent to `org.apache.lucene.facet.MultiDoubleValuesSource`.
+///
+/// Equivalent to `MultiDoubleValuesSource.toString()`: the
+/// [`Display`](fmt::Display) supertrait.
 pub trait MultiDoubleValuesSource:
     SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync
 {

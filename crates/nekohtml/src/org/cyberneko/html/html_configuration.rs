@@ -172,7 +172,16 @@ impl HTMLConfiguration {
     ///
     /// Equivalent to `new HTMLConfiguration()`.
     pub fn new() -> Rc<Self> {
-        Self::with_document_scanner(HTMLScanner::new())
+        Self::with_document_scanner(Self::create_document_scanner())
+    }
+
+    /// The document scanner the configuration creates: the default
+    /// `fDocumentScanner`, which a subclass replaces through
+    /// [`with_document_scanner`](Self::with_document_scanner).
+    ///
+    /// Equivalent to the protected `HTMLConfiguration.createDocumentScanner()`.
+    pub fn create_document_scanner() -> Rc<HTMLScanner> {
+        HTMLScanner::new()
     }
 
     /// The constructor of a subclass whose `createDocumentScanner()`

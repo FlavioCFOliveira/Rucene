@@ -58,6 +58,7 @@ impl ShapeIO for WKTWriter {
 }
 
 impl ShapeWriter for WKTWriter {
+    /// Equivalent to `WKTWriter.toString(Shape)`.
     fn to_string_of(&self, shape: &dyn Shape) -> String {
         let nf = self.get_number_format();
         if let Some(point) = shape.as_point() {

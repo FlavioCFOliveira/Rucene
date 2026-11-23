@@ -9,7 +9,9 @@
 //! on every JVM. The functions here are a line-by-line Rust translation of the
 //! fdlibm 5.3 C sources published at <https://netlib.org/fdlibm/>: `s_sin.c`,
 //! `s_cos.c`, `k_sin.c`, `k_cos.c`, `e_rem_pio2.c`, `k_rem_pio2.c`,
-//! `e_asin.c`, `e_sqrt.c` and `s_scalbn.c`. Each of those files carries the
+//! `e_asin.c`, `e_sqrt.c` and `s_scalbn.c` (and, for the later `impl`
+//! blocks, the files each function names, among them `e_exp.c`, `s_tanh.c`
+//! and `s_expm1.c`). Each of those files carries the
 //! following notice, which is preserved here as its terms require:
 //!
 //! ```text
@@ -1521,5 +1523,276 @@ impl StrictMath {
             }
         }
         from_words(hi(x) ^ sx as i32, lo(x))
+    }
+}
+
+/// `expm1(x)` (fdlibm `s_expm1.c`): `exp(x) - 1`, accurate even for `x`
+/// near 0. [`StrictMath::tanh`] calls it as fdlibm's `s_tanh.c` does.
+fn expm1(mut x: f64) -> f64 {
+    const ONE: f64 = 1.0;
+    const HUGE: f64 = 1.0e+300;
+    const TINY: f64 = 1.0e-300;
+    const O_THRESHOLD: f64 = f64::from_bits(0x40862E42_FEFA39EF); // 7.09782712893383973096e+02
+    const LN2_HI: f64 = f64::from_bits(0x3fe62e42_fee00000); // 6.93147180369123816490e-01
+    const LN2_LO: f64 = f64::from_bits(0x3dea39ef_35793c76); // 1.90821492927058770002e-10
+    const INVLN2: f64 = f64::from_bits(0x3ff71547_652b82fe); // 1.44269504088896338700e+00
+                                                             // scaled coefficients related to expm1
+    const Q1: f64 = f64::from_bits(0xBFA11111_111110F4); // -3.33333333333331316428e-02
+    const Q2: f64 = f64::from_bits(0x3F5A01A0_19FE5585); // 1.58730158725481460165e-03
+    const Q3: f64 = f64::from_bits(0xBF14CE19_9EAADBB7); // -7.93650757867487942473e-05
+    const Q4: f64 = f64::from_bits(0x3ED0CFCA_86E65239); // 4.00821782732936239552e-06
+    const Q5: f64 = f64::from_bits(0xBE8AFDB7_6E09C32D); // -2.01099218183624371326e-07
+
+    let mut y: f64;
+    let hi_part: f64;
+    let lo_part: f64;
+    let c: f64;
+    let mut t: f64;
+    let k: i32;
+
+    let mut hx = hi(x) as u32; // high word of x
+    let xsb = hx & 0x8000_0000; // sign bit of x
+    hx &= 0x7fff_ffff; // high word of |x|
+
+    // filter out huge and non-finite argument
+    if hx >= 0x4043_687A {
+        // if |x|>=56*ln2
+        if hx >= 0x4086_2E42 {
+            // if |x|>=709.78...
+            if hx >= 0x7ff0_0000 {
+                if ((hx & 0xfffff) | lo(x)) != 0 {
+                    return x + x; // NaN
+                } else {
+                    return if xsb == 0 { x } else { -1.0 }; // exp(+-inf)={inf,-1}
+                }
+            }
+            if x > O_THRESHOLD {
+                return HUGE * HUGE; // overflow
+            }
+        }
+        if xsb != 0 {
+            // x < -56*ln2, return -1.0 with inexact
+            if x + TINY < 0.0 {
+                // raise inexact
+                return TINY - ONE; // return -1
+            }
+        }
+    }
+
+    // argument reduction
+    if hx > 0x3fd6_2e42 {
+        // if  |x| > 0.5 ln2
+        if hx < 0x3FF0_A2B2 {
+            // and |x| < 1.5 ln2
+            if xsb == 0 {
+                hi_part = x - LN2_HI;
+                lo_part = LN2_LO;
+                k = 1;
+            } else {
+                hi_part = x + LN2_HI;
+                lo_part = -LN2_LO;
+                k = -1;
+            }
+        } else {
+            // C `k = invln2*x+((xsb==0)?0.5:-0.5);`: truncation toward zero,
+            // in range for every finite x reaching here (|k| <= 1025).
+            k = (INVLN2 * x + if xsb == 0 { 0.5 } else { -0.5 }) as i32;
+            t = f64::from(k);
+            hi_part = x - t * LN2_HI; // t*ln2_hi is exact here
+            lo_part = t * LN2_LO;
+        }
+        x = hi_part - lo_part;
+        c = (hi_part - x) - lo_part;
+    } else if hx < 0x3c90_0000 {
+        // when |x|<2**-54, return x
+        t = HUGE + x; // return x with inexact flags when x!=0
+        return x - (t - (HUGE + x));
+    } else {
+        k = 0;
+        c = 0.0;
+    }
+
+    // x is now in primary range
+    let hfx = 0.5 * x;
+    let hxs = x * hfx;
+    let r1 = ONE + hxs * (Q1 + hxs * (Q2 + hxs * (Q3 + hxs * (Q4 + hxs * Q5))));
+    t = 3.0 - r1 * hfx;
+    let mut e = hxs * ((r1 - t) / (6.0 - x * t));
+    if k == 0 {
+        x - (x * e - hxs) // c is 0
+    } else {
+        e = x * (e - c) - c;
+        e -= hxs;
+        if k == -1 {
+            return 0.5 * (x - e) - 0.5;
+        }
+        if k == 1 {
+            if x < -0.25 {
+                return -2.0 * (e - (x + 0.5));
+            } else {
+                return ONE + 2.0 * (x - e);
+            }
+        }
+        if k <= -2 || k > 56 {
+            // suffice to return exp(x)-1
+            y = ONE - (e - x);
+            y = from_words(hi(y).wrapping_add(k << 20), lo(y)); // add k to y's exponent
+            return y - ONE;
+        }
+        t = ONE;
+        if k < 20 {
+            t = from_words(0x3ff0_0000 - (0x0020_0000 >> k), lo(t)); // t=1-2^-k
+            y = t - (e - x);
+            y = from_words(hi(y).wrapping_add(k << 20), lo(y)); // add k to y's exponent
+        } else {
+            t = from_words((0x3ff - k) << 20, lo(t)); // 2^-k
+            y = x - (e + t);
+            y += ONE;
+            y = from_words(hi(y).wrapping_add(k << 20), lo(y)); // add k to y's exponent
+        }
+        y
+    }
+}
+
+/// The fdlibm functions icu4j's LSTM break engine reaches through
+/// `java.lang.Math` (`LSTMBreakEngine` `sigmoid` and `tanh`).
+impl StrictMath {
+    /// The exponential of `x`, from fdlibm `e_exp.c`.
+    ///
+    /// Equivalent to `java.lang.StrictMath.exp(double)`.
+    pub fn exp(mut x: f64) -> f64 {
+        const ONE: f64 = 1.0;
+        const HALF: [f64; 2] = [0.5, -0.5];
+        const HUGE: f64 = 1.0e+300;
+        const TWOM1000: f64 = f64::from_bits(0x01700000_00000000); // 9.33263618503218878990e-302, 2**-1000
+        const O_THRESHOLD: f64 = f64::from_bits(0x40862E42_FEFA39EF); // 7.09782712893383973096e+02
+        const U_THRESHOLD: f64 = f64::from_bits(0xc0874910_D52D3051); // -7.45133219101941108420e+02
+        const LN2_HI: [f64; 2] = [
+            f64::from_bits(0x3fe62e42_fee00000), // 6.93147180369123816490e-01
+            f64::from_bits(0xbfe62e42_fee00000), // -6.93147180369123816490e-01
+        ];
+        const LN2_LO: [f64; 2] = [
+            f64::from_bits(0x3dea39ef_35793c76), // 1.90821492927058770002e-10
+            f64::from_bits(0xbdea39ef_35793c76), // -1.90821492927058770002e-10
+        ];
+        const INVLN2: f64 = f64::from_bits(0x3ff71547_652b82fe); // 1.44269504088896338700e+00
+        const P1: f64 = f64::from_bits(0x3FC55555_5555553E); // 1.66666666666666019037e-01
+        const P2: f64 = f64::from_bits(0xBF66C16C_16BEBD93); // -2.77777777770155933842e-03
+        const P3: f64 = f64::from_bits(0x3F11566A_AF25DE2C); // 6.61375632143793436117e-05
+        const P4: f64 = f64::from_bits(0xBEBBBD41_C5D26BF1); // -1.65339022054652515390e-06
+        const P5: f64 = f64::from_bits(0x3E663769_72BEA4D0); // 4.13813679705723846039e-08
+
+        let mut hi_part = 0.0;
+        let mut lo_part = 0.0;
+        let mut k: i32 = 0;
+
+        let mut hx = hi(x) as u32; // high word of x
+        let xsb = ((hx >> 31) & 1) as usize; // sign bit of x
+        hx &= 0x7fff_ffff; // high word of |x|
+
+        // filter out non-finite argument
+        if hx >= 0x4086_2E42 {
+            // if |x|>=709.78...
+            if hx >= 0x7ff0_0000 {
+                if ((hx & 0xfffff) | lo(x)) != 0 {
+                    return x + x; // NaN
+                } else {
+                    return if xsb == 0 { x } else { 0.0 }; // exp(+-inf)={inf,0}
+                }
+            }
+            if x > O_THRESHOLD {
+                return HUGE * HUGE; // overflow
+            }
+            if x < U_THRESHOLD {
+                return TWOM1000 * TWOM1000; // underflow
+            }
+        }
+
+        // argument reduction
+        if hx > 0x3fd6_2e42 {
+            // if  |x| > 0.5 ln2
+            if hx < 0x3FF0_A2B2 {
+                // and |x| < 1.5 ln2
+                hi_part = x - LN2_HI[xsb];
+                lo_part = LN2_LO[xsb];
+                k = 1 - xsb as i32 - xsb as i32;
+            } else {
+                // C `(int)`: truncation toward zero, in range for every
+                // finite x reaching here (|k| <= 1075).
+                k = (INVLN2 * x + HALF[xsb]) as i32;
+                let t = f64::from(k);
+                hi_part = x - t * LN2_HI[0]; // t*ln2HI is exact here
+                lo_part = t * LN2_LO[0];
+            }
+            x = hi_part - lo_part;
+        } else if hx < 0x3e30_0000 {
+            // when |x|<2**-28
+            if HUGE + x > ONE {
+                return ONE + x; // trigger inexact
+            }
+        }
+
+        // x is now in primary range
+        let t = x * x;
+        let c = x - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+        if k == 0 {
+            return ONE - ((x * c) / (c - 2.0) - x);
+        }
+        let y = ONE - ((lo_part - (x * c) / (2.0 - c)) - hi_part);
+        if k >= -1021 {
+            from_words(hi(y).wrapping_add(k << 20), lo(y)) // add k to y's exponent
+        } else {
+            from_words(hi(y).wrapping_add((k + 1000) << 20), lo(y)) * TWOM1000 // add k to y's exponent
+        }
+    }
+
+    /// The hyperbolic tangent of `x`, from fdlibm `s_tanh.c` (with
+    /// `s_expm1.c`).
+    ///
+    /// Equivalent to `java.lang.StrictMath.tanh(double)`.
+    pub fn tanh(x: f64) -> f64 {
+        const ONE: f64 = 1.0;
+        const TWO: f64 = 2.0;
+        const TINY: f64 = 1.0e-300;
+
+        let z;
+
+        // High word of |x|.
+        let jx = hi(x);
+        let ix = jx & 0x7fff_ffff;
+
+        // x is INF or NaN
+        if ix >= 0x7ff0_0000 {
+            if jx >= 0 {
+                return ONE / x + ONE; // tanh(+-inf)=+-1
+            } else {
+                return ONE / x - ONE; // tanh(NaN) = NaN
+            }
+        }
+
+        // |x| < 22
+        if ix < 0x4036_0000 {
+            // |x|<22
+            if ix < 0x3c80_0000 {
+                // |x|<2**-55
+                return x * (ONE + x); // tanh(small) = small
+            }
+            if ix >= 0x3ff0_0000 {
+                // |x|>=1
+                let t = expm1(TWO * x.abs());
+                z = ONE - TWO / (t + TWO);
+            } else {
+                let t = expm1(-TWO * x.abs());
+                z = -t / (t + TWO);
+            }
+        } else {
+            // |x| > 22, return +-1
+            z = ONE - TINY; // raised inexact flag
+        }
+        if jx >= 0 {
+            z
+        } else {
+            -z
+        }
     }
 }

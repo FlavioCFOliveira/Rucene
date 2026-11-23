@@ -529,6 +529,8 @@ impl SerializableObject for PlanetModel {
         o.downcast_ref::<PlanetModel>()
             .is_some_and(|other| self == other)
     }
+    /// Equivalent to `PlanetModel.hashCode()`: `Double.hashCode(a) +
+    /// Double.hashCode(b)`.
     fn java_hash_code(&self) -> i32 {
         dhash(self.a).wrapping_add(dhash(self.b))
     }

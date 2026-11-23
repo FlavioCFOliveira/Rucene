@@ -115,6 +115,11 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
         format!("Filter({})", self.source.range_to_string())
     }
 
+    /// `visit(QueryVisitor)`: `visitor.visitLeaf(this)`.
+    ///
+    /// Equivalent to `ValueSourceQuery.visit(QueryVisitor)`. Equivalent to
+    /// `MultiValueSourceQuery.visit(QueryVisitor)`. (Both nested classes of
+    /// `LongRange` and `DoubleRange`.)
     fn visit(&self, visitor: &mut dyn QueryVisitor) {
         visitor.visit_leaf(self);
     }
@@ -123,6 +128,12 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
         self
     }
 
+    /// `rewrite(IndexSearcher)`: the query over the rewritten fast-match
+    /// query, when the rewrite changed it.
+    ///
+    /// Equivalent to `ValueSourceQuery.rewrite(IndexSearcher)`. Equivalent to
+    /// `MultiValueSourceQuery.rewrite(IndexSearcher)`. (Both nested classes of
+    /// `LongRange` and `DoubleRange`.)
     fn rewrite(&self, index_searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         if let Some(fast_match_query) = &self.fast_match_query {
             if let Some(fast_match_rewritten) = fast_match_query.rewrite(index_searcher)? {
@@ -137,6 +148,13 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
         Ok(None)
     }
 
+    /// `createWeight(IndexSearcher, ScoreMode, float)`: a
+    /// `ConstantScoreWeight` whose two-phase iterator tests the range over
+    /// the fast-match query's matches (or every document).
+    ///
+    /// Equivalent to `ValueSourceQuery.createWeight(IndexSearcher, ScoreMode, float)`.
+    /// Equivalent to `MultiValueSourceQuery.createWeight(IndexSearcher, ScoreMode, float)`.
+    /// (Both nested classes of `LongRange` and `DoubleRange`.)
     fn create_weight(
         &self,
         searcher: &IndexSearcher,
@@ -160,19 +178,17 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
         )))
     }
 
+    /// `equals(Object)`: `sameClassAs(other) && equalsTo(other)`.
+    ///
+    /// Equivalent to `ValueSourceQuery.equals(Object)`. Equivalent to
+    /// `MultiValueSourceQuery.equals(Object)`. (Both nested classes of
+    /// `LongRange` and `DoubleRange`.)
     fn query_eq(&self, other: &dyn Query) -> bool {
         self.same_class_as(other)
             && other
                 .as_any()
                 .downcast_ref::<RangeFilterQuery<S>>()
-                .is_some_and(|o| {
-                    let fmq_eq = match (&self.fast_match_query, &o.fast_match_query) {
-                        (None, None) => true,
-                        (Some(a), Some(b)) => a.query_eq(&**b),
-                        _ => false,
-                    };
-                    self.source.source_eq(&o.source) && fmq_eq
-                })
+                .is_some_and(|o| self.equals_to(o))
     }
 
     fn query_hash(&self) -> i32 {
@@ -185,6 +201,24 @@ impl<S: RangeFilterSource> Query for RangeFilterQuery<S> {
 
     fn java_class_name(&self) -> &'static str {
         self.source.java_class_name()
+    }
+}
+
+impl<S: RangeFilterSource> RangeFilterQuery<S> {
+    /// `equalsTo(other)`: the ranges, the fast-match queries
+    /// (`Objects.equals`) and the values sources are equal.
+    ///
+    /// Equivalent to `ValueSourceQuery.equalsTo(ValueSourceQuery)`.
+    /// Equivalent to `MultiValueSourceQuery.equalsTo(MultiValueSourceQuery)`.
+    /// (Both private methods of the nested classes of `LongRange` and
+    /// `DoubleRange`.)
+    fn equals_to(&self, other: &Self) -> bool {
+        let fmq_eq = match (&self.fast_match_query, &other.fast_match_query) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.query_eq(&**b),
+            _ => false,
+        };
+        self.source.source_eq(&other.source) && fmq_eq
     }
 }
 

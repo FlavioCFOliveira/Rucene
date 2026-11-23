@@ -2,7 +2,7 @@
 //!
 //! | Rucene | JDK |
 //! | --- | --- |
-//! | [`sin`], [`cos`], [`tan`], [`asin`], [`acos`], [`atan`], [`atan2`], [`pow`], [`sqrt`], [`ieee_remainder`] | `java.lang.Math` |
+//! | [`sin`], [`cos`], [`tan`], [`asin`], [`acos`], [`atan`], [`atan2`], [`pow`], [`sqrt`], [`ieee_remainder`], [`exp`], [`tanh`] | `java.lang.Math` |
 //!
 //! `java.lang.Math` may use any algorithm within 1 ulp; each function here is
 //! the matching [`StrictMath`] (fdlibm) function. Measured on JDK 25.0.5
@@ -19,6 +19,9 @@
 //!   equals `java.lang.Math` under `-XX:-UseLibmIntrinsic` and on JVMs
 //!   without those intrinsics, and is the same on every platform. The Java
 //!   oracles of the tests run with `-XX:-UseLibmIntrinsic`.
+//! * `Math.exp` and `Math.tanh` (icu4j's LSTM break engine, rmp #647) follow
+//!   the same decision: fdlibm `StrictMath`, equal to `java.lang.Math` under
+//!   `-XX:-UseLibmIntrinsic`.
 
 use super::strict_math::StrictMath;
 
@@ -82,4 +85,16 @@ pub fn sqrt(x: f64) -> f64 {
 #[inline]
 pub fn ieee_remainder(x: f64, p: f64) -> f64 {
     StrictMath::ieee_remainder(x, p)
+}
+
+/// `Math.exp(double)`: [`StrictMath::exp`] (see the module's divergence).
+#[inline]
+pub fn exp(x: f64) -> f64 {
+    StrictMath::exp(x)
+}
+
+/// `Math.tanh(double)`: [`StrictMath::tanh`] (see the module's divergence).
+#[inline]
+pub fn tanh(x: f64) -> f64 {
+    StrictMath::tanh(x)
 }

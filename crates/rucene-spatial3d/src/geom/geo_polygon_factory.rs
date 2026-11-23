@@ -1444,6 +1444,11 @@ impl fmt::Display for BestShape {
 /// An edge of the polygon being tiled; compared by identity.
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPolygonFactory.Edge`.
+///
+/// Equivalent to `Edge.equals(Object)` (`o == this`) and to
+/// `Edge.hashCode()` (`System.identityHashCode(this)`): an edge's identity
+/// is its index in the edge arena, which the `HashSet<usize>` and
+/// `HashMap<usize, usize>` of [`EdgeBuffer`] hold and compare.
 #[derive(Clone)]
 pub(crate) struct Edge {
     start_point: Pt,

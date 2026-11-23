@@ -30,6 +30,10 @@ use super::planet_model::PlanetModel;
 /// reaches through the `impl_*` macros of [`super`] and through these
 /// associated functions where Java calls `super`.
 /// The `planetModel` field is the `planet_model` field of each struct.
+///
+/// Equivalent to `BasePlanetObject.getPlanetModel()`: the
+/// [`PlanetObject::get_planet_model`](super::planet_object::PlanetObject::get_planet_model)
+/// that `impl_planet_object!` implements over the `planet_model` field.
 pub struct BasePlanetObject;
 
 impl BasePlanetObject {

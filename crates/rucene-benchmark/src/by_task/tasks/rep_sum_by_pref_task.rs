@@ -116,6 +116,7 @@ impl PerfTask for RepSumByPrefTask {
         self.set_prefix(Some(prefix.to_string()));
     }
 
+    /// Equivalent to `RepSumByPrefTask.toString()`.
     fn task_to_string(&self) -> String {
         format!(
             "{} {}",

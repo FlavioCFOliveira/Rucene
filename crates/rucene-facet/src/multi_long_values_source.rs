@@ -41,6 +41,9 @@ use crate::multi_long_values::MultiLongValues;
 /// abstract `equals`/`hashCode`/`toString` are
 /// [`source_eq`](Self::source_eq), [`source_hash`](Self::source_hash) and
 /// [`Display`](fmt::Display).
+///
+/// Equivalent to `MultiLongValuesSource.toString()`: the
+/// [`Display`](fmt::Display) supertrait.
 pub trait MultiLongValuesSource:
     SegmentCacheable + fmt::Display + fmt::Debug + Send + Sync
 {

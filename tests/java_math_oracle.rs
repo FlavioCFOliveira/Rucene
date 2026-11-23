@@ -16,7 +16,7 @@
  */
 
 //! Portability test of `rucene::util::strict_math` and
-//! `rucene::util::java_math` (rmp #628): over the edge cases and 1,000,000
+//! `rucene::util::java_math` (rmp #628; `exp` and `tanh`, rmp #647): over the edge cases and 1,000,000
 //! seeded inputs per function, every [`StrictMath`] function equals JDK 25
 //! `java.lang.StrictMath`, and every `java_math` function equals
 //! `java.lang.Math` under `-XX:-UseLibmIntrinsic` (the divergence
@@ -314,6 +314,8 @@ fn strict_math_and_java_math_equal_the_jdk() {
         "StrictMath",
         &binary(9, false, StrictMath::ieee_remainder),
     );
+    check(&oracle, "exp", "StrictMath", &unary(10, StrictMath::exp));
+    check(&oracle, "tanh", "StrictMath", &unary(11, StrictMath::tanh));
 
     // java_math: every function, against java.lang.Math (without the LIBM
     // intrinsics).
@@ -337,4 +339,6 @@ fn strict_math_and_java_math_equal_the_jdk() {
         "Math",
         &binary(9, false, java_math::ieee_remainder),
     );
+    check(&oracle, "exp", "Math", &unary(10, java_math::exp));
+    check(&oracle, "tanh", "Math", &unary(11, java_math::tanh));
 }

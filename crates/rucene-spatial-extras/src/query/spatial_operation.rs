@@ -171,6 +171,17 @@ impl SpatialOperation {
         }
     }
 
+    /// Registers this operation in the `registry` under `name`, as given and
+    /// upper-cased (`Locale.ROOT`). The constructor registers the name and
+    /// each constant's initializer its aliases, which the `registry`'s lazy
+    /// initializer replays in that order.
+    ///
+    /// Equivalent to `SpatialOperation.register(String)`.
+    fn register(self, registry: &mut HashMap<String, SpatialOperation>, name: &str) {
+        registry.insert(name.to_string(), self);
+        registry.insert(name.to_uppercase(), self);
+    }
+
     /// `hashCode()`: the identity hash of the constant (the core's
     /// stand-in over the name of its anonymous class, `SpatialOperation$1`
     /// to `$8`).
@@ -188,8 +199,7 @@ static REGISTRY: LazyLock<HashMap<String, SpatialOperation>> = LazyLock::new(|| 
     for op in SpatialOperation::values() {
         // the constructor registers the name, then the initializer the aliases
         for name in std::iter::once(op.get_name()).chain(op.aliases().iter().copied()) {
-            registry.insert(name.to_string(), op);
-            registry.insert(name.to_uppercase(), op);
+            op.register(&mut registry, name);
         }
     }
     registry

@@ -422,7 +422,7 @@ impl LocationItem {
 
     /// Returns a string representation of this object.
     ///
-    /// Equivalent to `toString()`.
+    /// Equivalent to `LocationItem.toString()`.
     pub fn to_java_string(&self) -> String {
         format!(
             "{}:{}:{}:{}:{}:{}",

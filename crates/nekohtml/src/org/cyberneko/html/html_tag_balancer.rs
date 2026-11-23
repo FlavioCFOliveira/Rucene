@@ -197,6 +197,8 @@ impl Info {
 
     /// Simple representation to make debugging easier: `Object.toString()`
     /// (class and address) then the name.
+    ///
+    /// Equivalent to `Info.toString()`.
     pub fn to_java_string(&self) -> String {
         format!(
             "org.cyberneko.html.HTMLTagBalancer$Info@{:x}{}",
@@ -248,7 +250,7 @@ impl InfoStack {
 
     /// Simple representation to make debugging easier.
     ///
-    /// Equivalent to `toString()`.
+    /// Equivalent to `InfoStack.toString()`.
     pub fn to_java_string(&self) -> String {
         let mut sb = String::from("InfoStack(");
         for i in (0..self.top).rev() {

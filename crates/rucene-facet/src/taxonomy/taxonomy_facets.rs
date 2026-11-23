@@ -147,7 +147,10 @@ impl AggregatedCount {
 impl AggregatedValue {
     /// Aggregate the value corresponding to the given ordinal.
     ///
-    /// Equivalent to `aggregate(int)`.
+    /// Equivalent to `aggregate(int)`, dispatched per variant: Equivalent to
+    /// `AggregatedCount.aggregate(int)`. Equivalent to
+    /// `IntAggregatedValue.aggregate(int)`. Equivalent to
+    /// `FloatAggregatedValue.aggregate(int)`.
     pub(crate) fn aggregate(&mut self, facets: &TaxonomyFacets, ord: i32) {
         match self {
             AggregatedValue::Count(count) => *count = count.wrapping_add(facets.get_count(ord)),
@@ -168,7 +171,9 @@ impl AggregatedValue {
 
     /// Retrieve the aggregation value.
     ///
-    /// Equivalent to `get()`.
+    /// Equivalent to `get()`, dispatched per variant: Equivalent to
+    /// `AggregatedCount.get()`. Equivalent to `IntAggregatedValue.get()`.
+    /// Equivalent to `FloatAggregatedValue.get()`.
     pub(crate) fn get(&self) -> NumericValue {
         match *self {
             AggregatedValue::Count(v) | AggregatedValue::Int(v) => NumericValue::Int(v),

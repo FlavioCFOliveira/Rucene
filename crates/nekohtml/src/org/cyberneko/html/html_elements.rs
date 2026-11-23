@@ -763,7 +763,8 @@ impl Element {
     /// the other object (`name.equals(o)`), so this is true only for a
     /// string equal to the name.
     ///
-    /// Equivalent to `equals(Object)` with a `String` argument.
+    /// Equivalent to `Element.equals(Object)` with a `String` argument (any
+    /// other argument, an `Element` included, is never equal in Java).
     pub fn equals_str(&self, o: &str) -> bool {
         self.name == o
     }

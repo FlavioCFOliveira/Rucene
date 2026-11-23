@@ -33,6 +33,10 @@ fn radius_deg() -> f64 {
 /// (`public abstract class GeodesicSphereDistCalc extends
 /// AbstractDistanceCalculator`): distances on a sphere, in degrees. The
 /// subclasses implement [`distance_lat_lon_rad`](Self::distance_lat_lon_rad).
+///
+/// Equivalent to `GeodesicSphereDistCalc.area(Rectangle)` and to its
+/// `area(Circle)` overload: the `area_rect` and `area_circle` that the
+/// `geodesic_sphere_dist_calc!` macro implements for every subclass.
 pub trait GeodesicSphereDistCalc: Send + Sync + fmt::Debug + Any {
     /// `distanceLatLonRAD(double lat1, double lon1, double lat2, double
     /// lon2)`.
@@ -115,6 +119,7 @@ macro_rules! geodesic_sphere_dist_calc {
                 )
             }
 
+            /// Equivalent to `GeodesicSphereDistCalc.area(Rectangle)`.
             fn area_rect(&self, rect: &dyn Rectangle) -> f64 {
                 //From http://mathforum.org/library/drmath/view/63767.html
                 let lat1 = DistanceUtils::to_radians(rect.get_min_y());
@@ -126,6 +131,7 @@ macro_rules! geodesic_sphere_dist_calc {
                     * rect.get_width()
             }
 
+            /// Equivalent to `GeodesicSphereDistCalc.area(Circle)`.
             fn area_circle(&self, circle: &dyn Circle) -> f64 {
                 //formula is a simplified case of area(rect).
                 let lat = DistanceUtils::to_radians(90.0 - circle.get_radius());

@@ -137,6 +137,58 @@ impl XMLParseException {
     }
 }
 
+impl XMLParseException {
+    /// Returns a string representation of this object.
+    ///
+    /// Equivalent to `XMLParseException.toString()`.
+    pub fn to_java_string(&self) -> String {
+        self.0.to_java_string()
+    }
+
+    /// The body of `toString()` over the exception's location, message and
+    /// wrapped exception; [`XNIException::to_java_string`] runs it for an
+    /// exception of this class.
+    pub(crate) fn to_java_string_of(
+        l: &XMLParseLocation,
+        message: Option<&str>,
+        exception: Option<&Exception>,
+    ) -> String {
+        let mut str = String::new();
+        if let Some(v) = &l.public_id {
+            str.push_str(v);
+        }
+        str.push(':');
+        if let Some(v) = &l.literal_system_id {
+            str.push_str(v);
+        }
+        str.push(':');
+        if let Some(v) = &l.expanded_system_id {
+            str.push_str(v);
+        }
+        str.push(':');
+        if let Some(v) = &l.base_system_id {
+            str.push_str(v);
+        }
+        str.push(':');
+        str.push_str(&l.line_number.to_string());
+        str.push(':');
+        str.push_str(&l.column_number.to_string());
+        str.push(':');
+        str.push_str(&l.character_offset.to_string());
+        str.push(':');
+        let mut message = message.map(String::from);
+        if message.is_none() {
+            if let Some(exception) = exception {
+                message = exception.get_message();
+            }
+        }
+        if let Some(m) = message {
+            str.push_str(&m);
+        }
+        str
+    }
+}
+
 impl Deref for XMLParseException {
     type Target = XNIException;
 

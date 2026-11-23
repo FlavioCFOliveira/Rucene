@@ -87,6 +87,10 @@ impl AbstractPrefixTreeQuery {
     }
 
     /// `equalsTo(AbstractPrefixTreeQuery other)` (after `sameClassAs`).
+    ///
+    /// Equivalent to `AbstractPrefixTreeQuery.equals(Object)` with each
+    /// subclass's `query_eq`: its downcast to its own type is `sameClassAs(o)`,
+    /// then this is `equalsTo(getClass().cast(o))`.
     pub fn equals_to(&self, other: &AbstractPrefixTreeQuery) -> bool {
         self.detail_level == other.detail_level
             && self.field_name == other.field_name

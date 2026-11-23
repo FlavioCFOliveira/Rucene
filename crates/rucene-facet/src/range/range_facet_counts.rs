@@ -168,7 +168,7 @@ impl RangeFacetCounts {
 
     /// Counts from the provided field.
     ///
-    /// Equivalent to `count(String, List)`.
+    /// Equivalent to `RangeFacetCounts.count(String, List)`.
     pub(crate) fn count_field(
         &mut self,
         field: &str,

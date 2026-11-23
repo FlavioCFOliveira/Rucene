@@ -194,5 +194,7 @@ public class JavaMathOracle {
     binary(7, "atan2", seed, n, false, StrictMath::atan2, Math::atan2);
     binary(8, "pow", seed, n, true, StrictMath::pow, Math::pow);
     binary(9, "IEEEremainder", seed, n, false, StrictMath::IEEEremainder, Math::IEEEremainder);
+    unary(10, "exp", seed, n, StrictMath::exp, Math::exp);
+    unary(11, "tanh", seed, n, StrictMath::tanh, Math::tanh);
   }
 }

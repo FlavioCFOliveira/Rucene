@@ -280,6 +280,17 @@ impl IntersectsDifferentiatingQuery {
         Err(LuceneError::illegal_state(String::new()))
     }
 
+    /// Equivalent to `IntersectsDifferentiatingQuery.toString(String)`: not
+    /// used this way.
+    ///
+    /// # Panics
+    ///
+    /// Always, with Java's `IllegalStateException`.
+    #[allow(dead_code)] // Java's override that is never called this way.
+    pub(crate) fn to_query_string(&self, _field: &str) -> String {
+        panic!("java.lang.IllegalStateException")
+    }
+
     /// `equals(Object o)`: `AbstractPrefixTreeQuery`'s.
     fn query_eq(&self, other: &IntersectsDifferentiatingQuery) -> bool {
         self.avptq.base.equals_to(&other.avptq.base)

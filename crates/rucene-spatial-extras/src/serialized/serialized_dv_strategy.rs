@@ -190,6 +190,7 @@ impl ConstantScoreWeightImpl for PredicateWeight {
 }
 
 impl Query for PredicateValueSourceQuery {
+    /// Equivalent to `PredicateValueSourceQuery.toString(String)`.
     fn to_query_string(&self, _field: &str) -> String {
         format!("PredicateValueSourceQuery({})", self.predicate_value_source)
     }
@@ -297,6 +298,7 @@ impl ShapeValuesSource for ShapeDocValueSource {
         }))
     }
 
+    /// Equivalent to `ShapeDocValueSource.equals(Object)`.
     fn source_eq(&self, other: &dyn ShapeValuesSource) -> bool {
         match other.as_any().downcast_ref::<ShapeDocValueSource>() {
             Some(that) => std::ptr::eq(self, that) || self.field_name == that.field_name,
@@ -304,6 +306,7 @@ impl ShapeValuesSource for ShapeDocValueSource {
         }
     }
 
+    /// Equivalent to `ShapeDocValueSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         string_hash(&self.field_name)
     }

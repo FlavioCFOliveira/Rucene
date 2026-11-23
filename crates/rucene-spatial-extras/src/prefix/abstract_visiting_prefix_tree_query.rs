@@ -219,6 +219,27 @@ pub(crate) struct VNodeCellIterator {
     v_node: usize,
 }
 
+impl VNodeCellIterator {
+    /// Equivalent to `VNodeCellIterator.hasNext()`: `cellIter.hasNext()`.
+    fn has_next(&mut self) -> bool {
+        self.cell_iter.has_next()
+    }
+
+    /// Equivalent to `VNodeCellIterator.next()`: resets the one reused node
+    /// (`v_node`, an index into the template's node stack `nodes`) to the
+    /// next cell and returns it.
+    fn next(&mut self, nodes: &mut [VNode]) -> usize {
+        debug_assert!(self.has_next());
+        nodes[self.v_node].reset(self.cell_iter.next());
+        self.v_node
+    }
+
+    /// Equivalent to `VNodeCellIterator.remove()`: it always removes (Java's
+    /// body is empty). The template never calls it, as Java's never does.
+    #[allow(dead_code)]
+    fn remove(&mut self) {}
+}
+
 /// Equivalent to `org.apache.lucene.spatial.prefix.AbstractVisitingPrefixTreeQuery.VisitorTemplate`
 /// (`public abstract class VisitorTemplate extends BaseTermsEnumTraverser`):
 /// an abstract class designed to make it easy to implement predicates or
@@ -285,11 +306,12 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
 
     /// `curVNode.children.next()` of the node `p`.
     fn children_next(&mut self, p: usize) -> usize {
-        let children = self.nodes[p].children.as_mut().expect("children != null");
-        debug_assert!(children.cell_iter.has_next());
-        let cell = children.cell_iter.next();
-        let v = children.v_node;
-        self.nodes[v].reset(cell);
+        // The iterator is lent out of `nodes[p]` while it resets another node
+        // of the stack, then put back.
+        let mut children = self.nodes[p].children.take().expect("children != null");
+        debug_assert!(children.has_next()); // if we put it there then it has something
+        let v = children.next(&mut self.nodes);
+        self.nodes[p].children = Some(children);
         v
     }
 
@@ -338,7 +360,6 @@ impl<'q, H: VisitorHooks> VisitorTemplate<'q, H> {
                         .children
                         .as_mut()
                         .expect("a parent has children")
-                        .cell_iter
                         .has_next();
                     if has_next {
                         // advance next sibling

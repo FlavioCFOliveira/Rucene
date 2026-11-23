@@ -29,4 +29,11 @@
 /// associated functions where Java calls `super`.
 /// `computeOutsideDistance` is implemented by `impl_geo_base_membership_shape!`
 /// over each class's inherent `outside_distance`.
+///
+/// Equivalent to `GeoBaseMembershipShape.isWithin(Vector)`: the provided
+/// [`Membership::is_within`](super::membership::Membership::is_within), which
+/// is `isWithin(point.x, point.y, point.z)` as this override is.
+/// Equivalent to `GeoBaseMembershipShape.outsideDistance(DistanceStyle, double, double, double)`:
+/// the abstract method is each class's inherent `outside_distance`, which
+/// `impl_geo_base_membership_shape!` calls from `computeOutsideDistance`.
 pub struct GeoBaseMembershipShape;

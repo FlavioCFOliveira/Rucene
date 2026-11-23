@@ -1209,6 +1209,10 @@ pub(crate) struct Node {
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoComplexPolygon.Tree`.
 /// The abstract `getMinimum`/`getMaximum` of the subclasses are the
 /// dimension functions [`XTree`], [`YTree`] and [`ZTree`] pass in.
+///
+/// Equivalent to `Tree.getMinimum(Edge)`: the `get_minimum` argument of
+/// [`Tree::new`]. Equivalent to `Tree.getMaximum(Edge)`: the `get_maximum`
+/// argument of [`Tree::new`].
 pub(crate) struct Tree {
     nodes: Vec<Node>,
     root_node: Option<usize>,
@@ -1336,12 +1340,19 @@ fn ub(v: Option<f64>) -> f64 {
 pub(crate) struct ZTree;
 
 impl ZTree {
+    /// `new ZTree(List<Edge>)`.
     fn create(all_edges: &[Edge]) -> Tree {
-        Tree::new(
-            all_edges,
-            |e| ub(e.plane_bounds.get_minimum_z()),
-            |e| ub(e.plane_bounds.get_maximum_z()),
-        )
+        Tree::new(all_edges, Self::get_minimum, Self::get_maximum)
+    }
+
+    /// Equivalent to `ZTree.getMinimum(Edge)`.
+    fn get_minimum(edge: &Edge) -> f64 {
+        ub(edge.plane_bounds.get_minimum_z())
+    }
+
+    /// Equivalent to `ZTree.getMaximum(Edge)`.
+    fn get_maximum(edge: &Edge) -> f64 {
+        ub(edge.plane_bounds.get_maximum_z())
     }
 }
 
@@ -1351,12 +1362,19 @@ impl ZTree {
 pub(crate) struct YTree;
 
 impl YTree {
+    /// `new YTree(List<Edge>)`.
     fn create(all_edges: &[Edge]) -> Tree {
-        Tree::new(
-            all_edges,
-            |e| ub(e.plane_bounds.get_minimum_y()),
-            |e| ub(e.plane_bounds.get_maximum_y()),
-        )
+        Tree::new(all_edges, Self::get_minimum, Self::get_maximum)
+    }
+
+    /// Equivalent to `YTree.getMinimum(Edge)`.
+    fn get_minimum(edge: &Edge) -> f64 {
+        ub(edge.plane_bounds.get_minimum_y())
+    }
+
+    /// Equivalent to `YTree.getMaximum(Edge)`.
+    fn get_maximum(edge: &Edge) -> f64 {
+        ub(edge.plane_bounds.get_maximum_y())
     }
 }
 
@@ -1366,12 +1384,19 @@ impl YTree {
 pub(crate) struct XTree;
 
 impl XTree {
+    /// `new XTree(List<Edge>)`.
     fn create(all_edges: &[Edge]) -> Tree {
-        Tree::new(
-            all_edges,
-            |e| ub(e.plane_bounds.get_minimum_x()),
-            |e| ub(e.plane_bounds.get_maximum_x()),
-        )
+        Tree::new(all_edges, Self::get_minimum, Self::get_maximum)
+    }
+
+    /// Equivalent to `XTree.getMinimum(Edge)`.
+    fn get_minimum(edge: &Edge) -> f64 {
+        ub(edge.plane_bounds.get_minimum_x())
+    }
+
+    /// Equivalent to `XTree.getMaximum(Edge)`.
+    fn get_maximum(edge: &Edge) -> f64 {
+        ub(edge.plane_bounds.get_maximum_x())
     }
 }
 

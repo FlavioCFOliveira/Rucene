@@ -84,6 +84,7 @@ impl ShapeWriter for LegacyShapeWriter {
             .map_err(io_error)
     }
 
+    /// Equivalent to `LegacyShapeWriter.toString(Shape)`: `writeShape(shape)`.
     fn to_string_of(&self, shape: &dyn Shape) -> String {
         Self::write_shape(shape)
     }

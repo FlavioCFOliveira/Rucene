@@ -1167,9 +1167,8 @@ impl XMLDocumentHandler for AbstractSAXParser {
                 // REVISIT: should we support schema-normalized-value for SAX1
                 // events?
                 self.snapshot_attributes(&*attributes);
-                let proxy = AttributesProxy {
-                    attributes: &*attributes,
-                };
+                let mut proxy = AttributesProxy::new();
+                proxy.set_attributes(&*attributes);
                 dh.start_element(element.rawname.as_deref().unwrap_or(""), &proxy)?;
             }
 
@@ -1227,9 +1226,8 @@ impl XMLDocumentHandler for AbstractSAXParser {
                     String::new()
                 };
                 self.snapshot_attributes(&*attributes);
-                let proxy = AttributesProxy {
-                    attributes: &*attributes,
-                };
+                let mut proxy = AttributesProxy::new();
+                proxy.set_attributes(&*attributes);
                 ch.start_element(
                     &uri,
                     &localpart,
@@ -1249,8 +1247,7 @@ impl XMLDocumentHandler for AbstractSAXParser {
         attributes: &mut dyn XMLAttributes,
         augs: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        self.start_element(element, attributes, augs)?;
-        self.end_element(element, augs)
+        AbstractXMLDocumentParser::empty_element(self, element, attributes, augs)
     }
 
     /// This method notifies of the start of an entity.
@@ -1284,11 +1281,11 @@ impl XMLDocumentHandler for AbstractSAXParser {
     /// `AbstractXMLDocumentParser`'s empty body.
     fn text_decl(
         &self,
-        _version: Option<&str>,
-        _encoding: Option<&str>,
-        _augs: Option<&dyn Augmentations>,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augs: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.text_decl(version, encoding, augs)
     }
 
     /// This method notifies the end of an entity.
@@ -1481,11 +1478,11 @@ impl XMLDTDHandler for AbstractSAXParser {
     /// `AbstractXMLDocumentParser`'s empty body.
     fn text_decl(
         &self,
-        _version: Option<&str>,
-        _encoding: Option<&str>,
-        _augmentations: Option<&dyn Augmentations>,
+        version: Option<&str>,
+        encoding: Option<&str>,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.text_decl(version, encoding, augmentations)
     }
 
     /// This method notifies the end of a parameter entity.
@@ -1556,10 +1553,10 @@ impl XMLDTDHandler for AbstractSAXParser {
     /// `AbstractXMLDocumentParser`'s empty body.
     fn start_attlist(
         &self,
-        _element_name: &str,
-        _augmentations: Option<&dyn Augmentations>,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.start_attlist(element_name, augmentations)
     }
 
     /// An attribute declaration.
@@ -1622,8 +1619,8 @@ impl XMLDTDHandler for AbstractSAXParser {
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn end_attlist(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn end_attlist(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.end_attlist(augmentations)
     }
 
     /// An internal entity declaration.
@@ -1709,24 +1706,24 @@ impl XMLDTDHandler for AbstractSAXParser {
     /// `AbstractXMLDocumentParser`'s empty body.
     fn start_conditional(
         &self,
-        _type_: i16,
-        _augmentations: Option<&dyn Augmentations>,
+        type_: i16,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.start_conditional(type_, augmentations)
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
     fn ignored_characters(
         &self,
-        _text: &XMLString,
-        _augmentations: Option<&dyn Augmentations>,
+        text: &XMLString,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.ignored_characters(text, augmentations)
     }
 
     /// `AbstractXMLDocumentParser`'s empty body.
-    fn end_conditional(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn end_conditional(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.end_conditional(augmentations)
     }
 
     /// The end of the DTD.
@@ -1762,58 +1759,54 @@ impl XMLDTDHandler for AbstractSAXParser {
 impl XMLDTDContentModelHandler for AbstractSAXParser {
     fn start_content_model(
         &self,
-        _element_name: &str,
-        _augmentations: Option<&dyn Augmentations>,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.start_content_model(element_name, augmentations)
     }
 
-    fn any(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn any(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.any(augmentations)
     }
 
-    fn empty(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn empty(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.empty(augmentations)
     }
 
-    fn start_group(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn start_group(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.start_group(augmentations)
     }
 
-    fn pcdata(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn pcdata(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.pcdata(augmentations)
     }
 
     fn element(
         &self,
-        _element_name: &str,
-        _augmentations: Option<&dyn Augmentations>,
+        element_name: &str,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.element(element_name, augmentations)
     }
 
-    fn separator(
-        &self,
-        _separator: i16,
-        _augmentations: Option<&dyn Augmentations>,
-    ) -> JResult<()> {
-        Ok(())
+    fn separator(&self, separator: i16, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.separator(separator, augmentations)
     }
 
     fn occurrence(
         &self,
-        _occurrence: i16,
-        _augmentations: Option<&dyn Augmentations>,
+        occurrence: i16,
+        augmentations: Option<&dyn Augmentations>,
     ) -> JResult<()> {
-        Ok(())
+        self.base.occurrence(occurrence, augmentations)
     }
 
-    fn end_group(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn end_group(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.end_group(augmentations)
     }
 
-    fn end_content_model(&self, _augmentations: Option<&dyn Augmentations>) -> JResult<()> {
-        Ok(())
+    fn end_content_model(&self, augmentations: Option<&dyn Augmentations>) -> JResult<()> {
+        self.base.end_content_model(augmentations)
     }
 
     fn set_dtd_content_model_source(&self, source: Option<Rc<dyn XMLDTDContentModelSource>>) {
@@ -2482,8 +2475,35 @@ impl Locator2 for LocatorProxy {
 /// borrows the attributes for the duration of the callback (see the
 /// parser's divergence).
 pub struct AttributesProxy<'a> {
-    /// XML attributes.
-    attributes: &'a dyn XMLAttributes,
+    /// XML attributes (`fAttributes`), `None` (Java `null`) until
+    /// [`set_attributes`](Self::set_attributes).
+    attributes: Option<&'a dyn XMLAttributes>,
+}
+
+impl<'a> AttributesProxy<'a> {
+    /// Equivalent to `new AttributesProxy()`.
+    pub fn new() -> Self {
+        Self { attributes: None }
+    }
+
+    /// Sets the XML attributes.
+    ///
+    /// Equivalent to `AttributesProxy.setAttributes(XMLAttributes)`.
+    pub fn set_attributes(&mut self, attributes: &'a dyn XMLAttributes) {
+        self.attributes = Some(attributes);
+    }
+
+    /// `fAttributes`, dereferenced.
+    fn attributes(&self) -> &'a dyn XMLAttributes {
+        self.attributes
+            .expect("java.lang.NullPointerException: fAttributes")
+    }
+}
+
+impl Default for AttributesProxy<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AttributesProxy<'_> {
@@ -2496,7 +2516,7 @@ impl AttributesProxy<'_> {
     }
 
     fn declared_at(&self, index: i32) -> bool {
-        self.attributes
+        self.attributes()
             .get_augmentations(index)
             .and_then(|a| a.get_item(constants::ATTRIBUTE_DECLARED))
             .and_then(|o| object_as_bool(&o))
@@ -2506,86 +2526,88 @@ impl AttributesProxy<'_> {
 
 impl AttributeList for AttributesProxy<'_> {
     fn get_length(&self) -> i32 {
-        self.attributes.get_length()
+        self.attributes().get_length()
     }
 
     fn get_name(&self, i: i32) -> Option<String> {
-        self.attributes.get_qname(i)
+        self.attributes().get_qname(i)
     }
 
     fn get_type(&self, i: i32) -> Option<String> {
-        self.attributes.get_type(i)
+        self.attributes().get_type(i)
     }
 
     fn get_value(&self, i: i32) -> Option<String> {
-        self.attributes.get_value(i)
+        self.attributes().get_value(i)
     }
 
     fn get_type_by_name(&self, name: &str) -> Option<String> {
-        self.attributes.get_type_by_qname(name)
+        self.attributes().get_type_by_qname(name)
     }
 
     fn get_value_by_name(&self, name: &str) -> Option<String> {
-        self.attributes.get_value_by_qname(name)
+        self.attributes().get_value_by_qname(name)
     }
 }
 
 impl Attributes for AttributesProxy<'_> {
     fn get_length(&self) -> i32 {
-        self.attributes.get_length()
+        self.attributes().get_length()
     }
 
     fn get_uri(&self, index: i32) -> Option<String> {
         // REVISIT: this hides the fact that internally we use
         //          null instead of empty string
         //          SAX requires URI to be a string or an empty string
-        Some(self.attributes.get_uri(index).unwrap_or_default())
+        Some(self.attributes().get_uri(index).unwrap_or_default())
     }
 
     fn get_local_name(&self, index: i32) -> Option<String> {
-        self.attributes.get_local_name(index)
+        self.attributes().get_local_name(index)
     }
 
     fn get_qname(&self, index: i32) -> Option<String> {
-        self.attributes.get_qname(index)
+        self.attributes().get_qname(index)
     }
 
     fn get_type(&self, i: i32) -> Option<String> {
-        self.attributes.get_type(i)
+        self.attributes().get_type(i)
     }
 
     fn get_value(&self, i: i32) -> Option<String> {
-        self.attributes.get_value(i)
+        self.attributes().get_value(i)
     }
 
     fn get_index_ns(&self, uri: &str, local_part: &str) -> i32 {
-        self.attributes.get_index_ns(Self::ns_uri(uri), local_part)
+        self.attributes()
+            .get_index_ns(Self::ns_uri(uri), local_part)
     }
 
     fn get_index(&self, qname: &str) -> i32 {
-        self.attributes.get_index(qname)
+        self.attributes().get_index(qname)
     }
 
     fn get_type_ns(&self, uri: &str, local_name: &str) -> Option<String> {
-        self.attributes.get_type_ns(Self::ns_uri(uri), local_name)
+        self.attributes().get_type_ns(Self::ns_uri(uri), local_name)
     }
 
     fn get_type_by_qname(&self, qname: &str) -> Option<String> {
-        self.attributes.get_type_by_qname(qname)
+        self.attributes().get_type_by_qname(qname)
     }
 
     fn get_value_ns(&self, uri: &str, local_name: &str) -> Option<String> {
-        self.attributes.get_value_ns(Self::ns_uri(uri), local_name)
+        self.attributes()
+            .get_value_ns(Self::ns_uri(uri), local_name)
     }
 
     fn get_value_by_qname(&self, qname: &str) -> Option<String> {
-        self.attributes.get_value_by_qname(qname)
+        self.attributes().get_value_by_qname(qname)
     }
 }
 
 impl Attributes2 for AttributesProxy<'_> {
     fn is_declared(&self, index: i32) -> JResult<bool> {
-        if index < 0 || index >= self.attributes.get_length() {
+        if index < 0 || index >= self.attributes().get_length() {
             return Err(Exception::runtime(rucene::error::LuceneError::unchecked(
                 "java.lang.ArrayIndexOutOfBoundsException",
                 format!("Array index out of range: {index}"),
@@ -2615,13 +2637,13 @@ impl Attributes2 for AttributesProxy<'_> {
     }
 
     fn is_specified(&self, index: i32) -> JResult<bool> {
-        if index < 0 || index >= self.attributes.get_length() {
+        if index < 0 || index >= self.attributes().get_length() {
             return Err(Exception::runtime(rucene::error::LuceneError::unchecked(
                 "java.lang.ArrayIndexOutOfBoundsException",
                 format!("Array index out of range: {index}"),
             )));
         }
-        Ok(self.attributes.is_specified(index))
+        Ok(self.attributes().is_specified(index))
     }
 
     fn is_specified_ns(&self, uri: &str, local_name: &str) -> JResult<bool> {
@@ -2631,7 +2653,7 @@ impl Attributes2 for AttributesProxy<'_> {
                 rucene::error::LuceneError::illegal_argument(local_name),
             ));
         }
-        Ok(self.attributes.is_specified(index))
+        Ok(self.attributes().is_specified(index))
     }
 
     fn is_specified_by_qname(&self, qname: &str) -> JResult<bool> {
@@ -2641,6 +2663,6 @@ impl Attributes2 for AttributesProxy<'_> {
                 rucene::error::LuceneError::illegal_argument(qname),
             ));
         }
-        Ok(self.attributes.is_specified(index))
+        Ok(self.attributes().is_specified(index))
     }
 }

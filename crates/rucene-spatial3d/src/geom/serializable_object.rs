@@ -339,11 +339,7 @@ pub fn read_string(input: &mut dyn Read) -> Result<String> {
 ///
 /// `IOException` from the stream.
 pub fn write_point_array(output: &mut dyn Write, values: &[GeoPoint]) -> Result<()> {
-    write_int(output, values.len() as i32)?;
-    for value in values {
-        value.write(output)?;
-    }
-    Ok(())
+    write_homogeneous_array(output, values)
 }
 
 /// `readPointArray(PlanetModel, InputStream)`.
@@ -355,17 +351,12 @@ pub fn read_point_array(
     planet_model: &Arc<PlanetModel>,
     input: &mut dyn Read,
 ) -> Result<Vec<GeoPoint>> {
-    let count = read_int(input)?;
-    let mut rval = new_array(count)?;
-    for _ in 0..count {
-        let o = read_object_with_model_class(
-            planet_model,
-            input,
-            "org.apache.lucene.spatial3d.geom.GeoPoint",
-        )?;
-        rval.push(downcast_point(o)?);
-    }
-    Ok(rval)
+    read_homogeneous_array(
+        planet_model,
+        input,
+        "org.apache.lucene.spatial3d.geom.GeoPoint",
+        downcast_point,
+    )
 }
 
 /// `(GeoPoint) o`.
@@ -410,6 +401,54 @@ pub fn read_polygon_array(
         "org.apache.lucene.spatial3d.geom.GeoPolygon",
         |o| o.into_geo_polygon(),
     )
+}
+
+/// Write an array: the count, then each object's own `write` (no class
+/// names).
+///
+/// Equivalent to `SerializableObject.writeHomogeneousArray(OutputStream, SerializableObject[])`
+/// and its `(OutputStream, List<? extends SerializableObject>)` overload. A
+/// Java `null` array writes the count 0, which is the empty slice here.
+///
+/// # Errors
+///
+/// `IOException` from the stream.
+pub fn write_homogeneous_array<T: SerializableObject>(
+    output: &mut dyn Write,
+    values: &[T],
+) -> Result<()> {
+    write_int(output, values.len() as i32)?;
+    for value in values {
+        value.write(output)?;
+    }
+    Ok(())
+}
+
+/// Read an array: the count, then each object through `clazz`'s
+/// `(PlanetModel, InputStream)` constructor; `cast` is `clazz.cast`.
+///
+/// Equivalent to `SerializableObject.readHomogeneousArray(PlanetModel, InputStream, Class)`.
+///
+/// # Errors
+///
+/// `IOException` from the stream or for a malformed one;
+/// `ClassCastException` from `cast`.
+pub fn read_homogeneous_array<T>(
+    planet_model: &Arc<PlanetModel>,
+    input: &mut dyn Read,
+    clazz: &str,
+    cast: impl Fn(Arc<dyn SerializableObject>) -> Result<T>,
+) -> Result<Vec<T>> {
+    let count = read_int(input)?;
+    let mut rval = new_array(count)?;
+    for _ in 0..count {
+        rval.push(cast(read_object_with_model_class(
+            planet_model,
+            input,
+            clazz,
+        )?)?);
+    }
+    Ok(rval)
 }
 
 /// `writeHeterogeneousArray(OutputStream, SerializableObject[])`.

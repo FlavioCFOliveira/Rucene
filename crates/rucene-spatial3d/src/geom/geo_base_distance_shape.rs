@@ -31,4 +31,24 @@
 /// implemented by `impl_geo_base_distance_shape!` over each class's inherent
 /// `distance`, `delta_distance` (Java's default: `distance * 2.0`) and
 /// `distance_bounds`.
+///
+/// Equivalent to `GeoBaseDistanceShape.isWithin(Vector)`: the provided
+/// [`Membership::is_within`](super::membership::Membership::is_within), which
+/// is `isWithin(point.x, point.y, point.z)` as this override is.
+/// Equivalent to `GeoBaseDistanceShape.distanceBounds(Bounds, DistanceStyle, double)`:
+/// the abstract method is each class's inherent `distance_bounds`, which
+/// `impl_geo_base_distance_shape!` calls from `getDistanceBounds`.
 pub struct GeoBaseDistanceShape;
+
+impl GeoBaseDistanceShape {
+    /// Called by a `computeDeltaDistance` method if X/Y/Z is within this
+    /// shape: Java's default body, `distance(...) * 2.0`, given the result of
+    /// the class's `distance(distanceStyle, x, y, z)`. The classes that do not
+    /// override `deltaDistance` (`GeoStandardCircle`, `GeoExactCircle`) call
+    /// it from their inherent `delta_distance`.
+    ///
+    /// Equivalent to `GeoBaseDistanceShape.deltaDistance(DistanceStyle, double, double, double)`.
+    pub fn delta_distance(distance: rucene::error::Result<f64>) -> rucene::error::Result<f64> {
+        Ok(distance? * 2.0)
+    }
+}

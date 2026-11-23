@@ -169,8 +169,8 @@ impl WKTReader {
     }
 
     /// `newState(String wktString)`.
-    pub fn new_state(&self, wkt_string: &str) -> State {
-        State::new(wkt_string)
+    pub fn new_state(&self, wkt_string: &str) -> State<'_> {
+        State::new(self, wkt_string)
     }
 
     /// `parseShapeByType(State state, String shapeType)`: `None` (Java
@@ -492,10 +492,12 @@ impl ShapeReader for WKTReader {
 
 /// Equivalent to `org.locationtech.spatial4j.io.WKTReader.State` (`public
 /// class State`, an inner class): the parse state of one WKT string, as its
-/// UTF-16 units. Its `getCtx()` and `getParser()` reach the enclosing
-/// reader, which the parse methods hold here as `self`.
+/// UTF-16 units. `parser` is the enclosing reader (`WKTReader.this`), which
+/// [`get_ctx`](Self::get_ctx) and [`get_parser`](Self::get_parser) reach.
 #[derive(Clone, Debug)]
-pub struct State {
+pub struct State<'a> {
+    /// `WKTReader.this`, the enclosing instance.
+    parser: &'a WKTReader,
     /// `rawString`.
     pub raw_string: Vec<u16>,
     /// `offset`: the index into `rawString`.
@@ -504,14 +506,25 @@ pub struct State {
     pub dimension: Option<String>,
 }
 
-impl State {
-    /// `State(String rawString)`.
-    pub fn new(raw_string: &str) -> Self {
+impl<'a> State<'a> {
+    /// `State(String rawString)`, an inner-class constructor of `parser`.
+    pub fn new(parser: &'a WKTReader, raw_string: &str) -> Self {
         Self {
+            parser,
             raw_string: raw_string.encode_utf16().collect(),
             offset: 0,
             dimension: None,
         }
+    }
+
+    /// Equivalent to `State.getCtx()`: the enclosing reader's `ctx`.
+    pub fn get_ctx(&self) -> Arc<SpatialContext> {
+        self.parser.ctx()
+    }
+
+    /// Equivalent to `State.getParser()`: `WKTReader.this`.
+    pub fn get_parser(&self) -> &'a WKTReader {
+        self.parser
     }
 
     /// `rawString.charAt(index)`, a lone surrogate as U+FFFD (which no

@@ -33,6 +33,10 @@ use super::vector::Vector;
 /// interfaces and calls these associated functions where Java calls the
 /// inherited methods. `getEdgePoints()` is each solid's inherent
 /// `edge_points()`.
+///
+/// Equivalent to `BaseXYZSolid.isWithin(Vector)`: the provided
+/// [`Membership::is_within`](super::membership::Membership::is_within), which
+/// is `isWithin(point.x, point.y, point.z)` as this override is.
 pub(crate) struct BaseXYZSolid;
 
 /// Unit vector in x.

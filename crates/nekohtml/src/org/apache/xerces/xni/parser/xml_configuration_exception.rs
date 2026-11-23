@@ -65,12 +65,49 @@ impl XMLConfigurationException {
     pub fn of(e: &Exception) -> Option<(i16, Option<&str>)> {
         match e {
             Exception::Xni(x) => match x.class() {
-                XNIExceptionClass::XMLConfigurationException { type_, identifier } => {
-                    Some((*type_, identifier.as_deref()))
+                XNIExceptionClass::XMLConfigurationException { .. } => {
+                    Some((Self::get_type(x), Self::get_identifier(x)))
                 }
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// Returns the exception type of the configuration exception `e`.
+    ///
+    /// Equivalent to `XMLConfigurationException.getType()`.
+    ///
+    /// # Panics
+    ///
+    /// `ClassCastException` when `e` is not an `XMLConfigurationException`.
+    pub fn get_type(e: &XNIException) -> i16 {
+        match e.class() {
+            XNIExceptionClass::XMLConfigurationException { type_, .. } => *type_,
+            _ => panic!(
+                "java.lang.ClassCastException: class {} cannot be cast to class org.apache.xerces.xni.parser.XMLConfigurationException",
+                e.class_name()
+            ),
+        }
+    }
+
+    /// Returns the feature or property identifier of the configuration
+    /// exception `e`.
+    ///
+    /// Equivalent to `XMLConfigurationException.getIdentifier()`.
+    ///
+    /// # Panics
+    ///
+    /// `ClassCastException` when `e` is not an `XMLConfigurationException`.
+    pub fn get_identifier(e: &XNIException) -> Option<&str> {
+        match e.class() {
+            XNIExceptionClass::XMLConfigurationException { identifier, .. } => {
+                identifier.as_deref()
+            }
+            _ => panic!(
+                "java.lang.ClassCastException: class {} cannot be cast to class org.apache.xerces.xni.parser.XMLConfigurationException",
+                e.class_name()
+            ),
         }
     }
 }

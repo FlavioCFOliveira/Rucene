@@ -28,6 +28,9 @@ use crate::shape::rectangle::Rectangle;
 /// [`fmt::Display`] implementation.
 pub trait DistanceCalculator: fmt::Display + fmt::Debug + Send + Sync + Any {
     /// `distance(Point from, Point to)`.
+    ///
+    /// Equivalent to `AbstractDistanceCalculator.distance(Point, Point)`, the
+    /// body every calculator inherits.
     fn distance(&self, from: &dyn Point, to: &dyn Point) -> f64 {
         self.distance_xy(from, to.get_x(), to.get_y())
     }
@@ -36,6 +39,9 @@ pub trait DistanceCalculator: fmt::Display + fmt::Debug + Send + Sync + Any {
     fn distance_xy(&self, from: &dyn Point, to_x: f64, to_y: f64) -> f64;
 
     /// `within(Point from, double toX, double toY, double distance)`.
+    ///
+    /// Equivalent to `AbstractDistanceCalculator.within(Point, double, double, double)`,
+    /// the body every calculator inherits.
     fn within(&self, from: &dyn Point, to_x: f64, to_y: f64, distance: f64) -> bool {
         self.distance_xy(from, to_x, to_y) <= distance
     }

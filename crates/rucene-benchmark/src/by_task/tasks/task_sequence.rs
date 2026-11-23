@@ -395,15 +395,13 @@ impl TaskSequence {
         let run_data = Arc::clone(self.base.get_run_data());
         let stats = run_data.get_points().get_current_stats();
         self.init_tasks_array();
-        let (repetitions, tasks_array, let_child_report, any_exhaustible, rate, per_min) = {
+        let (repetitions, tasks_array, let_child_report, any_exhaustible) = {
             let s = self.lock();
             (
                 s.repetitions,
                 s.tasks_array.clone().unwrap_or_default(),
                 s.let_child_report,
                 s.any_exhaustible_tasks,
-                s.rate,
-                s.per_min,
             )
         };
         let n = (repetitions.max(0) as usize) * tasks_array.len();
@@ -429,23 +427,11 @@ impl TaskSequence {
             Some(t.iter().map(|(_, task)| Arc::clone(task)).collect());
         let counts: Vec<AtomicI32> = (0..t.len()).map(|_| AtomicI32::new(0)).collect();
         std::thread::scope(|scope| -> Result<()> {
-            // run threads
             let mut handles = Vec::with_capacity(t.len());
-            let delay_step = if rate > 0 {
-                i64::from(if per_min { 60000 } else { 1000 } / rate)
-            } else {
-                0
-            };
-            let mut next_start_time = jdk::current_time_millis();
-            for (i, (name, task)) in t.iter().enumerate() {
-                if rate > 0 {
-                    // startlThreadsWithRate: run threads with rate
-                    let wait_more = next_start_time - jdk::current_time_millis();
-                    if wait_more > 0 {
-                        std::thread::sleep(Duration::from_millis(wait_more as u64));
-                    }
-                    next_start_time += delay_step; // this aims at average rate of starting threads.
-                }
+            // run threads
+            self.start_threads(t.len(), &mut |i| {
+                // `t[i].start()`
+                let (name, task) = &t[i];
                 let count = &counts[i];
                 let thread_name = name.clone();
                 let handle = std::thread::Builder::new()
@@ -474,7 +460,8 @@ impl TaskSequence {
                     })
                     .map_err(rucene::error::LuceneError::from)?;
                 handles.push(handle);
-            }
+                Ok(())
+            })?;
             if self.base.is_stop_now() {
                 for (_, task) in &t {
                     task.stop_now();
@@ -514,6 +501,42 @@ impl TaskSequence {
         }
         // return total count
         Ok(count)
+    }
+
+    /// `startThreads(ParallelTask[] t)`: run threads. `start(i)` is
+    /// `t[i].start()` over the `n` prepared parallel tasks.
+    fn start_threads(&self, n: usize, start: &mut dyn FnMut(usize) -> Result<()>) -> Result<()> {
+        if self.lock().rate > 0 {
+            return self.startl_threads_with_rate(n, start);
+        }
+        for i in 0..n {
+            start(i)?;
+        }
+        Ok(())
+    }
+
+    /// `startlThreadsWithRate(ParallelTask[] t)`: run threads with rate.
+    /// `start(i)` is `t[i].start()` over the `n` prepared parallel tasks.
+    fn startl_threads_with_rate(
+        &self,
+        n: usize,
+        start: &mut dyn FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        let (rate, per_min) = {
+            let s = self.lock();
+            (s.rate, s.per_min)
+        };
+        let delay_step = i64::from(if per_min { 60000 } else { 1000 } / rate);
+        let mut next_start_time = jdk::current_time_millis();
+        for i in 0..n {
+            let wait_more = next_start_time - jdk::current_time_millis();
+            if wait_more > 0 {
+                std::thread::sleep(Duration::from_millis(wait_more as u64));
+            }
+            next_start_time += delay_step; // this aims at average rate of starting threads.
+            start(i)?;
+        }
+        Ok(())
     }
 
     /// `addTask(PerfTask task)`.
@@ -676,6 +699,7 @@ impl PerfTask for TaskSequence {
         simple_class_name == "TaskSequence"
     }
 
+    /// Equivalent to `TaskSequence.toString()`.
     fn task_to_string(&self) -> String {
         let padd = self.base.get_padding();
         let mut sb = perf_task::task_to_string(self);

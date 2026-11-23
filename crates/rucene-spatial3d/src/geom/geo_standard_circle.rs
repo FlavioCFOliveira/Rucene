@@ -178,7 +178,10 @@ impl GeoStandardCircle {
     }
 
     fn delta_distance(&self, ds: &dyn DistanceStyle, x: f64, y: f64, z: f64) -> Result<f64> {
-        Ok(self.distance(ds, x, y, z)? * 2.0)
+        // Inherited `GeoBaseDistanceShape.deltaDistance`.
+        super::geo_base_distance_shape::GeoBaseDistanceShape::delta_distance(
+            self.distance(ds, x, y, z),
+        )
     }
 
     fn distance_bounds(

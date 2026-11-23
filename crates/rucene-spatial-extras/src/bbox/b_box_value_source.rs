@@ -123,6 +123,7 @@ impl ShapeValuesSource for BBoxValueSource {
         }))
     }
 
+    /// Equivalent to `BBoxValueSource.equals(Object)`.
     fn source_eq(&self, other: &dyn ShapeValuesSource) -> bool {
         match other.as_any().downcast_ref::<BBoxValueSource>() {
             // `strategy.equals` is `Object.equals`: identity.
@@ -132,6 +133,8 @@ impl ShapeValuesSource for BBoxValueSource {
     }
 
     /// `strategy.hashCode()`: an identity hash.
+    ///
+    /// Equivalent to `BBoxValueSource.hashCode()`.
     fn source_hash(&self) -> i32 {
         identity_hash("org.apache.lucene.spatial.bbox.BBoxStrategy")
     }

@@ -408,6 +408,7 @@ impl ConstantScoreWeightImpl for DistanceRangeWeight {
 }
 
 impl Query for DistanceRangeQuery {
+    /// Equivalent to `DistanceRangeQuery.toString(String)`.
     fn to_query_string(&self, field: &str) -> String {
         format!(
             "DistanceRangeQuery({}; {} < {})",

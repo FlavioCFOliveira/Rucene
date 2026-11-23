@@ -111,11 +111,9 @@ impl SymbolHash {
     ///
     /// Equivalent to `get(Object)`.
     pub fn get(&self, key: &str) -> Option<Object> {
-        let bucket = (self.hash(key) % self.table_size) as usize;
-        self.buckets[bucket]
-            .iter()
-            .find(|e| e.key == key)
-            .and_then(|e| e.value.clone())
+        let bucket = self.hash(key) % self.table_size;
+        let entry = self.search(key, bucket);
+        entry.and_then(|e| e.value.clone())
     }
 
     /// Get the number of key/value pairs stored in this table.
@@ -176,22 +174,41 @@ impl SymbolHash {
         self.hash_multipliers = None;
     }
 
+    /// Searches the chain of `bucket` for an entry of `key`.
+    ///
+    /// Equivalent to the protected `search(Object, int)`.
+    fn search(&self, key: &str, bucket: i32) -> Option<&Entry> {
+        // search for identical key
+        self.buckets[bucket as usize]
+            .iter()
+            .find(|entry| key == entry.key)
+    }
+
     /// Returns a hashcode value for the specified key.
     ///
     /// Equivalent to the protected `hash(Object)`.
     fn hash(&self, key: &str) -> i32 {
-        match &self.hash_multipliers {
-            None => string_hash_code(key) & 0x7FFF_FFFF,
-            Some(multipliers) => {
-                let mut code = 0i32;
-                for (i, c) in key.encode_utf16().enumerate() {
-                    code = code
-                        .wrapping_mul(multipliers[i & MULTIPLIERS_MASK as usize])
-                        .wrapping_add(c as i32);
-                }
-                code & 0x7FFF_FFFF
-            }
+        if self.hash_multipliers.is_none() {
+            return string_hash_code(key) & 0x7FFF_FFFF;
         }
+        self.hash0(key)
+    }
+
+    /// The hash of `symbol` under the multipliers `rebalance` selected.
+    ///
+    /// Equivalent to the private `hash0(String)`.
+    fn hash0(&self, symbol: &str) -> i32 {
+        let mut code = 0i32;
+        let multipliers = self
+            .hash_multipliers
+            .as_ref()
+            .expect("hash0 runs once rebalance set the multipliers");
+        for (i, c) in symbol.encode_utf16().enumerate() {
+            code = code
+                .wrapping_mul(multipliers[i & MULTIPLIERS_MASK as usize])
+                .wrapping_add(i32::from(c));
+        }
+        code & 0x7FFF_FFFF
     }
 
     /// Equivalent to the protected `rehash()`.

@@ -131,9 +131,14 @@ impl XNIException {
 
     /// Returns the wrapped exception.
     ///
-    /// Equivalent to `getException()` (and `getCause()`).
+    /// Equivalent to `getException()`.
     pub fn get_exception(&self) -> Option<&Exception> {
         self.exception.as_deref()
+    }
+
+    /// Equivalent to `XNIException.getCause()`: `getException()`.
+    pub fn get_cause(&self) -> Option<&Exception> {
+        self.get_exception()
     }
 
     /// Equivalent to `initCause(Throwable)`.
@@ -156,39 +161,11 @@ impl XNIException {
     pub fn to_java_string(&self) -> String {
         match &self.class {
             XNIExceptionClass::XMLParseException(l) => {
-                let mut str = String::new();
-                if let Some(v) = &l.public_id {
-                    str.push_str(v);
-                }
-                str.push(':');
-                if let Some(v) = &l.literal_system_id {
-                    str.push_str(v);
-                }
-                str.push(':');
-                if let Some(v) = &l.expanded_system_id {
-                    str.push_str(v);
-                }
-                str.push(':');
-                if let Some(v) = &l.base_system_id {
-                    str.push_str(v);
-                }
-                str.push(':');
-                str.push_str(&l.line_number.to_string());
-                str.push(':');
-                str.push_str(&l.column_number.to_string());
-                str.push(':');
-                str.push_str(&l.character_offset.to_string());
-                str.push(':');
-                let mut message = self.message.clone();
-                if message.is_none() {
-                    if let Some(exception) = self.get_exception() {
-                        message = exception.get_message();
-                    }
-                }
-                if let Some(m) = message {
-                    str.push_str(&m);
-                }
-                str
+                crate::org::apache::xerces::xni::parser::xml_parse_exception::XMLParseException::to_java_string_of(
+                    l,
+                    self.message.as_deref(),
+                    self.get_exception(),
+                )
             }
             _ => throwable_to_string(self.class_name(), self.message.as_deref()),
         }
