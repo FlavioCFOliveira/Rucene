@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use rucene::document::Document;
-use rucene::error::{LuceneError, Result};
+use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::util::java_random::JavaRandom;
 use rucene_spatial_extras::composite::composite_spatial_strategy::CompositeSpatialStrategy;
 use rucene_spatial_extras::prefix::prefix_tree_strategy::PrefixTreeStrategy;
@@ -36,6 +36,7 @@ use rucene_spatial_extras::serialized::serialized_dv_strategy::SerializedDVStrat
 use rucene_spatial_extras::spatial_strategy::SpatialStrategy;
 use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::context::spatial_context_factory::SpatialContextFactory;
+use spatial4j::java_map::StringMap;
 use spatial4j::shape::shape::Shape;
 
 use crate::by_task::feeds::content_source::ContentSource;
@@ -47,26 +48,35 @@ use crate::jdk;
 static SPATIAL_STRATEGY_CACHE: LazyLock<Mutex<HashMap<i32, Arc<dyn SpatialStrategy>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// The `spatial.*` keys the spatial context factory and the prefix tree
-/// factory read from the configuration map.
-const SPATIAL_KEYS: [&str; 16] = [
-    "spatialContextFactory",
-    "geo",
-    "shapeFactoryClass",
-    "normWrapLongitude",
-    "binaryCodecClass",
-    "hasFormatConfig",
-    "distCalculator",
-    "worldBounds",
-    "readers",
-    "writers",
-    "wktShapeParserClass",
-    "planetModel",
-    "prefixTree",
-    "maxLevels",
-    "maxDistErr",
-    "version",
-];
+/// The anonymous `AbstractMap<String, String>` of
+/// `makeSpatialStrategy(Config)` (`SpatialDocMaker.java:72-85`): a `Map`
+/// view of `Config` that prefixes keys with "spatial.". `get` reads the
+/// configuration when called, so a by-round value is the one of the round
+/// current at that read; `entrySet()` (and with it `AbstractMap`'s
+/// `containsKey`) throws `UnsupportedOperationException`.
+struct SpatialConfigMap {
+    config: Arc<Config>,
+}
+
+impl std::fmt::Debug for SpatialConfigMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SpatialDocMaker$1")
+    }
+}
+
+impl StringMap for SpatialConfigMap {
+    fn get(&self, key: &str) -> Result<Option<String>> {
+        self.config.get_str(&format!("spatial.{key}"), None)
+    }
+
+    fn entry_set(&self) -> Result<Vec<(String, String)>> {
+        Err(LuceneError::from(LuceneErrorKind::Unchecked {
+            class: "java.lang.UnsupportedOperationException",
+            message: None,
+            cause: None,
+        }))
+    }
+}
 
 /// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.SpatialDocMaker.ShapeConverter`
 /// (`public interface ShapeConverter`): converts one shape to another.
@@ -121,13 +131,6 @@ impl ShapeConverter for DefaultShapeConverter {
 /// maker via the static method [`get_spatial_strategy`](Self::get_spatial_strategy).
 /// See spatial.alg for a listing of spatial parameters, in particular those
 /// starting with "spatial." and "doc.spatial".
-///
-/// **Divergence.** Java hands the spatial factories a lazy `Map` view of the
-/// config, whose `get(key)` is `config.get("spatial." + key, null)`
-/// (`SpatialDocMaker.java:72-85`). spatial4j's port takes a `HashMap`, so
-/// the map is built from the `spatial.*` keys the factories read
-/// ([`SPATIAL_KEYS`]); a key read by round is extracted when the map is
-/// built rather than when a factory reads it.
 pub struct SpatialDocMaker {
     inner: DocMaker,
     /// `(strategy, shapeConverter)`.
@@ -164,28 +167,18 @@ impl SpatialDocMaker {
         })
     }
 
-    /// The configuration map: `config.get("spatial." + key, null)` for each
-    /// key the factories read.
-    fn config_map(config: &Config) -> Result<HashMap<String, String>> {
-        let mut map = HashMap::new();
-        for key in SPATIAL_KEYS {
-            if let Some(value) = config.get_str(&format!("spatial.{key}"), None)? {
-                map.insert(key.to_string(), value);
-            }
-        }
-        Ok(map)
-    }
-
     /// `makeSpatialStrategy(Config config)`: builds a SpatialStrategy from
     /// configuration options.
     ///
     /// # Errors
     ///
     /// The exception of the factories.
-    pub fn make_spatial_strategy(&self, config: &Config) -> Result<Arc<dyn SpatialStrategy>> {
+    pub fn make_spatial_strategy(&self, config: &Arc<Config>) -> Result<Arc<dyn SpatialStrategy>> {
         // A Map view of Config that prefixes keys with "spatial."
-        let config_map = Self::config_map(config)?;
+        let config_map: Arc<dyn StringMap> = Arc::new(SpatialConfigMap { config: Arc::clone(config) });
+
         let ctx = SpatialContextFactory::make_spatial_context(&config_map)?;
+
         self.make_spatial_strategy_with(config, &config_map, ctx)
     }
 
@@ -198,7 +191,7 @@ impl SpatialDocMaker {
     pub fn make_spatial_strategy_with(
         &self,
         config: &Config,
-        config_map: &HashMap<String, String>,
+        config_map: &Arc<dyn StringMap>,
         ctx: Arc<SpatialContext>,
     ) -> Result<Arc<dyn SpatialStrategy>> {
         // TODO once strategies have factories, we could use them here.
@@ -221,7 +214,7 @@ impl SpatialDocMaker {
         &self,
         spatial_field: &str,
         config: &Config,
-        config_map: &HashMap<String, String>,
+        config_map: &Arc<dyn StringMap>,
         ctx: Arc<SpatialContext>,
     ) -> Result<Arc<RecursivePrefixTreeStrategy>> {
         // A factory for the prefix tree grid
@@ -258,7 +251,7 @@ impl SpatialDocMaker {
         &self,
         spatial_field: &str,
         _config: &Config,
-        _config_map: &HashMap<String, String>,
+        _config_map: &Arc<dyn StringMap>,
         ctx: Arc<SpatialContext>,
     ) -> Result<Arc<SerializedDVStrategy>> {
         Ok(Arc::new(SerializedDVStrategy::new(ctx, spatial_field)?))
@@ -273,7 +266,7 @@ impl SpatialDocMaker {
     pub fn make_composite_strategy(
         &self,
         config: &Config,
-        config_map: &HashMap<String, String>,
+        config_map: &Arc<dyn StringMap>,
         ctx: Arc<SpatialContext>,
     ) -> Result<Arc<dyn SpatialStrategy>> {
         let rpt: Arc<dyn RecursivePrefixTreeStrategyOps> =

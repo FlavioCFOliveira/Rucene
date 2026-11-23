@@ -155,5 +155,6 @@ pub mod context;
 pub mod distance;
 pub mod exception;
 pub mod io;
+pub mod java_map;
 pub mod shape;
 pub mod test_log;

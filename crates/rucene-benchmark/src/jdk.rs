@@ -5,6 +5,7 @@
 //! | Rust | JDK 25 |
 //! | --- | --- |
 //! | [`properties::Properties`] | `java.util.Properties` (its `ConcurrentHashMap` iteration order) |
+//! | [`sax::SaxParser`] | the `SAXParser` of `SAXParserFactory.newDefaultInstance()` (streaming, not namespace aware) |
 //! | [`stream_tokenizer::StreamTokenizer`] | `java.io.StreamTokenizer` |
 //! | the functions below | `System`, `Thread`, `String`, `Integer`, `Double` and `Boolean` members |
 
@@ -14,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rucene::error::{LuceneError, Result};
 
 pub mod properties;
+pub mod sax;
 pub mod stream_tokenizer;
 
 /// `System.getProperty("line.separator")`.

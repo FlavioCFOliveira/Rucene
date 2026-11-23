@@ -25,6 +25,7 @@ use rucene::error::{LuceneError, Result};
 use rucene::util::Version;
 use spatial4j::context::spatial_context::SpatialContext;
 use spatial4j::distance::distance_utils::DistanceUtils;
+use spatial4j::java_map::StringMap;
 
 use crate::jdk::{parse_double, parse_int};
 use crate::prefix::tree::geohash_prefix_tree;
@@ -39,8 +40,9 @@ const DEFAULT_GEO_MAX_DETAIL_KM: f64 = 0.001;
 /// The fields of `SpatialPrefixTreeFactory`.
 #[derive(Debug, Clone, Default)]
 pub struct SpatialPrefixTreeFactoryBase {
-    /// `args`.
-    pub args: HashMap<String, String>,
+    /// `args`: the arguments map given to `init`, kept by reference
+    /// (`None` for `null`, before `init`).
+    pub args: Option<Arc<dyn StringMap>>,
     /// `ctx`.
     pub ctx: Option<Arc<SpatialContext>>,
     /// `maxLevels` (`None` for `null`).
@@ -50,6 +52,19 @@ pub struct SpatialPrefixTreeFactoryBase {
 }
 
 impl SpatialPrefixTreeFactoryBase {
+    /// `args.get(key)`.
+    ///
+    /// # Errors
+    ///
+    /// `NullPointerException` before `init` (`args` is `null`); what the
+    /// map's `get` throws.
+    pub fn arg(&self, key: &str) -> Result<Option<String>> {
+        match &self.args {
+            Some(args) => args.get(key),
+            None => Err(LuceneError::null_pointer()),
+        }
+    }
+
     /// `ctx`, set by `init`.
     ///
     /// # Panics
@@ -118,8 +133,8 @@ pub trait SpatialPrefixTreeFactory: Send + Sync {
     /// # Errors
     ///
     /// The errors of `initVersion` and `initMaxLevels`.
-    fn init(&mut self, args: HashMap<String, String>, ctx: Arc<SpatialContext>) -> Result<()> {
-        self.base_mut().args = args;
+    fn init(&mut self, args: Arc<dyn StringMap>, ctx: Arc<SpatialContext>) -> Result<()> {
+        self.base_mut().args = Some(args);
         self.base_mut().ctx = Some(ctx);
         self.init_version()?;
         self.init_max_levels()
@@ -132,9 +147,9 @@ pub trait SpatialPrefixTreeFactory: Send + Sync {
     /// `RuntimeException` wrapping the `ParseException` of an invalid
     /// `version` argument.
     fn init_version(&mut self) -> Result<()> {
-        let version = match self.base().args.get(VERSION) {
+        let version = match self.base().arg(VERSION)? {
             None => Version::LATEST,
-            Some(version_str) => Version::parse_leniently(version_str).map_err(LuceneError::runtime_exception)?,
+            Some(version_str) => Version::parse_leniently(&version_str).map_err(LuceneError::runtime_exception)?,
         };
         self.set_version(version);
         Ok(())
@@ -147,11 +162,11 @@ pub trait SpatialPrefixTreeFactory: Send + Sync {
     /// `NumberFormatException` for an invalid `maxLevels` or `maxDistErr`
     /// argument; the errors of `getLevelForDistance`.
     fn init_max_levels(&mut self) -> Result<()> {
-        if let Some(ml_str) = self.base().args.get(MAX_LEVELS).cloned() {
+        if let Some(ml_str) = self.base().arg(MAX_LEVELS)? {
             self.base_mut().max_levels = Some(parse_int(&ml_str)?);
             return Ok(());
         }
-        let degrees = match self.base().args.get(MAX_DIST_ERR).cloned() {
+        let degrees = match self.base().arg(MAX_DIST_ERR)? {
             None => {
                 if !self.base().ctx().is_geo() {
                     return Ok(()); // let default to max
@@ -213,10 +228,10 @@ pub const VERSION: &str = "version";
 ///
 /// `RuntimeException` when the factory class cannot be loaded; the errors of
 /// `init` and `newSPT`.
-pub fn make_spt(args: &HashMap<String, String>, ctx: &Arc<SpatialContext>) -> Result<Arc<dyn SpatialPrefixTree>> {
+pub fn make_spt(args: &Arc<dyn StringMap>, ctx: &Arc<SpatialContext>) -> Result<Arc<dyn SpatialPrefixTree>> {
     // TODO refactor to use Java SPI like how Lucene already does for codecs/postingsFormats, etc
-    let cname = match args.get(PREFIX_TREE) {
-        Some(c) => c.clone(),
+    let cname = match args.get(PREFIX_TREE)? {
+        Some(c) => c,
         None => (if ctx.is_geo() { "geohash" } else { "quad" }).to_string(),
     };
     let mut instance: Box<dyn SpatialPrefixTreeFactory> = if "geohash".eq_ignore_ascii_case(&cname) {
@@ -243,6 +258,6 @@ pub fn make_spt(args: &HashMap<String, String>, ctx: &Arc<SpatialContext>) -> Re
             }
         }
     };
-    instance.init(args.clone(), Arc::clone(ctx))?;
+    instance.init(Arc::clone(args), Arc::clone(ctx))?;
     instance.new_spt()
 }

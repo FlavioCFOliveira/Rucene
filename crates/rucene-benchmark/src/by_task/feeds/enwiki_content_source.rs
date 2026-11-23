@@ -25,7 +25,6 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use rucene::error::{LuceneError, Result};
 use rucene_analysis_common::jdk::io::{CodingErrorAction, InputStreamReader};
-use rucene_analysis_common::jdk::sax::{Attributes, DefaultHandler, InputSource, XmlReader};
 
 use crate::by_task::feeds::content_items_source::{ContentItemsSource, ContentItemsSourceBase};
 use crate::by_task::feeds::content_source::ContentSource;
@@ -34,6 +33,7 @@ use crate::by_task::feeds::no_more_data_exception::NoMoreDataException;
 use crate::by_task::utils::config::Config;
 use crate::by_task::utils::stream_utils::StreamUtils;
 use crate::jdk;
+use crate::jdk::sax::{Attributes, DefaultHandler, SaxParser};
 
 const TITLE: usize = 0;
 const DATE: usize = TITLE + 1;
@@ -70,19 +70,53 @@ struct HandOff {
     nmde: bool,
 }
 
-/// The input stream slot `is`, with a generation that changes whenever the
-/// field is assigned (Java compares the stream objects by identity).
-#[derive(Default)]
-struct InputSlot {
-    generation: u64,
-    stream: Option<Box<dyn Read + Send>>,
+/// An input stream of the field `is`, shared by the source and the parser
+/// thread as Java shares the object: `close()` closes it while the parser
+/// thread reads it, whose next read then throws `IOException("Stream
+/// closed")`, as `BufferedInputStream.read` does after `close()`. The field
+/// compares the streams by identity (`localFileIS != is`), here
+/// `Arc::ptr_eq`.
+struct ClosableInputStream {
+    stream: Mutex<Option<Box<dyn Read + Send>>>,
+}
+
+impl ClosableInputStream {
+    fn new(stream: Box<dyn Read + Send>) -> Arc<Self> {
+        Arc::new(ClosableInputStream { stream: Mutex::new(Some(stream)) })
+    }
+
+    /// `close()`.
+    fn close(&self) {
+        jdk::lock(&self.stream).take();
+    }
+}
+
+/// A reading handle on a [`ClosableInputStream`].
+struct SharedInputStream(Arc<ClosableInputStream>);
+
+impl Read for SharedInputStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match jdk::lock(&self.0.stream).as_mut() {
+            Some(stream) => stream.read(buf),
+            None => Err(std::io::Error::other("Stream closed")),
+        }
+    }
+}
+
+/// `localFileIS == is`: the same stream object, or both `null`.
+fn same_stream(a: &Option<Arc<ClosableInputStream>>, b: &Option<Arc<ClosableInputStream>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// The state the parser thread and the source share.
 struct Shared {
     hand_off: Mutex<HandOff>,
     cond: Condvar,
-    is: Mutex<InputSlot>,
+    is: Mutex<Option<Arc<ClosableInputStream>>>,
     file: Mutex<Option<PathBuf>>,
     keep_images: Mutex<bool>,
     forever: Mutex<bool>,
@@ -90,9 +124,9 @@ struct Shared {
 
 impl Shared {
     /// `openInputStream()`: open the input stream.
-    fn open_input_stream(&self) -> Result<Box<dyn Read + Send>> {
+    fn open_input_stream(&self) -> Result<Arc<ClosableInputStream>> {
         let file = jdk::lock(&self.file).clone().ok_or_else(LuceneError::null_pointer)?;
-        StreamUtils::input_stream(&file)
+        Ok(ClosableInputStream::new(StreamUtils::input_stream(&file)?))
     }
 }
 
@@ -146,25 +180,25 @@ impl Parser {
 
     /// `run()`.
     fn run(&mut self) -> Result<()> {
-        let reader = XmlReader::new();
+        let reader = SaxParser::new();
         loop {
             if jdk::lock(&self.shared.hand_off).stopped {
                 return Ok(());
             }
-            let (generation, local_file_is) = {
-                let mut slot = jdk::lock(&self.shared.is);
-                (slot.generation, slot.stream.take())
-            };
-            if let Some(local_file_is) = local_file_is {
+            let local_file_is = jdk::lock(&self.shared.is).clone();
+            if let Some(local) = &local_file_is {
                 // null means fileIS was closed on us
                 // To work around a bug in XERCES (XERCESJ-1257), we assume the XML is always UTF8, so
                 // we simply provide reader.
-                let char_reader = InputStreamReader::with_action(local_file_is, CodingErrorAction::Report);
-                let source = InputSource::from_character_stream(Box::new(ReadCharsAdapter(Mutex::new(char_reader))));
-                if let Err(e) = reader.parse(source, self) {
+                let char_reader = InputStreamReader::with_action(
+                    Box::new(SharedInputStream(Arc::clone(local))) as Box<dyn Read + Send>,
+                    CodingErrorAction::Report,
+                );
+                let mut char_reader = ReadCharsAdapter(Mutex::new(char_reader));
+                if let Err(e) = reader.parse(&mut char_reader, self) {
                     if e.is_io_exception() {
-                        let slot = jdk::lock(&self.shared.is);
-                        if slot.generation != generation {
+                        let is = jdk::lock(&self.shared.is);
+                        if !same_stream(&local_file_is, &is) {
                             // fileIS was closed on us, so, just fall through
                         } else {
                             // Exception is real
@@ -181,11 +215,10 @@ impl Parser {
                 self.shared.cond.notify_all();
                 return Ok(());
             }
-            let mut slot = jdk::lock(&self.shared.is);
-            if slot.generation == generation {
+            let mut is = jdk::lock(&self.shared.is);
+            if same_stream(&local_file_is, &is) {
                 // If file is not already re-opened then re-open it now
-                slot.stream = Some(self.shared.open_input_stream()?);
-                slot.generation += 1;
+                *is = Some(self.shared.open_input_stream()?);
             }
         }
     }
@@ -297,10 +330,9 @@ impl DefaultHandler for Parser {
 /// * keep.image.only.docs=false|true (default **true**).
 /// * docs.file=<path to the file>
 ///
-/// The XML is parsed by `rucene_analysis_common::jdk::sax::XmlReader`, the
-/// port's SAX parser over `quick-xml`, whose differences from the JDK's
-/// parser are declared there; it reads the whole document before reporting
-/// its first element.
+/// The XML is parsed by [`SaxParser`](crate::jdk::sax::SaxParser), which
+/// streams the dump as the JDK's SAX parser does; its differences from the
+/// JDK's parser are declared there.
 pub struct EnwikiContentSource {
     base: ContentItemsSourceBase,
     shared: Arc<Shared>,
@@ -320,7 +352,7 @@ impl EnwikiContentSource {
             shared: Arc::new(Shared {
                 hand_off: Mutex::new(HandOff::default()),
                 cond: Condvar::new(),
-                is: Mutex::new(InputSlot::default()),
+                is: Mutex::new(None),
                 file: Mutex::new(None),
                 keep_images: Mutex::new(true),
                 forever: Mutex::new(true),
@@ -401,18 +433,17 @@ impl ContentItemsSource for EnwikiContentSource {
 
     fn close(&self) -> Result<()> {
         self.stop();
-        let mut slot = jdk::lock(&self.shared.is);
-        slot.stream = None;
-        slot.generation += 1;
+        let mut is = jdk::lock(&self.shared.is);
+        if let Some(stream) = is.take() {
+            stream.close();
+        }
         Ok(())
     }
 
     fn reset_inputs(&self) -> Result<()> {
         self.base.reset_inputs();
         let stream = self.shared.open_input_stream()?;
-        let mut slot = jdk::lock(&self.shared.is);
-        slot.stream = Some(stream);
-        slot.generation += 1;
+        *jdk::lock(&self.shared.is) = Some(stream);
         Ok(())
     }
 

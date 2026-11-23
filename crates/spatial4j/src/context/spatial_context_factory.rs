@@ -25,6 +25,7 @@ use crate::io::legacy_shape_reader::LegacyShapeReader;
 use crate::io::legacy_shape_writer::LegacyShapeWriter;
 use crate::io::polyshape_reader::PolyshapeReader;
 use crate::io::polyshape_writer::PolyshapeWriter;
+use crate::java_map::StringMap;
 use crate::io::shape_reader::ShapeReader;
 use crate::io::shape_writer::ShapeWriter;
 use crate::io::supported_formats::SupportedFormats;
@@ -161,8 +162,8 @@ fn class_cast(class: &JavaClass) -> LuceneError {
 /// `Geo3dSpatialContextFactory`) implements over an embedded instance.
 #[derive(Clone, Debug)]
 pub struct SpatialContextFactory {
-    /// `args`: the arguments given to `init`.
-    pub args: Option<HashMap<String, String>>,
+    /// `args`: the arguments map given to `init`, kept by reference.
+    pub args: Option<Arc<dyn StringMap>>,
     /// `geo`.
     pub geo: bool,
     /// `distCalc`: defaults in the `SpatialContext` constructor, based on
@@ -247,6 +248,19 @@ impl SpatialContextFactory {
         kind: JavaClassKind::SpatialContextFactory(|| Box::new(SpatialContextFactory::new())),
     };
 
+    /// `args.get(name)`: the argument `name` of the map given to `init`
+    /// (`None` before `init`).
+    ///
+    /// # Errors
+    ///
+    /// What the map's `get` throws.
+    pub fn arg(&self, name: &str) -> Result<Option<String>> {
+        match &self.args {
+            Some(args) => args.get(name),
+            None => Ok(None),
+        }
+    }
+
     /// `SpatialContextFactory()`.
     pub fn new() -> Self {
         Self {
@@ -273,8 +287,8 @@ impl SpatialContextFactory {
     ///
     /// `RuntimeException` when the factory class cannot be instantiated; the
     /// errors of `init` and `newSpatialContext`.
-    pub fn make_spatial_context(args: &HashMap<String, String>) -> Result<Arc<SpatialContext>> {
-        let mut cname = args.get("spatialContextFactory").cloned();
+    pub fn make_spatial_context(args: &Arc<dyn StringMap>) -> Result<Arc<SpatialContext>> {
+        let mut cname = args.get("spatialContextFactory")?;
         if cname.is_none() {
             cname = std::env::var("SpatialContextFactory").ok();
         }
@@ -288,7 +302,7 @@ impl SpatialContextFactory {
                 }
             }
         };
-        instance.init(args.clone())?;
+        instance.init(Arc::clone(args))?;
         instance.new_spatial_context()
     }
 }
@@ -310,7 +324,7 @@ pub trait SpatialContextFactoryOps: Send + Sync + Any {
     /// # Errors
     ///
     /// The errors of the `init*` steps.
-    fn init(&mut self, args: HashMap<String, String>) -> Result<()> {
+    fn init(&mut self, args: Arc<dyn StringMap>) -> Result<()> {
         init_default(self, args)
     }
 
@@ -422,7 +436,7 @@ pub trait SpatialContextFactoryOps: Send + Sync + Any {
 /// # Errors
 ///
 /// The errors of the `init*` steps.
-pub fn init_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, args: HashMap<String, String>) -> Result<()> {
+pub fn init_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, args: Arc<dyn StringMap>) -> Result<()> {
     f.base_mut().args = Some(args);
     f.init_field("geo")?;
     f.init_field("shapeFactoryClass")?;
@@ -454,7 +468,7 @@ pub fn init_field_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, name:
             ))
         }
     };
-    let Some(str) = f.base().args.as_ref().and_then(|a| a.get(name)).cloned() else {
+    let Some(str) = f.base().arg(name)? else {
         return Ok(());
     };
     let invalid = |cause: LuceneError| {
@@ -499,7 +513,7 @@ pub fn init_field_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F, name:
 ///
 /// `RuntimeException` for an unknown calculator name.
 pub fn init_calculator_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F) -> Result<()> {
-    let Some(calc_str) = f.base().args.as_ref().and_then(|a| a.get("distCalculator")).cloned() else {
+    let Some(calc_str) = f.base().arg("distCalculator")? else {
         return Ok(());
     };
     let calc: Arc<dyn DistanceCalculator> = if calc_str.eq_ignore_ascii_case("haversine") {
@@ -532,7 +546,6 @@ pub fn init_formats_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F) -> 
     let not_found = |e: LuceneError| {
         unchecked_with_cause("java.lang.RuntimeException", Some("Unable to find format class".to_string()), Some(e))
     };
-    let args = f.base().args.clone().unwrap_or_default();
     let reader_class = |name: &str| -> Result<JavaClass> {
         let class = load_class(name.trim()).map_err(not_found)?;
         match class.kind {
@@ -540,17 +553,17 @@ pub fn init_formats_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F) -> 
             _ => Err(class_cast(&class)),
         }
     };
-    if let Some(val) = args.get("readers") {
+    if let Some(val) = f.base().arg("readers")? {
         for name in val.split(',') {
             let class = reader_class(name)?;
             f.base_mut().readers.push(class);
         }
-    } else if let Some(val) = args.get("wktShapeParserClass") {
+    } else if let Some(val) = f.base().arg("wktShapeParserClass")? {
         //deprecated; a parameter from when this was a raw class
-        let class = reader_class(val)?;
+        let class = reader_class(&val)?;
         f.base_mut().readers.push(class);
     }
-    if let Some(val) = args.get("writers") {
+    if let Some(val) = f.base().arg("writers")? {
         for name in val.split(',') {
             let class = load_class(name.trim()).map_err(not_found)?;
             match class.kind {
@@ -614,7 +627,7 @@ pub fn check_default_formats_default<F: SpatialContextFactoryOps + ?Sized>(f: &m
 /// The errors of `newSpatialContext`; `ClassCastException` when the bounds
 /// do not read as a rectangle.
 pub fn init_world_bounds_default<F: SpatialContextFactoryOps + ?Sized>(f: &mut F) -> Result<()> {
-    let Some(world_bounds_str) = f.base().args.as_ref().and_then(|a| a.get("worldBounds")).cloned() else {
+    let Some(world_bounds_str) = f.base().arg("worldBounds")? else {
         return Ok(());
     };
     //kinda ugly we do this just to read a rectangle.  TODO refactor

@@ -19,7 +19,7 @@
 //! package `org.apache.lucene.spatial.spatial4j`.
 
 use std::any::Any;
-use std::collections::HashMap;
+use spatial4j::java_map::StringMap;
 use std::sync::{Arc, LazyLock};
 
 use rucene::error::{LuceneError, Result};
@@ -113,8 +113,8 @@ impl Geo3dSpatialContextFactory {
     /// # Errors
     ///
     /// `RuntimeException("Unknown planet model: ...")`.
-    pub fn init_planet_model(&mut self, args: &HashMap<String, String>) -> Result<()> {
-        match args.get("planetModel") {
+    pub fn init_planet_model(&mut self, args: &dyn StringMap) -> Result<()> {
+        match args.get("planetModel")? {
             Some(planet_model) => {
                 if planet_model.eq_ignore_ascii_case("sphere") {
                     self.planet_model = Some(Arc::clone(&planet_model::SPHERE));
@@ -158,13 +158,13 @@ impl SpatialContextFactoryOps for Geo3dSpatialContextFactory {
         SpatialContext::new(self)
     }
 
-    fn init(&mut self, args: HashMap<String, String>) -> Result<()> {
-        self.init_planet_model(&args)?;
+    fn init(&mut self, args: Arc<dyn StringMap>) -> Result<()> {
+        self.init_planet_model(&*args)?;
         init_default(self, args)
     }
 
     fn init_calculator(&mut self) -> Result<()> {
-        let calc_str = self.base.args.as_ref().and_then(|a| a.get("distCalculator")).cloned();
+        let calc_str = self.base.arg("distCalculator")?;
         match calc_str {
             None => Ok(()),
             Some(calc_str) if calc_str == "geo3d" => {

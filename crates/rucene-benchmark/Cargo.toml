@@ -21,7 +21,9 @@ name = "rucene_benchmark"
 # commons-compress; decoding is equal both ways); icu4j's root `%spellout-numbering` rule
 # is ported in this crate, and nekohtml 1.9.17 (with the Xerces 2.12.2 and SAX
 # types it uses) is ported as the workspace crate `nekohtml`, so neither adds a
-# third-party dependency.
+# third-party dependency. quick-xml (already a workspace dependency of
+# rucene-analysis-common) is the XML parser under `jdk::sax`, the streaming SAX
+# parser of `EnwikiContentSource`.
 [dependencies]
 rucene = { path = "../.." }
 nekohtml = { path = "../nekohtml" }
@@ -34,3 +36,4 @@ rucene-spatial-extras = { path = "../rucene-spatial-extras" }
 spatial4j = { path = "../spatial4j" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6.1"
+quick-xml = "0.42.0"
