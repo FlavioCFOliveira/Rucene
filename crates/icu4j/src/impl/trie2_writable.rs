@@ -218,7 +218,8 @@ impl Trie2Writable {
         i = 0x80;
         while i < 0x800 {
             let iv = self.initial_value;
-            self.set_lscp(i, true, iv);
+            // Java's constructor propagates the internal IllegalStateException.
+            self.set_lscp(i, true, iv).unwrap_or_else(|e| panic!("{e}"));
             i += UTRIE2_DATA_BLOCK_LENGTH;
         }
     }
@@ -1006,7 +1007,7 @@ impl Trie2Writable {
     /// the index, and for 32-bit data the data words), big-endian.
     fn serialize_frozen(f: &Frozen) -> ByteBuffer {
         let mut out: Vec<u8> = Vec::with_capacity(16 + f.index.len() * 2 + f.data32.as_ref().map_or(0, |d| d.len() * 4));
-        let mut put_short = |out: &mut Vec<u8>, v: i32| out.extend_from_slice(&(v as u16).to_be_bytes());
+        let put_short = |out: &mut Vec<u8>, v: i32| out.extend_from_slice(&(v as u16).to_be_bytes());
         out.extend_from_slice(&0x54726932i32.to_be_bytes());
         put_short(&mut out, f.options);
         put_short(&mut out, f.index_length);
@@ -1128,6 +1129,53 @@ impl Trie2Writable {
             high_start: self.high_start,
             data32,
         })
+    }
+
+    /// `equals(Object other)` (inherited from `Trie2`, final): the same
+    /// ranges, error value and initial value.
+    pub fn equals(&self, other: &Trie2Writable) -> bool {
+        let mut other_iter = other.iterator();
+        for range_from_this in self.iterator() {
+            match other_iter.next() {
+                None => return false,
+                Some(range_from_other) => {
+                    if range_from_this != range_from_other {
+                        return false;
+                    }
+                }
+            }
+        }
+        if other_iter.has_next() {
+            return false;
+        }
+        if self.error_value != other.error_value || self.initial_value != other.initial_value {
+            return false;
+        }
+        true
+    }
+
+    /// `hashCode()` (inherited from `Trie2`): the FNV hash of the ranges,
+    /// cached in `fHash` until the next change.
+    pub fn hash_code(&mut self) -> i32 {
+        if self.f_hash == 0 {
+            // initHash(), hashInt(): Trie2's FNV helpers.
+            let hash_byte = |h: i32, b: i32| h.wrapping_mul(16777619) ^ b;
+            let hash_int = |mut h: i32, i: i32| {
+                h = hash_byte(h, i & 255);
+                h = hash_byte(h, (i >> 8) & 255);
+                h = hash_byte(h, (i >> 16) & 255);
+                hash_byte(h, (i >> 24) & 255)
+            };
+            let mut hash = 0x811c9DC5_u32 as i32;
+            for r in self.iterator() {
+                hash = hash_int(hash, r.hash_code());
+            }
+            if hash == 0 {
+                hash = 1;
+            }
+            self.f_hash = hash;
+        }
+        self.f_hash
     }
 
     /// `Trie2.rangeEnd(int, int, int)` (inherited): the last code point of

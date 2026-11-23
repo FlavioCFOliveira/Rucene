@@ -140,6 +140,38 @@ pub mod r#impl {
     pub mod u_character_utility;
     pub mod u_serialized_set;
     pub mod unicode_set_string_span;
+    pub mod trie2_writable;
+    /// `com.ibm.icu.impl.coll`.
+    pub mod coll {
+        pub mod bocsu;
+        pub mod collation;
+        pub mod collation_builder;
+        pub mod collation_compare;
+        pub mod collation_data;
+        pub mod collation_data_builder;
+        pub mod collation_data_reader;
+        pub mod collation_fast_latin;
+        pub mod collation_fast_latin_builder;
+        pub mod collation_fcd;
+        pub mod collation_iterator;
+        pub mod collation_keys;
+        pub mod collation_loader;
+        pub mod collation_root;
+        pub mod collation_root_elements;
+        pub mod collation_rule_parser;
+        pub mod collation_settings;
+        pub mod collation_tailoring;
+        pub mod collation_weights;
+        pub mod contractions_and_expansions;
+        pub mod fcd_iter_collation_iterator;
+        pub mod fcd_utf16_collation_iterator;
+        pub mod iter_collation_iterator;
+        pub mod shared_object;
+        pub mod tailored_set;
+        pub mod u_vector32;
+        pub mod u_vector64;
+        pub mod utf16_collation_iterator;
+    }
 }
 
 /// `com.ibm.icu.lang`.
@@ -210,6 +242,13 @@ pub mod text {
     pub(crate) mod unicode_name_transliterator;
     pub(crate) mod unicode_replacer;
     pub(crate) mod uppercase_transliterator;
+    pub mod canonical_iterator;
+    pub mod collation_element_iterator;
+    pub mod collation_key;
+    pub mod collator;
+    pub(crate) mod collator_service_shim;
+    pub mod raw_collation_key;
+    pub mod rule_based_collator;
 }
 
 /// `com.ibm.icu.util`.
@@ -239,4 +278,5 @@ pub mod util {
     pub mod freezable;
     pub mod range_value_iterator;
     pub mod value_iterator;
+    pub mod icu_input_too_long_exception;
 }
