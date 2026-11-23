@@ -1,0 +1,35 @@
+[package]
+name = "rucene-analysis-icu"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/analysis/icu (analysis integration with ICU: normalization, folding, segmentation, transforms and collation)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_analysis_icu"
+
+# The two command-line tools of `lucene/analysis/icu/src/tools` (user decision
+# on rmp #640, D4), run as `java <Class> args` runs them.
+
+[[bin]]
+name = "rbbi_rule_compiler"
+path = "src/bin/rbbi_rule_compiler.rs"
+
+[[bin]]
+name = "generate_utr30_data_files"
+path = "src/bin/generate_utr30_data_files.rs"
+
+# `lucene/analysis/icu/build.gradle`: `moduleApi project(':lucene:core')`,
+# `moduleApi project(':lucene:analysis:common')` and `moduleApi deps.icu4j`.
+[dependencies]
+rucene = { path = "../.." }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+icu4j = { path = "../icu4j" }
+# The HTTPS client under `GenerateUTR30DataFiles`'s downloads, in place of
+# `java.net.URLConnection` (MIT OR Apache-2.0; user decision on rmp #641,
+# 2026-11-23). No gzip: `URLConnection` asks for no content encoding.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
