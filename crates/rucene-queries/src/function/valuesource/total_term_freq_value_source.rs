@@ -118,3 +118,54 @@ impl ValueSource for TotalTermFreqValueSource {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::function::value_source::new_context;
+    use rucene::document::{Document, Store, StringField};
+    use rucene::error::LuceneErrorKind;
+    use rucene::index::directory_reader;
+    use rucene::index::index_writer::IndexWriter;
+    use rucene::index::index_writer_config::IndexWriterConfig;
+    use rucene::store::{ByteBuffersDirectory, Directory};
+
+    /// Regression for rmp #669: before `createWeight`, Java's `getValues`
+    /// returns the `null` its context map holds
+    /// (`TotalTermFreqValueSource.java:62-65`) and fails only when that
+    /// reference is used, with a `NullPointerException`.
+    #[test]
+    fn get_values_before_create_weight_fails_only_on_use() {
+        let _ = rucene::codecs::register_codec("Lucene104", rucene::codecs::Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        let mut doc = Document::new();
+        doc.add(StringField::new("f", "x".to_string(), Store::NO).unwrap());
+        writer.add_document(&doc).unwrap();
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let reader = directory_reader::open(dir).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+
+        let vs = Arc::new(TotalTermFreqValueSource::new(
+            "f",
+            "x",
+            "f",
+            BytesRef::new(b"x".to_vec()),
+        ));
+        let context = new_context(None);
+        let mut values = vs
+            .get_values(&context, &leaves[0])
+            .expect("getValues returns the map's null without failing");
+        let error = values.long_val(0).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"
+            ),
+            "{error:?}"
+        );
+        drop(values);
+        reader.close().unwrap();
+    }
+}

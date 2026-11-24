@@ -2310,7 +2310,7 @@ impl<V: PackedLongValuesAccess> DocValuesIterator for BufferedSorted<V> {
     }
 }
 
-impl<V: PackedLongValuesAccess> SortedDocValues for BufferedSorted<V> {
+impl<V: PackedLongValuesAccess + Send + Sync> SortedDocValues for BufferedSorted<V> {
     fn ord_value(&self) -> Result<i32> {
         Ok(self.ord)
     }

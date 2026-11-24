@@ -2547,6 +2547,10 @@ impl SortedDocValues for ExitableSortedDocValues {
         self.inner.terms_enum()
     }
 
+    fn independent_terms_enum(&self) -> Result<Option<Box<dyn TermsEnum>>> {
+        self.inner.independent_terms_enum()
+    }
+
     fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.intersect(automaton)
     }
@@ -2741,6 +2745,10 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
 
     fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.terms_enum()
+    }
+
+    fn independent_terms_enum(&self) -> Result<Option<Box<dyn TermsEnum>>> {
+        self.inner.independent_terms_enum()
     }
 
     fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {

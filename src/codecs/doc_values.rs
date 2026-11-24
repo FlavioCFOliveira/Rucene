@@ -1634,6 +1634,10 @@ impl SortedDocValues for MergedSortedDocValues {
     }
     /// `new MergedTermsEnum(map, termsEnurmSubs)` over each sub's
     /// `values.termsEnum()` (`DocValuesConsumer.java:808-815`).
+    ///
+    /// The enum reads the subs, which these values own, so it has no
+    /// [`independent_terms_enum`](SortedDocValues::independent_terms_enum):
+    /// merged values are only ever lent, to the consumer that writes them.
     fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         let map = Arc::clone(&self.map);
         let subs = self.merger.subs_mut();
@@ -1841,6 +1845,8 @@ impl SortedSetDocValues for MergedSortedSetDocValues {
     /// `new MergedTermsEnum(map, subs)` over each `toMerge.get(sub).termsEnum()`
     /// (`DocValuesConsumer.java:1043-1050`). The subs' values stand for Java's
     /// `toMerge` list, as in [`lookup_ord`](SortedSetDocValues::lookup_ord).
+    /// As for the merged sorted values, the enum reads the subs these values
+    /// own, so these values are only ever lent.
     fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         let map = Arc::clone(&self.map);
         let subs = self.merger.subs_mut();

@@ -774,12 +774,7 @@ fn do_test_terms_enum_random(
             let mut actual = actual_values.terms_enum()?;
             assert_equals_terms_enum(terms.size()?, &mut *expected, &mut *actual)?;
 
-            let leaf = Arc::clone(&r);
-            suite.do_test_sorted_set_enum_advance_independently(&|| {
-                Ok(leaf
-                    .get_sorted_set_doc_values("dv")?
-                    .unwrap_or_else(|| npe("ssdv")))
-            })?;
+            suite.do_test_sorted_set_enum_advance_independently(ssdv)?;
         }
     }
     ir.close()?;

@@ -27,8 +27,12 @@ use rucene::search::index_searcher::IndexSearcher;
 use rucene::util::java_collections::java_string_hash_code;
 
 use crate::function::docvalues::long_doc_values::{long_doc_values_members, LongDocValues};
-use crate::function::function_values::FunctionValues;
+use crate::function::function_values::{FunctionValues, ValueFiller};
 use crate::function::value_source::{class_hash, ValueSource, ValueSourceContext};
+use crate::function::value_source_scorer::ValueSourceScorerMatcher;
+use rucene::search::similarities::Explanation;
+use rucene::util::mutable::MutableValueObject;
+use rucene::util::BytesRefBuilder;
 
 /// The constant values a statistics source stores in the context: the
 /// anonymous `LongDocValues` whose `longVal` is the statistic.
@@ -73,25 +77,136 @@ impl LongDocValues for ConstLongDocValues {
 /// `(FunctionValues) context.get(this)` of a statistics source: the statistic
 /// `createWeight` stored, as the constant values Java stored.
 ///
-/// **Divergence.** Java stores the `LongDocValues` itself and returns that
-/// same instance (`SumTotalTermFreqValueSource.java:53-75`); the context map
-/// is shared across threads here, so it stores the statistic and every call
-/// builds the same constant values around it. Java returns `null` when
-/// `createWeight` was not called, which its caller dereferences; this port
-/// raises that `NullPointerException` here.
+/// When `createWeight` was not called, Java's map answers `null` and
+/// `getValues` returns it (`TotalTermFreqValueSource.java:62-65`,
+/// `SumTotalTermFreqValueSource.java:53-57`); the caller fails only when it
+/// uses that reference. That `null` is [`NullFunctionValues`] here.
+///
+/// The context map is shared across threads here, so it stores the
+/// statistic and every call builds the same constant values around it, where
+/// Java returns the one `LongDocValues` it stored.
 ///
 /// # Errors
 ///
-/// The `NullPointerException` described above.
+/// None in practice; the signature is the trait's.
 pub(crate) fn stored_values(
     context: &ValueSourceContext<'_>,
     vs: Arc<dyn ValueSource>,
 ) -> Result<Box<dyn FunctionValues>> {
-    let ttf = context
+    match context
         .get(&*vs)
         .and_then(|value| value.downcast_ref::<i64>().copied())
-        .ok_or_else(LuceneError::null_pointer)?;
-    Ok(Box::new(ConstLongDocValues::new(vs, ttf)))
+    {
+        Some(ttf) => Ok(Box::new(ConstLongDocValues::new(vs, ttf))),
+        None => Ok(Box::new(NullFunctionValues)),
+    }
+}
+
+/// The `null` reference a statistics source's `getValues` returns before
+/// `createWeight`: every use of it is Java's `NullPointerException`.
+///
+/// A method answering through `Result` returns that exception; a method
+/// whose signature carries no error (`cost`, `getValueFiller`,
+/// `getScorer`'s matcher) raises it as a panic payload, as Java's unchecked
+/// exception propagates from the call.
+#[derive(Debug)]
+pub(crate) struct NullFunctionValues;
+
+fn null_dereference<T>() -> T {
+    std::panic::panic_any(LuceneError::null_pointer())
+}
+
+impl FunctionValues for NullFunctionValues {
+    fn byte_val(&mut self, _doc: i32) -> Result<i8> {
+        Err(LuceneError::null_pointer())
+    }
+    fn short_val(&mut self, _doc: i32) -> Result<i16> {
+        Err(LuceneError::null_pointer())
+    }
+    fn float_val(&mut self, _doc: i32) -> Result<f32> {
+        Err(LuceneError::null_pointer())
+    }
+    fn int_val(&mut self, _doc: i32) -> Result<i32> {
+        Err(LuceneError::null_pointer())
+    }
+    fn long_val(&mut self, _doc: i32) -> Result<i64> {
+        Err(LuceneError::null_pointer())
+    }
+    fn double_val(&mut self, _doc: i32) -> Result<f64> {
+        Err(LuceneError::null_pointer())
+    }
+    fn str_val(&mut self, _doc: i32) -> Result<Option<String>> {
+        Err(LuceneError::null_pointer())
+    }
+    fn bool_val(&mut self, _doc: i32) -> Result<bool> {
+        Err(LuceneError::null_pointer())
+    }
+    fn float_vector_val(&mut self, _doc: i32) -> Result<Option<Vec<f32>>> {
+        Err(LuceneError::null_pointer())
+    }
+    fn byte_vector_val(&mut self, _doc: i32) -> Result<Option<Vec<u8>>> {
+        Err(LuceneError::null_pointer())
+    }
+    fn bytes_val(&mut self, _doc: i32, _target: &mut BytesRefBuilder) -> Result<bool> {
+        Err(LuceneError::null_pointer())
+    }
+    fn object_val(&mut self, _doc: i32) -> Result<Option<MutableValueObject>> {
+        Err(LuceneError::null_pointer())
+    }
+    fn exists(&mut self, _doc: i32) -> Result<bool> {
+        Err(LuceneError::null_pointer())
+    }
+    fn ord_val(&mut self, _doc: i32) -> Result<i32> {
+        Err(LuceneError::null_pointer())
+    }
+    fn num_ord(&self) -> Result<i32> {
+        Err(LuceneError::null_pointer())
+    }
+    fn cost(&self) -> f32 {
+        null_dereference()
+    }
+    fn to_doc_string(&mut self, _doc: i32) -> Result<String> {
+        Err(LuceneError::null_pointer())
+    }
+    fn get_value_filler(&self) -> Box<dyn ValueFiller> {
+        null_dereference()
+    }
+    fn byte_vals(&mut self, _doc: i32, _vals: &mut [i8]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn short_vals(&mut self, _doc: i32, _vals: &mut [i16]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn float_vals(&mut self, _doc: i32, _vals: &mut [f32]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn int_vals(&mut self, _doc: i32, _vals: &mut [i32]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn long_vals(&mut self, _doc: i32, _vals: &mut [i64]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn double_vals(&mut self, _doc: i32, _vals: &mut [f64]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn str_vals(&mut self, _doc: i32, _vals: &mut [Option<String>]) -> Result<()> {
+        Err(LuceneError::null_pointer())
+    }
+    fn explain(&mut self, _doc: i32) -> Result<Explanation> {
+        Err(LuceneError::null_pointer())
+    }
+    fn get_scorer_matcher(&mut self) -> Box<dyn ValueSourceScorerMatcher> {
+        null_dereference()
+    }
+    fn get_range_matcher(
+        &mut self,
+        _lower_val: Option<&str>,
+        _upper_val: Option<&str>,
+        _include_lower: bool,
+        _include_upper: bool,
+    ) -> Result<Box<dyn ValueSourceScorerMatcher>> {
+        Err(LuceneError::null_pointer())
+    }
 }
 
 /// `SumTotalTermFreqValueSource` returns the number of tokens (sum of term

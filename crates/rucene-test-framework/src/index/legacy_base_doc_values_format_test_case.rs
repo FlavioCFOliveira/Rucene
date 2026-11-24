@@ -34,11 +34,6 @@
 //! [`base_compressing_doc_values_format_test_case`](super::base_compressing_doc_values_format_test_case).
 //!
 //! **Divergences** (declared, each confined to the member named):
-//! * `SortedDocValues.termsEnum()` / `SortedSetDocValues.termsEnum()` /
-//!   `intersect(...)`: the port's methods consume the doc values (a Rust
-//!   terms enum owns the doc values it reads), so where Java goes on using
-//!   the doc values after taking its terms enum, the port asks the reader for
-//!   the field's doc values again. Asking draws nothing from `random()`.
 //! * Fields Java keeps after `doc.add` are changed through the document
 //!   (`Document::get_field_mut_as`) or, when Java adds one object to many
 //!   documents (`testThreads2`), shared with `Document::add_shared`.
@@ -4291,7 +4286,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
                 let sorted = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.docID()\" because \"in\" is null");
                 Ok(Box::new(DocValues::singleton_sorted(sorted)?))
             };
-            self.do_test_sorted_set_enum_advance_independently(&dv)?;
+            self.do_test_sorted_set_enum_advance_independently(dv()?)?;
 
             drop(leaf);
             ireader.close()?;
@@ -4327,7 +4322,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             let dv = || -> Result<Box<dyn SortedSetDocValues>> {
                 Ok(npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.getValueCount()\" because \"dv\" is null"))
             };
-            self.do_test_sorted_set_enum_advance_independently(&dv)?;
+            self.do_test_sorted_set_enum_advance_independently(dv()?)?;
 
             drop(leaf);
             ireader.close()?;
@@ -4335,19 +4330,28 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         directory.close()
     }
 
-    /// `doTestSortedSetEnumAdvanceIndependently(dv)` (`protected`); `dv`
-    /// gives the field's doc values again for each `termsEnum()` (see the
-    /// module docs).
+    /// `doTestSortedSetEnumAdvanceIndependently(dv)` (`protected`): every
+    /// `dv.termsEnum()` is taken on the one `dv`, held through a shared
+    /// handle so that several enums over it live at once, as in Java.
     fn do_test_sorted_set_enum_advance_independently(
         &self,
-        dv: &dyn Fn() -> Result<Box<dyn SortedSetDocValues>>,
+        dv: Box<dyn SortedSetDocValues>,
     ) -> Result<()> {
-        if dv()?.get_value_count()? < 2 {
+        let dv = std::rc::Rc::new(std::cell::RefCell::new(dv));
+        // `dv.termsEnum()`: the implementation's own enum, or the default
+        // `SortedSetDocValuesTermsEnum` over `dv`.
+        let terms_enum = || -> Result<Box<dyn rucene::index::TermsEnum>> {
+            let independent = dv.borrow().independent_terms_enum()?;
+            Ok(match independent {
+                Some(terms_enum) => terms_enum,
+                None => rucene::index::SortedSetDocValuesTermsEnum::new(std::rc::Rc::clone(&dv)),
+            })
+        };
+        if dv.borrow().get_value_count()? < 2 {
             return Ok(());
         }
         let mut terms: Vec<BytesRef> = Vec::new();
-        let mut te_values = dv()?;
-        let mut te = te_values.terms_enum()?;
+        let mut te = terms_enum()?;
         terms.push(BytesRef::deep_copy_of(&npe_at(
             te.next()?.cloned(),
             "Cannot read field \"bytes\" because \"other\" is null",
@@ -4358,10 +4362,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         )));
 
         // Make sure that calls to next() does not modify the term of the other enum
-        let mut enum1_values = dv()?;
-        let mut enum1 = enum1_values.terms_enum()?;
-        let mut enum2_values = dv()?;
-        let mut enum2 = enum2_values.terms_enum()?;
+        let mut enum1 = terms_enum()?;
+        let mut enum2 = terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4382,10 +4384,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekCeil
-        let mut enum1_values = dv()?;
-        let mut enum1 = enum1_values.terms_enum()?;
-        let mut enum2_values = dv()?;
-        let mut enum2 = enum2_values.terms_enum()?;
+        let mut enum1 = terms_enum()?;
+        let mut enum2 = terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4406,10 +4406,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekCeil on an exact value
-        let mut enum1_values = dv()?;
-        let mut enum1 = enum1_values.terms_enum()?;
-        let mut enum2_values = dv()?;
-        let mut enum2 = enum2_values.terms_enum()?;
+        let mut enum1 = terms_enum()?;
+        let mut enum2 = terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4427,10 +4425,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekExact
-        let mut enum1_values = dv()?;
-        let mut enum1 = enum1_values.terms_enum()?;
-        let mut enum2_values = dv()?;
-        let mut enum2 = enum2_values.terms_enum()?;
+        let mut enum1 = terms_enum()?;
+        let mut enum2 = terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4446,10 +4442,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         ));
 
         // Same for seek by ord
-        let mut enum1_values = dv()?;
-        let mut enum1 = enum1_values.terms_enum()?;
-        let mut enum2_values = dv()?;
-        let mut enum2 = enum2_values.terms_enum()?;
+        let mut enum1 = terms_enum()?;
+        let mut enum2 = terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 

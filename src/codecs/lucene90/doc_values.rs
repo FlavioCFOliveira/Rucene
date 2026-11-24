@@ -4413,6 +4413,15 @@ impl SortedDocValues for LazySortedDocValues {
             &self.terms_dict_entry,
         )?))
     }
+
+    /// The same `new TermsDict(entry.termsDictEntry, data)`, which reads only
+    /// the entry and a clone of the data input.
+    fn independent_terms_enum(&self) -> Result<Option<Box<dyn crate::index::TermsEnum>>> {
+        Ok(Some(Box::new(TermsDict::new(
+            &*self.data,
+            &self.terms_dict_entry,
+        )?)))
+    }
 }
 
 /// A `SORTED_NUMERIC` field, or the ordinals of a multi-valued `SORTED_SET`.
@@ -4838,6 +4847,15 @@ impl SortedSetDocValues for LazySortedSetDocValues {
             &*self.data,
             &self.terms_dict_entry,
         )?))
+    }
+
+    /// The same `new TermsDict(entry.termsDictEntry, data)`, which reads only
+    /// the entry and a clone of the data input.
+    fn independent_terms_enum(&self) -> Result<Option<Box<dyn crate::index::TermsEnum>>> {
+        Ok(Some(Box::new(TermsDict::new(
+            &*self.data,
+            &self.terms_dict_entry,
+        )?)))
     }
 }
 
