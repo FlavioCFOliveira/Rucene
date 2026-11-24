@@ -34,6 +34,11 @@ fn icu(message: &str) -> rucene::error::LuceneError {
 
 const DATA_FORMAT: i32 = 0x55436f6c; // "UCol"
 
+/// Whether the data file's format version is supported.
+///
+/// Equivalent to the private class `com.ibm.icu.impl.coll.CollationDataReader.IsAcceptable`,
+/// whose `IsAcceptable.isDataVersionAcceptable(byte[])` is this function
+/// (an `ICUBinary.Authenticate`).
 fn is_acceptable(version: &[u8; 4]) -> bool {
     version[0] == 5
 }

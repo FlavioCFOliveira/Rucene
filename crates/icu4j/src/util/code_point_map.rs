@@ -27,6 +27,9 @@ pub enum RangeOption {
 /// `ValueFilter`: modifies map values while enumerating ranges.
 ///
 /// Equivalent to the interface `com.ibm.icu.util.CodePointMap.ValueFilter`.
+///
+/// Equivalent to `CodePointMap.ValueFilter.apply(int)`: the call of the
+/// function.
 pub type ValueFilter<'f> = &'f dyn Fn(i32) -> i32;
 
 /// Range iteration result data: the code points `start..=end` all have

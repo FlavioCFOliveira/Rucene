@@ -1,7 +1,7 @@
 // © 2016 and later: Unicode, Inc. and others.
 // License & terms of use: http://www.unicode.org/copyright.html
 
-//! `com.ibm.icu.util.ICUCloneNotSupportedException`.
+//! Ported from `com.ibm.icu.util.ICUCloneNotSupportedException`.
 
 use crate::util::icu_exception::icu_exception_class;
 

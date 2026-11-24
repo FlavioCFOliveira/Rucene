@@ -103,6 +103,11 @@ struct ReaderCacheKey {
 
 /// `CACHE`: the readers by base name and locale ID; `None` caches a
 /// missing bundle (Java's `NULL_READER`).
+///
+/// Java's `CACHE` is an instance of the private class
+/// `ICUResourceBundleReader.ReaderCache`, a `SoftCache` whose only member is
+/// its `createInstance(ReaderCacheKey key, ClassLoader loader)` override; that
+/// override is the closure given to [`SoftCache::new`] here.
 #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
 static CACHE: LazyLock<
     SoftCache<ReaderCacheKey, Option<Arc<ICUResourceBundleReader>>, ClassLoader>,
@@ -1056,6 +1061,12 @@ enum ContainerKind {
 /// Equivalent to `ICUResourceBundleReader.Container` (package-private) and
 /// its subclasses `Array`, `Array32`, `Array16`, `Table`, `Table1632`,
 /// `Table16` and `Table32`, distinguished by [`ContainerKind`].
+///
+/// Equivalent to `com.ibm.icu.impl.ICUResourceBundleReader.Array`
+/// (package-private, `ICUResourceBundleReader.java:977-988`).
+///
+/// Equivalent to `com.ibm.icu.impl.ICUResourceBundleReader.Table`
+/// (package-private, `ICUResourceBundleReader.java:1010-1079`).
 #[derive(Debug, Clone)]
 pub struct Container {
     kind: ContainerKind,

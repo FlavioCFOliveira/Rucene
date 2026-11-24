@@ -8,7 +8,11 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use rucene::error::{LuceneError, Result};
 
-/// The function that notifies one listener (`notifyListener`).
+/// The function that notifies one listener.
+///
+/// Equivalent to `ICUNotifier.notifyListener(EventListener)`: the
+/// subclass's override of the abstract method, called on the notification
+/// thread for each listener.
 pub type NotifyFn<L> = Arc<dyn Fn(&Arc<L>) + Send + Sync>;
 
 /// `NotifyThread` (private): the daemon thread that notifies the queued
@@ -85,6 +89,10 @@ impl<L: ?Sized + Send + Sync + 'static> ICUNotifier<L> {
 
     /// `addListener(EventListener l)`: adds a listener once (by identity),
     /// when `accepts_listener` accepts it.
+    ///
+    /// `accepts_listener` is the answer of the subclass's
+    /// `ICUNotifier.acceptsListener(EventListener)` for `l`, computed by the
+    /// caller, which knows the subclass.
     ///
     /// # Errors
     ///

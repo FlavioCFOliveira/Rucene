@@ -46,6 +46,11 @@ impl ValueType {
 }
 
 /// `SpecialType` and its `SpecialTypeHandler`s.
+///
+/// Each private `SpecialTypeHandler` subclass (`KeyTypeData.java:43-89`) is
+/// the handler of one variant: its `pat` is the variant's pattern in
+/// [`SpecialType::is_well_formed`], and none overrides the inherited
+/// `canonicalize`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum SpecialType {
     Codepoints,
@@ -76,11 +81,17 @@ impl SpecialType {
     fn is_well_formed(self, value: &str) -> bool {
         static PATS: LazyLock<[JavaPattern; 6]> = LazyLock::new(|| {
             [
+                // `KeyTypeData.CodepointsTypeHandler.pat`
                 "[0-9a-fA-F]{4,6}(-[0-9a-fA-F]{4,6})*",
+                // `KeyTypeData.ReorderCodeTypeHandler.pat`
                 "[a-zA-Z]{3,8}(-[a-zA-Z]{3,8})*",
+                // `KeyTypeData.RgKeyValueTypeHandler.pat`
                 "([a-zA-Z]{2}|[0-9]{3})[zZ]{4}",
+                // `KeyTypeData.ScriptCodeTypeHandler.pat`
                 "[a-zA-Z]{4}(-[a-zA-Z]{4})*",
+                // `KeyTypeData.SubdivisionKeyValueTypeHandler.pat`
                 "([a-zA-Z]{2}|[0-9]{3})",
+                // `KeyTypeData.PrivateUseKeyValueTypeHandler.pat`
                 "[a-zA-Z0-9]{3,8}(-[a-zA-Z0-9]{3,8})*",
             ]
             .map(|p| JavaPattern::compile(p, 0).expect("valid pattern"))
@@ -458,7 +469,8 @@ impl KeyTypeData {
         while it.has_next() {
             let key_info_entry = it.next()?;
             let key = key_info_entry.get_key().unwrap_or_else(|| "null".into());
-            // KeyInfoType.valueOf(key)
+            // `KeyTypeData.KeyInfoType.valueOf(key)`: the private enum
+            // `KeyInfoType {deprecated, valueType}` is the two keys matched here.
             let is_deprecated = match key.as_str() {
                 "deprecated" => true,
                 "valueType" => false,
@@ -495,7 +507,8 @@ impl KeyTypeData {
         while it.has_next() {
             let key_info_entry = it.next()?;
             let key = key_info_entry.get_key().unwrap_or_else(|| "null".into());
-            // TypeInfoType.valueOf(key)
+            // `KeyTypeData.TypeInfoType.valueOf(key)`: the private enum
+            // `TypeInfoType {deprecated}` is the one key matched here.
             if key != "deprecated" {
                 return Err(LuceneError::illegal_argument(format!(
                     "No enum constant com.ibm.icu.impl.locale.KeyTypeData.TypeInfoType.{key}"

@@ -10,4 +10,9 @@ use crate::text::transform::Transform;
 /// Equivalent to the interface `com.ibm.icu.text.StringTransform`, which
 /// extends `Transform<String,String>`; its `transform(String)` is the
 /// inherited method with `S` and `D` the UTF-16 strings of this crate.
+///
+/// Equivalent to `StringTransform.transform(String)`: Java re-declares the
+/// inherited `Transform.transform(S)` with `S` and `D` bound to `String`;
+/// here it is [`Transform::transform`] of the supertrait, bound to
+/// `&[u16]` and `Vec<u16>`.
 pub trait StringTransform: for<'a> Transform<&'a [u16], Vec<u16>> {}

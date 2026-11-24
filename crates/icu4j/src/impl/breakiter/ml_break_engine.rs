@@ -18,8 +18,8 @@ use crate::util::u_resource_bundle::UResourceBundle;
 
 /// The start index of each feature group in the model list.
 ///
-/// Equivalent to the package-private enum `ModelIndex` of
-/// `MlBreakEngine.java`.
+/// Equivalent to the package-private enum
+/// `com.ibm.icu.impl.breakiter.ModelIndex`, declared in `MlBreakEngine.java`.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)] // variant names mirror the Java constants

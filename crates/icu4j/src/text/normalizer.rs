@@ -41,22 +41,28 @@ pub enum QuickCheckResult {
 /// Equivalent to the abstract class `Normalizer.Mode` and its singleton
 /// subclasses (`NONE`, `NFD`, `NFKD`, `NFC`, `NFKC`, `FCD`; the aliases
 /// `DEFAULT`, `NO_OP`, `COMPOSE`, `COMPOSE_COMPAT`, `DECOMP`,
-/// `DECOMP_COMPAT` are the same values).
+/// `DECOMP_COMPAT` are the same values). Each private singleton subclass
+/// (`Normalizer.java:248-286`) is a variant, and its
+/// `getNormalizer2(int options)` override is the variant's arm of
+/// [`Mode::get_normalizer2`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
-    /// `NONE` (`NO_OP`): no decomposition/composition.
+    /// `NONE` (`NO_OP`), the private class `Normalizer.NONEMode`: no
+    /// decomposition/composition.
     None,
-    /// `NFD` (`DECOMP`): canonical decomposition.
+    /// `NFD` (`DECOMP`), the private class `Normalizer.NFDMode`: canonical
+    /// decomposition.
     Nfd,
-    /// `NFKD` (`DECOMP_COMPAT`): compatibility decomposition.
+    /// `NFKD` (`DECOMP_COMPAT`), the private class `Normalizer.NFKDMode`:
+    /// compatibility decomposition.
     Nfkd,
-    /// `NFC` (`DEFAULT`, `COMPOSE`): canonical decomposition followed by
-    /// canonical composition.
+    /// `NFC` (`DEFAULT`, `COMPOSE`), the private class `Normalizer.NFCMode`:
+    /// canonical decomposition followed by canonical composition.
     Nfc,
-    /// `NFKC` (`COMPOSE_COMPAT`): compatibility decomposition followed by
-    /// canonical composition.
+    /// `NFKC` (`COMPOSE_COMPAT`), the private class `Normalizer.NFKCMode`:
+    /// compatibility decomposition followed by canonical composition.
     Nfkc,
-    /// `FCD`: "fast C or D" form.
+    /// `FCD`, the private class `Normalizer.FCDMode`: "fast C or D" form.
     Fcd,
 }
 
@@ -75,6 +81,10 @@ static UNICODE32: LazyLock<std::result::Result<Arc<UnicodeSet>, Arc<LuceneError>
 
 /// A lazily created `ModeImpl.INSTANCE`: the normalizer of a mode, or the
 /// exception of its static initializer.
+///
+/// Each private holder class of `Normalizer` (`Normalizer.java:156-199`),
+/// whose only member is the lazily initialized `INSTANCE`, is one static
+/// of this type, named after it.
 type ModeImpl = LazyLock<std::result::Result<Arc<dyn Normalizer2>, Arc<LuceneError>>>;
 
 fn mode_impl(
@@ -88,29 +98,44 @@ fn filtered(n2: Result<Arc<dyn Normalizer2>>) -> Result<Arc<dyn Normalizer2>> {
     Ok(Arc::new(FilteredNormalizer2::new(n2?, set)))
 }
 
+/// `Normalizer.NFDModeImpl.INSTANCE`: `Normalizer2.getNFDInstance()`.
 static NFD_MODE_IMPL: ModeImpl =
     LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfd_instance()? as Arc<dyn Normalizer2>)));
+/// `Normalizer.NFKDModeImpl.INSTANCE`: `Normalizer2.getNFKDInstance()`.
 static NFKD_MODE_IMPL: ModeImpl =
     LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfkd_instance()? as Arc<dyn Normalizer2>)));
+/// `Normalizer.NFCModeImpl.INSTANCE`: `Normalizer2.getNFCInstance()`.
 static NFC_MODE_IMPL: ModeImpl =
     LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfc_instance()? as Arc<dyn Normalizer2>)));
+/// `Normalizer.NFKCModeImpl.INSTANCE`: `Normalizer2.getNFKCInstance()`.
 static NFKC_MODE_IMPL: ModeImpl =
     LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfkc_instance()? as Arc<dyn Normalizer2>)));
+/// `Normalizer.FCDModeImpl.INSTANCE`: `Norm2AllModes.getFCDNormalizer2()`.
 static FCD_MODE_IMPL: ModeImpl = LazyLock::new(|| {
     mode_impl(|| Ok(Norm2AllModes::get_fcd_normalizer2()? as Arc<dyn Normalizer2>))
 });
+/// `Normalizer.NFD32ModeImpl.INSTANCE`: `Normalizer2.getNFDInstance()`
+/// filtered by `Unicode32.INSTANCE`.
 static NFD32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
     mode_impl(|| filtered(normalizer2::get_nfd_instance().map(|n| n as Arc<dyn Normalizer2>)))
 });
+/// `Normalizer.NFKD32ModeImpl.INSTANCE`: `Normalizer2.getNFKDInstance()`
+/// filtered by `Unicode32.INSTANCE`.
 static NFKD32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
     mode_impl(|| filtered(normalizer2::get_nfkd_instance().map(|n| n as Arc<dyn Normalizer2>)))
 });
+/// `Normalizer.NFC32ModeImpl.INSTANCE`: `Normalizer2.getNFCInstance()`
+/// filtered by `Unicode32.INSTANCE`.
 static NFC32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
     mode_impl(|| filtered(normalizer2::get_nfc_instance().map(|n| n as Arc<dyn Normalizer2>)))
 });
+/// `Normalizer.NFKC32ModeImpl.INSTANCE`: `Normalizer2.getNFKCInstance()`
+/// filtered by `Unicode32.INSTANCE`.
 static NFKC32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
     mode_impl(|| filtered(normalizer2::get_nfkc_instance().map(|n| n as Arc<dyn Normalizer2>)))
 });
+/// `Normalizer.FCD32ModeImpl.INSTANCE`: `Norm2AllModes.getFCDNormalizer2()`
+/// filtered by `Unicode32.INSTANCE`.
 static FCD32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
     mode_impl(|| filtered(Norm2AllModes::get_fcd_normalizer2().map(|n| n as Arc<dyn Normalizer2>)))
 });
@@ -1333,7 +1358,9 @@ impl Normalizer {
             Fold2,
             Owned(Vec<u16>),
         }
-        // CmpEquivLevel: cs (null for an unused level) and s.
+        // A `Normalizer.CmpEquivLevel` (`cs`, `s`) is a `(Option<Src>, i32)`:
+        // `cs` (`None` for an unused level) and `s`; `createCmpEquivLevelStack()`
+        // is the two-element array the stacks below are created with.
         let nfc_all;
         let nfc_impl = if (options & COMPARE_EQUIV) != 0 {
             nfc_all = Norm2AllModes::get_nfc_instance()?;

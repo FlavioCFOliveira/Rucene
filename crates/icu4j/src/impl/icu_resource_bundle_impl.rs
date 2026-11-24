@@ -1,9 +1,10 @@
 // © 2016 and later: Unicode, Inc. and others.
 // License & terms of use: http://www.unicode.org/copyright.html
 
-//! `com.ibm.icu.impl.ICUResourceBundleImpl`: the concrete resource
-//! classes of ICU bundles, as the [`ImplKind`] of an
-//! [`ICUResourceBundle`].
+//! The concrete resource classes of ICU bundles, ported from
+//! `com.ibm.icu.impl.ICUResourceBundleImpl`: its members are methods of
+//! [`ICUResourceBundle`] declared in this module, and its subclasses are
+//! the [`ImplKind`] of an [`ICUResourceBundle`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -19,10 +20,15 @@ use crate::util::u_resource_type_mismatch_exception::type_mismatch;
 
 /// The subclass of `ICUResourceBundleImpl` an ICU resource is.
 ///
-/// Equivalent to the private and package-private nested classes of
-/// `com.ibm.icu.impl.ICUResourceBundleImpl`: `ResourceString`,
-/// `ResourceBinary`, `ResourceInt`, `ResourceIntVector` and the
-/// `ResourceContainer` subclasses `ResourceArray` and `ResourceTable`.
+/// The private and package-private nested classes of
+/// `ICUResourceBundleImpl` are its variants: `ICUResourceBundleImpl.ResourceString`,
+/// `ICUResourceBundleImpl.ResourceBinary`, `ICUResourceBundleImpl.ResourceInt`,
+/// `ICUResourceBundleImpl.ResourceIntVector` and the abstract
+/// `ICUResourceBundleImpl.ResourceContainer`'s subclasses
+/// `ICUResourceBundleImpl.ResourceArray` and `ICUResourceBundleImpl.ResourceTable`
+/// (`ICUResourceBundleImpl.java:63-308`). The members of
+/// `ResourceContainer` are methods of [`ICUResourceBundle`] that act on the
+/// `Array` and `Table` variants.
 #[derive(Debug)]
 pub enum ImplKind {
     /// `ResourceString`: `value` holds the string unless it is large (Java

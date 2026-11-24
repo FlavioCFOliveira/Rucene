@@ -17,7 +17,8 @@
 
 //! Downloads/generates lucene/analysis/icu/src/data/utr30/*.txt for the
 //! specified icu release tag, ported from
-//! `lucene/analysis/icu/src/tools/java/org/apache/lucene/analysis/icu/GenerateUTR30DataFiles.java`.
+//! `org.apache.lucene.analysis.icu.GenerateUTR30DataFiles`
+//! (`lucene/analysis/icu/src/tools/java/org/apache/lucene/analysis/icu/GenerateUTR30DataFiles.java`).
 //!
 //! ASSUMPTION: This class will be run with current directory set to
 //! lucene/analysis/icu/src/data/utr30/

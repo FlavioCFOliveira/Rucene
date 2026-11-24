@@ -40,6 +40,12 @@ pub struct Data {
 }
 
 impl Data {
+    /// `hashCode()`: the constant 1 (Java: "unused; silence ErrorProne",
+    /// `LikelySubtags.java:105-108`).
+    pub fn hash_code(&self) -> i32 {
+        1
+    }
+
     /// `new Data(...)`.
     pub fn new(
         language_aliases: HashMap<String, String>,

@@ -13,6 +13,16 @@ use rucene::error::{LuceneError, Result};
 use crate::jdk::ByteBuffer;
 use crate::util::u_resource_bundle::UResourceBundle;
 
+/// ICU resource bundle key and value types.
+///
+/// Equivalent to the final class `com.ibm.icu.impl.UResource`
+/// (`UResource.java:22`). Java declares it with no member of its own: it is
+/// the namespace of the nested types [`Key`], [`Array`], [`Table`],
+/// [`Value`] and [`Sink`], which are this module's items, and its implicit
+/// public no-argument constructor is [`Default`].
+#[derive(Debug, Default)]
+pub struct UResource;
+
 /// Represents a resource bundle item's key string: a view of the
 /// NUL-terminated invariant-character key bytes of a bundle, or a string
 /// set by the caller.

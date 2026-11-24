@@ -509,6 +509,11 @@ impl TransliteratorRegistry {
 
     /// `getAvailableIDs()`: the visible IDs, in registration order
     /// (Java returns an `Enumeration` over them).
+    ///
+    /// Java wraps the enumeration of each `getAvailable*` method in a
+    /// `TransliteratorRegistry.IDEnumeration`, which maps each
+    /// `CaseInsensitiveString` to its string and is empty when created over
+    /// `null`; that is the `map` of these methods and their empty result.
     pub fn get_available_ids(&self) -> Vec<Vec<u16>> {
         self.available_ids()
             .0

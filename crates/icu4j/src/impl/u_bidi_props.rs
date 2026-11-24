@@ -101,6 +101,11 @@ fn get_mirror_index(m: i32) -> i32 {
     ((m as u32) >> MIRROR_INDEX_SHIFT) as i32
 }
 
+/// Whether the data file's format version is supported.
+///
+/// Equivalent to the private class `com.ibm.icu.impl.UBiDiProps.IsAcceptable`,
+/// whose `IsAcceptable.isDataVersionAcceptable(byte[])` is this function
+/// (an `ICUBinary.Authenticate`).
 fn is_acceptable(version: &[u8; 4]) -> bool {
     version[0] == 2
 }

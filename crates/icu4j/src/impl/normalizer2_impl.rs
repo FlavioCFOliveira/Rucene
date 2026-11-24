@@ -456,6 +456,11 @@ pub struct Normalizer2Impl {
 
 const DATA_FORMAT: i32 = 0x4e726d32; // "Nrm2"
 
+/// Whether the data file's format version is supported.
+///
+/// Equivalent to the private class `com.ibm.icu.impl.Normalizer2Impl.IsAcceptable`,
+/// whose `IsAcceptable.isDataVersionAcceptable(byte[])` is this function
+/// (an `ICUBinary.Authenticate`).
 fn is_acceptable(version: &[u8; 4]) -> bool {
     version[0] == 5
 }

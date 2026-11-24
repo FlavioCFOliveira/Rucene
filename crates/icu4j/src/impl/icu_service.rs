@@ -811,8 +811,9 @@ impl ICUService {
         self.notifier.remove_listener(l);
     }
 
-    /// `notifyChanged()` of `ICUNotifier`, with `notifyListener` calling
-    /// `serviceChanged(this)`.
+    /// `notifyChanged()` of `ICUNotifier`, with
+    /// `ICUService.notifyListener(EventListener)` the closure given to it:
+    /// `((ServiceListener)l).serviceChanged(this)`.
     pub fn notify_changed(&self) {
         let w = self.self_ref.clone();
         self.notifier

@@ -17,7 +17,8 @@
 
 //! Command-line utility to converts RuleBasedBreakIterator (.rbbi) files
 //! into binary compiled form (.brk), ported from
-//! `lucene/analysis/icu/src/tools/java/org/apache/lucene/analysis/icu/RBBIRuleCompiler.java`.
+//! `org.apache.lucene.analysis.icu.RBBIRuleCompiler`
+//! (`lucene/analysis/icu/src/tools/java/org/apache/lucene/analysis/icu/RBBIRuleCompiler.java`).
 //!
 //! Run as `java org.apache.lucene.analysis.icu.RBBIRuleCompiler <sourcedir>
 //! <destdir>` runs (`gradle/generation/icu.gradle`, task `genRbbiInternal`,

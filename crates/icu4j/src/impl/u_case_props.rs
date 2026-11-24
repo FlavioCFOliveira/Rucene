@@ -139,6 +139,11 @@ fn slot_offset(flags: i32, index: i32) -> i32 {
     FLAGS_OFFSET[(flags & ((1 << index) - 1)) as usize] as i32
 }
 
+/// Whether the data file's format version is supported.
+///
+/// Equivalent to the private class `com.ibm.icu.impl.UCaseProps.IsAcceptable`,
+/// whose `IsAcceptable.isDataVersionAcceptable(byte[])` is this function
+/// (an `ICUBinary.Authenticate`).
 fn is_acceptable(version: &[u8; 4]) -> bool {
     version[0] == 4
 }

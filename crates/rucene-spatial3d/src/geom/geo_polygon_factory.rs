@@ -1445,10 +1445,12 @@ impl fmt::Display for BestShape {
 ///
 /// Equivalent to `org.apache.lucene.spatial3d.geom.GeoPolygonFactory.Edge`.
 ///
-/// Equivalent to `Edge.equals(Object)` (`o == this`) and to
-/// `Edge.hashCode()` (`System.identityHashCode(this)`): an edge's identity
+/// Equivalent to `Edge.equals(Object)` (`o == this`): an edge's identity
 /// is its index in the edge arena, which the `HashSet<usize>` and
 /// `HashMap<usize, usize>` of [`EdgeBuffer`] hold and compare.
+///
+/// Equivalent to `Edge.hashCode()` (`System.identityHashCode(this)`): the
+/// same arena index is the key those collections hash.
 #[derive(Clone)]
 pub(crate) struct Edge {
     start_point: Pt,

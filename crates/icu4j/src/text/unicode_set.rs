@@ -3582,6 +3582,10 @@ impl UnicodeSet {
     }
 
     /// `ranges()`: the code point ranges.
+    ///
+    /// Java returns a `UnicodeSet.EntryRangeIterable` whose `iterator()` is a
+    /// new `EntryRangeIterator`; the Rust iterator is the iterable, so this
+    /// returns the [`EntryRangeIterator`] itself.
     pub fn ranges(&self) -> EntryRangeIterator<'_> {
         EntryRangeIterator { set: self, pos: 0 }
     }
@@ -3919,6 +3923,13 @@ impl UnicodeSet {
     }
 
     /// `codePoints()`.
+    ///
+    /// Java returns a `UnicodeSet.CodePointIterable` whose `iterator()` is a
+    /// `UnicodeSet.CodePointIterator`, which forwards `hasNext()` and
+    /// `next()` to a `CodePointIteratorInt` and throws
+    /// `UnsupportedOperationException` from `remove()`. The Rust iterator is
+    /// the iterable, and [`CodePointIteratorInt`] implements [`Iterator`]
+    /// itself, so this returns it; a Rust iterator has no `remove`.
     pub fn code_points(&self) -> CodePointIteratorInt<'_> {
         CodePointIteratorInt::new(self)
     }

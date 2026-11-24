@@ -71,6 +71,8 @@ impl Range {
 /// different values with the same mapped value merge.
 ///
 /// Equivalent to the interface `com.ibm.icu.impl.Trie2.ValueMapper`.
+///
+/// Equivalent to `Trie2.ValueMapper.map(int)`: the call of the function.
 pub type ValueMapper<'m> = &'m dyn Fn(i32) -> i32;
 
 /// The identity mapper (`defaultValueMapper`).

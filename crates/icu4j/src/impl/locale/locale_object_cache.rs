@@ -22,10 +22,18 @@ type NormalizeFn<K> = Box<dyn Fn(K) -> Option<K> + Send + Sync>;
 /// the collector may clear (removing the entries through a
 /// `ReferenceQueue`); a Rust process has no collector, so the values stay
 /// cached, one of the behaviours the `SoftReference` contract allows (as
-/// [`CacheValue`](crate::r#impl::cache_value::CacheValue) does).
+/// [`CacheValue`](crate::r#impl::cache_value::CacheValue) does). The map
+/// therefore holds each value itself where Java holds a
+/// `LocaleObjectCache.CacheEntry` (the value's `SoftReference`, carrying its
+/// key for the removal, `LocaleObjectCache.java:83-94`).
 pub struct LocaleObjectCache<K, V> {
+    /// `_map`: the values by key.
     map: Mutex<HashMap<K, V>>,
+    /// `createObject(K key)`: the subclass's override, which creates the
+    /// value of a normalized key (`None` for Java's `null`).
     create: CreateFn<K, V>,
+    /// `normalizeKey(K key)`: the subclass's override, or the default that
+    /// returns the key unchanged (`None` for Java's `null`).
     normalize: NormalizeFn<K>,
 }
 
@@ -56,6 +64,12 @@ where
     }
 
     /// `get(K key)`.
+    ///
+    /// Java calls the private `LocaleObjectCache.cleanStaleEntries()` before
+    /// the first lookup and after the insertion, to drop the entries whose
+    /// value the collector cleared; no value is ever cleared here, so the
+    /// reference queue it drains is always empty and both calls remove
+    /// nothing.
     pub fn get(&self, key: K) -> Option<V> {
         let value = self.map_get(&key);
         if value.is_none() {

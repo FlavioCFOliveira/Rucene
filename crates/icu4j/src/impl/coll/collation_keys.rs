@@ -120,6 +120,9 @@ const SORT_KEY_LEVEL_INITIAL_CAPACITY: usize = 40;
 /// `CollationKeys.SortKeyLevel` (private).
 #[derive(Debug, Clone)]
 struct SortKeyLevel {
+    /// `data()` (package-private) returns this array, `buffer`; the port's
+    /// one caller, the backwards-secondary reversal of `writeSortKeyUpToQuaternary`,
+    /// reads the field directly.
     buffer: Vec<i8>,
     len: i32,
 }

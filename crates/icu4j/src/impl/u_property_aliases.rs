@@ -27,6 +27,11 @@ const IX_RESERVED3_OFFSET: usize = 3;
 /// `DATA_FORMAT`: "pnam".
 const DATA_FORMAT: i32 = 0x706E616D;
 
+/// Whether the data file's format version is supported.
+///
+/// Equivalent to the private class `com.ibm.icu.impl.UPropertyAliases.IsAcceptable`,
+/// whose `IsAcceptable.isDataVersionAcceptable(byte[])` is this function
+/// (an `ICUBinary.Authenticate`).
 fn is_acceptable(version: &[u8; 4]) -> bool {
     version[0] == 2
 }

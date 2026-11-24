@@ -357,9 +357,19 @@ fn singleton(name: &str) -> Singleton {
     }
 }
 
+// Each private holder class of `Norm2AllModes` (`Norm2AllModes.java:382-393`),
+// whose only member is the lazily initialized `INSTANCE`, is one static,
+// named after it.
+
+/// `Norm2AllModes.NFCSingleton.INSTANCE`: `new Norm2AllModesSingleton("nfc")`.
 static NFC_SINGLETON: LazyLock<Singleton> = LazyLock::new(|| singleton("nfc"));
+/// `Norm2AllModes.NFKCSingleton.INSTANCE`: `new Norm2AllModesSingleton("nfkc")`.
 static NFKC_SINGLETON: LazyLock<Singleton> = LazyLock::new(|| singleton("nfkc"));
+/// `Norm2AllModes.NFKC_CFSingleton.INSTANCE`:
+/// `new Norm2AllModesSingleton("nfkc_cf")`.
 static NFKC_CF_SINGLETON: LazyLock<Singleton> = LazyLock::new(|| singleton("nfkc_cf"));
+/// `Norm2AllModes.NFKC_SCFSingleton.INSTANCE`:
+/// `new Norm2AllModesSingleton("nfkc_scf")`.
 static NFKC_SCF_SINGLETON: LazyLock<Singleton> = LazyLock::new(|| singleton("nfkc_scf"));
 
 /// `cache`: the modes of other data, by name.

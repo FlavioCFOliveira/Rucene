@@ -12,10 +12,15 @@ use std::sync::Arc;
 /// fresh reference count) and is held through [`Reference`].
 ///
 /// **Divergence.** Java keeps an explicit `AtomicInteger refCount` that
-/// only `Reference` instances increment and decrement
-/// (`SharedObject.java:91-163`); `copyOnWrite()` mutates the object in
-/// place when that count is at most 1. Here the count is the [`Arc`]
-/// strong count, and [`Reference::copy_on_write`] is [`Arc::make_mut`]:
+/// only `Reference` instances increment and decrement, through
+/// `SharedObject.addRef()` and `SharedObject.removeRef()`, with
+/// `SharedObject.deleteIfZeroRefCount()` an empty method ("Deletion in Java
+/// is up to the garbage collector") (`SharedObject.java:91-198`). Those
+/// three members are the [`Arc`] count's increment on clone, its decrement
+/// on drop, and the deallocation of the last drop. `copyOnWrite()`
+/// mutates the object in place when that count is at most 1. Here the
+/// count is the [`Arc`] strong count, and [`Reference::copy_on_write`] is
+/// [`Arc::make_mut`]:
 /// Rust forbids mutating an object other owners can read, so any other
 /// owner (not only another `Reference`) makes the write go to a copy. The
 /// values seen through every reference are the same as in Java.

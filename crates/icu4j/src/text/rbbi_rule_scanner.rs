@@ -105,7 +105,9 @@ pub(crate) struct RBBIRuleScanner {
     /// occurring in the rules.
     pub(crate) f_symbol_table: RBBISymbolTable,
     /// `fSetTable`: the UnicodeSets of the rules, keyed by their source
-    /// text, so that the same set used in several rules is shared.
+    /// text, so that the same set used in several rules is shared. Java's
+    /// entry `RBBIRuleScanner.RBBISetTableEl` (`String key`, `RBBINode val`,
+    /// `RBBIRuleScanner.java:607-611`) is the map's key and value.
     f_set_table: HashMap<Vec<u16>, NodeId>,
     /// `fRuleSets`: predefined UnicodeSets that are always available for
     /// use as char class matchers.

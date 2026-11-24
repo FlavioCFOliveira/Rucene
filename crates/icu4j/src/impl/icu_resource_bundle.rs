@@ -157,6 +157,10 @@ pub struct ICUResourceBundle {
 
 /// `ICUResourceBundle.Loader` (private): the bundle loading of
 /// `instantiateBundle`, run by the cache on a miss.
+///
+/// Equivalent to `ICUResourceBundle.Loader.load()`: the abstract method of
+/// the anonymous subclass Java creates per lookup is the call of this
+/// function.
 type Loader = Box<dyn FnOnce() -> Result<Option<Arc<ICUResourceBundle>>>>;
 
 /// `BUNDLE_CACHE`.
@@ -1470,6 +1474,13 @@ impl ICUResourceBundle {
     pub fn java_equals(&self, other: &ICUResourceBundle) -> bool {
         self.get_base_name() == other.get_base_name()
             && self.get_locale_id() == other.get_locale_id()
+    }
+
+    /// `hashCode()`: not designed (`assert false : "hashCode not designed"`,
+    /// then 42; `ICUResourceBundle.java:1212-1216`).
+    pub fn hash_code(&self) -> i32 {
+        debug_assert!(false, "hashCode not designed");
+        42
     }
 
     /// `getBundleInstance(String baseName, String localeID, ClassLoader

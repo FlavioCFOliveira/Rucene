@@ -26,7 +26,11 @@ pub struct BaseLocale {
     hash: i32,
 }
 
-/// `CACHE`.
+/// `CACHE`: an instance of the private class `BaseLocale.Cache`
+/// (`BaseLocale.java:251-266`), a `LocaleObjectCache` whose two overrides
+/// are the closures given to [`LocaleObjectCache::new`]:
+/// `createObject(Key key)` (`new BaseLocale(key._lang, key._scrt,
+/// key._regn, key._vart)`) and `normalizeKey(Key key)` (`Key.normalize(key)`).
 static CACHE: LazyLock<LocaleObjectCache<Key, Arc<BaseLocale>>> = LazyLock::new(|| {
     LocaleObjectCache::new(
         |key: &Key| {

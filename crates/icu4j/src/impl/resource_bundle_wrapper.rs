@@ -22,6 +22,10 @@ use crate::util::u_resource_bundle::{
 static DEBUG: LazyLock<bool> = LazyLock::new(|| ICUDebug::enabled_arg("resourceBundleWrapper"));
 
 /// `ResourceBundleWrapper.Loader` (private).
+///
+/// Equivalent to `ResourceBundleWrapper.Loader.load()`: the abstract method
+/// of the anonymous subclass Java creates per lookup is the call of this
+/// function.
 type Loader = Box<dyn FnOnce() -> Result<Option<Arc<ResourceBundleWrapper>>>>;
 
 /// `BUNDLE_CACHE`.

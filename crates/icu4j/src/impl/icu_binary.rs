@@ -34,6 +34,11 @@ impl DatPackageReader {
     const DATA_FORMAT: i32 = 0x436d6e44;
 
     /// `IS_ACCEPTABLE`: format version 1.
+    ///
+    /// Equivalent to the private class
+    /// `com.ibm.icu.impl.ICUBinary.DatPackageReader.IsAcceptable`, whose
+    /// `IsAcceptable.isDataVersionAcceptable(byte[])` is this function (an
+    /// `ICUBinary.Authenticate`).
     fn is_acceptable(version: &[u8; 4]) -> bool {
         version[0] == 1
     }
@@ -318,6 +323,9 @@ static ICU_DATA_FILES: LazyLock<Vec<Box<dyn DataFile>>> = LazyLock::new(|| {
 /// version is acceptable.
 ///
 /// Equivalent to the interface `ICUBinary.Authenticate`.
+///
+/// Equivalent to `ICUBinary.Authenticate.isDataVersionAcceptable(byte[])`:
+/// the call of the function, with the four format-version bytes.
 pub type Authenticate<'a> = &'a dyn Fn(&[u8; 4]) -> bool;
 
 /// Reading of ICU binary data: the data files, their common header, and

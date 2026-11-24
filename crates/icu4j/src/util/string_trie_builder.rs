@@ -35,6 +35,11 @@ enum State {
 pub(crate) type NodeId = usize;
 
 /// The kind of a node, with the fields of its Java class.
+///
+/// The abstract `StringTrieBuilder.BranchNode` (`StringTrieBuilder.java:594-601`),
+/// base of `ListBranchNode` and `SplitBranchNode`, is the `hash` and
+/// `first_edge_number` fields of those two variants; its `hashCode()`
+/// override (`return hash`) is their arm of `node_hash_code`.
 #[derive(Debug, Clone)]
 enum NodeKind {
     /// `ValueNode`.
@@ -76,6 +81,8 @@ enum NodeKind {
 /// fields of its class.
 #[derive(Debug, Clone)]
 struct Node {
+    /// `getOffset()` (public final) returns this field, `Node.offset`; the
+    /// port reads the field directly.
     offset: i32,
     has_value: bool,
     value: i32,

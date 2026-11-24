@@ -430,6 +430,17 @@ impl BinaryProperty {
 }
 
 /// The kinds of Java's `IntProperty` and its anonymous subclasses.
+///
+/// The private subclasses `UCharacterProperty.BiDiIntProperty` (source
+/// `SRC_BIDI`, `getMaxValue` from `UBiDiProps`: [`IntKind::BidiClass`],
+/// [`IntKind::JoiningGroup`], [`IntKind::JoiningType`],
+/// [`IntKind::BidiPairedBracketType`]) and
+/// `UCharacterProperty.CombiningClassIntProperty` (`getMaxValue` `0xff`:
+/// [`IntKind::CanonicalCombiningClass`],
+/// [`IntKind::LeadCanonicalCombiningClass`],
+/// [`IntKind::TrailCanonicalCombiningClass`]) are the kinds their anonymous
+/// subclasses became (`UCharacterProperty.java:728-746,767-885`); their
+/// overrides are the matching arms of `IntProperty::get_max_value`.
 #[derive(Debug, Clone, Copy)]
 enum IntKind {
     /// `IntProperty(int column, int mask, int shift)`.
@@ -844,6 +855,11 @@ const MAX_BLOCK: i32 = 0x3ff;
  */
 const DATA_FORMAT: i32 = 0x5550726F;
 
+/// Whether the data file's format version is supported.
+///
+/// Equivalent to the private class `com.ibm.icu.impl.UCharacterProperty.IsAcceptable`,
+/// whose `UCharacterProperty.IsAcceptable.isDataVersionAcceptable(byte[])` is
+/// this function (an `ICUBinary.Authenticate`).
 fn is_acceptable(version: &[u8; 4]) -> bool {
     version[0] == 9
 }
@@ -1740,6 +1756,7 @@ impl LayoutProps {
             ICUBinary::read_header_and_data_version(
                 &mut bytes,
                 Self::DATA_FORMAT,
+                // `LayoutProps.IsAcceptable` (`IS_ACCEPTABLE`): format version 1.
                 Some(&(|v: &[u8; 4]| v[0] == 1) as &dyn Fn(&[u8; 4]) -> bool),
             )?;
             let start_pos = bytes.position();
