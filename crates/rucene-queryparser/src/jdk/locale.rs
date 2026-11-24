@@ -724,16 +724,103 @@ impl Locale {
         startup_default().clone()
     }
 
-    /// `Locale.setDefault(Locale)`; `None` restores the startup default.
+    /// `Locale.setDefault(Locale)`: sets the default locale and the default
+    /// of both categories (`Locale.java` `setDefault(Locale)` calls
+    /// `setDefault(Category, Locale)` for `DISPLAY` and `FORMAT`). `None` (no
+    /// Java counterpart: Java rejects `null`) restores the startup default
+    /// and lets both categories initialise again from it.
     pub fn set_default(locale: Option<Locale>) {
+        let mut categories = CATEGORY_DEFAULTS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *categories = [locale.clone(), locale.clone()];
         *DEFAULT_LOCALE
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = locale;
+    }
+
+    /// `Locale.getDefault(Locale.Category)`: the category default, which is
+    /// initialised on first use (`initDefault(Category)`) from the JVM's
+    /// startup category properties: `user.language.display` and its kin
+    /// default to the startup default locale ([`startup_default`]); the
+    /// `FORMAT` ones come from `LC_CTYPE` (see [`startup_format_default`]).
+    pub fn get_default_category(category: Category) -> Locale {
+        let i = category.ordinal();
+        if let Some(locale) = CATEGORY_DEFAULTS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)[i]
+            .clone()
+        {
+            return locale;
+        }
+        let mut categories = CATEGORY_DEFAULTS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        categories[i]
+            .get_or_insert_with(|| match category {
+                Category::Display => startup_default().clone(),
+                Category::Format => startup_format_default().clone(),
+            })
+            .clone()
+    }
+
+    /// `Locale.setDefault(Locale.Category, Locale)`: sets the default of one
+    /// category only.
+    pub fn set_default_category(category: Category, locale: Locale) {
+        CATEGORY_DEFAULTS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)[category.ordinal()] = Some(locale);
+    }
+}
+
+/// `Locale.Category`: the categories of the default locale.
+///
+/// Equivalent to the enum `java.util.Locale.Category`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Category {
+    /// `DISPLAY`: the locale for displaying user interfaces.
+    Display,
+    /// `FORMAT`: the locale for formatting dates, numbers and values.
+    Format,
+}
+
+impl Category {
+    /// `ordinal()`.
+    pub fn ordinal(self) -> usize {
+        match self {
+            Category::Display => 0,
+            Category::Format => 1,
+        }
     }
 }
 
 /// `Locale.setDefault`'s value, `None` until set.
 static DEFAULT_LOCALE: std::sync::RwLock<Option<Locale>> = std::sync::RwLock::new(None);
+
+/// `defaultDisplayLocale` and `defaultFormatLocale`, `None` until set or
+/// first read (`Locale.java` keeps them `null` until `getDefault(Category)`
+/// initialises them).
+static CATEGORY_DEFAULTS: std::sync::RwLock<[Option<Locale>; 2]> =
+    std::sync::RwLock::new([None, None]);
+
+/// The default `FORMAT` locale a JVM starts with on Linux: `java_props_md.c`
+/// parses `LC_CTYPE` into the `format_*` properties (`LC_MESSAGES` gives the
+/// display ones), and `SystemProps.fillI18nProps` publishes them as
+/// `user.language.format` and its kin when they differ from the display
+/// values; `Locale.initDefault(Category.FORMAT)` reads them. Resolved from
+/// the environment as [`startup_default`] resolves `LC_MESSAGES` (same
+/// declared divergence).
+pub fn startup_format_default() -> &'static Locale {
+    static DEFAULT: std::sync::LazyLock<Locale> = std::sync::LazyLock::new(|| {
+        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let lc = env("LC_ALL")
+            .or_else(|| env("LC_CTYPE"))
+            .or_else(|| env("LANG"))
+            .unwrap_or_else(|| "C".to_string());
+        parse_posix_locale(&lc)
+    });
+    &DEFAULT
+}
 
 /// The default locale a JVM starts with on Linux: `user.language`,
 /// `user.script`, `user.country` and `user.variant` as `java_props_md.c`

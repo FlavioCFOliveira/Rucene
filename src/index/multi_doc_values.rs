@@ -399,7 +399,7 @@ impl MultiDocValues {
     /// # Errors
     ///
     /// As [`Self::get_sorted_set_values`].
-    pub(crate) fn get_sorted_set_values_and_mapping(
+    pub fn get_sorted_set_values_and_mapping(
         reader: &Arc<dyn IndexReader>,
         field: &str,
     ) -> Result<Option<WithMapping<dyn SortedSetDocValues>>> {
@@ -468,7 +468,7 @@ impl MultiDocValues {
 
 /// A merged view, and the [`OrdinalMap`] it was built with when there was one
 /// to build.
-pub(crate) type WithMapping<T> = (Box<T>, Option<Arc<OrdinalMap>>);
+pub type WithMapping<T> = (Box<T>, Option<Arc<OrdinalMap>>);
 
 /// Returns `true` if any leaf declares `field` with the given doc-values type.
 fn any_leaf_has(leaves: &[Arc<LeafReaderContext>], field: &str, wanted: DocValuesType) -> bool {

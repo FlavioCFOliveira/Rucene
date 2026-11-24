@@ -15,7 +15,9 @@ Workspace: alem do crate raiz (`src/`, `tests/`), levanta cada crate membro em
 `port_modules_kg.PORT_MODULES` para la de `lucene/core` (o `cratePath` de cada
 um: `crates/rucene-codecs`, `crates/randomizedtesting`,
 `crates/rucene-test-framework`, `crates/rucene-analysis-common`,
-`crates/rucene-queries`, `crates/rucene-queryparser`, `crates/rucene-sandbox`),
+`crates/rucene-queries`, `crates/rucene-queryparser`, `crates/rucene-sandbox`, e os
+crates do sprint 17, `crates/rucene-benchmark` e as suas dependencias, `crates/spatial4j`,
+`crates/s2-geometry`),
 mais qualquer outro membro com `Cargo.toml` (`crates/rucene-cli-example`). Os
 membros sao lidos de `crates/*/Cargo.toml`, por isso um crate que ainda nao
 existe (os tres do sprint 13 antes de o sprint os criar) nao contribui
@@ -41,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from kgio import kg_target  # noqa: E402
+from kgcache import disk_memo  # noqa: E402
 
 CRATE = "rucene"
 # The workspace member crates under `crates/`: `{"crates/<dir>": (package,
@@ -75,6 +78,7 @@ def member_of(rel: str):
 # --------------------------------------------------------------------------
 
 
+@disk_memo
 def mask(text: str) -> str:
     out = list(text)
     i = 0
@@ -166,7 +170,11 @@ def mask(text: str) -> str:
 
 VIS = r"(?:pub(?:\s*\([^)]*\))?\s+)?"
 
-RE_MOD = re.compile(r"^[ \t]*" + VIS + r"mod\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+# A module named by a raw identifier (`pub mod r#impl { ... }`, icu4j's
+# `com.ibm.icu.impl`) is captured without its `r#`: module paths are built from
+# file paths (`module_path_for`: `src/impl/x.rs` is `<crate>::impl::x`), which
+# never carry the prefix.
+RE_MOD = re.compile(r"^[ \t]*" + VIS + r"mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)", re.M)
 RE_TYPE = re.compile(
     r"^[ \t]*"
     + VIS
@@ -265,6 +273,7 @@ def module_path_for(rel: str):
     return "::".join([crate] + parts)
 
 
+@disk_memo
 def parse_file(rel: str, text: str):
     """Devolve (types, fns, impls, uses) de um ficheiro Rust."""
     masked = blank_macro_bodies(mask(text))
@@ -609,6 +618,20 @@ def main():
         help="reuse a previously captured `-Zunpretty=expanded` dump instead "
         "of running the compiler again",
     )
+    ap.add_argument(
+        "--reuse-expanded-from",
+        metavar="EXPORT",
+        help="the base commit's export directory name (`rucene-survey-<short>`): "
+        "the cached expansion of every crate outside --expand-only is reused from "
+        "it (`sync_plan.py`: such a crate's expansion cannot have changed)",
+    )
+    ap.add_argument(
+        "--expand-only",
+        metavar="CRATES",
+        default=None,
+        help="comma-separated Cargo package names to expand afresh with "
+        "--reuse-expanded-from (`rucene` for the root crate); may be empty",
+    )
     args = ap.parse_args()
 
     root = Path(args.source_root).resolve()
@@ -693,7 +716,13 @@ def main():
 
     macro_types, macro_fns = [], []
     if args.expand or args.expanded_file:
-        if args.expand:
+        if args.expand and args.reuse_expanded_from is not None:
+            fresh = {c for c in (args.expand_only or "").split(",") if c}
+            reused = reuse_expansions(root, args.reuse_expanded_from, fresh)
+            print(f"expansions reused from {args.reuse_expanded_from}: "
+                  f"{', '.join(reused) or 'none'}; expanded afresh: "
+                  f"{', '.join(sorted(fresh)) or 'none'}", file=sys.stderr)
+        if args.expand and not all_expansions_cached(root):
             clean_workspace_members(root)
         # The root crate, then each member: `--expanded-file` is the root's dump.
         dumps = [(CRATE, Path(args.expanded_file).read_text(encoding="utf-8")
@@ -746,7 +775,9 @@ def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool,
     `crate` e o identificador do crate do ficheiro, para onde `crate::` aponta;
     um caminho que comeca pelo identificador de outro crate do workspace
     resolve nesse crate."""
-    segs = path.split("::")
+    # `crate::r#impl::x`: a raw identifier names the module `impl`, which is
+    # how `mod_to_file` (built from file paths) spells it (rmp #634).
+    segs = [s[2:] if s.startswith("r#") else s for s in path.split("::")]
     if not segs:
         return None
     head = segs[0]
@@ -795,7 +826,7 @@ def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool,
 # parser did not already record for the same file. Expansion is compiled with
 # `cfg(test)` off, so it contributes production types only.
 
-RE_EXP_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*\{")
+RE_EXP_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_]\w*)\s*\{")
 RE_EXP_TYPE = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait|union)\s+([A-Za-z_]\w*)"
 )
@@ -831,6 +862,43 @@ def clean_workspace_members(root: Path) -> None:
     )
     if proc.returncode != 0:
         raise SystemExit("cleaning workspace members failed:\n" + proc.stderr[-2000:])
+
+
+def expansion_cache(root: Path, package: str = None):
+    """The cache file of one crate's expansion of the export `root`, or `None`
+    when `root` is no export under the KG target."""
+    target = kg_target()
+    try:
+        root.resolve().relative_to(target.resolve())
+    except ValueError:
+        return None
+    return target / "expanded" / f"{root.resolve().name}--{package or 'root'}.rs"
+
+
+def reuse_expansions(root: Path, base_export: str, fresh: set):
+    """Copy the base export's cached expansion of every crate not in `fresh`
+    to this export's cache name, so `run_macro_expansion` serves it without the
+    compiler. A crate whose base dump is missing is left to be expanded."""
+    import shutil
+    reused = []
+    for pkg in [None] + [p for p, _ident in WORKSPACE.values()]:
+        name = pkg or CRATE
+        if name in fresh:
+            continue
+        dst = expansion_cache(root, pkg)
+        src = kg_target() / "expanded" / f"{base_export}--{pkg or 'root'}.rs"
+        if dst is not None and src.is_file():
+            if not dst.is_file():
+                shutil.copyfile(src, dst)
+            reused.append(name)
+    return reused
+
+
+def all_expansions_cached(root: Path) -> bool:
+    """Whether every crate's expansion of `root` is already cached, in which case
+    nothing is compiled and the workspace members need no clean."""
+    return all((c := expansion_cache(root, pkg)) is not None and c.is_file()
+               for pkg in [None] + [p for p, _ident in WORKSPACE.values()])
 
 
 def run_macro_expansion(root: Path, package: str = None) -> str:
@@ -876,6 +944,7 @@ def run_macro_expansion(root: Path, package: str = None) -> str:
     return proc.stdout
 
 
+@disk_memo
 def parse_expanded_records(text: str, crate: str = CRATE):
     """Module-level items of the expanded crate, each with its raw header.
 
@@ -923,7 +992,10 @@ def parse_expanded_records(text: str, crate: str = CRATE):
 
     def classify(header):
         h = " ".join(header.split())
-        m = re.search(r"\bmod\s+([A-Za-z_]\w*)\s*$", h)
+        # `r#` dropped as in `RE_MOD`: without it `mod r#impl {` read as an
+        # anonymous block, and every item under it lost the `impl` segment and
+        # fell back to the crate root file (rmp #634).
+        m = re.search(r"\bmod\s+(?:r#)?([A-Za-z_]\w*)\s*$", h)
         if m:
             return ("mod", m.group(1))
         m = re.search(r"\b(struct|enum|union)\s+([A-Za-z_]\w*)", h)

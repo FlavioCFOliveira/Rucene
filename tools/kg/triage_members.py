@@ -64,6 +64,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from rust_surface import parse_tree
+from port_modules_kg import JAVA_PREFIXES, claim_crate_of
 
 # --------------------------------------------------------------------------
 # Java-to-Rust name shapes
@@ -167,14 +168,25 @@ def doc_members(doc):
     return set(RE_DOC_MEMBER.findall(doc)) | set(RE_DOC_HASH.findall(doc))
 
 
-# The crate states which Lucene type an item ports in its own doc comment
+# The crate states which Java type an item ports in its own doc comment
 # (`CLAUDE.md` 14.1). Reading that from the source is stronger than reading the
-# `PORTS` edges, which exist only for the claims the graph loader resolved.
+# `PORTS` edges, which exist only for the claims the graph loader resolved. A
+# claim names a type of any port module -- Lucene's, randomizedtesting's and the
+# ported libraries' (`port_modules_kg.JAVA_PREFIXES`) -- so a library member is
+# triaged against its own type, not misreported for lack of a Lucene name.
 RE_CLAIM = re.compile(
     r"(?:Equivalent to|Port of|Ported from|ported from)\s+(?:the\s+)?"
     r"(?:abstract |final |sealed |package-private |static |nested |private )*"
     r"(?:class |interface |enum |record )?"
-    r"`(org\.apache\.lucene\.[A-Za-z0-9_.$]+)`")
+    r"`((?:" + "|".join(re.escape(p) for p in JAVA_PREFIXES) + r")\.[A-Za-z0-9_.$]+)`")
+
+def _own_claim(fqn, file):
+    """Whether the claim of `file` on `fqn` may port it: always, except for a
+    type only its own crate ports (`port_modules_kg.claim_crate_of`, the JDK's
+    `org.xml.sax` emulated elsewhere), as `port_evidence_kg.load` rules."""
+    own = claim_crate_of(fqn)
+    return own is None or file.startswith(own + "/")
+
 
 # The same claim, naming a *member*, and read from a declaration's doc rather
 # than a function's. It is deliberately stricter than `doc_members`: a
@@ -305,13 +317,15 @@ class Surface:
                 self.trait_decls[t["name"]].append((f, t))
                 for fqn in RE_CLAIM.findall(
                         _doc_above(rec, t) or ""):
-                    self.type_claims[(t["name"], f)].add(fqn.rstrip("."))
+                    if _own_claim(fqn.rstrip("."), f):
+                        self.type_claims[(t["name"], f)].add(fqn.rstrip("."))
             for im in rec["impls"]:
                 self.impls_of[im["self"]].append((f, im))
             for name, td in rec["types"].items():
                 self.type_decl[name].append((f, td))
                 for fqn in RE_CLAIM.findall(td["doc"] or ""):
-                    self.type_claims[(name, f)].add(fqn.rstrip("."))
+                    if _own_claim(fqn.rstrip("."), f):
+                        self.type_claims[(name, f)].add(fqn.rstrip("."))
             # Every declaration site, not just the first: `standard.rs`
             # declares `set_max_token_length` on three types, and keeping only
             # the first hid the one that answers `StandardTokenizer` behind the

@@ -179,19 +179,21 @@ fn test_copy_to() -> Result<()> {
     Ok(())
 }
 
-/// The reflected map of `TestUtil.assertAttributeReflection`, keyed and
-/// valued as Rucene's `AttributeReflector` reports them (see that method's
-/// divergence): `CharTermAttribute.class.getName()` and
-/// `TermToBytesRefAttribute.class.getName()` both stand for the
-/// implementation's type name.
+/// The reflected map of `TestUtil.assertAttributeReflection`, keyed as
+/// Java's (`CharTermAttribute.class.getName() + "#term"`,
+/// `TermToBytesRefAttribute.class.getName() + "#bytes"`) and valued as
+/// Rucene's `AttributeReflector` reports them (see that method's divergence).
 fn test_attribute_reflection() -> Result<()> {
     let mut t = CharTermAttributeImpl::new();
     t.append_string(Some("foobar"));
-    let term = std::any::type_name::<CharTermAttributeImpl>();
+    let p = "org.apache.lucene.analysis.tokenattributes.";
     let mut expected: HashMap<String, String> = HashMap::new();
-    expected.insert(format!("{term}#term"), format!("{:?}", "foobar"));
     expected.insert(
-        format!("{term}#bytes"),
+        format!("{p}CharTermAttribute#term"),
+        format!("{:?}", "foobar"),
+    );
+    expected.insert(
+        format!("{p}TermToBytesRefAttribute#bytes"),
         format!("{:?}", BytesRef::new(b"foobar".to_vec())),
     );
     TestUtil::assert_attribute_reflection(&t, &expected);

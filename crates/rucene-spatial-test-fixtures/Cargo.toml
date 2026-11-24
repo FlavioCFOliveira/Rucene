@@ -1,0 +1,25 @@
+[package]
+name = "rucene-spatial-test-fixtures"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/spatial-test-fixtures (random spatial3d shapes for tests)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_spatial_test_fixtures"
+
+# Lucene's `lucene/spatial-test-fixtures/build.gradle`: `moduleImplementation`
+# of `:lucene:test-framework` and `:lucene:spatial3d`. The port draws its
+# randomness from randomizedtesting's context directly (the only part of
+# test-framework the Java class uses, through `LuceneTestCase.random()`), so
+# test-framework itself is not a dependency.
+[dependencies]
+rucene-spatial3d = { path = "../rucene-spatial3d" }
+# Reached in Java through test-framework's `api` dependency on
+# randomizedtesting and spatial3d's on lucene-core.
+rucene = { path = "../.." }
+randomizedtesting = { path = "../randomizedtesting" }

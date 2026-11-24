@@ -7,11 +7,14 @@
 //! values instead of descending a BKD tree. It is slower, and it is the only
 //! way when the field carries no points index.
 
+use crate::analysis::{Analyzer, TokenStream};
 use crate::document::range_fields::{
     BinaryRangeDocValues, BinaryRangeDocValuesField, BinaryRangeFieldRangeQuery, DoubleRange,
     FloatRange, IntRange, LongRange, RangeQueryType,
 };
+use crate::document::{InvertableType, NumericValue, SharedReader, StoredValue};
 use crate::error::{LuceneError, Result};
+use crate::index::{IndexableField, IndexableFieldType};
 use crate::util::BytesRef;
 
 /// Largest dimension index a typed range doc-values accessor accepts.
@@ -151,6 +154,66 @@ macro_rules! range_doc_values_field {
             ) -> Result<$query_name> {
                 check_args(min, max)?;
                 $query_name::new(field, min, max, query_type)
+            }
+        }
+
+        impl std::fmt::Display for $field_name {
+            /// Java's `Field.toString()`, which none of `BinaryDocValuesField`,
+            #[doc = concat!("`BinaryRangeDocValuesField` and `", stringify!($field_name), "`")]
+            /// overrides.
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(&self.inner, f)
+            }
+        }
+
+        #[doc = concat!("`", $field_equiv, "` is a `Field` (it extends")]
+        /// `BinaryRangeDocValuesField extends BinaryDocValuesField extends
+        /// Field`), so a document takes it directly; every member is the
+        /// inherited one, delegated to the `BinaryRangeDocValuesField` base.
+        impl IndexableField for $field_name {
+            /// This field as `Any`, for Java's `instanceof` tests and casts.
+            fn as_any(&self) -> Option<&dyn std::any::Any> {
+                Some(self)
+            }
+
+            fn name(&self) -> &str {
+                IndexableField::name(&self.inner)
+            }
+
+            fn field_type(&self) -> &dyn IndexableFieldType {
+                IndexableField::field_type(&self.inner)
+            }
+
+            fn token_stream(
+                &self,
+                analyzer: Option<&dyn Analyzer>,
+                reuse: &mut Option<Box<dyn TokenStream>>,
+            ) -> Result<Box<dyn TokenStream>> {
+                IndexableField::token_stream(&self.inner, analyzer, reuse)
+            }
+
+            fn binary_value(&self) -> Option<BytesRef> {
+                IndexableField::binary_value(&self.inner)
+            }
+
+            fn string_value(&self) -> Option<String> {
+                IndexableField::string_value(&self.inner)
+            }
+
+            fn reader_value(&self) -> Option<SharedReader> {
+                IndexableField::reader_value(&self.inner)
+            }
+
+            fn numeric_value(&self) -> Option<NumericValue> {
+                IndexableField::numeric_value(&self.inner)
+            }
+
+            fn stored_value(&self) -> Result<Option<StoredValue>> {
+                IndexableField::stored_value(&self.inner)
+            }
+
+            fn invertable_type(&self) -> Option<InvertableType> {
+                IndexableField::invertable_type(&self.inner)
             }
         }
 

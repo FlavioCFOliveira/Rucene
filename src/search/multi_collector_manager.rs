@@ -161,7 +161,7 @@ impl std::fmt::Debug for MultiCollectorHandle {
 impl MultiCollectorHandle {
     /// Returns the erased sub-collectors, one per sub-manager and in the same
     /// order.
-    fn into_collectors(self) -> Vec<AnyCollector> {
+    pub fn into_collectors(self) -> Vec<AnyCollector> {
         match self {
             Self::Single(collector) => vec![collector],
             Self::Multi(collector) => collector.into_collectors(),

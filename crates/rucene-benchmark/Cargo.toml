@@ -1,0 +1,75 @@
+[package]
+name = "rucene-benchmark"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/benchmark (byTask algorithms, quality and TREC evaluation)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_benchmark"
+
+# The five `main` classes of `lucene/benchmark`, run as `java <Class> args`
+# runs them (rmp #639); `benchmark` is the `mainClass` of the module's
+# `gradle run` task.
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "query_driver"
+path = "src/bin/query_driver.rs"
+
+[[bin]]
+name = "quality_queries_finder"
+path = "src/bin/quality_queries_finder.rs"
+
+[[bin]]
+name = "extract_wikipedia"
+path = "src/bin/extract_wikipedia.rs"
+
+[[bin]]
+name = "sample"
+path = "src/bin/sample.rs"
+
+# Lucene's `lucene/benchmark/build.gradle` also uses commons-compress, icu4j and
+# nekohtml (user decisions on rmp #611, 2026-11-22): commons-compress's GZIP and
+# BZIP2 streams (`byTask.utils.StreamUtils`) are replaced by `flate2` on the
+# workspace's `zlib-rs` backend (the C backend would switch the whole workspace
+# through feature unification) and `bzip2` on its default pure-Rust backend
+# (declared divergence: written `.gz` and `.bz2` bytes may differ from
+# commons-compress; decoding is equal both ways); icu4j's root `%spellout-numbering` rule
+# is ported in this crate, and nekohtml 1.9.17 (with the Xerces 2.12.2 and SAX
+# types it uses) is ported as the workspace crate `nekohtml`, so neither adds a
+# third-party dependency. quick-xml (already a workspace dependency of
+# rucene-analysis-common) is the XML parser under `jdk::sax`, the streaming SAX
+# parser of `EnwikiContentSource`.
+[dependencies]
+rucene = { path = "../.." }
+nekohtml = { path = "../nekohtml" }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+# `lucene/benchmark/build.gradle`: `moduleImplementation deps.icu4j` and
+# `moduleRuntimeOnly project(':lucene:analysis:icu')` (the ICU implementation of
+# `NewCollationAnalyzerTask`, rmp #642).
+icu4j = { path = "../icu4j" }
+rucene-analysis-icu = { path = "../rucene-analysis-icu" }
+rucene-facet = { path = "../rucene-facet" }
+rucene-highlighter = { path = "../rucene-highlighter" }
+rucene-queries = { path = "../rucene-queries" }
+rucene-queryparser = { path = "../rucene-queryparser" }
+rucene-spatial-extras = { path = "../rucene-spatial-extras" }
+spatial4j = { path = "../spatial4j" }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+bzip2 = "0.6.1"
+quick-xml = "0.42.0"
+
+[dev-dependencies]
+# The ported Lucene tests run on lucene/test-framework (and its randomized
+# testing base); the sprint-17 Java-oracle harness (`tests/sprint17_oracle/`,
+# rmp #628) draws on `randomizedtesting`.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }

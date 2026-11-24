@@ -63,6 +63,12 @@ impl CompoundDirectory for EmptyCompoundDirectory {
 }
 
 impl Directory for EmptyCompoundDirectory {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
     }

@@ -1175,7 +1175,7 @@ pub trait Terms: Send + Sync {
 ///
 /// Returns [`LuceneErrorKind::IllegalArgument`] when `compiled` is not a normal
 /// automaton, and propagates whatever `terms.iterator()` raises.
-pub(crate) fn default_intersect<T: Terms + ?Sized>(
+pub fn default_intersect<T: Terms + ?Sized>(
     terms: &T,
     compiled: &CompiledAutomaton,
     start_term: Option<&BytesRef>,

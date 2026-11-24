@@ -29,6 +29,42 @@ def write(root: Path, rel: str, text: str):
     return p
 
 
+S4J, S2 = "spatial4j/spatial4j", "s2-geometry/s2-geometry-library-java"
+NEKO = "nekohtml/nekohtml"
+ICU, ICU4J = "lucene/analysis/icu", "icu4j/icu4j"
+S17 = ("lucene/memory", "lucene/facet", "lucene/highlighter", "lucene/spatial3d",
+       "lucene/spatial-extras", "lucene/spatial-test-fixtures", "lucene/benchmark", S4J, S2)
+S17_CRATES = ("rucene-memory", "rucene-facet", "rucene-highlighter", "rucene-spatial3d",
+              "rucene-spatial-extras", "rucene-spatial-test-fixtures", "rucene-benchmark",
+              "spatial4j", "s2-geometry")
+
+
+def write_sprint17_descriptors(lucene: Path):
+    """The six sprint-17 Lucene descriptors, with the `requires` Lucene 10.5.0
+    declares (`lucene/spatial-test-fixtures` has none)."""
+    write(lucene, "lucene/memory/src/java/module-info.java",
+          "module org.apache.lucene.memory {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/facet/src/java/module-info.java",
+          "module org.apache.lucene.facet {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/highlighter/src/java/module-info.java",
+          "module org.apache.lucene.highlighter {\n requires org.apache.lucene.core;\n"
+          " requires org.apache.lucene.queries;\n requires org.apache.lucene.memory;\n}")
+    write(lucene, "lucene/spatial3d/src/java/module-info.java",
+          "module org.apache.lucene.spatial3d {\n requires org.apache.lucene.core;\n}")
+    write(lucene, "lucene/spatial-extras/src/java/module-info.java",
+          '@SuppressWarnings({"requires-automatic"})\nmodule org.apache.lucene.spatial_extras {\n'
+          " requires spatial4j;\n requires s2.geometry.library.java;\n"
+          " requires org.apache.lucene.core;\n requires org.apache.lucene.spatial3d;\n}")
+    write(lucene, "lucene/benchmark/src/java/module-info.java",
+          '@SuppressWarnings({"requires-automatic"})\nmodule org.apache.lucene.benchmark {\n'
+          " requires java.xml;\n requires org.apache.lucene.core;\n"
+          " requires org.apache.lucene.analysis.common;\n requires org.apache.lucene.facet;\n"
+          " requires org.apache.lucene.highlighter;\n requires org.apache.lucene.queries;\n"
+          " requires org.apache.lucene.queryparser;\n requires org.apache.lucene.spatial_extras;\n"
+          " requires spatial4j;\n requires org.apache.commons.compress;\n"
+          " requires nekohtml;\n requires com.ibm.icu;\n}")
+
+
 def write_query_descriptors(lucene: Path):
     """The three sprint-13 descriptors, as Lucene 10.5.0 declares their `requires`."""
     write(lucene, "lucene/queries/src/java/module-info.java",
@@ -44,20 +80,23 @@ def write_query_descriptors(lucene: Path):
 
 # --- the module registry ----------------------------------------------------
 
-def test_the_registry_names_the_eight_modules_and_their_crates():
+def test_the_registry_names_the_seventeen_modules_and_their_crates():
     assert [m["name"] for m in pm.PORT_MODULES] == [
         "lucene/core", "lucene/codecs", "lucene/test-framework",
         "randomizedtesting/randomized-runner", "lucene/analysis/common",
-        "lucene/queries", "lucene/queryparser", "lucene/sandbox"]
+        "lucene/queries", "lucene/queryparser", "lucene/sandbox", *S17, NEKO, ICU, ICU4J]
     assert pm.ADDED_MODULES == ("lucene/codecs", "lucene/test-framework",
                                 "randomizedtesting/randomized-runner", "lucene/analysis/common",
-                                "lucene/queries", "lucene/queryparser", "lucene/sandbox")
+                                "lucene/queries", "lucene/queryparser", "lucene/sandbox", *S17,
+                                NEKO, ICU, ICU4J)
     assert {m["cratePath"] for m in pm.PORT_MODULES} == {
         ".", "crates/rucene-codecs", "crates/rucene-test-framework", "crates/randomizedtesting",
         "crates/rucene-analysis-common", "crates/rucene-queries", "crates/rucene-queryparser",
-        "crates/rucene-sandbox"}
-    # only lucene/sandbox is narrowed to listed files
-    assert [m["name"] for m in pm.PORT_MODULES if m.get("files")] == ["lucene/sandbox"]
+        "crates/rucene-sandbox", *(f"crates/{c}" for c in S17_CRATES), "crates/nekohtml",
+        "crates/rucene-analysis-icu", "crates/icu4j"}
+    # lucene/sandbox and the four sprint-17 libraries are narrowed to listed files
+    assert [m["name"] for m in pm.PORT_MODULES if m.get("files")] == [
+        "lucene/sandbox", S4J, S2, NEKO, ICU4J]
 
 
 def test_module_of_file_keys_on_the_declaring_tree():
@@ -116,6 +155,10 @@ def test_module_dependencies_map_jpms_names_to_port_modules(tmp_path):
           "module org.apache.lucene.analysis.common {\n requires java.xml;\n"
           " requires org.apache.lucene.core;\n}")
     write_query_descriptors(lucene)
+    write_sprint17_descriptors(lucene)
+    write(lucene, "lucene/analysis/icu/src/java/module-info.java",
+          "module org.apache.lucene.analysis.icu {\n requires com.ibm.icu;\n"
+          " requires org.apache.lucene.core;\n requires org.apache.lucene.analysis.common;\n}")
     deps = pm.module_dependencies(pm.repo_roots(lucene, rt))
     assert [(a, b) for a, b, _ in deps] == [
         ("lucene/codecs", "lucene/core"),
@@ -128,7 +171,32 @@ def test_module_dependencies_map_jpms_names_to_port_modules(tmp_path):
         ("lucene/queryparser", "lucene/queries"),
         ("lucene/queryparser", "lucene/sandbox"),
         ("lucene/sandbox", "lucene/core"),
-        ("lucene/sandbox", "lucene/queries")]
+        ("lucene/sandbox", "lucene/queries"),
+        # lucene/facet is a port module since sprint 17
+        ("lucene/sandbox", "lucene/facet"),
+        ("lucene/memory", "lucene/core"),
+        ("lucene/facet", "lucene/core"),
+        ("lucene/highlighter", "lucene/core"),
+        ("lucene/highlighter", "lucene/queries"),
+        ("lucene/highlighter", "lucene/memory"),
+        ("lucene/spatial3d", "lucene/core"),
+        ("lucene/spatial-extras", S4J),
+        ("lucene/spatial-extras", S2),
+        ("lucene/spatial-extras", "lucene/core"),
+        ("lucene/spatial-extras", "lucene/spatial3d"),
+        ("lucene/benchmark", "lucene/core"),
+        ("lucene/benchmark", "lucene/analysis/common"),
+        ("lucene/benchmark", "lucene/facet"),
+        ("lucene/benchmark", "lucene/highlighter"),
+        ("lucene/benchmark", "lucene/queries"),
+        ("lucene/benchmark", "lucene/queryparser"),
+        ("lucene/benchmark", "lucene/spatial-extras"),
+        ("lucene/benchmark", S4J),
+        # `requires nekohtml;` / `requires com.ibm.icu;`: the automatic names of
+        # the ported libraries
+        ("lucene/benchmark", NEKO),
+        ("lucene/benchmark", ICU4J),
+        (ICU, ICU4J), (ICU, "lucene/core"), (ICU, "lucene/analysis/common")]
 
 
 def test_queries_narrow_to_one_module_and_the_model_holds_them_verbatim():
@@ -465,7 +533,7 @@ def test_sprint13_modules_are_port_modules_with_their_crates_and_rules():
     assert (pm.BY_NAME[SB]["scopeRule"], pm.BY_NAME[SB]["classRule"]) == (
         "sprint-13-ports-listed-files", "sprint-13-listed-file-top-level")
     assert pm.BY_NAME[SB]["files"] == (FLT_FILE,)
-    d = pm.DECISIONS[-1]
+    d = pm.DECISIONS[2]
     assert (d["name"], d["on"], d["modules"], d["supersedes"]) == (
         "Sprint 13 ports lucene/queries and lucene/queryparser, with sandbox "
         "FuzzyLikeThisQuery", "2026-11-14",
@@ -600,8 +668,9 @@ def test_an_unlisted_sandbox_type_never_enters_the_scope(monkeypatch):
 
 def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypatch, tmp_path):
     lucene, rt = tmp_path / "lucene", tmp_path / "rt"
+    roots = pm.repo_roots(lucene, rt, tmp_path / "s4j", tmp_path / "s2")
     for m in pm.PORT_MODULES:
-        base = lucene if m["repo"] == "lucene" else rt
+        base = roots[m["repo"]]
         write(base, f"{m['sources'][0]}/X.java", "package x;\nclass X {}\n")
         if m["descriptor"]:
             write(base, m["descriptor"], f"module {m['jpms']} {{ requires org.apache.lucene.core; }}")
@@ -616,7 +685,7 @@ def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypa
             return [[m] for d in pm.DECISIONS if pm.esc(d["name"]) in q for m in d["modules"]]
         return [[0]]
     monkeypatch.setattr(pm, "read", fake_read)
-    pm.phase_modules("r", pm.repo_roots(lucene, rt), "c" * 40, "2026-11-14")
+    pm.phase_modules("r", roots, "c" * 40, "2026-11-14")
     concerns = {(d["name"], r["m"]) for d in pm.DECISIONS for label, rows, body in writes
                 if label == "Decision CONCERNS Module" and pm.esc(d["name"]) in body
                 for r in rows}
@@ -625,7 +694,21 @@ def test_phase_modules_records_the_sandbox_scope_files_and_the_decision(monkeypa
     assert "m.scopeFiles = row.scopeFiles" in body
     scope = {r["name"]: r["scopeFiles"] for r in rows}
     assert scope.pop(SB) == FLT_FILE
+    assert scope.pop(S4J) == ", ".join(pm.BY_NAME[S4J]["files"])
+    assert scope.pop(S2) == ", ".join(pm.BY_NAME[S2]["files"])
+    assert scope.pop(NEKO) == ", ".join(pm.BY_NAME[NEKO]["files"])
+    assert scope.pop(ICU4J) == ", ".join(pm.BY_NAME[ICU4J]["files"])
     assert set(scope.values()) == {None}
+    # the clone-root libraries' module directory is the clone itself
+    paths = {r["name"]: r["path"] for r in rows}
+    assert (paths[S4J], paths[S2], paths["randomizedtesting/randomized-runner"]) == (
+        ".", ".", "randomized-runner")
+    # one Project per external library, with its version
+    for project, version in ((pm.RT_PROJECT, "2.8.1"), (pm.SPATIAL4J_PROJECT, "0.8"),
+                             (pm.S2_PROJECT, "1.0.0")):
+        assert any(f"MERGE (p:Project {{name: {pm.esc(project)}}})" in q for q in statements)
+        assert any(pm.esc(project) in q and f"p.version = {pm.esc(version)}" in q
+                   for q in statements)
     assert {r["name"]: r["scopeRule"] for r in rows}["lucene/queryparser"] == \
         "sprint-13-ports-the-module"
     decision = next(q for q in statements if "Sprint 13 ports" in q and "d.evidence" in q)
@@ -701,3 +784,289 @@ def test_an_annotation_on_the_declaration_line_is_seen_by_every_extractor(tmp_pa
     _files, ctop, cnested = audit.java_census(lucene, ("lucene/queryparser/src/java",))
     assert sorted(q for q, _ in ctop) == sorted(top)
     assert sorted(n for n, _ in cnested) == ["JJCalls", "LookaheadSuccess"]
+
+
+# --- sprint 17: lucene/benchmark, its dependency modules, spatial4j and s2 ------
+
+def test_sprint17_modules_are_port_modules_with_their_crates_and_rules():
+    for name, crate in zip(S17, S17_CRATES):
+        m = pm.BY_NAME[name]
+        assert (m["crate"], m["cratePath"]) == (crate, f"crates/{crate}")
+        assert m["skeletons"] == "enforce"
+        assert name in pm.ADDED_MODULES and name in pm.SKELETON_MODULES
+    for name in S17[:7]:
+        m = pm.BY_NAME[name]
+        assert m["sources"] == (f"{name}/src/java",) and "files" not in m
+        assert (m["scopeRule"], m["classRule"]) == (
+            "sprint-17-ports-the-module", "sprint-17-module-top-level")
+    assert pm.BY_NAME["lucene/spatial-test-fixtures"]["descriptor"] is None
+    assert pm.BY_NAME["lucene/spatial-test-fixtures"]["jpms"] == "lucene.spatial.test.fixtures"
+    for name, project, jpms in ((S4J, pm.SPATIAL4J_PROJECT, "spatial4j"),
+                                (S2, pm.S2_PROJECT, "s2.geometry.library.java")):
+        m = pm.BY_NAME[name]
+        assert (m["project"], m["jpms"], m["descriptor"]) == (project, jpms, None)
+        assert (m["scopeRule"], m["classRule"]) == (
+            "sprint-17-ports-listed-files", "sprint-17-listed-file-top-level")
+    # the closures: 41 + 3 test helpers, and 15
+    s4j = pm.BY_NAME[S4J]["files"]
+    assert len(s4j) == 44 and len(set(s4j)) == 44
+    assert sum(1 for f in s4j if f.startswith("src/test/java/")) == 3
+    assert len(pm.BY_NAME[S2]["files"]) == 15
+    assert "src/main/java/org/locationtech/spatial4j/shape/impl/RectangleImpl.java" in s4j
+    assert "src/main/java/com/google/common/geometry/S2CellId.java" in pm.BY_NAME[S2]["files"]
+    assert {"org.locationtech.spatial4j", "com.google.common.geometry"} <= set(pm.JAVA_PREFIXES)
+    d = pm.DECISIONS[3]
+    assert (d["on"], d["modules"], d["supersedes"]) == ("2026-11-22", S17, None)
+    summary, rationale, alternatives = pm.decision_text(d)
+    assert "sprint-17-listed-file-top-level" in summary and "spatial4j 0.8" in summary
+    assert "2026-11-22" in rationale and "rejected" in alternatives
+
+
+def test_the_two_libraries_share_a_tree_spelling_and_their_lists_keep_them_apart():
+    a = "src/main/java/org/locationtech/spatial4j/shape/Shape.java"
+    b = "src/main/java/com/google/common/geometry/S2Cell.java"
+    helper = "src/test/java/org/locationtech/spatial4j/TestLog.java"
+    assert (pm.module_of_file(a), pm.module_of_file(b), pm.module_of_file(helper)) == (
+        S4J, S2, S4J)
+    assert not pm.file_in_scope(S2, a) and not pm.file_in_scope(S4J, b)
+    # a library file outside the closure belongs to no port module
+    assert pm.module_of_file(
+        "src/main/java/org/locationtech/spatial4j/context/jts/JtsSpatialContext.java") is None
+    assert pm.module_of_file("src/main/java/com/google/common/geometry/S2Loop.java") is None
+    assert pm.module_of_file("src/test/java/com/google/common/geometry/S2CellTest.java") is None
+
+
+def test_sprint17_crate_destinations_mirror_the_package_below_the_module_root():
+    assert pm.crate_destination(S4J, "org.locationtech.spatial4j.shape.impl") \
+        == "crates/spatial4j/src/shape/impl/"
+    assert pm.crate_destination(S2, "com.google.common.geometry") == "crates/s2-geometry/src/"
+    assert pm.crate_destination("lucene/benchmark", "org.apache.lucene.benchmark.byTask.feeds") \
+        == "crates/rucene-benchmark/src/by_task/feeds/"
+    assert pm.crate_destination("lucene/highlighter", "org.apache.lucene.search.uhighlight") \
+        == "crates/rucene-highlighter/src/uhighlight/"
+    assert pm.crate_destination("lucene/memory", "org.apache.lucene.index.memory") \
+        == "crates/rucene-memory/src/"
+    assert pm.crate_destination("lucene/spatial-test-fixtures",
+                                "org.apache.lucene.spatial3d.tests") \
+        == "crates/rucene-spatial-test-fixtures/src/"
+
+
+def test_repo_roots_reach_the_libraries_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("SPATIAL4J_ROOT", str(tmp_path / "a"))
+    monkeypatch.setenv("S2_GEOMETRY_ROOT", str(tmp_path / "b"))
+    roots = pm.repo_roots("/l", "/r")
+    assert (roots["spatial4j"], roots["s2-geometry"]) == (tmp_path / "a", tmp_path / "b")
+    roots = pm.repo_roots("/l", "/r", "/x", "/y")
+    assert (roots["spatial4j"], roots["s2-geometry"]) == (Path("/x"), Path("/y"))
+    monkeypatch.delenv("SPATIAL4J_ROOT")
+    monkeypatch.delenv("S2_GEOMETRY_ROOT")
+    roots = pm.repo_roots()
+    assert (roots["spatial4j"], roots["s2-geometry"]) == (
+        Path(pm.DEFAULT_SPATIAL4J_ROOT), Path(pm.DEFAULT_S2_ROOT))
+
+
+def test_a_library_skeleton_is_read_with_its_full_name():
+    assert pe.skeleton_in("Skeleton of `org.locationtech.spatial4j.shape.impl.RectangleImpl`; "
+                          "ported by rmp task #621.") == (
+        "org.locationtech.spatial4j.shape.impl.RectangleImpl", 621)
+    assert pe.skeleton_in("Skeleton of `com.google.common.geometry.S2CellId`; "
+                          "ported by rmp task #622.") == ("com.google.common.geometry.S2CellId", 622)
+
+
+def test_the_audit_leaves_a_file_of_the_other_library_to_its_module():
+    # the audit's graph side reads every File under `src/main/java/`; the
+    # filter it applies keeps each library's files to its own module
+    s4j = "src/main/java/org/locationtech/spatial4j/shape/Shape.java"
+    s2 = "src/main/java/com/google/common/geometry/S2Cell.java"
+    foreign = lambda path, n: pm.module_of_file(path) not in (None, n)  # noqa: E731
+    assert foreign(s2, S4J) and not foreign(s4j, S4J)
+    assert foreign(s4j, S2) and not foreign(s2, S2)
+
+
+# --- sprint 17: nekohtml 1.9.17 with its Xerces-J and SAX closure (#635) ------
+
+def test_nekohtml_is_a_listed_file_library_with_three_source_trees():
+    m = pm.BY_NAME[NEKO]
+    assert (m["project"], m["repo"], m["crate"], m["cratePath"]) == (
+        pm.NEKOHTML_PROJECT, "nekohtml", "nekohtml", "crates/nekohtml")
+    assert m["sources"] == ("neko", "xerces", "xmlapis")
+    assert (m["jpms"], m["descriptor"], m["skeletons"]) == ("nekohtml", None, "enforce")
+    assert (m["scopeRule"], m["classRule"]) == (
+        "sprint-17-ports-listed-files", "sprint-17-listed-file-top-level")
+    files = m["files"]
+    assert len(files) == len(set(files)) == 121
+    by_tree = {t: sum(1 for f in files if f.startswith(t + "/"))
+               for t in ("neko", "xerces", "xmlapis")}
+    assert by_tree == {"neko": 18, "xerces": 80, "xmlapis": 23}
+    assert "neko/org/cyberneko/html/parsers/SAXParser.java" in files
+    assert "xmlapis/org/xml/sax/helpers/DefaultHandler.java" in files
+    assert {"org.cyberneko.html", "org.apache.xerces", "org.xml.sax"} <= set(pm.JAVA_PREFIXES)
+    assert (pm.NEKOHTML_PROJECT, "1.9.17") in [p[:2] for p in pm.EXTERNAL_PROJECTS]
+    d = pm.DECISIONS[4]
+    assert (d["on"], d["modules"], d["supersedes"]) == ("2026-11-22", (NEKO,), None)
+    summary, rationale, alternatives = pm.decision_text(d)
+    assert "121 files" in summary and "41/49" in rationale and "html5ever" in alternatives
+    # the sprint-17 decision no longer says nekohtml is replaced by a crate
+    assert "nekohtml is ported" in pm.decision_text(pm.DECISIONS[3])[0]
+
+
+def test_nekohtml_files_belong_to_it_and_its_crate_mirrors_the_whole_package():
+    assert pm.module_of_file("neko/org/cyberneko/html/HTMLScanner.java") == NEKO
+    assert pm.module_of_file("xerces/org/apache/xerces/util/URI.java") == NEKO
+    # a Xerces file outside the closure belongs to no port module
+    assert pm.module_of_file("xerces/org/apache/xerces/dom/AttrImpl.java") is None
+    # the empty package root holds every package, and keeps it whole in the crate
+    assert pm.package_root(NEKO, "org.xml.sax.helpers") == ""
+    assert pm.crate_destination(NEKO, "org.cyberneko.html.parsers") \
+        == "crates/nekohtml/src/org/cyberneko/html/parsers/"
+    assert pm.crate_destination(NEKO, "org.apache.xerces.xni") \
+        == "crates/nekohtml/src/org/apache/xerces/xni/"
+
+
+def test_repo_roots_reach_nekohtml_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEKOHTML_ROOT", str(tmp_path / "n"))
+    assert pm.repo_roots("/l", "/r")["nekohtml"] == tmp_path / "n"
+    assert pm.repo_roots("/l", "/r", nekohtml_root="/z")["nekohtml"] == Path("/z")
+    monkeypatch.delenv("NEKOHTML_ROOT")
+    assert pm.repo_roots()["nekohtml"] == Path(pm.DEFAULT_NEKOHTML_ROOT)
+
+
+def test_survey_of_a_listed_file_library_spread_over_three_trees(tmp_path, monkeypatch):
+    """Only the listed files of the three trees are surveyed, and the empty
+    package root keeps every package they declare."""
+    root = tmp_path / "neko-root"
+    write(root, "neko/org/cyberneko/html/parsers/SAXParser.java",
+          "package org.cyberneko.html.parsers;\npublic class SAXParser {\n"
+          "  public void parse() {}\n}\n")
+    write(root, "xerces/org/apache/xerces/util/URI.java",
+          "package org.apache.xerces.util;\npublic class URI {\n"
+          "  public static class MalformedURIException extends Exception {}\n}\n")
+    write(root, "xerces/org/apache/xerces/dom/AttrImpl.java",
+          "package org.apache.xerces.dom;\npublic class AttrImpl {}\n")
+    write(root, "xmlapis/org/xml/sax/helpers/DefaultHandler.java",
+          "package org.xml.sax.helpers;\npublic class DefaultHandler {}\n")
+    roots = dict(pm.repo_roots("/l", "/r"), nekohtml=root)
+    listed = ("neko/org/cyberneko/html/parsers/SAXParser.java",
+              "xerces/org/apache/xerces/util/URI.java",
+              "xmlapis/org/xml/sax/helpers/DefaultHandler.java")
+    monkeypatch.setitem(pm.BY_NAME, NEKO, dict(pm.BY_NAME[NEKO], files=listed))
+    data = pm.survey_module(NEKO, roots)
+    assert sorted(t["qualified"] for t in data["types"]) == [
+        "org.apache.xerces.util.URI", "org.cyberneko.html.parsers.SAXParser",
+        "org.xml.sax.helpers.DefaultHandler"]
+    assert [n["qualifiedName"] for n in data["nested"]] == [
+        "org.apache.xerces.util.URI$MalformedURIException"]
+    assert data["packages"] == ["org.apache.xerces.util", "org.cyberneko.html.parsers",
+                                "org.xml.sax.helpers"]
+
+
+def test_only_the_nekohtml_crate_ports_its_types():
+    """`org.xml.sax` is also the JDK's package, emulated under other crates' `jdk/`
+    modules; their claims name the JDK type, not this port of it."""
+    assert pm.claim_crate_of("org.xml.sax.Attributes") == "crates/nekohtml"
+    assert pm.claim_crate_of("org.apache.xerces.util.URI") == "crates/nekohtml"
+    assert pm.claim_crate_of("org.apache.lucene.index.IndexWriter") is None
+    assert pm.claim_crate_of("org.locationtech.spatial4j.shape.Point") is None
+    import triage_members as tm
+    assert tm._own_claim("org.xml.sax.Attributes",
+                         "crates/nekohtml/src/org/xml/sax/attributes.rs")
+    assert not tm._own_claim("org.xml.sax.Attributes",
+                             "crates/rucene-analysis-common/src/jdk/sax.rs")
+    assert tm.RE_CLAIM.findall("Equivalent to `org.locationtech.spatial4j.shape.Point`.") == [
+        "org.locationtech.spatial4j.shape.Point"]
+
+
+def test_a_plain_comment_between_a_doc_and_its_item_keeps_the_claim(tmp_path):
+    """rustc attaches a `///` block to the next item across ordinary comments
+    (`CharBlockArray`'s `// Java package-private class; ...`); a `use` between
+    them takes the doc instead, so no claim reaches the item."""
+    write(tmp_path, "src/a.rs",
+          "/// Equivalent to `org.apache.lucene.util.Foo`.\n"
+          "// Java package-private class.\n#[derive(Debug)]\npub struct Foo;\n"
+          "/// Equivalent to `org.apache.lucene.util.Bar`.\nuse std::fmt;\npub struct Bar;\n")
+    claims = [(c["target"], c["lucene"]) for c in pe.scan_file(tmp_path, "src/a.rs")
+              if c["scope"] == "item"]
+    assert claims == [("Foo", "org.apache.lucene.util.Foo")]
+
+
+# --- sprint 17: lucene/analysis/icu and the icu4j 77.1 subset (#640) ----------
+
+def test_analysis_icu_is_a_whole_module_with_its_build_tools():
+    m = pm.BY_NAME[ICU]
+    assert m["sources"] == ("lucene/analysis/icu/src/java",
+                            "lucene/analysis/icu/src/tools/java")
+    assert (m["crate"], m["cratePath"], m["jpms"], m["skeletons"]) == (
+        "rucene-analysis-icu", "crates/rucene-analysis-icu",
+        "org.apache.lucene.analysis.icu", "report")
+    assert "files" not in m
+    assert pm.module_of_file(
+        "lucene/analysis/icu/src/tools/java/org/apache/lucene/analysis/icu/"
+        "RBBIRuleCompiler.java") == ICU
+    assert pm.crate_destination(ICU, "org.apache.lucene.analysis.icu.segmentation") \
+        == "crates/rucene-analysis-icu/src/segmentation/"
+
+
+def test_icu4j_is_the_184_file_closure_of_three_maven_modules():
+    m = pm.BY_NAME[ICU4J]
+    assert (m["project"], m["repo"], m["crate"], m["jpms"], m["skeletons"]) == (
+        pm.ICU4J_PROJECT, "icu4j", "icu4j", "com.ibm.icu", "report")
+    files = m["files"]
+    assert len(files) == len(set(files)) == 184
+    by_module = {s: sum(1 for f in files if f.startswith(s + "/")) for s in m["sources"]}
+    assert by_module == {"main/core/src/main/java": 136, "main/collate/src/main/java": 23,
+                         "main/translit/src/main/java": 25}
+    assert pm.module_of_file("main/core/src/main/java/com/ibm/icu/text/UnicodeSet.java") \
+        == ICU4J
+    # a file outside the closure belongs to no port module
+    assert pm.module_of_file(
+        "main/core/src/main/java/com/ibm/icu/text/DecimalFormat.java") is None
+    assert (pm.ICU4J_PROJECT, "77.1") in [p[:2] for p in pm.EXTERNAL_PROJECTS]
+    d = pm.DECISIONS[5]
+    assert (d["on"], d["modules"], d["supersedes"]) == ("2026-11-23", (ICU, ICU4J), None)
+    summary, rationale, alternatives = pm.decision_text(d)
+    assert "184 files" in summary and "#641" in summary and "371" in rationale
+    assert "D1" in alternatives and "D4" in alternatives
+
+
+def test_scope_plans_map_the_module_and_each_icu4j_file_to_its_block_task():
+    plans = pm.scope_plans()
+    assert plans[(ICU, None)] == 641
+    icu = {f: t for (mod, f), t in plans.items() if mod == ICU4J}
+    assert set(icu) == set(pm.BY_NAME[ICU4J]["files"])
+    per = {}
+    for t in icu.values():
+        per[t] = per.get(t, 0) + 1
+    # FINDING 4695 on #640: 41 / 32 / 15 / 17 / 28 / 23 / 28 files
+    assert per == {643: 41, 644: 32, 645: 15, 646: 17, 647: 28, 648: 23, 649: 28}
+    core = "main/core/src/main/java/com/ibm/icu/"
+    assert icu[core + "text/UnicodeSet.java"] == 646
+    assert icu[core + "util/ULocale.java"] == 644
+    assert icu["main/collate/src/main/java/com/ibm/icu/text/RuleBasedCollator.java"] == 648
+
+
+def test_scope_plan_rows_plan_top_level_classes_of_mirrored_tasks():
+    f = "main/core/src/main/java/com/ibm/icu/text/UnicodeSet.java"
+    rows = pe.scope_plan_rows(
+        [("com.ibm.icu.text.UnicodeSet", ICU4J, f),
+         ("org.apache.lucene.analysis.icu.ICUFoldingFilter", ICU,
+          "lucene/analysis/icu/src/java/org/apache/lucene/analysis/icu/ICUFoldingFilter.java"),
+         ("org.apache.lucene.index.IndexWriter", "lucene/core", "x.java"),
+         ("com.ibm.icu.util.ULocale", ICU4J,
+          "main/core/src/main/java/com/ibm/icu/util/ULocale.java")],
+        tasks={646, 641})
+    assert [(r["task"], r["lucene"]) for r in rows] == [
+        (646, "com.ibm.icu.text.UnicodeSet"),
+        (641, "org.apache.lucene.analysis.icu.ICUFoldingFilter")]
+    assert {r["at"] for r in rows} == {pe.SCOPE_PLAN_AT}
+
+
+def test_a_comment_in_a_declaration_head_does_not_hide_the_type(tmp_path, monkeypatch):
+    """icu4j's `public final class CollationCompare /* all static */ {`."""
+    write(tmp_path, "src/com/ibm/icu/impl/coll/CollationCompare.java",
+          "package com.ibm.icu.impl.coll;\n\n"
+          "public final class CollationCompare /* all static */ {\n  int x;\n}\n")
+    monkeypatch.setattr(el, "ROOT", tmp_path / "src")
+    monkeypatch.setattr(el, "LUCENE_ROOT", tmp_path)
+    monkeypatch.setattr(el, "CORE_PREFIX", ("com.ibm.icu",))
+    assert [t["qualified"] for t in el.discover()["types"]] == [
+        "com.ibm.icu.impl.coll.CollationCompare"]

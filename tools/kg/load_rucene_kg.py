@@ -142,6 +142,12 @@ class Survey:
 # ---------------------------------------------------------------------------
 
 
+def is_java_type(row) -> bool:
+    """Whether a legacy-candidate row is a Java `Class` of a port module (its
+    `file` a `.java` path), which the Rust-side repair must never touch."""
+    return "Class" in (row.get("labels") or []) and (row.get("file") or "").endswith(".java")
+
+
 def phase_repair(roadmap, s: Survey, batch_size):
     print("phase: repair", file=sys.stderr)
     stamp = {"gitCommit": s.commit, "gitDate": s.date}
@@ -256,18 +262,41 @@ def phase_repair(roadmap, s: Survey, batch_size):
         )
     rmp("delete", roadmap, "MATCH (n:TestSuite) DETACH DELETE n", "drop-testsuite")
 
+    # --- 1.5z tipos Java tomados por nos Rust legados ------------------------
+    # Ate ao sprint 17 o selector de 1.5 lia como no Rust legado todo o `Class`
+    # com `file` comecado por `src/`. As bibliotecas do sprint 17 (spatial4j,
+    # s2-geometry) guardam o codigo Java em `src/main/java` e `src/test/java`, por
+    # isso os seus `Class` eram reetiquetados como tipos Rust do esqueleto com o
+    # mesmo nome simples (sync de ae7df7c: 70 de 87) e perdiam-se do lado Lucene.
+    # Um no Rust nunca leva `module` (propriedade de `Class`, escrita por
+    # `port_modules_kg.py --phase structure`): um tipo Rust com `module` e um tipo
+    # Java assim engolido, e as suas arestas Java (`DECLARES` -> `Method`,
+    # `NESTED_IN`, `EXTENDS`, o `DECLARES` do ficheiro `.java`) estao nele. Apaga-
+    # se; a fase `nodes` recria o tipo Rust e a fase structure ja recriou o `Class`.
+    for label in ALL_TYPE_LABELS:
+        rmp(
+            "delete",
+            roadmap,
+            f"MATCH (n:{label}) WHERE n.module IS NOT NULL DETACH DELETE n",
+            f"drop-{label}-swallowed-java-type",
+        )
+
     # --- 1.5 colapso das etiquetas duplicadas -------------------------------
     # Os nos sao identificados por `id(n)`: as etiquetas legadas coexistem umas
-    # com as outras e com as canonicas, e so o id e inequivoco.
-    legacy = read(
+    # com as outras e com as canonicas, e so o id e inequivoco. Um `Class` com
+    # `file` em `src/` so e legado Rust quando o ficheiro nao e `.java`: os
+    # `Class` das bibliotecas Java cujo clone e o proprio modulo (spatial4j,
+    # s2-geometry: `src/main/java/...`) sao tipos Lucene-side (`is_java_type`).
+    legacy = [r for r in read(
         roadmap,
         "MATCH (n) WHERE n:Struct OR n:Trait OR n:Enum OR n:Interface OR n:Test "
-        "OR n:Component OR (n:Class AND (n.file STARTS WITH 'src/' "
+        "OR n:Component OR (n:Class AND ((n.file STARTS WITH 'src/' "
+        "AND NOT n.file ENDS WITH '.java') "
         "OR n.qualifiedName STARTS WITH 'rucene::' "
         "OR n.qualifiedName STARTS WITH 'crate::')) "
         "RETURN id(n) AS id, labels(n) AS labels, n.name AS name, "
         "n.file AS file, n.qualifiedName AS qn",
-    )
+    ) if not is_java_type(r)]
     to_type, to_fn, keep_component, unresolved = [], [], [], []
     for row in legacy:
         labels = row["labels"]

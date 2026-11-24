@@ -318,3 +318,96 @@ def test_impls_derives_and_fields_bind_to_the_declaring_file():
     assert [f for f, _ in S.fields("FieldValuesSource", lf)] == [lf]
     # No file named: every site, as before.
     assert set(S.item_fns("FieldValuesSource")) >= {"source_hash", "double_hash"}
+
+
+# --- extract_rucene_kg: inline module blocks named by a raw identifier ------
+#
+# icu4j's `lib.rs` declares `pub mod r#impl { pub mod x; ... }` (Java package
+# `com.ibm.icu.impl`). The expanded-crate scan read `mod r#impl {` as an
+# anonymous block, so every item under it lost the `impl` segment, missed its
+# file in `mod_to_file` and was re-added as a macro-origin item of `lib.rs`
+# (rmp #634: ~3,260 false nodes and host-file-name edges).
+
+ICU_EXPANDED = textwrap.dedent("""\
+    pub mod jdk {
+        pub struct Jdk;
+    }
+    pub mod r#impl {
+        pub mod breakiter {
+            pub mod ml_break_engine {
+                pub struct ModelIndex {
+                    value: i32,
+                }
+                impl ModelIndex {
+                    pub fn get_value(&self) -> i32 { self.value }
+                }
+            }
+        }
+        pub mod locale_display_names_impl {
+            struct Cache {
+                key: u8,
+            }
+        }
+    }
+    """)
+
+ICU_MOD_TO_FILE = {
+    "icu4j": "crates/icu4j/src/lib.rs",
+    "icu4j::jdk": "crates/icu4j/src/jdk/mod.rs",
+    "icu4j::impl::breakiter::ml_break_engine":
+        "crates/icu4j/src/impl/breakiter/ml_break_engine.rs",
+    "icu4j::impl::locale_display_names_impl":
+        "crates/icu4j/src/impl/locale_display_names_impl.rs",
+}
+
+
+def test_a_raw_identifier_module_keeps_its_segment_in_the_expanded_scan():
+    import extract_rucene_kg as ex
+    types, fns = ex.parse_expanded(ICU_EXPANDED, "icu4j")
+    assert sorted(types) == [
+        ("icu4j::impl::breakiter::ml_break_engine", "ModelIndex", "struct"),
+        ("icu4j::impl::locale_display_names_impl", "Cache", "struct"),
+        ("icu4j::jdk", "Jdk", "struct"),
+    ]
+    assert [(m, n, o) for m, n, o, _s in fns] == [
+        ("icu4j::impl::breakiter::ml_break_engine", "get_value", "ModelIndex")]
+
+
+def test_items_under_a_raw_identifier_module_are_not_re_added_to_lib_rs(tmp_path):
+    import extract_rucene_kg as ex
+    known = {
+        ("Jdk", "crates/icu4j/src/jdk/mod.rs"),
+        ("ModelIndex", "crates/icu4j/src/impl/breakiter/ml_break_engine.rs"),
+        ("Cache", "crates/icu4j/src/impl/locale_display_names_impl.rs"),
+    }
+    known_fns = {("get_value", "crates/icu4j/src/impl/breakiter/ml_break_engine.rs",
+                  "ModelIndex")}
+    assert ex.macro_generated_types(
+        tmp_path, ICU_MOD_TO_FILE, set(known), ICU_EXPANDED, "icu4j") == []
+    assert ex.macro_generated_fns(
+        ICU_MOD_TO_FILE, set(known_fns), ICU_EXPANDED, "icu4j") == []
+
+
+def test_the_literal_scan_names_a_raw_identifier_module_without_its_prefix():
+    import extract_rucene_kg as ex
+    lib_rs = textwrap.dedent("""\
+        pub mod jdk;
+        pub mod r#impl {
+            pub mod icu_binary;
+            pub mod breakiter {
+                pub mod ml_break_engine;
+            }
+        }
+        """)
+    _types, _fns, _impls, mods, _uses = ex.parse_file("crates/icu4j/src/lib.rs", lib_rs)
+    assert [(m["modSuffix"], m["name"]) for m in mods] == [
+        ([], "impl"), (["impl"], "breakiter")]
+
+
+def test_a_use_path_through_a_raw_identifier_module_resolves_to_the_real_file():
+    import extract_rucene_kg as ex
+    target = ex.resolve_use(
+        "crate::r#impl::breakiter::ml_break_engine::ModelIndex",
+        "icu4j::text::transliterator", ICU_MOD_TO_FILE, False, "icu4j")
+    assert target == "crates/icu4j/src/impl/breakiter/ml_break_engine.rs"
+    assert ex.RE_EXP_MOD.match("pub mod r#impl {").group(1) == "impl"

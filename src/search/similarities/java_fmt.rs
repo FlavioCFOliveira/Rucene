@@ -11,8 +11,8 @@
 //!
 //! * Rust's `Display` prints `800` where Java prints `800.0`, and prints
 //!   `0.0000000001` where Java prints `1.0E-10`.
-//! * Rust's `{:.6}` rounds ties to even where Java's `%f` rounds ties away from
-//!   zero (`java.math.RoundingMode.HALF_UP`).
+//! * Rust's `{:.6}` rounds the exact binary expansion, ties to even, where
+//!   Java's `%f` rounds the `Double.toString` shortest digits half up.
 
 #![deny(unsafe_code)]
 
@@ -77,63 +77,79 @@ fn with_fraction_digit(rendered: &str) -> String {
 }
 
 /// Renders `value` the way `String.format(Locale.ROOT, "%f", value)` does: six
-/// fraction digits, no grouping separators, ties rounded away from zero.
+/// fraction digits, no grouping separators.
 ///
 /// `LMSimilarity`'s descendants build their names with `%f`
 /// (`LMDirichletSimilarity.java:135`, `LMJelinekMercerSimilarity.java:117`,
-/// `IndriDirichletSimilarity.java:101`), and those names reach `toString()`.
+/// `IndriDirichletSimilarity.java:98`), and those names reach `toString()`.
+/// `Formatter` widens their `float` argument to `double`, so callers pass
+/// `f64::from(x)`.
 ///
-/// Rust's `{:.6}` would round ties to even; Java's `Formatter` rounds them away
-/// from zero. The two disagree on values whose exact decimal expansion stops on
-/// a `5` in the seventh fraction digit — every odd multiple of `1/128`, for
-/// instance — so the digits are taken from the exact expansion and rounded
-/// here instead.
+/// JDK 25's `Formatter` rounds the `Double.toString` shortest digits half up,
+/// never the exact binary expansion; that algorithm is
+/// [`crate::util::java_fmt::format_fixed`], used here with six digits.
 pub(crate) fn format_f(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
-    }
-    if value.is_infinite() {
-        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
-    }
-    // A finite `f64` has an exact decimal expansion of at most 1074 fraction
-    // digits (the smallest subnormal), so this rendering is exact, never
-    // rounded, and the rounding below is therefore a single rounding step.
-    let exact = format!("{:.*}", 1074, value.abs());
-    let (integer, fraction) = match exact.split_once('.') {
-        Some(split) => split,
-        None => (exact.as_str(), ""),
-    };
+    crate::util::java_fmt::format_fixed(value, 6)
+}
 
-    let mut digits: Vec<u8> = integer.bytes().chain(fraction.bytes().take(6)).collect();
-    // Pad a fraction shorter than six digits, which cannot happen for the exact
-    // expansion above but keeps the indexing below independent of it.
-    while digits.len() < integer.len() + 6 {
-        digits.push(b'0');
-    }
-    let round_up = fraction
-        .as_bytes()
-        .get(6)
-        .is_some_and(|digit| *digit >= b'5');
-    if round_up {
-        let mut carry = true;
-        for digit in digits.iter_mut().rev() {
-            if !carry {
-                break;
-            }
-            if *digit == b'9' {
-                *digit = b'0';
-            } else {
-                *digit += 1;
-                carry = false;
-            }
+#[cfg(test)]
+mod tests {
+    use super::format_f;
+    use crate::search::similarities::{IndriDirichletSimilarity, LMDirichletSimilarity};
+
+    /// Rows where rounding the exact binary expansion disagreed with JDK 25
+    /// `String.format(Locale.ROOT, "%f", x)`, which rounds the
+    /// `Double.toString` shortest digits half up; expected strings are the
+    /// JDK 25.0.5 output. The last rows agreed before the fix and guard the
+    /// shared paths (ties, `-0.0`).
+    #[test]
+    fn format_f_matches_jdk25_formatter() {
+        let doubles: [(u64, &str); 9] = [
+            (0x4227_e8ef_579c_7a60, "51346123726.239010"),
+            (0x4306_ffa5_9090_4dd7, "809192005962170.900000"),
+            (0xc2cd_d75e_0f85_6e9b, "-65621666499293.210000"),
+            (0x44b5_2d02_c7e1_4af6, "100000000000000000000000.000000"),
+            (0x3fc3_3333_3333_3333, "0.150000"),
+            (0x8000_0000_0000_0000, "-0.000000"),
+            (0x7ff8_0000_0000_0000, "NaN"),
+            (0x7ff0_0000_0000_0000, "Infinity"),
+            (0xfff0_0000_0000_0000, "-Infinity"),
+        ];
+        for (bits, expected) in doubles {
+            assert_eq!(
+                format_f(f64::from_bits(bits)),
+                expected,
+                "double {bits:#018x}"
+            );
         }
-        if carry {
-            digits.insert(0, b'1');
+        // `Formatter` widens a `Float` argument to `double`, as the
+        // `LMSimilarity` callers do with `f64::from`.
+        let floats: [(u32, &str); 5] = [
+            (0x5b7e_c074, "71706248533245950.000000"),
+            (0x6407_8678, "9999999778196308000000.000000"),
+            (0x3c00_0000, "0.007813"),
+            (0x3cc0_0000, "0.023438"),
+            (0x3e19_999a, "0.150000"),
+        ];
+        for (bits, expected) in floats {
+            let value = f64::from(f32::from_bits(bits));
+            assert_eq!(format_f(value), expected, "float {bits:#010x}");
         }
     }
 
-    let rendered = String::from_utf8(digits).unwrap_or_default();
-    let split = rendered.len() - 6;
-    let sign = if value.is_sign_negative() { "-" } else { "" };
-    format!("{sign}{}.{}", &rendered[..split], &rendered[split..])
+    /// `toString()` texts printed by the Lucene 10.5.0 jar on JDK 25.0.5.
+    #[test]
+    fn lm_similarity_names_match_lucene() {
+        let dirichlet = LMDirichletSimilarity::with_mu(f32::from_bits(0x5b7e_c074))
+            .expect("finite non-negative mu");
+        assert_eq!(
+            dirichlet.to_string(),
+            "LM Dirichlet(71706248533245950.000000)"
+        );
+        let indri = IndriDirichletSimilarity::with_mu(f32::from_bits(0x6407_8678));
+        assert_eq!(
+            indri.to_string(),
+            "LM IndriDirichlet(9999999778196308000000.000000)"
+        );
+    }
 }

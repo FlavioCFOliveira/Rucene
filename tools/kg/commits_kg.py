@@ -78,7 +78,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from kgio import esc, kg_target, read_dicts as kg_read_dicts, unwind as kg_unwind
+from kgio import esc, kg_target, read as kg_read, read_dicts as kg_read_dicts, \
+    unwind as kg_unwind
 
 SEP = "\x1e"
 REC = "\x1d"
@@ -434,6 +435,29 @@ def retire_underived(rows, unwind, read_rows):
     return retired
 
 
+def retire_unreachable(rows, hashes_in_graph, unwind):
+    """Delete the `Commit` nodes of commits the history no longer holds.
+
+    The graph mirrors the history reachable from HEAD; a commit outside it --
+    an amended commit, or the throwaway commit of a measurement synced from a
+    separate clone -- is no fact of the project, and its node, with the
+    `COMMITTED_IN` / task edges it carries, would keep saying it is. Only a run
+    over the whole history knows what is unreachable, so `main` calls this only
+    without `--since`. Returns the hashes deleted, each printed as `RETIRED
+    Commit <hash>`."""
+    live = {r["hash"] for r in rows}
+    stale = sorted(h for h in hashes_in_graph if h and h not in live)
+    for h in stale:
+        print(f"  RETIRED Commit {h[:7]}: not in the history reachable from HEAD",
+              file=sys.stderr)
+    if stale:
+        unwind("delete", [{"hash": h} for h in stale],
+               "MATCH (c:Commit {hash: row.hash}) DETACH DELETE c",
+               "unreachable Commit nodes")
+    print(f"  Commit nodes outside the history: {len(stale)} deleted", file=sys.stderr)
+    return stale
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Mirror the commit history, COMMITTED_IN, CLOSES_TASK and "
@@ -476,6 +500,10 @@ def main(argv=None):
     def unwind(mode, data, body, label):
         return kg_unwind(args.roadmap, mode, data, body, label, args.batch_size)
 
+    if since is None:
+        retire_unreachable(
+            rows, [r[0] for r in kg_read(args.roadmap, "MATCH (c:Commit) RETURN c.hash")],
+            unwind)
     unwind("create", [{"hash": r["hash"]} for r in rows],
            "MERGE (c:Commit {hash: row.hash})", "Commit nodes")
     unwind("update",

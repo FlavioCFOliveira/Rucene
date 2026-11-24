@@ -1090,6 +1090,12 @@ pub struct FieldInfos {
     /// while internal field numbers are preserved for merge contexts.
     /// This mirrors the filtered view previously provided by the codec stub.
     filtered_names: Option<Arc<HashSet<String>>>,
+
+    /// When present, [`field_info`](Self::field_info) and
+    /// [`shared_field_info`](Self::shared_field_info) look up this name
+    /// whatever name they are asked for (see
+    /// [`with_field_info_name_override`](Self::with_field_info_name_override)).
+    field_info_name_override: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for FieldInfos {
@@ -1111,6 +1117,7 @@ impl std::fmt::Debug for FieldInfos {
             .field("soft_deletes_field", &self.core.soft_deletes_field)
             .field("parent_field", &self.core.parent_field)
             .field("filtered_names", &self.filtered_names.as_deref())
+            .field("field_info_name_override", &self.field_info_name_override)
             .finish()
     }
 }
@@ -1223,7 +1230,18 @@ impl FieldInfos {
         // One `Arc` per field, shared by `by_name`, `by_number` and `values`,
         // so that the collections alias a single object exactly as Java's
         // map and arrays do.
-        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+        Self::from_shared(infos.into_iter().map(Arc::new).collect())
+    }
+
+    /// Creates a `FieldInfos` over the given shared [`FieldInfo`] objects:
+    /// `new FieldInfos(FieldInfo[])` keeps the caller's objects, so a
+    /// `FieldInfo` handle the caller holds and the one this `FieldInfos`
+    /// returns are the same object (for example the attribute map).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_shared(infos: Vec<Arc<FieldInfo>>) -> Result<Self> {
         // A `FieldName` hashes the field's name alone, which never changes;
         // the interior mutability the lint sees is the attribute map.
         #[allow(clippy::mutable_key_type)]
@@ -1351,7 +1369,20 @@ impl FieldInfos {
             has_point_values,
             has_vector_values,
             filtered_names: None,
+            field_info_name_override: None,
         })
+    }
+
+    /// This `FieldInfos` whose name lookups always answer the field `name`.
+    ///
+    /// Equivalent to an anonymous Java subclass of `FieldInfos` that overrides
+    /// `fieldInfo(String)` as `return super.fieldInfo(name);`, as
+    /// `WeightedSpanTermExtractor.DelegatingLeafReader.getFieldInfos()` does
+    /// (`WeightedSpanTermExtractor.java:415-424`). Iteration, numbering and the
+    /// aggregate flags are those of `self`.
+    pub fn with_field_info_name_override(mut self, name: &str) -> Self {
+        self.field_info_name_override = Some(Arc::from(name));
+        self
     }
 
     /// Returns an empty `FieldInfos`.
@@ -1403,6 +1434,7 @@ impl FieldInfos {
 
     /// Looks up a visible field by name.
     pub fn field_info(&self, name: &str) -> Option<&FieldInfo> {
+        let name = self.field_info_name_override.as_deref().unwrap_or(name);
         if !self.is_visible(name) {
             return None;
         }
@@ -1416,6 +1448,7 @@ impl FieldInfos {
     /// field's one `FieldInfo` object, as Java's `fieldInfo(String)` answers
     /// the reference itself.
     pub fn shared_field_info(&self, name: &str) -> Option<&Arc<FieldInfo>> {
+        let name = self.field_info_name_override.as_deref().unwrap_or(name);
         if !self.is_visible(name) {
             return None;
         }

@@ -395,6 +395,12 @@ pub trait JavaThrowable: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
+    /// Whether the class extends `java.lang.UnsupportedOperationException`
+    /// (for example spatial4j's `UnsupportedSpatialOperation`).
+    fn is_unsupported_operation_exception(&self) -> bool {
+        false
+    }
+
     /// The class's own `toString()`, `None` when it inherits
     /// `Throwable.toString()` (the class, then `": " + getLocalizedMessage()`
     /// when there is a message).
@@ -619,6 +625,34 @@ impl LuceneError {
     /// [`LuceneErrorKind::is_illegal_argument_exception`] of its kind.
     pub fn is_illegal_argument_exception(&self) -> bool {
         self.kind.is_illegal_argument_exception()
+    }
+
+    /// Whether the Java class this error stands for is a
+    /// `java.lang.UnsupportedOperationException` or a subclass of it: what a
+    /// `catch (UnsupportedOperationException e)` clause catches. A subclass
+    /// is a [`LuceneErrorKind::Throwable`] whose
+    /// [`JavaThrowable::is_unsupported_operation_exception`] answers `true`.
+    pub fn is_unsupported_operation_exception(&self) -> bool {
+        match &self.kind {
+            LuceneErrorKind::UnsupportedOperation { .. } => true,
+            LuceneErrorKind::Unchecked { class, .. } => {
+                *class == "java.lang.UnsupportedOperationException"
+            }
+            LuceneErrorKind::Throwable(t) => t.is_unsupported_operation_exception(),
+            _ => false,
+        }
+    }
+
+    /// `new <class>(message)` of an unchecked exception class whose message
+    /// may be `null` (`None`): a [`LuceneErrorKind::Unchecked`], whose
+    /// `toString()` is the class name alone when the message is `null`, as
+    /// `Throwable.toString()`.
+    pub fn unchecked_with_message(class: &'static str, message: Option<String>) -> Self {
+        Self::from(LuceneErrorKind::Unchecked {
+            class,
+            message,
+            cause: None,
+        })
     }
 
     /// Whether this error is a `java.lang.NumberFormatException`: what a

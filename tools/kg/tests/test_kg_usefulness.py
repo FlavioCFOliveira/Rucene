@@ -82,6 +82,24 @@ def test_java_refs_resolve_to_one_top_level_type_or_none():
     ]
 
 
+def test_a_slash_banner_is_a_plain_comment_and_the_scan_ends():
+    """#637: a `////` banner entered the doc branch, which consumed no line, so
+    `scan_text` never returned (the X'' sync hung on `icu4j`'s
+    `icu_currency_display_info_provider.rs`). Bounded: a hang fails in 10 s."""
+    import threading
+    text = ("////////\n/// **Divergence:** kept.\n////////\n"
+            "pub fn f() {}\n//! **Divergence:** inner.\n")
+    out = []
+    t = threading.Thread(target=lambda: out.append(dv.scan_text("src/b.rs", text)), daemon=True)
+    t.start()
+    t.join(10)
+    assert out, "scan_text did not return within 10 s"
+    assert [(d["line"], d["text"]) for d in out[0]] == [
+        (2, "**Divergence:** kept."), (5, "**Divergence:** inner.")]
+    assert dv._doc_marker("////x") is None and dv._doc_marker("/// x") == "///"
+    assert dv._doc_marker("//! x") == "//!"
+
+
 TABLE = """\
 | item | auto | final | action | Java evidence |
 |---|---|---|---|---|

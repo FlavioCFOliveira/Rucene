@@ -123,13 +123,13 @@ impl AttributeImpl for MaxNonCompetitiveBoostAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn MaxNonCompetitiveBoostAttribute>(),
-            std::any::type_name::<MaxNonCompetitiveBoostAttributeImpl>(),
+            "org.apache.lucene.search.MaxNonCompetitiveBoostAttribute",
             "maxNonCompetitiveBoost",
             &self.max_non_competitive_boost,
         );
         reflector.reflect(
             TypeId::of::<dyn MaxNonCompetitiveBoostAttribute>(),
-            std::any::type_name::<MaxNonCompetitiveBoostAttributeImpl>(),
+            "org.apache.lucene.search.MaxNonCompetitiveBoostAttribute",
             "competitiveTerm",
             &self.competitive_term,
         );

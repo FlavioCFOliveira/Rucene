@@ -6,8 +6,10 @@ requires decisions to rest on measurement. A graph that is only ever checked
 against its own loaders satisfies neither: a loader bug becomes a fact. This audit
 therefore re-derives both sides from primary sources --
 
-* the Apache Lucene 10.5.0 clone and the randomizedtesting 2.8.1 clone (every
-  module `port_modules_kg.PORT_MODULES` names), parsed here by a brace-depth scanner written
+* the Apache Lucene 10.5.0 clone and the randomizedtesting 2.8.1, spatial4j 0.8
+  and s2-geometry 1.0.0 clones (every module `port_modules_kg.PORT_MODULES`
+  names; the last two from `$SPATIAL4J_ROOT` / `$S2_GEOMETRY_ROOT`, else their
+  `/tmp` defaults), parsed here by a brace-depth scanner written
   independently of `extract_lucene_kg.py`/`enrich_lucene_kg.py`, so the two can
   disagree. Only the lexical pass is shared, `javatext.strip_java`: agreeing on
   what a comment, a string and a char literal are is not what this audit is
@@ -169,6 +171,10 @@ def skeleton_audit(q, check, source_root: Path):
           f"{sorted(have - want)[:3]}" if have - want else "")
     want_p = {(d["task"], exact[d["lucene"]]) for d in items
               if exact.get(d["lucene"]) in classes and d["task"] in tasks}
+    # and the plans the scope declares for the modules ported without skeletons
+    want_p |= {(r["task"], r["lucene"]) for r in pe.scope_plan_rows(
+        q("MATCH (c:Class) WHERE c.portScope = 'in' RETURN c.qualifiedName, c.module, c.file"),
+        tasks)}
     have_p = {(t, c) for t, c in q(
         "MATCH (t:Task)-[:PLANS_PORT]->(c:Class) RETURN t.id, c.qualifiedName")}
     check("skeleton tasks without a PLANS_PORT", len(want_p - have_p), 0,
@@ -201,8 +207,12 @@ def skeleton_audit(q, check, source_root: Path):
         multi = sorted(c for c in mod if per_class.get(c, 0) > 1)
         check(f"{module} classes with more than one skeleton", len(multi), 0,
               f"{multi[:3]}" if multi else "")
+        # A skeleton stands for a port still owed. An `absorbed` nested type owes
+        # none (`nested_port_kg.py`: no independent Rust item, and none is owed),
+        # as a `notApplicable` class owes none, so neither is a gap.
         gap = sorted(c for c, (_sc, st) in mod.items()
-                     if per_class.get(c, 0) == 0 and st not in ("ported", "notApplicable"))
+                     if per_class.get(c, 0) == 0
+                     and st not in ("ported", "notApplicable", "absorbed"))
         gap_in = sum(1 for c in gap if mod[c][0] == "in")
         line = (f"   {module}: classes {len(mod)} (top-level "
                 f"{sum(1 for v in mod.values() if v[0] == 'in')}, nested "
@@ -262,7 +272,12 @@ def main():
         top += mtop
         nested += mnested
         cond = " OR ".join(f"f.path STARTS WITH '{s}/'" for s in m["sources"])
-        gf = {r[0] for r in q(f"MATCH (f:File) WHERE {cond} RETURN f.path")}
+        # Two clones may spell their trees alike (spatial4j's and s2-geometry's
+        # `src/main/java`): a file another port module owns is that module's,
+        # never this one's GRAPH-ONLY.
+        foreign = lambda path, n=name: pm.module_of_file(path) not in (None, n)  # noqa: E731
+        gf = {r[0] for r in q(f"MATCH (f:File) WHERE {cond} RETURN f.path")
+              if not foreign(r[0])}
         check(f"{name} java files", len(gf), len(mfiles))
         for p in sorted(set(mfiles) - gf)[:5]:
             print("   MISSING:", p)
@@ -271,7 +286,8 @@ def main():
         if m.get("files"):
             outside = [r[0] for r in q(
                 f"MATCH (c:Class) WHERE ({cond.replace('f.path', 'c.file')}) "
-                f"AND NOT c.file IN {list(m['files'])} RETURN c.qualifiedName")]
+                f"AND NOT c.file IN {list(m['files'])} RETURN c.qualifiedName, c.file")
+                if not foreign(r[1])]
             check(f"{name} types outside its listed files", len(outside), 0,
                   f"{outside[:3]}" if outside else "")
         gmt = {r[0] for r in q("MATCH (c:Class) WHERE c.portScope='in' "

@@ -9,15 +9,25 @@ import port_modules_kg as pm
 
 TSM = "org.apache.lucene.tests.util.TestSecurityManager"
 TOIFF = "org.apache.lucene.tests.util.TestObjectInputFilterFactory"
+GJR = "org.locationtech.spatial4j.io.GeoJSONReader"
 
 
 def test_the_verdict_file_justifies_both_test_framework_classes():
     verdicts = pc.load_not_applicable()
-    assert set(verdicts) == {TSM, TOIFF}
+    # and spatial4j's GeoJSONReader, which needs the absent noggit (user decision, #621)
+    assert set(verdicts) == {TSM, TOIFF, GJR}
     assert pc.verdict_problems(verdicts) == []
-    for v in verdicts.values():
+    for qn in (TSM, TOIFF):
+        v = verdicts[qn]
         assert any("randomization.gradle" in s for s in v["lucene"])
         assert any("JDK 25" in s or "JEP 486" in s for s in v["jdk"])
+    # GeoJSONReader: noggit is absent from Lucene's resolved dependencies, and
+    # spatial4j registers the reader only when `org.noggit.JSONParser` loads
+    g = verdicts[GJR]
+    assert any("versions.lock" in s for s in g["lucene"])
+    assert any("SpatialContextFactory.java:250,263-268" in s for s in g["lucene"])
+    assert any("Class.forName" in s and "JDK 25" in s for s in g["jdk"])
+    assert "#621" in g["reason"]
 
 
 def test_a_verdict_without_its_sources_is_a_problem():

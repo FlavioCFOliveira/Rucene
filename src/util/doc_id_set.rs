@@ -745,7 +745,7 @@ impl DocIdSetBuilder {
     /// # Errors
     ///
     /// Propagates the errors of the underlying set constructors.
-    pub fn build(self) -> Result<Box<dyn DocIdSet>> {
+    pub fn build(self) -> Result<Box<dyn DocIdSet + Send + Sync>> {
         if let Some(bit_set) = self.bit_set {
             debug_assert!(self.counter >= 0);
             let cost = (self.counter as f64 / self.num_values_per_doc).round() as i64;

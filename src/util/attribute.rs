@@ -32,6 +32,93 @@ use crate::util::atomic_ref_cell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 /// Equivalent to `org.apache.lucene.util.Attribute`.
 pub trait Attribute: 'static + Send + Sync + Debug {}
 
+/// A value reported to an [`AttributeReflector`]: Java's `Object value`
+/// parameter of `AttributeReflector.reflect(Class, String, Object)`.
+///
+/// [`Self::append_value_of`] renders it as Java's `String.valueOf(value)`
+/// does, which is what `AttributeImpl.reflectAsString` appends
+/// (`AttributeImpl.java:58-71`): strings bare, `BytesRef` through its
+/// `toString()` (`[74 68 69 73]`), numbers and booleans as Java prints them,
+/// and an absent value as `null`. The [`Debug`] supertrait keeps the value
+/// inspectable by reflectors that compare values rather than text (Java's
+/// `Object.equals` in `TestUtil.assertAttributeReflection`).
+pub trait AttributeValue: Debug {
+    /// Appends `String.valueOf(this)` to `out`.
+    fn append_value_of(&self, out: &mut String);
+}
+
+impl<T: AttributeValue + ?Sized> AttributeValue for &T {
+    fn append_value_of(&self, out: &mut String) {
+        (**self).append_value_of(out);
+    }
+}
+
+impl<T: AttributeValue> AttributeValue for Option<T> {
+    /// `String.valueOf(null)` is `"null"`.
+    fn append_value_of(&self, out: &mut String) {
+        match self {
+            Some(value) => value.append_value_of(out),
+            None => out.push_str("null"),
+        }
+    }
+}
+
+impl AttributeValue for str {
+    fn append_value_of(&self, out: &mut String) {
+        out.push_str(self);
+    }
+}
+
+impl AttributeValue for String {
+    fn append_value_of(&self, out: &mut String) {
+        out.push_str(self);
+    }
+}
+
+impl AttributeValue for std::borrow::Cow<'_, str> {
+    fn append_value_of(&self, out: &mut String) {
+        out.push_str(self);
+    }
+}
+
+/// Integers, `boolean` and `char`: Rust's `Display` writes what
+/// `Integer.toString`, `Long.toString`, `Boolean.toString` and
+/// `Character.toString` write.
+macro_rules! display_attribute_value {
+    ($($t:ty),*) => {
+        $(impl AttributeValue for $t {
+            fn append_value_of(&self, out: &mut String) {
+                use std::fmt::Write as _;
+                // Writing to a `String` cannot fail.
+                let _ = write!(out, "{self}");
+            }
+        })*
+    };
+}
+display_attribute_value!(bool, char, i8, i16, i32, i64, u8, u16, u32, u64, usize, isize);
+
+impl AttributeValue for f32 {
+    /// `Float.toString(float)`.
+    fn append_value_of(&self, out: &mut String) {
+        out.push_str(&crate::util::java_fmt::float_to_string(*self));
+    }
+}
+
+impl AttributeValue for f64 {
+    /// `Double.toString(double)`.
+    fn append_value_of(&self, out: &mut String) {
+        out.push_str(&crate::util::java_fmt::double_to_string(*self));
+    }
+}
+
+impl AttributeValue for crate::util::BytesRef {
+    /// `BytesRef.toString()`: the bytes in lower-case hex, space-separated,
+    /// in brackets.
+    fn append_value_of(&self, out: &mut String) {
+        out.push_str(&self.to_hex_string());
+    }
+}
+
 /// Reflector used to introspect the contents of an [`AttributeImpl`] or
 /// [`AttributeSource`].
 ///
@@ -40,27 +127,29 @@ pub trait AttributeReflector {
     /// Reports a single attribute property.
     ///
     /// `attribute_type` identifies the attribute interface, `attribute_name`
-    /// is its source-level name, `key` is the property name, and `value` is
-    /// the current value.
+    /// is its fully qualified Java name (Java's `attClass.getName()`, e.g.
+    /// `org.apache.lucene.analysis.tokenattributes.CharTermAttribute`), `key`
+    /// is the property name, and `value` is the current value (Java's
+    /// `Object value`).
     fn reflect(
         &mut self,
         attribute_type: TypeId,
         attribute_name: &'static str,
         key: &str,
-        value: &dyn Debug,
+        value: &dyn AttributeValue,
     );
 }
 
 impl<F> AttributeReflector for F
 where
-    F: for<'a, 'b> FnMut(TypeId, &'static str, &'a str, &'b (dyn Debug + 'b)),
+    F: for<'a, 'b> FnMut(TypeId, &'static str, &'a str, &'b (dyn AttributeValue + 'b)),
 {
     fn reflect(
         &mut self,
         attribute_type: TypeId,
         attribute_name: &'static str,
         key: &str,
-        value: &dyn Debug,
+        value: &dyn AttributeValue,
     ) {
         self(attribute_type, attribute_name, key, value)
     }
@@ -108,7 +197,7 @@ pub trait AttributeImpl: Attribute + Debug + Send + Sync + 'static {
     /// (`AttributeImpl.java:58-71`), which drives [`Self::reflect_with`] with a
     /// reflector that appends `key=value` for each property, separated by
     /// commas, optionally prefixing each key with the attribute interface's
-    /// name and `#`.
+    /// fully qualified Java name (`attClass.getName()`) and `#`.
     ///
     /// Java declares the method `final`, so no implementation may change it;
     /// a provided trait method is the closest Rust equivalent — an
@@ -1387,7 +1476,10 @@ impl AttributeSource {
     /// Returns a comma-separated string of all reflected attribute values.
     ///
     /// If `prepend_att_class` is true, each key is prefixed with the attribute
-    /// source-level name and `#`.
+    /// interface's fully qualified Java name and `#`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.AttributeSource#reflectAsString(boolean)`.
     pub fn reflect_as_string(&self, prepend_att_class: bool) -> String {
         let mut reflector = ReflectAsString {
             buffer: String::new(),
@@ -1440,7 +1532,7 @@ impl AttributeReflector for ReflectAsString {
         _attribute_type: TypeId,
         attribute_name: &'static str,
         key: &str,
-        value: &dyn Debug,
+        value: &dyn AttributeValue,
     ) {
         if !self.buffer.is_empty() {
             self.buffer.push(',');
@@ -1451,7 +1543,9 @@ impl AttributeReflector for ReflectAsString {
         }
         self.buffer.push_str(key);
         self.buffer.push('=');
-        self.buffer.push_str(&format!("{:?}", value));
+        // `buffer.append(key).append('=').append((value == null) ? "null" : value)`:
+        // `String.valueOf(value)`.
+        value.append_value_of(&mut self.buffer);
     }
 }
 
@@ -1939,6 +2033,140 @@ mod tests {
         assert!(source(true) == source(true));
         assert!(source(true) != source(false));
         assert_ne!(source(true).hash_code(), source(false).hash_code());
+    }
+
+    /// `reflectAsString` appends `String.valueOf(value)`
+    /// (`AttributeImpl.java:58-71`): strings bare, `BytesRef.toString()`,
+    /// `Float.toString`, `Boolean.toString`, and `null` for an absent value.
+    #[test]
+    fn reflect_as_string_prints_values_as_java_string_value_of() {
+        use crate::analysis::tokenattributes::{
+            BytesTermAttributeImpl, CharTermAttributeImpl, KeywordAttributeImpl,
+            PayloadAttributeImpl, TypeAttributeImpl,
+        };
+        use crate::search::boost_attribute::BoostAttributeImpl;
+        use crate::search::max_non_competitive_boost_attribute::MaxNonCompetitiveBoostAttributeImpl;
+
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string(Some("This"));
+        assert_eq!(
+            term.reflect_as_string(false),
+            "term=This,bytes=[54 68 69 73]"
+        );
+        assert_eq!(
+            TypeAttributeImpl::default().reflect_as_string(false),
+            "type=word"
+        );
+        assert_eq!(
+            KeywordAttributeImpl::default().reflect_as_string(false),
+            "keyword=false"
+        );
+        assert_eq!(
+            PayloadAttributeImpl::default().reflect_as_string(false),
+            "payload=null"
+        );
+        assert_eq!(
+            BytesTermAttributeImpl::default().reflect_as_string(false),
+            "bytes=null"
+        );
+        assert_eq!(
+            BoostAttributeImpl::new().reflect_as_string(false),
+            "boost=1.0"
+        );
+        assert_eq!(
+            MaxNonCompetitiveBoostAttributeImpl::new().reflect_as_string(false),
+            "maxNonCompetitiveBoost=-Infinity,competitiveTerm=null"
+        );
+    }
+
+    /// `reflectAsString(true)` prefixes each key with the attribute
+    /// interface's `Class.getName()` and `#` (`AttributeImpl.java:58-71`,
+    /// `AttributeSource.java:391-408`). The expected strings are the output of
+    /// Lucene 10.5.0 (JDK 25) on the same attributes.
+    #[test]
+    fn reflect_as_string_prepends_the_java_interface_name() {
+        use crate::analysis::default_token_attribute_factory;
+        use crate::analysis::tokenattributes::{
+            BytesTermAttributeImpl, CharTermAttribute, CharTermAttributeImpl, FlagsAttribute,
+            KeywordAttribute, OffsetAttribute, OffsetAttributeImpl, PayloadAttribute,
+            SentenceAttributeImpl,
+        };
+        use crate::search::boost_attribute::BoostAttributeImpl;
+        use crate::search::max_non_competitive_boost_attribute::MaxNonCompetitiveBoostAttributeImpl;
+
+        const T: &str = "org.apache.lucene.analysis.tokenattributes.";
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string(Some("This"));
+        assert_eq!(
+            term.reflect_as_string(true),
+            format!(
+                "{T}CharTermAttribute#term=This,{T}TermToBytesRefAttribute#bytes=[54 68 69 73]"
+            )
+        );
+        assert_eq!(
+            OffsetAttributeImpl::default().reflect_as_string(true),
+            format!("{T}OffsetAttribute#startOffset=0,{T}OffsetAttribute#endOffset=0")
+        );
+        assert_eq!(
+            BoostAttributeImpl::new().reflect_as_string(true),
+            "org.apache.lucene.search.BoostAttribute#boost=1.0"
+        );
+        assert_eq!(
+            MaxNonCompetitiveBoostAttributeImpl::new().reflect_as_string(true),
+            "org.apache.lucene.search.MaxNonCompetitiveBoostAttribute#maxNonCompetitiveBoost=\
+             -Infinity,org.apache.lucene.search.MaxNonCompetitiveBoostAttribute#competitiveTerm=null"
+        );
+        assert_eq!(
+            SentenceAttributeImpl::default().reflect_as_string(true),
+            format!("{T}SentenceAttribute#sentences=0")
+        );
+        assert_eq!(
+            BytesTermAttributeImpl::default().reflect_as_string(true),
+            format!("{T}TermToBytesRefAttribute#bytes=null")
+        );
+
+        // `new AttributeSource(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY)`:
+        // the packed implementation reflects its six interfaces, then the
+        // other implementations follow in insertion order.
+        let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
+        let cell = source
+            .add_attribute_by_id(TypeId::of::<dyn CharTermAttribute>())
+            .unwrap();
+        cell.borrow_mut()
+            .as_char_term_attribute_mut()
+            .unwrap()
+            .append_string(Some("foo"));
+        let cell = source
+            .add_attribute_by_id(TypeId::of::<dyn OffsetAttribute>())
+            .unwrap();
+        cell.borrow_mut()
+            .as_offset_attribute_mut()
+            .unwrap()
+            .set_offset(1, 4);
+        let cell = source
+            .add_attribute_by_id(TypeId::of::<dyn FlagsAttribute>())
+            .unwrap();
+        cell.borrow_mut()
+            .as_flags_attribute_mut()
+            .unwrap()
+            .set_flags(3);
+        source
+            .add_attribute_by_id(TypeId::of::<dyn KeywordAttribute>())
+            .unwrap();
+        source
+            .add_attribute_by_id(TypeId::of::<dyn PayloadAttribute>())
+            .unwrap();
+        assert_eq!(
+            source.reflect_as_string(true),
+            format!(
+                "{T}CharTermAttribute#term=foo,{T}TermToBytesRefAttribute#bytes=[66 6f 6f],\
+                 {T}OffsetAttribute#startOffset=1,{T}OffsetAttribute#endOffset=4,\
+                 {T}PositionIncrementAttribute#positionIncrement=1,\
+                 {T}PositionLengthAttribute#positionLength=1,{T}TypeAttribute#type=word,\
+                 {T}TermFrequencyAttribute#termFrequency=1,{T}FlagsAttribute#flags=3,\
+                 {T}KeywordAttribute#keyword=false,{T}PayloadAttribute#payload=null"
+            )
+        );
     }
 
     #[test]

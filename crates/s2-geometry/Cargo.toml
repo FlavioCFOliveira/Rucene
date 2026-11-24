@@ -1,0 +1,19 @@
+[package]
+name = "s2-geometry"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of s2-geometry-library-java 1.0.0, limited to the types Apache Lucene 10.5.0 spatial-extras uses."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "s2_geometry"
+
+# s2-geometry-library-java 1.0.0 depends on guava for its tests only. The port
+# uses the Rucene core for the JDK behaviours it reproduces (`Double.toString`,
+# the Java exception classes).
+[dependencies]
+rucene = { path = "../.." }

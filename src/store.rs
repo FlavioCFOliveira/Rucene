@@ -6184,6 +6184,12 @@ impl FilterDirectory {
 }
 
 impl Directory for FilterDirectory {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }
@@ -6521,6 +6527,12 @@ impl TrackingDirectoryWrapper {
 }
 
 impl Directory for TrackingDirectoryWrapper {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }
@@ -9479,6 +9491,12 @@ impl Default for ByteBuffersDirectory {
 }
 
 impl Directory for ByteBuffersDirectory {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.ensure_open()?;
         let files = self
@@ -10904,6 +10922,12 @@ impl FSDirectory {
 }
 
 impl Directory for FSDirectory {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Equivalent to `FSDirectory.listAll()` (`FSDirectory.java:191-195`):
     /// the entries of the directory but those pending delete.
     fn list_all(&self) -> Result<Vec<String>> {
@@ -11312,6 +11336,12 @@ impl NIOFSDirectory {
 }
 
 impl Directory for NIOFSDirectory {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }

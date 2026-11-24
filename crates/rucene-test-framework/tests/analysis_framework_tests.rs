@@ -920,23 +920,33 @@ mod test_token {
         t.set_position_increment(3);
         t.set_position_length(11);
         t.set_term_frequency(42);
-        let packed = std::any::type_name::<rucene::analysis::PackedTokenAttributeImpl>();
-        let term = std::any::type_name::<rucene::analysis::CharTermAttributeImpl>();
-        let token = std::any::type_name::<Token>();
+        let p = "org.apache.lucene.analysis.tokenattributes.";
         let mut expected: HashMap<String, String> = HashMap::new();
-        expected.insert(format!("{term}#term"), format!("{:?}", "foobar"));
         expected.insert(
-            format!("{term}#bytes"),
+            format!("{p}CharTermAttribute#term"),
+            format!("{:?}", "foobar"),
+        );
+        expected.insert(
+            format!("{p}TermToBytesRefAttribute#bytes"),
             format!("{:?}", BytesRef::new(b"foobar".to_vec())),
         );
-        expected.insert(format!("{packed}#startOffset"), "6".to_string());
-        expected.insert(format!("{packed}#endOffset"), "22".to_string());
-        expected.insert(format!("{packed}#positionIncrement"), "3".to_string());
-        expected.insert(format!("{packed}#positionLength"), "11".to_string());
-        expected.insert(format!("{token}#payload"), "None".to_string());
-        expected.insert(format!("{packed}#type"), format!("{:?}", "word"));
-        expected.insert(format!("{token}#flags"), "8".to_string());
-        expected.insert(format!("{packed}#termFrequency"), "42".to_string());
+        expected.insert(format!("{p}OffsetAttribute#startOffset"), "6".to_string());
+        expected.insert(format!("{p}OffsetAttribute#endOffset"), "22".to_string());
+        expected.insert(
+            format!("{p}PositionIncrementAttribute#positionIncrement"),
+            "3".to_string(),
+        );
+        expected.insert(
+            format!("{p}PositionLengthAttribute#positionLength"),
+            "11".to_string(),
+        );
+        expected.insert(format!("{p}PayloadAttribute#payload"), "None".to_string());
+        expected.insert(format!("{p}TypeAttribute#type"), format!("{:?}", "word"));
+        expected.insert(format!("{p}FlagsAttribute#flags"), "8".to_string());
+        expected.insert(
+            format!("{p}TermFrequencyAttribute#termFrequency"),
+            "42".to_string(),
+        );
         TestUtil::assert_attribute_reflection(&t, &expected);
         Ok(())
     }

@@ -45,6 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import port_modules_kg as pm  # noqa: E402
 from kgio import (counters_of, item_labels, kg_target, read as kg_read,  # noqa: E402
                   rmp as kg_rmp, unwind, unwind_items)
 
@@ -70,10 +71,15 @@ from kgio import (counters_of, item_labels, kg_target, read as kg_read,  # noqa:
 # The full name of a type of any port module (`port_modules_kg.PORT_MODULES`):
 # Lucene's `org.apache.lucene.`, randomizedtesting's
 # `com.carrotsearch.randomizedtesting.`, which sprint 9's workspace crates claim,
-# and the Snowball runtime's `org.tartarus.snowball.`, which
-# `lucene/analysis/common` declares and sprint 12's crate claims.
-FQN_FULL = (r"(?:org\.apache\.lucene|com\.carrotsearch\.randomizedtesting"
-            r"|org\.tartarus\.snowball)\.[A-Za-z0-9_.$]+")
+# the Snowball runtime's `org.tartarus.snowball.`, which
+# `lucene/analysis/common` declares and sprint 12's crate claims, and the
+# libraries sprint 17 ports: spatial4j's `org.locationtech.spatial4j.`,
+# s2-geometry's `com.google.common.geometry.`, and nekohtml's
+# `org.cyberneko.html.` with the Xerces `org.apache.xerces.` and SAX
+# `org.xml.sax.` types of its closure. The prefixes are `pm.JAVA_PREFIXES`, so a
+# module added to the scope is claimable without a second list to keep in step.
+FQN_FULL = (r"(?:" + "|".join(re.escape(p) for p in pm.JAVA_PREFIXES)
+            + r")\.[A-Za-z0-9_.$]+")
 NESTED_SHORT = r"[A-Z][A-Za-z0-9_]*(?:[.$][A-Z][A-Za-z0-9_]*)+"
 # The crate often quotes the Java declaration rather than just the name --
 # ``Equivalent to the `final class MultiTermQuery.TopTermsScoringBooleanQueryRewrite`.``
@@ -250,8 +256,12 @@ def claim_in(text: str):
 # the same two spellings every other claim is -- a full `org.apache.lucene…` name
 # or a capitalised `Outer.Inner` chain. A bare simple name in a table row is
 # still refused, so the table can never resolve a name by coincidence.
+# The right-hand header is the name of the Java project the module ports (Lucene
+# or one of `pm.EXTERNAL_PROJECTS`).
 RE_TABLE_HEADER = re.compile(
-    r"^\s*\|\s*Rucene\s*\|\s*(?:Apache Lucene Core 10\.5\.0|randomizedtesting 2\.8\.1)\s*\|\s*$")
+    r"^\s*\|\s*Rucene\s*\|\s*(?:"
+    + "|".join(re.escape(p) for p in (pm.LUCENE, *(e[0] for e in pm.EXTERNAL_PROJECTS)))
+    + r")\s*\|\s*$")
 RE_TABLE_ROW = re.compile(r"^\s*\|\s*\[`([^`\]]+)`\](?:\([^)]*\))?\s*\|\s*`([^`]+)`\s*\|\s*$")
 
 
@@ -345,11 +355,19 @@ def scan_file(root: Path, rel: str):
             break
 
     # Item-level `///` claims describe the declaration that follows the block.
+    # A plain `//` comment between the block and the item is skipped like an
+    # attribute: rustc attaches outer doc comments to the next item whatever
+    # ordinary comments stand between (`CharBlockArray`'s
+    # `// Java package-private class; ...` line hid its claim).
     block = []
     for i, line in enumerate(lines):
         m = RE_DOC_OUTER.match(line)
         if m:
             block.append((i + 1, m.group(1)))
+            continue
+        stripped = line.strip()
+        if (block and stripped.startswith("//")
+                and not stripped.startswith(("///", "//!"))):
             continue
         if RE_ATTR.match(line) or not line.strip():
             if not line.strip():
@@ -631,7 +649,41 @@ def load_skeletons(roadmap, skeletons, commit, date):
                "SET e.evidence = 'skeleton-doc-comment', e.declaredAt = row.at, "
                "e.gitCommit = row.commit, e.gitDate = row.date",
                "PLANS_PORT evidence stamped")
+    # The modules ported without skeletons plan their types in the scope itself
+    # (`port_modules_kg.SCOPE_PLANS`); a pair a skeleton already plans keeps the
+    # skeleton's evidence.
+    scoped = [{**r, "commit": commit, "date": date}
+              for r in scope_plan_rows(q(roadmap, "MATCH (c:Class) WHERE c.portScope = 'in' "
+                                                  "RETURN c.qualifiedName, c.module, c.file"),
+                                       tasks)
+              if (r["task"], r["lucene"]) not in seen]
+    run_unwind(roadmap, "create", scoped,
+               "MATCH (t:Task {id:row.task}) MATCH (c:Class {qualifiedName:row.lucene}) "
+               "MERGE (t)-[:PLANS_PORT]->(c)", "PLANS_PORT scope plans")
+    run_unwind(roadmap, "update", scoped,
+               "MATCH (t:Task {id:row.task})-[e:PLANS_PORT]->"
+               "(c:Class {qualifiedName:row.lucene}) "
+               "SET e.evidence = 'scope-plan', e.declaredAt = row.at, "
+               "e.gitCommit = row.commit, e.gitDate = row.date",
+               "PLANS_PORT scope plans stamped")
+    print(f"  scope plans: {len(scoped)} PLANS_PORT", file=sys.stderr)
     return rows, problems
+
+
+SCOPE_PLAN_AT = "tools/kg/port_modules_kg.py SCOPE_PLANS"
+
+
+def scope_plan_rows(classes, tasks):
+    """`[{task, lucene, at}]`: the `SCOPE_PLANS` task of every in-scope top-level
+    class (`(qualifiedName, module, file)` rows) whose module or file is
+    planned, for a task the graph mirrors."""
+    plans = pm.scope_plans()
+    out = []
+    for qn, module, file in classes:
+        task = plans.get((module, file), plans.get((module, None)))
+        if task is not None and task in tasks:
+            out.append({"task": task, "lucene": qn, "at": SCOPE_PLAN_AT})
+    return out
 
 
 def q(roadmap, cypher):
@@ -754,7 +806,7 @@ def load(roadmap, claims, commit, date):
         fn_counts[(name, file)] = fn_counts.get((name, file), 0) + 1
     types |= {k for k, n in fn_counts.items() if n == 1}
 
-    rows, unresolved_lucene, unresolved_rust = [], set(), set()
+    rows, unresolved_lucene, unresolved_rust, foreign_claims = [], set(), set(), set()
     module_resolved = module_as_component = member_resolved = short_resolved = 0
     for c in claims:
         target, component = c.get("target"), False
@@ -792,6 +844,10 @@ def load(roadmap, claims, commit, date):
         if target_class is None:
             unresolved_lucene.add(c["lucene"])
             continue
+        own = pm.claim_crate_of(target_class)
+        if own is not None and not c["file"].startswith(own + "/"):
+            foreign_claims.add((c["file"], c["target"], target_class))
+            continue
         if not component and (c["target"], c["file"]) not in types:
             unresolved_rust.add((c["target"], c["file"]))
             continue
@@ -814,6 +870,10 @@ def load(roadmap, claims, commit, date):
         elif r["claimLevel"] == "type" and uniq[seen[k]]["claimLevel"] == "member":
             uniq[seen[k]] = r
 
+    print(f"  claims on a type only its own crate ports, from another crate "
+          f"(`ownClaimsOnly`), not loaded: {len(foreign_claims)}", file=sys.stderr)
+    for f, t, qn in sorted(foreign_claims):
+        print(f"    FOREIGN {f} {t} -> {qn}", file=sys.stderr)
     print(f"  module claims resolved to a declared item: {module_resolved}",
           file=sys.stderr)
     print(f"  module claims resolved to a Component: {module_as_component}",

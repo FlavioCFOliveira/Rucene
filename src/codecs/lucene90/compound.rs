@@ -432,6 +432,12 @@ impl CompoundDirectory for Lucene90CompoundReader {
 }
 
 impl Directory for Lucene90CompoundReader {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         let mut names: Vec<String> = self
             .entries

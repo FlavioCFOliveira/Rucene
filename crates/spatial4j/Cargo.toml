@@ -1,0 +1,31 @@
+[package]
+name = "spatial4j"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of spatial4j 0.8, limited to the types Apache Lucene 10.5.0 spatial-extras and benchmark use."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "spatial4j"
+
+# spatial4j 0.8's own dependencies (noggit, jackson-databind, jts-core) are all
+# optional in its pom; none is a dependency of this crate. The port uses the
+# Rucene core for the JDK behaviours it reproduces (`Double.toString`,
+# `java.text` number formats, the Java exception classes).
+[dependencies]
+rucene = { path = "../.." }
+# The exact JDK 25 `Character` tables (`isLetter`, `isWhitespace`,
+# `isJavaIdentifierPart`) the WKT and legacy readers use.
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+# The spatial4j 0.8 test helpers (`TestLog`, `RandomizedShapeTest`,
+# `RectIntersectionTestHelper`) extend randomizedtesting's `RandomizedTest`
+# and `TestRuleAdapter`; only the `test-helpers` feature builds them.
+randomizedtesting = { path = "../randomizedtesting", optional = true }
+
+[features]
+# The spatial4j 0.8 test sources Lucene 10.5.0 spatial-extras' tests import.
+test-helpers = ["dep:randomizedtesting"]

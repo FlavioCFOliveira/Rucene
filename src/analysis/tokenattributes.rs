@@ -533,13 +533,13 @@ impl AttributeImpl for CharTermAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn CharTermAttribute>(),
-            std::any::type_name::<CharTermAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.CharTermAttribute",
             "term",
             &self.term(),
         );
         reflector.reflect(
             TypeId::of::<dyn TermToBytesRefAttribute>(),
-            std::any::type_name::<CharTermAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute",
             "bytes",
             &self.get_bytes_ref(),
         );
@@ -693,13 +693,13 @@ impl AttributeImpl for OffsetAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn OffsetAttribute>(),
-            std::any::type_name::<OffsetAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.OffsetAttribute",
             "startOffset",
             &self.start_offset,
         );
         reflector.reflect(
             TypeId::of::<dyn OffsetAttribute>(),
-            std::any::type_name::<OffsetAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.OffsetAttribute",
             "endOffset",
             &self.end_offset,
         );
@@ -833,7 +833,7 @@ impl AttributeImpl for PositionIncrementAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn PositionIncrementAttribute>(),
-            std::any::type_name::<PositionIncrementAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute",
             "positionIncrement",
             &self.position_increment,
         );
@@ -963,7 +963,7 @@ impl AttributeImpl for PositionLengthAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn PositionLengthAttribute>(),
-            std::any::type_name::<PositionLengthAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.PositionLengthAttribute",
             "positionLength",
             &self.position_length,
         );
@@ -1108,7 +1108,7 @@ impl AttributeImpl for TypeAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn TypeAttribute>(),
-            std::any::type_name::<TypeAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TypeAttribute",
             "type",
             &self.type_value,
         );
@@ -1484,37 +1484,37 @@ impl AttributeImpl for PackedTokenAttributeImpl {
         self.term.reflect_with(reflector);
         reflector.reflect(
             TypeId::of::<dyn OffsetAttribute>(),
-            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.OffsetAttribute",
             "startOffset",
             &self.start_offset,
         );
         reflector.reflect(
             TypeId::of::<dyn OffsetAttribute>(),
-            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.OffsetAttribute",
             "endOffset",
             &self.end_offset,
         );
         reflector.reflect(
             TypeId::of::<dyn PositionIncrementAttribute>(),
-            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute",
             "positionIncrement",
             &self.position_increment,
         );
         reflector.reflect(
             TypeId::of::<dyn PositionLengthAttribute>(),
-            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.PositionLengthAttribute",
             "positionLength",
             &self.position_length,
         );
         reflector.reflect(
             TypeId::of::<dyn TypeAttribute>(),
-            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TypeAttribute",
             "type",
             &self.type_value,
         );
         reflector.reflect(
             TypeId::of::<dyn TermFrequencyAttribute>(),
-            std::any::type_name::<PackedTokenAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute",
             "termFrequency",
             &self.term_frequency,
         );
@@ -1674,7 +1674,7 @@ impl AttributeImpl for TermFrequencyAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn TermFrequencyAttribute>(),
-            std::any::type_name::<TermFrequencyAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute",
             "termFrequency",
             &self.term_frequency,
         );
@@ -1788,7 +1788,7 @@ impl AttributeImpl for KeywordAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn KeywordAttribute>(),
-            std::any::type_name::<KeywordAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.KeywordAttribute",
             "keyword",
             &self.keyword,
         );
@@ -1900,7 +1900,7 @@ impl AttributeImpl for FlagsAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn FlagsAttribute>(),
-            std::any::type_name::<FlagsAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.FlagsAttribute",
             "flags",
             &self.flags,
         );
@@ -2024,7 +2024,7 @@ impl AttributeImpl for PayloadAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn PayloadAttribute>(),
-            std::any::type_name::<PayloadAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.PayloadAttribute",
             "payload",
             &self.payload,
         );
@@ -2201,7 +2201,7 @@ impl AttributeImpl for BytesTermAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn TermToBytesRefAttribute>(),
-            std::any::type_name::<BytesTermAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute",
             "bytes",
             &self.bytes,
         );
@@ -2321,7 +2321,7 @@ impl AttributeImpl for SentenceAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn SentenceAttribute>(),
-            std::any::type_name::<SentenceAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.SentenceAttribute",
             "sentences",
             &self.index,
         );
@@ -2396,7 +2396,7 @@ impl std::fmt::Display for CharTermAttributeImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::attribute::{AttributeSource, DefaultAttributeFactory};
+    use crate::util::attribute::{AttributeSource, AttributeValue, DefaultAttributeFactory};
 
     /// `CharTermAttributeImpl.charAt` checks with `Objects.checkIndex`
     /// (`CharTermAttributeImpl.java:104-107`). Measured against
@@ -2552,11 +2552,12 @@ mod tests {
         let mut t = CharTermAttributeImpl::new();
         t.append_string(Some("foobar"));
         let mut entries: Vec<(TypeId, &'static str, String, String)> = Vec::new();
-        t.reflect_with(
-            &mut |type_id: TypeId, name: &'static str, key: &str, value: &dyn Debug| {
-                entries.push((type_id, name, key.to_string(), format!("{:?}", value)));
-            },
-        );
+        t.reflect_with(&mut |type_id: TypeId,
+                             name: &'static str,
+                             key: &str,
+                             value: &dyn AttributeValue| {
+            entries.push((type_id, name, key.to_string(), format!("{:?}", value)));
+        });
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].2, "term");
         assert!(entries[0].3.contains("foobar"));
@@ -2649,7 +2650,7 @@ mod tests {
         t.reflect_with(&mut |_type_id: TypeId,
                              _name: &'static str,
                              key: &str,
-                             value: &dyn Debug| {
+                             value: &dyn AttributeValue| {
             entries.push((key.to_string(), format!("{:?}", value)));
         });
         assert_eq!(entries.len(), 2);
@@ -2813,7 +2814,7 @@ mod tests {
         source.reflect_with(&mut |_type_id: TypeId,
                                   name: &'static str,
                                   key: &str,
-                                  value: &dyn Debug| {
+                                  value: &dyn AttributeValue| {
             entries.push((name.to_string(), key.to_string(), format!("{:?}", value)));
         });
 

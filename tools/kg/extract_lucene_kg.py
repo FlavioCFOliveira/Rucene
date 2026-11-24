@@ -215,7 +215,10 @@ def discover():
                 re.MULTILINE,
             )
             clean = clean_for_brace_count(text)
-            for dm in decl_re.finditer(text):
+            # Over the blanked copy (same offsets), as `enrich_lucene_kg` reads
+            # members: a comment inside a declaration head hid the type
+            # (icu4j's `public final class CollationCompare /* all static */ {`).
+            for dm in decl_re.finditer(clean):
                 # top-level: count braces before this declaration in cleaned text; depth must be 0
                 prefix = clean[:dm.start()]
                 depth = prefix.count('{') - prefix.count('}')

@@ -29,13 +29,15 @@ de indice com o Apache Lucene Core 10.5.0. Os tipos aninhados ficam marcados
 por isso nao entram no denominador.
 
 Desde as decisoes do utilizador de 2026-11-03 (sprint 9), de 2026-11-13
-(sprint 12) e de 2026-11-14 (sprint 13), a mesma regra cobre todos os modulos que
+(sprint 12), de 2026-11-14 (sprint 13) e de 2026-11-22 (sprint 17), a mesma regra cobre todos os modulos que
 `port_modules_kg.PORT_MODULES` nomeia para la de `lucene/core`
 (`port_modules_kg.ADDED_MODULES`: `lucene/codecs`, `lucene/test-framework`,
 randomizedtesting 2.8.1 `randomized-runner`, `lucene/analysis/common`,
-`lucene/queries`, `lucene/queryparser` e `lucene/sandbox`), com o `classRule` de
+`lucene/queries`, `lucene/queryparser`, `lucene/sandbox`, os sete modulos Lucene do
+sprint 17 e as bibliotecas spatial4j 0.8 e s2-geometry 1.0.0), com o `classRule` de
 cada um (`sprint-9-module-top-level`, `sprint-12-module-top-level`,
-`sprint-13-module-top-level`, `sprint-13-listed-file-top-level`), e cada `Class`
+`sprint-13-module-top-level`, `sprint-13-listed-file-top-level`,
+`sprint-17-module-top-level`, `sprint-17-listed-file-top-level`), e cada `Class`
 leva o seu `module`. Um modulo com `files` (`lucene/sandbox`: so
 `FuzzyLikeThisQuery.java`) so contribui os ficheiros listados
 (`port_modules_kg.file_in_scope`). Para esses

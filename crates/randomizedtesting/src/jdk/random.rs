@@ -946,15 +946,24 @@ macro_rules! stream {
 
 stream!(
     /// The `IntStream` of `ints(...)`, drawn lazily and in order.
-    Ints, i32, |r| r.next_int(), |r, o, b| bounded_next_int(r, o, b)
+    Ints,
+    i32,
+    |r| r.next_int(),
+    |r, o, b| bounded_next_int(r, o, b)
 );
 stream!(
     /// The `LongStream` of `longs(...)`, drawn lazily and in order.
-    Longs, i64, |r| r.next_long(), |r, o, b| bounded_next_long_range(r, o, b)
+    Longs,
+    i64,
+    |r| r.next_long(),
+    |r, o, b| bounded_next_long_range(r, o, b)
 );
 stream!(
     /// The `DoubleStream` of `doubles(...)`, drawn lazily and in order.
-    Doubles, f64, |r| r.next_double(), |r, o, b| bounded_double(r.next_double(), o, b)
+    Doubles,
+    f64,
+    |r| r.next_double(),
+    |r, o, b| bounded_double(r.next_double(), o, b)
 );
 
 /// The `DoubleStream` of `equiDoubles(...)`, drawn lazily and in order:

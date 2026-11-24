@@ -22,14 +22,15 @@ use rucene_test_framework::util::TestUtil;
 
 /// `Collections.singletonMap(Attribute.class.getName() + "#" + key, value)`.
 ///
-/// **Divergence from Lucene 10.5.0.** Java keys the reflected map by the
-/// attribute interface's binary name and holds the value objects; Rucene's
-/// `AttributeImpl.reflectWith` names the implementing type and
+/// `attribute` is the interface's simple name in
+/// `org.apache.lucene.analysis.tokenattributes.`.
+///
+/// **Divergence from Lucene 10.5.0.** Java's map holds the value objects;
 /// `TestUtil.assertAttributeReflection` compares each value's `Debug`
-/// rendering, so the expected map is keyed and valued the same way.
-fn single<T>(key: &str, value: impl std::fmt::Debug) -> HashMap<String, String> {
+/// rendering, so the expected map is valued the same way.
+fn single(attribute: &str, key: &str, value: impl std::fmt::Debug) -> HashMap<String, String> {
     HashMap::from([(
-        format!("{}#{key}", std::any::type_name::<T>()),
+        format!("org.apache.lucene.analysis.tokenattributes.{attribute}#{key}"),
         format!("{value:?}"),
     )])
 }
@@ -39,29 +40,29 @@ fn single<T>(key: &str, value: impl std::fmt::Debug) -> HashMap<String, String> 
 fn simple_attribute_impl_test_attributes() -> Result<()> {
     TestUtil::assert_attribute_reflection(
         &PositionIncrementAttributeImpl::default(),
-        &single::<PositionIncrementAttributeImpl>("positionIncrement", 1),
+        &single("PositionIncrementAttribute", "positionIncrement", 1),
     );
     TestUtil::assert_attribute_reflection(
         &PositionLengthAttributeImpl::default(),
-        &single::<PositionLengthAttributeImpl>("positionLength", 1),
+        &single("PositionLengthAttribute", "positionLength", 1),
     );
     TestUtil::assert_attribute_reflection(
         &FlagsAttributeImpl::default(),
-        &single::<FlagsAttributeImpl>("flags", 0),
+        &single("FlagsAttribute", "flags", 0),
     );
     TestUtil::assert_attribute_reflection(
         &TypeAttributeImpl::default(),
-        &single::<TypeAttributeImpl>("type", DEFAULT_TYPE),
+        &single("TypeAttribute", "type", DEFAULT_TYPE),
     );
     TestUtil::assert_attribute_reflection(
         &PayloadAttributeImpl::default(),
-        &single::<PayloadAttributeImpl>("payload", None::<()>),
+        &single("PayloadAttribute", "payload", None::<()>),
     );
     TestUtil::assert_attribute_reflection(
         &KeywordAttributeImpl::default(),
-        &single::<KeywordAttributeImpl>("keyword", false),
+        &single("KeywordAttribute", "keyword", false),
     );
-    let offset = std::any::type_name::<OffsetAttributeImpl>();
+    let offset = "org.apache.lucene.analysis.tokenattributes.OffsetAttribute";
     TestUtil::assert_attribute_reflection(
         &OffsetAttributeImpl::default(),
         &HashMap::from([

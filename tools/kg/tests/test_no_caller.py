@@ -165,6 +165,75 @@ def test_a_macro_generated_item_resolves_by_qualified_name():
         ("RustFn", "rucene::h::list::List::add")
 
 
+GEN = ("mod test_a {\n    fn test_x() { crate::a::helper(); }\n}\n"
+       "mod test_b {\n    fn test_x() { crate::a::helper(); }\n}\n")
+
+
+def _gen_docs():
+    O = scipio.Occurrence
+    gen = scipio.Document("tests/gen/mod.rs", [
+        O((0, 0, 6, 0), P + "gen/", 1, (0, 0, 6, 0)),           # the file's own module
+        O((0, 4, 0, 10), P + "gen/test_a/", 1, (0, 0, 2, 1)),
+        O((1, 7, 1, 13), P + "gen/test_a/test_x().", 1, (1, 4, 1, 40)),
+        O((1, 25, 1, 31), P + "a/helper()."),
+        O((3, 4, 3, 10), P + "gen/test_b/", 1, (3, 0, 5, 1)),
+        O((4, 7, 4, 13), P + "gen/test_b/test_x().", 1, (4, 4, 4, 40)),
+        O((4, 25, 4, 31), P + "a/helper()."),
+    ])
+    lib = scipio.Document("src/a.rs", [O((18, 7, 18, 13), P + "a/helper().", 1, (18, 0, 18, 18))])
+    return [lib, gen]
+
+
+def test_same_named_fns_of_a_test_file_resolve_by_the_kg_identity_in_any_row_order():
+    """#637: `test_x` of `mod test_a` and of `mod test_b` share `(file, owner,
+    name)`, and the SCIP path (`rucene::gen::test_a::test_x`) never spells the
+    KG's `rucene::tests::gen::...`. The referrer used to be the first row the
+    graph returned; it must follow the file's `modulePath` and the inline
+    module around the definition, whatever the row order."""
+    a = ("rucene::tests::gen::test_a::test_x", "tests/gen/mod.rs", None, "test_x")
+    b = ("rucene::tests::gen::test_b::test_x", "tests/gen/mod.rs", None, "test_x")
+    helper = ("RustFn", "rucene::a::helper")
+    want = {(("RustFn", a[0]), helper): [0, 1], (("RustFn", b[0]), helper): [0, 1]}
+    texts = {"src/a.rs": SRC, "tests/gen/mod.rs": GEN}.get
+    for rows in ([a, b], [b, a]):
+        kg = rr.KgIndex([], [*rows, ("rucene::a::helper", "src/a.rs", None, "helper")],
+                        [("src/a.rs", "rucene::a"), ("tests/gen/mod.rs", "rucene::tests::gen")])
+        assert dict(rr.extract(_gen_docs(), texts, kg)) == want
+        assert not kg.ambiguous
+
+
+def test_an_unresolvable_fn_ambiguity_is_refused_not_picked():
+    rows = [("rucene::tests::gen::x::test_x", "tests/gen/mod.rs", None, "test_x"),
+            ("rucene::tests::gen::y::test_x", "tests/gen/mod.rs", None, "test_x")]
+    kg = rr.KgIndex([], rows, [("tests/gen/mod.rs", "rucene::tests::gen")])
+    item = ("fn", None, "test_x", ("gen", "test_a"))
+    assert kg.node(item, "tests/gen/mod.rs", local=("test_a",)) is None
+    assert kg.ambiguous["tests/gen/mod.rs"] == 1
+
+
+def test_a_type_name_with_two_labels_in_one_file_resolves_by_qualified_name():
+    """`icu4j` `Key`: a struct and a trait in one file. The label used to be the
+    last row read; it must be the one whose qualified name matches, else none."""
+    s = ("RustStruct", "Key", "src/k.rs", None)
+    t = ("RustTrait", "Key", "src/k.rs", "rucene::k::service::Key")
+    for rows in ([s, t], [t, s]):
+        kg = rr.KgIndex(rows, [], [("src/k.rs", "rucene::k")])
+        trait = ("type", None, "Key", ("k", "service"))
+        assert kg.node(trait, "src/k.rs", local=("service",)) == ("RustTrait", "Key", "src/k.rs")
+        assert kg.node(("type", None, "Key", ("k",)), "src/k.rs", local=()) is None
+
+
+def test_file_module_path_and_local_mods():
+    lib, gen = _gen_docs()
+    assert rr.file_module_path(gen) == ("gen",)
+    O = scipio.Occurrence
+    root = scipio.Document("src/lib.rs", [O((0, 0, 3, 0), P + "crate/", 1, (0, 0, 3, 0))])
+    assert rr.file_module_path(root) == ()
+    assert rr.file_module_path(lib) is None
+    assert rr.local_mods(("fn", None, "f", ("gen", "m")), ("gen",)) == ("m",)
+    assert rr.local_mods(("fn", None, "f", ("other",)), ("gen",)) is None
+
+
 def test_macro_bodies_credit_the_invocation_file_lexically():
     macros = "macro_rules! make {\n    ($n:ident) => { fn g() { Util::grow(); let _: Entry; } };\n}\n"
     O = scipio.Occurrence

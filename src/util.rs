@@ -33,6 +33,8 @@ pub mod int_block_pool;
 pub mod io_function;
 pub mod java_collections;
 pub mod java_fmt;
+pub mod java_math;
+pub mod java_random;
 pub mod jvm;
 pub mod long_heap;
 pub mod math_util;
@@ -2990,6 +2992,36 @@ impl IOUtils {
             }));
         }
     }
+
+    /// Deletes every named file of `dir`; `None` entries are ignored. After
+    /// every file was tried, the first failure is returned.
+    ///
+    /// Equivalent to `IOUtils.deleteFiles(Directory, Collection<String>)`
+    /// (`IOUtils.java:247-262`): `dir.deleteFile(name)` for each non-null name
+    /// inside `catch (Throwable t)`, the first throwable rethrown and the later
+    /// ones suppressed (`useOrSuppress`); a panic is caught like any
+    /// `Throwable`, as in [`close`](Self::close).
+    ///
+    /// # Errors
+    ///
+    /// The first error `delete_file` returned, unchanged.
+    pub fn delete_files_in<D, I, S>(dir: &D, names: I) -> Result<(), LuceneError>
+    where
+        D: crate::store::Directory + ?Sized,
+        I: IntoIterator<Item = Option<S>>,
+        S: AsRef<str>,
+    {
+        let mut th: Option<Thrown> = None;
+        for name in names.into_iter().flatten() {
+            if let Some(t) = Self::close_one(|| dir.delete_file(name.as_ref())) {
+                th = Some(Self::use_or_suppress(th, t));
+            }
+        }
+        match th {
+            Some(th) => Err(th.rethrow()),
+            None => Ok(()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4493,6 +4525,12 @@ impl MatchAllBits {
 }
 
 impl Bits for MatchAllBits {
+    /// `Bits.MatchAllBits`/`Bits.MatchNoBits` are classes Lucene tests with
+    /// `instanceof` (spatial-extras `HeatmapFacetCounter.java:174`).
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, _index: usize) -> bool {
         true
     }
@@ -4516,6 +4554,12 @@ impl MatchNoBits {
 }
 
 impl Bits for MatchNoBits {
+    /// `Bits.MatchAllBits`/`Bits.MatchNoBits` are classes Lucene tests with
+    /// `instanceof` (spatial-extras `HeatmapFacetCounter.java:174`).
+    fn bits_as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get(&self, _index: usize) -> bool {
         false
     }

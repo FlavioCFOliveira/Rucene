@@ -453,7 +453,7 @@ impl ComplexPhraseQuery {
                 &mut ors
             };
 
-            if let Some(tq) = child_query.as_any().downcast_ref::<TermQuery>() {
+            if let Some(tq) = child_query.as_term_query() {
                 let stq: Arc<dyn SpanQuery> = Arc::new(SpanTermQuery::new(tq.get_term().clone()));
                 chosen_list.push(stq);
             } else if let Some(cbq) = child_query.as_any().downcast_ref::<BooleanQuery>() {
@@ -517,7 +517,7 @@ impl Query for ComplexPhraseQuery {
 
         // ArrayList spanClauses = new ArrayList();
         if let Some(c) = &contents {
-            if c.as_any().is::<TermQuery>()
+            if c.as_term_query().is_some()
                 || c.is_multi_term_query()
                 || c.as_any().is::<SynonymQuery>()
             {
@@ -572,7 +572,7 @@ impl Query for ComplexPhraseQuery {
                 // and there were no "Smithe*" terms - need to prevent match
                 // on just "Fred".
                 all_span_clauses.push(self.dummy_clause());
-            } else if let Some(tq) = qc.as_any().downcast_ref::<TermQuery>() {
+            } else if let Some(tq) = qc.as_term_query() {
                 all_span_clauses.push(Arc::new(SpanTermQuery::new(tq.get_term().clone())));
             } else {
                 return Err(self.unknown_query_type(qc.as_ref()));

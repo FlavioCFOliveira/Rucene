@@ -1519,10 +1519,27 @@ pub const PARSE_EXCEPTION: &str = "java.text.ParseException";
 /// [`ParseException::of`]. The parse exceptions this crate raised before it
 /// existed are [`LuceneErrorKind::Unchecked`] values of class
 /// [`PARSE_EXCEPTION`], whose `errorOffset` is 0.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ParseException {
     message: String,
     error_offset: i32,
+    /// The cause `Throwable.initCause` recorded, if any.
+    cause: Option<std::sync::Arc<LuceneError>>,
+}
+
+impl PartialEq for ParseException {
+    /// The message, the offset, and the same cause object (Java compares
+    /// throwables by identity; this compares the parse data and the cause
+    /// reference).
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+            && self.error_offset == other.error_offset
+            && match (&self.cause, &other.cause) {
+                (None, None) => true,
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl ParseException {
@@ -1531,7 +1548,30 @@ impl ParseException {
         LuceneError::from(LuceneErrorKind::Throwable(std::sync::Arc::new(Self {
             message: message.into(),
             error_offset,
+            cause: None,
         })))
+    }
+
+    /// `new ParseException(message, errorOffset)` followed by
+    /// `initCause(cause)`, as a [`LuceneError`].
+    ///
+    /// Equivalent to `Throwable.initCause(Throwable)` on a fresh
+    /// `ParseException`, whose `getCause()` then answers `cause`.
+    pub fn error_with_cause(
+        message: impl Into<String>,
+        error_offset: i32,
+        cause: LuceneError,
+    ) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Throwable(std::sync::Arc::new(Self {
+            message: message.into(),
+            error_offset,
+            cause: Some(std::sync::Arc::new(cause)),
+        })))
+    }
+
+    /// Equivalent to `getCause()`.
+    pub fn get_cause(&self) -> Option<&std::sync::Arc<LuceneError>> {
+        self.cause.as_ref()
     }
 
     /// The `ParseException` `error` stands for, when it is one built by
@@ -1561,6 +1601,10 @@ impl crate::error::JavaThrowable for ParseException {
 
     fn get_message(&self) -> Option<&str> {
         Some(&self.message)
+    }
+
+    fn get_cause(&self) -> Option<&std::sync::Arc<LuceneError>> {
+        self.cause.as_ref()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

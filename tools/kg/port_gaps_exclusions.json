@@ -364,5 +364,17 @@
     "triageReason": "Private helper that refills the scratch EncodedRectangle `relateNode` passes to `relateComponent`, `relatePoint`, `relateLine` and `relateTriangle`, none of which reads it (ShapeDocValues.java:836-845, 875-935); the port drops that write-only parameter (src/document/shape_doc_values.rs:1278-1281), so there is no scratch box to reset."
    }
   }
+ },
+ "com.ibm.icu.impl.locale.BaseLocale$Cache": {
+  "memberVerdicts": {
+   "createObject": {
+    "triageClass": "renamed",
+    "triageReason": "The private subclass's override is the first closure BaseLocale's static CACHE passes to LocaleObjectCache::new (crates/icu4j/src/impl/locale/base_locale.rs:36-40): new BaseLocale(key._lang, key._scrt, key._regn, key._vart), as BaseLocale.java:261-264. The graph's only port of BaseLocale$Cache is a host-file-name edge to an unrelated struct Cache attributed to crates/icu4j/src/lib.rs, so no rule reads base_locale.rs."
+   },
+   "normalizeKey": {
+    "triageClass": "renamed",
+    "triageReason": "The private subclass's override is the second closure BaseLocale's static CACHE passes to LocaleObjectCache::new (crates/icu4j/src/impl/locale/base_locale.rs:41): Key.normalize(key), as BaseLocale.java:256-259. The graph's only port of BaseLocale$Cache is a host-file-name edge to an unrelated struct Cache attributed to crates/icu4j/src/lib.rs, so no rule reads base_locale.rs."
+   }
+  }
  }
 }

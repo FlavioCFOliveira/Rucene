@@ -57,7 +57,8 @@ use rucene::error::LuceneError;
 use rucene_analysis_common::analysis::util::char_array_iterator::CharArrayIterator;
 use rucene_analysis_common::jdk::break_dictionary::{thai_dictionary_source, ThaiDictionarySource};
 use rucene_analysis_common::jdk::break_iterator::{
-    get_icu_thai_word_instance, get_sentence_instance, get_word_instance, BreakIterator,
+    get_icu_thai_word_instance, get_line_instance, get_sentence_instance, get_word_instance,
+    BreakIterator,
 };
 use rucene_analysis_common::jdk::locale::Locale;
 
@@ -134,6 +135,11 @@ enum Kind {
     /// The port's fallback Thai iterator, on the embedded ICU 79.1 list
     /// (`get_icu_thai_word_instance`).
     ThaiIcu,
+    /// `getLineInstance(Locale.ROOT)`.
+    Line,
+    /// `getLineInstance(th)`: the Thai line rules on the process's Thai
+    /// dictionary.
+    ThaiLine,
 }
 
 impl Kind {
@@ -143,6 +149,8 @@ impl Kind {
             Kind::Word => "w",
             Kind::Sentence => "s",
             Kind::ThaiIcu | Kind::Thai => "t",
+            Kind::Line => "l",
+            Kind::ThaiLine => "u",
         }
     }
 
@@ -152,6 +160,10 @@ impl Kind {
             Kind::Sentence => get_sentence_instance(&Locale::of_parts("", "", "", "")),
             Kind::Thai => get_word_instance(&Locale::builder_from_language_tag("th").expect("th")),
             Kind::ThaiIcu => get_icu_thai_word_instance(),
+            Kind::Line => get_line_instance(&Locale::of_parts("", "", "", "")),
+            Kind::ThaiLine => {
+                get_line_instance(&Locale::builder_from_language_tag("th").expect("th"))
+            }
         }
     }
 }
@@ -595,6 +607,41 @@ fn thai_word_instance_equals_jdk() {
     );
 }
 
+/// Characters of the line rules' classes the word and sentence alphabet
+/// lacks: U+0003, the glue characters, `$`, `'`, `()`, `{}`, the
+/// `<post-word>` signs and small Kana, Hangul, enclosing marks after spaces,
+/// a format and an ignored control character, the letters of the Thai
+/// rules' literal `break`, `ฯ` and `ๆ`.
+const LINE_EXTRA: &str = "\u{3}\u{a0}\u{f0c}\u{2007}\u{2011}\u{202f}\u{feff}$'(){}\u{b0}\u{2032}\u{2103}\u{3001}\u{3063}\u{30c3}\u{30fc}\u{ff05}\u{ff0c}\u{ac01}\u{d7a3}\u{fa30}\u{20dd}\u{300} \u{200d}\u{7f}\u{85}breakk--\u{2014}\u{e2f}\u{e2f}\u{e25}\u{e46}\r\n\u{2029}";
+
+/// The line instances (`getLineInstance` of the root locale, and of Thai on
+/// the installed JDK's `thai_dict`) equal the JDK on the standard corpus,
+/// seeded strings over the rule classes (Thai and line characters
+/// included) and seeded multilingual and Thai sentences.
+#[test]
+fn line_instances_equal_jdk() {
+    let r = JdkRandom::new(0x0629_11E5);
+    let mut chars: Vec<char> = ALPHA.chars().collect();
+    for _ in 0..2 {
+        chars.extend(LINE_EXTRA.chars());
+    }
+    chars.extend(THAI.chars());
+    let mut texts: Vec<Vec<u16>> = analysis_oracle::corpus::standard(0x629, 300);
+    texts.extend(LUCENE_THAI_TEXTS.iter().map(|s| s.encode_utf16().collect()));
+    texts.extend(random_strings(&r, &chars, 15_000, 12));
+    texts.extend(random_strings(&r, &chars, 5_000, 40));
+    texts.extend(multilingual_sentences(&r, 4_000));
+    texts.extend(thai_corpus(0x629, 1_500));
+    let mut cases = Vec::new();
+    for text in &texts {
+        cases.push(make_case(&r, Kind::Line, text.clone()));
+        cases.push(make_case(&r, Kind::ThaiLine, text.clone()));
+    }
+    let java = java_results(&cases, "line");
+    let diffs = compare(&cases, &java);
+    assert_no_diffs("line (root and Thai)", cases.len(), &diffs);
+}
+
 /// The Thai dictionary source is the JDK's `thai_dict`, read from the image
 /// of the JDK the lookup order finds first (`JAVA_HOME`, then `java` on
 /// `PATH`): on this machine, the JDK whose `java` the oracle runs.
@@ -653,7 +700,13 @@ fn supplementary_category_quirks_equal_jdk() {
         let x = char::from_u32(p).unwrap().to_string();
         for c in contexts {
             let text: Vec<u16> = c.replace("{}", &x).encode_utf16().collect();
-            for kind in [Kind::Word, Kind::Sentence, Kind::Thai] {
+            for kind in [
+                Kind::Word,
+                Kind::Sentence,
+                Kind::Thai,
+                Kind::Line,
+                Kind::ThaiLine,
+            ] {
                 cases.push(make_case(&r, kind, text.clone()));
             }
         }

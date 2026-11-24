@@ -142,6 +142,23 @@ _TRACE = os.environ.get("KG_TRACE")
 _SCRIPT = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "?"
 
 
+# `KG_WRITES=<file>` appends one line per statement that changed the graph (its
+# result carries write counters), so `sync_commit.sh` restarts the server only
+# after a step that wrote: the restart exists for nodes written since the server
+# started (the `AllNodesScan` defect it documents), and a step that wrote
+# nothing left none.
+_WRITES = os.environ.get("KG_WRITES")
+
+
+def _record_write(label: str, stdout: str) -> None:
+    if not _WRITES:
+        return
+    counters = counters_of(stdout)
+    if counters:
+        with open(_WRITES, "a", encoding="utf-8") as f:
+            f.write(f"{_SCRIPT}\t{label}\t{format_counters(counters)}\n")
+
+
 def _trace(label: str, query: str, seconds: float, code: int) -> None:
     if not _TRACE:
         return
@@ -172,6 +189,7 @@ def client(roadmap: str, query: str, label: str = "statement", attempts: int = 6
         )
         _trace(label, query, time.monotonic() - started, result.returncode)
         if result.returncode == 0:
+            _record_write(label, result.stdout)
             return result.stdout
         error = error_line(result.stderr)
         if attempt >= attempts or not error.startswith(_WRITE_CONFLICT):

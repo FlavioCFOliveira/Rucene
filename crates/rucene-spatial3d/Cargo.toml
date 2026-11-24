@@ -1,0 +1,24 @@
+[package]
+name = "rucene-spatial3d"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/spatial3d (3D planar geometry, Geo3DPoint)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_spatial3d"
+
+[dependencies]
+rucene = { path = "../.." }
+
+[dev-dependencies]
+# The tests port Lucene's spatial3d tests onto lucene/test-framework (and its
+# randomized-testing base); the random shapes come from
+# lucene/spatial-test-fixtures, as in Lucene's `spatial3d/build.gradle`.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
+rucene-spatial-test-fixtures = { path = "../rucene-spatial-test-fixtures" }

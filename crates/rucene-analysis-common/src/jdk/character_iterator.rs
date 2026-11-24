@@ -111,6 +111,36 @@ impl StringCharacterIterator {
             pos: 0,
         }
     }
+
+    /// Constructs an iterator over the given range of `text`, with the index
+    /// set at `pos`.
+    ///
+    /// Equivalent to `StringCharacterIterator(String text, int begin, int
+    /// end, int pos)`; `text` is the string's UTF-16 units.
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException("Invalid substring range")` unless `0 <=
+    /// begin <= end <= text.length()`, and `IllegalArgumentException("Invalid
+    /// position")` unless `begin <= pos <= end`.
+    pub fn with_range(text: Vec<u16>, begin: i32, end: i32, pos: i32) -> Result<Self> {
+        if begin < 0 || begin > end || end > text.len() as i32 {
+            return Err(rucene::error::LuceneError::illegal_argument(
+                "Invalid substring range".to_string(),
+            ));
+        }
+        if pos < begin || pos > end {
+            return Err(rucene::error::LuceneError::illegal_argument(
+                "Invalid position".to_string(),
+            ));
+        }
+        Ok(Self {
+            text,
+            begin,
+            end,
+            pos,
+        })
+    }
 }
 
 impl CharacterIterator for StringCharacterIterator {

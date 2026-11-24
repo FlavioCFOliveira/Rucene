@@ -519,7 +519,7 @@ impl AttributeImpl for MockRetainAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn MockRetainAttribute>(),
-            "MockRetainAttribute",
+            "org.apache.lucene.analysis.compound.TestCompoundWordTokenFilter$MockRetainAttribute",
             "retain",
             &self.retain,
         );

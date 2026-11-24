@@ -307,6 +307,42 @@ pub const FORMAT: u8 = 16;
 /// `Character.SURROGATE`, general category `Cs`.
 pub const SURROGATE: u8 = 19;
 
+/// `Character.CONNECTOR_PUNCTUATION`, general category `Pc`.
+pub const CONNECTOR_PUNCTUATION: u8 = 23;
+/// `Character.CURRENCY_SYMBOL`, general category `Sc`.
+pub const CURRENCY_SYMBOL: u8 = 26;
+
+/// `Character.isIdentifierIgnorable(int)`: the ISO control characters that
+/// are not whitespace (`U+0000`-`U+0008`, `U+000E`-`U+001B`,
+/// `U+007F`-`U+009F`) and every `FORMAT` (`Cf`) code point.
+pub fn is_identifier_ignorable(code_point: i32) -> bool {
+    (0x0000..=0x0008).contains(&code_point)
+        || (0x000E..=0x001B).contains(&code_point)
+        || (0x007F..=0x009F).contains(&code_point)
+        || get_type(code_point) == FORMAT
+}
+
+/// `Character.isJavaIdentifierPart(int)`, as JDK 25 answers: a letter
+/// (`Lu`, `Ll`, `Lt`, `Lm`, `Lo`), a currency symbol (`Sc`), a connecting
+/// punctuation character (`Pc`), a digit (`Nd`), a numeric letter (`Nl`), a
+/// combining mark (`Mc`), a non-spacing mark (`Mn`), or an identifier-ignorable
+/// code point ([`is_identifier_ignorable`]).
+///
+/// This is the rule of the method's specification over [`get_type`]; checked
+/// against JDK 25.0.5 `Character.isJavaIdentifierPart` for every code point
+/// `0..=0x10FFFF` (0 mismatches).
+pub fn is_java_identifier_part(code_point: i32) -> bool {
+    let t = get_type(code_point);
+    (UPPERCASE_LETTER..=OTHER_LETTER).contains(&t)
+        || t == CURRENCY_SYMBOL
+        || t == CONNECTOR_PUNCTUATION
+        || t == DECIMAL_DIGIT_NUMBER
+        || t == LETTER_NUMBER
+        || t == COMBINING_SPACING_MARK
+        || t == NON_SPACING_MARK
+        || is_identifier_ignorable(code_point)
+}
+
 /// `Character.getType(int)`: the general category of `code_point`, as the
 /// value of Java's `Character` category constant, as JDK 25 answers (a
 /// surrogate code unit is [`SURROGATE`]; a value outside the code space is
