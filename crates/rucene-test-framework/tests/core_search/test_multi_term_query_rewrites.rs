@@ -330,7 +330,7 @@ impl FilteredTermsEnumFilter for BoostFilter {
 /// The `FilteredTermsEnum` of `checkBoosts` with its `BoostAttribute` set to
 /// `Float.parseFloat(term.utf8ToString())` of each term it returns.
 struct BoostingTermsEnum {
-    inner: FilteredTermsEnum,
+    inner: FilteredTermsEnum<'static>,
 }
 
 impl fmt::Display for BoostingTermsEnum {

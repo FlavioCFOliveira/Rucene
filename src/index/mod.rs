@@ -76,8 +76,8 @@ pub mod vector_values_consumer;
 pub use automaton_terms_enum::AutomatonTermsEnum;
 pub use codec_reader::CodecReader;
 pub use doc_values::{
-    BinaryDocValues, DocValues, DocValuesIterator, DocValuesSkipper, EmptyBinaryDocValues,
-    EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
+    BinaryDocValues, DocValues, DocValuesIterator, DocValuesRef, DocValuesSkipper,
+    EmptyBinaryDocValues, EmptyDocValuesProducer, EmptyNumericDocValues, EmptySortedDocValues,
     EmptySortedNumericDocValues, EmptySortedSetDocValues, FilterBinaryDocValues,
     FilterNumericDocValues, FilterSortedDocValues, FilterSortedNumericDocValues,
     FilterSortedSetDocValues, NumericDocValues, OrdinalMap, SingletonSortedNumericDocValues,

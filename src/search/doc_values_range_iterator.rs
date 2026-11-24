@@ -80,7 +80,7 @@ enum RangePredicate {
 /// A set of ordinals a query matches, with the bounds that frame it.
 ///
 /// Equivalent to the private record `DocValuesRangeIterator.OrdinalSet`.
-struct OrdinalSet {
+pub(crate) struct OrdinalSet {
     min: i64,
     max: i64,
     ords: Arc<LongBitSet>,
@@ -111,7 +111,10 @@ impl OrdinalSet {
 ///
 /// Propagates any I/O error raised while enumerating, and the [`LongBitSet`]
 /// construction error for an invalid ordinal count.
-fn build_ordinal_set(terms_enum: &mut dyn TermsEnum, ord_count: i64) -> Result<Option<OrdinalSet>> {
+pub(crate) fn build_ordinal_set(
+    terms_enum: &mut dyn TermsEnum,
+    ord_count: i64,
+) -> Result<Option<OrdinalSet>> {
     if terms_enum.next()?.is_none() {
         return Ok(None);
     }
@@ -318,24 +321,29 @@ impl DocValuesRangeIterator {
     ) -> Result<Self> {
         let ord_count = i64::from(values.get_value_count()?);
         let ordinal_set = build_ordinal_set(terms, ord_count)?;
+        Ok(Self::for_ordinal_set_inner(values, skipper, ordinal_set))
+    }
+
+    /// The body of [`for_ordinal_set`](Self::for_ordinal_set) after the terms
+    /// were walked into `ordinal_set`.
+    pub(crate) fn for_ordinal_set_inner(
+        values: Box<dyn SortedDocValues>,
+        skipper: Option<Box<dyn DocValuesSkipper>>,
+        ordinal_set: Option<OrdinalSet>,
+    ) -> Self {
         let Some(ordinal_set) = ordinal_set else {
-            return Ok(Self::empty());
+            return Self::empty();
         };
         if ordinal_set.disjoint(skipper.as_deref()) {
-            return Ok(Self::empty());
+            return Self::empty();
         }
         if ordinal_set.contiguous {
-            return Ok(Self::for_ordinal_range(
-                values,
-                skipper,
-                ordinal_set.min,
-                ordinal_set.max,
-            ));
+            return Self::for_ordinal_range(values, skipper, ordinal_set.min, ordinal_set.max);
         }
         let predicate = RangePredicate::SortedOrdinalSet {
             ords: Arc::clone(&ordinal_set.ords),
         };
-        Ok(Self {
+        Self {
             values: RangeValues::Sorted(values),
             block_iterator: skipper.map(|skipper| {
                 SkipBlockRangeIterator::new(skipper, ordinal_set.min, ordinal_set.max)
@@ -346,7 +354,7 @@ impl DocValuesRangeIterator {
             // has no block-level short circuit.
             bulk: false,
             bulk_bounds: (ordinal_set.min, ordinal_set.max),
-        })
+        }
     }
 
     /// Confirms that one of a document's ordinals belongs to the set the terms
@@ -401,7 +409,7 @@ impl DocValuesRangeIterator {
 
     /// Equivalent to the private
     /// `forOrdinalSet(SortedSetDocValues, DocValuesSkipper, OrdinalSet)`.
-    fn for_sorted_set_ordinal_set_inner(
+    pub(crate) fn for_sorted_set_ordinal_set_inner(
         values: Box<dyn SortedSetDocValues>,
         skipper: Option<Box<dyn DocValuesSkipper>>,
         ordinal_set: Option<OrdinalSet>,

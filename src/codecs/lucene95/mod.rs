@@ -3,7 +3,8 @@
 //! Holds the doc-id encoding shared by every vector format since Lucene 9.5,
 //! and the slice accessor a reader exposes so a caller can prefetch its data.
 
-use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::{Arc, MutexGuard};
 
 use crate::codecs::hnsw::flat_vectors::DocsWithFieldSet;
 use crate::codecs::lucene90::indexed_disi::{write_bit_set, IndexedDISI, DEFAULT_DENSE_RANK_POWER};
@@ -25,8 +26,34 @@ use crate::util::packed::{DirectMonotonicMeta, DirectMonotonicReader, DirectMono
 pub trait HasIndexSlice {
     /// Returns the slice this reader reads from, when it has one.
     ///
-    /// Equivalent to `HasIndexSlice.getSlice()`.
-    fn get_slice(&self) -> Option<&dyn IndexInput>;
+    /// Equivalent to `HasIndexSlice.getSlice()`; `None` stands for Java's
+    /// `null`.
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>>;
+}
+
+/// The slice [`HasIndexSlice::get_slice`] hands back.
+///
+/// Java returns the `IndexInput` field itself. A reader whose read methods take
+/// `&self` keeps that field behind a `Mutex`, because reading a vector seeks
+/// it (`OffHeapFloatVectorValues.java:73-86`); such a reader hands back the
+/// lock guard. A reader that owns its slice outright lends a reference. Both
+/// deref to the very `IndexInput` Java returns.
+pub enum IndexSliceRef<'a> {
+    /// The slice, borrowed from a reader that owns it outright.
+    Borrowed(&'a dyn IndexInput),
+    /// The slice, held through the lock of the reader that guards it.
+    Locked(MutexGuard<'a, Box<dyn IndexInput>>),
+}
+
+impl<'a> Deref for IndexSliceRef<'a> {
+    type Target = dyn IndexInput + 'a;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(slice) => *slice,
+            Self::Locked(guard) => guard.as_ref(),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------

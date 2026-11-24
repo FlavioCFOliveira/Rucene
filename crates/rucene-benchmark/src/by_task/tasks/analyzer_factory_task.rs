@@ -742,3 +742,46 @@ impl PerfTask for AnalyzerFactoryTask {
         simple_class_name == "AnalyzerFactoryTask"
     }
 }
+
+#[cfg(test)]
+mod analysis_classpath_tests {
+    use super::*;
+    use crate::by_task::utils::config::Config;
+    use crate::jdk::properties::Properties;
+
+    /// Regression for rmp #661: Lucene's benchmark has `lucene:analysis:icu`
+    /// on its runtime classpath (`lucene/benchmark/build.gradle:48`), so
+    /// `AnalyzerFactoryTask` resolves the analysis-icu factories by short
+    /// name, while the analysis-common ones stay visible through the parent
+    /// class loader.
+    #[test]
+    fn analysis_icu_factories_resolve_by_short_name() -> Result<()> {
+        let run_data = PerfRunData::new(Arc::new(Config::from_properties(Properties::new())))?;
+        let task = AnalyzerFactoryTask::new(run_data)?;
+        let tokenizer = |name: &str| task.lookup_analysis_class(name, ExpectedType::Tokenizer);
+        let token_filter = |name: &str| task.lookup_analysis_class(name, ExpectedType::TokenFilter);
+        let char_filter = |name: &str| task.lookup_analysis_class(name, ExpectedType::CharFilter);
+
+        assert!(matches!(
+            tokenizer("icuTokenizer")?,
+            AnalysisClass::Tokenizer(_)
+        ));
+        for name in ["icuFolding", "icuNormalizer2", "icuTransform"] {
+            assert!(matches!(token_filter(name)?, AnalysisClass::TokenFilter(_)));
+        }
+        assert!(matches!(
+            char_filter("icuNormalizer2")?,
+            AnalysisClass::CharFilter(_)
+        ));
+        // analysis-common, through the parent of the analysis-icu loader.
+        assert!(matches!(
+            tokenizer("WhitespaceTokenizer")?,
+            AnalysisClass::Tokenizer(_)
+        ));
+        assert!(matches!(
+            token_filter("LowerCaseFilter")?,
+            AnalysisClass::TokenFilter(_)
+        ));
+        Ok(())
+    }
+}

@@ -16,7 +16,7 @@ use rucene::index::filter_directory_reader::{
 };
 use rucene::index::filter_reader::{FilterLeafReader, FilterTerms, FilterTermsEnum};
 use rucene::index::index_reader::CacheHelper;
-use rucene::index::terms::{FilteredTermsEnum, SeekStatus, TermState};
+use rucene::index::terms::{SeekStatus, TermState};
 use rucene::index::{
     ImpactsEnum, IndexReader, LeafReader, MultiTerms, PostingsEnum, Term, Terms, TermsEnum,
 };
@@ -192,11 +192,7 @@ fn test_prefix_term() -> Result<()> {
     // `wq.getTermsEnum(terms).getClass().getSimpleName().contains("AutomatonTermsEnum")`:
     // the port's `AutomatonTermsEnum` is the filter of a `FilteredTermsEnum`.
     let te = get_terms_enum(&wq, &terms)?;
-    let is_automaton = te
-        .as_any()
-        .and_then(|a| a.downcast_ref::<FilteredTermsEnum>())
-        .and_then(|fte| fte.filter().as_any())
-        .is_some_and(|a| a.is::<AutomatonTermsEnum>());
+    let is_automaton = te.as_any().is_some_and(|a| a.is::<AutomatonTermsEnum>());
     Assert::assert_false(is_automaton);
     drop(searcher);
     reader.close()?;

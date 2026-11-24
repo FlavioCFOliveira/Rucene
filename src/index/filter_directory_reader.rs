@@ -33,6 +33,7 @@ use crate::index::index_utilities::QueryTimeout;
 use crate::index::leaf_reader::{LeafReader, TermVectors};
 use crate::index::point_values::{IntersectVisitor, PointTree, PointValues, Relation};
 use crate::index::postings_enum::{ImpactsEnum, PostingsEnum};
+use crate::index::readers_and_updates::PendingSoftDeletes;
 use crate::index::stored_field_visitor::StoredFieldVisitor;
 use crate::index::terms::{Fields, SeekStatus, TermState, Terms, TermsEnum};
 use crate::index::vector_values::{
@@ -41,6 +42,7 @@ use crate::index::vector_values::{
 use crate::index::VectorEncoding;
 use crate::index::{IndexCommit, Term};
 use crate::index::{IndexOptions, LeafMetaData};
+use crate::search::field_exists_query::FieldExistsQuery;
 use crate::search::knn::KnnCollector;
 use crate::search::{AcceptDocs, DocIdSetIterator, FilterDocIdSetIterator, VectorScorer};
 use crate::store::Directory;
@@ -2541,18 +2543,16 @@ impl SortedDocValues for ExitableSortedDocValues {
         self.inner.lookup_term(key)
     }
 
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).terms_enum()
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.terms_enum()
     }
 
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).intersect(automaton)
+    fn independent_terms_enum(&self) -> Result<Option<Box<dyn TermsEnum>>> {
+        self.inner.independent_terms_enum()
+    }
+
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.intersect(automaton)
     }
 }
 
@@ -2743,18 +2743,16 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
         self.inner.lookup_term(key)
     }
 
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).terms_enum()
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.terms_enum()
     }
 
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).intersect(automaton)
+    fn independent_terms_enum(&self) -> Result<Option<Box<dyn TermsEnum>>> {
+        self.inner.independent_terms_enum()
+    }
+
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.intersect(automaton)
     }
 }
 
@@ -3531,52 +3529,66 @@ impl SoftDeletesSubReaderWrapper {
     /// Computes the live-docs bitset that hides the soft-deleted documents of
     /// `reader`.
     ///
-    /// Equivalent to `PendingSoftDeletes.applySoftDeletes`: every document the
-    /// soft-deletes field marks is cleared from the reader's existing live docs.
+    /// The steps `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)`
+    /// takes before it wraps (`SoftDeletesDirectoryReaderWrapper.java:131-142`):
+    /// the documents `FieldExistsQuery.getDocValuesDocIdSetIterator` finds for
+    /// `field`, whatever its doc values type, are cleared from a copy of the
+    /// reader's live docs by `PendingSoftDeletes.applySoftDeletes`. A field
+    /// without doc values in the leaf soft-deletes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever opening or walking the doc values raises.
     pub fn soft_deletes_live_docs(
         reader: &dyn LeafReader,
         field: &str,
     ) -> Result<(crate::util::FixedBitSet, i32)> {
-        let max_doc = reader.max_doc();
-        let mut bits = crate::util::FixedBitSet::new(max_doc as usize);
-        match reader.get_live_docs() {
-            Some(live_docs) => {
-                for doc in 0..max_doc {
-                    if live_docs.get(doc as usize) {
-                        bits.set(doc as usize);
-                    }
-                }
-            }
-            None => {
-                for doc in 0..max_doc {
-                    bits.set(doc as usize);
-                }
-            }
+        match FieldExistsQuery::get_doc_values_doc_id_set_iterator(field, reader)? {
+            Some(iterator) => Self::apply_soft_deletes_to_live_docs(reader, iterator),
+            None => Ok((Self::live_docs_copy(reader), 0)),
         }
+    }
 
-        let mut num_soft_deletes = 0i32;
-        if let Some(mut values) = reader.get_numeric_doc_values(field)? {
-            loop {
-                let doc = values.next_doc()?;
-                if doc == crate::search::NO_MORE_DOCS {
-                    break;
-                }
-                if doc >= 0 && (doc as usize) < max_doc as usize && bits.get(doc as usize) {
-                    bits.clear(doc as usize);
-                    num_soft_deletes += 1;
-                }
+    /// `FixedBitSet.copyOf(liveDocs)`, or every document when the reader has
+    /// no deletions (`SoftDeletesDirectoryReaderWrapper.java:135-142`).
+    fn live_docs_copy(reader: &dyn LeafReader) -> crate::util::FixedBitSet {
+        match reader.get_live_docs() {
+            Some(live_docs) => crate::util::FixedBitSet::copy_of(live_docs.as_ref()),
+            None => {
+                let max_doc = reader.max_doc() as usize;
+                let mut bits = crate::util::FixedBitSet::new(max_doc);
+                bits.set_range(0, max_doc);
+                bits
             }
         }
+    }
+
+    /// `int numSoftDeletes = PendingSoftDeletes.applySoftDeletes(iterator,
+    /// bits)` over a copy of the reader's live docs
+    /// (`SoftDeletesDirectoryReaderWrapper.java:135-143`).
+    fn apply_soft_deletes_to_live_docs(
+        reader: &dyn LeafReader,
+        mut iterator: Box<dyn DocIdSetIterator>,
+    ) -> Result<(crate::util::FixedBitSet, i32)> {
+        let mut bits = Self::live_docs_copy(reader);
+        // A plain doc-values iterator is not a `DocValuesFieldUpdates.Iterator`,
+        // so Java's `hasValue` is null and every document takes the clear
+        // branch.
+        let num_soft_deletes = PendingSoftDeletes::apply_soft_deletes(&mut bits, || {
+            let doc = iterator.next_doc()?;
+            Ok((doc != crate::search::NO_MORE_DOCS).then_some((doc, true)))
+        })?;
         Ok((bits, num_soft_deletes))
     }
 
     /// Wraps `reader`, hiding the documents `field` marks as soft-deleted.
     ///
-    /// Equivalent to `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)`:
-    /// `reader instanceof CodecReader ? new SoftDeletesFilterCodecReader(...)
-    /// : new SoftDeletesFilterLeafReader(...)`
-    /// (`SoftDeletesDirectoryReaderWrapper.java:150-152`), the `instanceof`
-    /// being [`LeafReader::as_codec_reader`].
+    /// Equivalent to `SoftDeletesDirectoryReaderWrapper.wrap(LeafReader, String)`
+    /// (`SoftDeletesDirectoryReaderWrapper.java:130-155`): the reader is
+    /// returned as is when `field` has no doc values or soft-deletes nothing,
+    /// and otherwise `reader instanceof CodecReader ? new
+    /// SoftDeletesFilterCodecReader(...) : new SoftDeletesFilterLeafReader(...)`,
+    /// the `instanceof` being [`LeafReader::as_codec_reader`].
     ///
     /// # Errors
     ///
@@ -3586,7 +3598,13 @@ impl SoftDeletesSubReaderWrapper {
         reader: Arc<dyn LeafReader>,
         field: &str,
     ) -> Result<Arc<dyn LeafReader>> {
-        let (bits, num_soft_deletes) = Self::soft_deletes_live_docs(reader.as_ref(), field)?;
+        let Some(iterator) =
+            FieldExistsQuery::get_doc_values_doc_id_set_iterator(field, reader.as_ref())?
+        else {
+            return Ok(reader);
+        };
+        let (bits, num_soft_deletes) =
+            Self::apply_soft_deletes_to_live_docs(reader.as_ref(), iterator)?;
         if num_soft_deletes == 0 {
             return Ok(reader);
         }
@@ -4270,6 +4288,78 @@ mod tests {
     use crate::index::point_values::InMemoryPointValues;
     use crate::index::vector_values::from_floats;
     use std::sync::atomic::AtomicUsize;
+
+    /// Regression for rmp #663: `SoftDeletesDirectoryReaderWrapper` finds the
+    /// soft-deleted documents with `FieldExistsQuery.getDocValuesDocIdSetIterator`
+    /// (`SoftDeletesDirectoryReaderWrapper.java:131`), so a soft-deletes field
+    /// of any doc values type hides the documents that carry it.
+    #[test]
+    fn soft_deletes_of_every_doc_values_type_are_hidden() {
+        use crate::codecs::{register_codec, Lucene104Codec};
+        use crate::document::{
+            BinaryDocValuesField, Document, NumericDocValuesField, SortedDocValuesField,
+            SortedNumericDocValuesField, SortedSetDocValuesField,
+        };
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        use crate::store::ByteBuffersDirectory;
+        use crate::util::BytesRef;
+
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let add_soft_field = |doc: &mut Document, kind: &str| {
+            let value = || BytesRef::new(b"deleted".to_vec());
+            match kind {
+                "numeric" => doc.add(NumericDocValuesField::new("soft", 1)),
+                "binary" => doc.add(BinaryDocValuesField::new("soft", value())),
+                "sorted" => doc.add(SortedDocValuesField::new("soft", value())),
+                "sorted_numeric" => doc.add(SortedNumericDocValuesField::new("soft", 1)),
+                "sorted_set" => doc.add(SortedSetDocValuesField::new("soft", value())),
+                _ => unreachable!(),
+            }
+        };
+        for kind in [
+            "numeric",
+            "binary",
+            "sorted",
+            "sorted_numeric",
+            "sorted_set",
+        ] {
+            let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+            let config = IndexWriterConfig::new();
+            config.set_soft_deletes_field(Some("soft".to_string()));
+            // Keep the flushed segment: a merge would reclaim the soft deletes.
+            config
+                .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
+                .unwrap();
+            let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+            for i in 0..10 {
+                let mut doc = Document::new();
+                if i % 3 == 0 {
+                    add_soft_field(&mut doc, kind);
+                }
+                writer.add_document(&doc).unwrap();
+            }
+            writer.commit().unwrap();
+            writer.close().unwrap();
+
+            let reader = crate::index::directory_reader::open(dir).unwrap();
+            assert_eq!(
+                reader.num_docs(),
+                10,
+                "{kind}: the plain reader sees every document"
+            );
+            let wrapped = SoftDeletesDirectoryReaderWrapper::new("soft")
+                .wrap(reader)
+                .unwrap();
+            // Documents 0, 3, 6 and 9 carry the soft-deletes field.
+            assert_eq!(
+                wrapped.num_docs(),
+                6,
+                "{kind}: soft-deleted documents are hidden"
+            );
+            wrapped.close().unwrap();
+        }
+    }
 
     /// A timeout that fires from its `fires_after`-th interrogation onwards, so
     /// that an iteration crosses it part way through instead of before it

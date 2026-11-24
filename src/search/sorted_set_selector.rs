@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 
 use crate::error::{LuceneError, Result};
-use crate::index::{DocValuesIterator, SortedDocValues, SortedSetDocValues};
+use crate::index::{DocValues, DocValuesIterator, SortedDocValues, SortedSetDocValues};
 use crate::search::doc_id_set_iterator::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::util::{BytesRef, FixedBitSet};
 
@@ -84,17 +84,10 @@ impl SortedSetSelector {
     ///
     /// Equivalent to `SortedSetSelector.wrap(SortedSetDocValues, Type)`.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java first calls
-    /// `DocValues.unwrapSingleton(sortedSet)` and, when the field is
-    /// single-valued in practice, sorts on the underlying single-valued doc
-    /// values directly. [`DocValues::unwrap_singleton_sorted`](crate::index::DocValues::unwrap_singleton_sorted)
-    /// hands out a borrow of the wrapped values rather than the values
-    /// themselves, so this port cannot take ownership of them and always
-    /// installs the selecting view. On a document with a single ordinal every
-    /// one of the four selectors reads that ordinal — `MIN` and `MIDDLE_MIN`
-    /// take the first, `MAX` and `MIDDLE_MAX` land on it too because the loop
-    /// bound is derived from a value count of one — so only the cost of one
-    /// extra delegation differs, never the selected ordinal.
+    /// When the field is single-valued in practice — `sorted_set` is a
+    /// singleton view — the underlying single-valued doc values are returned
+    /// directly, whatever the selector, as Java's `DocValues.unwrapSingleton`
+    /// shortcut does (`SortedSetSelector.java:70-75`).
     ///
     /// # Errors
     ///
@@ -110,6 +103,16 @@ impl SortedSetSelector {
                 "fields containing more than {} unique terms are unsupported",
                 i32::MAX - 1
             )));
+        }
+        // `SortedDocValues singleton = DocValues.unwrapSingleton(sortedSet)`:
+        // the instanceof test first, so the values come back to the selector
+        // when they are not a singleton view.
+        if sorted_set.is_singleton() {
+            // it's actually single-valued in practice, but indexed as
+            // multi-valued, so just sort on the underlying single-valued dv
+            // directly. regardless of selector type, this optimization is safe!
+            return Ok(DocValues::unwrap_singleton_sorted(sorted_set)?
+                .expect("INVARIANT: a singleton view unwraps to its single-valued doc values"));
         }
         Ok(Box::new(SelectedValue::new(sorted_set, selector)))
     }
@@ -227,5 +230,92 @@ impl SortedDocValues for SelectedValue {
 
     fn lookup_term(&mut self, key: &BytesRef) -> Result<i32> {
         Ok(self.inner.lookup_term(key)? as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, SortedSetDocValuesField};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::{directory_reader, DocValues};
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use std::sync::Arc;
+
+    /// The (document, ordinal) pairs `values` yields.
+    fn ords(mut values: Box<dyn SortedDocValues>) -> Vec<(i32, i32)> {
+        let mut ords = Vec::new();
+        loop {
+            let doc = values.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                return ords;
+            }
+            ords.push((doc, values.ord_value().unwrap()));
+        }
+    }
+
+    /// Regression for rmp #667: `SortedSetSelector.wrap` returns
+    /// `DocValues.unwrapSingleton(sortedSet)` for a field that is
+    /// single-valued in practice, whatever the selector
+    /// (`SortedSetSelector.java:70-75`), with the same ordinals; a
+    /// multi-valued field gets the selector's view.
+    #[test]
+    fn wrap_returns_the_unwrapped_singleton() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for (single, multi) in [("c", ["z", "y"]), ("a", ["x", "w"]), ("b", ["v", "u"])] {
+            let mut doc = Document::new();
+            doc.add(SortedSetDocValuesField::new(
+                "single",
+                BytesRef::new(single.as_bytes().to_vec()),
+            ));
+            for value in multi {
+                doc.add(SortedSetDocValuesField::new(
+                    "multi",
+                    BytesRef::new(value.as_bytes().to_vec()),
+                ));
+            }
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let reader = directory_reader::open(dir).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let leaf = leaves[0].leaf_reader();
+        let sorted_set = |field: &str| leaf.get_sorted_set_doc_values(field).unwrap().unwrap();
+
+        let expected = ords(
+            DocValues::unwrap_singleton_sorted(sorted_set("single"))
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(expected, vec![(0, 2), (1, 0), (2, 1)]);
+        for selector in [
+            SortedSetSelectorType::MIN,
+            SortedSetSelectorType::MAX,
+            SortedSetSelectorType::MIDDLE_MIN,
+            SortedSetSelectorType::MIDDLE_MAX,
+        ] {
+            let single = sorted_set("single");
+            assert!(single.is_singleton());
+            let wrapped = SortedSetSelector::wrap(single, selector).unwrap();
+            assert!(
+                !wrapped.java_to_string().contains("SortedSetSelector$"),
+                "{selector}: {}",
+                wrapped.java_to_string()
+            );
+            assert_eq!(ords(wrapped), expected, "{selector}");
+
+            let wrapped = SortedSetSelector::wrap(sorted_set("multi"), selector).unwrap();
+            assert!(
+                wrapped.java_to_string().contains("SortedSetSelector$"),
+                "{selector}"
+            );
+        }
+        drop(leaves);
+        reader.close().unwrap();
     }
 }

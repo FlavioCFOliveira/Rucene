@@ -4,17 +4,18 @@
 #![deny(unsafe_code)]
 
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{LuceneError, Result};
 use crate::index::{
-    DocValues, LeafReader, LeafReaderContext, SortedSetDocValuesTermsEnum, Terms, TermsEnum,
+    DocValues, LeafReader, LeafReaderContext, SortedSetDocValues, SortedSetDocValuesTermsEnum,
+    Terms, TermsEnum,
 };
 use crate::search::boolean_clause::Occur;
 use crate::search::constant_score_query::ConstantScoreQuery;
 use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_weight::{ConstantScoreWeight, ConstantScoreWeightImpl};
-use crate::search::doc_values_range_iterator::DocValuesRangeIterator;
+use crate::search::doc_values_range_iterator::{build_ordinal_set, DocValuesRangeIterator};
 use crate::search::index_searcher::IndexSearcher;
 use crate::search::matches::{owned_leaf_context, Matches, MatchesUtils};
 use crate::search::multi_term_query::{get_terms_enum, MultiTermQuery, RewriteMethod};
@@ -165,28 +166,29 @@ impl Query for MultiTermQueryDocValuesWrapper {
 /// The doc-values-backed [`Terms`] a [`MultiTermQuery`] enumerates.
 ///
 /// Equivalent to the anonymous `Terms` built by
-/// `MultiTermQueryDocValuesWrapper`'s weight, whose `iterator()` is
-/// `values.termsEnum()` and whose statistics are unsupported.
-///
-/// **Divergence from Lucene 10.5.0.** Java closes over a single
-/// `SortedSetDocValues` instance and hands out terms enums over it; this port's
-/// [`SortedSetDocValuesTermsEnum`] owns the values it reads, so each
-/// [`Terms::iterator`] call opens a fresh view of the same field. The terms
-/// enumerated are the same, and the caller can no longer disturb the doc
-/// iteration of the values instance the scorer uses.
+/// `MultiTermQueryDocValuesWrapper`'s weight in `getTermsEnum(values)`
+/// (`DocValuesRewriteMethod.java:96-142`), whose `iterator()` is
+/// `values.termsEnum()` over the weight's own values object and whose
+/// statistics are unsupported. The object is shared through a lock because a
+/// [`Terms`] may be handed to another thread.
 struct DocValuesTerms {
-    reader: Arc<dyn LeafReader>,
-    field: String,
+    values: Arc<Mutex<Box<dyn SortedSetDocValues>>>,
 }
 
 impl Terms for DocValuesTerms {
+    /// `values.termsEnum()` (`DocValuesRewriteMethod.java:103-105`): the
+    /// implementation's own enum (Lucene90's `TermsDict`), or the default
+    /// `SortedSetDocValuesTermsEnum` over the shared object.
     fn iterator(&self) -> Result<Box<dyn TermsEnum>> {
-        // `DocValues.getSortedSet(context.reader(), query.field)`
-        // (`DocValuesRewriteMethod.java:151`).
-        Ok(SortedSetDocValuesTermsEnum::new(DocValues::get_sorted_set(
-            self.reader.as_ref(),
-            &self.field,
-        )?))
+        let independent = self
+            .values
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .independent_terms_enum()?;
+        Ok(match independent {
+            Some(terms_enum) => terms_enum,
+            None => SortedSetDocValuesTermsEnum::new(Arc::clone(&self.values)),
+        })
     }
 
     /// Equivalent to the anonymous `Terms.size()` (`DocValuesRewriteMethod.java:122-125`).
@@ -244,16 +246,18 @@ struct DocValuesWeightImpl {
 
 impl DocValuesWeightImpl {
     /// Creates a terms enum providing the intersection of the query terms with
-    /// the terms present in the doc values.
+    /// the terms present in `values`.
     ///
-    /// Equivalent to the private
-    /// `getTermsEnum(SortedSetDocValues)` of the anonymous weight.
-    fn query_terms_enum(&self, reader: &Arc<dyn LeafReader>) -> Result<Box<dyn TermsEnum>> {
+    /// Equivalent to the private `getTermsEnum(SortedSetDocValues)` of the
+    /// anonymous weight (`DocValuesRewriteMethod.java:96-142`).
+    fn get_terms_enum(
+        query: &dyn MultiTermQuery,
+        values: &Arc<Mutex<Box<dyn SortedSetDocValues>>>,
+    ) -> Result<Box<dyn TermsEnum>> {
         let terms: Arc<dyn Terms> = Arc::new(DocValuesTerms {
-            reader: Arc::clone(reader),
-            field: self.query.get_field().to_string(),
+            values: Arc::clone(values),
         });
-        get_terms_enum(&*self.query, &terms)
+        get_terms_enum(query, &terms)
     }
 }
 
@@ -272,11 +276,10 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
             return Ok(None);
         }
         let cost = values.cost();
-        let terms_enum = self.query_terms_enum(&reader)?;
         Ok(Some(Box::new(DocValuesScorerSupplier {
             reader,
-            field: self.query.get_field().to_string(),
-            terms_enum: Some(terms_enum),
+            query: Arc::clone(&self.query),
+            values: Some(values),
             score,
             score_mode: self.score_mode,
             cost,
@@ -306,11 +309,13 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
         MatchesUtils::for_field(
             field,
             Arc::new(move || {
-                let terms: Arc<dyn Terms> = Arc::new(DocValuesTerms {
-                    reader: Arc::clone(&reader),
-                    field: supplier_field.clone(),
-                });
-                let terms_enum = get_terms_enum(&*query, &terms)?;
+                // `final SortedSetDocValues values = DocValues.getSortedSet(context.reader(),
+                // query.field)` and `getTermsEnum(values)` (`DocValuesRewriteMethod.java:85-90`).
+                let values = Arc::new(Mutex::new(DocValues::get_sorted_set(
+                    reader.as_ref(),
+                    &supplier_field,
+                )?));
+                let terms_enum = DocValuesWeightImpl::get_terms_enum(&*query, &values)?;
                 crate::search::disjunction_matches_iterator::from_terms_enum(
                     &context_handle,
                     doc,
@@ -332,8 +337,9 @@ impl ConstantScoreWeightImpl for DocValuesWeightImpl {
 /// Equivalent to the anonymous `ScorerSupplier` the weight returns.
 struct DocValuesScorerSupplier {
     reader: Arc<dyn LeafReader>,
-    field: String,
-    terms_enum: Option<Box<dyn TermsEnum>>,
+    query: Arc<dyn MultiTermQuery>,
+    /// The `values` the anonymous supplier captures; `get` takes them.
+    values: Option<Box<dyn SortedSetDocValues>>,
     score: f32,
     score_mode: ScoreMode,
     cost: i64,
@@ -342,7 +348,7 @@ struct DocValuesScorerSupplier {
 impl std::fmt::Debug for DocValuesScorerSupplier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DocValuesScorerSupplier")
-            .field("field", &self.field)
+            .field("field", &self.query.get_field())
             .field("cost", &self.cost)
             .finish_non_exhaustive()
     }
@@ -350,35 +356,52 @@ impl std::fmt::Debug for DocValuesScorerSupplier {
 
 impl ScorerSupplier for DocValuesScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
-        // Create a terms enum that provides the intersection of the terms the
-        // query specifies with the values present in the doc values.
-        let mut terms_enum = self.terms_enum.take().ok_or_else(|| {
+        let values = self.values.take().ok_or_else(|| {
             LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),
             )
         })?;
-        let values = DocValues::get_sorted_set(self.reader.as_ref(), &self.field)?;
-        // Leverage a doc-values skipper when one was indexed for the field.
-        let skipper = self.reader.get_doc_values_skipper(&self.field)?;
-        // `SortedDocValues singleton = DocValues.unwrapSingleton(values);` and
-        // the `forOrdinalSet` overload it selects
-        // (`DocValuesRewriteMethod.java:166-174`). `is_singleton` asks the
-        // `instanceof` question without giving the values up, so the
-        // multi-valued branch still has them.
+        let field = self.query.get_field();
+        // Create a TermsEnum that will provide the intersection of the terms
+        // specified in the query with the values present in the doc values:
+        // `getTermsEnum(values)`, over this very values object.
+        let values = Arc::new(Mutex::new(values));
+        let mut terms_enum = DocValuesWeightImpl::get_terms_enum(&*self.query, &values)?;
+        // Leverage a DV skipper if one was indexed for the field.
+        let skipper = self.reader.get_doc_values_skipper(field)?;
+        // `DocValuesRangeIterator.forOrdinalSet(values-or-singleton, skipper,
+        // termsEnum)` (`DocValuesRewriteMethod.java:164-174`) walks the terms
+        // enum into the ordinal set, then keeps the values for the documents;
+        // the walk is done here, before the values leave the shared handle.
+        let ord_count = values
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_value_count()?;
+        let ordinal_set = build_ordinal_set(&mut *terms_enum, ord_count)?;
+        drop(terms_enum);
+        let values = Arc::try_unwrap(values)
+            .map_err(|_| {
+                LuceneError::illegal_state(
+                    "the doc values are still referenced by a terms enum".to_string(),
+                )
+            })?
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `SortedDocValues singleton = DocValues.unwrapSingleton(values);`
         let iterator: Box<dyn TwoPhaseIterator> = if values.is_singleton() {
             let singleton = DocValues::unwrap_singleton_sorted(values)?
                 .expect("INVARIANT: is_singleton answered true");
-            Box::new(DocValuesRangeIterator::for_ordinal_set(
+            Box::new(DocValuesRangeIterator::for_ordinal_set_inner(
                 singleton,
                 skipper,
-                &mut *terms_enum,
-            )?)
+                ordinal_set,
+            ))
         } else {
-            Box::new(DocValuesRangeIterator::for_sorted_set_ordinal_set(
+            Box::new(DocValuesRangeIterator::for_sorted_set_ordinal_set_inner(
                 values,
                 skipper,
-                &mut *terms_enum,
-            )?)
+                ordinal_set,
+            ))
         };
         Ok(Box::new(ConstantScoreScorer::from_two_phase(
             self.score,
@@ -391,5 +414,72 @@ impl ScorerSupplier for DocValuesScorerSupplier {
         // There is no prior knowledge of how many docs might match any given
         // query term, so every doc with a value is assumed to be a match.
         self.cost
+    }
+}
+
+#[cfg(test)]
+mod shared_values_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, SortedSetDocValuesField};
+    use crate::index::directory_reader;
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::Term;
+    use crate::search::prefix_query::PrefixQuery;
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use crate::util::BytesRef;
+
+    /// Regression for rmp #668: the anonymous `Terms` of
+    /// `getTermsEnum(values)` answers `values.termsEnum()` over the weight's
+    /// own values object (`DocValuesRewriteMethod.java:96-105`), the codec's
+    /// `TermsDict` on Lucene90 values, and the query's terms enum yields the
+    /// values' terms the query accepts.
+    #[test]
+    fn the_query_terms_enum_reads_the_weights_values_object() {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for value in ["ab", "b", "ac", "c"] {
+            let mut doc = Document::new();
+            doc.add(SortedSetDocValuesField::new(
+                "f",
+                BytesRef::new(value.as_bytes().to_vec()),
+            ));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        let reader = directory_reader::open(dir).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let values = Arc::new(Mutex::new(
+            DocValues::get_sorted_set(leaves[0].leaf_reader().as_ref(), "f").unwrap(),
+        ));
+
+        // `values.termsEnum()` of Lucene90 values is the codec's own
+        // `TermsDict` (`Lucene90DocValuesProducer.java:1567-1570`).
+        let terms = DocValuesTerms {
+            values: Arc::clone(&values),
+        };
+        let dictionary = terms.iterator().unwrap();
+        assert!(
+            dictionary
+                .to_string()
+                .contains("Lucene90DocValuesProducer$TermsDict@"),
+            "{dictionary}"
+        );
+        drop((dictionary, terms));
+
+        let query = PrefixQuery::new(Term::from_text("f", "a")).unwrap();
+        let mut terms_enum = DocValuesWeightImpl::get_terms_enum(&query, &values).unwrap();
+        let mut terms = Vec::new();
+        while let Some(term) = terms_enum.next().unwrap() {
+            terms.push(term.slice().to_vec());
+        }
+        assert_eq!(terms, vec![b"ab".to_vec(), b"ac".to_vec()]);
+        drop(terms_enum);
+        assert_eq!(Arc::strong_count(&values), 1);
+        drop(values);
+        reader.close().unwrap();
     }
 }

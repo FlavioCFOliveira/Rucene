@@ -704,8 +704,8 @@ pub trait FilteredTermsEnumFilter: Send {
 /// Terms iterator that wraps another [`TermsEnum`] and filters terms.
 ///
 /// Equivalent to `org.apache.lucene.index.FilteredTermsEnum`.
-pub struct FilteredTermsEnum {
-    tenum: Box<dyn TermsEnum>,
+pub struct FilteredTermsEnum<'a> {
+    tenum: Box<dyn TermsEnum + 'a>,
     filter: Box<dyn FilteredTermsEnumFilter>,
     initial_seek_term: Option<BytesRef>,
     do_seek: bool,
@@ -720,7 +720,10 @@ pub struct FilteredTermsEnum {
 /// Java's `actualTerm`: the delegate's current term buffer when
 /// `has_actual_term`, else `null`. Takes the delegate rather than the enum so
 /// that the filter can be borrowed beside the term.
-fn actual_term(tenum: &dyn TermsEnum, has_actual_term: bool) -> Result<Option<&BytesRef>> {
+fn actual_term<'t>(
+    tenum: &'t (dyn TermsEnum + '_),
+    has_actual_term: bool,
+) -> Result<Option<&'t BytesRef>> {
     if has_actual_term {
         tenum.term_buffer()
     } else {
@@ -728,10 +731,10 @@ fn actual_term(tenum: &dyn TermsEnum, has_actual_term: bool) -> Result<Option<&B
     }
 }
 
-impl FilteredTermsEnum {
+impl<'a> FilteredTermsEnum<'a> {
     /// Creates a filtered enum that starts by seeking the initial term.
     /// Creates a filtered enum that iterates linearly over the delegate.
-    pub fn new(tenum: Box<dyn TermsEnum>, filter: Box<dyn FilteredTermsEnumFilter>) -> Self {
+    pub fn new(tenum: Box<dyn TermsEnum + 'a>, filter: Box<dyn FilteredTermsEnumFilter>) -> Self {
         Self {
             tenum,
             filter,
@@ -748,7 +751,7 @@ impl FilteredTermsEnum {
     /// Equivalent to `FilteredTermsEnum(TermsEnum, boolean startWithSeek)`
     /// (`index/FilteredTermsEnum.java:87-91`).
     pub fn with_start_with_seek(
-        tenum: Box<dyn TermsEnum>,
+        tenum: Box<dyn TermsEnum + 'a>,
         filter: Box<dyn FilteredTermsEnumFilter>,
         start_with_seek: bool,
     ) -> Self {
@@ -763,7 +766,7 @@ impl FilteredTermsEnum {
 
     /// Creates a filtered enum that first seeks to `initial_seek_term`.
     pub fn new_with_seek(
-        tenum: Box<dyn TermsEnum>,
+        tenum: Box<dyn TermsEnum + 'a>,
         filter: Box<dyn FilteredTermsEnumFilter>,
         initial_seek_term: BytesRef,
     ) -> Self {
@@ -777,7 +780,7 @@ impl FilteredTermsEnum {
     }
 }
 
-impl std::fmt::Display for FilteredTermsEnum {
+impl std::fmt::Display for FilteredTermsEnum<'_> {
     /// `org.apache.lucene.index.FilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
     /// `java.lang.Object`'s applies: the binary class name, `@`, and the
     /// identity hash. See
@@ -791,16 +794,19 @@ impl std::fmt::Display for FilteredTermsEnum {
     }
 }
 
-impl FilteredTermsEnum {
+impl<'a> FilteredTermsEnum<'a> {
     /// The filter, which in Java is this object itself.
     pub fn filter(&self) -> &dyn FilteredTermsEnumFilter {
         &*self.filter
     }
 }
 
-impl TermsEnum for FilteredTermsEnum {
+impl TermsEnum for FilteredTermsEnum<'_> {
+    /// The filter: Java's `FilteredTermsEnum` is abstract, and the subclass
+    /// an `instanceof` test names (`AutomatonTermsEnum`, `SingleTermsEnum`,
+    /// ...) is the filter of this port.
     fn as_any(&self) -> Option<&dyn Any> {
-        Some(self)
+        self.filter.as_any()
     }
 
     fn attributes(&mut self) -> &mut AttributeSource {
@@ -953,7 +959,7 @@ impl SingleTermsEnum {
     /// After construction the enum is already positioned at the term if it
     /// exists; the first call to [`TermsEnum::next`] will advance past it.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(tenum: Box<dyn TermsEnum>, term_text: BytesRef) -> Box<dyn TermsEnum> {
+    pub fn new<'a>(tenum: Box<dyn TermsEnum + 'a>, term_text: BytesRef) -> Box<dyn TermsEnum + 'a> {
         let filter = Box::new(SingleTermsEnum {
             single_ref: term_text.clone(),
         });

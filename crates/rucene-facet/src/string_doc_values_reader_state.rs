@@ -64,7 +64,7 @@ impl StringDocValuesReaderState {
             .map(|h| h.get_key().clone());
         Ok(Some(OrdinalMap::build_sorted_set(
             owner,
-            doc_values,
+            &mut doc_values,
             PackedInts::DEFAULT,
         )?))
     }
