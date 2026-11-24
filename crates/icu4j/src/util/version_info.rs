@@ -269,11 +269,21 @@ impl VersionInfo {
     /// `IllegalArgumentException("Invalid min/maxDigits range")` unless
     /// `1 <= min_digits <= max_digits <= 4`.
     pub fn get_version_string(&self, min_digits: i32, max_digits: i32) -> Result<String> {
-        if min_digits < 1 || max_digits < 1 || min_digits > 4 || max_digits > 4 || min_digits > max_digits {
+        if min_digits < 1
+            || max_digits < 1
+            || min_digits > 4
+            || max_digits > 4
+            || min_digits > max_digits
+        {
             return Err(LuceneError::illegal_argument("Invalid min/maxDigits range"));
         }
 
-        let digits = [self.get_major(), self.get_minor(), self.get_milli(), self.get_micro()];
+        let digits = [
+            self.get_major(),
+            self.get_minor(),
+            self.get_milli(),
+            self.get_micro(),
+        ];
 
         let mut num_digits = max_digits;
         while num_digits > min_digits {
@@ -324,8 +334,14 @@ impl VersionInfo {
         println!("International Components for Unicode for Java {icu_api_ver}");
 
         println!();
-        println!("Implementation Version: {}", icu_version.get_version_string(2, 4)?);
-        println!("Unicode Data Version:   {}", Self::UNICODE_VERSION.get_version_string(2, 4)?);
+        println!(
+            "Implementation Version: {}",
+            icu_version.get_version_string(2, 4)?
+        );
+        println!(
+            "Unicode Data Version:   {}",
+            Self::UNICODE_VERSION.get_version_string(2, 4)?
+        );
         println!(
             "CLDR Data Version:      {}",
             crate::util::locale_data::LocaleData::get_cldr_version()?.get_version_string(2, 4)?
@@ -345,10 +361,15 @@ impl VersionInfo {
         let mut v = TZDATA_VERSION.lock().unwrap_or_else(|e| e.into_inner());
         if v.is_none() {
             let tzbundle = crate::util::u_resource_bundle::UResourceBundle::get_bundle_instance(
-                Some(&format!("com/ibm/icu/impl/{}", crate::r#impl::icu_data::ICUData::ICU_BUNDLE)),
+                Some(&format!(
+                    "com/ibm/icu/impl/{}",
+                    crate::r#impl::icu_data::ICUData::ICU_BUNDLE
+                )),
                 "zoneinfo64",
             )?;
-            *v = Some(String::from_utf16_lossy(&tzbundle.get_string_by_key("TZVersion")?));
+            *v = Some(String::from_utf16_lossy(
+                &tzbundle.get_string_by_key("TZVersion")?,
+            ));
         }
         Ok(v.clone().expect("set above"))
     }

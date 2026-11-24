@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use crate::jdk::{char_count, code_point_at, is_low_surrogate, offset_by_code_points, to_code_point};
+use crate::jdk::{
+    char_count, code_point_at, is_low_surrogate, offset_by_code_points, to_code_point,
+};
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_fcd::CollationFCD;
@@ -26,7 +28,10 @@ struct CEBuffer {
 
 impl CEBuffer {
     fn new() -> Self {
-        Self { length: 0, buffer: vec![0; INITIAL_CAPACITY] }
+        Self {
+            length: 0,
+            buffer: vec![0; INITIAL_CAPACITY],
+        }
     }
 
     fn append(&mut self, ce: i64) {
@@ -245,11 +250,15 @@ impl CollationIteratorBase {
     }
 
     fn ceb(&self) -> &CEBuffer {
-        self.ce_buffer.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.ce_buffer
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn ceb_mut(&mut self) -> &mut CEBuffer {
-        self.ce_buffer.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.ce_buffer
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `equals(Object)` of the base class: compares the iterator state but
@@ -354,7 +363,9 @@ pub fn is_trail_surrogate(c: i32) -> bool {
 }
 
 fn base_of(d: &CollationData) -> Arc<CollationData> {
-    d.base.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+    d.base
+        .clone()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
 }
 
 /// Collation element iterator and abstract character iterator.
@@ -450,7 +461,9 @@ pub trait CollationIterator {
             // Normal CE from the main data.
             // Forced-inline of ceFromSimpleCE32(ce32).
             return self.set_next(
-                (((ce32 as u32 & 0xffff0000) as i32 as i64) << 32) | (((ce32 & 0xff00) as i64) << 16) | (t << 8) as i64,
+                (((ce32 as u32 & 0xffff0000) as i32 as i64) << 32)
+                    | (((ce32 & 0xff00) as i64) << 16)
+                    | (t << 8) as i64,
             );
         }
         let d: Arc<CollationData>;
@@ -476,7 +489,8 @@ pub trait CollationIterator {
         }
         if t == Collation::LONG_PRIMARY_CE32_LOW_BYTE {
             // Forced-inline of ceFromLongPrimaryCE32(ce32).
-            return self.set_next((((ce32 - t) as i64) << 32) | Collation::COMMON_SEC_AND_TER_CE as i64);
+            return self
+                .set_next((((ce32 - t) as i64) << 32) | Collation::COMMON_SEC_AND_TER_CE as i64);
         }
         self.next_ce_from_ce32(d, c, ce32)
     }
@@ -546,18 +560,28 @@ pub trait CollationIterator {
     }
 
     /// `appendCEsFromCE32(CollationData, int, int, boolean)` (protected final).
-    fn append_ces_from_ce32(&mut self, mut d: Arc<CollationData>, mut c: i32, mut ce32: i32, forward: bool) {
+    fn append_ces_from_ce32(
+        &mut self,
+        mut d: Arc<CollationData>,
+        mut c: i32,
+        mut ce32: i32,
+        forward: bool,
+    ) {
         while Collation::is_special_ce32(ce32) {
             match Collation::tag_from_ce32(ce32) {
                 Collation::FALLBACK_TAG | Collation::RESERVED_TAG_3 => {
                     panic!("com.ibm.icu.util.ICUException: internal program error: should be unreachable")
                 }
                 Collation::LONG_PRIMARY_TAG => {
-                    self.base_mut().ceb_mut().append(Collation::ce_from_long_primary_ce32(ce32));
+                    self.base_mut()
+                        .ceb_mut()
+                        .append(Collation::ce_from_long_primary_ce32(ce32));
                     return;
                 }
                 Collation::LONG_SECONDARY_TAG => {
-                    self.base_mut().ceb_mut().append(Collation::ce_from_long_secondary_ce32(ce32));
+                    self.base_mut()
+                        .ceb_mut()
+                        .append(Collation::ce_from_long_secondary_ce32(ce32));
                     return;
                 }
                 Collation::LATIN_EXPANSION_TAG => {
@@ -637,7 +661,9 @@ pub trait CollationIterator {
                             // No more text.
                             ce32 = default_ce32;
                             continue;
-                        } else if (ce32 & Collation::CONTRACT_NEXT_CCC) != 0 && !CollationFCD::may_have_lccc(next_cp) {
+                        } else if (ce32 & Collation::CONTRACT_NEXT_CCC) != 0
+                            && !CollationFCD::may_have_lccc(next_cp)
+                        {
                             // All contraction suffixes start with characters with lccc!=0
                             // but the next code point has lccc==0.
                             self.backward_num_code_points(1);
@@ -650,7 +676,9 @@ pub trait CollationIterator {
                             // No more text.
                             ce32 = default_ce32;
                             continue;
-                        } else if (ce32 & Collation::CONTRACT_NEXT_CCC) != 0 && !CollationFCD::may_have_lccc(next_cp) {
+                        } else if (ce32 & Collation::CONTRACT_NEXT_CCC) != 0
+                            && !CollationFCD::may_have_lccc(next_cp)
+                        {
                             // All contraction suffixes start with characters with lccc!=0
                             // but the next code point has lccc==0.
                             self.backward_num_skipped(1);
@@ -659,7 +687,14 @@ pub trait CollationIterator {
                         }
                     }
                     let contexts = d.contexts.clone();
-                    ce32 = self.next_ce32_from_contraction(d.clone(), ce32, contexts, index + 2, default_ce32, next_cp);
+                    ce32 = self.next_ce32_from_contraction(
+                        d.clone(),
+                        ce32,
+                        contexts,
+                        index + 2,
+                        default_ce32,
+                        next_cp,
+                    );
                     if ce32 == Collation::NO_CE32 {
                         // CEs from a discontiguous contraction plus the skipped combining marks
                         // have been appended already.
@@ -695,16 +730,26 @@ pub trait CollationIterator {
                         ceb.ensure_append_capacity(if t == 0 { 2 } else { 3 });
                         let l = ceb.length;
                         ceb.set(l, Collation::ce_from_ce32(jamo_ce32s[c as usize]));
-                        ceb.set(l + 1, Collation::ce_from_ce32(jamo_ce32s[(19 + v) as usize]));
+                        ceb.set(
+                            l + 1,
+                            Collation::ce_from_ce32(jamo_ce32s[(19 + v) as usize]),
+                        );
                         ceb.length += 2;
                         if t != 0 {
-                            ceb.append_unsafe(Collation::ce_from_ce32(jamo_ce32s[(39 + t) as usize]));
+                            ceb.append_unsafe(Collation::ce_from_ce32(
+                                jamo_ce32s[(39 + t) as usize],
+                            ));
                         }
                         return;
                     } else {
                         // We should not need to compute each Jamo code point.
                         // In particular, there should be no offset or implicit ce32.
-                        self.append_ces_from_ce32(d.clone(), Collation::SENTINEL_CP, jamo_ce32s[c as usize], forward);
+                        self.append_ces_from_ce32(
+                            d.clone(),
+                            Collation::SENTINEL_CP,
+                            jamo_ce32s[c as usize],
+                            forward,
+                        );
                         self.append_ces_from_ce32(
                             d.clone(),
                             Collation::SENTINEL_CP,
@@ -755,14 +800,18 @@ pub trait CollationIterator {
                     if is_surrogate(c) && self.forbid_surrogate_code_points() {
                         ce32 = Collation::FFFD_CE32;
                     } else {
-                        self.base_mut().ceb_mut().append(Collation::unassigned_ce_from_code_point(c));
+                        self.base_mut()
+                            .ceb_mut()
+                            .append(Collation::unassigned_ce_from_code_point(c));
                         return;
                     }
                 }
                 _ => unreachable!("tags are 4 bits"),
             }
         }
-        self.base_mut().ceb_mut().append(Collation::ce_from_simple_ce32(ce32));
+        self.base_mut()
+            .ceb_mut()
+            .append(Collation::ce_from_simple_ce32(ce32));
     }
 
     #[doc(hidden)]
@@ -902,7 +951,13 @@ pub trait CollationIterator {
                         since_match = 1;
                     }
                     if d.get_fcd16(c) > 0xff {
-                        return self.next_ce32_from_discontiguous_contraction(d, &mut suffixes, ce32, look_ahead, c);
+                        return self.next_ce32_from_discontiguous_contraction(
+                            d,
+                            &mut suffixes,
+                            ce32,
+                            look_ahead,
+                            c,
+                        );
                     }
                 }
                 break;
@@ -1075,7 +1130,10 @@ pub trait CollationIterator {
     #[doc(hidden)]
     /// The skipped-marks state, which exists once discontiguous matching started.
     fn skipped_mut(&mut self) -> &mut SkippedState {
-        self.base_mut().skipped.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.base_mut()
+            .skipped
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     #[doc(hidden)]
@@ -1256,7 +1314,9 @@ pub trait CollationIterator {
             num_bytes = 40;
             if value < num_bytes * 254 {
                 // Three-byte primary for 74..10233=74+40*254-1, good for year numbers and more.
-                let primary = numeric_primary | ((first_byte + value / 254) << 16) as i64 | ((2 + value % 254) << 8) as i64;
+                let primary = numeric_primary
+                    | ((first_byte + value / 254) << 16) as i64
+                    | ((2 + value % 254) << 8) as i64;
                 ceb.append(Collation::make_ce(primary));
                 return;
             }

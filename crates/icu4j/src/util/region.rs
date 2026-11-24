@@ -104,7 +104,9 @@ impl fmt::Debug for Region {
 
 fn sorted_insert(data_regions: &[RegionNode], set: &mut Vec<usize>, r: usize) {
     let key = &data_regions[r].id;
-    match set.binary_search_by(|&x| rucene::util::java_collections::java_compare_to(&data_regions[x].id, key)) {
+    match set.binary_search_by(|&x| {
+        rucene::util::java_collections::java_compare_to(&data_regions[x].id, key)
+    }) {
         Ok(_) => {}
         Err(i) => set.insert(i, r),
     }
@@ -138,12 +140,19 @@ impl Region {
         let mut available_regions: Vec<Vec<usize>> = Vec::with_capacity(RegionType::VALUES.len());
 
         let loader = icu_resource_bundle::icu_data_class_loader();
-        let metadata = UResourceBundle::get_bundle_instance_loader(Some(ICUData::ICU_BASE_NAME), "metadata", loader)?;
+        let metadata = UResourceBundle::get_bundle_instance_loader(
+            Some(ICUData::ICU_BASE_NAME),
+            "metadata",
+            loader,
+        )?;
         let metadata_alias = metadata.get("alias")?;
         let territory_alias = metadata_alias.get("territory")?;
 
-        let supplemental_data =
-            UResourceBundle::get_bundle_instance_loader(Some(ICUData::ICU_BASE_NAME), "supplementalData", loader)?;
+        let supplemental_data = UResourceBundle::get_bundle_instance_loader(
+            Some(ICUData::ICU_BASE_NAME),
+            "supplementalData",
+            loader,
+        )?;
         let code_mappings = supplemental_data.get("codeMappings")?;
         let id_validity = supplemental_data.get("idValidity")?;
         let region_list = id_validity.get("region")?;
@@ -156,7 +165,11 @@ impl Region {
         let grouping_containment = territory_containment.get("grouping")?;
 
         let to_s = |v: Vec<u16>| String::from_utf16_lossy(&v);
-        let continents: Vec<String> = world_containment.get_string_array()?.into_iter().map(to_s).collect();
+        let continents: Vec<String> = world_containment
+            .get_string_array()?
+            .into_iter()
+            .map(to_s)
+            .collect();
         let groupings = grouping_containment.get_keys()?;
 
         let mut region_codes: Vec<String> = Vec::new();
@@ -199,7 +212,9 @@ impl Region {
             let idx = regions.len();
             region_id_map.insert(id.clone(), idx);
             if THREE_DIGITS.matches(id) {
-                r.code = id.parse::<i32>().map_err(|_| LuceneError::number_format_for_input_string(id, 10))?;
+                r.code = id
+                    .parse::<i32>()
+                    .map_err(|_| LuceneError::number_format_for_input_string(id, 10))?;
                 numeric_code_map.insert(r.code, idx);
                 r.ty = RegionType::Subcontinent;
             } else {
@@ -234,9 +249,9 @@ impl Region {
                     };
                     region_id_map.insert(alias_from.clone(), idx);
                     if THREE_DIGITS.matches(&alias_from) {
-                        node.code = alias_from
-                            .parse::<i32>()
-                            .map_err(|_| LuceneError::number_format_for_input_string(&alias_from, 10))?;
+                        node.code = alias_from.parse::<i32>().map_err(|_| {
+                            LuceneError::number_format_for_input_string(&alias_from, 10)
+                        })?;
                         numeric_code_map.insert(node.code, idx);
                     } else {
                         node.code = -1;
@@ -259,7 +274,8 @@ impl Region {
         for i in 0..code_mappings.get_size() {
             let mapping = code_mappings.get_at(i)?;
             if mapping.get_type() == UResourceBundle::ARRAY {
-                let code_mapping_strings: Vec<String> = mapping.get_string_array()?.into_iter().map(to_s).collect();
+                let code_mapping_strings: Vec<String> =
+                    mapping.get_string_array()?.into_iter().map(to_s).collect();
                 let code_mapping_id = &code_mapping_strings[0];
                 let units: Vec<u16> = code_mapping_strings[1].encode_utf16().collect();
                 let code_mapping_number = crate::jdk::parse_int(&units, 10)?;
@@ -306,8 +322,8 @@ impl Region {
             let parent = mapping.get_key().unwrap_or_else(|| "null".to_string());
             if parent == "containedGroupings" || parent == "deprecated" || parent == "grouping" {
                 continue; // handle new pseudo-parent types added in ICU data per cldrbug 7808; for now just skip.
-                // #11232 is to do something useful with these.
-                // Also skip "grouping" which has multi-level structure below from CLDR 34.
+                          // #11232 is to do something useful with these.
+                          // Also skip "grouping" which has multi-level structure below from CLDR 34.
             }
             let parent_region = region_id_map.get(&parent).copied();
             for j in 0..mapping.get_size() {
@@ -400,7 +416,9 @@ impl Region {
             .or_else(|| data.region_aliases.get(id))
             .copied();
         match r {
-            None => Err(LuceneError::illegal_argument(format!("Unknown region id: {id}"))),
+            None => Err(LuceneError::illegal_argument(format!(
+                "Unknown region id: {id}"
+            ))),
             Some(r) => Ok(Self::resolve(data, r)),
         }
     }
@@ -426,7 +444,9 @@ impl Region {
             r = data.region_aliases.get(&id).copied();
         }
         match r {
-            None => Err(LuceneError::illegal_argument(format!("Unknown region code: {code}"))),
+            None => Err(LuceneError::illegal_argument(format!(
+                "Unknown region code: {code}"
+            ))),
             Some(r) => Ok(Self::resolve(data, r)),
         }
     }
@@ -440,7 +460,10 @@ impl Region {
         let data = Self::load_region_data()?;
         Ok(data.available_regions[ty.ordinal()]
             .iter()
-            .map(|&i| Region { data: data.clone(), idx: i })
+            .map(|&i| Region {
+                data: data.clone(),
+                idx: i,
+            })
             .collect())
     }
 
@@ -462,7 +485,11 @@ impl Region {
 
     /// `getContainedRegions()`: in id order.
     pub fn get_contained_regions(&self) -> Vec<Region> {
-        self.node().contained_regions.iter().map(|&i| self.of(i)).collect()
+        self.node()
+            .contained_regions
+            .iter()
+            .map(|&i| self.of(i))
+            .collect()
     }
 
     /// `getContainedRegions(RegionType type)`: the contained regions of the
@@ -496,7 +523,10 @@ impl Region {
     /// `contains(Region other)`: whether `other` is contained at any depth.
     pub fn contains(&self, other: &Region) -> bool {
         let contained = &self.node().contained_regions;
-        if contained.iter().any(|&i| self.data.regions[i].id == other.node().id) {
+        if contained
+            .iter()
+            .any(|&i| self.data.regions[i].id == other.node().id)
+        {
             true
         } else {
             contained.iter().any(|&i| self.of(i).contains(other))

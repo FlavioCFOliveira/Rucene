@@ -249,12 +249,18 @@ pub fn get_nfkc_simple_casefold_instance() -> Result<Arc<Normalizer2WithImpl>> {
 ///
 /// `ICUUncheckedIOException` wrapping a read error; the errors of loading
 /// the data.
-pub fn get_instance(data: Option<&mut dyn InputStream>, name: &str, mode: Mode) -> Result<Arc<Normalizer2WithImpl>> {
+pub fn get_instance(
+    data: Option<&mut dyn InputStream>,
+    name: &str,
+    mode: Mode,
+) -> Result<Arc<Normalizer2WithImpl>> {
     let mut bytes = None;
     if let Some(data) = data {
         match ICUBinary::get_byte_buffer_from_input_stream_and_close_stream(data) {
             Ok(b) => bytes = Some(b),
-            Err(e) if e.is_io_exception() => return Err(ICUUncheckedIOException::with_cause(e).error()),
+            Err(e) if e.is_io_exception() => {
+                return Err(ICUUncheckedIOException::with_cause(e).error())
+            }
             Err(e) => return Err(e),
         }
     }

@@ -107,7 +107,11 @@ pub const NO_UNIQUE_VALUE: f64 = -0.00123456777;
 /// `getUniqueKeywordDecimalQuantityValue` when there is no unique value to
 /// return.
 pub static NO_UNIQUE_VALUE_DECIMAL_QUANTITY: LazyLock<SharedDecimalQuantity> =
-    LazyLock::new(|| share(Box::new(DecimalQuantity_DualStorageBCD::from_double(-0.00123456777))));
+    LazyLock::new(|| {
+        share(Box::new(DecimalQuantity_DualStorageBCD::from_double(
+            -0.00123456777,
+        )))
+    });
 
 /// `NO_CONSTRAINT`: the default constraint that is always satisfied.
 static NO_CONSTRAINT: LazyLock<Arc<dyn Constraint>> = LazyLock::new(|| Arc::new(NoConstraint));
@@ -120,8 +124,12 @@ static DEFAULT_RULE: LazyLock<Rule> =
 /// [`KEYWORD_OTHER`].
 pub static DEFAULT: LazyLock<Arc<PluralRules>> = LazyLock::new(|| {
     let mut list = RuleList::new();
-    list.add_rule(DEFAULT_RULE.clone()).expect("a single rule has no duplicate keyword");
-    Arc::new(PluralRules::new(list, Some(standard_plural_ranges::DEFAULT.clone())))
+    list.add_rule(DEFAULT_RULE.clone())
+        .expect("a single rule has no duplicate keyword");
+    Arc::new(PluralRules::new(
+        list,
+        Some(standard_plural_ranges::DEFAULT.clone()),
+    ))
 });
 
 /// `AT_SEPARATED`.
@@ -147,7 +155,11 @@ fn compile(regex: &str) -> JavaPattern {
 /// `Pattern.split(CharSequence, 0)` over a Rust string (rule texts are
 /// well-formed UTF-16).
 fn split(pattern: &JavaPattern, input: &str) -> Vec<String> {
-    pattern.split(&units(input), 0).into_iter().map(|s| String::from_utf16_lossy(&s)).collect()
+    pattern
+        .split(&units(input), 0)
+        .into_iter()
+        .map(|s| String::from_utf16_lossy(&s))
+        .collect()
 }
 
 /// `String.length()`: the UTF-16 length.
@@ -193,7 +205,11 @@ pub trait Factory: Send + Sync {
     /// # Errors
     ///
     /// The errors of locale canonicalization.
-    fn get_functional_equivalent(&self, locale: &ULocale, is_available: Option<&mut [bool]>) -> Result<ULocale>;
+    fn get_functional_equivalent(
+        &self,
+        locale: &ULocale,
+        is_available: Option<&mut [bool]>,
+    ) -> Result<ULocale>;
 
     /// Returns whether or not there are overrides. Equivalent to
     /// `hasOverride(ULocale)`.
@@ -243,8 +259,17 @@ pub enum Operand {
 
 impl Operand {
     /// The constants in declaration order (`values()`).
-    pub const VALUES: [Operand; 9] =
-        [Operand::N, Operand::I, Operand::F, Operand::T, Operand::V, Operand::W, Operand::E, Operand::C, Operand::J];
+    pub const VALUES: [Operand; 9] = [
+        Operand::N,
+        Operand::I,
+        Operand::F,
+        Operand::T,
+        Operand::V,
+        Operand::W,
+        Operand::E,
+        Operand::C,
+        Operand::J,
+    ];
 
     /// Equivalent to `name()`.
     pub fn name(self) -> &'static str {
@@ -268,9 +293,15 @@ impl Operand {
     /// `IllegalArgumentException("No enum constant
     /// com.ibm.icu.text.PluralRules.Operand.<name>")`.
     pub fn value_of(name: &str) -> Result<Operand> {
-        Self::VALUES.iter().copied().find(|o| o.name() == name).ok_or_else(|| {
-            LuceneError::illegal_argument(format!("No enum constant com.ibm.icu.text.PluralRules.Operand.{name}"))
-        })
+        Self::VALUES
+            .iter()
+            .copied()
+            .find(|o| o.name() == name)
+            .ok_or_else(|| {
+                LuceneError::illegal_argument(format!(
+                    "No enum constant com.ibm.icu.text.PluralRules.Operand.{name}"
+                ))
+            })
     }
 }
 
@@ -370,7 +401,11 @@ impl FixedDecimal {
     pub fn new_with_compact(n: f64, v: i32, f: i64, e: i32, c: i32) -> Self {
         let is_negative = n < 0.0;
         let source = if is_negative { -n } else { n };
-        let integer_value = if n > FIXED_DECIMAL_MAX as f64 { FIXED_DECIMAL_MAX } else { source as i64 };
+        let integer_value = if n > FIXED_DECIMAL_MAX as f64 {
+            FIXED_DECIMAL_MAX
+        } else {
+            source as i64
+        };
         let mut init_exp_val = e;
         if init_exp_val == 0 {
             init_exp_val = c;
@@ -489,7 +524,10 @@ impl FixedDecimal {
             0
         } else {
             let buf: Vec<char> = java_format_e(n, 15).chars().collect();
-            let e_pos = buf.iter().rposition(|&c| c == 'e').expect("%e renders an exponent") as i32;
+            let e_pos = buf
+                .iter()
+                .rposition(|&c| c == 'e')
+                .expect("%e renders an exponent") as i32;
             let mut exp_num_pos = e_pos + 1;
             if buf[exp_num_pos as usize] == '+' {
                 exp_num_pos += 1;
@@ -526,16 +564,28 @@ impl FixedDecimal {
     /// `compareTo(FixedDecimal)` (deprecated).
     pub fn compare_to(&self, other: &FixedDecimal) -> i32 {
         if self.exponent != other.exponent {
-            return if self.double_value() < other.double_value() { -1 } else { 1 };
+            return if self.double_value() < other.double_value() {
+                -1
+            } else {
+                1
+            };
         }
         if self.integer_value != other.integer_value {
-            return if self.integer_value < other.integer_value { -1 } else { 1 };
+            return if self.integer_value < other.integer_value {
+                -1
+            } else {
+                1
+            };
         }
         if self.source != other.source {
             return if self.source < other.source { -1 } else { 1 };
         }
         if self.visible_decimal_digit_count != other.visible_decimal_digit_count {
-            return if self.visible_decimal_digit_count < other.visible_decimal_digit_count { -1 } else { 1 };
+            return if self.visible_decimal_digit_count < other.visible_decimal_digit_count {
+                -1
+            } else {
+                1
+            };
         }
         let diff = self.decimal_digits.wrapping_sub(other.decimal_digits);
         if diff != 0 {
@@ -547,7 +597,9 @@ impl FixedDecimal {
     /// Equivalent to `hashCode()` (deprecated).
     pub fn hash_code(&self) -> i32 {
         // TODO Auto-generated method stub
-        let inner = self.visible_decimal_digit_count.wrapping_add(java_d2i(37.0 * self.source));
+        let inner = self
+            .visible_decimal_digit_count
+            .wrapping_add(java_d2i(37.0 * self.source));
         java_l2i(self.decimal_digits.wrapping_add(37 * inner as i64))
     }
 
@@ -555,7 +607,10 @@ impl FixedDecimal {
     /// `String.format(Locale.ROOT, "%.<v>f", source)`, then `e<exponent>`
     /// when the exponent is not zero.
     pub fn to_java_string(&self) -> String {
-        let base_string = java_format_f(self.source, self.visible_decimal_digit_count.max(0) as usize);
+        let base_string = java_format_f(
+            self.source,
+            self.visible_decimal_digit_count.max(0) as usize,
+        );
         if self.exponent != 0 {
             format!("{base_string}e{}", self.exponent)
         } else {
@@ -590,7 +645,11 @@ impl FixedDecimal {
 
     /// Equivalent to `doubleValue()` (deprecated).
     pub fn double_value(&self) -> f64 {
-        (if self.is_negative { -self.source } else { self.source }) * 10f64.powi(self.exponent)
+        (if self.is_negative {
+            -self.source
+        } else {
+            self.source
+        }) * 10f64.powi(self.exponent)
     }
 
     /// Equivalent to `writeObject(ObjectOutputStream)`.
@@ -701,11 +760,20 @@ fn java_math_round(a: f64) -> i64 {
 fn shortest_digits(value: f64) -> (Vec<u8>, i32) {
     let s = double_to_string(value);
     let (mantissa, exp) = match s.find('E') {
-        Some(e) => (&s[..e], s[e + 1..].parse::<i32>().expect("Double.toString renders a decimal exponent")),
+        Some(e) => (
+            &s[..e],
+            s[e + 1..]
+                .parse::<i32>()
+                .expect("Double.toString renders a decimal exponent"),
+        ),
         None => (&s[..], 0),
     };
     let dot = mantissa.find('.').unwrap_or(mantissa.len());
-    let mut digits: Vec<u8> = mantissa.bytes().filter(|b| b.is_ascii_digit()).map(|b| b - b'0').collect();
+    let mut digits: Vec<u8> = mantissa
+        .bytes()
+        .filter(|b| b.is_ascii_digit())
+        .map(|b| b - b'0')
+        .collect();
     let mut point = dot as i32 + exp;
     // Strip leading zeros (fraction-only renderings like 0.0012).
     while digits.len() > 1 && digits[0] == 0 {
@@ -756,7 +824,11 @@ fn java_format_f(value: f64, prec: usize) -> String {
     }
     let negative = value.is_sign_negative() && value != 0.0;
     let v = value.abs();
-    let (mut digits, mut point) = if v == 0.0 { (vec![0u8], 1) } else { shortest_digits(v) };
+    let (mut digits, mut point) = if v == 0.0 {
+        (vec![0u8], 1)
+    } else {
+        shortest_digits(v)
+    };
     // Number of digits to keep: the integer digits plus `prec` fraction
     // digits.
     let keep = point + prec as i32;
@@ -780,7 +852,11 @@ fn java_format_f(value: f64, prec: usize) -> String {
     }
     for k in 0..prec as i32 {
         let idx = point + k;
-        let d = if idx < 0 { 0 } else { digits.get(idx as usize).copied().unwrap_or(0) };
+        let d = if idx < 0 {
+            0
+        } else {
+            digits.get(idx as usize).copied().unwrap_or(0)
+        };
         frac_part.push((b'0' + d) as char);
     }
     let mut out = String::new();
@@ -867,7 +943,12 @@ impl DecimalQuantitySamplesRange {
         } else {
             let s = lock_dq(&start);
             let e = lock_dq(&end);
-            (s.get_plural_operand(Operand::V), e.get_plural_operand(Operand::V), s.to_java_string(), e.to_java_string())
+            (
+                s.get_plural_operand(Operand::V),
+                e.get_plural_operand(Operand::V),
+                s.to_java_string(),
+                e.to_java_string(),
+            )
         };
         if sv != ev {
             return Err(LuceneError::illegal_argument(format!(
@@ -916,6 +997,7 @@ impl DecimalQuantitySamples {
     ///
     /// `IllegalArgumentException` for ill-formed samples, and the
     /// `NumberFormatException` of malformed numbers.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn parse(source: &str) -> Result<DecimalQuantitySamples> {
         let sample_type2;
         let mut bounded2 = true;
@@ -927,7 +1009,9 @@ impl DecimalQuantitySamples {
         } else if source.starts_with("decimal") {
             sample_type2 = SampleType::Decimal;
         } else {
-            return Err(LuceneError::illegal_argument("Samples must start with 'integer' or 'decimal'"));
+            return Err(LuceneError::illegal_argument(
+                "Samples must start with 'integer' or 'decimal'",
+            ));
         }
         let source = java_trim(substring16(source, 7));
 
@@ -938,29 +1022,42 @@ impl DecimalQuantitySamples {
                 continue;
             }
             if have_bound {
-                return Err(LuceneError::illegal_argument(format!("Can only have \u{2026} at the end of samples: {range}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Can only have \u{2026} at the end of samples: {range}"
+                )));
             }
             let range_parts = split(&TILDE_SEPARATED, &range);
             match range_parts.len() {
                 1 => {
-                    let sample: SharedDecimalQuantity =
-                        share(Box::new(DecimalQuantity_DualStorageBCD::from_exponent_string(&range_parts[0])?));
+                    let sample: SharedDecimalQuantity = share(Box::new(
+                        DecimalQuantity_DualStorageBCD::from_exponent_string(&range_parts[0])?,
+                    ));
                     Self::check_decimal(sample_type2, &sample)?;
                     samples2.push(DecimalQuantitySamplesRange::new(sample.clone(), sample)?);
                 }
                 2 => {
-                    let start: SharedDecimalQuantity =
-                        share(Box::new(DecimalQuantity_DualStorageBCD::from_exponent_string(&range_parts[0])?));
-                    let end: SharedDecimalQuantity =
-                        share(Box::new(DecimalQuantity_DualStorageBCD::from_exponent_string(&range_parts[1])?));
+                    let start: SharedDecimalQuantity = share(Box::new(
+                        DecimalQuantity_DualStorageBCD::from_exponent_string(&range_parts[0])?,
+                    ));
+                    let end: SharedDecimalQuantity = share(Box::new(
+                        DecimalQuantity_DualStorageBCD::from_exponent_string(&range_parts[1])?,
+                    ));
                     Self::check_decimal(sample_type2, &start)?;
                     Self::check_decimal(sample_type2, &end)?;
                     samples2.push(DecimalQuantitySamplesRange::new(start, end)?);
                 }
-                _ => return Err(LuceneError::illegal_argument(format!("Ill-formed number range: {range}"))),
+                _ => {
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Ill-formed number range: {range}"
+                    )))
+                }
             }
         }
-        Ok(DecimalQuantitySamples { sample_type: sample_type2, samples: samples2, bounded: bounded2 })
+        Ok(DecimalQuantitySamples {
+            sample_type: sample_type2,
+            samples: samples2,
+            bounded: bounded2,
+        })
     }
 
     /// `checkDecimal(SampleType, DecimalQuantity)`.
@@ -974,7 +1071,10 @@ impl DecimalQuantitySamples {
                 && s.get_plural_operand(Operand::V) == 0.0
                 && s.get_plural_operand(Operand::E) == 0.0)
         {
-            return Err(LuceneError::illegal_argument(format!("Ill-formed number range: {}", s.to_java_string())));
+            return Err(LuceneError::illegal_argument(format!(
+                "Ill-formed number range: {}",
+                s.to_java_string()
+            )));
         }
         Ok(())
     }
@@ -995,7 +1095,10 @@ impl DecimalQuantitySamples {
     /// # Errors
     ///
     /// As [`add_samples`](Self::add_samples).
-    pub fn add_decimal_quantity_samples(&self, result: &mut Vec<SharedDecimalQuantity>) -> Result<()> {
+    pub fn add_decimal_quantity_samples(
+        &self,
+        result: &mut Vec<SharedDecimalQuantity>,
+    ) -> Result<()> {
         self.add_samples(None, Some(result))
     }
 
@@ -1027,7 +1130,12 @@ impl DecimalQuantitySamples {
                 } else {
                     lock_dq(&range.end).to_double()
                 };
-                (start.get_lower_display_magnitude(), start.get_exponent(), start.create_copy(), end_double)
+                (
+                    start.get_lower_display_magnitude(),
+                    start.get_exponent(),
+                    start.create_copy(),
+                    end_double,
+                )
             };
             let increment_scale = lower_disp_mag + exponent;
             let increment_bd = BigDecimal::one().move_point_right(increment_scale)?;
@@ -1164,7 +1272,8 @@ struct SimpleTokenizer;
 
 /// `SimpleTokenizer.BREAK_AND_IGNORE`.
 static BREAK_AND_IGNORE: LazyLock<UnicodeSet> = LazyLock::new(|| {
-    let mut set = UnicodeSet::from_pairs(&[0x09, 0x0a, 0x0c, 0x0d, 0x20, 0x20]).expect("valid ranges");
+    let mut set =
+        UnicodeSet::from_pairs(&[0x09, 0x0a, 0x0c, 0x0d, 0x20, 0x20]).expect("valid ranges");
     set.freeze();
     set
 });
@@ -1172,8 +1281,8 @@ static BREAK_AND_IGNORE: LazyLock<UnicodeSet> = LazyLock::new(|| {
 /// `SimpleTokenizer.BREAK_AND_KEEP`.
 static BREAK_AND_KEEP: LazyLock<UnicodeSet> = LazyLock::new(|| {
     let mut set = UnicodeSet::from_pairs(&[
-        '!' as i32, '!' as i32, '%' as i32, '%' as i32, ',' as i32, ',' as i32, '.' as i32, '.' as i32, '=' as i32,
-        '=' as i32,
+        '!' as i32, '!' as i32, '%' as i32, '%' as i32, ',' as i32, ',' as i32, '.' as i32,
+        '.' as i32, '=' as i32, '=' as i32,
     ])
     .expect("valid ranges");
     set.freeze();
@@ -1197,7 +1306,9 @@ impl SimpleTokenizer {
                 if last >= 0 {
                     result.push(String::from_utf16_lossy(&source[last as usize..i as usize]));
                 }
-                result.push(String::from_utf16_lossy(&source[i as usize..(i + 1) as usize]));
+                result.push(String::from_utf16_lossy(
+                    &source[i as usize..(i + 1) as usize],
+                ));
                 last = -1;
             } else if last < 0 {
                 last = i;
@@ -1396,14 +1507,20 @@ fn parse_constraint(description: &str) -> Result<Arc<dyn Constraint>> {
 
             and_constraint = Some(match and_constraint {
                 None => new_constraint,
-                Some(a) => Arc::new(AndConstraint { a, b: new_constraint }),
+                Some(a) => Arc::new(AndConstraint {
+                    a,
+                    b: new_constraint,
+                }),
             });
         }
 
         let and_constraint = and_constraint.expect("Pattern.split yields at least one element");
         result = Some(match result {
             None => and_constraint,
-            Some(r) => Arc::new(OrConstraint { a: r, b: and_constraint }),
+            Some(r) => Arc::new(OrConstraint {
+                a: r,
+                b: and_constraint,
+            }),
         });
     }
     Ok(result.expect("Pattern.split yields at least one element"))
@@ -1411,20 +1528,27 @@ fn parse_constraint(description: &str) -> Result<Arc<dyn Constraint>> {
 
 /// The `ArrayIndexOutOfBoundsException` of `tokens[x++]` past the end.
 fn array_index_out_of_bounds_for(index: usize, length: usize) -> ! {
-    panic!("java.lang.ArrayIndexOutOfBoundsException: Index {index} out of bounds for length {length}")
+    panic!(
+        "java.lang.ArrayIndexOutOfBoundsException: Index {index} out of bounds for length {length}"
+    )
 }
 
 /// `Long.parseLong(String)`.
 fn parse_long(s: &str) -> Result<i64> {
     let valid = {
         let b = s.as_bytes();
-        let digits = if !b.is_empty() && (b[0] == b'-' || b[0] == b'+') { &b[1..] } else { b };
+        let digits = if !b.is_empty() && (b[0] == b'-' || b[0] == b'+') {
+            &b[1..]
+        } else {
+            b
+        };
         !digits.is_empty() && digits.iter().all(|c| c.is_ascii_digit())
     };
     if !valid {
         return Err(LuceneError::number_format_for_input_string(s, 10));
     }
-    s.parse::<i64>().map_err(|_| LuceneError::number_format_for_input_string(s, 10))
+    s.parse::<i64>()
+        .map_err(|_| LuceneError::number_format_for_input_string(s, 10))
 }
 
 /// Returns a parse exception wrapping the token and context strings.
@@ -1439,7 +1563,10 @@ fn next_token(tokens: &[String], x: usize, context: &str) -> Result<String> {
     if x < tokens.len() {
         return Ok(tokens[x].clone());
     }
-    Err(ParseException::error(format!("missing token at end of '{context}'"), -1))
+    Err(ParseException::error(
+        format!("missing token at end of '{context}'"),
+        -1,
+    ))
 }
 
 /// Syntax: `keyword ':' condition`. Equivalent to `parseRule(String)`.
@@ -1453,13 +1580,19 @@ fn parse_rule(description: &str) -> Result<Rule> {
     let x = match description.find(':') {
         Some(x) => x,
         None => {
-            return Err(ParseException::error(format!("missing ':' in rule description '{description}'"), 0));
+            return Err(ParseException::error(
+                format!("missing ':' in rule description '{description}'"),
+                0,
+            ));
         }
     };
 
     let keyword = java_trim(&description[..x]).to_string();
     if !is_valid_keyword(&keyword) {
-        return Err(ParseException::error(format!("keyword '{keyword} is not valid"), 0));
+        return Err(ParseException::error(
+            format!("keyword '{keyword} is not valid"),
+            0,
+        ));
     }
 
     let description = java_trim(&description[x + 1..]).to_string();
@@ -1481,26 +1614,45 @@ fn parse_rule(description: &str) -> Result<Rule> {
             let i = DecimalQuantitySamples::parse(&constraint_or_samples[1])?;
             let d = DecimalQuantitySamples::parse(&constraint_or_samples[2])?;
             if i.sample_type != SampleType::Integer || d.sample_type != SampleType::Decimal {
-                return Err(LuceneError::illegal_argument(format!("Must have @integer then @decimal in {description}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Must have @integer then @decimal in {description}"
+                )));
             }
             integer_samples = Some(i);
             decimal_samples = Some(d);
         }
-        _ => return Err(LuceneError::illegal_argument(format!("Too many samples in {description}"))),
+        _ => {
+            return Err(LuceneError::illegal_argument(format!(
+                "Too many samples in {description}"
+            )))
+        }
     }
     if sample_failure {
-        return Err(LuceneError::illegal_argument("Ill-formed samples\u{2014}'@' characters."));
+        return Err(LuceneError::illegal_argument(
+            "Ill-formed samples\u{2014}'@' characters.",
+        ));
     }
 
     // 'other' is special, and must have no rules; all other keywords must
     // have rules.
     let is_other = keyword == "other";
     if is_other != (len16(&constraint_or_samples[0]) == 0) {
-        return Err(LuceneError::illegal_argument("The keyword 'other' must have no constraints, just samples."));
+        return Err(LuceneError::illegal_argument(
+            "The keyword 'other' must have no constraints, just samples.",
+        ));
     }
 
-    let constraint = if is_other { NO_CONSTRAINT.clone() } else { parse_constraint(&constraint_or_samples[0])? };
-    Ok(Rule::new(keyword, constraint, integer_samples.map(Arc::new), decimal_samples.map(Arc::new)))
+    let constraint = if is_other {
+        NO_CONSTRAINT.clone()
+    } else {
+        parse_constraint(&constraint_or_samples[0])?
+    };
+    Ok(Rule::new(
+        keyword,
+        constraint,
+        integer_samples.map(Arc::new),
+        decimal_samples.map(Arc::new),
+    ))
 }
 
 /// Syntax: `rule : keyword ':' condition`, `keyword: <identifier>`.
@@ -1512,7 +1664,8 @@ fn parse_rule_chain(description: &str) -> Result<RuleList> {
     let rules = split(&SEMI_SEPARATED, description);
     for r in &rules {
         let rule = parse_rule(java_trim(r))?;
-        result.has_explicit_bounding_info |= rule.integer_samples.is_some() || rule.decimal_samples.is_some();
+        result.has_explicit_bounding_info |=
+            rule.integer_samples.is_some() || rule.decimal_samples.is_some();
         result.add_rule(rule)?;
     }
     result.finish()
@@ -1542,7 +1695,15 @@ impl RangeConstraint {
         high_bound: f64,
         vals: Option<Vec<i64>>,
     ) -> Self {
-        Self { mod_, in_range, integers_only, lower_bound: low_bound, upper_bound: high_bound, range_list: vals, operand }
+        Self {
+            mod_,
+            in_range,
+            integers_only,
+            lower_bound: low_bound,
+            upper_bound: high_bound,
+            range_list: vals,
+            operand,
+        }
     }
 }
 
@@ -1600,6 +1761,7 @@ impl Constraint for RangeConstraint {
 }
 
 impl fmt::Display for RangeConstraint {
+    #[allow(clippy::if_same_then_else)] // branches mirror the Java source
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut result = String::new();
         result.push_str(self.operand.name());
@@ -1628,7 +1790,12 @@ impl fmt::Display for RangeConstraint {
         if let Some(range_list) = &self.range_list {
             let mut i = 0;
             while i < range_list.len() {
-                add_range(&mut result, range_list[i] as f64, range_list[i + 1] as f64, i != 0);
+                add_range(
+                    &mut result,
+                    range_list[i] as f64,
+                    range_list[i + 1] as f64,
+                    i != 0,
+                );
                 i += 2;
             }
         } else {
@@ -1735,7 +1902,12 @@ impl Rule {
         integer_samples: Option<Arc<DecimalQuantitySamples>>,
         decimal_samples: Option<Arc<DecimalQuantitySamples>>,
     ) -> Self {
-        Self { keyword, constraint, integer_samples, decimal_samples }
+        Self {
+            keyword,
+            constraint,
+            integer_samples,
+            decimal_samples,
+        }
     }
 
     /// Equivalent to `and(Constraint)` (unused).
@@ -1743,7 +1915,10 @@ impl Rule {
     fn and(&self, c: Arc<dyn Constraint>) -> Rule {
         Rule::new(
             self.keyword.clone(),
-            Arc::new(AndConstraint { a: self.constraint.clone(), b: c }),
+            Arc::new(AndConstraint {
+                a: self.constraint.clone(),
+                b: c,
+            }),
             self.integer_samples.clone(),
             self.decimal_samples.clone(),
         )
@@ -1754,7 +1929,10 @@ impl Rule {
     fn or(&self, c: Arc<dyn Constraint>) -> Rule {
         Rule::new(
             self.keyword.clone(),
-            Arc::new(OrConstraint { a: self.constraint.clone(), b: c }),
+            Arc::new(OrConstraint {
+                a: self.constraint.clone(),
+                b: c,
+            }),
             self.integer_samples.clone(),
             self.decimal_samples.clone(),
         )
@@ -1807,7 +1985,10 @@ struct RuleList {
 
 impl RuleList {
     fn new() -> Self {
-        Self { has_explicit_bounding_info: false, rules: Vec::new() }
+        Self {
+            has_explicit_bounding_info: false,
+            rules: Vec::new(),
+        }
     }
 
     /// `addRule(Rule)`.
@@ -1815,7 +1996,9 @@ impl RuleList {
         let keyword = next_rule.get_keyword();
         for rule in &self.rules {
             if keyword == rule.get_keyword() {
-                return Err(LuceneError::illegal_argument(format!("Duplicate keyword: {keyword}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Duplicate keyword: {keyword}"
+                )));
             }
         }
         self.rules.push(next_rule);
@@ -1850,7 +2033,9 @@ impl RuleList {
         if n.is_infinite() || n.is_nan() {
             return KEYWORD_OTHER.to_string();
         }
-        let r = self.select_rule(n).expect("java.lang.NullPointerException: no rule applies");
+        let r = self
+            .select_rule(n)
+            .expect("java.lang.NullPointerException: no rule applies");
         r.get_keyword().to_string()
     }
 
@@ -1912,7 +2097,11 @@ impl RuleList {
         false
     }
 
-    fn get_decimal_samples(&self, keyword: &str, sample_type: SampleType) -> Option<&Arc<DecimalQuantitySamples>> {
+    fn get_decimal_samples(
+        &self,
+        keyword: &str,
+        sample_type: SampleType,
+    ) -> Option<&Arc<DecimalQuantitySamples>> {
         for rule in &self.rules {
             if rule.get_keyword() == keyword {
                 return if sample_type == SampleType::Integer {
@@ -2000,19 +2189,29 @@ impl PluralRules {
     /// # Errors
     ///
     /// As [`parse_description`](Self::parse_description).
-    pub fn new_internal(description: &str, ranges: Option<Arc<StandardPluralRanges>>) -> Result<Arc<PluralRules>> {
+    pub fn new_internal(
+        description: &str,
+        ranges: Option<Arc<StandardPluralRanges>>,
+    ) -> Result<Arc<PluralRules>> {
         let description = java_trim(description);
         if description.is_empty() {
             Ok(DEFAULT.clone())
         } else {
-            Ok(Arc::new(PluralRules::new(parse_rule_chain(description)?, ranges)))
+            Ok(Arc::new(PluralRules::new(
+                parse_rule_chain(description)?,
+                ranges,
+            )))
         }
     }
 
     /// `PluralRules(RuleList, StandardPluralRanges)`.
     fn new(rules: RuleList, standard_plural_ranges: Option<Arc<StandardPluralRanges>>) -> Self {
         let keywords = rules.get_keywords();
-        Self { rules, keywords, standard_plural_ranges }
+        Self {
+            rules,
+            keywords,
+            standard_plural_ranges,
+        }
     }
 
     /// Provides access to the predefined cardinal-number `PluralRules` for a
@@ -2051,7 +2250,10 @@ impl PluralRules {
     /// # Errors
     ///
     /// The errors of `ULocale.forLocale` and of the plural data.
-    pub fn for_java_locale_type(locale: &Locale, plural_type: PluralType) -> Result<Arc<PluralRules>> {
+    pub fn for_java_locale_type(
+        locale: &Locale,
+        plural_type: PluralType,
+    ) -> Result<Arc<PluralRules>> {
         let ulocale = ULocale::for_locale(Some(locale))?.unwrap_or_else(ULocale::root);
         Self::for_locale_type(&ulocale, plural_type)
     }
@@ -2091,7 +2293,9 @@ impl PluralRules {
     pub fn select_range(&self, range: &FormattedNumberRange) -> Result<String> {
         let ranges = match &self.standard_plural_ranges {
             None => {
-                return Err(LuceneError::unsupported_operation("Plural ranges are unavailable on this instance"));
+                return Err(LuceneError::unsupported_operation(
+                    "Plural ranges are unavailable on this instance",
+                ));
             }
             Some(r) => r,
         };
@@ -2103,8 +2307,17 @@ impl PluralRules {
 
     /// Given a number, returns the keyword of the first rule that applies to
     /// the number. Equivalent to `select(double, int, long)` (internal).
-    pub fn select_with_digits(&self, number: f64, count_visible_fraction_digits: i32, fractionaldigits: i64) -> String {
-        self.rules.select(&FixedDecimal::new_with_digits(number, count_visible_fraction_digits, fractionaldigits))
+    pub fn select_with_digits(
+        &self,
+        number: f64,
+        count_visible_fraction_digits: i32,
+        fractionaldigits: i64,
+    ) -> String {
+        self.rules.select(&FixedDecimal::new_with_digits(
+            number,
+            count_visible_fraction_digits,
+            fractionaldigits,
+        ))
     }
 
     /// Given a number information, returns the keyword of the first rule
@@ -2153,7 +2366,10 @@ impl PluralRules {
     /// # Errors
     ///
     /// The `ArithmeticException` of the sample arithmetic (scale overflow).
-    pub fn get_unique_keyword_decimal_quantity_value(&self, keyword: &str) -> Result<SharedDecimalQuantity> {
+    pub fn get_unique_keyword_decimal_quantity_value(
+        &self,
+        keyword: &str,
+    ) -> Result<SharedDecimalQuantity> {
         if let Some(values) = self.get_all_keyword_decimal_quantity_values(keyword)? {
             if values.len() == 1 {
                 return Ok(values[0].clone());
@@ -2188,7 +2404,10 @@ impl PluralRules {
     /// # Errors
     ///
     /// The `ArithmeticException` of the sample arithmetic (scale overflow).
-    pub fn get_all_keyword_decimal_quantity_values(&self, keyword: &str) -> Result<Option<Vec<SharedDecimalQuantity>>> {
+    pub fn get_all_keyword_decimal_quantity_values(
+        &self,
+        keyword: &str,
+    ) -> Result<Option<Vec<SharedDecimalQuantity>>> {
         self.get_all_keyword_values_typed(keyword, SampleType::Integer)
     }
 
@@ -2228,7 +2447,10 @@ impl PluralRules {
     /// # Errors
     ///
     /// The `ArithmeticException` of the sample arithmetic (scale overflow).
-    pub fn get_decimal_quantity_samples(&self, keyword: &str) -> Result<Option<Vec<SharedDecimalQuantity>>> {
+    pub fn get_decimal_quantity_samples(
+        &self,
+        keyword: &str,
+    ) -> Result<Option<Vec<SharedDecimalQuantity>>> {
         self.get_decimal_quantity_samples_typed(keyword, SampleType::Integer)
     }
 
@@ -2239,7 +2461,11 @@ impl PluralRules {
     /// # Errors
     ///
     /// The `ArithmeticException` of the sample arithmetic (scale overflow).
-    pub fn get_samples_typed(&self, keyword: &str, sample_type: SampleType) -> Result<Option<Vec<f64>>> {
+    pub fn get_samples_typed(
+        &self,
+        keyword: &str,
+        sample_type: SampleType,
+    ) -> Result<Option<Vec<f64>>> {
         let samples = match self.get_decimal_quantity_samples_typed(keyword, sample_type)? {
             None => return Ok(None),
             Some(s) => s,
@@ -2277,22 +2503,41 @@ impl PluralRules {
         }
 
         // hack in case the rule is created without explicit samples
-        let max_count = if self.is_limited(keyword, sample_type) { i32::MAX } else { 20 };
+        let max_count = if self.is_limited(keyword, sample_type) {
+            i32::MAX
+        } else {
+            20
+        };
 
         match sample_type {
             SampleType::Integer => {
                 for i in 0..200 {
-                    if !self.add_sample(keyword, share(Box::new(DecimalQuantity_DualStorageBCD::from_int(i))), max_count, &mut result) {
+                    if !self.add_sample(
+                        keyword,
+                        share(Box::new(DecimalQuantity_DualStorageBCD::from_int(i))),
+                        max_count,
+                        &mut result,
+                    ) {
                         break;
                     }
                 }
-                self.add_sample(keyword, share(Box::new(DecimalQuantity_DualStorageBCD::from_int(1000000))), max_count, &mut result);
+                self.add_sample(
+                    keyword,
+                    share(Box::new(DecimalQuantity_DualStorageBCD::from_int(1000000))),
+                    max_count,
+                    &mut result,
+                );
             }
             SampleType::Decimal => {
                 for i in 0..2000 {
                     let mut next_sample = DecimalQuantity_DualStorageBCD::from_int(i);
                     next_sample.adjust_magnitude(-1)?;
-                    if !self.add_sample(keyword, share(Box::new(next_sample)), max_count, &mut result) {
+                    if !self.add_sample(
+                        keyword,
+                        share(Box::new(next_sample)),
+                        max_count,
+                        &mut result,
+                    ) {
                         break;
                     }
                 }
@@ -2310,7 +2555,13 @@ impl PluralRules {
 
     /// `addSample(String, DecimalQuantity, int, Set<DecimalQuantity>)`: the
     /// `maxCount` decrement is local to the call, as in Java.
-    fn add_sample(&self, keyword: &str, sample: SharedDecimalQuantity, mut max_count: i32, result: &mut Vec<SharedDecimalQuantity>) -> bool {
+    fn add_sample(
+        &self,
+        keyword: &str,
+        sample: SharedDecimalQuantity,
+        mut max_count: i32,
+        result: &mut Vec<SharedDecimalQuantity>,
+    ) -> bool {
         let selected_keyword = {
             let s = lock_dq(&sample);
             self.select(&**s)
@@ -2329,8 +2580,14 @@ impl PluralRules {
     /// keyword, or `None` if the keyword is not defined or no samples are
     /// available. Equivalent to `getDecimalSamples(String, SampleType)`
     /// (internal).
-    pub fn get_decimal_samples(&self, keyword: &str, sample_type: SampleType) -> Option<Arc<DecimalQuantitySamples>> {
-        self.rules.get_decimal_samples(keyword, sample_type).cloned()
+    pub fn get_decimal_samples(
+        &self,
+        keyword: &str,
+        sample_type: SampleType,
+    ) -> Option<Arc<DecimalQuantitySamples>> {
+        self.rules
+            .get_decimal_samples(keyword, sample_type)
+            .cloned()
     }
 
     /// Returns the set of locales for which PluralRules are known.
@@ -2349,7 +2606,10 @@ impl PluralRules {
     /// # Errors
     ///
     /// The errors of locale canonicalization.
-    pub fn get_functional_equivalent(locale: &ULocale, is_available: Option<&mut [bool]>) -> Result<ULocale> {
+    pub fn get_functional_equivalent(
+        locale: &ULocale,
+        is_available: Option<&mut [bool]>,
+    ) -> Result<ULocale> {
         get_default_factory().get_functional_equivalent(locale, is_available)
     }
 
@@ -2382,7 +2642,13 @@ impl PluralRules {
         explicits: Option<&[SharedDecimalQuantity]>,
         unique_value: Option<&mut Output<SharedDecimalQuantity>>,
     ) -> Result<KeywordStatus> {
-        self.get_keyword_status_typed(keyword, offset, explicits, unique_value, SampleType::Integer)
+        self.get_keyword_status_typed(
+            keyword,
+            offset,
+            explicits,
+            unique_value,
+            SampleType::Integer,
+        )
     }
 
     /// Find the status for the keyword, given a certain set of explicit
@@ -2440,10 +2706,14 @@ impl PluralRules {
         for explicit in explicits {
             let explicit_bd = lock_dq(explicit).to_big_decimal()?;
             let val_to_remove_bd = explicit_bd.subtract(&BigDecimal::from_int(offset))?;
-            let val_to_remove: SharedDecimalQuantity =
-                share(Box::new(DecimalQuantity_DualStorageBCD::from_big_decimal(&val_to_remove_bd)?));
+            let val_to_remove: SharedDecimalQuantity = share(Box::new(
+                DecimalQuantity_DualStorageBCD::from_big_decimal(&val_to_remove_bd)?,
+            ));
             // ArrayList.remove(Object): the first element equal to it.
-            if let Some(pos) = subtracted_set.iter().position(|e| dq_equals(&val_to_remove, e)) {
+            if let Some(pos) = subtracted_set
+                .iter()
+                .position(|e| dq_equals(&val_to_remove, e))
+            {
                 subtracted_set.remove(pos);
             }
         }
@@ -2507,6 +2777,7 @@ impl PluralRules {
     }
 
     /// Equivalent to the package-private `isLimited(String)`.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn is_limited_integer(&self, keyword: &str) -> bool {
         self.rules.is_limited(keyword, SampleType::Integer)
     }
@@ -2531,7 +2802,13 @@ impl fmt::Display for PluralRules {
 /// Adds `value` to the `LinkedHashSet<Double>` `set` (`Double.equals`: bit
 /// equality of the canonical NaN).
 fn set_add_double(set: &mut Vec<f64>, value: f64) {
-    let key = |d: f64| if d.is_nan() { f64::NAN.to_bits() } else { d.to_bits() };
+    let key = |d: f64| {
+        if d.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            d.to_bits()
+        }
+    };
     if !set.iter().any(|v| key(*v) == key(value)) {
         set.push(value);
     }
@@ -2547,7 +2824,12 @@ impl PluralRules {
     /// Set<IFixedDecimal>, double)`: adds `new FixedDecimal(trial)` to
     /// `others` when neither set contains it (`FixedDecimal.equals`).
     #[allow(dead_code)]
-    fn add_conditional(&self, to_add_to: &[FixedDecimal], others: &mut Vec<FixedDecimal>, trial: f64) -> bool {
+    fn add_conditional(
+        &self,
+        to_add_to: &[FixedDecimal],
+        others: &mut Vec<FixedDecimal>,
+        trial: f64,
+    ) -> bool {
         let to_add = FixedDecimal::from_double(trial);
         if !to_add_to.contains(&to_add) && !others.contains(&to_add) {
             others.push(to_add);

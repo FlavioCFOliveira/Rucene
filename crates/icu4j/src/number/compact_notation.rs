@@ -16,7 +16,9 @@ use crate::r#impl::number::compact_data::{CompactData, CompactType};
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
 use crate::r#impl::number::micro_props::MicroProps;
 use crate::r#impl::number::micro_props_generator::MicroPropsGenerator;
-use crate::r#impl::number::mutable_pattern_modifier::{ImmutablePatternModifier, MutablePatternModifier};
+use crate::r#impl::number::mutable_pattern_modifier::{
+    ImmutablePatternModifier, MutablePatternModifier,
+};
 use crate::r#impl::number::pattern_string_parser::PatternStringParser;
 use crate::text::compact_decimal_format::CompactStyle;
 use crate::text::number_format::field as nf_field;
@@ -56,18 +58,22 @@ impl CompactNotation {
 
     /// `CompactNotation(CompactStyle)` (package-private).
     pub(crate) fn new(compact_style: CompactStyle) -> Self {
-        CompactNotation(Notation(Arc::new(NotationKind::Compact(CompactNotationData {
-            compact_style: Some(compact_style),
-            compact_custom_data: None,
-        }))))
+        CompactNotation(Notation(Arc::new(NotationKind::Compact(
+            CompactNotationData {
+                compact_style: Some(compact_style),
+                compact_custom_data: None,
+            },
+        ))))
     }
 
     /// `CompactNotation(Map)` (package-private).
     pub(crate) fn with_custom_data(compact_custom_data: Option<Arc<CompactCustomData>>) -> Self {
-        CompactNotation(Notation(Arc::new(NotationKind::Compact(CompactNotationData {
-            compact_style: None,
-            compact_custom_data,
-        }))))
+        CompactNotation(Notation(Arc::new(NotationKind::Compact(
+            CompactNotationData {
+                compact_style: None,
+                compact_custom_data,
+            },
+        ))))
     }
 
     /// `notation instanceof CompactNotation ? (CompactNotation) notation :
@@ -112,7 +118,16 @@ impl CompactNotation {
     ) -> Result<Arc<dyn MicroPropsGenerator>> {
         // TODO: Add a data cache? It would be keyed by locale, nsName,
         // compact type, and compact style.
-        Ok(Arc::new(CompactHandler::new(self, locale, ns_name, compact_type, rules, build_reference, safe, parent)?))
+        Ok(Arc::new(CompactHandler::new(
+            self,
+            locale,
+            ns_name,
+            compact_type,
+            rules,
+            build_reference,
+            safe,
+            parent,
+        )?))
     }
 }
 
@@ -166,12 +181,21 @@ impl CompactHandler {
         let (precomputed_mods, unsafe_pattern_modifier) = if safe {
             // Safe code path requires copying the patterns for each new
             // number.
-            (Some(Self::precompute_all_modifiers(&data, build_reference)?), None)
+            (
+                Some(Self::precompute_all_modifiers(&data, build_reference)?),
+                None,
+            )
         } else {
             // Unsafe code path; requires the build reference to be used.
             (None, Some(build_reference.clone()))
         };
-        Ok(CompactHandler { rules, parent, precomputed_mods, unsafe_pattern_modifier, data })
+        Ok(CompactHandler {
+            rules,
+            parent,
+            precomputed_mods,
+            unsafe_pattern_modifier,
+            data,
+        })
     }
 
     /// Used by the safe code path.
@@ -185,7 +209,8 @@ impl CompactHandler {
 
         for pattern_string in all_patterns {
             let pattern_info = PatternStringParser::parse_to_pattern_info(&pattern_string)?;
-            build_reference.set_pattern_info(Arc::new(pattern_info), Some(&nf_field::COMPACT as FieldRef));
+            build_reference
+                .set_pattern_info(Arc::new(pattern_info), Some(&nf_field::COMPACT as FieldRef));
             let imm = build_reference.create_immutable()?;
             precomputed_mods.insert(pattern_string, imm);
         }
@@ -197,7 +222,10 @@ impl MicroPropsGenerator for CompactHandler {
     fn process_quantity(&self, quantity: &mut dyn DecimalQuantity) -> Result<MicroProps> {
         let mut micros = self.parent.process_quantity(quantity)?;
         debug_assert!(micros.rounder.is_some());
-        let rounder = micros.rounder.clone().expect("micros.rounder is set by the pipeline");
+        let rounder = micros
+            .rounder
+            .clone()
+            .expect("micros.rounder is set by the pipeline");
 
         // Treat zero, NaN, and infinity as if they had magnitude 0
         let magnitude;
@@ -207,7 +235,11 @@ impl MicroPropsGenerator for CompactHandler {
             rounder.apply(quantity)?;
         } else {
             multiplier = rounder.choose_multiplier_and_apply(quantity, &self.data)?;
-            let m = if quantity.is_zeroish() { 0 } else { quantity.get_magnitude()? };
+            let m = if quantity.is_zeroish() {
+                0
+            } else {
+                quantity.get_magnitude()?
+            };
             magnitude = m - multiplier;
         }
 
@@ -221,15 +253,23 @@ impl MicroPropsGenerator for CompactHandler {
                 Some(mods) => {
                     // Safe code path.
                     // Java NPE when the pattern is missing from the map.
-                    let m = mods.get(&pattern_string).unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+                    let m = mods
+                        .get(&pattern_string)
+                        .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
                     m.apply_to_micros(&mut micros, quantity)?;
                 }
                 None => {
                     // Unsafe code path.
                     // Overwrite the PatternInfo in the existing modMiddle.
                     let pattern_info = PatternStringParser::parse_to_pattern_info(&pattern_string)?;
-                    let upm = self.unsafe_pattern_modifier.as_ref().expect("set on the unsafe path");
-                    upm.set_pattern_info(Arc::new(pattern_info), Some(&nf_field::COMPACT as FieldRef));
+                    let upm = self
+                        .unsafe_pattern_modifier
+                        .as_ref()
+                        .expect("set on the unsafe path");
+                    upm.set_pattern_info(
+                        Arc::new(pattern_info),
+                        Some(&nf_field::COMPACT as FieldRef),
+                    );
                     upm.set_number_properties(quantity.signum(), None);
                     micros.mod_middle = Some(upm.clone());
                 }

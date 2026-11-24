@@ -87,7 +87,9 @@ pub fn null_pointer(message: &str) -> LuceneError {
 /// With that message when `index` is outside `0..length`.
 fn check_index(index: i32, length: i32) -> usize {
     if index < 0 || index >= length {
-        panic!("java.lang.IndexOutOfBoundsException: Index {index} out of bounds for length {length}");
+        panic!(
+            "java.lang.IndexOutOfBoundsException: Index {index} out of bounds for length {length}"
+        );
     }
     index as usize
 }
@@ -427,10 +429,7 @@ impl ByteBuffer {
     pub fn set_position(&mut self, new_position: i32) -> Result<&mut Self> {
         if new_position > self.limit || new_position < 0 {
             let msg = if new_position > self.limit {
-                format!(
-                    "newPosition > limit: ({} > {})",
-                    new_position, self.limit
-                )
+                format!("newPosition > limit: ({} > {})", new_position, self.limit)
             } else {
                 format!("newPosition < 0: ({new_position} < 0)")
             };
@@ -457,10 +456,7 @@ impl ByteBuffer {
     pub fn set_limit(&mut self, new_limit: i32) -> Result<&mut Self> {
         if new_limit > self.capacity || new_limit < 0 {
             let msg = if new_limit > self.capacity {
-                format!(
-                    "newLimit > capacity: ({} > {})",
-                    new_limit, self.capacity
-                )
+                format!("newLimit > capacity: ({} > {})", new_limit, self.capacity)
             } else {
                 format!("newLimit < 0: ({new_limit} < 0)")
             };
@@ -1184,7 +1180,10 @@ pub struct ParsePosition {
 impl ParsePosition {
     /// `new ParsePosition(int index)`: the error index is -1.
     pub fn new(index: i32) -> Self {
-        Self { index, error_index: -1 }
+        Self {
+            index,
+            error_index: -1,
+        }
     }
 
     /// `getIndex()`.
@@ -1216,7 +1215,11 @@ impl ParsePosition {
 impl std::fmt::Display for ParsePosition {
     /// `toString()`: `java.text.ParsePosition[index=<i>,errorIndex=<e>]`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "java.text.ParsePosition[index={},errorIndex={}]", self.index, self.error_index)
+        write!(
+            f,
+            "java.text.ParsePosition[index={},errorIndex={}]",
+            self.index, self.error_index
+        )
     }
 }
 
@@ -1382,5 +1385,6 @@ pub fn parse_double(s: &str) -> Result<f64> {
     if s.trim_matches(|c: char| c <= '\u{20}').is_empty() {
         return Err(LuceneError::number_format("empty String"));
     }
-    rucene::util::java_fmt::parse_double(s).ok_or_else(|| LuceneError::number_format(format!("For input string: \"{s}\"")))
+    rucene::util::java_fmt::parse_double(s)
+        .ok_or_else(|| LuceneError::number_format(format!("For input string: \"{s}\"")))
 }

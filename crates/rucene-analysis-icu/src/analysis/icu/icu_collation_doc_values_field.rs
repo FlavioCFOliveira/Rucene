@@ -93,9 +93,9 @@ impl ICUCollationDocValuesField {
     // TODO: can we make this trap-free? maybe just synchronize on the collator
     // instead?
     pub fn new(name: &str, collator: &dyn Collator) -> Result<Self> {
-        let collator = collator
-            .clone_box()
-            .unwrap_or_else(|e| IOUtils::rethrow_always(rucene::error::LuceneError::runtime_exception(e)));
+        let collator = collator.clone_box().unwrap_or_else(|e| {
+            IOUtils::rethrow_always(rucene::error::LuceneError::runtime_exception(e))
+        });
         Ok(Self {
             base: Field::new_with_bytes(
                 name.to_string(),

@@ -30,7 +30,9 @@ use crate::r#impl::u_resource::{Key, Sink, Value};
 use crate::text::break_iterator::{self, BreakIterator};
 use crate::text::case_map::{self, Title};
 use crate::text::display_context::{DisplayContext, Type};
-use crate::text::locale_display_names::{sort_ui_list, DialectHandling, LocaleDisplayNames, UiListItem};
+use crate::text::locale_display_names::{
+    sort_ui_list, DialectHandling, LocaleDisplayNames, UiListItem,
+};
 use crate::util::u_locale::{Builder as ULocaleBuilder, Minimize, ULocale};
 use crate::util::u_resource_bundle::{is_missing_resource, UResourceBundle};
 
@@ -72,7 +74,11 @@ static TO_TITLE_WHOLE_STRING_NO_LOWERCASE: LazyLock<Title> = LazyLock::new(|| {
 /// `toTitleWholeStringNoLowercase(ULocale locale, String s)`.
 fn to_title_whole_string_no_lowercase(locale: &ULocale, s: &str) -> Result<String> {
     let l: Locale = locale.to_locale();
-    Ok(to_rust_string(&TO_TITLE_WHOLE_STRING_NO_LOWERCASE.apply(Some(&l), None, &units(s))?))
+    Ok(to_rust_string(&TO_TITLE_WHOLE_STRING_NO_LOWERCASE.apply(
+        Some(&l),
+        None,
+        &units(s),
+    )?))
 }
 
 /// The ICU implementation of [`LocaleDisplayNames`].
@@ -136,7 +142,11 @@ static CACHE: Mutex<Cache> = Mutex::new(Cache {
 });
 
 impl Cache {
-    fn get_dialect(&mut self, locale: &ULocale, dialect_handling: DialectHandling) -> Result<Arc<LocaleDisplayNamesImpl>> {
+    fn get_dialect(
+        &mut self,
+        locale: &ULocale,
+        dialect_handling: DialectHandling,
+    ) -> Result<Arc<LocaleDisplayNamesImpl>> {
         if !(Some(dialect_handling) == self.dialect_handling
             && Some(DisplayContext::CapitalizationNone) == self.capitalization
             && Some(DisplayContext::LengthFull) == self.name_length
@@ -149,12 +159,22 @@ impl Cache {
             self.name_length = Some(DisplayContext::LengthFull);
             self.substitute_handling = Some(DisplayContext::Substitute);
             // (Java assigns the fields first: a throwing constructor leaves them updated.)
-            self.cache = Some(Arc::new(LocaleDisplayNamesImpl::new_dialect(locale, dialect_handling)?));
+            self.cache = Some(Arc::new(LocaleDisplayNamesImpl::new_dialect(
+                locale,
+                dialect_handling,
+            )?));
         }
-        Ok(self.cache.clone().expect("set above or by an earlier call with the same key"))
+        Ok(self
+            .cache
+            .clone()
+            .expect("set above or by an earlier call with the same key"))
     }
 
-    fn get_contexts(&mut self, locale: &ULocale, contexts: &[DisplayContext]) -> Result<Arc<LocaleDisplayNamesImpl>> {
+    fn get_contexts(
+        &mut self,
+        locale: &ULocale,
+        contexts: &[DisplayContext],
+    ) -> Result<Arc<LocaleDisplayNamesImpl>> {
         let mut dialect_handling_in = DialectHandling::StandardNames;
         let mut capitalization_in = DisplayContext::CapitalizationNone;
         let mut name_length_in = DisplayContext::LengthFull;
@@ -162,11 +182,12 @@ impl Cache {
         for &context_item in contexts {
             match context_item.r#type() {
                 Type::DialectHandling => {
-                    dialect_handling_in = if context_item.value() == DisplayContext::StandardNames.value() {
-                        DialectHandling::StandardNames
-                    } else {
-                        DialectHandling::DialectNames
-                    };
+                    dialect_handling_in =
+                        if context_item.value() == DisplayContext::StandardNames.value() {
+                            DialectHandling::StandardNames
+                        } else {
+                            DialectHandling::DialectNames
+                        };
                 }
                 Type::Capitalization => capitalization_in = context_item,
                 Type::DisplayLength => name_length_in = context_item,
@@ -184,9 +205,14 @@ impl Cache {
             self.capitalization = Some(capitalization_in);
             self.name_length = Some(name_length_in);
             self.substitute_handling = Some(substitute_handling);
-            self.cache = Some(Arc::new(LocaleDisplayNamesImpl::new_contexts(locale, contexts)?));
+            self.cache = Some(Arc::new(LocaleDisplayNamesImpl::new_contexts(
+                locale, contexts,
+            )?));
         }
-        Ok(self.cache.clone().expect("set above or by an earlier call with the same key"))
+        Ok(self
+            .cache
+            .clone()
+            .expect("set above or by an earlier call with the same key"))
     }
 }
 
@@ -213,11 +239,12 @@ impl Sink for CapitalizationContextSink<'_> {
                 continue;
             }
 
-            let titlecase_int = if self.capitalization == DisplayContext::CapitalizationForUiListOrMenu {
-                int_vector[0]
-            } else {
-                int_vector[1]
-            };
+            let titlecase_int =
+                if self.capitalization == DisplayContext::CapitalizationForUiListOrMenu {
+                    int_vector[0]
+                } else {
+                    int_vector[1]
+                };
             if titlecase_int == 0 {
                 continue;
             }
@@ -231,8 +258,15 @@ impl Sink for CapitalizationContextSink<'_> {
 
 /// `String.replace(char, char)` twice: the parentheses of the format
 /// pattern replaced by their substitutes.
-fn replace_parens(s: &str, open: char, replace_open: char, close: char, replace_close: char) -> String {
-    s.replace(open, &replace_open.to_string()).replace(close, &replace_close.to_string())
+fn replace_parens(
+    s: &str,
+    open: char,
+    replace_open: char,
+    close: char,
+    replace_close: char,
+) -> String {
+    s.replace(open, &replace_open.to_string())
+        .replace(close, &replace_close.to_string())
 }
 
 impl LocaleDisplayNamesImpl {
@@ -243,7 +277,10 @@ impl LocaleDisplayNamesImpl {
     /// # Errors
     ///
     /// The errors of the constructor.
-    pub fn get_instance_dialect(locale: &ULocale, dialect_handling: DialectHandling) -> Result<Arc<dyn LocaleDisplayNames>> {
+    pub fn get_instance_dialect(
+        locale: &ULocale,
+        dialect_handling: DialectHandling,
+    ) -> Result<Arc<dyn LocaleDisplayNames>> {
         let mut cache = CACHE.lock().expect("cache lock");
         Ok(cache.get_dialect(locale, dialect_handling)? as Arc<dyn LocaleDisplayNames>)
     }
@@ -253,7 +290,10 @@ impl LocaleDisplayNamesImpl {
     /// # Errors
     ///
     /// The errors of the constructor.
-    pub fn get_instance_contexts(locale: &ULocale, contexts: &[DisplayContext]) -> Result<Arc<dyn LocaleDisplayNames>> {
+    pub fn get_instance_contexts(
+        locale: &ULocale,
+        contexts: &[DisplayContext],
+    ) -> Result<Arc<dyn LocaleDisplayNames>> {
         let mut cache = CACHE.lock().expect("cache lock");
         Ok(cache.get_contexts(locale, contexts)? as Arc<dyn LocaleDisplayNames>)
     }
@@ -294,11 +334,12 @@ impl LocaleDisplayNamesImpl {
         for &context_item in contexts {
             match context_item.r#type() {
                 Type::DialectHandling => {
-                    dialect_handling = if context_item.value() == DisplayContext::StandardNames.value() {
-                        DialectHandling::StandardNames
-                    } else {
-                        DialectHandling::DialectNames
-                    };
+                    dialect_handling =
+                        if context_item.value() == DisplayContext::StandardNames.value() {
+                            DialectHandling::StandardNames
+                        } else {
+                            DialectHandling::DialectNames
+                        };
                 }
                 Type::Capitalization => capitalization = context_item,
                 Type::DisplayLength => name_length = context_item,
@@ -306,8 +347,10 @@ impl LocaleDisplayNamesImpl {
             }
         }
 
-        let lang_data = lang_data_tables().get(locale, substitute_handling == DisplayContext::NoSubstitute)?;
-        let region_data = region_data_tables().get(locale, substitute_handling == DisplayContext::NoSubstitute)?;
+        let lang_data =
+            lang_data_tables().get(locale, substitute_handling == DisplayContext::NoSubstitute)?;
+        let region_data = region_data_tables()
+            .get(locale, substitute_handling == DisplayContext::NoSubstitute)?;
         let this_locale = if ULocale::root() == lang_data.get_locale() {
             region_data.get_locale()
         } else {
@@ -323,24 +366,41 @@ impl LocaleDisplayNamesImpl {
             sep = Some("{0}, {1}".to_string());
         }
         let mut sb = Vec::new();
-        let separator_format =
-            SimpleFormatterImpl::compile_to_string_min_max_arguments(&units(sep.as_deref().expect("set")), &mut sb, 2, 2)?;
+        let separator_format = SimpleFormatterImpl::compile_to_string_min_max_arguments(
+            &units(sep.as_deref().expect("set")),
+            &mut sb,
+            2,
+            2,
+        )?;
 
         let mut pattern = lang_data.get_sub("localeDisplayPattern", None, "pattern");
         if pattern.as_deref().is_none_or(|p| p == "pattern") {
             pattern = Some("{0} ({1})".to_string());
         }
         let pattern = pattern.expect("set");
-        let format = SimpleFormatterImpl::compile_to_string_min_max_arguments(&units(&pattern), &mut sb, 2, 2)?;
-        let (format_open_paren, format_close_paren, format_replace_open_paren, format_replace_close_paren) =
-            if pattern.contains('（') {
-                ('（', '）', '［', '］')
-            } else {
-                ('(', ')', '[', ']')
-            };
+        let format = SimpleFormatterImpl::compile_to_string_min_max_arguments(
+            &units(&pattern),
+            &mut sb,
+            2,
+            2,
+        )?;
+        let (
+            format_open_paren,
+            format_close_paren,
+            format_replace_open_paren,
+            format_replace_close_paren,
+        ) = if pattern.contains('（') {
+            ('（', '）', '［', '］')
+        } else {
+            ('(', ')', '[', ']')
+        };
 
-        let mut key_type_pattern = lang_data.get_sub("localeDisplayPattern", None, "keyTypePattern");
-        if key_type_pattern.as_deref().is_none_or(|p| p == "keyTypePattern") {
+        let mut key_type_pattern =
+            lang_data.get_sub("localeDisplayPattern", None, "keyTypePattern");
+        if key_type_pattern
+            .as_deref()
+            .is_none_or(|p| p == "keyTypePattern")
+        {
             key_type_pattern = Some("{0}={1}".to_string());
         }
         let key_type_format = SimpleFormatterImpl::compile_to_string_min_max_arguments(
@@ -358,7 +418,10 @@ impl LocaleDisplayNamesImpl {
             || capitalization == DisplayContext::CapitalizationForStandalone
         {
             let mut usage = [false; CAPITALIZATION_CONTEXT_USAGE_COUNT]; // initialized to all false
-            let rb = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
+            let rb = UResourceBundle::get_bundle_instance_for(
+                Some(ICUData::ICU_BASE_NAME),
+                Some(locale),
+            )?;
             let rb: Arc<ICUResourceBundle> = rb.as_icu()?.clone();
             let mut sink = CapitalizationContextSink {
                 capitalization,
@@ -413,17 +476,26 @@ impl LocaleDisplayNamesImpl {
         )
     }
 
-    fn adjust_for_usage_and_context(&self, usage: CapitalizationContextUsage, name: Option<String>) -> Result<Option<String>> {
+    fn adjust_for_usage_and_context(
+        &self,
+        usage: CapitalizationContextUsage,
+        name: Option<String>,
+    ) -> Result<Option<String>> {
         if let Some(n) = &name {
             let u = units(n);
             if !u.is_empty()
                 && UCharacter::is_lower_case(code_point_at(&u, 0))
                 && (self.capitalization == DisplayContext::CapitalizationForBeginningOfSentence
-                    || self.capitalization_usage.is_some_and(|cu| cu[usage as usize]))
+                    || self
+                        .capitalization_usage
+                        .is_some_and(|cu| cu[usage as usize]))
             {
                 // Note, won't have capitalizationUsage != null && capitalizationUsage[usage.ordinal()]
                 // unless capitalization is CAPITALIZATION_FOR_UI_LIST_OR_MENU or CAPITALIZATION_FOR_STANDALONE
-                let mut brk = self.capitalization_brk_iter.lock().expect("break iterator lock");
+                let mut brk = self
+                    .capitalization_brk_iter
+                    .lock()
+                    .expect("break iterator lock");
                 if brk.is_none() {
                     // should only happen when deserializing, etc.
                     *brk = Some(break_iterator::get_sentence_instance_ulocale(&self.locale)?);
@@ -544,17 +616,21 @@ impl LocaleDisplayNamesImpl {
                     Some(k) => k,
                 };
                 let key_display_name = self.rp(&key_display_name);
-                let value_display_name = match self.key_value_display_name_skip(&key, value.as_deref(), true)? {
-                    None => return Ok(None),
-                    Some(v) => v,
-                };
+                let value_display_name =
+                    match self.key_value_display_name_skip(&key, value.as_deref(), true)? {
+                        None => return Ok(None),
+                        Some(v) => v,
+                    };
                 let value_display_name = self.rp(&value_display_name);
                 if value.as_deref() != Some(value_display_name.as_str()) {
                     self.append_with_sep(&value_display_name, &mut buf)?;
                 } else if key != key_display_name {
                     let key_value = SimpleFormatterImpl::format_compiled_pattern(
                         &self.key_type_format,
-                        &[Arg::Text(&units(&key_display_name)), Arg::Text(&units(&value_display_name))],
+                        &[
+                            Arg::Text(&units(&key_display_name)),
+                            Arg::Text(&units(&value_display_name)),
+                        ],
                     )?;
                     self.append_with_sep(&to_rust_string(&key_value), &mut buf)?;
                 } else {
@@ -605,14 +681,21 @@ impl LocaleDisplayNamesImpl {
         Ok(loc_id_name)
     }
 
-    fn script_display_name_in_context_skip(&self, script: &str, skip_adjust: bool) -> Result<Option<String>> {
+    fn script_display_name_in_context_skip(
+        &self,
+        script: &str,
+        skip_adjust: bool,
+    ) -> Result<Option<String>> {
         if self.name_length == DisplayContext::LengthShort {
             let script_name = self.lang_data.get("Scripts%short", script);
             if script_name.as_deref().is_some_and(|n| n != script) {
                 return if skip_adjust {
                     Ok(script_name)
                 } else {
-                    self.adjust_for_usage_and_context(CapitalizationContextUsage::Script, script_name)
+                    self.adjust_for_usage_and_context(
+                        CapitalizationContextUsage::Script,
+                        script_name,
+                    )
                 };
             }
         }
@@ -631,7 +714,10 @@ impl LocaleDisplayNamesImpl {
                 return if skip_adjust {
                     Ok(region_name)
                 } else {
-                    self.adjust_for_usage_and_context(CapitalizationContextUsage::Territory, region_name)
+                    self.adjust_for_usage_and_context(
+                        CapitalizationContextUsage::Territory,
+                        region_name,
+                    )
                 };
             }
         }
@@ -643,7 +729,11 @@ impl LocaleDisplayNamesImpl {
         }
     }
 
-    fn variant_display_name_skip(&self, variant: &str, skip_adjust: bool) -> Result<Option<String>> {
+    fn variant_display_name_skip(
+        &self,
+        variant: &str,
+        skip_adjust: bool,
+    ) -> Result<Option<String>> {
         // don't have a resource for short variant names
         let variant_name = self.lang_data.get("Variants", variant);
         if skip_adjust {
@@ -663,7 +753,12 @@ impl LocaleDisplayNamesImpl {
         }
     }
 
-    fn key_value_display_name_skip(&self, key: &str, value: Option<&str>, skip_adjust: bool) -> Result<Option<String>> {
+    fn key_value_display_name_skip(
+        &self,
+        key: &str,
+        value: Option<&str>,
+        skip_adjust: bool,
+    ) -> Result<Option<String>> {
         let mut key_value_name: Option<String> = None;
 
         if key == "currency" {
@@ -672,7 +767,9 @@ impl LocaleDisplayNamesImpl {
                 .currency_display_info
                 .as_ref()
                 .ok_or_else(|| null_pointer("Cannot invoke \"com.ibm.icu.impl.CurrencyData$CurrencyDisplayInfo.getName(String)\" because \"this.currencyDisplayInfo\" is null"))?;
-            let v = value.ok_or_else(|| null_pointer("Cannot invoke \"String.length()\" because \"s\" is null"))?;
+            let v = value.ok_or_else(|| {
+                null_pointer("Cannot invoke \"String.length()\" because \"s\" is null")
+            })?;
             key_value_name = info.get_name(&AsciiUtil::to_upper_string(v))?;
             if key_value_name.is_none() {
                 key_value_name = Some(v.to_string());
@@ -699,24 +796,29 @@ impl LocaleDisplayNamesImpl {
     fn new_row(&self, modified: ULocale, cap_context: DisplayContext) -> Result<UiListItem> {
         let minimized = ULocale::minimize_subtags_favor(&modified, Minimize::FavorScript)?;
         // (`getDisplayName` uses the standard, substituting instance: never null.)
-        let temp_name = modified
-            .get_display_name_in(&self.locale)?
-            .ok_or_else(|| null_pointer("Cannot invoke \"String.length()\" because \"s\" is null"))?;
+        let temp_name = modified.get_display_name_in(&self.locale)?.ok_or_else(|| {
+            null_pointer("Cannot invoke \"String.length()\" because \"s\" is null")
+        })?;
         let titlecase = cap_context == DisplayContext::CapitalizationForUiListOrMenu;
         let name_in_display_locale = if titlecase {
             to_title_whole_string_no_lowercase(&self.locale, &temp_name)?
         } else {
             temp_name
         };
-        let temp_name = modified
-            .get_display_name_in(&modified)?
-            .ok_or_else(|| null_pointer("Cannot invoke \"String.length()\" because \"s\" is null"))?;
+        let temp_name = modified.get_display_name_in(&modified)?.ok_or_else(|| {
+            null_pointer("Cannot invoke \"String.length()\" because \"s\" is null")
+        })?;
         let name_in_self = if cap_context == DisplayContext::CapitalizationForUiListOrMenu {
             to_title_whole_string_no_lowercase(&modified, &temp_name)?
         } else {
             temp_name
         };
-        Ok(UiListItem::new(minimized, modified, name_in_display_locale, name_in_self))
+        Ok(UiListItem::new(
+            minimized,
+            modified,
+            name_in_display_locale,
+            name_in_self,
+        ))
     }
 
     fn append_with_sep(&self, s: &str, b: &mut Vec<u16>) -> Result<()> {
@@ -724,7 +826,12 @@ impl LocaleDisplayNamesImpl {
             b.extend_from_slice(&units(s));
         } else {
             let su = units(s);
-            SimpleFormatterImpl::format_and_replace(&self.separator_format, b, None, &[Arg::Result, Arg::Text(&su)])?;
+            SimpleFormatterImpl::format_and_replace(
+                &self.separator_format,
+                b,
+                None,
+                &[Arg::Result, Arg::Text(&su)],
+            )?;
         }
         Ok(())
     }
@@ -789,7 +896,8 @@ impl LocaleDisplayNames for LocaleDisplayNamesImpl {
         if self.name_length == DisplayContext::LengthShort {
             lang_name = self.lang_data.get("Languages%short", lang);
             if lang_name.as_deref().is_some_and(|n| n != lang) {
-                return self.adjust_for_usage_and_context(CapitalizationContextUsage::Language, lang_name);
+                return self
+                    .adjust_for_usage_and_context(CapitalizationContextUsage::Language, lang_name);
             }
         }
         lang_name = self.lang_data.get("Languages", lang);
@@ -800,7 +908,10 @@ impl LocaleDisplayNames for LocaleDisplayNamesImpl {
             if self.name_length == DisplayContext::LengthShort {
                 lang_name = self.lang_data.get("Languages%short", &canon_loc_id);
                 if lang_name.as_deref().is_some_and(|n| n != canon_loc_id) {
-                    return self.adjust_for_usage_and_context(CapitalizationContextUsage::Language, lang_name);
+                    return self.adjust_for_usage_and_context(
+                        CapitalizationContextUsage::Language,
+                        lang_name,
+                    );
                 }
             }
             lang_name = self.lang_data.get("Languages", &canon_loc_id);
@@ -814,7 +925,8 @@ impl LocaleDisplayNames for LocaleDisplayNamesImpl {
             if self.name_length == DisplayContext::LengthShort {
                 str = self.lang_data.get("Scripts%short", script);
                 if str.as_deref().is_some_and(|s| s != script) {
-                    return self.adjust_for_usage_and_context(CapitalizationContextUsage::Script, str);
+                    return self
+                        .adjust_for_usage_and_context(CapitalizationContextUsage::Script, str);
                 }
             }
             str = self.lang_data.get("Scripts", script);
@@ -831,7 +943,9 @@ impl LocaleDisplayNames for LocaleDisplayNamesImpl {
         let short_name = UScript::get_short_name(script_code)?;
         match short_name {
             Some(s) => self.script_display_name(&s),
-            None => Err(null_pointer("Cannot invoke \"String.equals(Object)\" because \"script\" is null")),
+            None => Err(null_pointer(
+                "Cannot invoke \"String.equals(Object)\" because \"script\" is null",
+            )),
         }
     }
 
@@ -851,6 +965,7 @@ impl LocaleDisplayNames for LocaleDisplayNamesImpl {
         self.key_value_display_name_skip(key, value, false)
     }
 
+    #[allow(clippy::mutable_key_type)] // ULocale hashes its immutable ID only; its caches do not affect Hash/Eq
     fn get_ui_list_compare_whole_items(
         &self,
         locale_set: &[ULocale],
@@ -877,7 +992,10 @@ impl LocaleDisplayNames for LocaleDisplayNamesImpl {
             let values = &base_to_locales[&base];
             if values.len() == 1 {
                 let locale = values.iter().next().expect("one value").clone();
-                result.push(self.new_row(ULocale::minimize_subtags_favor(&locale, Minimize::FavorScript)?, cap_context)?);
+                result.push(self.new_row(
+                    ULocale::minimize_subtags_favor(&locale, Minimize::FavorScript)?,
+                    cap_context,
+                )?);
             } else {
                 let mut scripts: HashSet<String> = HashSet::new();
                 let mut regions: HashSet<String> = HashSet::new();
@@ -956,7 +1074,12 @@ impl DataTable {
     }
 
     /// `get(String tableName, String subTableName, String code)`.
-    pub fn get_sub(&self, table_name: &str, sub_table_name: Option<&str>, code: &str) -> Option<String> {
+    pub fn get_sub(
+        &self,
+        table_name: &str,
+        sub_table_name: Option<&str>,
+        code: &str,
+    ) -> Option<String> {
         match self {
             DataTable::Plain { null_if_not_found } => {
                 if *null_if_not_found {
@@ -982,7 +1105,12 @@ impl DataTable {
     /// code yields `null` (the plain table returns the code itself;
     /// `ICUResourceTableAccess.getTableString` gets a `NullPointerException`
     /// from the lookup, catches it and returns its default, the code).
-    fn get_sub_value(&self, table_name: &str, sub_table_name: &str, code: Option<&str>) -> Option<String> {
+    fn get_sub_value(
+        &self,
+        table_name: &str,
+        sub_table_name: &str,
+        code: Option<&str>,
+    ) -> Option<String> {
         match code {
             Some(c) => self.get_sub(table_name, Some(sub_table_name), c),
             None => None,
@@ -1029,13 +1157,15 @@ impl DataTables {
 
 /// `LangDataTables.impl`.
 fn lang_data_tables() -> DataTables {
-    static IMPL: LazyLock<DataTables> = LazyLock::new(|| DataTables::load("com.ibm.icu.impl.ICULangDataTables"));
+    static IMPL: LazyLock<DataTables> =
+        LazyLock::new(|| DataTables::load("com.ibm.icu.impl.ICULangDataTables"));
     *IMPL
 }
 
 /// `RegionDataTables.impl`.
 fn region_data_tables() -> DataTables {
-    static IMPL: LazyLock<DataTables> = LazyLock::new(|| DataTables::load("com.ibm.icu.impl.ICURegionDataTables"));
+    static IMPL: LazyLock<DataTables> =
+        LazyLock::new(|| DataTables::load("com.ibm.icu.impl.ICURegionDataTables"));
     *IMPL
 }
 

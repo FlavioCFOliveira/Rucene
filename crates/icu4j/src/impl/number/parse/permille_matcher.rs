@@ -6,12 +6,18 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::r#impl::number::parse::parsed_number::{self, ParsedNumber};
-use crate::r#impl::number::parse::symbol_matcher::{impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl};
+use crate::r#impl::number::parse::symbol_matcher::{
+    impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl,
+};
 use crate::r#impl::static_unicode_sets::Key;
 use crate::r#impl::string_segment::StringSegment;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 
-static DEFAULT: LazyLock<Arc<PermilleMatcher>> = LazyLock::new(|| Arc::new(PermilleMatcher { base: SymbolMatcher::from_key(Key::PermilleSign) }));
+static DEFAULT: LazyLock<Arc<PermilleMatcher>> = LazyLock::new(|| {
+    Arc::new(PermilleMatcher {
+        base: SymbolMatcher::from_key(Key::PermilleSign),
+    })
+});
 
 /// Equivalent to `com.ibm.icu.impl.number.parse.PermilleMatcher`.
 #[derive(Debug)]
@@ -26,7 +32,9 @@ impl PermilleMatcher {
         if DEFAULT.base.uni_set.contains_str(symbol_string) {
             DEFAULT.clone()
         } else {
-            Arc::new(PermilleMatcher { base: SymbolMatcher::new(symbol_string, DEFAULT.base.uni_set) })
+            Arc::new(PermilleMatcher {
+                base: SymbolMatcher::new(symbol_string, DEFAULT.base.uni_set),
+            })
         }
     }
 }

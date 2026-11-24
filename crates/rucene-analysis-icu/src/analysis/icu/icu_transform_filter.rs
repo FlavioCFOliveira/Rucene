@@ -96,8 +96,11 @@ impl TokenFilterLogic for ICUTransformFilterLogic {
             self.position.context_start = 0;
             self.position.context_limit = length;
 
-            self.transform
-                .filtered_transliterate(&self.replaceable_attribute, &mut self.position, false)?;
+            self.transform.filtered_transliterate(
+                &self.replaceable_attribute,
+                &mut self.position,
+                false,
+            )?;
             set_term_utf16(&mut *term_att, &self.replaceable_attribute.text());
             Ok(true)
         } else {
@@ -193,7 +196,14 @@ impl ReplaceableState {
     }
 
     /// `replace(int, int, char[], int, int)`.
-    fn replace_chars(&mut self, start: i32, limit: i32, text: &[u16], chars_start: i32, chars_len: i32) {
+    fn replace_chars(
+        &mut self,
+        start: i32,
+        limit: i32,
+        text: &[u16],
+        chars_start: i32,
+        chars_len: i32,
+    ) {
         // shift text if necessary for the replacement
         let new_length = self.shift_for_replace(start, limit, chars_len);
         // insert the replacement text
@@ -291,7 +301,14 @@ impl Replaceable for ReplaceableTermAttribute {
     }
 
     /// Equivalent to `replace(int, int, char[], int, int)`.
-    fn replace_chars(&self, start: i32, limit: i32, text: &[u16], chars_start: i32, chars_len: i32) {
+    fn replace_chars(
+        &self,
+        start: i32,
+        limit: i32,
+        text: &[u16],
+        chars_start: i32,
+        chars_len: i32,
+    ) {
         self.lock()
             .replace_chars(start, limit, text, chars_start, chars_len);
     }

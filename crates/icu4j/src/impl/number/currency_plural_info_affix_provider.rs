@@ -36,7 +36,10 @@ impl CurrencyPluralInfoAffixProvider {
         plural_properties.copy_from(properties);
         for plural in StandardPlural::VALUES {
             let pattern = cpi.get_currency_plural_pattern(plural.get_keyword());
-            PatternStringParser::parse_to_existing_properties(Some(&pattern), &mut plural_properties)?;
+            PatternStringParser::parse_to_existing_properties(
+                Some(&pattern),
+                &mut plural_properties,
+            )?;
             affixes_by_plural.push(PropertiesAffixPatternProvider::new(&plural_properties)?);
         }
         Ok(CurrencyPluralInfoAffixProvider { affixes_by_plural })
@@ -91,4 +94,3 @@ impl AffixPatternProvider for CurrencyPluralInfoAffixProvider {
         self.other().currency_as_decimal()
     }
 }
-

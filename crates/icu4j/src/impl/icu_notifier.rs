@@ -104,7 +104,9 @@ impl<L: ?Sized + Send + Sync + 'static> ICUNotifier<L> {
             }
             Ok(())
         } else {
-            Err(LuceneError::illegal_state("Listener invalid for this notifier."))
+            Err(LuceneError::illegal_state(
+                "Listener invalid for this notifier.",
+            ))
         }
     }
 
@@ -138,7 +140,10 @@ impl<L: ?Sized + Send + Sync + 'static> ICUNotifier<L> {
                 std::thread::spawn(move || tt.run(notify_listener));
                 st.notify_thread = Some(t);
             }
-            st.notify_thread.as_ref().expect("set above").queue(listeners);
+            st.notify_thread
+                .as_ref()
+                .expect("set above")
+                .queue(listeners);
         }
     }
 }

@@ -99,7 +99,9 @@ pub trait CurrencyDisplayNames: Send + Sync {
 ///
 /// The errors of loading the currency data.
 pub fn get_instance(locale: Option<&ULocale>) -> Result<Option<Arc<dyn CurrencyDisplayNames>>> {
-    Ok(currency_data::provider().get_instance(locale, true)?.map(|i| i as Arc<dyn CurrencyDisplayNames>))
+    Ok(currency_data::provider()
+        .get_instance(locale, true)?
+        .map(|i| i as Arc<dyn CurrencyDisplayNames>))
 }
 
 /// `getInstance(Locale locale)`: as `getInstance(locale, false)`.
@@ -107,7 +109,9 @@ pub fn get_instance(locale: Option<&ULocale>) -> Result<Option<Arc<dyn CurrencyD
 /// # Errors
 ///
 /// The errors of `ULocale.forLocale` and of loading the data.
-pub fn get_instance_locale(locale: Option<&Locale>) -> Result<Option<Arc<dyn CurrencyDisplayNames>>> {
+pub fn get_instance_locale(
+    locale: Option<&Locale>,
+) -> Result<Option<Arc<dyn CurrencyDisplayNames>>> {
     get_instance_locale_no_substitute(locale, false)
 }
 

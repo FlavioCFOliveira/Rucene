@@ -155,7 +155,9 @@ pub trait BreakIterator: Debug + Send + Sync {
 
     /// `setText(String newText)`.
     fn set_text_string(&mut self, new_text: &[u16]) {
-        self.set_text(Some(Box::new(StringCharacterIterator::new(new_text.to_vec()))));
+        self.set_text(Some(Box::new(StringCharacterIterator::new(
+            new_text.to_vec(),
+        ))));
     }
 
     /// `setText(CharSequence newText)`.
@@ -217,7 +219,12 @@ pub trait BreakIteratorServiceShim: Send + Sync {
     /// # Errors
     ///
     /// The errors of the service.
-    fn register_instance(&self, iter: Box<dyn BreakIterator>, l: &ULocale, k: i32) -> Result<Arc<dyn Factory>>;
+    fn register_instance(
+        &self,
+        iter: Box<dyn BreakIterator>,
+        l: &ULocale,
+        k: i32,
+    ) -> Result<Arc<dyn Factory>>;
     /// `unregister(Object key)`.
     fn unregister(&self, key: &Arc<dyn Factory>) -> bool;
     /// `getAvailableLocales()`.
@@ -249,7 +256,10 @@ struct BreakIteratorCache {
 
 impl BreakIteratorCache {
     fn new(where_: ULocale, iter: &dyn BreakIterator) -> Self {
-        Self { where_, iter: iter.clone_box() }
+        Self {
+            where_,
+            iter: iter.clone_box(),
+        }
     }
 
     fn get_locale(&self) -> &ULocale {
@@ -263,15 +273,22 @@ impl BreakIteratorCache {
 
 /// `iterCache`: the last iterator created per kind (a `CacheValue` whose
 /// soft reference this crate never clears).
-static ITER_CACHE: Mutex<[Option<BreakIteratorCache>; KIND_COUNT]> = Mutex::new([None, None, None, None, None]);
+static ITER_CACHE: Mutex<[Option<BreakIteratorCache>; KIND_COUNT]> =
+    Mutex::new([None, None, None, None, None]);
 
 /// `shim`, created on first use.
 static SHIM: Mutex<Option<Arc<dyn BreakIteratorServiceShim>>> = Mutex::new(None);
 
 /// `Class.forName("com.ibm.icu.text.BreakIteratorFactory").newInstance()`:
 /// the constructor of the factory class.
+#[allow(clippy::type_complexity)] // type mirrors the Java signature
 fn break_iterator_factory_class() -> Option<fn() -> Result<Arc<dyn BreakIteratorServiceShim>>> {
-    Some(|| Ok(Arc::new(crate::text::break_iterator_factory::BreakIteratorFactory::new()?) as Arc<dyn BreakIteratorServiceShim>))
+    Some(|| {
+        Ok(
+            Arc::new(crate::text::break_iterator_factory::BreakIteratorFactory::new()?)
+                as Arc<dyn BreakIteratorServiceShim>,
+        )
+    })
 }
 
 fn get_shim() -> Result<Arc<dyn BreakIteratorServiceShim>> {
@@ -446,7 +463,11 @@ fn for_locale(where_: &Locale) -> Result<ULocale> {
 /// # Errors
 ///
 /// The errors of the factory.
-pub fn register_instance_locale(iter: Box<dyn BreakIterator>, locale: &Locale, kind: i32) -> Result<Arc<dyn Factory>> {
+pub fn register_instance_locale(
+    iter: Box<dyn BreakIterator>,
+    locale: &Locale,
+    kind: i32,
+) -> Result<Arc<dyn Factory>> {
     register_instance(iter, &for_locale(locale)?, kind)
 }
 
@@ -459,7 +480,11 @@ pub fn register_instance_locale(iter: Box<dyn BreakIterator>, locale: &Locale, k
 /// # Panics
 ///
 /// `ArrayIndexOutOfBoundsException` for a kind outside `0..5`.
-pub fn register_instance(iter: Box<dyn BreakIterator>, locale: &ULocale, kind: i32) -> Result<Arc<dyn Factory>> {
+pub fn register_instance(
+    iter: Box<dyn BreakIterator>,
+    locale: &ULocale,
+    kind: i32,
+) -> Result<Arc<dyn Factory>> {
     // If the registered object matches the one in the cache, then
     // flush the cached object.
     {
@@ -481,7 +506,9 @@ pub fn register_instance(iter: Box<dyn BreakIterator>, locale: &ULocale, kind: i
 /// `None` key.
 pub fn unregister(key: Option<&Arc<dyn Factory>>) -> Result<bool> {
     let Some(key) = key else {
-        return Err(LuceneError::illegal_argument("registry key must not be null"));
+        return Err(LuceneError::illegal_argument(
+            "registry key must not be null",
+        ));
     };
     let shim = SHIM.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(shim) = shim {

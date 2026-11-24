@@ -81,7 +81,12 @@ pub struct WholeBundle {
 }
 
 impl WholeBundle {
-    fn new(base_name: &str, locale_id: &str, loader: ClassLoader, reader: Arc<ICUResourceBundleReader>) -> Result<Self> {
+    fn new(
+        base_name: &str,
+        locale_id: &str,
+        loader: ClassLoader,
+        reader: Arc<ICUResourceBundleReader>,
+    ) -> Result<Self> {
         Ok(Self {
             base_name: base_name.to_string(),
             locale_id: locale_id.to_string(),
@@ -161,6 +166,7 @@ static BUNDLE_CACHE: LazyLock<SoftCache<String, Arc<ICUResourceBundle>, Loader>>
 /// `AvailEntry` (private): the lazily computed available-locale lists of a
 /// bundle prefix.
 #[derive(Debug)]
+#[allow(clippy::type_complexity)] // type mirrors the Java signature
 struct AvailEntry {
     prefix: String,
     loader: ClassLoader,
@@ -185,7 +191,10 @@ impl AvailEntry {
     fn ulocales(&self) -> Result<Arc<HashMap<AvailableType, Vec<ULocale>>>> {
         let mut u = self.ulocales.lock().unwrap_or_else(|e| e.into_inner());
         if u.is_none() {
-            *u = Some(Arc::new(ICUResourceBundle::create_u_locale_list(&self.prefix, self.loader)?));
+            *u = Some(Arc::new(ICUResourceBundle::create_u_locale_list(
+                &self.prefix,
+                self.loader,
+            )?));
         }
         Ok(u.clone().expect("set above"))
     }
@@ -209,7 +218,10 @@ impl AvailEntry {
     fn get_locale_name_set(&self) -> Result<Arc<HashSet<String>>> {
         let mut n = self.name_set.lock().unwrap_or_else(|e| e.into_inner());
         if n.is_none() {
-            *n = Some(Arc::new(ICUResourceBundle::create_locale_name_set(&self.prefix, self.loader)?));
+            *n = Some(Arc::new(ICUResourceBundle::create_locale_name_set(
+                &self.prefix,
+                self.loader,
+            )?));
         }
         Ok(n.clone().expect("set above"))
     }
@@ -227,16 +239,22 @@ impl AvailEntry {
         // to lock.
         let mut f = self.full_name_set.lock().unwrap_or_else(|e| e.into_inner());
         if f.is_none() {
-            *f = Some(Arc::new(ICUResourceBundle::create_full_locale_name_set(&self.prefix, self.loader)?));
+            *f = Some(Arc::new(ICUResourceBundle::create_full_locale_name_set(
+                &self.prefix,
+                self.loader,
+            )?));
         }
         Ok(f.clone().expect("set above"))
     }
 }
 
 /// `GET_AVAILABLE_CACHE`: cache used for `AvailEntry`.
-static GET_AVAILABLE_CACHE: LazyLock<SoftCache<String, Arc<AvailEntry>, ClassLoader>> = LazyLock::new(|| {
-    SoftCache::new(|key: &String, loader: ClassLoader| Ok(Some(Arc::new(AvailEntry::new(key, loader)))))
-});
+static GET_AVAILABLE_CACHE: LazyLock<SoftCache<String, Arc<AvailEntry>, ClassLoader>> =
+    LazyLock::new(|| {
+        SoftCache::new(|key: &String, loader: ClassLoader| {
+            Ok(Some(Arc::new(AvailEntry::new(key, loader))))
+        })
+    });
 
 fn get_avail_entry(key: &str, loader: ClassLoader) -> Result<Arc<AvailEntry>> {
     Ok(GET_AVAILABLE_CACHE
@@ -250,7 +268,12 @@ struct AvailableLocalesSink<'a> {
 }
 
 impl Sink for AvailableLocalesSink<'_> {
-    fn put(&mut self, key: &mut Key, value: &mut dyn u_resource::Value, _no_fallback: bool) -> Result<()> {
+    fn put(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn u_resource::Value,
+        _no_fallback: bool,
+    ) -> Result<()> {
         let res_index_table = value.get_table()?;
         let mut i = 0;
         while res_index_table.get_key_and_value(i, key, value) {
@@ -340,15 +363,21 @@ impl ICUResourceBundle {
         let mut def_depth = 0; // depth of 'default' marker
         let mut res_depth = 0; // depth of found resource;
 
-        if kw_val.as_deref().is_none_or(|k| k.is_empty() || k == DEFAULT_TAG) {
+        if kw_val
+            .as_deref()
+            .is_none_or(|k| k.is_empty() || k == DEFAULT_TAG)
+        {
             kw_val = Some(String::new()); // default tag is treated as no keyword
             look_for_default = true;
         }
         let mut kw_val = kw_val.expect("set above");
 
         // Check top level locale first
-        let mut r: Option<Arc<ICUResourceBundle>> =
-            Some(UResourceBundle::get_bundle_instance_for(Some(base_name), Some(&parent))?.as_icu()?.clone());
+        let mut r: Option<Arc<ICUResourceBundle>> = Some(
+            UResourceBundle::get_bundle_instance_for(Some(base_name), Some(&parent))?
+                .as_icu()?
+                .clone(),
+        );
         if let Some(is_available) = is_available {
             *is_available = false;
             let available_u_locales = get_avail_entry(base_name, loader)?
@@ -392,7 +421,11 @@ impl ICUResourceBundle {
 
         // Now, search for the named resource
         parent = ULocale::new(&base_loc)?;
-        r = Some(UResourceBundle::get_bundle_instance_for(Some(base_name), Some(&parent))?.as_icu()?.clone());
+        r = Some(
+            UResourceBundle::get_bundle_instance_for(Some(base_name), Some(&parent))?
+                .as_icu()?
+                .clone(),
+        );
         // determine in which locale (if any) the named resource is located
         loop {
             let rr = r.clone().expect("loop condition");
@@ -434,7 +467,11 @@ impl ICUResourceBundle {
             // couldn't find requested resource. Fall back to default.
             kw_val = def_str.clone().expect("checked above"); // Fall back to default.
             parent = ULocale::new(&base_loc)?;
-            r = Some(UResourceBundle::get_bundle_instance_for(Some(base_name), Some(&parent))?.as_icu()?.clone());
+            r = Some(
+                UResourceBundle::get_bundle_instance_for(Some(base_name), Some(&parent))?
+                    .as_icu()?
+                    .clone(),
+            );
             res_depth = 0;
             // determine in which locale (if any) the named resource is located
             loop {
@@ -500,7 +537,12 @@ impl ICUResourceBundle {
             // default was set in same locale or child
             Ok(full_base) // Keyword value is default - no keyword needed in locale
         } else {
-            ULocale::new(&format!("{}@{}={}", full_base.get_base_name(), keyword, kw_val))
+            ULocale::new(&format!(
+                "{}@{}={}",
+                full_base.get_base_name(),
+                keyword,
+                kw_val
+            ))
         }
     }
 
@@ -621,7 +663,10 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// The errors of alias resolution.
-    pub fn find_with_fallback(self: &Arc<Self>, path: &str) -> Result<Option<Arc<ICUResourceBundle>>> {
+    pub fn find_with_fallback(
+        self: &Arc<Self>,
+        path: &str,
+    ) -> Result<Option<Arc<ICUResourceBundle>>> {
         Self::find_resource_with_fallback_path(path, &UResourceBundle::Icu(self.clone()), None)
     }
 
@@ -680,7 +725,11 @@ impl ICUResourceBundle {
         let rb = if path.is_empty() {
             self.clone()
         } else {
-            match Self::find_resource_with_fallback_path(path, &UResourceBundle::Icu(self.clone()), None)? {
+            match Self::find_resource_with_fallback_path(
+                path,
+                &UResourceBundle::Icu(self.clone()),
+                None,
+            )? {
                 Some(rb) => rb,
                 None => {
                     return Err(missing_resource(
@@ -708,7 +757,11 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// The errors of the sink.
-    pub fn get_all_items_with_fallback_no_fail(self: &Arc<Self>, path: &str, sink: &mut dyn Sink) -> Result<()> {
+    pub fn get_all_items_with_fallback_no_fail(
+        self: &Arc<Self>,
+        path: &str,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
         match self.get_all_items_with_fallback(path, sink) {
             // Quietly ignore the exception.
             Err(e) if is_missing_resource(&e) => Ok(()),
@@ -724,7 +777,11 @@ impl ICUResourceBundle {
     ///
     /// `MissingResourceException` when the path is found nowhere; the
     /// errors of the sink.
-    pub fn get_all_items_with_fallback(self: &Arc<Self>, path: &str, sink: &mut dyn Sink) -> Result<()> {
+    pub fn get_all_items_with_fallback(
+        self: &Arc<Self>,
+        path: &str,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
         // Collect existing and parsed key objects into an array of keys,
         // rather than assembling and parsing paths.
         let num_path_keys = Self::count_path_keys(path); // How much deeper does the path go?
@@ -752,7 +809,12 @@ impl ICUResourceBundle {
         };
         let mut key = Key::new();
         let mut reader_value = ReaderValue::new();
-        rb.get_all_items_with_fallback_impl(&mut key, &mut reader_value, sink, &UResourceBundle::Icu(self.clone()))
+        rb.get_all_items_with_fallback_impl(
+            &mut key,
+            &mut reader_value,
+            sink,
+            &UResourceBundle::Icu(self.clone()),
+        )
     }
 
     /// `getAllChildrenWithFallback(String path, UResource.Sink sink)`: as
@@ -764,7 +826,11 @@ impl ICUResourceBundle {
     ///
     /// `MissingResourceException` when the path is found nowhere; the
     /// errors of the sink.
-    pub fn get_all_children_with_fallback(self: &Arc<Self>, path: &str, sink: &mut dyn Sink) -> Result<()> {
+    pub fn get_all_children_with_fallback(
+        self: &Arc<Self>,
+        path: &str,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
         let mut all = AllChildrenSink {
             outer: self.clone(),
             sink,
@@ -819,7 +885,10 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// The errors of reading the index bundle.
-    pub fn get_available_locale_name_set_of(bundle_prefix: &str, loader: ClassLoader) -> Result<Arc<HashSet<String>>> {
+    pub fn get_available_locale_name_set_of(
+        bundle_prefix: &str,
+        loader: ClassLoader,
+    ) -> Result<Arc<HashSet<String>>> {
         get_avail_entry(bundle_prefix, loader)?.get_locale_name_set()
     }
 
@@ -837,7 +906,10 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// The errors of reading the index bundle.
-    pub fn get_full_locale_name_set_of(bundle_prefix: &str, loader: ClassLoader) -> Result<Arc<HashSet<String>>> {
+    pub fn get_full_locale_name_set_of(
+        bundle_prefix: &str,
+        loader: ClassLoader,
+    ) -> Result<Arc<HashSet<String>>> {
         get_avail_entry(bundle_prefix, loader)?.get_full_locale_name_set()
     }
 
@@ -871,7 +943,11 @@ impl ICUResourceBundle {
     ///
     /// The errors of reading the index bundle.
     pub fn get_available_u_locales() -> Result<Option<Vec<ULocale>>> {
-        Self::get_available_u_locales_of(ICUData::ICU_BASE_NAME, icu_data_class_loader(), AvailableType::Default)
+        Self::get_available_u_locales_of(
+            ICUData::ICU_BASE_NAME,
+            icu_data_class_loader(),
+            AvailableType::Default,
+        )
     }
 
     /// `getAvailableULocales(ULocale.AvailableType type)`.
@@ -888,7 +964,10 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// The errors of reading the index bundle.
-    pub fn get_available_u_locales_loader(base_name: &str, loader: ClassLoader) -> Result<Option<Vec<ULocale>>> {
+    pub fn get_available_u_locales_loader(
+        base_name: &str,
+        loader: ClassLoader,
+    ) -> Result<Option<Vec<ULocale>>> {
         Self::get_available_u_locales_of(base_name, loader, AvailableType::Default)
     }
 
@@ -899,7 +978,11 @@ impl ICUResourceBundle {
     ///
     /// The errors of reading the index bundle; `NullPointerException` when
     /// the index has no list of that type.
-    pub fn get_available_locales_of(base_name: &str, loader: ClassLoader, ty: AvailableType) -> Result<Arc<Vec<Locale>>> {
+    pub fn get_available_locales_of(
+        base_name: &str,
+        loader: ClassLoader,
+        ty: AvailableType,
+    ) -> Result<Arc<Vec<Locale>>> {
         get_avail_entry(base_name, loader)?.get_locale_list(ty)
     }
 
@@ -909,7 +992,11 @@ impl ICUResourceBundle {
     ///
     /// As [`get_available_locales_of`](Self::get_available_locales_of).
     pub fn get_available_locales() -> Result<Arc<Vec<Locale>>> {
-        Self::get_available_locales_of(ICUData::ICU_BASE_NAME, icu_data_class_loader(), AvailableType::Default)
+        Self::get_available_locales_of(
+            ICUData::ICU_BASE_NAME,
+            icu_data_class_loader(),
+            AvailableType::Default,
+        )
     }
 
     /// `getAvailableLocales(ULocale.AvailableType type)`.
@@ -926,7 +1013,10 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// As [`get_available_locales_of`](Self::get_available_locales_of).
-    pub fn get_available_locales_loader(base_name: &str, loader: ClassLoader) -> Result<Arc<Vec<Locale>>> {
+    pub fn get_available_locales_loader(
+        base_name: &str,
+        loader: ClassLoader,
+    ) -> Result<Arc<Vec<Locale>>> {
         Self::get_available_locales_of(base_name, loader, AvailableType::Default)
     }
 
@@ -950,16 +1040,22 @@ impl ICUResourceBundle {
         self.get_u_locale().to_locale()
     }
 
-    fn create_u_locale_list(base_name: &str, root: ClassLoader) -> Result<HashMap<AvailableType, Vec<ULocale>>> {
+    fn create_u_locale_list(
+        base_name: &str,
+        root: ClassLoader,
+    ) -> Result<HashMap<AvailableType, Vec<ULocale>>> {
         // the canned list is a subset of all the available .res files, the idea
         // is we don't export them
         // all. gotta be a better way to do this, since to add a locale you have
         // to update this list,
         // and it's embedded in our binary resources.
-        let rb = UResourceBundle::instantiate_bundle(Some(base_name), ICU_RESOURCE_INDEX, root, true)?;
+        let rb =
+            UResourceBundle::instantiate_bundle(Some(base_name), ICU_RESOURCE_INDEX, root, true)?;
         let rb = rb.as_icu()?.clone();
         let mut result = HashMap::new();
-        let mut sink = AvailableLocalesSink { output: &mut result };
+        let mut sink = AvailableLocalesSink {
+            output: &mut result,
+        };
         rb.get_all_items_with_fallback("", &mut sink)?;
         Ok(result)
     }
@@ -967,9 +1063,18 @@ impl ICUResourceBundle {
     /// `addLocaleIDsFromIndexBundle(String baseName, ClassLoader root,
     /// Set<String> locales)` (private): as `createULocaleList`, but
     /// catching the `MissingResourceException`.
-    fn add_locale_ids_from_index_bundle(base_name: &str, root: ClassLoader, locales: &mut HashSet<String>) -> Result<()> {
+    fn add_locale_ids_from_index_bundle(
+        base_name: &str,
+        root: ClassLoader,
+        locales: &mut HashSet<String>,
+    ) -> Result<()> {
         let bundle = (|| -> Result<UResourceBundle> {
-            let b = UResourceBundle::instantiate_bundle(Some(base_name), ICU_RESOURCE_INDEX, root, true)?;
+            let b = UResourceBundle::instantiate_bundle(
+                Some(base_name),
+                ICU_RESOURCE_INDEX,
+                root,
+                true,
+            )?;
             let b = b.as_icu()?.clone();
             UResourceBundle::Icu(b).get(INSTALLED_LOCALES)
         })();
@@ -992,7 +1097,11 @@ impl ICUResourceBundle {
         Ok(())
     }
 
-    fn add_bundle_base_names_from_class_loader(bn: &str, root: ClassLoader, names: &mut HashSet<String>) {
+    fn add_bundle_base_names_from_class_loader(
+        bn: &str,
+        root: ClassLoader,
+        names: &mut HashSet<String>,
+    ) {
         // bn has a trailing slash: The WebSphere class loader would return null
         // for a raw directory name without it.
         let urls = root.get_resources(bn);
@@ -1034,7 +1143,10 @@ impl ICUResourceBundle {
         }
     }
 
-    fn create_full_locale_name_set(base_name: &str, loader: ClassLoader) -> Result<HashSet<String>> {
+    fn create_full_locale_name_set(
+        base_name: &str,
+        loader: ClassLoader,
+    ) -> Result<HashSet<String>> {
         let bn = if base_name.ends_with('/') {
             base_name.to_string()
         } else {
@@ -1062,7 +1174,7 @@ impl ICUResourceBundle {
                 }
             }
             set.remove(ICU_RESOURCE_INDEX); // "res_index"
-            // HACK: TODO: Figure out how we can distinguish locale data from other data items.
+                                            // HACK: TODO: Figure out how we can distinguish locale data from other data items.
             set.retain(|name| {
                 let n = name.encode_utf16().count();
                 // Does not look like a locale ID.
@@ -1153,7 +1265,8 @@ impl ICUResourceBundle {
             // rather than the location of the alias.
             let base_depth = base.get_res_depth();
             if depth != base_depth {
-                let mut new_keys = vec![String::new(); (base_depth as usize) + (keys.len() - depth as usize)];
+                let mut new_keys =
+                    vec![String::new(); (base_depth as usize) + (keys.len() - depth as usize)];
                 new_keys[base_depth as usize..].clone_from_slice(&keys[depth as usize..]);
                 keys = new_keys;
             }
@@ -1203,16 +1316,22 @@ impl ICUResourceBundle {
                 if res == Self::RES_BOGUS {
                     let ty = base.get_type();
                     if ty == UResourceBundle::TABLE || ty == UResourceBundle::ARRAY {
-                        reader_container = base.container_value().expect("a container has a value").clone();
+                        reader_container = base
+                            .container_value()
+                            .expect("a container has a value")
+                            .clone();
                     } else {
                         break;
                     }
                 } else {
                     let ty = ICUResourceBundleReader::res_get_type(res);
                     if ICUResourceBundleReader::ures_is_table(ty) {
-                        reader_container = reader.get_table(res).expect("a table resource has a table");
+                        reader_container =
+                            reader.get_table(res).expect("a table resource has a table");
                     } else if ICUResourceBundleReader::ures_is_array(ty) {
-                        reader_container = reader.get_array(res).expect("an array resource has an array");
+                        reader_container = reader
+                            .get_array(res)
+                            .expect("an array resource has an array");
                     } else {
                         res = Self::RES_BOGUS;
                         break;
@@ -1261,8 +1380,11 @@ impl ICUResourceBundle {
                     // rather than the location of the alias.
                     base_depth = base.get_res_depth();
                     if depth != base_depth {
-                        let mut new_keys =
-                            vec![String::new(); (base_depth as usize) + (keys.len() - depth as usize)];
+                        let mut new_keys = vec![
+                            String::new();
+                            (base_depth as usize)
+                                + (keys.len() - depth as usize)
+                        ];
                         new_keys[base_depth as usize..].clone_from_slice(&keys[depth as usize..]);
                         keys = new_keys;
                         depth = base_depth;
@@ -1327,7 +1449,10 @@ impl ICUResourceBundle {
         }
         let mut i = 0usize;
         loop {
-            let j = path[i..].find(RES_PATH_SEP_CHAR).map(|x| x + i).expect("num counts the separators");
+            let j = path[i..]
+                .find(RES_PATH_SEP_CHAR)
+                .map(|x| x + i)
+                .expect("num counts the separators");
             keys[start as usize] = path[i..j].to_string();
             start += 1;
             if num == 2 {
@@ -1343,7 +1468,8 @@ impl ICUResourceBundle {
 
     /// `equals(Object other)`: same base name and locale ID.
     pub fn java_equals(&self, other: &ICUResourceBundle) -> bool {
-        self.get_base_name() == other.get_base_name() && self.get_locale_id() == other.get_locale_id()
+        self.get_base_name() == other.get_base_name()
+            && self.get_locale_id() == other.get_locale_id()
     }
 
     /// `getBundleInstance(String baseName, String localeID, ClassLoader
@@ -1390,7 +1516,12 @@ impl ICUResourceBundle {
                 &default
             }
         };
-        Self::get_bundle_instance_open(base_name, &locale.get_base_name(), icu_data_class_loader(), open_type)
+        Self::get_bundle_instance_open(
+            base_name,
+            &locale.get_base_name(),
+            icu_data_class_loader(),
+            open_type,
+        )
     }
 
     /// `getBundleInstance(String baseName, String localeID, ClassLoader
@@ -1455,11 +1586,19 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// `IllegalArgumentException("variants is too long")` from the parser.
-    pub fn get_parent_locale_id(name: &str, orig_name: &str, open_type: OpenType) -> Result<Option<String>> {
+    pub fn get_parent_locale_id(
+        name: &str,
+        orig_name: &str,
+        open_type: OpenType,
+    ) -> Result<Option<String>> {
         Self::get_parent_locale_id_impl(name, orig_name, open_type)
     }
 
-    fn get_parent_locale_id_impl(name: &str, orig_name: &str, open_type: OpenType) -> Result<Option<String>> {
+    fn get_parent_locale_id_impl(
+        name: &str,
+        orig_name: &str,
+        open_type: OpenType,
+    ) -> Result<Option<String>> {
         // early out if the locale ID has a variant code or ends with _
         if name.ends_with('_') || !ULocale::get_variant_of(name)?.is_empty() {
             let last_underbar_pos = name.rfind('_');
@@ -1506,7 +1645,11 @@ impl ICUResourceBundle {
             if !orig_name_script.is_empty() {
                 Some(format!("{language}_{orig_name_script}"))
             } else {
-                Some(format!("{}_{}", language, Self::get_default_script(&language, Some(&region))))
+                Some(format!(
+                    "{}_{}",
+                    language,
+                    Self::get_default_script(&language, Some(&region))
+                ))
             }
         } else if !script.is_empty() {
             // if "name" has script but not region (and our open type is LOCALE_DEFAULT_ROOT), is the script the
@@ -1515,7 +1658,9 @@ impl ICUResourceBundle {
             // - if not, return "root" (bypassing the system default locale ID)
             // (we don't do this for other open types for the same reason we don't look things up in the parent
             // locale table for other open types-- see the reference to UTS #35 above)
-            if open_type != OpenType::LocaleDefaultRoot || Self::get_default_script(&language, None) == script {
+            if open_type != OpenType::LocaleDefaultRoot
+                || Self::get_default_script(&language, None) == script
+            {
                 Some(language)
             } else {
                 /*"root"*/
@@ -1570,7 +1715,9 @@ impl ICUResourceBundle {
             if *DEBUG {
                 println!(
                     "The bundle created is: {} and openType={:?} and bundle.getNoFallback={}",
-                    b.as_ref().map(|b| b.get_locale_id().to_string()).unwrap_or_else(|| "null".into()),
+                    b.as_ref()
+                        .map(|b| b.get_locale_id().to_string())
+                        .unwrap_or_else(|| "null".into()),
                     open_type,
                     b.as_ref().is_some_and(|b| b.get_no_fallback())
                 );
@@ -1594,11 +1741,16 @@ impl ICUResourceBundle {
             match &b {
                 None => {
                     let mut local_open_type = open_type;
-                    if open_type == OpenType::LocaleDefaultRoot && Some(locale_name.as_str()) == default_id.as_deref() {
+                    if open_type == OpenType::LocaleDefaultRoot
+                        && Some(locale_name.as_str()) == default_id.as_deref()
+                    {
                         local_open_type = OpenType::LocaleRoot;
                     }
-                    let orig_locale_name = orig_locale_id.clone().unwrap_or_else(|| locale_name.clone());
-                    let fallback_locale_id = Self::get_parent_locale_id(&locale_name, &orig_locale_name, open_type)?;
+                    let orig_locale_name = orig_locale_id
+                        .clone()
+                        .unwrap_or_else(|| locale_name.clone());
+                    let fallback_locale_id =
+                        Self::get_parent_locale_id(&locale_name, &orig_locale_name, open_type)?;
                     if let Some(fallback_locale_id) = fallback_locale_id {
                         b = Self::instantiate_bundle(
                             &base_name,
@@ -1610,14 +1762,18 @@ impl ICUResourceBundle {
                         )?;
                     } else if local_open_type == OpenType::LocaleDefaultRoot
                         && !Self::locale_id_starts_with_lang_subtag(
-                            default_id.as_deref().expect("LOCALE_DEFAULT_ROOT has a default ID"),
+                            default_id
+                                .as_deref()
+                                .expect("LOCALE_DEFAULT_ROOT has a default ID"),
                             &locale_name,
                         )
                     {
                         // Go to the default locale before root.
                         b = Self::instantiate_bundle(
                             &base_name,
-                            default_id.as_deref().expect("LOCALE_DEFAULT_ROOT has a default ID"),
+                            default_id
+                                .as_deref()
+                                .expect("LOCALE_DEFAULT_ROOT has a default ID"),
                             None,
                             default_id.as_deref(),
                             root,
@@ -1696,7 +1852,10 @@ impl ICUResourceBundle {
                     //call the get method to recursively fetch the resource
                     return p.get_with_aliases(a_key, aliases_visited, requested);
                 }
-                let full_name = ICUResourceBundleReader::get_full_name(Some(self.get_base_name()), self.get_locale_id());
+                let full_name = ICUResourceBundleReader::get_full_name(
+                    Some(self.get_base_name()),
+                    self.get_locale_id(),
+                );
                 Err(missing_resource(
                     format!("Can't find resource for bundle {full_name}, key {a_key}"),
                     self.java_class_name(),
@@ -1708,7 +1867,10 @@ impl ICUResourceBundle {
 
     /// `UResourceBundle.get(String)` on this bundle.
     fn get_key_fallback(self: &Arc<Self>, key: &str) -> Result<Arc<ICUResourceBundle>> {
-        Ok(UResourceBundle::Icu(self.clone()).get(key)?.as_icu()?.clone())
+        Ok(UResourceBundle::Icu(self.clone())
+            .get(key)?
+            .as_icu()?
+            .clone())
     }
 
     /// `ResourceBundle.getString(String key)` on this bundle.
@@ -1722,12 +1884,17 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// The errors of reading the file.
-    pub fn create_bundle(base_name: &str, locale_id: &str, root: ClassLoader) -> Result<Option<Arc<ICUResourceBundle>>> {
-        let reader = match ICUResourceBundleReader::get_reader(Some(base_name), Some(locale_id), root)? {
-            // could not open the .res file
-            None => return Ok(None),
-            Some(r) => r,
-        };
+    pub fn create_bundle(
+        base_name: &str,
+        locale_id: &str,
+        root: ClassLoader,
+    ) -> Result<Option<Arc<ICUResourceBundle>>> {
+        let reader =
+            match ICUResourceBundleReader::get_reader(Some(base_name), Some(locale_id), root)? {
+                // could not open the .res file
+                None => return Ok(None),
+                Some(r) => r,
+            };
         Ok(Some(Self::get_bundle(reader, base_name, locale_id, root)?))
     }
 
@@ -1753,7 +1920,10 @@ impl ICUResourceBundle {
 
     /// `getParent()`.
     pub fn get_parent(&self) -> Option<Arc<ICUResourceBundle>> {
-        self.parent.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.parent
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// `getParent()` as a `UResourceBundle`.
@@ -1782,7 +1952,9 @@ impl ICUResourceBundle {
         loader: ClassLoader,
     ) -> Result<Arc<ICUResourceBundle>> {
         let root_res = reader.get_root_resource();
-        let root_table = if ICUResourceBundleReader::ures_is_table(ICUResourceBundleReader::res_get_type(root_res)) {
+        let root_table = if ICUResourceBundleReader::ures_is_table(
+            ICUResourceBundleReader::res_get_type(root_res),
+        ) {
             let wb = Arc::new(WholeBundle::new(base_name, locale_id, loader, reader)?);
             Arc::new(ICUResourceBundle::new_root_table(wb, root_res))
         } else {
@@ -1874,7 +2046,9 @@ impl ICUResourceBundle {
             None => &mut local_visited,
         };
         if aliases_visited.contains_key(rpath) {
-            return Err(LuceneError::illegal_argument("Circular references in the resource bundles"));
+            return Err(LuceneError::illegal_argument(
+                "Circular references in the resource bundles",
+            ));
         }
         aliases_visited.insert(rpath.to_string(), String::new());
         if rpath.starts_with(RES_PATH_SEP_CHAR) {
@@ -1918,7 +2092,10 @@ impl ICUResourceBundle {
         if bundle_name == LOCALE {
             bundle_name = base_name.to_string();
             let _ = &bundle_name;
-            let kp = substring16_from(rpath, LOCALE.len() as i32 + 2 /* prepending and appending / */);
+            let kp = substring16_from(
+                rpath,
+                LOCALE.len() as i32 + 2, /* prepending and appending / */
+            );
 
             // Get the top bundle of the requested bundle
             let mut bundle = requested.as_icu()?.clone();
@@ -1927,7 +2104,8 @@ impl ICUResourceBundle {
             }
             sub = Self::find_resource_with_fallback_path(&kp, &UResourceBundle::Icu(bundle), None)?;
         } else {
-            let bundle = Self::get_bundle_instance(Some(&bundle_name), &locale, loader_to_use, false)?;
+            let bundle =
+                Self::get_bundle_instance(Some(&bundle_name), &locale, loader_to_use, false)?;
 
             let num_keys;
             let owned_keys: Vec<String>;
@@ -1957,7 +2135,11 @@ impl ICUResourceBundle {
                     if i >= num_keys {
                         break;
                     }
-                    s = Some(cur.get_with_aliases(&keys[i as usize], Some(&mut *aliases_visited), requested)?);
+                    s = Some(cur.get_with_aliases(
+                        &keys[i as usize],
+                        Some(&mut *aliases_visited),
+                        requested,
+                    )?);
                     i += 1;
                 }
                 sub = s;
@@ -1969,7 +2151,11 @@ impl ICUResourceBundle {
             Some(s) => Ok(s),
             None => {
                 let bkp = base_key_path.ok_or_else(LuceneError::null_pointer)?;
-                Err(missing_resource(locale, base_name, bkp[bkp.len() - 1].clone()))
+                Err(missing_resource(
+                    locale,
+                    base_name,
+                    bkp[bkp.len() - 1].clone(),
+                ))
             }
         }
         // TODO: If we know that sub is not cached,
@@ -2010,7 +2196,12 @@ struct AllChildrenSink<'a> {
 }
 
 impl Sink for AllChildrenSink<'_> {
-    fn put(&mut self, key: &mut Key, value: &mut dyn u_resource::Value, no_fallback: bool) -> Result<()> {
+    fn put(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn u_resource::Value,
+        no_fallback: bool,
+    ) -> Result<()> {
         let items_table = value.get_table()?;
         let mut i = 0;
         while items_table.get_key_and_value(i, key, value) {
@@ -2045,7 +2236,8 @@ impl Sink for AllChildrenSink<'_> {
                     let mut aliased_value_type = UResourceBundle::TABLE;
                     let mut table_path = substring16_from(&alias_path, "/LOCALE/".len() as i32);
                     let mut key_copy = key.clone(); // sink.put() changes the key
-                    self.sink.put(&mut key_copy, &mut aliased_value, no_fallback)?;
+                    self.sink
+                        .put(&mut key_copy, &mut aliased_value, no_fallback)?;
                     while aliased_value_type == UResourceBundle::TABLE {
                         let Some(parent) = aliased_resource.get_parent() else {
                             break;
@@ -2053,7 +2245,10 @@ impl Sink for AllChildrenSink<'_> {
                         let new_aliased_resource = parent
                             .find_with_fallback(&table_path)?
                             .ok_or_else(LuceneError::null_pointer)?;
-                        let new_key = new_aliased_resource.key.clone().ok_or_else(LuceneError::null_pointer)?;
+                        let new_key = new_aliased_resource
+                            .key
+                            .clone()
+                            .ok_or_else(LuceneError::null_pointer)?;
                         if Some(&new_key) == aliased_resource.key.as_ref() {
                             aliased_resource = new_aliased_resource;
                         } else {
@@ -2076,7 +2271,8 @@ impl Sink for AllChildrenSink<'_> {
                         aliased_value.res = aliased_resource.get_resource();
                         aliased_value_type = u_resource::Value::get_type(&aliased_value); // sink.put() messes up the value
                         key_copy = key.clone(); // sink.put() messes up the key
-                        self.sink.put(&mut key_copy, &mut aliased_value, no_fallback)?;
+                        self.sink
+                            .put(&mut key_copy, &mut aliased_value, no_fallback)?;
                     }
                 }
             } else {

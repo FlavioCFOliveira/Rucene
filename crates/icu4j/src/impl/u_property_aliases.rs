@@ -44,18 +44,28 @@ pub struct UPropertyAliases {
 
 /// `INSTANCE`, or the `MissingResourceException` its static initializer
 /// throws.
-static INSTANCE: LazyLock<std::result::Result<Arc<UPropertyAliases>, String>> = LazyLock::new(|| {
-    UPropertyAliases::new().map(Arc::new).map_err(|e| e.to_string())
-});
+static INSTANCE: LazyLock<std::result::Result<Arc<UPropertyAliases>, String>> =
+    LazyLock::new(|| {
+        UPropertyAliases::new()
+            .map(Arc::new)
+            .map_err(|e| e.to_string())
+    });
 
 impl UPropertyAliases {
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn load(bytes: &mut ByteBuffer) -> Result<Self> {
         //dataVersion=ICUBinary.readHeaderAndDataVersion(bytes, DATA_FORMAT, IS_ACCEPTABLE);
-        ICUBinary::read_header(bytes, DATA_FORMAT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
+        ICUBinary::read_header(
+            bytes,
+            DATA_FORMAT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
         let indexes_length = bytes.get_int()? / 4; // inIndexes[IX_VALUE_MAPS_OFFSET]/4
         if indexes_length < 8 {
             // formatVersion 2 initially has 8 indexes
-            return Err(LuceneError::from(std::io::Error::other("pnames.icu: not enough indexes")));
+            return Err(LuceneError::from(std::io::Error::other(
+                "pnames.icu: not enough indexes",
+            )));
         }
         let mut in_indexes = vec![0i32; indexes_length as usize];
         in_indexes[0] = indexes_length * 4;
@@ -186,7 +196,10 @@ impl UPropertyAliases {
         let num_names = ng[i] as i32;
         i += 1;
         if name_index < 0 || num_names <= name_index {
-            return Err(IllegalIcuArgumentException::with_message("Invalid property (value) name choice").error());
+            return Err(IllegalIcuArgumentException::with_message(
+                "Invalid property (value) name choice",
+            )
+            .error());
         }
         // Skip nameIndex names.
         while name_index > 0 {
@@ -223,7 +236,11 @@ impl UPropertyAliases {
         for &u in name {
             let mut c = u as i32;
             // Ignore delimiters '-', '_', and ASCII White_Space.
-            if c == b'-' as i32 || c == b'_' as i32 || c == b' ' as i32 || (0x09..=0x0d).contains(&c) {
+            if c == b'-' as i32
+                || c == b'_' as i32
+                || c == b' ' as i32
+                || (0x09..=0x0d).contains(&c)
+            {
                 continue;
             }
             if !result.has_next() {
@@ -264,12 +281,18 @@ impl UPropertyAliases {
     ///
     /// `IllegalArgumentException` for an invalid property, a property
     /// without named values, or an invalid name choice.
-    pub fn get_property_value_name(&self, property: i32, value: i32, name_choice: i32) -> Result<Option<String>> {
+    pub fn get_property_value_name(
+        &self,
+        property: i32,
+        value: i32,
+        name_choice: i32,
+    ) -> Result<Option<String>> {
         let value_map_index = self.find_property(property);
         if value_map_index == 0 {
             return Err(Self::invalid_property(property));
         }
-        let name_group_offset = self.find_property_value_name_group(self.value_maps[value_map_index + 1], value);
+        let name_group_offset =
+            self.find_property_value_name_group(self.value_maps[value_map_index + 1], value);
         if name_group_offset == 0 {
             return Err(Self::no_named_values(property));
         }

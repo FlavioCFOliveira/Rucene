@@ -29,17 +29,22 @@ pub struct UCharacterNameIterator {
 }
 
 impl ValueIterator for UCharacterNameIterator {
+    #[allow(clippy::if_same_then_else)] // branches mirror the Java source
     fn next(&mut self, element: &mut Element) -> bool {
         if self.m_current >= self.m_limit {
             return false;
         }
 
-        if self.m_choice == UCharacterNameChoice::UNICODE_CHAR_NAME || self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME {
+        if self.m_choice == UCharacterNameChoice::UNICODE_CHAR_NAME
+            || self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME
+        {
             let length = self.m_name.get_algorithm_length();
             if self.m_algorithm_index < length {
                 while self.m_algorithm_index < length {
                     // find the algorithm range that could contain m_current_
-                    if self.m_algorithm_index < 0 || self.m_name.get_algorithm_end(self.m_algorithm_index) < self.m_current {
+                    if self.m_algorithm_index < 0
+                        || self.m_name.get_algorithm_end(self.m_algorithm_index) < self.m_current
+                    {
                         self.m_algorithm_index += 1;
                     } else {
                         break;
@@ -71,7 +76,10 @@ impl ValueIterator for UCharacterNameIterator {
                     }
 
                     element.integer = self.m_current;
-                    element.value = Some(Arc::new(self.m_name.get_algorithm_name(self.m_algorithm_index, self.m_current)));
+                    element.value = Some(Arc::new(
+                        self.m_name
+                            .get_algorithm_name(self.m_algorithm_index, self.m_current),
+                    ));
                     // reset the group index if we are in the algorithmic names
                     self.m_group_index = -1;
                     self.m_current += 1;
@@ -83,7 +91,9 @@ impl ValueIterator for UCharacterNameIterator {
         if !self.iterate_group(element, self.m_limit) {
             self.m_current += 1;
             return true;
-        } else if self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME && !self.iterate_extended(element, self.m_limit) {
+        } else if self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME
+            && !self.iterate_extended(element, self.m_limit)
+        {
             self.m_current += 1;
             return true;
         }
@@ -99,7 +109,9 @@ impl ValueIterator for UCharacterNameIterator {
 
     fn set_range(&mut self, start: i32, limit: i32) -> Result<()> {
         if start >= limit {
-            return Err(LuceneError::illegal_argument("start or limit has to be valid Unicode codepoints and start < limit"));
+            return Err(LuceneError::illegal_argument(
+                "start or limit has to be valid Unicode codepoints and start < limit",
+            ));
         }
         if start < UCharacter::MIN_VALUE {
             self.m_start = UCharacter::MIN_VALUE;
@@ -136,11 +148,21 @@ impl UCharacterNameIterator {
     fn iterate_single_group(&mut self, result: &mut Element, limit: i32) -> bool {
         let mut group_offsets = [0u16; LINES_PER_GROUP as usize + 1];
         let mut group_lengths = [0u16; LINES_PER_GROUP as usize + 1];
-        let index = self.m_name.get_group_lengths(self.m_group_index, &mut group_offsets, &mut group_lengths);
+        let index = self.m_name.get_group_lengths(
+            self.m_group_index,
+            &mut group_offsets,
+            &mut group_lengths,
+        );
         while self.m_current < limit {
             let offset = UCharacterName::get_group_offset(self.m_current) as usize;
-            let mut name = self.m_name.get_group_name(index + group_offsets[offset] as i32, group_lengths[offset] as i32, self.m_choice);
-            if name.as_ref().is_none_or(|n| n.is_empty()) && self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME {
+            let mut name = self.m_name.get_group_name(
+                index + group_offsets[offset] as i32,
+                group_lengths[offset] as i32,
+                self.m_choice,
+            );
+            if name.as_ref().is_none_or(|n| n.is_empty())
+                && self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME
+            {
                 name = self.m_name.get_extended_name(self.m_current);
             }
             if let Some(n) = name {
@@ -186,7 +208,9 @@ impl UCharacterNameIterator {
                 if g_min > limit {
                     g_min = limit;
                 }
-                if self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME && !self.iterate_extended(result, g_min) {
+                if self.m_choice == UCharacterNameChoice::EXTENDED_CHAR_NAME
+                    && !self.iterate_extended(result, g_min)
+                {
                     return false;
                 }
                 self.m_current = g_min;

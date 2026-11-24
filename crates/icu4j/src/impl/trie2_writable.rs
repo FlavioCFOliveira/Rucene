@@ -6,12 +6,14 @@
 use rucene::error::{LuceneError, Result};
 
 use crate::r#impl::trie2::{
-    Range, Trie2, UTrie2Header, ValueMapper, ValueWidth, UNEWTRIE2_INDEX_1_LENGTH, UNEWTRIE2_INDEX_GAP_LENGTH, UNEWTRIE2_INDEX_GAP_OFFSET,
-    UNEWTRIE2_MAX_DATA_LENGTH, UNEWTRIE2_MAX_INDEX_2_LENGTH, UTRIE2_BAD_UTF8_DATA_OFFSET, UTRIE2_CP_PER_INDEX_1_ENTRY,
-    UTRIE2_DATA_BLOCK_LENGTH, UTRIE2_DATA_GRANULARITY, UTRIE2_DATA_MASK, UTRIE2_DATA_START_OFFSET, UTRIE2_INDEX_1_OFFSET,
-    UTRIE2_INDEX_2_BLOCK_LENGTH, UTRIE2_INDEX_2_BMP_LENGTH, UTRIE2_INDEX_2_MASK, UTRIE2_INDEX_2_OFFSET,
-    UTRIE2_INDEX_SHIFT, UTRIE2_LSCP_INDEX_2_LENGTH, UTRIE2_LSCP_INDEX_2_OFFSET, UTRIE2_OMITTED_BMP_INDEX_1_LENGTH,
-    UTRIE2_SHIFT_1, UTRIE2_SHIFT_1_2, UTRIE2_SHIFT_2, UTRIE2_UTF8_2B_INDEX_2_LENGTH,
+    Range, Trie2, UTrie2Header, ValueMapper, ValueWidth, UNEWTRIE2_INDEX_1_LENGTH,
+    UNEWTRIE2_INDEX_GAP_LENGTH, UNEWTRIE2_INDEX_GAP_OFFSET, UNEWTRIE2_MAX_DATA_LENGTH,
+    UNEWTRIE2_MAX_INDEX_2_LENGTH, UTRIE2_BAD_UTF8_DATA_OFFSET, UTRIE2_CP_PER_INDEX_1_ENTRY,
+    UTRIE2_DATA_BLOCK_LENGTH, UTRIE2_DATA_GRANULARITY, UTRIE2_DATA_MASK, UTRIE2_DATA_START_OFFSET,
+    UTRIE2_INDEX_1_OFFSET, UTRIE2_INDEX_2_BLOCK_LENGTH, UTRIE2_INDEX_2_BMP_LENGTH,
+    UTRIE2_INDEX_2_MASK, UTRIE2_INDEX_2_OFFSET, UTRIE2_INDEX_SHIFT, UTRIE2_LSCP_INDEX_2_LENGTH,
+    UTRIE2_LSCP_INDEX_2_OFFSET, UTRIE2_OMITTED_BMP_INDEX_1_LENGTH, UTRIE2_SHIFT_1,
+    UTRIE2_SHIFT_1_2, UTRIE2_SHIFT_2, UTRIE2_UTF8_2B_INDEX_2_LENGTH,
 };
 use crate::r#impl::trie2_16::Trie2_16;
 use crate::r#impl::trie2_32::Trie2_32;
@@ -19,7 +21,8 @@ use crate::r#impl::trie2_32::Trie2_32;
 const UNEWTRIE2_INITIAL_DATA_LENGTH: i32 = 1 << 14;
 const UNEWTRIE2_MEDIUM_DATA_LENGTH: i32 = 1 << 17;
 const UNEWTRIE2_INDEX_2_NULL_OFFSET: i32 = UNEWTRIE2_INDEX_GAP_OFFSET + UNEWTRIE2_INDEX_GAP_LENGTH;
-const UNEWTRIE2_INDEX_2_START_OFFSET: i32 = UNEWTRIE2_INDEX_2_NULL_OFFSET + UTRIE2_INDEX_2_BLOCK_LENGTH;
+const UNEWTRIE2_INDEX_2_START_OFFSET: i32 =
+    UNEWTRIE2_INDEX_2_NULL_OFFSET + UTRIE2_INDEX_2_BLOCK_LENGTH;
 const UNEWTRIE2_DATA_NULL_OFFSET: i32 = UTRIE2_DATA_START_OFFSET;
 const UNEWTRIE2_DATA_START_OFFSET: i32 = UNEWTRIE2_DATA_NULL_OFFSET + 0x40;
 const UNEWTRIE2_DATA_0800_OFFSET: i32 = UNEWTRIE2_DATA_START_OFFSET + 0x780;
@@ -147,7 +150,9 @@ impl Trie2Writable {
         // Plus 1 so that we don't drop this block during compaction.
         // Plus as many as needed for lead surrogate code points.
         // i==newTrie->dataNullOffset
-        self.map[i as usize] = (0x110000 >> UTRIE2_SHIFT_2) - (0x80 >> UTRIE2_SHIFT_2) + 1 + UTRIE2_LSCP_INDEX_2_LENGTH;
+        self.map[i as usize] = (0x110000 >> UTRIE2_SHIFT_2) - (0x80 >> UTRIE2_SHIFT_2)
+            + 1
+            + UTRIE2_LSCP_INDEX_2_LENGTH;
         i += 1;
         j += UTRIE2_DATA_BLOCK_LENGTH;
         while j < UNEWTRIE2_DATA_START_OFFSET {
@@ -242,7 +247,8 @@ impl Trie2Writable {
         let i2 = if crate::jdk::is_high_surrogate(c as u16) && for_lscp {
             (UTRIE2_LSCP_INDEX_2_OFFSET - (0xd800 >> UTRIE2_SHIFT_2)) + (c >> UTRIE2_SHIFT_2)
         } else {
-            self.index1[(c >> UTRIE2_SHIFT_1) as usize] + ((c >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK)
+            self.index1[(c >> UTRIE2_SHIFT_1) as usize]
+                + ((c >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK)
         };
         let block = self.index2[i2 as usize];
         block == self.data_null_offset
@@ -255,12 +261,16 @@ impl Trie2Writable {
             // Should never occur.
             // Either UTRIE2_MAX_BUILD_TIME_INDEX_LENGTH is incorrect,
             // or the code writes more values than should be possible.
-            return Err(LuceneError::illegal_state("Internal error in Trie2 creation."));
+            return Err(LuceneError::illegal_state(
+                "Internal error in Trie2 creation.",
+            ));
         }
         self.index2_length = new_top;
         let src = self.index2_null_offset as usize;
-        self.index2
-            .copy_within(src..src + UTRIE2_INDEX_2_BLOCK_LENGTH as usize, new_block as usize);
+        self.index2.copy_within(
+            src..src + UTRIE2_INDEX_2_BLOCK_LENGTH as usize,
+            new_block as usize,
+        );
         Ok(new_block)
     }
 
@@ -277,6 +287,7 @@ impl Trie2Writable {
         Ok(i2)
     }
 
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn alloc_data_block(&mut self, copy_block: i32) -> Result<i32> {
         let new_block;
         if self.first_free_block != 0 {
@@ -298,17 +309,23 @@ impl Trie2Writable {
                     // Should never occur.
                     // Either UNEWTRIE2_MAX_DATA_LENGTH is incorrect,
                     // or the code writes more values than should be possible.
-                    return Err(LuceneError::illegal_state("Internal error in Trie2 creation."));
+                    return Err(LuceneError::illegal_state(
+                        "Internal error in Trie2 creation.",
+                    ));
                 }
                 let mut new_data = vec![0i32; capacity as usize];
-                new_data[..self.data_length as usize].copy_from_slice(&self.data[..self.data_length as usize]);
+                new_data[..self.data_length as usize]
+                    .copy_from_slice(&self.data[..self.data_length as usize]);
                 self.data = new_data;
                 self.data_capacity = capacity;
             }
             self.data_length = new_top;
         }
         let src = copy_block as usize;
-        self.data.copy_within(src..src + UTRIE2_DATA_BLOCK_LENGTH as usize, new_block as usize);
+        self.data.copy_within(
+            src..src + UTRIE2_DATA_BLOCK_LENGTH as usize,
+            new_block as usize,
+        );
         self.map[(new_block >> UTRIE2_SHIFT_2) as usize] = 0;
         Ok(new_block)
     }
@@ -408,7 +425,15 @@ impl Trie2Writable {
     }
 
     /// `initialValue` is ignored if `overwrite`=true
-    fn fill_block(&mut self, block: i32, start: i32, limit: i32, value: i32, initial_value: i32, overwrite: bool) {
+    fn fill_block(
+        &mut self,
+        block: i32,
+        start: i32,
+        limit: i32,
+        value: i32,
+        initial_value: i32,
+        overwrite: bool,
+    ) {
         let p_limit = block + limit;
         if overwrite {
             for i in block + start..p_limit {
@@ -432,7 +457,13 @@ impl Trie2Writable {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an invalid code point range.
-    pub fn set_range(&mut self, mut start: i32, end: i32, value: i32, overwrite: bool) -> Result<&mut Self> {
+    pub fn set_range(
+        &mut self,
+        mut start: i32,
+        end: i32,
+        value: i32,
+        overwrite: bool,
+    ) -> Result<&mut Self> {
         // repeat value in [start..end]
         // mark index values for repeat-data blocks by setting bit 31 of the index values
         // fill around existing values if any, if(overwrite)
@@ -457,11 +488,25 @@ impl Trie2Writable {
             let next_start = (start + UTRIE2_DATA_BLOCK_LENGTH) & !UTRIE2_DATA_MASK;
             if next_start <= limit {
                 let iv = self.initial_value;
-                self.fill_block(block, start & UTRIE2_DATA_MASK, UTRIE2_DATA_BLOCK_LENGTH, value, iv, overwrite);
+                self.fill_block(
+                    block,
+                    start & UTRIE2_DATA_MASK,
+                    UTRIE2_DATA_BLOCK_LENGTH,
+                    value,
+                    iv,
+                    overwrite,
+                );
                 start = next_start;
             } else {
                 let iv = self.initial_value;
-                self.fill_block(block, start & UTRIE2_DATA_MASK, limit & UTRIE2_DATA_MASK, value, iv, overwrite);
+                self.fill_block(
+                    block,
+                    start & UTRIE2_DATA_MASK,
+                    limit & UTRIE2_DATA_MASK,
+                    value,
+                    iv,
+                    overwrite,
+                );
                 return Ok(self);
             }
         }
@@ -473,7 +518,11 @@ impl Trie2Writable {
         limit &= !UTRIE2_DATA_MASK;
 
         // iterate over all-value blocks
-        let mut repeat_block = if value == self.initial_value { self.data_null_offset } else { -1 };
+        let mut repeat_block = if value == self.initial_value {
+            self.data_null_offset
+        } else {
+            -1
+        };
 
         while start < limit {
             let mut set_repeat_block = false;
@@ -499,7 +548,9 @@ impl Trie2Writable {
                     let iv = self.initial_value;
                     self.fill_block(block, 0, UTRIE2_DATA_BLOCK_LENGTH, value, iv, overwrite);
                 }
-            } else if self.data[block as usize] != value && (overwrite || block == self.data_null_offset) {
+            } else if self.data[block as usize] != value
+                && (overwrite || block == self.data_null_offset)
+            {
                 // Set the repeatBlock instead of the null block or previous repeat block:
                 //
                 // If !isWritableBlock() then all entries in the block have the same value
@@ -555,7 +606,12 @@ impl Trie2Writable {
                 }
             }
         } else {
-            self.set_range(range.start_code_point, range.end_code_point, range.value, overwrite)?;
+            self.set_range(
+                range.start_code_point,
+                range.end_code_point,
+                range.value,
+                overwrite,
+            )?;
         }
         Ok(self)
     }
@@ -570,7 +626,11 @@ impl Trie2Writable {
     /// # Errors
     ///
     /// `IllegalStateException` for an internal capacity error.
-    pub fn set_for_lead_surrogate_code_unit(&mut self, code_unit: u16, value: i32) -> Result<&mut Self> {
+    pub fn set_for_lead_surrogate_code_unit(
+        &mut self,
+        code_unit: u16,
+        value: i32,
+    ) -> Result<&mut Self> {
         self.f_hash = 0;
         self.set_lscp(code_unit as i32, false, value)?;
         Ok(self)
@@ -595,7 +655,8 @@ impl Trie2Writable {
         let i2 = if (0xd800..0xdc00).contains(&c) && from_lscp {
             (UTRIE2_LSCP_INDEX_2_OFFSET - (0xd800 >> UTRIE2_SHIFT_2)) + (c >> UTRIE2_SHIFT_2)
         } else {
-            self.index1[(c >> UTRIE2_SHIFT_1) as usize] + ((c >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK)
+            self.index1[(c >> UTRIE2_SHIFT_1) as usize]
+                + ((c >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK)
         };
         let block = self.index2[i2 as usize];
         self.data[(block + (c & UTRIE2_DATA_MASK)) as usize]
@@ -623,7 +684,12 @@ impl Trie2Writable {
 
         let mut block = 0;
         while block <= index2_length {
-            if Self::equal_int(&self.index2, block, other_block, UTRIE2_INDEX_2_BLOCK_LENGTH) {
+            if Self::equal_int(
+                &self.index2,
+                block,
+                other_block,
+                UTRIE2_INDEX_2_BLOCK_LENGTH,
+            ) {
                 return block;
             }
             block += 1;
@@ -631,7 +697,12 @@ impl Trie2Writable {
         -1
     }
 
-    fn find_same_data_block(&self, mut data_length: i32, other_block: i32, block_length: i32) -> i32 {
+    fn find_same_data_block(
+        &self,
+        mut data_length: i32,
+        other_block: i32,
+        block_length: i32,
+    ) -> i32 {
         // ensure that we do not even partially get past dataLength
         data_length -= block_length;
 
@@ -717,6 +788,7 @@ impl Trie2Writable {
     }
 
     /// Compact a build-time trie.
+    #[allow(clippy::explicit_counter_loop)] // counter mirrors the Java for-loop
     fn compact_data(&mut self) {
         // do not compact linear-ASCII data
         let mut new_start = UTRIE2_DATA_START_OFFSET;
@@ -812,7 +884,8 @@ impl Trie2Writable {
                 // Gap indexes are invalid (-1). Skip over the gap.
                 i += UNEWTRIE2_INDEX_GAP_LENGTH;
             }
-            self.index2[i as usize] = self.map[(self.index2[i as usize] >> UTRIE2_SHIFT_2) as usize];
+            self.index2[i as usize] =
+                self.map[(self.index2[i as usize] >> UTRIE2_SHIFT_2) as usize];
             i += 1;
         }
         self.data_null_offset = self.map[(self.data_null_offset >> UTRIE2_SHIFT_2) as usize];
@@ -839,7 +912,8 @@ impl Trie2Writable {
         }
 
         // Reduce the index table gap to what will be needed at runtime.
-        new_start += UTRIE2_UTF8_2B_INDEX_2_LENGTH + ((self.high_start - 0x10000) >> UTRIE2_SHIFT_1);
+        new_start +=
+            UTRIE2_UTF8_2B_INDEX_2_LENGTH + ((self.high_start - 0x10000) >> UTRIE2_SHIFT_1);
 
         start = UNEWTRIE2_INDEX_2_NULL_OFFSET;
         while start < self.index2_length {
@@ -863,7 +937,8 @@ impl Trie2Writable {
             // see if the beginning of this block can be overlapped with the end of the previous block
             // look for maximum overlap with the previous, adjacent block
             let mut overlap = UTRIE2_INDEX_2_BLOCK_LENGTH - 1;
-            while overlap > 0 && !Self::equal_int(&self.index2, new_start - overlap, start, overlap) {
+            while overlap > 0 && !Self::equal_int(&self.index2, new_start - overlap, start, overlap)
+            {
                 overlap -= 1;
             }
 
@@ -888,7 +963,8 @@ impl Trie2Writable {
 
         // now adjust the index-1 table
         for i in 0..UNEWTRIE2_INDEX_1_LENGTH {
-            self.index1[i as usize] = self.map[(self.index1[i as usize] >> UTRIE2_SHIFT_1_2) as usize];
+            self.index1[i as usize] =
+                self.map[(self.index1[i as usize] >> UTRIE2_SHIFT_1_2) as usize];
         }
         self.index2_null_offset = self.map[(self.index2_null_offset >> UTRIE2_SHIFT_1_2) as usize];
 
@@ -911,7 +987,8 @@ impl Trie2Writable {
         // find highStart and round it up
         let mut high_value = self.get(0x10ffff);
         let mut local_high_start = self.find_high_start(high_value);
-        local_high_start = (local_high_start + (UTRIE2_CP_PER_INDEX_1_ENTRY - 1)) & !(UTRIE2_CP_PER_INDEX_1_ENTRY - 1);
+        local_high_start = (local_high_start + (UTRIE2_CP_PER_INDEX_1_ENTRY - 1))
+            & !(UTRIE2_CP_PER_INDEX_1_ENTRY - 1);
         if local_high_start == 0x110000 {
             high_value = self.error_value;
         }
@@ -924,7 +1001,11 @@ impl Trie2Writable {
 
         if self.high_start < 0x110000 {
             // Blank out [highStart..10ffff] to release associated data blocks.
-            let supp_high_start = if self.high_start <= 0x10000 { 0x10000 } else { self.high_start };
+            let supp_high_start = if self.high_start <= 0x10000 {
+                0x10000
+            } else {
+                self.high_start
+            };
             let iv = self.initial_value;
             self.set_range(supp_high_start, 0x10ffff, iv, true)?;
         }
@@ -985,9 +1066,17 @@ impl Trie2Writable {
             self.compact_trie()?;
         }
 
-        let all_indexes_length = if self.high_start <= 0x10000 { UTRIE2_INDEX_1_OFFSET } else { self.index2_length };
+        let all_indexes_length = if self.high_start <= 0x10000 {
+            UTRIE2_INDEX_1_OFFSET
+        } else {
+            self.index2_length
+        };
         // >0 if the data is moved to the end of the index array
-        let data_move = if value_bits == ValueWidth::Bits16 { all_indexes_length } else { 0 };
+        let data_move = if value_bits == ValueWidth::Bits16 {
+            all_indexes_length
+        } else {
+            0
+        };
 
         // are indexLength and dataLength within limits?
         if all_indexes_length > UTRIE2_MAX_INDEX_LENGTH /* for unshifted indexLength */
@@ -996,7 +1085,9 @@ impl Trie2Writable {
             || (data_move + self.data_length) > UTRIE2_MAX_DATA_LENGTH
         /* for shiftedDataLength */
         {
-            return Err(LuceneError::unsupported_operation("Trie2 data is too large."));
+            return Err(LuceneError::unsupported_operation(
+                "Trie2 data is too large.",
+            ));
         }
 
         // calculate the sizes of, and allocate, the index and data arrays
@@ -1026,7 +1117,11 @@ impl Trie2Writable {
         //    convenient to do here.)
         dest.header = UTrie2Header {
             signature: 0x54726932, /* "Tri2" */
-            options: if value_bits == ValueWidth::Bits16 { 0 } else { 1 },
+            options: if value_bits == ValueWidth::Bits16 {
+                0
+            } else {
+                1
+            },
             index_length: dest.index_length,
             shifted_data_length: dest.data_length >> UTRIE2_INDEX_SHIFT,
             index2_null_offset: dest.index2_null_offset,
@@ -1037,7 +1132,8 @@ impl Trie2Writable {
         // write the index-2 array values shifted right by UTRIE2_INDEX_SHIFT, after adding dataMove
         let mut dest_idx = 0usize;
         for i in 0..UTRIE2_INDEX_2_BMP_LENGTH {
-            dest.index[dest_idx] = ((self.index2[i as usize] + data_move) >> UTRIE2_INDEX_SHIFT) as u16;
+            dest.index[dest_idx] =
+                ((self.index2[i as usize] + data_move) >> UTRIE2_INDEX_SHIFT) as u16;
             dest_idx += 1;
         }
 
@@ -1051,27 +1147,30 @@ impl Trie2Writable {
         }
         while i < (0xe0 - 0xc0) {
             // C2..DF
-            dest.index[dest_idx] = (data_move + self.index2[(i << (6 - UTRIE2_SHIFT_2)) as usize]) as u16;
+            dest.index[dest_idx] =
+                (data_move + self.index2[(i << (6 - UTRIE2_SHIFT_2)) as usize]) as u16;
             dest_idx += 1;
             i += 1;
         }
 
         if self.high_start > 0x10000 {
             let index1_length = (self.high_start - 0x10000) >> UTRIE2_SHIFT_1;
-            let index2_offset = UTRIE2_INDEX_2_BMP_LENGTH + UTRIE2_UTF8_2B_INDEX_2_LENGTH + index1_length;
+            let index2_offset =
+                UTRIE2_INDEX_2_BMP_LENGTH + UTRIE2_UTF8_2B_INDEX_2_LENGTH + index1_length;
 
             // write 16-bit index-1 values for supplementary code points
             for i in 0..index1_length {
-                dest.index[dest_idx] =
-                    (UTRIE2_INDEX_2_OFFSET + self.index1[(i + UTRIE2_OMITTED_BMP_INDEX_1_LENGTH) as usize]) as u16;
+                dest.index[dest_idx] = (UTRIE2_INDEX_2_OFFSET
+                    + self.index1[(i + UTRIE2_OMITTED_BMP_INDEX_1_LENGTH) as usize])
+                    as u16;
                 dest_idx += 1;
             }
 
             // write the index-2 array values for supplementary code points,
             // shifted right by UTRIE2_INDEX_SHIFT, after adding dataMove
             for i in 0..self.index2_length - index2_offset {
-                dest.index[dest_idx] =
-                    ((data_move + self.index2[(index2_offset + i) as usize]) >> UTRIE2_INDEX_SHIFT) as u16;
+                dest.index[dest_idx] = ((data_move + self.index2[(index2_offset + i) as usize])
+                    >> UTRIE2_INDEX_SHIFT) as u16;
                 dest_idx += 1;
             }
         }
@@ -1089,7 +1188,10 @@ impl Trie2Writable {
             }
             ValueWidth::Bits32 => {
                 // write 32-bit data values
-                let d = dest.data32.as_mut().expect("allocated above for 32-bit data");
+                let d = dest
+                    .data32
+                    .as_mut()
+                    .expect("allocated above for 32-bit data");
                 d.copy_from_slice(&self.data[..self.data_length as usize]);
             }
         }
@@ -1132,7 +1234,7 @@ impl Trie2Writable {
                 h = hash_byte(h, (i >> 16) & 255);
                 hash_byte(h, (i >> 24) & 255)
             };
-            let mut hash = 0x811c9DC5_u32 as i32;
+            let mut hash = 0x811C9DC5_u32 as i32;
             for r in self.iterator() {
                 hash = hash_int(hash, r.hash_code());
             }
@@ -1176,7 +1278,10 @@ impl Trie2Writable {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a value that is not a lead surrogate.
-    pub fn iterator_for_lead_surrogate(&self, lead: u16) -> Result<Trie2WritableIterator<'_, 'static>> {
+    pub fn iterator_for_lead_surrogate(
+        &self,
+        lead: u16,
+    ) -> Result<Trie2WritableIterator<'_, 'static>> {
         Trie2WritableIterator::for_lead_surrogate(self, lead, &identity)
     }
 }
@@ -1196,16 +1301,29 @@ pub struct Trie2WritableIterator<'a, 'm> {
 
 impl std::fmt::Debug for Trie2WritableIterator<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Trie2WritableIterator").field("next_start", &self.next_start).finish_non_exhaustive()
+        f.debug_struct("Trie2WritableIterator")
+            .field("next_start", &self.next_start)
+            .finish_non_exhaustive()
     }
 }
 
 impl<'a, 'm> Trie2WritableIterator<'a, 'm> {
     fn new(trie: &'a Trie2Writable, vm: ValueMapper<'m>) -> Self {
-        Self { trie, mapper: vm, next_start: 0, limit_cp: 0x110000, doing_code_points: true, do_lead_surrogates: true }
+        Self {
+            trie,
+            mapper: vm,
+            next_start: 0,
+            limit_cp: 0x110000,
+            doing_code_points: true,
+            do_lead_surrogates: true,
+        }
     }
 
-    fn for_lead_surrogate(trie: &'a Trie2Writable, lead_surrogate: u16, vm: ValueMapper<'m>) -> Result<Self> {
+    fn for_lead_surrogate(
+        trie: &'a Trie2Writable,
+        lead_surrogate: u16,
+        vm: ValueMapper<'m>,
+    ) -> Result<Self> {
         if !(0xd800..=0xdbff).contains(&lead_surrogate) {
             return Err(LuceneError::illegal_argument("Bad lead surrogate value."));
         }
@@ -1286,7 +1404,9 @@ impl Iterator for Trie2WritableIterator<'_, '_> {
                 if end_of_range >= 0xdbff {
                     break;
                 }
-                val = self.trie.get_from_u16_single_lead((end_of_range + 1) as u16);
+                val = self
+                    .trie
+                    .get_from_u16_single_lead((end_of_range + 1) as u16);
                 if (self.mapper)(val) != mapped_val {
                     break;
                 }

@@ -9,8 +9,9 @@ use std::sync::Arc;
 use rucene::error::{LuceneError, Result};
 
 use crate::r#impl::number::affix_utils::{
-    AffixUtils, TokenConsumer, TYPE_CURRENCY_DOUBLE, TYPE_CURRENCY_QUAD, TYPE_CURRENCY_QUINT, TYPE_CURRENCY_SINGLE,
-    TYPE_CURRENCY_TRIPLE, TYPE_MINUS_SIGN, TYPE_PERCENT, TYPE_PERMILLE, TYPE_PLUS_SIGN,
+    AffixUtils, TokenConsumer, TYPE_CURRENCY_DOUBLE, TYPE_CURRENCY_QUAD, TYPE_CURRENCY_QUINT,
+    TYPE_CURRENCY_SINGLE, TYPE_CURRENCY_TRIPLE, TYPE_MINUS_SIGN, TYPE_PERCENT, TYPE_PERMILLE,
+    TYPE_PLUS_SIGN,
 };
 use crate::r#impl::number::decimal_format_properties::string_hash_code;
 use crate::r#impl::number::parse::affix_token_matcher_factory::AffixTokenMatcherFactory;
@@ -81,7 +82,10 @@ impl AffixPatternMatcher {
         }
 
         // De-reference the memory
-        let mut matcher = AffixPatternMatcher { series: series.series, affix_pattern: affix_pattern.to_vec() };
+        let mut matcher = AffixPatternMatcher {
+            series: series.series,
+            affix_pattern: affix_pattern.to_vec(),
+        };
         matcher.series.freeze();
         Ok(Some(Arc::new(matcher)))
     }
@@ -118,7 +122,8 @@ impl TokenConsumer for Builder<'_> {
         // ignorables matchers in a row.
         if let Some(ignorables) = self.ignorables.as_ref() {
             if self.series.length() > 0
-                && (self.last_type_or_cp < 0 || !ignorables.get_set().contains_valid(self.last_type_or_cp))
+                && (self.last_type_or_cp < 0
+                    || !ignorables.get_set().contains_valid(self.last_type_or_cp))
             {
                 self.series.add_matcher(ignorables.clone());
             }
@@ -131,8 +136,8 @@ impl TokenConsumer for Builder<'_> {
                 TYPE_PLUS_SIGN => self.series.add_matcher(self.factory.plus_sign()),
                 TYPE_PERCENT => self.series.add_matcher(self.factory.percent()),
                 TYPE_PERMILLE => self.series.add_matcher(self.factory.permille()),
-                TYPE_CURRENCY_SINGLE | TYPE_CURRENCY_DOUBLE | TYPE_CURRENCY_TRIPLE | TYPE_CURRENCY_QUAD
-                | TYPE_CURRENCY_QUINT => match self.factory.currency() {
+                TYPE_CURRENCY_SINGLE | TYPE_CURRENCY_DOUBLE | TYPE_CURRENCY_TRIPLE
+                | TYPE_CURRENCY_QUAD | TYPE_CURRENCY_QUINT => match self.factory.currency() {
                     // All currency symbols use the same matcher
                     Ok(m) => self.series.add_matcher(m),
                     Err(e) => {
@@ -142,12 +147,17 @@ impl TokenConsumer for Builder<'_> {
                 },
                 _ => panic!("java.lang.AssertionError"),
             }
-        } else if self.ignorables.as_ref().is_some_and(|i| i.get_set().contains_valid(type_or_cp)) {
+        } else if self
+            .ignorables
+            .as_ref()
+            .is_some_and(|i| i.get_set().contains_valid(type_or_cp))
+        {
             // Case 2: the token is an ignorable literal.
             // No action necessary: the ignorables matcher has already been added.
         } else {
             // Case 3: the token is a non-ignorable literal.
-            self.series.add_matcher(CodePointMatcher::get_instance(type_or_cp));
+            self.series
+                .add_matcher(CodePointMatcher::get_instance(type_or_cp));
         }
         self.last_type_or_cp = type_or_cp;
     }

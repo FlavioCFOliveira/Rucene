@@ -379,8 +379,14 @@ impl RBBINodes {
                 print_int(node.f_serial_num, 10);
                 print_string(NODE_TYPE_NAMES[node.f_type as usize], 11);
                 print_int(node.f_parent.map_or(0, |p| self.nodes[p].f_serial_num), 11);
-                print_int(node.f_left_child.map_or(0, |p| self.nodes[p].f_serial_num), 11);
-                print_int(node.f_right_child.map_or(0, |p| self.nodes[p].f_serial_num), 12);
+                print_int(
+                    node.f_left_child.map_or(0, |p| self.nodes[p].f_serial_num),
+                    11,
+                );
+                print_int(
+                    node.f_right_child.map_or(0, |p| self.nodes[p].f_serial_num),
+                    12,
+                );
                 print_int(node.f_first_pos, 12);
                 print_int(node.f_val, 7);
 

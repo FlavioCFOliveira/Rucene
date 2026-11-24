@@ -25,6 +25,7 @@ pub(crate) const KEY_COLLAPSE: i32 = 5;
 /// `KEY_IDENTITY_FALLBACK`.
 pub(crate) const KEY_IDENTITY_FALLBACK: i32 = 6;
 /// `KEY_MAX`.
+#[allow(dead_code)] // Java member with no caller in the closure
 pub(crate) const KEY_MAX: i32 = 7;
 
 /// The `Object value` of a settings link, typed by its key.
@@ -55,8 +56,17 @@ pub struct RangeSettingsNode {
 impl RangeSettingsNode {
     /// `NumberRangeFormatterSettings(NumberRangeFormatterSettings<?>, int,
     /// Object)`.
-    pub(crate) fn new(parent: Option<Arc<RangeSettingsNode>>, key: i32, value: Option<RangeSettingValue>) -> Arc<Self> {
-        Arc::new(RangeSettingsNode { parent, key, value, resolved_macros: OnceLock::new() })
+    pub(crate) fn new(
+        parent: Option<Arc<RangeSettingsNode>>,
+        key: i32,
+        value: Option<RangeSettingValue>,
+    ) -> Arc<Self> {
+        Arc::new(RangeSettingsNode {
+            parent,
+            key,
+            value,
+            resolved_macros: OnceLock::new(),
+        })
     }
 
     /// Equivalent to `resolve()` (package-private).
@@ -67,7 +77,9 @@ impl RangeSettingsNode {
     /// and the `ClassCastException` of a value whose type does not match its
     /// key (unreachable through the public setters).
     pub(crate) fn resolve(&self) -> Arc<RangeMacroProps> {
-        self.resolved_macros.get_or_init(|| Arc::new(self.compute())).clone()
+        self.resolved_macros
+            .get_or_init(|| Arc::new(self.compute()))
+            .clone()
     }
 
     fn compute(&self) -> RangeMacroProps {
@@ -88,9 +100,13 @@ impl RangeSettingsNode {
                 }
                 (KEY_LOCALE, Some(RangeSettingValue::Locale(l))) => macros.loc = Some(l.clone()),
                 (KEY_LOCALE, None) => macros.loc = None,
-                (KEY_FORMATTER_1, Some(RangeSettingValue::Formatter(f))) => macros.formatter1 = Some(f.clone()),
+                (KEY_FORMATTER_1, Some(RangeSettingValue::Formatter(f))) => {
+                    macros.formatter1 = Some(f.clone())
+                }
                 (KEY_FORMATTER_1, None) => macros.formatter1 = None,
-                (KEY_FORMATTER_2, Some(RangeSettingValue::Formatter(f))) => macros.formatter2 = Some(f.clone()),
+                (KEY_FORMATTER_2, Some(RangeSettingValue::Formatter(f))) => {
+                    macros.formatter2 = Some(f.clone())
+                }
                 (KEY_FORMATTER_2, None) => macros.formatter2 = None,
                 (KEY_SAME_FORMATTERS, Some(RangeSettingValue::SameFormatters(b))) => {
                     macros.same_formatters = i32::from(*b);
@@ -102,7 +118,9 @@ impl RangeSettingsNode {
                 }
                 (KEY_IDENTITY_FALLBACK, None) => macros.identity_fallback = None,
                 (KEY_SAME_FORMATTERS, None) => panic!("java.lang.NullPointerException"),
-                (KEY_LOCALE..=KEY_IDENTITY_FALLBACK, Some(_)) => panic!("java.lang.ClassCastException"),
+                (KEY_LOCALE..=KEY_IDENTITY_FALLBACK, Some(_)) => {
+                    panic!("java.lang.ClassCastException")
+                }
                 (key, _) => panic!("java.lang.AssertionError: Unknown key: {key}"),
             }
             current = node.parent.as_deref();
@@ -136,23 +154,44 @@ pub trait NumberRangeFormatterSettings: Sized {
     /// range. The same formatter is applied to both sides of the range.
     /// Equivalent to `numberFormatterBoth(UnlocalizedNumberFormatter)`.
     fn number_formatter_both(&self, formatter: Option<&UnlocalizedNumberFormatter>) -> Self {
-        self.create(KEY_SAME_FORMATTERS, Some(RangeSettingValue::SameFormatters(true)))
-            .create(KEY_FORMATTER_1, formatter.cloned().map(RangeSettingValue::Formatter))
+        self.create(
+            KEY_SAME_FORMATTERS,
+            Some(RangeSettingValue::SameFormatters(true)),
+        )
+        .create(
+            KEY_FORMATTER_1,
+            formatter.cloned().map(RangeSettingValue::Formatter),
+        )
     }
 
     /// Sets the NumberFormatter instance to use for the first number in the
     /// range. Equivalent to `numberFormatterFirst(UnlocalizedNumberFormatter)`.
     fn number_formatter_first(&self, formatter_first: Option<&UnlocalizedNumberFormatter>) -> Self {
-        self.create(KEY_SAME_FORMATTERS, Some(RangeSettingValue::SameFormatters(false)))
-            .create(KEY_FORMATTER_1, formatter_first.cloned().map(RangeSettingValue::Formatter))
+        self.create(
+            KEY_SAME_FORMATTERS,
+            Some(RangeSettingValue::SameFormatters(false)),
+        )
+        .create(
+            KEY_FORMATTER_1,
+            formatter_first.cloned().map(RangeSettingValue::Formatter),
+        )
     }
 
     /// Sets the NumberFormatter instances to use for the second number in
     /// the range. Equivalent to
     /// `numberFormatterSecond(UnlocalizedNumberFormatter)`.
-    fn number_formatter_second(&self, formatter_second: Option<&UnlocalizedNumberFormatter>) -> Self {
-        self.create(KEY_SAME_FORMATTERS, Some(RangeSettingValue::SameFormatters(false)))
-            .create(KEY_FORMATTER_2, formatter_second.cloned().map(RangeSettingValue::Formatter))
+    fn number_formatter_second(
+        &self,
+        formatter_second: Option<&UnlocalizedNumberFormatter>,
+    ) -> Self {
+        self.create(
+            KEY_SAME_FORMATTERS,
+            Some(RangeSettingValue::SameFormatters(false)),
+        )
+        .create(
+            KEY_FORMATTER_2,
+            formatter_second.cloned().map(RangeSettingValue::Formatter),
+        )
     }
 
     /// Sets the aggressiveness of "collapsing" fields across the range
@@ -164,7 +203,10 @@ pub trait NumberRangeFormatterSettings: Sized {
     /// Sets the behavior when the two sides of the range are the same.
     /// Equivalent to `identityFallback(RangeIdentityFallback)`.
     fn identity_fallback(&self, identity_fallback: Option<RangeIdentityFallback>) -> Self {
-        self.create(KEY_IDENTITY_FALLBACK, identity_fallback.map(RangeSettingValue::IdentityFallback))
+        self.create(
+            KEY_IDENTITY_FALLBACK,
+            identity_fallback.map(RangeSettingValue::IdentityFallback),
+        )
     }
 
     /// Equivalent to `resolve()` (package-private).
@@ -185,4 +227,3 @@ pub trait NumberRangeFormatterSettings: Sized {
         self.resolve().java_equals(&other.resolve())
     }
 }
-

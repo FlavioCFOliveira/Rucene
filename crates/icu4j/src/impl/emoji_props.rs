@@ -83,15 +83,24 @@ static BIT_FLAGS: [i8; 15] = [
 ];
 
 impl EmojiProps {
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     fn new() -> Result<Self> {
         let mut bytes = ICUBinary::get_required_data("uemoji.icu")?;
-        ICUBinary::read_header_and_data_version(&mut bytes, DATA_FORMAT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
+        ICUBinary::read_header_and_data_version(
+            &mut bytes,
+            DATA_FORMAT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
         let start_pos = bytes.position();
 
         let cp_trie_offset = bytes.get_int()?; // inIndexes[IX_CPTRIE_OFFSET]
         let indexes_length = cp_trie_offset / 4;
         if indexes_length <= IX_RGI_EMOJI_ZWJ_SEQUENCE_TRIE_OFFSET as i32 {
-            return Err(ICUUncheckedIOException::with_message("Emoji properties data: not enough indexes").error());
+            return Err(ICUUncheckedIOException::with_message(
+                "Emoji properties data: not enough indexes",
+            )
+            .error());
         }
         let mut in_indexes = vec![0i32; indexes_length as usize];
         in_indexes[0] = cp_trie_offset;
@@ -117,12 +126,18 @@ impl EmojiProps {
             let offset = in_indexes[i];
             let next_offset = in_indexes[i + 1];
             if next_offset > offset {
-                string_tries[get_string_trie_index(i)] =
-                    Some(Arc::from(ICUBinary::get_string(&mut bytes, (next_offset - offset) / 2, 0)?));
+                string_tries[get_string_trie_index(i)] = Some(Arc::from(ICUBinary::get_string(
+                    &mut bytes,
+                    (next_offset - offset) / 2,
+                    0,
+                )?));
             }
         }
         let _ = offset;
-        Ok(Self { cp_trie, string_tries })
+        Ok(Self {
+            cp_trie,
+            string_tries,
+        })
     }
 
     /// `INSTANCE`.
@@ -170,7 +185,7 @@ impl EmojiProps {
         if length == 0 {
             return false;
         } // empty string
-        // The caller should have delegated single code points to hasBinaryProperty(c, which).
+          // The caller should have delegated single code points to hasBinaryProperty(c, which).
         if !(UProperty::BASIC_EMOJI..=UProperty::RGI_EMOJI).contains(&which) {
             return false;
         }
@@ -182,7 +197,8 @@ impl EmojiProps {
             last_prop = UProperty::RGI_EMOJI_ZWJ_SEQUENCE;
         }
         for prop in first_prop..=last_prop {
-            if let Some(trie_u_chars) = &self.string_tries[(prop - UProperty::BASIC_EMOJI) as usize] {
+            if let Some(trie_u_chars) = &self.string_tries[(prop - UProperty::BASIC_EMOJI) as usize]
+            {
                 let mut trie = CharsTrie::new(trie_u_chars.clone(), 0);
                 let result = trie.next_chars(s, 0, length);
                 if result.has_value() {
@@ -210,7 +226,8 @@ impl EmojiProps {
             last_prop = UProperty::RGI_EMOJI_ZWJ_SEQUENCE;
         }
         for prop in first_prop..=last_prop {
-            if let Some(trie_u_chars) = &self.string_tries[(prop - UProperty::BASIC_EMOJI) as usize] {
+            if let Some(trie_u_chars) = &self.string_tries[(prop - UProperty::BASIC_EMOJI) as usize]
+            {
                 let trie = CharsTrie::new(trie_u_chars.clone(), 0);
                 for entry in trie.iterator() {
                     set.add_str(&entry.chars)?;

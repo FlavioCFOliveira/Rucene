@@ -31,13 +31,20 @@ impl Properties {
     /// # Errors
     ///
     /// The errors of `DecimalFormatProperties.readObjectImpl`.
-    pub fn read_object(&mut self, entries: Vec<(String, Option<PropertyValue>)>) -> rucene::error::Result<()> {
-        self.instance.get_or_insert_with(DecimalFormatProperties::new).read_object_impl(entries)
+    pub fn read_object(
+        &mut self,
+        entries: Vec<(String, Option<PropertyValue>)>,
+    ) -> rucene::error::Result<()> {
+        self.instance
+            .get_or_insert_with(DecimalFormatProperties::new)
+            .read_object_impl(entries)
     }
 
     /// Equivalent to `writeObject(ObjectOutputStream)`: creates the instance
     /// when absent and writes it (`writeObjectImpl`).
     pub fn write_object(&mut self) -> Vec<(String, Option<PropertyValue>)> {
-        self.instance.get_or_insert_with(DecimalFormatProperties::new).write_object_impl()
+        self.instance
+            .get_or_insert_with(DecimalFormatProperties::new)
+            .write_object_impl()
     }
 }

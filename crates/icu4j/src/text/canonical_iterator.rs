@@ -112,6 +112,7 @@ impl CanonicalIterator {
     /// # Errors
     ///
     /// None; the signature leaves room for the iterator's callers.
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn next(&mut self) -> Result<Option<Vec<u16>>> {
         if self.done {
             return Ok(None);
@@ -120,7 +121,8 @@ impl CanonicalIterator {
         // construct return value
         self.buffer.clear(); // delete old contents
         for (i, piece) in self.pieces.iter().enumerate() {
-            self.buffer.extend_from_slice(&piece[self.current[i] as usize]);
+            self.buffer
+                .extend_from_slice(&piece[self.current[i] as usize]);
         }
         let result = self.buffer.clone();
 
@@ -201,10 +203,17 @@ impl CanonicalIterator {
         Self::permute_depth(source, skip_zeros, output, 0)
     }
 
-    fn permute_depth(source: &[u16], skip_zeros: bool, output: &mut JavaHashSet, depth: i32) -> Result<()> {
+    fn permute_depth(
+        source: &[u16],
+        skip_zeros: bool,
+        output: &mut JavaHashSet,
+        depth: i32,
+    ) -> Result<()> {
         // TODO: optimize
         if depth > PERMUTE_DEPTH_LIMIT {
-            return Err(LuceneError::unsupported_operation(format!("Stack too deep:{depth}")));
+            return Err(LuceneError::unsupported_operation(format!(
+                "Stack too deep:{depth}"
+            )));
         }
         // optimization:
         // if zero or one character, just return a set with it
@@ -312,7 +321,13 @@ impl CanonicalIterator {
         Ok(result)
     }
 
-    fn extract(&self, comp: i32, segment: &[u16], segment_pos: i32, buf: &mut Vec<u16>) -> Result<Option<JavaHashSet>> {
+    fn extract(
+        &self,
+        comp: i32,
+        segment: &[u16],
+        segment_pos: i32,
+        buf: &mut Vec<u16>,
+    ) -> Result<Option<JavaHashSet>> {
         let decomp = match self.nfc_impl.get_decomposition(comp) {
             Some(d) => d,
             None => UTF16::value_of(comp)?,

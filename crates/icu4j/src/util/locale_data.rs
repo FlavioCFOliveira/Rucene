@@ -9,8 +9,8 @@ use rucene::error::{LuceneError, Result};
 
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_resource_bundle::{self, ICUResourceBundle};
-use crate::util::u_locale::{Category, ULocale};
 use crate::text::unicode_set::UnicodeSet;
+use crate::util::u_locale::{Category, ULocale};
 use crate::util::u_resource_bundle::{is_missing_resource, UResourceBundle};
 use crate::util::version_info::VersionInfo;
 
@@ -110,16 +110,19 @@ impl LocaleData {
     /// The errors of opening the locale bundle (a missing `lang` bundle is
     /// kept and thrown by the display-pattern getters, ICU-22149).
     pub fn get_instance(locale: &ULocale) -> Result<LocaleData> {
-        let bundle = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?
-            .as_icu()?
-            .clone();
-        let (lang_bundle, lang_bundle_exception) =
-            match UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_LANG_BASE_NAME), Some(locale)) {
-                Ok(b) => (Some(b.as_icu()?.clone()), None),
-                // Expected error case: ICU-22149
-                Err(mre) if is_missing_resource(&mre) => (None, Some(mre)),
-                Err(e) => return Err(e),
-            };
+        let bundle =
+            UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?
+                .as_icu()?
+                .clone();
+        let (lang_bundle, lang_bundle_exception) = match UResourceBundle::get_bundle_instance_for(
+            Some(ICUData::ICU_LANG_BASE_NAME),
+            Some(locale),
+        ) {
+            Ok(b) => (Some(b.as_icu()?.clone()), None),
+            // Expected error case: ICU-22149
+            Err(mre) if is_missing_resource(&mre) => (None, Some(mre)),
+            Err(e) => return Err(e),
+        };
         Ok(LocaleData {
             no_substitute: false,
             bundle,
@@ -163,7 +166,11 @@ impl LocaleData {
     ///
     /// As [`get_exemplar_set`](Self::get_exemplar_set); the errors of
     /// opening the locale bundle.
-    pub fn get_exemplar_set_for_type(locale: &ULocale, options: i32, extype: i32) -> Result<Option<UnicodeSet>> {
+    pub fn get_exemplar_set_for_type(
+        locale: &ULocale,
+        options: i32,
+        extype: i32,
+    ) -> Result<Option<UnicodeSet>> {
         LocaleData::get_instance(locale)?.get_exemplar_set(options, extype)
     }
 
@@ -187,27 +194,44 @@ impl LocaleData {
 
         if extype == Self::ES_CURRENCY {
             // currency symbol exemplar is no longer available
-            return Ok(if self.no_substitute { None } else { Some(crate::text::unicode_set::EMPTY.clone()) });
+            return Ok(if self.no_substitute {
+                None
+            } else {
+                Some(crate::text::unicode_set::EMPTY.clone())
+            });
         }
 
-        let Some(a_key) = exemplar_set_types.get(extype as usize).filter(|_| extype >= 0) else {
+        let Some(a_key) = exemplar_set_types
+            .get(extype as usize)
+            .filter(|_| extype >= 0)
+        else {
             return Err(LuceneError::illegal_argument(format!(
                 "java.lang.ArrayIndexOutOfBoundsException: Index {extype} out of bounds for length 5"
             )));
         };
         let attempt = (|| -> Result<Option<UnicodeSet>> {
-            let string_bundle = UResourceBundle::Icu(self.bundle.clone()).get(a_key)?.as_icu()?.clone();
+            let string_bundle = UResourceBundle::Icu(self.bundle.clone())
+                .get(a_key)?
+                .as_icu()?
+                .clone();
 
             if self.no_substitute && !self.bundle.is_root() && string_bundle.is_root() {
                 return Ok(None);
             }
 
             let unicode_set_pattern = string_bundle.get_string()?;
-            Ok(Some(UnicodeSet::from_pattern_options(&unicode_set_pattern, crate::text::unicode_set::IGNORE_SPACE | options)?))
+            Ok(Some(UnicodeSet::from_pattern_options(
+                &unicode_set_pattern,
+                crate::text::unicode_set::IGNORE_SPACE | options,
+            )?))
         })();
         match attempt {
             Ok(r) => Ok(r),
-            Err(_ex) => Ok(if self.no_substitute { None } else { Some(crate::text::unicode_set::EMPTY.clone()) }),
+            Err(_ex) => Ok(if self.no_substitute {
+                None
+            } else {
+                Some(crate::text::unicode_set::EMPTY.clone())
+            }),
         }
     }
 
@@ -222,7 +246,10 @@ impl LocaleData {
     ///
     /// `ArrayIndexOutOfBoundsException` for a type outside `0..4`.
     pub fn get_delimiter(&self, ty: i32) -> Result<Option<Vec<u16>>> {
-        let delimiters_bundle = UResourceBundle::Icu(self.bundle.clone()).get("delimiters")?.as_icu()?.clone();
+        let delimiters_bundle = UResourceBundle::Icu(self.bundle.clone())
+            .get("delimiters")?
+            .as_icu()?
+            .clone();
         // Only some of the quotation marks may be here. So we make sure that we do a multilevel fallback.
         let ty_name = match DELIMITER_TYPES.get(ty as usize).filter(|_| ty >= 0) {
             Some(t) => *t,
@@ -237,7 +264,10 @@ impl LocaleData {
         Ok(Some(string_bundle.get_string()?))
     }
 
-    fn measurement_type_bundle_for_locale(locale: &ULocale, measurement_type: &str) -> Result<Option<UResourceBundle>> {
+    fn measurement_type_bundle_for_locale(
+        locale: &ULocale,
+        measurement_type: &str,
+    ) -> Result<Option<UResourceBundle>> {
         // Much of this is taken from getCalendarType in impl/CalendarUtil.java
         let region = ULocale::get_region_for_supplemental_data(locale, true)?;
         let attempt = (|| -> Result<UResourceBundle> {
@@ -247,7 +277,10 @@ impl LocaleData {
                 icu_resource_bundle::icu_data_class_loader(),
             )?;
             let measurement_data = rb.get("measurementData")?;
-            match measurement_data.get(&region).and_then(|d| d.get(measurement_type)) {
+            match measurement_data
+                .get(&region)
+                .and_then(|d| d.get(measurement_type))
+            {
                 Ok(b) => Ok(b),
                 Err(mre) if is_missing_resource(&mre) => {
                     // use "001" as fallback
@@ -295,7 +328,8 @@ impl LocaleData {
     ///
     /// `ArrayIndexOutOfBoundsException` for a vector shorter than 2.
     pub fn get_paper_size(locale: &ULocale) -> Result<PaperSize> {
-        let obj = Self::measurement_type_bundle_for_locale(locale, PAPER_SIZE)?.ok_or_else(LuceneError::null_pointer)?;
+        let obj = Self::measurement_type_bundle_for_locale(locale, PAPER_SIZE)?
+            .ok_or_else(LuceneError::null_pointer)?;
         let size = obj.get_int_vector()?;
         Ok(PaperSize {
             height: size[0],
@@ -322,7 +356,10 @@ impl LocaleData {
     /// pattern.
     pub fn get_locale_display_pattern(&self) -> Result<Vec<u16>> {
         let lang_bundle = self.lang_bundle()?;
-        let loc_disp_bundle = UResourceBundle::Icu(lang_bundle.clone()).get(LOCALE_DISPLAY_PATTERN)?.as_icu()?.clone();
+        let loc_disp_bundle = UResourceBundle::Icu(lang_bundle.clone())
+            .get(LOCALE_DISPLAY_PATTERN)?
+            .as_icu()?
+            .clone();
         loc_disp_bundle.get_string_with_fallback(PATTERN)
     }
 
@@ -336,7 +373,10 @@ impl LocaleData {
         let lang_bundle = self.lang_bundle()?;
         let sub0 = "{0}";
         let sub1 = "{1}";
-        let loc_disp_bundle = UResourceBundle::Icu(lang_bundle.clone()).get(LOCALE_DISPLAY_PATTERN)?.as_icu()?.clone();
+        let loc_disp_bundle = UResourceBundle::Icu(lang_bundle.clone())
+            .get(LOCALE_DISPLAY_PATTERN)?
+            .as_icu()?
+            .clone();
         let locale_separator = loc_disp_bundle.get_string_with_fallback(SEPARATOR)?;
         let sub0u: Vec<u16> = sub0.encode_utf16().collect();
         let sub1u: Vec<u16> = sub1.encode_utf16().collect();
@@ -366,7 +406,9 @@ impl LocaleData {
                 icu_resource_bundle::icu_data_class_loader(),
             )?;
             let cldr_version_bundle = supplemental_data_bundle.get("cldrVersion")?;
-            *g = Some(VersionInfo::get_instance_str(&cldr_version_bundle.get_string()?)?);
+            *g = Some(VersionInfo::get_instance_str(
+                &cldr_version_bundle.get_string()?,
+            )?);
         }
         Ok(g.expect("set above"))
     }

@@ -124,7 +124,7 @@ impl RBBIStateTable {
             }
         }
         let mut bytes_written = Self::F_HEADER_SIZE + self.f_row_len * self.f_num_states; // total bytes written,
-                                                                                            // including the header.
+                                                                                          // including the header.
         while bytes_written % 8 != 0 {
             bytes.write_byte(0)?;
             bytes_written += 1;
@@ -426,7 +426,11 @@ impl RBBIDataWrapper {
         }
         ICUBinary::skip_bytes(&mut bytes, h.f_status_table - pos)?;
         pos = h.f_status_table;
-        let f_status_table = ICUBinary::get_ints(&mut bytes, h.f_status_table_len / 4, h.f_status_table_len & 3)?;
+        let f_status_table = ICUBinary::get_ints(
+            &mut bytes,
+            h.f_status_table_len / 4,
+            h.f_status_table_len & 3,
+        )?;
         pos += h.f_status_table_len;
 
         //
@@ -438,7 +442,9 @@ impl RBBIDataWrapper {
         ICUBinary::skip_bytes(&mut bytes, h.f_rule_source - pos)?;
         let rule_bytes = ICUBinary::get_bytes(&mut bytes, h.f_rule_source_len, 0)?;
         let rule_bytes: Vec<u8> = rule_bytes.into_iter().map(|b| b as u8).collect();
-        let f_rule_source: Vec<u16> = String::from_utf8_lossy(&rule_bytes).encode_utf16().collect();
+        let f_rule_source: Vec<u16> = String::from_utf8_lossy(&rule_bytes)
+            .encode_utf16()
+            .collect();
 
         let this = RBBIDataWrapper {
             f_header: h,
@@ -476,7 +482,10 @@ impl RBBIDataWrapper {
         self.dump_table(out, self.f_r_table.as_ref());
 
         self.dump_char_categories(out);
-        out.println(&format!("Source Rules: {}", String::from_utf16_lossy(&self.f_rule_source)));
+        out.println(&format!(
+            "Source Rules: {}",
+            String::from_utf16_lossy(&self.f_rule_source)
+        ));
         Ok(())
     }
 
@@ -541,19 +550,31 @@ impl RBBIDataWrapper {
         let row = self.get_row_index(state) as usize;
         let t = &table.f_table;
         if t[row + Self::ACCEPTING as usize] != 0 {
-            dest.push_str(&Self::int_to_string(t[row + Self::ACCEPTING as usize] as i32, 5));
+            dest.push_str(&Self::int_to_string(
+                t[row + Self::ACCEPTING as usize] as i32,
+                5,
+            ));
         } else {
             dest.push_str("     ");
         }
         if t[row + Self::LOOKAHEAD as usize] != 0 {
-            dest.push_str(&Self::int_to_string(t[row + Self::LOOKAHEAD as usize] as i32, 5));
+            dest.push_str(&Self::int_to_string(
+                t[row + Self::LOOKAHEAD as usize] as i32,
+                5,
+            ));
         } else {
             dest.push_str("     ");
         }
-        dest.push_str(&Self::int_to_string(t[row + Self::TAGSIDX as usize] as i32, 5));
+        dest.push_str(&Self::int_to_string(
+            t[row + Self::TAGSIDX as usize] as i32,
+            5,
+        ));
 
         for col in 0..self.f_header.f_cat_count as usize {
-            dest.push_str(&Self::int_to_string(t[row + Self::NEXTSTATES as usize + col] as i32, 5));
+            dest.push_str(&Self::int_to_string(
+                t[row + Self::NEXTSTATES as usize + col] as i32,
+                5,
+            ));
         }
 
         out.println(&dest);
@@ -600,7 +621,8 @@ impl RBBIDataWrapper {
             }
         }
         // `catStrings[lastCat]` with `lastCat == -1` throws in Java.
-        let lc = usize::try_from(last_cat).unwrap_or_else(|_| crate::jdk::array_index_out_of_bounds(last_cat));
+        let lc = usize::try_from(last_cat)
+            .unwrap_or_else(|_| crate::jdk::array_index_out_of_bounds(last_cat));
         cat_strings[lc].push_str(&format!(" {:x}", range_start));
         if range_end != range_start {
             cat_strings[lc].push_str(&format!("-{:x}", range_end));

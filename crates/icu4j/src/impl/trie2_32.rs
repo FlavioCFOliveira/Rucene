@@ -88,7 +88,12 @@ impl Trie2_32 {
 
         bytes_written += self.0.serialize_header(&mut dos)?;
         for i in 0..self.0.data_length {
-            dos.write_int(self.0.data32.as_ref().expect("a 32-bit trie has 32-bit data")[i as usize])?;
+            dos.write_int(
+                self.0
+                    .data32
+                    .as_ref()
+                    .expect("a 32-bit trie has 32-bit data")[i as usize],
+            )?;
         }
         bytes_written += self.0.data_length * 4;
         Ok(bytes_written)
@@ -127,13 +132,16 @@ impl Trie2 {
                 //   For this function, we need the code point data.
                 // Note: this expression could be refactored for slightly improved efficiency, but
                 //       surrogate code points will be so rare in practice that it's not worth it.
-                ix = self.index[(UTRIE2_LSCP_INDEX_2_OFFSET + ((code_point - 0xd800) >> UTRIE2_SHIFT_2)) as usize] as i32;
+                ix = self.index[(UTRIE2_LSCP_INDEX_2_OFFSET
+                    + ((code_point - 0xd800) >> UTRIE2_SHIFT_2))
+                    as usize] as i32;
                 ix = (ix << UTRIE2_INDEX_SHIFT) + (code_point & UTRIE2_DATA_MASK);
                 return self.value32(ix);
             }
             if code_point < self.high_start {
                 // Supplemental code point, use two-level lookup.
-                ix = (UTRIE2_INDEX_1_OFFSET - UTRIE2_OMITTED_BMP_INDEX_1_LENGTH) + (code_point >> UTRIE2_SHIFT_1);
+                ix = (UTRIE2_INDEX_1_OFFSET - UTRIE2_OMITTED_BMP_INDEX_1_LENGTH)
+                    + (code_point >> UTRIE2_SHIFT_1);
                 ix = self.index[ix as usize] as i32;
                 ix += (code_point >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK;
                 ix = self.index[ix as usize] as i32;
@@ -184,13 +192,17 @@ impl Trie2 {
             } else if cp < 0xffff {
                 // Lead Surrogate Code Point, 0xd800 <= cp < 0xdc00
                 index2_block = UTRIE2_LSCP_INDEX_2_OFFSET;
-                block = (self.index[(index2_block + ((cp - 0xd800) >> UTRIE2_SHIFT_2)) as usize] as i32)
+                block = (self.index[(index2_block + ((cp - 0xd800) >> UTRIE2_SHIFT_2)) as usize]
+                    as i32)
                     << UTRIE2_INDEX_SHIFT;
             } else if cp < self.high_start {
                 // Supplemental code point, use two-level lookup.
-                let ix = (UTRIE2_INDEX_1_OFFSET - UTRIE2_OMITTED_BMP_INDEX_1_LENGTH) + (cp >> UTRIE2_SHIFT_1);
+                let ix = (UTRIE2_INDEX_1_OFFSET - UTRIE2_OMITTED_BMP_INDEX_1_LENGTH)
+                    + (cp >> UTRIE2_SHIFT_1);
                 index2_block = self.index[ix as usize] as i32;
-                block = (self.index[(index2_block + ((cp >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK)) as usize] as i32)
+                block = (self.index
+                    [(index2_block + ((cp >> UTRIE2_SHIFT_2) & UTRIE2_INDEX_2_MASK)) as usize]
+                    as i32)
                     << UTRIE2_INDEX_SHIFT;
             } else {
                 // Code point above highStart.

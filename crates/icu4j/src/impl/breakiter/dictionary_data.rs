@@ -5,13 +5,13 @@
 
 use rucene::error::Result;
 
+use crate::jdk::to_rust_string;
 use crate::r#impl::assert::Assert;
 use crate::r#impl::breakiter::bytes_dictionary_matcher::BytesDictionaryMatcher;
 use crate::r#impl::breakiter::chars_dictionary_matcher::CharsDictionaryMatcher;
 use crate::r#impl::breakiter::dictionary_matcher::DictionaryMatcher;
 use crate::r#impl::icu_binary::ICUBinary;
 use crate::r#impl::icu_data::ICUData;
-use crate::jdk::to_rust_string;
 use crate::util::u_resource_bundle::UResourceBundle;
 
 /// The loader of the break-iterator dictionaries (`brkitr/*.dict`).
@@ -69,11 +69,17 @@ impl DictionaryData {
     /// `MissingResourceException` for a missing bundle entry or data file,
     /// `IOException` for a malformed header, `IllegalStateException`
     /// (`Assert.assrt`) for inconsistent indexes.
-    pub(crate) fn load_dictionary_for(dict_type: &str) -> Result<Option<Box<dyn DictionaryMatcher>>> {
+    pub(crate) fn load_dictionary_for(
+        dict_type: &str,
+    ) -> Result<Option<Box<dyn DictionaryMatcher>>> {
         let rb = UResourceBundle::get_bundle_instance_default(Some(ICUData::ICU_BRKITR_BASE_NAME))?;
         let rb = rb.as_icu()?;
         let dict_file_name = rb.get_string_with_fallback(&format!("dictionaries/{dict_type}"))?;
-        let dict_file_name = format!("{}/{}", ICUData::ICU_BRKITR_NAME, to_rust_string(&dict_file_name));
+        let dict_file_name = format!(
+            "{}/{}",
+            ICUData::ICU_BRKITR_NAME,
+            to_rust_string(&dict_file_name)
+        );
         let mut bytes = ICUBinary::get_required_data(&dict_file_name)?;
         ICUBinary::read_header(&mut bytes, Self::DATA_FORMAT_ID, None)?;
         let mut indexes = [0i32; Self::IX_COUNT as usize];

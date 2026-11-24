@@ -276,7 +276,8 @@ impl Vectorizer {
                 // borrow it, so the iterator walks a clone. The caller resets
                 // its index after the range (`DictionaryBreakEngine.findBreaks`)
                 // and `substring` restores it, so the outcome is the same.
-                let mut iter = break_iterator::get_character_instance().unwrap_or_else(|e| panic!("{e}"));
+                let mut iter =
+                    break_iterator::get_character_instance().unwrap_or_else(|e| panic!("{e}"));
                 iter.set_text(Some(text.clone_box()));
                 let mut last = iter.next_n(start_pos);
                 let mut curr = iter.next();
@@ -324,7 +325,9 @@ impl LSTMBreakEngine {
     fn make_vectorizer(data: &LSTMData) -> Option<Vectorizer> {
         match data.f_type {
             EmbeddingType::CodePoints => Some(Vectorizer::CodePoints(data.f_dict.clone())),
-            EmbeddingType::GraphemeCluster => Some(Vectorizer::GraphemeCluster(data.f_dict.clone())),
+            EmbeddingType::GraphemeCluster => {
+                Some(Vectorizer::GraphemeCluster(data.f_dict.clone()))
+            }
             _ => None,
         }
     }
@@ -429,7 +432,14 @@ impl LSTMBreakEngine {
 
     /// `compute(float[][] W, float[][] U, float[] B, float[] x, float[] h,
     /// float[] c)`: one LSTM step; updates `c` and returns the new `h`.
-    fn compute(w: &[Vec<f32>], u: &[Vec<f32>], b: &[f32], x: &[f32], h: &[f32], c: &mut [f32]) -> Vec<f32> {
+    fn compute(
+        w: &[Vec<f32>],
+        u: &[Vec<f32>],
+        b: &[f32],
+        x: &[f32],
+        h: &[f32],
+        c: &mut [f32],
+    ) -> Vec<f32> {
         // ifco = x * W + h * U + b
         let mut ifco = b.to_vec();
         Self::add_dot_product_to(x, w, &mut ifco);
@@ -483,7 +493,10 @@ impl LSTMBreakEngine {
     ///
     /// `StringIndexOutOfBoundsException` when the model name has no `.`.
     pub fn create_data_for_script(script: i32) -> Result<Option<LSTMData>> {
-        if script != UScript::KHMER && script != UScript::LAO && script != UScript::MYANMAR && script != UScript::THAI
+        if script != UScript::KHMER
+            && script != UScript::LAO
+            && script != UScript::MYANMAR
+            && script != UScript::THAI
         {
             return Ok(None);
         }
@@ -515,7 +528,10 @@ impl LSTMBreakEngine {
     /// `null` that `createData(int)` answers for another script).
     pub fn create(script: i32, data: Option<LSTMData>) -> Result<LSTMBreakEngine> {
         let short = UScript::get_short_name(script)?;
-        let set_expr = format!("[[:{}:]&[:LineBreak=SA:]]", short.as_deref().unwrap_or("null"));
+        let set_expr = format!(
+            "[[:{}:]&[:LineBreak=SA:]]",
+            short.as_deref().unwrap_or("null")
+        );
         let mut set = UnicodeSet::new();
         set.apply_pattern(&units(&set_expr))?;
         set.compact()?;
@@ -537,7 +553,14 @@ impl LanguageBreakEngine for LSTMBreakEngine {
         found_breaks: &mut DequeI,
         is_phrase_breaking: bool,
     ) -> i32 {
-        dictionary_find_breaks(self, text, start_pos, end_pos, found_breaks, is_phrase_breaking)
+        dictionary_find_breaks(
+            self,
+            text,
+            start_pos,
+            end_pos,
+            found_breaks,
+            is_phrase_breaking,
+        )
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -628,7 +651,9 @@ impl DictionaryBreakEngine for LSTMBreakEngine {
             let current = Self::max_index(&logp);
 
             // BIES logic.
-            if (current == LSTMClass::Begin.ordinal() || current == LSTMClass::Single.ordinal()) && i != 0 {
+            if (current == LSTMClass::Begin.ordinal() || current == LSTMClass::Single.ordinal())
+                && i != 0
+            {
                 found_breaks.push(offsets[i]);
             }
         }

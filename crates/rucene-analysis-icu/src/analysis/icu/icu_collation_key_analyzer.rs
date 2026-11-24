@@ -93,7 +93,8 @@ impl Analyzer for ICUCollationKeyAnalyzer {
     /// Equivalent to `ICUCollationKeyAnalyzer.createComponents(String)`: a
     /// `KeywordTokenizer(factory, KeywordTokenizer.DEFAULT_BUFFER_SIZE)`.
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
-        let tokenizer = new_keyword_tokenizer_with_factory(self.factory.clone(), DEFAULT_BUFFER_SIZE)?;
+        let tokenizer =
+            new_keyword_tokenizer_with_factory(self.factory.clone(), DEFAULT_BUFFER_SIZE)?;
         Ok(TokenStreamComponents::from_tokenizer(Arc::new(
             AtomicRefCell::new(tokenizer),
         )))

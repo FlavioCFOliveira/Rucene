@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use rucene::error::{LuceneError, Result};
 
+use crate::lang::u_script::UScript;
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::u_vector32::UVector32;
 use crate::r#impl::normalizer2_impl::Normalizer2Impl;
 use crate::r#impl::trie2_32::Trie2_32;
-use crate::lang::u_script::UScript;
 use crate::text::collator::ReorderCodes;
 use crate::text::unicode_set::UnicodeSet;
 use crate::util::icu_exception::ICUException;
@@ -100,12 +100,16 @@ impl CollationData {
     }
 
     fn trie(&self) -> &Trie2_32 {
-        self.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.trie
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// The base data; Java dereferences `base` without a check.
     pub fn base(&self) -> &CollationData {
-        self.base.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.base
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `getCE32(int)`.
@@ -129,7 +133,10 @@ impl CollationData {
 
     /// `isUnsafeBackward(int, boolean)`.
     pub fn is_unsafe_backward(&self, c: i32, numeric: bool) -> bool {
-        let set = self.unsafe_backward_set.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let set = self
+            .unsafe_backward_set
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         set.contains_valid(c) || (numeric && self.is_digit(c))
     }
 
@@ -176,7 +183,9 @@ impl CollationData {
     /// Computes a CE from c's ce32 which has the OFFSET_TAG.
     pub fn get_ce_from_offset_ce32(&self, c: i32, ce32: i32) -> i64 {
         let data_ce = self.ces[Collation::index_from_ce32(ce32) as usize];
-        Collation::make_ce(Collation::get_three_byte_primary_for_offset_data(c, data_ce))
+        Collation::make_ce(Collation::get_three_byte_primary_for_offset_data(
+            c, data_ce,
+        ))
     }
 
     /// Returns the single CE that c maps to.
@@ -216,8 +225,12 @@ impl CollationData {
                 Collation::FALLBACK_TAG | Collation::RESERVED_TAG_3 => {
                     panic!("java.lang.AssertionError: unexpected CE32 tag for U+{c:04X} (CE32 0x{:08x})", ce32 as u32)
                 }
-                Collation::LONG_PRIMARY_TAG => return Ok(Collation::ce_from_long_primary_ce32(ce32)),
-                Collation::LONG_SECONDARY_TAG => return Ok(Collation::ce_from_long_secondary_ce32(ce32)),
+                Collation::LONG_PRIMARY_TAG => {
+                    return Ok(Collation::ce_from_long_primary_ce32(ce32))
+                }
+                Collation::LONG_SECONDARY_TAG => {
+                    return Ok(Collation::ce_from_long_secondary_ce32(ce32))
+                }
                 Collation::EXPANSION32_TAG => {
                     if Collation::length_from_ce32(ce32) == 1 {
                         ce32 = d.ce32s[Collation::index_from_ce32(ce32) as usize];
@@ -277,7 +290,9 @@ impl CollationData {
     /// Finds the reordering group which contains the primary weight.
     pub fn get_group_for_primary(&self, mut p: i64) -> i32 {
         p >>= 16;
-        if p < self.script_starts[1] as i64 || self.script_starts[self.script_starts.len() - 1] as i64 <= p {
+        if p < self.script_starts[1] as i64
+            || self.script_starts[self.script_starts.len() - 1] as i64 <= p
+        {
             return -1;
         }
         let mut index = 1usize;
@@ -359,7 +374,12 @@ impl CollationData {
         self.make_reorder_ranges_latin(reorder, false, ranges)
     }
 
-    fn make_reorder_ranges_latin(&self, reorder: &[i32], latin_must_move: bool, ranges: &mut UVector32) -> Result<()> {
+    fn make_reorder_ranges_latin(
+        &self,
+        reorder: &[i32],
+        latin_must_move: bool,
+        ranges: &mut UVector32,
+    ) -> Result<()> {
         ranges.remove_all_elements();
         let mut length = reorder.len();
         if length == 0 || (length == 1 && reorder[0] == UScript::UNKNOWN) {
@@ -371,15 +391,14 @@ impl CollationData {
 
         {
             // Set "don't care" values for reserved ranges.
-            let mut index = self.scripts_index
-                [(self.num_scripts + Self::REORDER_RESERVED_BEFORE_LATIN - ReorderCodes::FIRST) as usize]
-                as usize;
+            let mut index = self.scripts_index[(self.num_scripts
+                + Self::REORDER_RESERVED_BEFORE_LATIN
+                - ReorderCodes::FIRST) as usize] as usize;
             if index != 0 {
                 table[index] = 0xff;
             }
-            index = self.scripts_index
-                [(self.num_scripts + Self::REORDER_RESERVED_AFTER_LATIN - ReorderCodes::FIRST) as usize]
-                as usize;
+            index = self.scripts_index[(self.num_scripts + Self::REORDER_RESERVED_AFTER_LATIN
+                - ReorderCodes::FIRST) as usize] as usize;
             if index != 0 {
                 table[index] = 0xff;
             }
@@ -438,7 +457,9 @@ impl CollationData {
                     script = reorder[length];
                     if script == UScript::UNKNOWN {
                         // Must occur at most once.
-                        return Err(LuceneError::illegal_argument("setReorderCodes(): duplicate UScript.UNKNOWN"));
+                        return Err(LuceneError::illegal_argument(
+                            "setReorderCodes(): duplicate UScript.UNKNOWN",
+                        ));
                     }
                     if script == ReorderCodes::DEFAULT {
                         return Err(LuceneError::illegal_argument(
@@ -554,7 +575,8 @@ impl CollationData {
             high_limit -= 0x100;
         }
         let start = self.script_starts[index as usize] as i32;
-        high_limit = ((high_limit & 0xff00) - ((limit & 0xff00) - (start & 0xff00))) | (start & 0xff);
+        high_limit =
+            ((high_limit & 0xff00) - ((limit & 0xff00) - (start & 0xff00))) | (start & 0xff);
         table[index as usize] = (high_limit >> 8) as i16;
         high_limit
     }

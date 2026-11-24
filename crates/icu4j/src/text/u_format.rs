@@ -54,7 +54,10 @@ impl UFormatBase {
     pub fn set_locale(&mut self, valid: Option<ULocale>, actual: Option<ULocale>) -> Result<()> {
         // Change the following to an assertion later
         if valid.is_none() != actual.is_none() {
-            return Err(LuceneError::unchecked_with_message("java.lang.IllegalArgumentException", None));
+            return Err(LuceneError::unchecked_with_message(
+                "java.lang.IllegalArgumentException",
+                None,
+            ));
         }
         // Another check we could do is that the actual locale is at
         // the same level or less specific than the valid locale.

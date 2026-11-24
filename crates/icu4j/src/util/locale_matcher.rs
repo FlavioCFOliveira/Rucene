@@ -25,7 +25,8 @@ use crate::util::u_locale::{Builder as ULocaleBuilder, ULocale};
 /// `UND_LSR`.
 static UND_LSR: LazyLock<LSR> = LazyLock::new(|| LSR::new("und", "", "", LSR::EXPLICIT_LSR));
 /// `UND_ULOCALE`: in ULocale, "und" and "" make the same object.
-static UND_ULOCALE: LazyLock<ULocale> = LazyLock::new(|| ULocale::new("und").expect("\"und\" is a valid locale ID"));
+static UND_ULOCALE: LazyLock<ULocale> =
+    LazyLock::new(|| ULocale::new("und").expect("\"und\" is a valid locale ID"));
 /// `UND_LOCALE`: in Locale, "und" and "" make different objects.
 static UND_LOCALE: LazyLock<Locale> = LazyLock::new(|| Locale::of("und", "", ""));
 /// `EMPTY_LOCALE`.
@@ -300,7 +301,10 @@ impl Builder {
     }
 
     /// `setSupportedULocales(Collection<ULocale> locales)`.
-    pub fn set_supported_u_locales(&mut self, locales: impl IntoIterator<Item = ULocale>) -> &mut Self {
+    pub fn set_supported_u_locales(
+        &mut self,
+        locales: impl IntoIterator<Item = ULocale>,
+    ) -> &mut Self {
         self.supported_locales = Some(locales.into_iter().collect());
         self
     }
@@ -321,7 +325,9 @@ impl Builder {
 
     /// `addSupportedULocale(ULocale locale)`.
     pub fn add_supported_u_locale(&mut self, locale: ULocale) -> &mut Self {
-        self.supported_locales.get_or_insert_with(Vec::new).push(locale);
+        self.supported_locales
+            .get_or_insert_with(Vec::new)
+            .push(locale);
         self
     }
 
@@ -391,7 +397,9 @@ impl Builder {
         supported: Option<&Locale>,
     ) -> JResult<&mut Self> {
         if desired.is_none() || supported.is_none() {
-            return Err(LuceneError::illegal_argument("desired/supported locales must not be null"));
+            return Err(LuceneError::illegal_argument(
+                "desired/supported locales must not be null",
+            ));
         }
         let d = ULocale::for_locale(desired)?;
         let s = ULocale::for_locale(supported)?;
@@ -405,9 +413,15 @@ impl Builder {
     ///
     /// `IllegalArgumentException("desired/supported locales must not be
     /// null")`.
-    pub fn set_max_distance(&mut self, desired: Option<ULocale>, supported: Option<ULocale>) -> JResult<&mut Self> {
+    pub fn set_max_distance(
+        &mut self,
+        desired: Option<ULocale>,
+        supported: Option<ULocale>,
+    ) -> JResult<&mut Self> {
         if desired.is_none() || supported.is_none() {
-            return Err(LuceneError::illegal_argument("desired/supported locales must not be null"));
+            return Err(LuceneError::illegal_argument(
+                "desired/supported locales must not be null",
+            ));
         }
         self.max_distance_desired = desired;
         self.max_distance_supported = supported;
@@ -544,7 +558,9 @@ impl LocaleMatcher {
     ///
     /// As [`Builder::build`].
     pub fn from_priority_list(supported_locales: &LocalePriorityList) -> JResult<LocaleMatcher> {
-        Self::from_builder(Self::builder().set_supported_u_locales(supported_locales.get_u_locales()))
+        Self::from_builder(
+            Self::builder().set_supported_u_locales(supported_locales.get_u_locales()),
+        )
     }
 
     /// `LocaleMatcher(String supportedLocales)`.
@@ -659,7 +675,10 @@ impl LocaleMatcher {
         if builder.threshold_distance >= 0 {
             threshold = builder.threshold_distance;
         } else if let Some(max_desired) = &builder.max_distance_desired {
-            let max_supported = builder.max_distance_supported.as_ref().expect("set together with maxDistanceDesired");
+            let max_supported = builder
+                .max_distance_supported
+                .as_ref()
+                .expect("set together with maxDistanceDesired");
             let index_and_distance = distance.get_best_index_and_distance(
                 &get_maximal_lsr_or_und(max_desired)?,
                 &[get_maximal_lsr_or_und(max_supported)?],
@@ -709,7 +728,10 @@ impl LocaleMatcher {
     /// # Errors
     ///
     /// As [`get_best_match`](Self::get_best_match).
-    pub fn get_best_match_iter(&self, desired_locales: impl IntoIterator<Item = ULocale>) -> JResult<Option<ULocale>> {
+    pub fn get_best_match_iter(
+        &self,
+        desired_locales: impl IntoIterator<Item = ULocale>,
+    ) -> JResult<Option<ULocale>> {
         let mut desired_iter = desired_locales.into_iter().peekable();
         if desired_iter.peek().is_none() {
             return Ok(self.default_u_locale.clone());
@@ -755,7 +777,10 @@ impl LocaleMatcher {
     /// # Errors
     ///
     /// As [`get_best_match`](Self::get_best_match).
-    pub fn get_best_locale_iter(&self, desired_locales: impl IntoIterator<Item = Locale>) -> JResult<Option<Locale>> {
+    pub fn get_best_locale_iter(
+        &self,
+        desired_locales: impl IntoIterator<Item = Locale>,
+    ) -> JResult<Option<Locale>> {
         let mut desired_iter = desired_locales.into_iter().peekable();
         if desired_iter.peek().is_none() {
             return Ok(self.default_locale.clone());
@@ -771,7 +796,14 @@ impl LocaleMatcher {
     }
 
     fn default_result(&self) -> Result {
-        Result::new(None, self.default_u_locale.clone(), None, self.default_locale.clone(), -1, -1)
+        Result::new(
+            None,
+            self.default_u_locale.clone(),
+            None,
+            self.default_locale.clone(),
+            -1,
+            -1,
+        )
     }
 
     fn make_result_u(
@@ -792,7 +824,8 @@ impl LocaleMatcher {
                 supp_index,
             )
         } else {
-            let (remembered, best_desired_index) = lsr_iter.expect("an iterator when there is no single desired locale");
+            let (remembered, best_desired_index) =
+                lsr_iter.expect("an iterator when there is no single desired locale");
             Result::new(
                 remembered.clone(),
                 Some(self.supported_u_locales[supp_index as usize].clone()),
@@ -822,7 +855,8 @@ impl LocaleMatcher {
                 supp_index,
             )
         } else {
-            let (remembered, best_desired_index) = lsr_iter.expect("an iterator when there is no single desired locale");
+            let (remembered, best_desired_index) =
+                lsr_iter.expect("an iterator when there is no single desired locale");
             Result::new(
                 None,
                 Some(self.supported_u_locales[supp_index as usize].clone()),
@@ -850,7 +884,10 @@ impl LocaleMatcher {
     /// # Errors
     ///
     /// As [`get_best_match`](Self::get_best_match).
-    pub fn get_best_match_result_iter(&self, desired_locales: impl IntoIterator<Item = ULocale>) -> JResult<Result> {
+    pub fn get_best_match_result_iter(
+        &self,
+        desired_locales: impl IntoIterator<Item = ULocale>,
+    ) -> JResult<Result> {
         let mut desired_iter = desired_locales.into_iter().peekable();
         if desired_iter.peek().is_none() {
             return Ok(self.default_result());
@@ -858,7 +895,11 @@ impl LocaleMatcher {
         let mut lsr_iter = LsrIterator::new(desired_iter, get_maximal_lsr_or_und);
         let desired_lsr = lsr_iter.next_lsr()?;
         let supp_index = self.get_best_supp_index(desired_lsr, Some(&mut lsr_iter))?;
-        Ok(self.make_result_u(None, Some((&lsr_iter.remembered, lsr_iter.best_desired_index)), supp_index))
+        Ok(self.make_result_u(
+            None,
+            Some((&lsr_iter.remembered, lsr_iter.best_desired_index)),
+            supp_index,
+        ))
     }
 
     /// `getBestLocaleResult(Locale desiredLocale)`.
@@ -877,7 +918,10 @@ impl LocaleMatcher {
     /// # Errors
     ///
     /// As [`get_best_match`](Self::get_best_match).
-    pub fn get_best_locale_result_iter(&self, desired_locales: impl IntoIterator<Item = Locale>) -> JResult<Result> {
+    pub fn get_best_locale_result_iter(
+        &self,
+        desired_locales: impl IntoIterator<Item = Locale>,
+    ) -> JResult<Result> {
         let mut desired_iter = desired_locales.into_iter().peekable();
         if desired_iter.peek().is_none() {
             return Ok(self.default_result());
@@ -885,10 +929,18 @@ impl LocaleMatcher {
         let mut lsr_iter = LsrIterator::new(desired_iter, get_maximal_lsr_or_und_locale);
         let desired_lsr = lsr_iter.next_lsr()?;
         let supp_index = self.get_best_supp_index(desired_lsr, Some(&mut lsr_iter))?;
-        Ok(self.make_result_l(None, Some((&lsr_iter.remembered, lsr_iter.best_desired_index)), supp_index))
+        Ok(self.make_result_l(
+            None,
+            Some((&lsr_iter.remembered, lsr_iter.best_desired_index)),
+            supp_index,
+        ))
     }
 
-    fn get_best_supp_index(&self, mut desired_lsr: LSR, mut remaining_iter: Option<&mut dyn RemainingLsrs>) -> JResult<i32> {
+    fn get_best_supp_index(
+        &self,
+        mut desired_lsr: LSR,
+        mut remaining_iter: Option<&mut dyn RemainingLsrs>,
+    ) -> JResult<i32> {
         let distance = LocaleDistance::instance()?;
         let mut desired_index = 0;
         let mut best_supported_lsr_index = -1;
@@ -911,13 +963,15 @@ impl LocaleMatcher {
                 self.direction,
             )?;
             if best_index_and_distance >= 0 {
-                best_shifted_distance = LocaleDistance::get_shifted_distance(best_index_and_distance);
+                best_shifted_distance =
+                    LocaleDistance::get_shifted_distance(best_index_and_distance);
                 if let Some(r) = remaining_iter.as_deref_mut() {
                     r.remember_current(desired_index);
                 }
                 best_supported_lsr_index = LocaleDistance::get_index(best_index_and_distance);
             }
-            best_shifted_distance -= LocaleDistance::shift_distance(self.demotion_per_desired_locale);
+            best_shifted_distance -=
+                LocaleDistance::shift_distance(self.demotion_per_desired_locale);
             if best_shifted_distance <= 0 {
                 break;
             }
@@ -1011,6 +1065,7 @@ impl LocaleMatcher {
 
 /// `toString()`.
 impl fmt::Display for LocaleMatcher {
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = String::from("{LocaleMatcher");
         // Supported languages in the order that we try to match them.

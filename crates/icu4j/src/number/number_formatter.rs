@@ -61,7 +61,8 @@ number_formatter_enum!(
     /// An enum declaring how to resolve conflicts between maximum fraction
     /// digits and maximum significant digits. Equivalent to
     /// `NumberFormatter.RoundingPriority`.
-    RoundingPriority, "com.ibm.icu.number.NumberFormatter$RoundingPriority",
+    RoundingPriority,
+    "com.ibm.icu.number.NumberFormatter$RoundingPriority",
     [
         /// Favor greater precision by relaxing one of the rounding
         /// constraints.
@@ -75,7 +76,8 @@ number_formatter_enum!(
 number_formatter_enum!(
     /// An enum declaring how to render units, including currencies.
     /// Equivalent to `NumberFormatter.UnitWidth`.
-    UnitWidth, "com.ibm.icu.number.NumberFormatter$UnitWidth",
+    UnitWidth,
+    "com.ibm.icu.number.NumberFormatter$UnitWidth",
     [
         /// Use the most abbreviated form of the unit.
         Narrow = "NARROW",
@@ -98,7 +100,8 @@ number_formatter_enum!(
 number_formatter_enum!(
     /// An enum declaring the strategy for when and how to display grouping
     /// separators. Equivalent to `NumberFormatter.GroupingStrategy`.
-    GroupingStrategy, "com.ibm.icu.number.NumberFormatter$GroupingStrategy",
+    GroupingStrategy,
+    "com.ibm.icu.number.NumberFormatter$GroupingStrategy",
     [
         /// Do not display grouping separators in any locale.
         Off = "OFF",
@@ -118,7 +121,8 @@ number_formatter_enum!(
 number_formatter_enum!(
     /// An enum declaring how to denote positive and negative numbers.
     /// Equivalent to `NumberFormatter.SignDisplay`.
-    SignDisplay, "com.ibm.icu.number.NumberFormatter$SignDisplay",
+    SignDisplay,
+    "com.ibm.icu.number.NumberFormatter$SignDisplay",
     [
         /// Show the minus sign on negative numbers, and do not show the sign
         /// on positive numbers (default).
@@ -151,7 +155,8 @@ number_formatter_enum!(
 number_formatter_enum!(
     /// An enum declaring how to render the decimal separator. Equivalent to
     /// `NumberFormatter.DecimalSeparatorDisplay`.
-    DecimalSeparatorDisplay, "com.ibm.icu.number.NumberFormatter$DecimalSeparatorDisplay",
+    DecimalSeparatorDisplay,
+    "com.ibm.icu.number.NumberFormatter$DecimalSeparatorDisplay",
     [
         /// Show the decimal separator when there are one or more digits to
         /// display after the separator, and do not show it otherwise.
@@ -165,7 +170,8 @@ number_formatter_enum!(
 number_formatter_enum!(
     /// An enum declaring how to render trailing zeros. Equivalent to
     /// `NumberFormatter.TrailingZeroDisplay`.
-    TrailingZeroDisplay, "com.ibm.icu.number.NumberFormatter$TrailingZeroDisplay",
+    TrailingZeroDisplay,
+    "com.ibm.icu.number.NumberFormatter$TrailingZeroDisplay",
     [
         /// Display trailing zeros according to the settings for minimum
         /// fraction and significant digits.

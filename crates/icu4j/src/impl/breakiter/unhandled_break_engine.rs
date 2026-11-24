@@ -46,7 +46,10 @@ impl UnhandledBreakEngine {
 
     /// The current `fHandled` (a volatile read).
     fn handled(&self) -> Arc<UnicodeSet> {
-        self.f_handled.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.f_handled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// `handleChar(int c)`: adds the whole script of `c` to the handled
@@ -63,7 +66,9 @@ impl UnhandledBreakEngine {
             new_set
                 .apply_int_property_value(UProperty::SCRIPT, script)
                 .unwrap_or_else(|e| panic!("{e}"));
-            new_set.add_all(&original_set).unwrap_or_else(|e| panic!("{e}"));
+            new_set
+                .add_all(&original_set)
+                .unwrap_or_else(|e| panic!("{e}"));
             *self.f_handled.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(new_set);
         }
     }

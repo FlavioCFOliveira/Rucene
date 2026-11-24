@@ -14,7 +14,7 @@ const DEFAULT_ROUNDINGMODE: i32 = MathContext::ROUND_HALF_UP;
 
 const MIN_DIGITS: i32 = 0; // smallest value for DIGITS.
 const MAX_DIGITS: i32 = 999999999; // largest value for DIGITS.  If increased,
-// the BigDecimal class may need update.
+                                   // the BigDecimal class may need update.
 
 // list of valid rounding mode values, most common two first
 const ROUNDS: [i32; 8] = [
@@ -54,8 +54,12 @@ pub struct MathContext {
 
 /// `MathContext.DEFAULT`: 9 digits, scientific, no lost-digits checking,
 /// `ROUND_HALF_UP`.
-pub const DEFAULT: MathContext =
-    MathContext { digits: DEFAULT_DIGITS, form: DEFAULT_FORM, lost_digits: DEFAULT_LOSTDIGITS, rounding_mode: DEFAULT_ROUNDINGMODE };
+pub const DEFAULT: MathContext = MathContext {
+    digits: DEFAULT_DIGITS,
+    form: DEFAULT_FORM,
+    lost_digits: DEFAULT_LOSTDIGITS,
+    rounding_mode: DEFAULT_ROUNDINGMODE,
+};
 
 impl MathContext {
     /// `PLAIN`: plain (fixed point) notation, without any exponent.
@@ -90,7 +94,12 @@ impl MathContext {
     ///
     /// As [`with_all`](Self::with_all).
     pub fn new(setdigits: i32) -> Result<Self> {
-        Self::with_all(setdigits, DEFAULT_FORM, DEFAULT_LOSTDIGITS, DEFAULT_ROUNDINGMODE)
+        Self::with_all(
+            setdigits,
+            DEFAULT_FORM,
+            DEFAULT_LOSTDIGITS,
+            DEFAULT_ROUNDINGMODE,
+        )
     }
 
     /// `new MathContext(int setdigits, int setform)`.
@@ -118,23 +127,41 @@ impl MathContext {
     ///
     /// `IllegalArgumentException` (`Digits too small: <n>`, `Digits too
     /// large: <n>`, `Bad form value: <n>`, `Bad roundingMode value: <n>`).
-    pub fn with_all(setdigits: i32, setform: i32, setlostdigits: bool, setroundingmode: i32) -> Result<Self> {
+    pub fn with_all(
+        setdigits: i32,
+        setform: i32,
+        setlostdigits: bool,
+        setroundingmode: i32,
+    ) -> Result<Self> {
         // set values, after checking
         if setdigits != DEFAULT_DIGITS {
             if setdigits < MIN_DIGITS {
-                return Err(LuceneError::illegal_argument(format!("Digits too small: {setdigits}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Digits too small: {setdigits}"
+                )));
             }
             if setdigits > MAX_DIGITS {
-                return Err(LuceneError::illegal_argument(format!("Digits too large: {setdigits}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Digits too large: {setdigits}"
+                )));
             }
         }
         if setform != Self::SCIENTIFIC && setform != Self::ENGINEERING && setform != Self::PLAIN {
-            return Err(LuceneError::illegal_argument(format!("Bad form value: {setform}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Bad form value: {setform}"
+            )));
         }
         if !is_valid_round(setroundingmode) {
-            return Err(LuceneError::illegal_argument(format!("Bad roundingMode value: {setroundingmode}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Bad roundingMode value: {setroundingmode}"
+            )));
         }
-        Ok(Self { digits: setdigits, form: setform, lost_digits: setlostdigits, rounding_mode: setroundingmode })
+        Ok(Self {
+            digits: setdigits,
+            form: setform,
+            lost_digits: setlostdigits,
+            rounding_mode: setroundingmode,
+        })
     }
 
     /// `getDigits()`.

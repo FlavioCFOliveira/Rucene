@@ -30,7 +30,13 @@ pub trait UnicodeFilter: UnicodeMatcher {
     /// # Errors
     ///
     /// The errors of [`contains`](Self::contains).
-    fn filter_matches(&self, text: &dyn Replaceable, offset: &mut [i32], limit: i32, incremental: bool) -> Result<i32> {
+    fn filter_matches(
+        &self,
+        text: &dyn Replaceable,
+        offset: &mut [i32],
+        limit: i32,
+        incremental: bool,
+    ) -> Result<i32> {
         let c;
         if offset[0] < limit && {
             c = text.char32_at(offset[0]);

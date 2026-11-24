@@ -8,13 +8,15 @@ use std::sync::Arc;
 use rucene::error::Result;
 
 use crate::util::chars_trie::{
-    CharsTrie, K_MAX_BRANCH_LINEAR_SUB_NODE_LENGTH, K_MAX_LINEAR_MATCH_LENGTH, K_MAX_ONE_UNIT_DELTA,
-    K_MAX_ONE_UNIT_NODE_VALUE, K_MAX_ONE_UNIT_VALUE, K_MAX_TWO_UNIT_DELTA, K_MAX_TWO_UNIT_NODE_VALUE,
-    K_MAX_TWO_UNIT_VALUE, K_MIN_LINEAR_MATCH, K_MIN_TWO_UNIT_DELTA_LEAD, K_MIN_TWO_UNIT_NODE_VALUE_LEAD,
-    K_MIN_TWO_UNIT_VALUE_LEAD, K_THREE_UNIT_DELTA_LEAD, K_THREE_UNIT_NODE_VALUE_LEAD, K_THREE_UNIT_VALUE_LEAD,
-    K_VALUE_IS_FINAL,
+    CharsTrie, K_MAX_BRANCH_LINEAR_SUB_NODE_LENGTH, K_MAX_LINEAR_MATCH_LENGTH,
+    K_MAX_ONE_UNIT_DELTA, K_MAX_ONE_UNIT_NODE_VALUE, K_MAX_ONE_UNIT_VALUE, K_MAX_TWO_UNIT_DELTA,
+    K_MAX_TWO_UNIT_NODE_VALUE, K_MAX_TWO_UNIT_VALUE, K_MIN_LINEAR_MATCH, K_MIN_TWO_UNIT_DELTA_LEAD,
+    K_MIN_TWO_UNIT_NODE_VALUE_LEAD, K_MIN_TWO_UNIT_VALUE_LEAD, K_THREE_UNIT_DELTA_LEAD,
+    K_THREE_UNIT_NODE_VALUE_LEAD, K_THREE_UNIT_VALUE_LEAD, K_VALUE_IS_FINAL,
 };
-use crate::util::string_trie_builder::{StringTrieBuilder, StringTrieBuilderOption, StringTrieBuilderSpi};
+use crate::util::string_trie_builder::{
+    StringTrieBuilder, StringTrieBuilderOption, StringTrieBuilderSpi,
+};
 
 /// Builder class for `CharsTrie`: collects (string, value) pairs and
 /// serializes them into a `CharsTrie`.
@@ -74,7 +76,10 @@ impl CharsTrieBuilder {
     /// # Errors
     ///
     /// As [`build`](Self::build).
-    pub fn build_char_sequence(&mut self, build_option: StringTrieBuilderOption) -> Result<Vec<u16>> {
+    pub fn build_char_sequence(
+        &mut self,
+        build_option: StringTrieBuilderOption,
+    ) -> Result<Vec<u16>> {
         self.build_chars(build_option)?;
         let chars = self.chars.as_ref().expect("buildChars allocates the array");
         Ok(chars[chars.len() - self.chars_length as usize..].to_vec())
@@ -178,6 +183,7 @@ impl StringTrieBuilderSpi for CharsTrieBuilder {
         self.chars_length
     }
 
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn write_value_and_final(&mut self, i: i32, is_final: bool) -> i32 {
         if (0..=K_MAX_ONE_UNIT_VALUE).contains(&i) {
             return self.write_unit(i | if is_final { K_VALUE_IS_FINAL } else { 0 });
@@ -201,6 +207,7 @@ impl StringTrieBuilderSpi for CharsTrieBuilder {
         self.write_chars(&int_units, length)
     }
 
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn write_value_and_type(&mut self, has_value: bool, value: i32, node: i32) -> i32 {
         if !has_value {
             return self.write_unit(node);

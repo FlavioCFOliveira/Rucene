@@ -32,7 +32,11 @@ impl UCharacterUtility {
     /// `getNullTermByteSubString(StringBuffer str, byte[] array, int index)`
     /// (package-private): appends the null-terminated bytes at `index` and
     /// returns the index after the terminator.
-    pub(crate) fn get_null_term_byte_sub_string(str: &mut Vec<u16>, array: &[i8], mut index: i32) -> i32 {
+    pub(crate) fn get_null_term_byte_sub_string(
+        str: &mut Vec<u16>,
+        array: &[i8],
+        mut index: i32,
+    ) -> i32 {
         let mut b: i8 = 1;
         while b != 0 {
             b = array[index as usize];
@@ -47,7 +51,12 @@ impl UCharacterUtility {
     /// `compareNullTermByteSubString(String str, byte[] array, int strindex,
     /// int aindex)` (package-private): the index in `str` after a match, -1
     /// on mismatch.
-    pub(crate) fn compare_null_term_byte_sub_string(str: &[u16], array: &[i8], mut strindex: i32, mut aindex: i32) -> i32 {
+    pub(crate) fn compare_null_term_byte_sub_string(
+        str: &[u16],
+        array: &[i8],
+        mut strindex: i32,
+        mut aindex: i32,
+    ) -> i32 {
         let mut b: i8 = 1;
         let length = str.len() as i32;
         while b != 0 {
@@ -68,7 +77,11 @@ impl UCharacterUtility {
 
     /// `skipNullTermByteSubString(byte[] array, int index, int skipcount)`
     /// (package-private).
-    pub(crate) fn skip_null_term_byte_sub_string(array: &[i8], mut index: i32, skipcount: i32) -> i32 {
+    pub(crate) fn skip_null_term_byte_sub_string(
+        array: &[i8],
+        mut index: i32,
+        skipcount: i32,
+    ) -> i32 {
         for _ in 0..skipcount {
             let mut b: i8 = 1;
             while b != 0 {

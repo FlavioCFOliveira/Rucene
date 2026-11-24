@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use crate::r#impl::coll::collation_data::CollationData;
-use crate::r#impl::coll::collation_iterator::{is_trail_surrogate, CollationIterator, CollationIteratorBase, NO_CP_AND_CE32};
+use crate::r#impl::coll::collation_iterator::{
+    is_trail_surrogate, CollationIterator, CollationIteratorBase, NO_CP_AND_CE32,
+};
 use crate::text::u_character_iterator::UCharacterIterator;
 
 /// UCharIterator-based collation element and character iterator. Handles
@@ -25,7 +27,10 @@ pub struct IterCollationIterator {
 impl IterCollationIterator {
     /// `IterCollationIterator(CollationData, boolean, UCharacterIterator)`.
     pub fn new(d: Arc<CollationData>, numeric: bool, ui: Box<dyn UCharacterIterator>) -> Self {
-        Self { base: CollationIteratorBase::with_numeric(d, numeric), iter: ui }
+        Self {
+            base: CollationIteratorBase::with_numeric(d, numeric),
+            iter: ui,
+        }
     }
 }
 
@@ -60,8 +65,15 @@ impl CollationIterator for IterCollationIterator {
         if c < 0 {
             return NO_CP_AND_CE32;
         }
-        let trie = self.base.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
-        CollationIteratorBase::make_code_point_and_ce32_pair(c, trie.get_from_u16_single_lead(c as u16))
+        let trie = self
+            .base
+            .trie
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        CollationIteratorBase::make_code_point_and_ce32_pair(
+            c,
+            trie.get_from_u16_single_lead(c as u16),
+        )
     }
 
     fn handle_get_trail_surrogate(&mut self) -> u16 {

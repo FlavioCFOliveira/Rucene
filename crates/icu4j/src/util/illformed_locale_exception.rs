@@ -24,7 +24,10 @@ impl IllformedLocaleException {
 
     /// `new IllformedLocaleException()`.
     pub fn new() -> Self {
-        Self { message: None, err_idx: -1 }
+        Self {
+            message: None,
+            err_idx: -1,
+        }
     }
 
     /// `new IllformedLocaleException(String message)`.

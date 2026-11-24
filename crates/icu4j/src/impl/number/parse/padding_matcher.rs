@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use crate::r#impl::number::parse::parsed_number::ParsedNumber;
-use crate::r#impl::number::parse::symbol_matcher::{impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl};
+use crate::r#impl::number::parse::symbol_matcher::{
+    impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl,
+};
 use crate::r#impl::string_segment::StringSegment;
 use crate::text::unicode_set::EMPTY;
 
@@ -21,7 +23,9 @@ pub struct PaddingMatcher {
 impl PaddingMatcher {
     /// Equivalent to `getInstance(String)`.
     pub fn get_instance(pad_string: &[u16]) -> Arc<PaddingMatcher> {
-        Arc::new(PaddingMatcher { base: SymbolMatcher::new(pad_string, &EMPTY) })
+        Arc::new(PaddingMatcher {
+            base: SymbolMatcher::new(pad_string, &EMPTY),
+        })
     }
 }
 

@@ -14,7 +14,8 @@ use crate::text::replaceable::Replaceable;
 use crate::text::replaceable_context_iterator::ReplaceableContextIterator;
 use crate::text::source_target_utility::{FnTransform, SourceTargetUtility};
 use crate::text::transliterator::{
-    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position,
+    Transliterator, TransliteratorBase,
 };
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
@@ -47,7 +48,10 @@ impl TitlecaseTransliterator {
         register_factory_in(
             registry,
             &units(Self::ID),
-            factory(|_id| Ok(Some(Arc::new(TitlecaseTransliterator::new((*US).clone())?) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(TitlecaseTransliterator::new((*US).clone())?)
+                    as Arc<dyn Transliterator>))
+            }),
         )?;
         register_special_inverse(&units("Title"), &units("Lower"), false);
         Ok(())
@@ -78,7 +82,12 @@ impl Transliterator for TitlecaseTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, offsets: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        offsets: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         // TODO reimplement, see ustrcase.c
         // using a real word break iterator
         //   instead of just looking for a transition between cased and uncased characters
@@ -143,9 +152,13 @@ impl Transliterator for TitlecaseTransliterator {
             if type_ >= 0 {
                 // not case-ignorable
                 if do_title {
-                    c = self.csp.to_full_title(c, Some(&mut iter), &mut result, self.case_locale);
+                    c = self
+                        .csp
+                        .to_full_title(c, Some(&mut iter), &mut result, self.case_locale);
                 } else {
-                    c = self.csp.to_full_lower(c, Some(&mut iter), &mut result, self.case_locale);
+                    c = self
+                        .csp
+                        .to_full_lower(c, Some(&mut iter), &mut result, self.case_locale);
                 }
                 do_title = type_ == 0; // doTitle=isUncased
 
@@ -181,14 +194,26 @@ impl Transliterator for TitlecaseTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let utility = {
-            let mut guard = self.source_target_utility.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .source_target_utility
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             match &*guard {
                 Some(u) => u.clone(),
                 None => {
                     let locale = self.locale.clone();
-                    let u = Arc::new(SourceTargetUtility::new(Box::new(FnTransform(move |source: &[u16]| UCharacter::to_title_case_ulocale(&locale, source, None))))?);
+                    let u = Arc::new(SourceTargetUtility::new(Box::new(FnTransform(
+                        move |source: &[u16]| {
+                            UCharacter::to_title_case_ulocale(&locale, source, None)
+                        },
+                    )))?);
                     *guard = Some(u.clone());
                     u
                 }

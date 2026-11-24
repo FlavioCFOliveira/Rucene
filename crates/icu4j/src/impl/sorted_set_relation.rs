@@ -59,7 +59,9 @@ impl SortedSetRelation {
     /// `IllegalArgumentException` for `allow` outside `NONE..=ANY`.
     pub fn has_relation<T: Ord>(a: &BTreeSet<T>, allow: i32, b: &BTreeSet<T>) -> Result<bool> {
         if !(Self::NONE..=Self::ANY).contains(&allow) {
-            return Err(LuceneError::illegal_argument(format!("Relation {allow} out of range")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Relation {allow} out of range"
+            )));
         }
         // extract filter conditions
         // these are the ALLOWED conditions Set
@@ -79,10 +81,9 @@ impl SortedSetRelation {
                     return Ok(false);
                 }
             }
-            Self::EQUALS
-                if a.len() != b.len() => {
-                    return Ok(false);
-                }
+            Self::EQUALS if a.len() != b.len() => {
+                return Ok(false);
+            }
             _ => {}
         }
 
@@ -144,7 +145,11 @@ impl SortedSetRelation {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an unknown relation.
-    pub fn do_operation<'a, T: Ord + Clone>(a: &'a mut BTreeSet<T>, relation: i32, b: &BTreeSet<T>) -> Result<&'a mut BTreeSet<T>> {
+    pub fn do_operation<'a, T: Ord + Clone>(
+        a: &'a mut BTreeSet<T>,
+        relation: i32,
+        b: &BTreeSet<T>,
+    ) -> Result<&'a mut BTreeSet<T>> {
         // TODO: optimize this as above
         match relation {
             Self::ADDALL => {
@@ -178,7 +183,11 @@ impl SortedSetRelation {
             Self::NONE => {
                 a.clear();
             }
-            _ => return Err(LuceneError::illegal_argument(format!("Relation {relation} out of range"))),
+            _ => {
+                return Err(LuceneError::illegal_argument(format!(
+                    "Relation {relation} out of range"
+                )))
+            }
         }
         Ok(a)
     }

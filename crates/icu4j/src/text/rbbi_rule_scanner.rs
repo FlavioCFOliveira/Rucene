@@ -129,16 +129,21 @@ impl RBBIRuleScanner {
         //     Note: These could be made static and shared among
         //           all instances of RBBIRuleScanners.
         let mut f_rule_sets: Vec<Option<UnicodeSet>> = (0..10).map(|_| None).collect();
-        f_rule_sets[(T::kRuleSet_rule_char - 128) as usize] =
-            Some(UnicodeSet::from_pattern(&units(G_RULE_SET_RULE_CHAR_PATTERN))?);
-        f_rule_sets[(T::kRuleSet_white_space - 128) as usize] =
-            Some(UnicodeSet::from_pattern(&units(G_RULE_SET_WHITE_SPACE_PATTERN))?);
-        f_rule_sets[(T::kRuleSet_name_char - 128) as usize] =
-            Some(UnicodeSet::from_pattern(&units(G_RULE_SET_NAME_CHAR_PATTERN))?);
-        f_rule_sets[(T::kRuleSet_name_start_char - 128) as usize] =
-            Some(UnicodeSet::from_pattern(&units(G_RULE_SET_NAME_START_CHAR_PATTERN))?);
-        f_rule_sets[(T::kRuleSet_digit_char - 128) as usize] =
-            Some(UnicodeSet::from_pattern(&units(G_RULE_SET_DIGIT_CHAR_PATTERN))?);
+        f_rule_sets[(T::kRuleSet_rule_char - 128) as usize] = Some(UnicodeSet::from_pattern(
+            &units(G_RULE_SET_RULE_CHAR_PATTERN),
+        )?);
+        f_rule_sets[(T::kRuleSet_white_space - 128) as usize] = Some(UnicodeSet::from_pattern(
+            &units(G_RULE_SET_WHITE_SPACE_PATTERN),
+        )?);
+        f_rule_sets[(T::kRuleSet_name_char - 128) as usize] = Some(UnicodeSet::from_pattern(
+            &units(G_RULE_SET_NAME_CHAR_PATTERN),
+        )?);
+        f_rule_sets[(T::kRuleSet_name_start_char - 128) as usize] = Some(UnicodeSet::from_pattern(
+            &units(G_RULE_SET_NAME_START_CHAR_PATTERN),
+        )?);
+        f_rule_sets[(T::kRuleSet_digit_char - 128) as usize] = Some(UnicodeSet::from_pattern(
+            &units(G_RULE_SET_DIGIT_CHAR_PATTERN),
+        )?);
 
         Ok(Self {
             f_scan_index: 0,
@@ -275,7 +280,11 @@ impl RBBIRuleScanner {
                 rb.nodes[rhs_expr_node].f_last_pos = self.f_scan_index;
                 // fRB.fRules.extractBetween(RHSExprNode.fFirstPos,
                 // RHSExprNode.fLastPos, RHSExprNode.fText);
-                let text = Self::substring(rb, rb.nodes[rhs_expr_node].f_first_pos, rb.nodes[rhs_expr_node].f_last_pos);
+                let text = Self::substring(
+                    rb,
+                    rb.nodes[rhs_expr_node].f_first_pos,
+                    rb.nodes[rhs_expr_node].f_last_pos,
+                );
                 rb.nodes[rhs_expr_node].f_text = Some(text);
 
                 // Expression parse tree becomes l. child of the $variable reference
@@ -296,7 +305,11 @@ impl RBBIRuleScanner {
             T::doEndOfRule => {
                 self.fix_op_stack(rb, PREC_START)?; // Terminate expression, leaves expression
 
-                if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("rtree")) {
+                if rb
+                    .f_debug_env
+                    .as_deref()
+                    .is_some_and(|e| e.contains("rtree"))
+                {
                     self.print_node_stack(rb, "end of rule");
                 }
                 Assert::assrt(self.f_node_stack_ptr == 1)?;
@@ -524,7 +537,11 @@ impl RBBIRuleScanner {
                 match top {
                     Some(n) if rb.nodes[n].f_type == VAR_REF => {
                         rb.nodes[n].f_last_pos = self.f_scan_index;
-                        let text = Self::substring(rb, rb.nodes[n].f_first_pos + 1, rb.nodes[n].f_last_pos);
+                        let text = Self::substring(
+                            rb,
+                            rb.nodes[n].f_first_pos + 1,
+                            rb.nodes[n].f_last_pos,
+                        );
                         // Look the newly scanned name up in the symbol table
                         //   If there's an entry, set the l. child of the var ref to the
                         // replacement expression.
@@ -640,7 +657,8 @@ impl RBBIRuleScanner {
                 // end of expression matched with a left paren node.
                 self.error(RBBIRuleBuilder::U_BRK_MISMATCHED_PAREN)?;
             }
-            self.f_node_stack[(self.f_node_stack_ptr - 1) as usize] = self.f_node_stack[self.f_node_stack_ptr as usize];
+            self.f_node_stack[(self.f_node_stack_ptr - 1) as usize] =
+                self.f_node_stack[self.f_node_stack_ptr as usize];
             self.f_node_stack_ptr -= 1;
             // Delete the now-discarded LParen or Start node.
             // delete n;
@@ -717,7 +735,8 @@ impl RBBIRuleScanner {
             let cp = crate::jdk::code_point_at(rules, idx);
             let white_space = UCharacter::has_binary_property(cp, UProperty::PATTERN_WHITE_SPACE);
             if !white_space {
-                crate::jdk::append_code_point(&mut stripped_rules, cp).unwrap_or_else(|e| panic!("{e}"));
+                crate::jdk::append_code_point(&mut stripped_rules, cp)
+                    .unwrap_or_else(|e| panic!("{e}"));
             }
             idx = crate::jdk::offset_by_code_points(rules, idx, 1);
         }
@@ -741,7 +760,11 @@ impl RBBIRuleScanner {
         }
         self.f_next_index = UTF16::move_code_point_offset(&rb.f_rules, self.f_next_index, 1);
 
-        if ch == '\r' as i32 || ch == CH_NEL || ch == CH_LS || (ch == '\n' as i32 && self.f_last_char != '\r' as i32) {
+        if ch == '\r' as i32
+            || ch == CH_NEL
+            || ch == CH_LS
+            || (ch == '\n' as i32 && self.f_last_char != '\r' as i32)
+        {
             // Character is starting a new line. Bump up the line number, and
             // reset the column to 0.
             self.f_line_num += 1;
@@ -886,7 +909,11 @@ impl RBBIRuleScanner {
             //    the search will stop there, if not before.
             //
             table_el = &G_RULE_PARSE_STATE_TABLE[state as usize];
-            if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("scan")) {
+            if rb
+                .f_debug_env
+                .as_deref()
+                .is_some_and(|e| e.contains("scan"))
+            {
                 println!(
                     "char, line, col = ('{}', {}, {}    state = {}",
                     String::from_utf16_lossy(&[self.f_c.f_char as u16]),
@@ -899,10 +926,16 @@ impl RBBIRuleScanner {
             let mut table_row = state as usize;
             loop {
                 table_el = &G_RULE_PARSE_STATE_TABLE[table_row];
-                if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("scan")) {
+                if rb
+                    .f_debug_env
+                    .as_deref()
+                    .is_some_and(|e| e.contains("scan"))
+                {
                     print!(".");
                 }
-                if table_el.f_char_class < 127 && !self.f_c.f_escaped && table_el.f_char_class as i32 == self.f_c.f_char
+                if table_el.f_char_class < 127
+                    && !self.f_c.f_escaped
+                    && table_el.f_char_class as i32 == self.f_c.f_char
                 {
                     // Table row specified an individual character, not a set, and
                     //   the input character is not escaped, and
@@ -949,7 +982,11 @@ impl RBBIRuleScanner {
                 table_row += 1;
             }
 
-            if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("scan")) {
+            if rb
+                .f_debug_env
+                .as_deref()
+                .is_some_and(|e| e.contains("scan"))
+            {
                 println!();
             }
             //
@@ -1001,16 +1038,28 @@ impl RBBIRuleScanner {
         // We now have a parse tree for the rule expressions
         // and a list of all UnicodeSets that are referenced.
         //
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("symbols")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("symbols"))
+        {
             self.f_symbol_table.rbbi_symtable_print(&rb.nodes);
         }
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("ptree")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("ptree"))
+        {
             println!("Completed Forward Rules Parse Tree...");
-            rb.nodes
-                .print_tree(child(rb.f_tree_roots[RBBIRuleBuilder::F_FORWARD_TREE]), true);
+            rb.nodes.print_tree(
+                child(rb.f_tree_roots[RBBIRuleBuilder::F_FORWARD_TREE]),
+                true,
+            );
             println!("\nCompleted Reverse Rules Parse Tree...");
-            rb.nodes
-                .print_tree(child(rb.f_tree_roots[RBBIRuleBuilder::F_REVERSE_TREE]), true);
+            rb.nodes.print_tree(
+                child(rb.f_tree_roots[RBBIRuleBuilder::F_REVERSE_TREE]),
+                true,
+            );
             println!("\nCompleted Safe Point Forward Rules Parse Tree...");
             match rb.f_tree_roots[RBBIRuleBuilder::F_SAFE_FWD_TREE] {
                 None => println!("  -- null -- "),
@@ -1070,7 +1119,12 @@ impl RBBIRuleScanner {
                 nodes: &rb.nodes,
                 malformed_set_error: self.error_value(RBBIRuleBuilder::U_BRK_MALFORMED_SET),
             };
-            UnicodeSet::from_pattern_pos_options(&rb.f_rules, &mut pos, Some(&view), UnicodeSet::IGNORE_SPACE)
+            UnicodeSet::from_pattern_pos_options(
+                &rb.f_rules,
+                &mut pos,
+                Some(&view),
+                UnicodeSet::IGNORE_SPACE,
+            )
         };
         let pending = self.f_symbol_table.take_pending_error();
         let uset = match parsed {
@@ -1127,4 +1181,3 @@ impl RBBIRuleScanner {
         self.f_rule_num
     }
 }
-

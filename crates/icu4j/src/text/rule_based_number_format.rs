@@ -256,11 +256,20 @@ pub const DURATION: i32 = 3;
 pub const NUMBERING_SYSTEM: i32 = 4;
 
 /// `rulenames` (private).
-const RULENAMES: [&str; 4] = ["SpelloutRules", "OrdinalRules", "DurationRules", "NumberingSystemRules"];
+const RULENAMES: [&str; 4] = [
+    "SpelloutRules",
+    "OrdinalRules",
+    "DurationRules",
+    "NumberingSystemRules",
+];
 
 /// `locnames` (private).
-const LOCNAMES: [&str; 4] =
-    ["SpelloutLocalizations", "OrdinalLocalizations", "DurationLocalizations", "NumberingSystemLocalizations"];
+const LOCNAMES: [&str; 4] = [
+    "SpelloutLocalizations",
+    "OrdinalLocalizations",
+    "DurationLocalizations",
+    "NumberingSystemLocalizations",
+];
 
 /// `DEBUG` (private): `ICUDebug.enabled("rbnf")`.
 static DEBUG: LazyLock<bool> = LazyLock::new(|| ICUDebug::enabled_arg("rbnf"));
@@ -344,7 +353,10 @@ impl RuleGraph {
 pub(crate) fn find_rule_set_in(map: &HashMap<Vec<u16>, usize>, name: &[u16]) -> Result<usize> {
     match map.get(name) {
         Some(&i) => Ok(i),
-        None => Err(LuceneError::illegal_argument(format!("No rule set named {}", String::from_utf16_lossy(name)))),
+        None => Err(LuceneError::illegal_argument(format!(
+            "No rule set named {}",
+            String::from_utf16_lossy(name)
+        ))),
     }
 }
 
@@ -430,7 +442,9 @@ impl FieldsState {
 
     /// The graph built by `init`.
     fn graph(&self) -> Arc<RuleGraph> {
-        self.rule_sets.clone().expect("init sets the rule sets before the formatter is returned")
+        self.rule_sets
+            .clone()
+            .expect("init sets the rule sets before the formatter is returned")
     }
 
     /// `getDecimalFormatSymbols()` (package-private): lazily created for
@@ -441,7 +455,8 @@ impl FieldsState {
         // formatter
         if self.decimal_format_symbols.is_none() {
             let locale = self.locale.as_ref().ok_or_else(npe)?;
-            self.decimal_format_symbols = Some(Arc::new(DecimalFormatSymbols::for_ulocale(locale)?));
+            self.decimal_format_symbols =
+                Some(Arc::new(DecimalFormatSymbols::for_ulocale(locale)?));
         }
         Ok(self.decimal_format_symbols.clone().expect("set above"))
     }
@@ -453,7 +468,10 @@ impl FieldsState {
             let locale = self.locale.clone().ok_or_else(npe)?;
             let pattern = number_format::get_pattern(&locale, NUMBERSTYLE)?;
             let symbols = self.decimal_format_symbols()?;
-            self.decimal_format = Some(Arc::new(DecimalFormat::with_symbols(Some(&pattern), &symbols)?));
+            self.decimal_format = Some(Arc::new(DecimalFormat::with_symbols(
+                Some(&pattern),
+                &symbols,
+            )?));
         }
         Ok(self.decimal_format.clone().expect("set above"))
     }
@@ -488,7 +506,8 @@ impl FieldsState {
             // Java: Class.forName("com.ibm.icu.impl.text.RbnfScannerProviderImpl")
             // .newInstance(); the class is resolved directly (precedent
             // "forName tables") and its constructor cannot fail.
-            let provider: Arc<dyn RbnfLenientScannerProvider> = Arc::new(RbnfScannerProviderImpl::new());
+            let provider: Arc<dyn RbnfLenientScannerProvider> =
+                Arc::new(RbnfScannerProviderImpl::new());
             self.scanner_provider = Some(provider);
         }
         self.scanner_provider.clone()
@@ -566,7 +585,11 @@ impl RbnfFields {
             if !s.lenient_parse {
                 return Ok(None);
             }
-            (s.lenient_scanner_provider(), s.locale.clone(), s.lenient_parse_rules.clone())
+            (
+                s.lenient_scanner_provider(),
+                s.locale.clone(),
+                s.lenient_parse_rules.clone(),
+            )
         };
         match provider {
             Some(provider) => {
@@ -584,7 +607,11 @@ impl RbnfFields {
     ///
     /// The errors of the plural rules, of the decimal format and of the
     /// pattern.
-    pub(crate) fn create_plural_format(&self, plural_type: PluralType, pattern: &[u16]) -> Result<PluralFormat> {
+    pub(crate) fn create_plural_format(
+        &self,
+        plural_type: PluralType,
+        pattern: &[u16],
+    ) -> Result<PluralFormat> {
         let (locale, decimal_format) = {
             let mut s = self.lock();
             let df = s.decimal_format()?;
@@ -629,7 +656,9 @@ impl RuleBasedNumberFormat {
     fn with_locale_field(locale: Option<ULocale>) -> Self {
         RuleBasedNumberFormat {
             base: Mutex::new(NumberFormatBase::new()),
-            fields: Arc::new(RbnfFields { state: Mutex::new(FieldsState::new(locale)) }),
+            fields: Arc::new(RbnfFields {
+                state: Mutex::new(FieldsState::new(locale)),
+            }),
         }
     }
 
@@ -656,7 +685,10 @@ impl RuleBasedNumberFormat {
     ///
     /// As [`from_description`](Self::from_description); an
     /// `IllegalArgumentException` for inconsistent localizations.
-    pub fn from_description_localizations(description: &[u16], localizations: Option<&[Vec<Vec<u16>>]>) -> Result<Self> {
+    pub fn from_description_localizations(
+        description: &[u16],
+        localizations: Option<&[Vec<Vec<u16>>]>,
+    ) -> Result<Self> {
         let this = Self::with_locale_field(Some(ULocale::get_default_category(Category::Format)));
         this.init(description, localizations)?;
         Ok(this)
@@ -727,7 +759,10 @@ impl RuleBasedNumberFormat {
     /// `ArrayIndexOutOfBoundsException` for a selector outside `1..=4`.
     pub fn new(locale: &ULocale, format: i32) -> Result<Self> {
         let this = Self::with_locale_field(Some(locale.clone()));
-        let bundle = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_RBNF_BASE_NAME), Some(locale))?;
+        let bundle = UResourceBundle::get_bundle_instance_for(
+            Some(ICUData::ICU_RBNF_BASE_NAME),
+            Some(locale),
+        )?;
         let bundle = bundle.as_icu()?.clone();
         // TODO: determine correct actual/valid locale.  Note ambiguity
         // here -- do actual/valid refer to pattern, DecimalFormatSymbols,
@@ -794,7 +829,12 @@ impl RuleBasedNumberFormat {
         let base = lock(&self.base).clone();
         let mut state = self.fields.lock().clone();
         state.graph_owner = state.rule_sets.as_ref().map(|g| g.owner());
-        RuleBasedNumberFormat { base: Mutex::new(base), fields: Arc::new(RbnfFields { state: Mutex::new(state) }) }
+        RuleBasedNumberFormat {
+            base: Mutex::new(base),
+            fields: Arc::new(RbnfFields {
+                state: Mutex::new(state),
+            }),
+        }
     }
 
     /// Generates a textual description of this formatter: the descriptions
@@ -869,7 +909,12 @@ impl RuleBasedNumberFormat {
             state.default_nan_rule = t.default_nan_rule.clone();
         }
         state.graph_owner = Some(temp.fields.clone());
-        Ok(RuleBasedNumberFormat { base: Mutex::new(base), fields: Arc::new(RbnfFields { state: Mutex::new(state) }) })
+        Ok(RuleBasedNumberFormat {
+            base: Mutex::new(base),
+            fields: Arc::new(RbnfFields {
+                state: Mutex::new(state),
+            }),
+        })
     }
 
     //-----------------------------------------------------------------------
@@ -879,7 +924,11 @@ impl RuleBasedNumberFormat {
     /// Returns a list of the names of all of this formatter's public rule
     /// sets. Equivalent to `getRuleSetNames()`.
     pub fn get_rule_set_names(&self) -> Vec<Vec<u16>> {
-        self.fields.lock().public_rule_set_names.clone().expect("init sets publicRuleSetNames")
+        self.fields
+            .lock()
+            .public_rule_set_names
+            .clone()
+            .expect("init sets publicRuleSetNames")
     }
 
     /// Returns the locales for which there are localizations for the rule
@@ -907,7 +956,10 @@ impl RuleBasedNumberFormat {
     fn get_name_list_for_locale(&self, loc: Option<&ULocale>) -> Result<Option<Vec<Vec<u16>>>> {
         let s = self.fields.lock();
         if let (Some(loc), Some(display_names)) = (loc, &s.rule_set_display_names) {
-            let locale_names = [loc.get_base_name(), ULocale::get_default_category(Category::Display).get_base_name()];
+            let locale_names = [
+                loc.get_base_name(),
+                ULocale::get_default_category(Category::Display).get_base_name(),
+            ];
             for lname in locale_names {
                 let mut lname = lname;
                 while !lname.is_empty() {
@@ -956,7 +1008,11 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// `IllegalArgumentException("unrecognized rule set name: <name>")`.
-    pub fn get_rule_set_display_name_for(&self, rule_set_name: &[u16], loc: Option<&ULocale>) -> Result<Vec<u16>> {
+    pub fn get_rule_set_display_name_for(
+        &self,
+        rule_set_name: &[u16],
+        loc: Option<&ULocale>,
+    ) -> Result<Vec<u16>> {
         let rsnames = self.get_rule_set_names();
         for (ix, name) in rsnames.iter().enumerate() {
             if name.as_slice() == rule_set_name {
@@ -979,7 +1035,10 @@ impl RuleBasedNumberFormat {
     ///
     /// As [`get_rule_set_display_name_for`](Self::get_rule_set_display_name_for).
     pub fn get_rule_set_display_name(&self, rule_set_name: &[u16]) -> Result<Vec<u16>> {
-        self.get_rule_set_display_name_for(rule_set_name, Some(&ULocale::get_default_category(Category::Display)))
+        self.get_rule_set_display_name_for(
+            rule_set_name,
+            Some(&ULocale::get_default_category(Category::Display)),
+        )
     }
 
     /// Formats the specified number according to the specified rule set.
@@ -1028,7 +1087,10 @@ impl RuleBasedNumberFormat {
 
     /// Sets the provider for the lenient scanner (`None` to remove it).
     /// Equivalent to the deprecated `setLenientScannerProvider(...)`.
-    pub fn set_lenient_scanner_provider(&self, scanner_provider: Option<Arc<dyn RbnfLenientScannerProvider>>) {
+    pub fn set_lenient_scanner_provider(
+        &self,
+        scanner_provider: Option<Arc<dyn RbnfLenientScannerProvider>>,
+    ) {
         self.fields.lock().scanner_provider = scanner_provider;
     }
 
@@ -1053,7 +1115,10 @@ impl RuleBasedNumberFormat {
         let g = s.graph();
         match rule_set_name {
             None => {
-                let public = s.public_rule_set_names.clone().expect("init sets publicRuleSetNames");
+                let public = s
+                    .public_rule_set_names
+                    .clone()
+                    .expect("init sets publicRuleSetNames");
                 if !public.is_empty() {
                     s.default_rule_set = Some(g.find_rule_set(&public[0])?);
                 } else {
@@ -1114,7 +1179,10 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// The errors of the decimal formats and of the default rules.
-    pub fn set_decimal_format_symbols(&self, new_symbols: Option<&DecimalFormatSymbols>) -> Result<()> {
+    pub fn set_decimal_format_symbols(
+        &self,
+        new_symbols: Option<&DecimalFormatSymbols>,
+    ) -> Result<()> {
         if let Some(new_symbols) = new_symbols {
             let (g, symbols) = {
                 let mut s = self.fields.lock();
@@ -1147,6 +1215,7 @@ impl RuleBasedNumberFormat {
 
     /// Returns a reference to the formatter's default rule set (its graph
     /// and index). Equivalent to the package-private `getDefaultRuleSet()`.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn get_default_rule_set(&self) -> (Arc<RuleGraph>, Option<usize>) {
         let s = self.fields.lock();
         (s.graph(), s.default_rule_set)
@@ -1158,6 +1227,7 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// The provider's.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn get_lenient_scanner(&self) -> Result<Option<Arc<dyn RbnfLenientScanner>>> {
         self.fields.get_lenient_scanner()
     }
@@ -1169,6 +1239,7 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// The errors of the locale data.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn get_decimal_format_symbols(&self) -> Result<Arc<DecimalFormatSymbols>> {
         self.fields.get_decimal_format_symbols()
     }
@@ -1188,7 +1259,12 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// As [`RbnfFields::create_plural_format`].
-    pub(crate) fn create_plural_format(&self, plural_type: PluralType, pattern: &[u16]) -> Result<PluralFormat> {
+    #[allow(dead_code)] // Java member with no caller in the closure
+    pub(crate) fn create_plural_format(
+        &self,
+        plural_type: PluralType,
+        pattern: &[u16],
+    ) -> Result<PluralFormat> {
         self.fields.create_plural_format(plural_type, pattern)
     }
 
@@ -1198,6 +1274,7 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// The errors of the locale data.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn get_default_infinity_rule(&self) -> Result<Arc<NFRule>> {
         self.fields.get_default_infinity_rule()
     }
@@ -1208,6 +1285,7 @@ impl RuleBasedNumberFormat {
     /// # Errors
     ///
     /// The errors of the locale data.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn get_default_nan_rule(&self) -> Result<Arc<NFRule>> {
         self.fields.get_default_nan_rule()
     }
@@ -1237,7 +1315,9 @@ impl RuleBasedNumberFormat {
                     lp_end = description.len() as i32 - 1; // later we add 1 back to get the '%'
                 }
                 let mut lp_start = lp + special_name.len() as i32;
-                while lp_start < lp_end && PatternProps::is_white_space(i32::from(char_at(description, lp_start))) {
+                while lp_start < lp_end
+                    && PatternProps::is_white_space(i32::from(char_at(description, lp_start)))
+                {
                     lp_start += 1;
                 }
 
@@ -1293,7 +1373,8 @@ impl RuleBasedNumberFormat {
 
         // our rule list is an array of the appropriate size
         let mut rule_sets: Vec<NFRuleSet> = Vec::with_capacity(num_rule_sets);
-        let mut rule_sets_map: HashMap<Vec<u16>, usize> = HashMap::with_capacity(num_rule_sets * 2 + 1);
+        let mut rule_sets_map: HashMap<Vec<u16>, usize> =
+            HashMap::with_capacity(num_rule_sets * 2 + 1);
         let mut default_rule_set: Option<usize> = None;
 
         // Used to count the number of public rule sets
@@ -1403,13 +1484,20 @@ impl RuleBasedNumberFormat {
                     )));
                 }
                 // might be different
-                default_rule_set = Some(find_rule_set_in(&rule_sets_map, &names[array_index(0, names.len())])?);
+                default_rule_set = Some(find_rule_set_in(
+                    &rule_sets_map,
+                    &names[array_index(0, names.len())],
+                )?);
                 names
             }
             None => public_rule_set_temp,
         };
 
-        let graph = Arc::new(RuleGraph { rule_sets, rule_sets_map, owner: Arc::downgrade(&self.fields) });
+        let graph = Arc::new(RuleGraph {
+            rule_sets,
+            rule_sets_map,
+            owner: Arc::downgrade(&self.fields),
+        });
         let mut s = self.fields.lock();
         s.rule_sets = Some(graph);
         s.default_rule_set = default_rule_set;
@@ -1449,9 +1537,15 @@ impl RuleBasedNumberFormat {
     /// `initCapitalizationContextInfo(ULocale theLocale)` (private): set
     /// capitalization information from the locale data.
     fn init_capitalization_context_info(state: &mut FieldsState) -> Result<()> {
-        let rb = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), state.locale.as_ref())?;
+        let rb = UResourceBundle::get_bundle_instance_for(
+            Some(ICUData::ICU_BASE_NAME),
+            state.locale.as_ref(),
+        )?;
         let rb = rb.as_icu()?.clone();
-        let read = || -> Result<Vec<i32>> { rb.get_with_fallback("contextTransforms/number-spellout")?.get_int_vector() };
+        let read = || -> Result<Vec<i32>> {
+            rb.get_with_fallback("contextTransforms/number-spellout")?
+                .get_int_vector()
+        };
         match read() {
             Ok(int_vector) => {
                 if int_vector.len() >= 2 {
@@ -1526,16 +1620,22 @@ impl RuleBasedNumberFormat {
         let mut number = number;
         let mut result = Vec::new();
         let rounding_mode = self.get_rounding_mode()?;
-        if rounding_mode != IcuBigDecimal::ROUND_UNNECESSARY && !number.is_nan() && !number.is_infinite() {
+        if rounding_mode != IcuBigDecimal::ROUND_UNNECESSARY
+            && !number.is_nan()
+            && !number.is_infinite()
+        {
             // We convert to a string because BigDecimal insists on excessive precision.
             let field_rounding_mode = self.fields.lock().rounding_mode;
-            number = IcuBigDecimal::from_string(&units(&rucene::util::java_fmt::double_to_string(number)))?
-                .set_scale_round(self.get_maximum_fraction_digits(), field_rounding_mode)?
-                .double_value();
+            number = IcuBigDecimal::from_string(&units(
+                &rucene::util::java_fmt::double_to_string(number),
+            ))?
+            .set_scale_round(self.get_maximum_fraction_digits(), field_rounding_mode)?
+            .double_value();
         }
         let g = self.fields.lock().graph();
         let rule_set = rule_set.ok_or_else(npe)?;
-        g.rule_set(rule_set).format_double(number, &mut result, 0, 0, &g)?;
+        g.rule_set(rule_set)
+            .format_double(number, &mut result, 0, 0, &g)?;
         self.post_process(&mut result, Some(g.rule_set(rule_set)))?;
         Ok(result)
     }
@@ -1561,7 +1661,8 @@ impl RuleBasedNumberFormat {
             result.extend_from_slice(&NumberFormat::format_i64(&*df, i64::MIN)?);
         } else {
             let rule_set = rule_set.ok_or_else(npe)?;
-            g.rule_set(rule_set).format_long(number, &mut result, 0, 0, &g)?;
+            g.rule_set(rule_set)
+                .format_long(number, &mut result, 0, 0, &g)?;
         }
         self.post_process(&mut result, rule_set.map(|i| g.rule_set(i)))?;
         Ok(result)
@@ -1583,13 +1684,14 @@ impl RuleBasedNumberFormat {
                         ix = post_process_rules.len() as i32;
                     }
                     let pp_class_name = trim(substring(&post_process_rules, 0, ix)).to_vec();
-                    let created: Result<Box<dyn RBNFPostProcessor>> = match post_processor_for_name(&pp_class_name) {
-                        Some(mut p) => p.init(self, &post_process_rules).map(|()| p),
-                        None => Err(LuceneError::unchecked(
-                            "java.lang.ClassNotFoundException",
-                            String::from_utf16_lossy(&pp_class_name),
-                        )),
-                    };
+                    let created: Result<Box<dyn RBNFPostProcessor>> =
+                        match post_processor_for_name(&pp_class_name) {
+                            Some(mut p) => p.init(self, &post_process_rules).map(|()| p),
+                            None => Err(LuceneError::unchecked(
+                                "java.lang.ClassNotFoundException",
+                                String::from_utf16_lossy(&pp_class_name),
+                            )),
+                        };
                     match created {
                         Ok(p) => {
                             let p = Arc::new(Mutex::new(p));
@@ -1599,7 +1701,11 @@ impl RuleBasedNumberFormat {
                         Err(e) => {
                             // if debug, print it out
                             if *DEBUG {
-                                println!("could not locate {}, error {}", String::from_utf16_lossy(&pp_class_name), e);
+                                println!(
+                                    "could not locate {}, error {}",
+                                    String::from_utf16_lossy(&pp_class_name),
+                                    e
+                                );
                             }
                             let mut s = self.fields.lock();
                             s.post_processor = None;
@@ -1633,10 +1739,14 @@ impl RuleBasedNumberFormat {
                     if s.capitalization_brk_iter.is_none() {
                         // should only happen when deserializing, etc.
                         let locale = s.locale.clone().ok_or_else(npe)?;
-                        s.capitalization_brk_iter =
-                            Some(Arc::new(Mutex::new(break_iterator::get_sentence_instance_ulocale(&locale)?)));
+                        s.capitalization_brk_iter = Some(Arc::new(Mutex::new(
+                            break_iterator::get_sentence_instance_ulocale(&locale)?,
+                        )));
                     }
-                    (s.capitalization_brk_iter.clone().expect("set above"), s.locale.clone())
+                    (
+                        s.capitalization_brk_iter.clone().expect("set above"),
+                        s.locale.clone(),
+                    )
                 } else {
                     return Ok(result);
                 }
@@ -1689,32 +1799,60 @@ impl NumberFormat for RuleBasedNumberFormat {
 
     /// Formats the specified number using the formatter's default rule set.
     /// Equivalent to `format(double, StringBuffer, FieldPosition)`.
-    fn format_double_to(&self, number: f64, to_append_to: &mut Vec<u16>, _ignore: &mut FieldPosition) -> Result<()> {
+    fn format_double_to(
+        &self,
+        number: f64,
+        to_append_to: &mut Vec<u16>,
+        _ignore: &mut FieldPosition,
+    ) -> Result<()> {
         // this is one of the inherited format() methods.  Since it doesn't
         // have a way to select the rule set to use, it just uses the
         // default one
         // Note, the BigInteger/BigDecimal methods below currently go through this.
-        self.format_default(to_append_to, |this, rs| this.format_double_rule_set(number, rs))
+        self.format_default(to_append_to, |this, rs| {
+            this.format_double_rule_set(number, rs)
+        })
     }
 
     /// Formats the specified number using the formatter's default rule set.
     /// Equivalent to `format(long, StringBuffer, FieldPosition)`.
-    fn format_long_to(&self, number: i64, to_append_to: &mut Vec<u16>, _ignore: &mut FieldPosition) -> Result<()> {
+    fn format_long_to(
+        &self,
+        number: i64,
+        to_append_to: &mut Vec<u16>,
+        _ignore: &mut FieldPosition,
+    ) -> Result<()> {
         // this is one of the inherited format() methods.  Since it doesn't
         // have a way to select the rule set to use, it just uses the
         // default one
-        self.format_default(to_append_to, |this, rs| this.format_long_rule_set(number, rs))
+        self.format_default(to_append_to, |this, rs| {
+            this.format_long_rule_set(number, rs)
+        })
     }
 
     /// Equivalent to `format(BigInteger, StringBuffer, FieldPosition)`.
-    fn format_big_integer_to(&self, number: &BigInteger, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_big_integer_to(
+        &self,
+        number: &BigInteger,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         self.format_icu_big_decimal_to(&IcuBigDecimal::from_big_integer(number)?, to_append_to, pos)
     }
 
     /// Equivalent to `format(java.math.BigDecimal, StringBuffer,
     /// FieldPosition)`.
-    fn format_big_decimal_to(&self, number: &BigDecimal, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
-        self.format_icu_big_decimal_to(&IcuBigDecimal::from_java_big_decimal(number)?, to_append_to, pos)
+    fn format_big_decimal_to(
+        &self,
+        number: &BigDecimal,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
+        self.format_icu_big_decimal_to(
+            &IcuBigDecimal::from_java_big_decimal(number)?,
+            to_append_to,
+            pos,
+        )
     }
 
     /// Equivalent to `format(com.ibm.icu.math.BigDecimal, StringBuffer,
@@ -1728,7 +1866,9 @@ impl NumberFormat for RuleBasedNumberFormat {
         if MIN_VALUE.compare_to(number)? > 0 || MAX_VALUE.compare_to(number)? < 0 {
             // We're outside of our normal range that this framework can handle.
             // The DecimalFormat will provide more accurate results.
-            return self.get_decimal_format()?.format_icu_big_decimal_to(number, to_append_to, pos);
+            return self
+                .get_decimal_format()?
+                .format_icu_big_decimal_to(number, to_append_to, pos);
         }
         if number.scale() == 0 {
             return self.format_long_to(number.long_value(), to_append_to, pos);
@@ -1745,7 +1885,11 @@ impl NumberFormat for RuleBasedNumberFormat {
     ///
     /// `StringIndexOutOfBoundsException` when the parse position is outside
     /// `text`.
-    fn parse(&self, text: &[u16], parse_position: &mut ParsePosition) -> Result<Option<JavaNumber>> {
+    fn parse(
+        &self,
+        text: &[u16],
+        parse_position: &mut ParsePosition,
+    ) -> Result<Option<JavaNumber>> {
         // parsePosition tells us where to start parsing.  We copy the
         // text in the string from here to the end into a new string,
         // and create a new ParsePosition and result variable to use
@@ -1795,7 +1939,8 @@ impl NumberFormat for RuleBasedNumberFormat {
         // return the result
         parse_position.set_index(parse_position.get_index() + high_water_mark.get_index());
         if high_water_mark.get_index() == 0 {
-            parse_position.set_error_index(parse_position.get_index() + high_water_mark.get_error_index());
+            parse_position
+                .set_error_index(parse_position.get_index() + high_water_mark.get_error_index());
         }
         Ok(Some(result))
     }
@@ -1825,8 +1970,10 @@ impl NumberFormat for RuleBasedNumberFormat {
         }
         if s.capitalization_brk_iter.is_none()
             && (context == DisplayContext::CapitalizationForBeginningOfSentence
-                || (context == DisplayContext::CapitalizationForUiListOrMenu && s.capitalization_for_list_or_menu)
-                || (context == DisplayContext::CapitalizationForStandalone && s.capitalization_for_stand_alone))
+                || (context == DisplayContext::CapitalizationForUiListOrMenu
+                    && s.capitalization_for_list_or_menu)
+                || (context == DisplayContext::CapitalizationForStandalone
+                    && s.capitalization_for_stand_alone))
         {
             let iter = match &s.locale {
                 Some(locale) => break_iterator::get_sentence_instance_ulocale(locale)?,
@@ -1846,7 +1993,9 @@ impl NumberFormat for RuleBasedNumberFormat {
     /// `com.ibm.icu.math.BigDecimal`. Equivalent to `setRoundingMode(int)`.
     fn set_rounding_mode(&self, rounding_mode: i32) -> Result<()> {
         if !(IcuBigDecimal::ROUND_UP..=IcuBigDecimal::ROUND_UNNECESSARY).contains(&rounding_mode) {
-            return Err(LuceneError::illegal_argument(format!("Invalid rounding mode: {rounding_mode}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Invalid rounding mode: {rounding_mode}"
+            )));
         }
         self.fields.lock().rounding_mode = rounding_mode;
         Ok(())
@@ -1886,16 +2035,29 @@ impl NumberFormat for RuleBasedNumberFormat {
         if my_graph.rule_sets.len() != that_graph.rule_sets.len() {
             return false;
         }
-        my_graph.rule_sets.iter().zip(&that_graph.rule_sets).all(|(a, b)| a.java_equals(b))
+        my_graph
+            .rule_sets
+            .iter()
+            .zip(&that_graph.rule_sets)
+            .all(|(a, b)| a.java_equals(b))
     }
 }
 
 impl Format for RuleBasedNumberFormat {
-    fn format_object_to(&self, obj: &dyn Any, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_object_to(
+        &self,
+        obj: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         self.format_any_to(obj, to_append_to, pos)
     }
 
-    fn parse_object_at(&self, source: &[u16], pos: &mut ParsePosition) -> Result<Option<ParsedObject>> {
+    fn parse_object_at(
+        &self,
+        source: &[u16],
+        pos: &mut ParsePosition,
+    ) -> Result<Option<ParsedObject>> {
         Ok(NumberFormat::parse(self, source, pos)?.map(|n| Box::new(n) as ParsedObject))
     }
 

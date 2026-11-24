@@ -26,7 +26,10 @@ pub struct FilteredNormalizer2 {
 impl FilteredNormalizer2 {
     /// `FilteredNormalizer2(Normalizer2 n2, UnicodeSet filterSet)`.
     pub fn new(n2: Arc<dyn Normalizer2>, filter_set: Arc<UnicodeSet>) -> Self {
-        Self { norm2: n2, set: filter_set }
+        Self {
+            norm2: n2,
+            set: filter_set,
+        }
     }
 
     // Internal: No argument checking, and appends to dest.
@@ -36,7 +39,12 @@ impl FilteredNormalizer2 {
     // UnicodeSet.SpanCondition.SIMPLE should be passed in for the start of src
     // and UnicodeSet.SpanCondition.NOT_CONTAINED should be passed in if we continue after
     // an in-filter prefix.
-    fn normalize_cond(&self, src: &[u16], dest: &mut Vec<u16>, mut span_condition: SpanCondition) -> Result<()> {
+    fn normalize_cond(
+        &self,
+        src: &[u16],
+        dest: &mut Vec<u16>,
+        mut span_condition: SpanCondition,
+    ) -> Result<()> {
         let mut temp_dest: Vec<u16> = Vec::new();
         let mut prev_span_limit = 0;
         while prev_span_limit < src.len() as i32 {
@@ -51,7 +59,10 @@ impl FilteredNormalizer2 {
                 if span_length != 0 {
                     // Not norm2.normalizeSecondAndAppend() because we do not want
                     // to modify the non-filter part of dest.
-                    self.norm2.normalize(&src[prev_span_limit as usize..span_limit as usize], &mut temp_dest)?;
+                    self.norm2.normalize(
+                        &src[prev_span_limit as usize..span_limit as usize],
+                        &mut temp_dest,
+                    )?;
                     dest.extend_from_slice(&temp_dest);
                 }
                 span_condition = SpanCondition::NotContained;
@@ -61,7 +72,12 @@ impl FilteredNormalizer2 {
         Ok(())
     }
 
-    fn normalize_second_and_append_do(&self, first: &mut Vec<u16>, second: &[u16], do_normalize: bool) -> Result<()> {
+    fn normalize_second_and_append_do(
+        &self,
+        first: &mut Vec<u16>,
+        second: &[u16],
+        do_normalize: bool,
+    ) -> Result<()> {
         if first.is_empty() {
             if do_normalize {
                 return self.normalize(second, first);
@@ -84,7 +100,8 @@ impl FilteredNormalizer2 {
             } else {
                 let mut middle: Vec<u16> = first[suffix_start as usize..].to_vec();
                 if do_normalize {
-                    self.norm2.normalize_second_and_append(&mut middle, prefix)?;
+                    self.norm2
+                        .normalize_second_and_append(&mut middle, prefix)?;
                 } else {
                     self.norm2.append(&mut middle, prefix)?;
                 }
@@ -162,7 +179,10 @@ impl Normalizer2 for FilteredNormalizer2 {
             if span_condition == SpanCondition::NotContained {
                 span_condition = SpanCondition::Simple;
             } else {
-                if !self.norm2.is_normalized(&s[prev_span_limit as usize..span_limit as usize])? {
+                if !self
+                    .norm2
+                    .is_normalized(&s[prev_span_limit as usize..span_limit as usize])?
+                {
                     return Ok(false);
                 }
                 span_condition = SpanCondition::NotContained;
@@ -181,7 +201,9 @@ impl Normalizer2 for FilteredNormalizer2 {
             if span_condition == SpanCondition::NotContained {
                 span_condition = SpanCondition::Simple;
             } else {
-                let qc_result = self.norm2.quick_check(&s[prev_span_limit as usize..span_limit as usize])?;
+                let qc_result = self
+                    .norm2
+                    .quick_check(&s[prev_span_limit as usize..span_limit as usize])?;
                 if qc_result == QuickCheckResult::No {
                     return Ok(qc_result);
                 } else if qc_result == QuickCheckResult::Maybe {
@@ -202,7 +224,10 @@ impl Normalizer2 for FilteredNormalizer2 {
             if span_condition == SpanCondition::NotContained {
                 span_condition = SpanCondition::Simple;
             } else {
-                let yes_limit = prev_span_limit + self.norm2.span_quick_check_yes(&s[prev_span_limit as usize..span_limit as usize])?;
+                let yes_limit = prev_span_limit
+                    + self
+                        .norm2
+                        .span_quick_check_yes(&s[prev_span_limit as usize..span_limit as usize])?;
                 if yes_limit < span_limit {
                     return Ok(yes_limit);
                 }

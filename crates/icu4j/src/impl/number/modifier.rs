@@ -85,7 +85,12 @@ pub trait Modifier: fmt::Debug + Send + Sync + 'static {
     /// # Errors
     ///
     /// The unchecked exceptions of the implementation.
-    fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32>;
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        left_index: i32,
+        right_index: i32,
+    ) -> Result<i32>;
 
     /// Gets the length of the prefix. Equivalent to `getPrefixLength()`.
     ///

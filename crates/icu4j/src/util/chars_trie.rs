@@ -32,15 +32,18 @@ pub const K_MIN_TWO_UNIT_VALUE_LEAD: i32 = K_MAX_ONE_UNIT_VALUE + 1;
 /// `kThreeUnitValueLead` (package-private).
 pub const K_THREE_UNIT_VALUE_LEAD: i32 = 0x7fff;
 /// `kMaxTwoUnitValue` (package-private).
-pub const K_MAX_TWO_UNIT_VALUE: i32 = ((K_THREE_UNIT_VALUE_LEAD - K_MIN_TWO_UNIT_VALUE_LEAD) << 16) - 1;
+pub const K_MAX_TWO_UNIT_VALUE: i32 =
+    ((K_THREE_UNIT_VALUE_LEAD - K_MIN_TWO_UNIT_VALUE_LEAD) << 16) - 1;
 /// `kMaxOneUnitNodeValue` (package-private).
 pub const K_MAX_ONE_UNIT_NODE_VALUE: i32 = 0xff;
 /// `kMinTwoUnitNodeValueLead` (package-private).
-pub const K_MIN_TWO_UNIT_NODE_VALUE_LEAD: i32 = K_MIN_VALUE_LEAD + ((K_MAX_ONE_UNIT_NODE_VALUE + 1) << 6);
+pub const K_MIN_TWO_UNIT_NODE_VALUE_LEAD: i32 =
+    K_MIN_VALUE_LEAD + ((K_MAX_ONE_UNIT_NODE_VALUE + 1) << 6);
 /// `kThreeUnitNodeValueLead` (package-private).
 pub const K_THREE_UNIT_NODE_VALUE_LEAD: i32 = 0x7fc0;
 /// `kMaxTwoUnitNodeValue` (package-private).
-pub const K_MAX_TWO_UNIT_NODE_VALUE: i32 = ((K_THREE_UNIT_NODE_VALUE_LEAD - K_MIN_TWO_UNIT_NODE_VALUE_LEAD) << 10) - 1;
+pub const K_MAX_TWO_UNIT_NODE_VALUE: i32 =
+    ((K_THREE_UNIT_NODE_VALUE_LEAD - K_MIN_TWO_UNIT_NODE_VALUE_LEAD) << 10) - 1;
 /// `kMaxOneUnitDelta` (package-private).
 pub const K_MAX_ONE_UNIT_DELTA: i32 = 0xfbff;
 /// `kMinTwoUnitDeltaLead` (package-private).
@@ -48,7 +51,8 @@ pub const K_MIN_TWO_UNIT_DELTA_LEAD: i32 = K_MAX_ONE_UNIT_DELTA + 1;
 /// `kThreeUnitDeltaLead` (package-private).
 pub const K_THREE_UNIT_DELTA_LEAD: i32 = 0xffff;
 /// `kMaxTwoUnitDelta` (package-private).
-pub const K_MAX_TWO_UNIT_DELTA: i32 = ((K_THREE_UNIT_DELTA_LEAD - K_MIN_TWO_UNIT_DELTA_LEAD) << 16) - 1;
+pub const K_MAX_TWO_UNIT_DELTA: i32 =
+    ((K_THREE_UNIT_DELTA_LEAD - K_MIN_TWO_UNIT_DELTA_LEAD) << 16) - 1;
 
 /// Light-weight, non-const reader class for a `CharsTrie`: a trie of
 /// UTF-16 strings mapped to `int` values, traversed one code unit at a
@@ -140,7 +144,12 @@ impl CharsTrie {
     ///
     /// `IllegalArgumentException("incompatible trie state")`.
     pub fn reset_to_state(&mut self, state: &State) -> JResult<&mut Self> {
-        if state.chars.as_ref().is_some_and(|c| Arc::ptr_eq(c, &self.chars)) && self.root == state.root {
+        if state
+            .chars
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, &self.chars))
+            && self.root == state.root
+        {
             self.pos = state.pos;
             self.remaining_match_length = state.remaining_match_length;
         } else {
@@ -374,7 +383,12 @@ impl CharsTrie {
 
     /// `iterator(int maxStringLength)`.
     pub fn iterator_max(&self, max_string_length: i32) -> Iterator {
-        Iterator::new(self.chars.clone(), self.pos, self.remaining_match_length, max_string_length)
+        Iterator::new(
+            self.chars.clone(),
+            self.pos,
+            self.remaining_match_length,
+            max_string_length,
+        )
     }
 
     /// `iterator(CharSequence trieChars, int offset, int maxStringLength)`.
@@ -388,6 +402,7 @@ impl CharsTrie {
     }
 
     /// `branchNext(int pos, int length, int inUnit)` (private).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn branch_next(&mut self, mut pos: i32, mut length: i32, in_unit: i32) -> Result {
         // Branch according to the current unit.
         if length == 0 {
@@ -595,10 +610,20 @@ fn skip_delta(chars: &[u16], mut pos: i32) -> i32 {
 
 /// `findUniqueValueFromBranch(CharSequence chars, int pos, int length, long
 /// uniqueValue)` (private).
-fn find_unique_value_from_branch(chars: &[u16], mut pos: i32, mut length: i32, mut unique_value: i64) -> i64 {
+fn find_unique_value_from_branch(
+    chars: &[u16],
+    mut pos: i32,
+    mut length: i32,
+    mut unique_value: i64,
+) -> i64 {
     while length > K_MAX_BRANCH_LINEAR_SUB_NODE_LENGTH {
         pos += 1; // ignore the comparison unit
-        unique_value = find_unique_value_from_branch(chars, jump_by_delta(chars, pos), length >> 1, unique_value);
+        unique_value = find_unique_value_from_branch(
+            chars,
+            jump_by_delta(chars, pos),
+            length >> 1,
+            unique_value,
+        );
         if unique_value == 0 {
             return 0;
         }
@@ -607,7 +632,7 @@ fn find_unique_value_from_branch(chars: &[u16], mut pos: i32, mut length: i32, m
     }
     loop {
         pos += 1; // ignore a comparison unit
-        // handle its value
+                  // handle its value
         let mut node = uc(chars, pos);
         pos += 1;
         let is_final = (node & K_VALUE_IS_FINAL) != 0;
@@ -750,7 +775,12 @@ pub struct Iterator {
 impl Iterator {
     /// `Iterator(CharSequence trieChars, int offset, int remainingMatchLength,
     /// int maxStringLength)` (private).
-    fn new(trie_chars: Arc<[u16]>, offset: i32, remaining_match_length: i32, max_string_length: i32) -> Self {
+    fn new(
+        trie_chars: Arc<[u16]>,
+        offset: i32,
+        remaining_match_length: i32,
+        max_string_length: i32,
+    ) -> Self {
         let mut it = Self {
             chars: trie_chars,
             pos: offset,
@@ -805,7 +835,9 @@ impl Iterator {
     ///
     /// Always `UnsupportedOperationException`.
     pub fn remove(&mut self) -> JResult<()> {
-        Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"))
+        Err(crate::jdk::unchecked_no_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
     /// `next()` itself.
@@ -850,7 +882,9 @@ impl Iterator {
                     } else {
                         self.entry.value = read_node_value(&self.chars, pos, node);
                     }
-                    if is_final || (self.max_length > 0 && self.str_.len() as i32 == self.max_length) {
+                    if is_final
+                        || (self.max_length > 0 && self.str_.len() as i32 == self.max_length)
+                    {
                         self.pos = -1;
                     } else {
                         // We cannot skip the value right here because it shares its
@@ -886,7 +920,8 @@ impl Iterator {
                     return Some(self.truncate_and_stop());
                 }
                 let p = pos as usize;
-                self.str_.extend_from_slice(&self.chars[p..p + length as usize]);
+                self.str_
+                    .extend_from_slice(&self.chars[p..p + length as usize]);
                 pos += length;
             }
         }
@@ -906,9 +941,10 @@ impl Iterator {
     fn branch_next(&mut self, mut pos: i32, mut length: i32) -> i32 {
         while length > K_MAX_BRANCH_LINEAR_SUB_NODE_LENGTH {
             pos += 1; // ignore the comparison unit
-            // Push state for the greater-or-equal edge.
+                      // Push state for the greater-or-equal edge.
             let low = ((length - (length >> 1)) << 16) | self.str_.len() as i32;
-            self.stack.push(((skip_delta(&self.chars, pos) as i64) << 32) | (low as i64));
+            self.stack
+                .push(((skip_delta(&self.chars, pos) as i64) << 32) | (low as i64));
             // Follow the less-than edge.
             length >>= 1;
             pos = jump_by_delta(&self.chars, pos);

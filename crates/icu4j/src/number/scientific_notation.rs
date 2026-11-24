@@ -58,12 +58,14 @@ impl ScientificNotation {
         min_exponent_digits: i32,
         exponent_sign_display: SignDisplay,
     ) -> Self {
-        ScientificNotation(Notation(Arc::new(NotationKind::Scientific(ScientificNotationData {
-            engineering_interval,
-            require_min_int,
-            min_exponent_digits,
-            exponent_sign_display,
-        }))))
+        ScientificNotation(Notation(Arc::new(NotationKind::Scientific(
+            ScientificNotationData {
+                engineering_interval,
+                require_min_int,
+                min_exponent_digits,
+                exponent_sign_display,
+            },
+        ))))
     }
 
     /// `notation instanceof ScientificNotation ? (ScientificNotation)
@@ -113,7 +115,9 @@ impl ScientificNotation {
         if (1..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&min_exponent_digits) {
             let mut other = self.data().clone();
             other.min_exponent_digits = min_exponent_digits;
-            Ok(ScientificNotation(Notation(Arc::new(NotationKind::Scientific(other)))))
+            Ok(ScientificNotation(Notation(Arc::new(
+                NotationKind::Scientific(other),
+            ))))
         } else {
             Err(LuceneError::illegal_argument(format!(
                 "Integer digits must be between 1 and {} (inclusive)",
@@ -125,7 +129,10 @@ impl ScientificNotation {
     /// Sets whether to show the sign on positive and negative exponents in
     /// scientific notation. Equivalent to
     /// `withExponentSignDisplay(SignDisplay)`.
-    pub fn with_exponent_sign_display(&self, exponent_sign_display: SignDisplay) -> ScientificNotation {
+    pub fn with_exponent_sign_display(
+        &self,
+        exponent_sign_display: SignDisplay,
+    ) -> ScientificNotation {
         let mut other = self.data().clone();
         other.exponent_sign_display = exponent_sign_display;
         ScientificNotation(Notation(Arc::new(NotationKind::Scientific(other))))
@@ -174,7 +181,12 @@ struct ScientificApplier {
 
 impl ScientificApplier {
     /// `ScientificHandler.doApply(int, FormattedStringBuilder, int)`.
-    fn do_apply(&self, exponent: i32, output: &mut FormattedStringBuilder, right_index: i32) -> i32 {
+    fn do_apply(
+        &self,
+        exponent: i32,
+        output: &mut FormattedStringBuilder,
+        right_index: i32,
+    ) -> i32 {
         // FIXME: Localized exponent separator location.
         let mut i = right_index;
         // Append the exponent separator and sign
@@ -202,7 +214,11 @@ impl ScientificApplier {
         while j < self.notation.min_exponent_digits || disp > 0 {
             let d = disp % 10;
             let digit_string = &self.symbols.get_digit_strings_local()[d as usize];
-            i += output.insert(i - j, digit_string, Some(FieldObject::Field(&nf_field::EXPONENT as FieldRef)));
+            i += output.insert(
+                i - j,
+                digit_string,
+                Some(FieldObject::Field(&nf_field::EXPONENT as FieldRef)),
+            );
             j += 1;
             disp /= 10;
         }
@@ -240,7 +256,10 @@ impl ScientificHandler {
             // Pre-build the modifiers for exponents -12 through 12
             let mut mods: Vec<Arc<dyn Modifier>> = Vec::with_capacity(25);
             for i in -12..=12 {
-                mods.push(Arc::new(ScientificModifier { exponent: i, handler: applier.clone() }));
+                mods.push(Arc::new(ScientificModifier {
+                    exponent: i,
+                    handler: applier.clone(),
+                }));
             }
             Some(mods)
         } else {
@@ -268,11 +287,19 @@ impl MicroPropsGenerator for ScientificHandler {
         }
 
         // Treat zero as if it had magnitude 0
-        let rounder = micros.rounder.clone().expect("micros.rounder is set by the pipeline");
+        let rounder = micros
+            .rounder
+            .clone()
+            .expect("micros.rounder is set by the pipeline");
         let exponent = if quantity.is_zeroish() {
-            if self.applier.notation.require_min_int && matches!(rounder.kind(), PrecisionKind::Significant { .. }) {
+            if self.applier.notation.require_min_int
+                && matches!(rounder.kind(), PrecisionKind::Significant { .. })
+            {
                 // Show "00.000E0" on pattern "00.000E0"
-                rounder.apply_significant_min_int(quantity, self.applier.notation.engineering_interval);
+                rounder.apply_significant_min_int(
+                    quantity,
+                    self.applier.notation.engineering_interval,
+                );
             } else {
                 rounder.apply(quantity)?;
             }
@@ -286,13 +313,19 @@ impl MicroPropsGenerator for ScientificHandler {
             if (-12..=12).contains(&exponent) {
                 micros.mod_inner = Some(mods[(exponent + 12) as usize].clone());
             } else {
-                micros.mod_inner = Some(Arc::new(ScientificModifier { exponent, handler: self.applier.clone() }));
+                micros.mod_inner = Some(Arc::new(ScientificModifier {
+                    exponent,
+                    handler: self.applier.clone(),
+                }));
             }
         } else {
             // Unsafe code path: mutates the object and re-uses it as a
             // Modifier!
             self.exponent.store(exponent, Ordering::Relaxed);
-            let this: Arc<dyn Modifier> = self.self_ref.upgrade().expect("the handler is alive while it runs");
+            let this: Arc<dyn Modifier> = self
+                .self_ref
+                .upgrade()
+                .expect("the handler is alive while it runs");
             micros.mod_inner = Some(this);
         }
 
@@ -326,8 +359,15 @@ impl MultiplierProducer for ScientificHandler {
 }
 
 impl Modifier for ScientificHandler {
-    fn apply(&self, output: &mut FormattedStringBuilder, _left_index: i32, right_index: i32) -> Result<i32> {
-        Ok(self.applier.do_apply(self.exponent.load(Ordering::Relaxed), output, right_index))
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        _left_index: i32,
+        right_index: i32,
+    ) -> Result<i32> {
+        Ok(self
+            .applier
+            .do_apply(self.exponent.load(Ordering::Relaxed), output, right_index))
     }
 
     fn get_prefix_length(&self) -> Result<i32> {
@@ -383,7 +423,12 @@ struct ScientificModifier {
 }
 
 impl Modifier for ScientificModifier {
-    fn apply(&self, output: &mut FormattedStringBuilder, _left_index: i32, right_index: i32) -> Result<i32> {
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        _left_index: i32,
+        right_index: i32,
+    ) -> Result<i32> {
         Ok(self.handler.do_apply(self.exponent, output, right_index))
     }
 

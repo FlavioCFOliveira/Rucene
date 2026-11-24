@@ -28,12 +28,18 @@ pub struct SymbolMatcher {
 impl SymbolMatcher {
     /// Equivalent to `SymbolMatcher(String, UnicodeSet)`.
     pub(crate) fn new(symbol_string: &[u16], symbol_uni_set: &'static UnicodeSet) -> Self {
-        SymbolMatcher { string: symbol_string.to_vec(), uni_set: symbol_uni_set }
+        SymbolMatcher {
+            string: symbol_string.to_vec(),
+            uni_set: symbol_uni_set,
+        }
     }
 
     /// Equivalent to `SymbolMatcher(StaticUnicodeSets.Key)`.
     pub(crate) fn from_key(key: Key) -> Self {
-        SymbolMatcher { string: Vec::new(), uni_set: StaticUnicodeSets::get(key) }
+        SymbolMatcher {
+            string: Vec::new(),
+            uni_set: StaticUnicodeSets::get(key),
+        }
     }
 
     /// Equivalent to `getSet()`.

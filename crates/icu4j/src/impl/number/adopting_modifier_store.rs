@@ -40,7 +40,14 @@ impl AdoptingModifierStore {
         neg_zero: Option<Arc<dyn Modifier>>,
         negative: Option<Arc<dyn Modifier>>,
     ) -> Self {
-        Self { positive, pos_zero, neg_zero, negative, mods: None, frozen: true }
+        Self {
+            positive,
+            pos_zero,
+            neg_zero,
+            negative,
+            mods: None,
+            frozen: true,
+        }
     }
 
     /// This constructor prepares the ImmutableParameterizedModifier to be
@@ -58,10 +65,17 @@ impl AdoptingModifierStore {
     }
 
     /// Equivalent to `setModifier(Signum, StandardPlural, Modifier)`.
-    pub fn set_modifier(&mut self, signum: Signum, plural: StandardPlural, m: Option<Arc<dyn Modifier>>) {
+    pub fn set_modifier(
+        &mut self,
+        signum: Signum,
+        plural: StandardPlural,
+        m: Option<Arc<dyn Modifier>>,
+    ) {
         debug_assert!(!self.frozen);
         let index = Self::get_mod_index(signum, plural);
-        self.mods.as_mut().expect("java.lang.NullPointerException: mods")[index] = m;
+        self.mods
+            .as_mut()
+            .expect("java.lang.NullPointerException: mods")[index] = m;
     }
 
     /// Equivalent to `freeze()`.
@@ -91,6 +105,9 @@ impl ModifierStore for AdoptingModifierStore {
     fn get_modifier(&self, signum: Signum, plural: StandardPlural) -> Option<Arc<dyn Modifier>> {
         debug_assert!(self.frozen);
         debug_assert!(self.positive.is_none());
-        self.mods.as_ref().expect("java.lang.NullPointerException: mods")[Self::get_mod_index(signum, plural)].clone()
+        self.mods
+            .as_ref()
+            .expect("java.lang.NullPointerException: mods")[Self::get_mod_index(signum, plural)]
+        .clone()
     }
 }

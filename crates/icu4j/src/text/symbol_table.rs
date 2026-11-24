@@ -35,7 +35,12 @@ pub trait SymbolTable: Send + Sync {
     /// # Errors
     ///
     /// The errors the implementation throws.
-    fn parse_reference(&self, text: &[u16], pos: &mut ParsePosition, limit: i32) -> Result<Option<Vec<u16>>>;
+    fn parse_reference(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+        limit: i32,
+    ) -> Result<Option<Vec<u16>>>;
 
     /// This table as an `XSymbolTable`, `None` when it is not one.
     fn as_x_symbol_table(&self) -> Option<&dyn XSymbolTable> {

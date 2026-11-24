@@ -5,7 +5,7 @@
 
 use rucene::error::Result;
 
-use crate::jdk::{code_point_at, is_high_surrogate, is_low_surrogate, char_count, to_code_point};
+use crate::jdk::{char_count, code_point_at, is_high_surrogate, is_low_surrogate, to_code_point};
 
 /// A set of utilities for handling `CharSequence`s (UTF-16 code units).
 ///
@@ -106,7 +106,13 @@ impl CharSequences {
     /// As [`compare_cp`](Self::compare_cp).
     pub fn compare_cp_rev(codepoint: i32, a: &[u16]) -> Result<i32> {
         let result = Self::compare_cp(a, codepoint)?;
-        Ok(if result > 0 { -1 } else if result < 0 { 1 } else { 0 })
+        Ok(if result > 0 {
+            -1
+        } else if result < 0 {
+            1
+        } else {
+            0
+        })
     }
 
     /// `getSingleCodePoint(CharSequence s)`: the single code point of
@@ -176,6 +182,7 @@ impl CharSequences {
 
     /// `codePoints(CharSequence s)`: the code points, unpaired surrogates
     /// kept as they are.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub fn code_points(s: &[u16]) -> Vec<i32> {
         let mut result = vec![0i32; s.len()]; // in the vast majority of cases, the length will be the same
         let mut j = 0usize;

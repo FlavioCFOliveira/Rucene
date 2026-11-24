@@ -14,7 +14,8 @@ use crate::text::replaceable::Replaceable;
 use crate::text::replaceable_context_iterator::ReplaceableContextIterator;
 use crate::text::source_target_utility::{FnTransform, SourceTargetUtility};
 use crate::text::transliterator::{
-    factory, register_factory_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+    factory, register_factory_in, transliterator_boilerplate, Position, Transliterator,
+    TransliteratorBase,
 };
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
@@ -47,7 +48,10 @@ impl UppercaseTransliterator {
         register_factory_in(
             registry,
             &units(Self::ID),
-            factory(|_id| Ok(Some(Arc::new(UppercaseTransliterator::new((*US).clone())?) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(UppercaseTransliterator::new((*US).clone())?)
+                    as Arc<dyn Transliterator>))
+            }),
         )?;
         Ok(())
     }
@@ -75,7 +79,12 @@ impl Transliterator for UppercaseTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, offsets: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        offsets: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         // (csp is never null: UCaseProps.INSTANCE)
         if offsets.start >= offsets.limit {
             return Ok(());
@@ -100,7 +109,9 @@ impl Transliterator for UppercaseTransliterator {
             if c < 0 {
                 break;
             }
-            c = self.csp.to_full_upper(c, Some(&mut iter), &mut result, self.case_locale);
+            c = self
+                .csp
+                .to_full_upper(c, Some(&mut iter), &mut result, self.case_locale);
 
             if iter.did_reach_limit() && is_incremental {
                 // the case mapping function tried to look beyond the context limit
@@ -133,14 +144,26 @@ impl Transliterator for UppercaseTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let utility = {
-            let mut guard = self.source_target_utility.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .source_target_utility
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             match &*guard {
                 Some(u) => u.clone(),
                 None => {
                     let locale = self.locale.clone();
-                    let u = Arc::new(SourceTargetUtility::new(Box::new(FnTransform(move |source: &[u16]| Ok(UCharacter::to_upper_case_ulocale(&locale, source)))))?);
+                    let u = Arc::new(SourceTargetUtility::new(Box::new(FnTransform(
+                        move |source: &[u16]| {
+                            Ok(UCharacter::to_upper_case_ulocale(&locale, source))
+                        },
+                    )))?);
                     *guard = Some(u.clone());
                     u
                 }

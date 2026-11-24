@@ -9,7 +9,9 @@ use rucene::error::Result;
 
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
 use crate::r#impl::number::decimal_quantity_abstract_bcd::DecimalQuantityAbstractBcd;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 use crate::r#impl::number::parse::parsing_utils::ParsingUtils;
 use crate::r#impl::string_segment::StringSegment;
 
@@ -74,7 +76,10 @@ impl ParsedNumber {
 
     /// Equivalent to `copyFrom(ParsedNumber)` (the quantity is copied).
     pub fn copy_from(&mut self, other: &ParsedNumber) {
-        self.quantity = other.quantity.as_ref().map(DecimalQuantity_DualStorageBCD::from_other);
+        self.quantity = other
+            .quantity
+            .as_ref()
+            .map(DecimalQuantity_DualStorageBCD::from_other);
         self.char_end = other.char_end;
         self.flags = other.flags;
         self.prefix = other.prefix.clone();
@@ -144,7 +149,10 @@ impl ParsedNumber {
                 return Ok(JavaNumber::Double(f64::INFINITY));
             }
         }
-        let quantity = self.quantity.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException: quantity"));
+        let quantity = self
+            .quantity
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: quantity"));
         if quantity.is_zeroish() && quantity.is_negative() && !integer_only {
             return Ok(JavaNumber::Double(-0.0));
         }

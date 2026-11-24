@@ -6,7 +6,9 @@
 use rucene::error::Result;
 
 use crate::r#impl::number::parse::parsed_number::{self, ParsedNumber};
-use crate::r#impl::number::parse::validation_matcher::{impl_validation_matcher, ValidationMatcher};
+use crate::r#impl::number::parse::validation_matcher::{
+    impl_validation_matcher, ValidationMatcher,
+};
 
 /// Equivalent to `com.ibm.icu.impl.number.parse.RequireNumberValidator`.
 #[derive(Debug, Default)]

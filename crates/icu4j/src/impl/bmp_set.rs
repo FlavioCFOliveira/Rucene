@@ -57,7 +57,8 @@ impl BMPSet {
         // The last pair of indexes is for finding supplementary code points.
         s.list4k_starts[0] = s.find_code_point(0x800, 0, s.list_length - 1);
         for i in 1..=0x10usize {
-            s.list4k_starts[i] = s.find_code_point((i as i32) << 12, s.list4k_starts[i - 1], s.list_length - 1);
+            s.list4k_starts[i] =
+                s.find_code_point((i as i32) << 12, s.list4k_starts[i - 1], s.list_length - 1);
         }
         s.list4k_starts[0x11] = s.list_length - 1;
         s.init_bits();
@@ -66,7 +67,11 @@ impl BMPSet {
 
     /// `BMPSet(BMPSet otherBMPSet, int[] newParentList, int
     /// newParentListLength)`.
-    pub fn from_other(other_bmp_set: &BMPSet, new_parent_list: &[i32], new_parent_list_length: i32) -> Self {
+    pub fn from_other(
+        other_bmp_set: &BMPSet,
+        new_parent_list: &[i32],
+        new_parent_list_length: i32,
+    ) -> Self {
         Self {
             latin1_contains: other_bmp_set.latin1_contains,
             table7ff: other_bmp_set.table7ff,
@@ -96,7 +101,11 @@ impl BMPSet {
                 0 != two_bits
             } else {
                 // Look up the code point in its 4k block of code points.
-                self.contains_slow(c, self.list4k_starts[lead as usize], self.list4k_starts[lead as usize + 1])
+                self.contains_slow(
+                    c,
+                    self.list4k_starts[lead as usize],
+                    self.list4k_starts[lead as usize + 1],
+                )
             }
         } else if c <= 0x10ffff {
             // surrogate or supplementary code point
@@ -111,7 +120,13 @@ impl BMPSet {
     /// `span(CharSequence s, int start, SpanCondition spanCondition,
     /// OutputInt outCount)`: the end of the span from `start`; `outCount`
     /// receives the number of code points.
-    pub fn span(&self, s: &[u16], start: i32, span_condition: SpanCondition, out_count: Option<&mut OutputInt>) -> i32 {
+    pub fn span(
+        &self,
+        s: &[u16],
+        start: i32,
+        span_condition: SpanCondition,
+        out_count: Option<&mut OutputInt>,
+    ) -> i32 {
         let mut i = start;
         let limit = s.len() as i32;
         let mut num_supplementary = 0;
@@ -132,13 +147,22 @@ impl BMPSet {
                 if two_bits <= 1 {
                     found = two_bits != 0;
                 } else {
-                    found = self.contains_slow(c as i32, self.list4k_starts[lead as usize], self.list4k_starts[lead as usize + 1]);
+                    found = self.contains_slow(
+                        c as i32,
+                        self.list4k_starts[lead as usize],
+                        self.list4k_starts[lead as usize + 1],
+                    );
                 }
             } else {
                 // surrogate pair
                 let c2 = s[i as usize + 1];
                 let supplementary = to_code_point(c, c2);
-                if self.contains_slow(supplementary, self.list4k_starts[0x10], self.list4k_starts[0x11]) != contained {
+                if self.contains_slow(
+                    supplementary,
+                    self.list4k_starts[0x10],
+                    self.list4k_starts[0x11],
+                ) != contained
+                {
                     break;
                 }
                 num_supplementary += 1;
@@ -178,13 +202,21 @@ impl BMPSet {
                 if two_bits <= 1 {
                     found = two_bits != 0;
                 } else {
-                    found = self.contains_slow(c as i32, self.list4k_starts[lead as usize], self.list4k_starts[lead as usize + 1]);
+                    found = self.contains_slow(
+                        c as i32,
+                        self.list4k_starts[lead as usize],
+                        self.list4k_starts[lead as usize + 1],
+                    );
                 }
             } else {
                 // surrogate pair
                 let c2 = s[limit as usize - 1];
                 let supplementary = to_code_point(c2, c);
-                found = self.contains_slow(supplementary, self.list4k_starts[0x10], self.list4k_starts[0x11]);
+                found = self.contains_slow(
+                    supplementary,
+                    self.list4k_starts[0x10],
+                    self.list4k_starts[0x11],
+                );
                 if found == contained {
                     limit -= 1;
                 }
@@ -289,7 +321,11 @@ impl BMPSet {
 
         // Set table7FF[].
         while start < 0x800 {
-            Self::set32x64_bits(&mut self.table7ff, start, if limit <= 0x800 { limit } else { 0x800 });
+            Self::set32x64_bits(
+                &mut self.table7ff,
+                start,
+                if limit <= 0x800 { limit } else { 0x800 },
+            );
             if limit > 0x800 {
                 start = 0x800;
                 break;
@@ -359,14 +395,14 @@ impl BMPSet {
     /// is restricted for finding code points in a certain range.
     fn find_code_point(&self, c: i32, mut lo: i32, mut hi: i32) -> i32 {
         /* Examples:
-                                           findCodePoint(c)
-           set              list[]         c=0 1 3 4 7 8
-           ===              ==============   ===========
-           []               [110000]         0 0 0 0 0 0
-           [\u0000-\u0003]  [0, 4, 110000]   1 1 1 2 2 2
-           [\u0004-\u0007]  [4, 8, 110000]   0 0 0 1 1 2
-           [:Any:]          [0, 110000]      1 1 1 1 1 1
-         */
+                                          findCodePoint(c)
+          set              list[]         c=0 1 3 4 7 8
+          ===              ==============   ===========
+          []               [110000]         0 0 0 0 0 0
+          [\u0000-\u0003]  [0, 4, 110000]   1 1 1 2 2 2
+          [\u0004-\u0007]  [4, 8, 110000]   0 0 0 1 1 2
+          [:Any:]          [0, 110000]      1 1 1 1 1 1
+        */
 
         // Return the smallest i such that c < list[i]. Assume
         // list[len - 1] == HIGH and that c is legal (0..HIGH-1).

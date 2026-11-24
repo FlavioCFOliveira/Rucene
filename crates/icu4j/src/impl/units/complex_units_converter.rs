@@ -12,10 +12,13 @@ use rucene::error::{LuceneError, Result};
 use crate::jdk::math::{BigDecimal, BigInteger, RoundingMode};
 use crate::number::precision::Precision;
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 use crate::r#impl::units::conversion_rates::ConversionRates;
 use crate::r#impl::units::measure_unit_impl::{
-    MeasureUnitImpl, MeasureUnitImplComparator, MeasureUnitImplWithIndex, MeasureUnitImplWithIndexComparator,
+    MeasureUnitImpl, MeasureUnitImplComparator, MeasureUnitImplWithIndex,
+    MeasureUnitImplWithIndexComparator,
 };
 use crate::r#impl::units::units_converter::UnitsConverter;
 use crate::util::measure::Measure;
@@ -24,8 +27,11 @@ use crate::util::measure::Measure;
 pub static EPSILON: LazyLock<BigDecimal> =
     LazyLock::new(|| BigDecimal::value_of_double(f64::EPSILON).expect("finite constant"));
 /// `EPSILON_MULTIPLIER`: `1 + EPSILON`.
-pub static EPSILON_MULTIPLIER: LazyLock<BigDecimal> =
-    LazyLock::new(|| BigDecimal::value_of(1).add(&EPSILON).expect("exact addition"));
+pub static EPSILON_MULTIPLIER: LazyLock<BigDecimal> = LazyLock::new(|| {
+    BigDecimal::value_of(1)
+        .add(&EPSILON)
+        .expect("exact addition")
+});
 
 /// Converts from single or compound unit to single, compound or mixed
 /// units. For example, from `meter` to `foot+inch`.
@@ -59,7 +65,10 @@ impl ComplexUnitsConverter {
     /// # Errors
     ///
     /// The errors of the conversion-rate computation.
-    pub fn for_target(target_unit: &MeasureUnitImpl, conversion_rates: &ConversionRates) -> Result<Self> {
+    pub fn for_target(
+        target_unit: &MeasureUnitImpl,
+        conversion_rates: &ConversionRates,
+    ) -> Result<Self> {
         let units = target_unit.extract_individual_units_with_indices();
         debug_assert!(!units.is_empty());
 
@@ -74,7 +83,11 @@ impl ComplexUnitsConverter {
             }
         }
 
-        let mut result = ComplexUnitsConverter { units_converters: Vec::new(), units, input_unit };
+        let mut result = ComplexUnitsConverter {
+            units_converters: Vec::new(),
+            units,
+            input_unit,
+        };
         result.init(conversion_rates)?;
         Ok(result)
     }
@@ -84,7 +97,10 @@ impl ComplexUnitsConverter {
     /// # Errors
     ///
     /// The errors of the parsing and of the data loading.
-    pub fn from_identifiers(input_unit_identifier: &str, output_units_identifier: &str) -> Result<Self> {
+    pub fn from_identifiers(
+        input_unit_identifier: &str,
+        output_units_identifier: &str,
+    ) -> Result<Self> {
         Self::new(
             &MeasureUnitImpl::for_identifier(input_unit_identifier)?,
             &MeasureUnitImpl::for_identifier(output_units_identifier)?,
@@ -100,11 +116,19 @@ impl ComplexUnitsConverter {
     /// # Errors
     ///
     /// The errors of the conversion-rate computation.
-    pub fn new(input_unit: &MeasureUnitImpl, output_units: &MeasureUnitImpl, conversion_rates: &ConversionRates) -> Result<Self> {
+    pub fn new(
+        input_unit: &MeasureUnitImpl,
+        output_units: &MeasureUnitImpl,
+        conversion_rates: &ConversionRates,
+    ) -> Result<Self> {
         let units = output_units.extract_individual_units_with_indices();
         debug_assert!(!units.is_empty());
 
-        let mut result = ComplexUnitsConverter { units_converters: Vec::new(), units, input_unit: input_unit.clone() };
+        let mut result = ComplexUnitsConverter {
+            units_converters: Vec::new(),
+            units,
+            input_unit: input_unit.clone(),
+        };
         result.init(conversion_rates)?;
         Ok(result)
     }
@@ -142,7 +166,11 @@ impl ComplexUnitsConverter {
         for i in 0..self.units.len() {
             if i == 0 {
                 // first element
-                self.units_converters.push(UnitsConverter::new(&self.input_unit, &self.units[i].unit_impl, conversion_rates)?);
+                self.units_converters.push(UnitsConverter::new(
+                    &self.input_unit,
+                    &self.units[i].unit_impl,
+                    conversion_rates,
+                )?);
             } else {
                 self.units_converters.push(UnitsConverter::new(
                     &self.units[i - 1].unit_impl,
@@ -166,7 +194,11 @@ impl ComplexUnitsConverter {
         debug_assert!(!self.units.is_empty());
 
         // NOTE: First converter converts to the biggest quantity.
-        Ok(self.units_converters[0].convert(quantity)?.multiply(&EPSILON_MULTIPLIER)?.compare_to(limit) >= 0)
+        Ok(self.units_converters[0]
+            .convert(quantity)?
+            .multiply(&EPSILON_MULTIPLIER)?
+            .compare_to(limit)
+            >= 0)
     }
 
     /// Returns outputMeasures which is an array with the corresponding
@@ -176,7 +208,11 @@ impl ComplexUnitsConverter {
     /// # Errors
     ///
     /// The arithmetic errors of the conversion and the rounding.
-    pub fn convert(&self, quantity: &BigDecimal, rounder: Option<&Precision>) -> Result<ComplexConverterResult> {
+    pub fn convert(
+        &self,
+        quantity: &BigDecimal,
+        rounder: Option<&Precision>,
+    ) -> Result<ComplexConverterResult> {
         let mut quantity = quantity.clone();
         let mut sign = BigInteger::one();
         if quantity.compare_to(&BigDecimal::zero()) < 0 && self.units_converters.len() > 1 {
@@ -191,7 +227,8 @@ impl ComplexUnitsConverter {
         //   integers,
         // - the Nth converter (index N-1) converts to the smallest unit,
         //   which isn't (necessarily) an integer.
-        let mut int_values: Vec<BigInteger> = Vec::with_capacity(self.units_converters.len().saturating_sub(1));
+        let mut int_values: Vec<BigInteger> =
+            Vec::with_capacity(self.units_converters.len().saturating_sub(1));
 
         let n = self.units_converters.len();
         for (i, converter) in self.units_converters.iter().enumerate() {
@@ -239,14 +276,19 @@ impl ComplexUnitsConverter {
             } else {
                 index_of_quantity = self.units[i].index;
                 let measure = Measure::new(
-                    Some(JavaNumber::BigDecimal(quantity.multiply(&BigDecimal::value_of(sign.long_value()))?)),
+                    Some(JavaNumber::BigDecimal(
+                        quantity.multiply(&BigDecimal::value_of(sign.long_value()))?,
+                    )),
                     Some(self.units[i].unit_impl.clone().build()?),
                 )?;
                 measures[index_of_quantity as usize] = Some(measure);
             }
         }
 
-        Ok(ComplexConverterResult { index_of_quantity, measures })
+        Ok(ComplexConverterResult {
+            index_of_quantity,
+            measures,
+        })
     }
 
     /// Applies the rounder to the quantity (last element) and bubbles up
@@ -297,7 +339,8 @@ impl ComplexUnitsConverter {
                 // carry is not greater than zero
                 break;
             }
-            int_values[j] = int_values[j].subtract(&self.units_converters[j].convert(&carry)?.to_big_integer());
+            int_values[j] =
+                int_values[j].subtract(&self.units_converters[j].convert(&carry)?.to_big_integer());
             int_values[j - 1] = int_values[j - 1].add(&carry.to_big_integer());
             j -= 1;
         }
@@ -314,14 +357,28 @@ impl fmt::Display for ComplexUnitsConverter {
     /// `ClassName@<hex identityHashCode>`, the hash being the crate's
     /// stable identity-hash stand-in.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let converters: Vec<String> = self.units_converters.iter().map(ToString::to_string).collect();
+        let converters: Vec<String> = self
+            .units_converters
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         const CLASS: &str = "com.ibm.icu.impl.units.MeasureUnitImpl$MeasureUnitImplWithIndex";
         let units: Vec<String> = self
             .units
             .iter()
-            .map(|_| format!("{CLASS}@{:x}", rucene::util::java_collections::java_identity_hash_code_stand_in(CLASS) as u32))
+            .map(|_| {
+                format!(
+                    "{CLASS}@{:x}",
+                    rucene::util::java_collections::java_identity_hash_code_stand_in(CLASS) as u32
+                )
+            })
             .collect();
-        write!(f, "ComplexUnitsConverter [unitsConverters_=[{}], units_=[{}]]", converters.join(", "), units.join(", "))
+        write!(
+            f,
+            "ComplexUnitsConverter [unitsConverters_=[{}], units_=[{}]]",
+            converters.join(", "),
+            units.join(", ")
+        )
     }
 }
 

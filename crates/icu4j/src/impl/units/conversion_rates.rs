@@ -31,8 +31,12 @@ pub struct ConversionRates {
 
 /// `mapToConversionRate.get(id)`, which Java dereferences at once: a
 /// missing entry is a `NullPointerException`.
-fn info<'a>(map: &'a HashMap<String, ConversionRateInfo>, id: &str) -> Result<&'a ConversionRateInfo> {
-    map.get(id).ok_or_else(|| crate::jdk::null_pointer(&format!("no conversion rate for {id}")))
+fn info<'a>(
+    map: &'a HashMap<String, ConversionRateInfo>,
+    id: &str,
+) -> Result<&'a ConversionRateInfo> {
+    map.get(id)
+        .ok_or_else(|| crate::jdk::null_pointer(&format!("no conversion rate for {id}")))
 }
 
 impl ConversionRates {
@@ -45,8 +49,12 @@ impl ConversionRates {
         // Read the conversion rates from the data (units.txt).
         let resource = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "units")?;
         let mut sink = ConversionRatesSink::default();
-        resource.as_icu()?.get_all_items_with_fallback(Constants::CONVERSION_UNIT_TABLE_NAME, &mut sink)?;
-        Ok(ConversionRates { map_to_conversion_rate: sink.get_map_to_conversion_rate() })
+        resource
+            .as_icu()?
+            .get_all_items_with_fallback(Constants::CONVERSION_UNIT_TABLE_NAME, &mut sink)?;
+        Ok(ConversionRates {
+            map_to_conversion_rate: sink.get_map_to_conversion_rate(),
+        })
     }
 
     /// Extracts the factor from a `SingleUnitImpl` to its Basic Unit.
@@ -55,7 +63,11 @@ impl ConversionRates {
         let power = single_unit.get_dimensionality();
         let unit_prefix = single_unit.get_prefix();
         let result = Factor::process_factor(
-            info(&self.map_to_conversion_rate, single_unit.get_simple_unit_id())?.get_conversion_rate()?,
+            info(
+                &self.map_to_conversion_rate,
+                single_unit.get_simple_unit_id(),
+            )?
+            .get_conversion_rate()?,
         )?;
 
         // Prefix before power, because:
@@ -78,7 +90,9 @@ impl ConversionRates {
 
         // Apply the constant denominator
         if measure_unit.get_constant_denominator() != 0 {
-            result = result.divide_by(&BigDecimal::value_of(measure_unit.get_constant_denominator()))?;
+            result = result.divide_by(&BigDecimal::value_of(
+                measure_unit.get_constant_denominator(),
+            ))?;
         }
 
         Ok(result)
@@ -108,9 +122,14 @@ impl ConversionRates {
         let source_simple_identifier = source.get_single_units()[0].get_simple_unit_id();
         let target_simple_identifier = target.get_single_units()[0].get_simple_unit_id();
 
-        let source_offset = info(&self.map_to_conversion_rate, source_simple_identifier)?.get_offset();
-        let target_offset = info(&self.map_to_conversion_rate, target_simple_identifier)?.get_offset();
-        source_offset.subtract(target_offset)?.divide_mc(&target_to_base.get_conversion_rate()?, &MathContext::DECIMAL128)
+        let source_offset =
+            info(&self.map_to_conversion_rate, source_simple_identifier)?.get_offset();
+        let target_offset =
+            info(&self.map_to_conversion_rate, target_simple_identifier)?.get_offset();
+        source_offset.subtract(target_offset)?.divide_mc(
+            &target_to_base.get_conversion_rate()?,
+            &MathContext::DECIMAL128,
+        )
     }
 
     /// Equivalent to `getSpecialMappingName(MeasureUnitImpl)` (protected).
@@ -123,7 +142,9 @@ impl ConversionRates {
         // known simple units.
         self.map_to_conversion_rate
             .get(simple_identifier)
-            .unwrap_or_else(|| panic!("java.lang.NullPointerException: no conversion rate for {simple_identifier}"))
+            .unwrap_or_else(|| {
+                panic!("java.lang.NullPointerException: no conversion rate for {simple_identifier}")
+            })
             .get_special_mapping_name()
             .map(str::to_string)
     }
@@ -133,7 +154,10 @@ impl ConversionRates {
     /// # Errors
     ///
     /// The errors of the target parsing.
-    pub fn extract_compound_base_unit(&self, measure_unit: &MeasureUnitImpl) -> Result<MeasureUnitImpl> {
+    pub fn extract_compound_base_unit(
+        &self,
+        measure_unit: &MeasureUnitImpl,
+    ) -> Result<MeasureUnitImpl> {
         let base_units = self.extract_base_units(measure_unit)?;
 
         let mut result = MeasureUnitImpl::new();
@@ -149,7 +173,10 @@ impl ConversionRates {
     /// # Errors
     ///
     /// The errors of the target parsing.
-    pub fn extract_base_units(&self, measure_unit_impl: &MeasureUnitImpl) -> Result<Vec<SingleUnitImpl>> {
+    pub fn extract_base_units(
+        &self,
+        measure_unit_impl: &MeasureUnitImpl,
+    ) -> Result<Vec<SingleUnitImpl>> {
         let mut result = Vec::new();
         for single_unit in measure_unit_impl.get_single_units() {
             result.extend(self.extract_base_units_single(single_unit)?);
@@ -163,8 +190,15 @@ impl ConversionRates {
     /// # Errors
     ///
     /// The errors of the target parsing.
-    pub fn extract_base_units_single(&self, single_unit: &SingleUnitImpl) -> Result<Vec<SingleUnitImpl>> {
-        let target = info(&self.map_to_conversion_rate, single_unit.get_simple_unit_id())?.get_target();
+    pub fn extract_base_units_single(
+        &self,
+        single_unit: &SingleUnitImpl,
+    ) -> Result<Vec<SingleUnitImpl>> {
+        let target = info(
+            &self.map_to_conversion_rate,
+            single_unit.get_simple_unit_id(),
+        )?
+        .get_target();
         let mut target_impl = UnitsParser::parse_for_identifier(Some(target))?
             .ok_or_else(|| crate::jdk::null_pointer("empty conversion target"))?;
 
@@ -183,7 +217,12 @@ impl ConversionRates {
     ///
     /// `NullPointerException` for an unknown simple unit.
     pub fn extract_systems(&self, single_unit: &SingleUnitImpl) -> Result<Option<String>> {
-        Ok(info(&self.map_to_conversion_rate, single_unit.get_simple_unit_id())?.get_systems().map(str::to_string))
+        Ok(info(
+            &self.map_to_conversion_rate,
+            single_unit.get_simple_unit_id(),
+        )?
+        .get_systems()
+        .map(str::to_string))
     }
 
     /// Checks if the `MeasureUnitImpl` is simple or not. Equivalent to
@@ -246,14 +285,18 @@ impl Sink for ConversionRatesSink {
                     "special" => special = Some(value_string),
                     // just want the raw string
                     "systems" => systems = Some(value.to_java_string()),
-                    _ => debug_assert!(false, "The key must be target, factor, offset, special, or systems"),
+                    _ => debug_assert!(
+                        false,
+                        "The key must be target, factor, offset, special, or systems"
+                    ),
                 }
             }
 
             // HashMap.put replaces.
             debug_assert!(target.is_some());
             debug_assert!(factor.is_some() || special.is_some());
-            let info = ConversionRateInfo::new(&simple_unit, target, factor, &offset, special, systems)?;
+            let info =
+                ConversionRateInfo::new(&simple_unit, target, factor, &offset, special, systems)?;
             self.map_to_conversion_rate.insert(simple_unit, info);
         }
         Ok(())
@@ -320,8 +363,10 @@ impl ConversionRateInfo {
             return BigDecimal::from_string(&units(&numbers[0]));
         }
 
-        BigDecimal::from_string(&units(&numbers[0]))?
-            .divide_mc(&BigDecimal::from_string(&units(&numbers[1]))?, &MathContext::DECIMAL128)
+        BigDecimal::from_string(&units(&numbers[0]))?.divide_mc(
+            &BigDecimal::from_string(&units(&numbers[1]))?,
+            &MathContext::DECIMAL128,
+        )
     }
 
     /// Equivalent to `getTarget()` (`""` for Java's `null`, which the sink
@@ -344,8 +389,10 @@ impl ConversionRateInfo {
     pub fn get_conversion_rate(&self) -> Result<&str> {
         match &self.conversion_rate {
             Some(r) => Ok(r),
-            None => Err(IllegalIcuArgumentException::with_message("trying to use a null conversion rate (for special?)")
-                .error()),
+            None => Err(IllegalIcuArgumentException::with_message(
+                "trying to use a null conversion rate (for special?)",
+            )
+            .error()),
         }
     }
 

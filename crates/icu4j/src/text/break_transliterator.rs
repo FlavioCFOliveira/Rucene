@@ -13,7 +13,9 @@ use crate::jdk::units;
 use crate::lang::u_character::UCharacter;
 use crate::text::break_iterator::{self, BreakIterator, DONE as BI_DONE};
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{register_instance_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    register_instance_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+};
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_filter::UnicodeFilter;
 use crate::text::unicode_set::UnicodeSet;
@@ -112,6 +114,7 @@ impl BreakTransliterator {
     }
 
     /// `setInsertion(String insertion)`.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub fn set_insertion(&self, insertion: &[u16]) {
         self.state().insertion = insertion.to_vec();
     }
@@ -122,6 +125,7 @@ impl BreakTransliterator {
     /// # Errors
     ///
     /// The errors of `BreakIterator.getWordInstance`.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub fn get_break_iterator(&self) -> Result<Box<dyn BreakIterator>> {
         let mut st = self.state();
         Self::ensure_break_iterator(&mut st)?;
@@ -133,12 +137,15 @@ impl BreakTransliterator {
         // Defer this work until we really need it.  We do this to
         // simplify our initialization of this class.
         if st.bi.is_none() {
-            st.bi = Some(break_iterator::get_word_instance_ulocale(&ULocale::new("th_TH")?)?);
+            st.bi = Some(break_iterator::get_word_instance_ulocale(&ULocale::new(
+                "th_TH",
+            )?)?);
         }
         Ok(())
     }
 
     /// `setBreakIterator(BreakIterator bi)`.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub fn set_break_iterator(&self, bi: Option<Box<dyn BreakIterator>>) {
         self.state().bi = bi;
     }
@@ -148,7 +155,8 @@ impl BreakTransliterator {
     /// construction).
     pub(crate) fn register(registry: &TransliteratorRegistry) -> Result<()> {
         // false means that it is invisible
-        let trans: Arc<dyn Transliterator> = Arc::new(BreakTransliterator::new(&units("Any-BreakInternal"), None)?);
+        let trans: Arc<dyn Transliterator> =
+            Arc::new(BreakTransliterator::new(&units("Any-BreakInternal"), None)?);
         register_instance_in(registry, trans, false)
     }
 }
@@ -158,7 +166,12 @@ impl Transliterator for BreakTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position pos, boolean
     /// incremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, pos: &mut Position, incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        incremental: bool,
+    ) -> Result<()> {
         let mut guard = self.state(); // synchronized
         let st = &mut *guard;
         st.boundary_count = 0;
@@ -171,7 +184,9 @@ impl Transliterator for BreakTransliterator {
             boundary_count,
         } = st;
         let bi = bi.as_mut().expect("created above");
-        bi.set_text(Some(Box::new(ReplaceableCharacterIterator::new(text, pos.start, pos.limit, pos.start)?)));
+        bi.set_text(Some(Box::new(ReplaceableCharacterIterator::new(
+            text, pos.start, pos.limit, pos.start,
+        )?)));
         // TODO: fix clumsy workaround used below.
         /*
         char[] tempBuffer = new char[text.length()];
@@ -240,13 +255,22 @@ impl Transliterator for BreakTransliterator {
         // Now fix up the return values
         pos.context_limit += delta;
         pos.limit += delta;
-        pos.start = if incremental { last_boundary + delta } else { pos.limit };
+        pos.start = if incremental {
+            last_boundary + delta
+        } else {
+            pos.limit
+        };
         Ok(())
     }
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, _source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        _source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let my_filter = self.get_filter_as_unicode_set(input_filter)?;
         // Doesn't actually modify the source characters, so leave them alone.
         // add the characters inserted
@@ -317,6 +341,7 @@ impl ReplaceableCharacterIterator {
     /// classes that want to avoid allocating new
     /// ReplaceableCharacterIterator objects every time their setText method
     /// is called.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub fn set_text(&mut self, text: &dyn Replaceable) {
         self.text = snapshot(text);
         self.begin = 0;
@@ -326,6 +351,7 @@ impl ReplaceableCharacterIterator {
 
     /// `equals(Object obj)`: compares the equality of two
     /// ReplaceableCharacterIterator objects.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub fn equals(&self, that: &ReplaceableCharacterIterator) -> bool {
         if std::ptr::eq(self, that) {
             return true;
@@ -344,8 +370,12 @@ impl ReplaceableCharacterIterator {
     }
 
     /// `hashCode()`: computes a hashcode for this iterator.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub fn hash_code(&self) -> i32 {
-        java_identity_hash_code_stand_in("com.ibm.icu.text.Replaceable") ^ self.pos ^ self.begin ^ self.end
+        java_identity_hash_code_stand_in("com.ibm.icu.text.Replaceable")
+            ^ self.pos
+            ^ self.begin
+            ^ self.end
     }
 }
 

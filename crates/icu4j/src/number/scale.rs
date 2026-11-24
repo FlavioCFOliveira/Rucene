@@ -61,13 +61,21 @@ impl Scale {
     }
 
     /// `Scale(int, BigDecimal, MathContext)`.
-    fn with_mc(mut magnitude: i32, arbitrary: Option<BigDecimal>, mc: MathContext) -> Result<Scale> {
+    fn with_mc(
+        mut magnitude: i32,
+        arbitrary: Option<BigDecimal>,
+        mc: MathContext,
+    ) -> Result<Scale> {
         let mut arbitrary = arbitrary;
         if let Some(a) = arbitrary.take() {
             // Attempt to convert the BigDecimal to a magnitude multiplier.
             // ICU-20000: JDKs have inconsistent behavior on stripTrailingZeros()
             // for Zero. Fix by checking for zero.
-            let a = if a.compare_to(&BigDecimal::zero()) == 0 { BigDecimal::zero() } else { a.strip_trailing_zeros()? };
+            let a = if a.compare_to(&BigDecimal::zero()) == 0 {
+                BigDecimal::zero()
+            } else {
+                a.strip_trailing_zeros()?
+            };
             if a.precision() == 1 && a.unscaled_value().java_equals(&BigInteger::one()) {
                 // Success!
                 magnitude -= a.scale();
@@ -78,10 +86,17 @@ impl Scale {
 
         // We need the reciprocal for division operations.
         let reciprocal = match &arbitrary {
-            Some(a) if BigDecimal::zero().compare_to(a) != 0 => Some(BigDecimal::one().divide_mc(a, &mc)?),
+            Some(a) if BigDecimal::zero().compare_to(a) != 0 => {
+                Some(BigDecimal::one().divide_mc(a, &mc)?)
+            }
             _ => None,
         };
-        Ok(Scale(Arc::new(ScaleData { magnitude, arbitrary, reciprocal, mc })))
+        Ok(Scale(Arc::new(ScaleData {
+            magnitude,
+            arbitrary,
+            reciprocal,
+            mc,
+        })))
     }
 
     /// Whether two handles are the same Java object.

@@ -42,10 +42,14 @@ impl FieldPositionSubclass for UFieldPosition {
 
 impl UFieldPosition {
     fn state() -> Box<dyn FieldPositionSubclass> {
-        Box::new(UFieldPosition { count_visible_fraction_digits: -1, fraction_digits: 0 })
+        Box::new(UFieldPosition {
+            count_visible_fraction_digits: -1,
+            fraction_digits: 0,
+        })
     }
 
     /// `new UFieldPosition()`: field id -1.
+    #[allow(clippy::new_ret_no_self)] // Java method name
     pub fn new() -> FieldPosition {
         FieldPosition::new(-1).with_subclass(Self::state())
     }
@@ -77,7 +81,11 @@ impl UFieldPosition {
 
     /// `setFractionDigits(int countVisibleFractionDigits, long
     /// fractionDigits)`.
-    pub fn set_fraction_digits(&mut self, count_visible_fraction_digits: i32, fraction_digits: i64) {
+    pub fn set_fraction_digits(
+        &mut self,
+        count_visible_fraction_digits: i32,
+        fraction_digits: i64,
+    ) {
         self.count_visible_fraction_digits = count_visible_fraction_digits;
         self.fraction_digits = fraction_digits;
     }

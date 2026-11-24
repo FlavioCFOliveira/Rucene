@@ -75,13 +75,18 @@ impl std::fmt::Debug for TransliterationRule {
 /// `String.regionMatches(int toffset, String other, int ooffset, int len)`.
 fn region_matches(this: &[u16], toffset: i32, other: &[u16], ooffset: i32, len: i32) -> bool {
     // Note: toffset, ooffset, or len might be near -1>>>1.
-    if ooffset < 0 || toffset < 0 || toffset as i64 > this.len() as i64 - len as i64 || ooffset as i64 > other.len() as i64 - len as i64 {
+    if ooffset < 0
+        || toffset < 0
+        || toffset as i64 > this.len() as i64 - len as i64
+        || ooffset as i64 > other.len() as i64 - len as i64
+    {
         return false;
     }
     if len <= 0 {
         return true;
     }
-    this[toffset as usize..(toffset + len) as usize] == other[ooffset as usize..(ooffset + len) as usize]
+    this[toffset as usize..(toffset + len) as usize]
+        == other[ooffset as usize..(ooffset + len) as usize]
 }
 
 impl TransliterationRule {
@@ -100,6 +105,7 @@ impl TransliterationRule {
     /// `IllegalArgumentException` for an invalid ante context, post context
     /// or cursor position.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn new(
         input: Vec<u16>,
         ante_context_pos: i32,
@@ -153,13 +159,18 @@ impl TransliterationRule {
 
         let mut ante_context = None;
         if ante_context_length > 0 {
-            ante_context = Some(StringMatcher::new(pattern[..ante_context_length as usize].to_vec(), 0, the_data));
+            ante_context = Some(StringMatcher::new(
+                pattern[..ante_context_length as usize].to_vec(),
+                0,
+                the_data,
+            ));
         }
 
         let mut key = None;
         if key_length > 0 {
             key = Some(StringMatcher::new(
-                pattern[ante_context_length as usize..(ante_context_length + key_length) as usize].to_vec(),
+                pattern[ante_context_length as usize..(ante_context_length + key_length) as usize]
+                    .to_vec(),
                 0,
                 the_data,
             ));
@@ -175,7 +186,11 @@ impl TransliterationRule {
             ));
         }
 
-        let output = Box::new(StringReplacer::new_with_cursor(output.to_vec(), cursor_pos + cursor_offset, the_data));
+        let output = Box::new(StringReplacer::new_with_cursor(
+            output.to_vec(),
+            cursor_pos + cursor_offset,
+            the_data,
+        ));
 
         Ok(Self {
             data: Arc::downgrade(the_data),
@@ -192,13 +207,20 @@ impl TransliterationRule {
     }
 
     fn data(&self) -> Arc<Data> {
-        self.data.upgrade().expect("RuleBasedTransliterator.Data released while its TransliterationRule is in use")
+        self.data
+            .upgrade()
+            .expect("RuleBasedTransliterator.Data released while its TransliterationRule is in use")
     }
 
     /// `getAnteContextLength()`: the preceding context length, plus one for
     /// an anchor at the start (it counts as a character of context).
     pub fn get_ante_context_length(&self) -> i32 {
-        self.ante_context_length + if (self.flags & Self::ANCHOR_START) != 0 { 1 } else { 0 }
+        self.ante_context_length
+            + if (self.flags & Self::ANCHOR_START) != 0 {
+                1
+            } else {
+                0
+            }
     }
 
     /// `getIndexValue()`: the low byte of the first key character, or -1
@@ -283,11 +305,17 @@ impl TransliterationRule {
         // next statement.
 
         // Test for anchor masking
-        if left == left2 && right == right2 && self.key_length <= r2.key_length && region_matches(&r2.pattern, 0, &self.pattern, 0, len) {
+        if left == left2
+            && right == right2
+            && self.key_length <= r2.key_length
+            && region_matches(&r2.pattern, 0, &self.pattern, 0, len)
+        {
             // The following boolean logic implements the table above
             return (self.flags == r2.flags)
-                || (!((self.flags & Self::ANCHOR_START) != 0) && !((self.flags & Self::ANCHOR_END) != 0))
-                || (((r2.flags & Self::ANCHOR_START) != 0) && ((r2.flags & Self::ANCHOR_END) != 0));
+                || (!((self.flags & Self::ANCHOR_START) != 0)
+                    && !((self.flags & Self::ANCHOR_END) != 0))
+                || (((r2.flags & Self::ANCHOR_START) != 0)
+                    && ((r2.flags & Self::ANCHOR_END) != 0));
         }
 
         left <= left2
@@ -323,7 +351,12 @@ impl TransliterationRule {
     /// # Errors
     ///
     /// The errors of the matchers and the replacer.
-    pub fn match_and_replace(&self, text: &dyn Replaceable, pos: &mut Position, incremental: bool) -> Result<i32> {
+    pub fn match_and_replace(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        incremental: bool,
+    ) -> Result<i32> {
         // Matching and replacing are done in one method because the
         // replacement operation needs information obtained during the
         // match.  Another way to do this is to have the match method
@@ -414,7 +447,9 @@ impl TransliterationRule {
         // We have a full match.  The key is between pos.start and
         // keyLimit.
 
-        let new_length = self.output.replace(text, pos.start, key_limit, &mut int_ref)?;
+        let new_length = self
+            .output
+            .replace(text, pos.start, key_limit, &mut int_ref)?;
         let len_delta = new_length - (key_limit - pos.start);
         let new_start = int_ref[0];
 
@@ -459,13 +494,30 @@ impl TransliterationRule {
         )?;
 
         if emit_braces {
-            Utility::append_to_rule(&mut rule, b'{' as i32, true, escape_unprintable, &mut quote_buf)?;
+            Utility::append_to_rule(
+                &mut rule,
+                b'{' as i32,
+                true,
+                escape_unprintable,
+                &mut quote_buf,
+            )?;
         }
 
-        Utility::append_to_rule_matcher(&mut rule, self.key.as_ref().map(|m| m as &dyn UnicodeMatcher), escape_unprintable, &mut quote_buf)?;
+        Utility::append_to_rule_matcher(
+            &mut rule,
+            self.key.as_ref().map(|m| m as &dyn UnicodeMatcher),
+            escape_unprintable,
+            &mut quote_buf,
+        )?;
 
         if emit_braces {
-            Utility::append_to_rule(&mut rule, b'}' as i32, true, escape_unprintable, &mut quote_buf)?;
+            Utility::append_to_rule(
+                &mut rule,
+                b'}' as i32,
+                true,
+                escape_unprintable,
+                &mut quote_buf,
+            )?;
         }
 
         Utility::append_to_rule_matcher(
@@ -480,13 +532,31 @@ impl TransliterationRule {
             rule.push(b'$' as u16);
         }
 
-        Utility::append_to_rule_str(&mut rule, &[b' ' as u16, b'>' as u16, b' ' as u16], true, escape_unprintable, &mut quote_buf)?;
+        Utility::append_to_rule_str(
+            &mut rule,
+            &[b' ' as u16, b'>' as u16, b' ' as u16],
+            true,
+            escape_unprintable,
+            &mut quote_buf,
+        )?;
 
         // Emit the output pattern
 
-        Utility::append_to_rule_str(&mut rule, &self.output.to_replacer_pattern(escape_unprintable)?, true, escape_unprintable, &mut quote_buf)?;
+        Utility::append_to_rule_str(
+            &mut rule,
+            &self.output.to_replacer_pattern(escape_unprintable)?,
+            true,
+            escape_unprintable,
+            &mut quote_buf,
+        )?;
 
-        Utility::append_to_rule(&mut rule, b';' as i32, true, escape_unprintable, &mut quote_buf)?;
+        Utility::append_to_rule(
+            &mut rule,
+            b';' as i32,
+            true,
+            escape_unprintable,
+            &mut quote_buf,
+        )?;
 
         Ok(rule)
     }

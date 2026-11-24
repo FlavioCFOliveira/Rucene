@@ -23,7 +23,9 @@ const PRIMARY_STEP_MASK_L: i64 = CollationRootElements::PRIMARY_STEP_MASK as i64
 impl CollationRootElements {
     /// `CollationRootElements(long[] rootElements)`.
     pub fn new(root_elements: Arc<[i64]>) -> Self {
-        Self { elements: root_elements }
+        Self {
+            elements: root_elements,
+        }
     }
 
     /// Higher than any root primary.
@@ -271,13 +273,17 @@ impl CollationRootElements {
         // If p is in a range, then we just assume that p is an actual primary in this range.
         // (Too cumbersome/expensive to check.)
         // Otherwise, it must be an exact match.
-        debug_assert!(Self::is_end_of_primary_range(self.e(index + 1)) || p == (self.e(index) & 0xffffff00));
+        debug_assert!(
+            Self::is_end_of_primary_range(self.e(index + 1)) || p == (self.e(index) & 0xffffff00)
+        );
         index
     }
 
     /// Returns the primary weight after p where index=findPrimary(p).
     pub fn get_primary_after(&self, p: i64, mut index: i32, is_compressible: bool) -> i64 {
-        debug_assert!(p == (self.e(index) & 0xffffff00) || Self::is_end_of_primary_range(self.e(index + 1)));
+        debug_assert!(
+            p == (self.e(index) & 0xffffff00) || Self::is_end_of_primary_range(self.e(index + 1))
+        );
         index += 1;
         let mut q = self.e(index);
         let step;

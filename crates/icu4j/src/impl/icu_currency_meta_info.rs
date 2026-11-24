@@ -12,7 +12,9 @@ use rucene::error::Result;
 use crate::jdk::to_rust_string;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_resource_bundle::{icu_data_class_loader, ICUResourceBundle};
-use crate::text::currency_meta_info::{CurrencyDigits, CurrencyFilter, CurrencyInfo, CurrencyMetaInfo};
+use crate::text::currency_meta_info::{
+    CurrencyDigits, CurrencyFilter, CurrencyInfo, CurrencyMetaInfo,
+};
 use crate::text::rule_based_number_format::npe;
 use crate::util::currency::CurrencyUsage;
 use crate::util::u_resource_bundle::UResourceBundle;
@@ -74,11 +76,18 @@ impl ICUCurrencyMetaInfo {
             Some(b) => Some(b.as_icu()?.clone()),
             None => None,
         };
-        Ok(ICUCurrencyMetaInfo { region_info, digit_info })
+        Ok(ICUCurrencyMetaInfo {
+            region_info,
+            digit_info,
+        })
     }
 
     /// `collect(Collector<T> collector, CurrencyFilter filter)` (private).
-    fn collect<T>(&self, collector: &mut dyn Collector<T>, filter: &CurrencyFilter) -> Result<Vec<T>> {
+    fn collect<T>(
+        &self,
+        collector: &mut dyn Collector<T>,
+        filter: &CurrencyFilter,
+    ) -> Result<Vec<T>> {
         // We rely on the fact that the data lists the regions in order, and the
         // priorities in order within region.  This means we don't need
         // to sort the results to ensure the ordering matches the spec.
@@ -98,7 +107,10 @@ impl ICUCurrencyMetaInfo {
         }
 
         if needed != 0 {
-            let region_info = self.region_info.as_ref().unwrap_or_else(|| panic!("{}", npe()));
+            let region_info = self
+                .region_info
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}", npe()));
             if let Some(region) = &filter.region {
                 if let Some(b) = region_info.find_with_fallback(region)? {
                     self.collect_region(collector, filter, needed, &b)?;
@@ -116,7 +128,13 @@ impl ICUCurrencyMetaInfo {
 
     /// `collectRegion(Collector<T> collector, CurrencyFilter filter, int
     /// needed, ICUResourceBundle b)` (private).
-    fn collect_region<T>(&self, collector: &mut dyn Collector<T>, filter: &CurrencyFilter, needed: i32, b: &Arc<ICUResourceBundle>) -> Result<()> {
+    fn collect_region<T>(
+        &self,
+        collector: &mut dyn Collector<T>,
+        filter: &CurrencyFilter,
+        needed: i32,
+        b: &Arc<ICUResourceBundle>,
+    ) -> Result<()> {
         let region = b.get_key().map(str::to_string);
         if needed == REGION {
             collector.collect(b.get_key().map(str::to_string), None, 0, 0, -1, false);
@@ -181,7 +199,12 @@ impl ICUCurrencyMetaInfo {
     /// `getDate(ICUResourceBundle b, long defaultValue, boolean endOfDay)`
     /// (private): the date of a two-int vector, `default_value` without
     /// one.
-    fn get_date(&self, b: Option<Arc<ICUResourceBundle>>, default_value: i64, _end_of_day: bool) -> Result<i64> {
+    fn get_date(
+        &self,
+        b: Option<Arc<ICUResourceBundle>>,
+        default_value: i64,
+        _end_of_day: bool,
+    ) -> Result<i64> {
         match b {
             None => Ok(default_value),
             Some(b) => {
@@ -209,8 +232,16 @@ impl CurrencyMetaInfo for ICUCurrencyMetaInfo {
         self.currency_digits_usage(iso_code, CurrencyUsage::Standard)
     }
 
-    fn currency_digits_usage(&self, iso_code: &str, currency_purpose: CurrencyUsage) -> Result<CurrencyDigits> {
-        let digit_info = self.digit_info.as_ref().unwrap_or_else(|| panic!("{}", npe()));
+    #[allow(clippy::if_same_then_else)] // branches mirror the Java source
+    fn currency_digits_usage(
+        &self,
+        iso_code: &str,
+        currency_purpose: CurrencyUsage,
+    ) -> Result<CurrencyDigits> {
+        let digit_info = self
+            .digit_info
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}", npe()));
         let b = match digit_info.find_with_fallback(iso_code)? {
             Some(b) => b,
             None => non_null(digit_info.find_with_fallback("DEFAULT")?),
@@ -238,7 +269,10 @@ struct UniqueList<T> {
 
 impl<T> Default for UniqueList<T> {
     fn default() -> Self {
-        UniqueList { seen: HashSet::new(), list: Vec::new() }
+        UniqueList {
+            seen: HashSet::new(),
+            list: Vec::new(),
+        }
     }
 }
 
@@ -268,7 +302,15 @@ trait Collector<T> {
     /// (-1 if ignored), `tender` true if currency is legal tender.
     /// Equivalent to `collect(String region, String currency, long from,
     /// long to, int priority, boolean tender)`.
-    fn collect(&mut self, region: Option<String>, currency: Option<String>, from: i64, to: i64, priority: i32, tender: bool);
+    fn collect(
+        &mut self,
+        region: Option<String>,
+        currency: Option<String>,
+        from: i64,
+        to: i64,
+        priority: i32,
+        tender: bool,
+    );
 
     /// Return the list of unique items in the order in which we encountered
     /// them for the first time. Equivalent to `getList()`.
@@ -283,8 +325,18 @@ struct InfoCollector {
 }
 
 impl Collector<CurrencyInfo> for InfoCollector {
-    fn collect(&mut self, region: Option<String>, currency: Option<String>, from: i64, to: i64, priority: i32, tender: bool) {
-        self.result.push(CurrencyInfo::with_tender(region, currency, from, to, priority, tender));
+    fn collect(
+        &mut self,
+        region: Option<String>,
+        currency: Option<String>,
+        from: i64,
+        to: i64,
+        priority: i32,
+        tender: bool,
+    ) {
+        self.result.push(CurrencyInfo::with_tender(
+            region, currency, from, to, priority, tender,
+        ));
     }
 
     fn get_list(&self) -> Vec<CurrencyInfo> {
@@ -303,7 +355,15 @@ struct RegionCollector {
 }
 
 impl Collector<String> for RegionCollector {
-    fn collect(&mut self, region: Option<String>, _currency: Option<String>, _from: i64, _to: i64, _priority: i32, _tender: bool) {
+    fn collect(
+        &mut self,
+        region: Option<String>,
+        _currency: Option<String>,
+        _from: i64,
+        _to: i64,
+        _priority: i32,
+        _tender: bool,
+    ) {
         self.result.add(region);
     }
 
@@ -327,7 +387,15 @@ struct CurrencyCollector {
 }
 
 impl Collector<String> for CurrencyCollector {
-    fn collect(&mut self, _region: Option<String>, currency: Option<String>, _from: i64, _to: i64, _priority: i32, _tender: bool) {
+    fn collect(
+        &mut self,
+        _region: Option<String>,
+        currency: Option<String>,
+        _from: i64,
+        _to: i64,
+        _priority: i32,
+        _tender: bool,
+    ) {
         self.result.add(currency);
     }
 
@@ -339,7 +407,11 @@ impl Collector<String> for CurrencyCollector {
         self.result
             .list()
             .into_iter()
-            .map(|c| c.expect("the Currency bit of this collector makes collectRegion read every currency"))
+            .map(|c| {
+                c.expect(
+                    "the Currency bit of this collector makes collectRegion read every currency",
+                )
+            })
             .collect()
     }
 }

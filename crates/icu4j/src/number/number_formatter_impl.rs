@@ -10,7 +10,9 @@ use rucene::error::{LuceneError, Result};
 use crate::jdk::text::FieldRef;
 use crate::number::compact_notation::CompactNotation;
 use crate::number::integer_width::IntegerWidth;
-use crate::number::number_formatter::{DecimalSeparatorDisplay, GroupingStrategy, SignDisplay, UnitWidth};
+use crate::number::number_formatter::{
+    DecimalSeparatorDisplay, GroupingStrategy, SignDisplay, UnitWidth,
+};
 use crate::number::precision::{self, Precision};
 use crate::number::scientific_notation::ScientificNotation;
 use crate::r#impl::formatted_string_builder::{FieldObject, FormattedStringBuilder};
@@ -44,10 +46,11 @@ use crate::util::currency::Currency;
 use crate::util::measure_unit::{Complexity, MeasureUnit};
 
 /// `DEFAULT_CURRENCY`.
-static DEFAULT_CURRENCY: LazyLock<Currency> = LazyLock::new(|| match Currency::get_instance(Some("XXX")) {
-    Ok(c) => c,
-    Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
-});
+static DEFAULT_CURRENCY: LazyLock<Currency> =
+    LazyLock::new(|| match Currency::get_instance(Some("XXX")) {
+        Ok(c) => c,
+        Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
+    });
 
 /// `Some(FieldObject::Field(field))`.
 fn fo(field: FieldRef) -> Option<FieldObject> {
@@ -82,7 +85,10 @@ impl NumberFormatterImpl {
     pub fn new(macros: &MacroProps) -> Result<Self> {
         let micros = MicroPropsHead::new(MicroProps::new(true));
         let micro_props_generator = macros_to_micro_generator(macros, &micros, true)?;
-        Ok(NumberFormatterImpl { micros, micro_props_generator })
+        Ok(NumberFormatterImpl {
+            micros,
+            micro_props_generator,
+        })
     }
 
     /// Builds and evaluates an "unsafe" MicroPropsGenerator, which is
@@ -127,7 +133,11 @@ impl NumberFormatterImpl {
     /// # Errors
     ///
     /// The errors of the pipeline.
-    pub fn format(&self, in_value: &mut dyn DecimalQuantity, out_string: &mut FormattedStringBuilder) -> Result<MicroProps> {
+    pub fn format(
+        &self,
+        in_value: &mut dyn DecimalQuantity,
+        out_string: &mut FormattedStringBuilder,
+    ) -> Result<MicroProps> {
         let result = self.pre_process(in_value)?;
         let length = write_number(&result, in_value, out_string, 0);
         write_affixes(&result, out_string, 0, length)?;
@@ -153,7 +163,12 @@ impl NumberFormatterImpl {
     /// # Errors
     ///
     /// The errors of the pipeline.
-    pub fn get_prefix_suffix(&self, signum: i8, _plural: StandardPlural, output: &mut FormattedStringBuilder) -> Result<i32> {
+    pub fn get_prefix_suffix(
+        &self,
+        signum: i8,
+        _plural: StandardPlural,
+        output: &mut FormattedStringBuilder,
+    ) -> Result<i32> {
         get_prefix_suffix_impl(self.micro_props_generator.as_ref(), signum, output)
     }
 
@@ -166,7 +181,10 @@ impl NumberFormatterImpl {
 
 /// The integer-width step shared by `preProcess` and `preProcessUnsafe`.
 fn apply_integer_width(micros: &MicroProps, in_value: &mut dyn DecimalQuantity) {
-    let iw = micros.integer_width.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: integerWidth"));
+    let iw = micros
+        .integer_width
+        .as_ref()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: integerWidth"));
     if iw.max_int() == -1 {
         in_value.set_min_integer(iw.min_int());
     } else {
@@ -176,7 +194,10 @@ fn apply_integer_width(micros: &MicroProps, in_value: &mut dyn DecimalQuantity) 
 }
 
 /// `preProcessUnsafe(MacroProps, DecimalQuantity)`.
-fn pre_process_unsafe(macros: &MacroProps, in_value: &mut dyn DecimalQuantity) -> Result<MicroProps> {
+fn pre_process_unsafe(
+    macros: &MacroProps,
+    in_value: &mut dyn DecimalQuantity,
+) -> Result<MicroProps> {
     let micros_head = MicroPropsHead::new(MicroProps::new(false));
     let micro_props_generator = macros_to_micro_generator(macros, &micros_head, false)?;
     let micros = micro_props_generator.process_quantity(in_value)?;
@@ -185,14 +206,21 @@ fn pre_process_unsafe(macros: &MacroProps, in_value: &mut dyn DecimalQuantity) -
 }
 
 /// `getPrefixSuffixImpl(MicroPropsGenerator, byte, FormattedStringBuilder)`.
-fn get_prefix_suffix_impl(generator: &dyn MicroPropsGenerator, signum: i8, output: &mut FormattedStringBuilder) -> Result<i32> {
+fn get_prefix_suffix_impl(
+    generator: &dyn MicroPropsGenerator,
+    signum: i8,
+    output: &mut FormattedStringBuilder,
+) -> Result<i32> {
     // TODO: Use a static code path for this?
     let mut quantity = DecimalQuantity_DualStorageBCD::from_int(0);
     if signum < 0 {
         quantity.negate();
     }
     let micros = generator.process_quantity(&mut quantity)?;
-    let mod_middle = micros.mod_middle.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: modMiddle"));
+    let mod_middle = micros
+        .mod_middle
+        .as_ref()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: modMiddle"));
     mod_middle.apply(output, 0, 0)?;
     mod_middle.get_prefix_length()
 }
@@ -243,7 +271,10 @@ fn macros_to_micro_generator(
     let is_base_unit = unit_is_base_unit(unit);
     let is_percent = unit_is_percent(unit);
     let is_permille = unit_is_permille(unit);
-    let is_compact_notation = macros.notation.as_ref().is_some_and(|n| CompactNotation::try_cast(n).is_some());
+    let is_compact_notation = macros
+        .notation
+        .as_ref()
+        .is_some_and(|n| CompactNotation::try_cast(n).is_some());
     let is_accounting = matches!(
         macros.sign,
         Some(SignDisplay::Accounting)
@@ -265,13 +296,18 @@ fn macros_to_micro_generator(
     // normally used for the percent pattern.
     let is_cldr_unit = !is_currency
         && !is_base_unit
-        && (unit_width == UnitWidth::FullName || !(is_percent || is_permille) || is_compact_notation);
+        && (unit_width == UnitWidth::FullName
+            || !(is_percent || is_permille)
+            || is_compact_notation);
     let is_mixed_unit = is_cldr_unit
         && unit.is_some_and(|u| u.get_type().is_none())
         && unit.expect("a CLDR unit is present").get_complexity()? == Complexity::Mixed;
 
     // Java NPE when no locale was set.
-    let loc = macros.loc.clone().ok_or_else(|| crate::jdk::null_pointer("locale"))?;
+    let loc = macros
+        .loc
+        .clone()
+        .ok_or_else(|| crate::jdk::null_pointer("locale"))?;
 
     let mut rules: Option<Arc<PluralRules>> = macros.rules.clone();
 
@@ -350,11 +386,19 @@ fn macros_to_micro_generator(
             )
             .error());
         }
-        let handler = Arc::new(UsagePrefsHandler::new(&loc, unit.expect("a CLDR unit is present"), usage, chain)?);
+        let handler = Arc::new(UsagePrefsHandler::new(
+            &loc,
+            unit.expect("a CLDR unit is present"),
+            usage,
+            chain,
+        )?);
         usage_prefs_handler = Some(handler.clone());
         chain = handler;
     } else if is_mixed_unit {
-        chain = Arc::new(UnitConversionHandler::new(unit.expect("a mixed unit is present"), chain)?);
+        chain = Arc::new(UnitConversionHandler::new(
+            unit.expect("a mixed unit is present"),
+            chain,
+        )?);
     }
 
     // Multiplier
@@ -416,7 +460,11 @@ fn macros_to_micro_generator(
     micros.use_currency = is_currency;
 
     // Inner modifier (scientific notation)
-    match macros.notation.as_ref().and_then(ScientificNotation::try_cast) {
+    match macros
+        .notation
+        .as_ref()
+        .and_then(ScientificNotation::try_cast)
+    {
         Some(sci) => {
             chain = sci.with_locale_data(symbols.clone(), safe, chain);
         }
@@ -448,7 +496,11 @@ fn macros_to_micro_generator(
     } else {
         pattern_mod.set_symbols(symbols.clone(), currency.clone(), unit_width, None);
     }
-    let imm_pattern_mod = if safe { Some(pattern_mod.create_immutable()?) } else { None };
+    let imm_pattern_mod = if safe {
+        Some(pattern_mod.create_immutable()?)
+    } else {
+        None
+    };
 
     // currencyAsDecimal
     if affix_provider.currency_as_decimal() {
@@ -495,21 +547,34 @@ fn macros_to_micro_generator(
                 // This isn't strictly necessary, but was what we produced
                 // for ICU 67:
                 if unit.get_type().is_none()
-                    && (macros.unit.as_ref().expect("present").get_type().is_none() || per_unit.get_type().is_none())
+                    && (macros.unit.as_ref().expect("present").get_type().is_none()
+                        || per_unit.get_type().is_none())
                 {
                     return Err(LuceneError::unsupported_operation(
                         "perUnit() can only be used if unit and perUnit are both built-ins, or the combination is a built-in",
                     ));
                 }
             }
-            chain = LongNameHandler::for_measure_unit(&loc, &unit, unit_width, unit_display_case, &plural_rules, Some(chain))?;
+            chain = LongNameHandler::for_measure_unit(
+                &loc,
+                &unit,
+                unit_width,
+                unit_display_case,
+                &plural_rules,
+                Some(chain),
+            )?;
         }
     } else if is_currency && unit_width == UnitWidth::FullName {
         if rules.is_none() {
             // Lazily create PluralRules
             rules = Some(PluralRules::for_locale(&loc)?);
         }
-        chain = LongNameHandler::for_currency_long_names(&loc, &currency, rules.as_ref().expect("set above"), Some(chain))?;
+        chain = LongNameHandler::for_currency_long_names(
+            &loc,
+            &currency,
+            rules.as_ref().expect("set above"),
+            Some(chain),
+        )?;
     } else {
         // No outer modifier required
         micros.mod_outer = Some(constant_affix_modifier::EMPTY.clone());
@@ -521,15 +586,23 @@ fn macros_to_micro_generator(
             // Lazily create PluralRules
             rules = Some(PluralRules::for_locale(&loc)?);
         }
-        let compact_type = if macros.unit.as_ref().is_some_and(|u| Currency::try_cast(u).is_some())
+        let compact_type = if macros
+            .unit
+            .as_ref()
+            .is_some_and(|u| Currency::try_cast(u).is_some())
             && macros.unit_width != Some(UnitWidth::FullName)
         {
             CompactType::Currency
         } else {
             CompactType::Decimal
         };
-        let compact = CompactNotation::try_cast(macros.notation.as_ref().expect("compact notation is present"))
-            .expect("compact notation");
+        let compact = CompactNotation::try_cast(
+            macros
+                .notation
+                .as_ref()
+                .expect("compact notation is present"),
+        )
+        .expect("compact notation");
         chain = compact.with_locale_data(
             &loc,
             ns_name.as_deref().unwrap_or("null"),
@@ -561,11 +634,25 @@ fn macros_to_micro_generator(
 /// # Errors
 ///
 /// The errors of the modifiers.
-pub fn write_affixes(micros: &MicroProps, string: &mut FormattedStringBuilder, start: i32, end: i32) -> Result<i32> {
+pub fn write_affixes(
+    micros: &MicroProps,
+    string: &mut FormattedStringBuilder,
+    start: i32,
+    end: i32,
+) -> Result<i32> {
     let npe = |name: &str| -> ! { panic!("java.lang.NullPointerException: {name}") };
-    let mod_inner: &dyn Modifier = micros.mod_inner.as_deref().unwrap_or_else(|| npe("modInner"));
-    let mod_middle: &dyn Modifier = micros.mod_middle.as_deref().unwrap_or_else(|| npe("modMiddle"));
-    let mod_outer: &dyn Modifier = micros.mod_outer.as_deref().unwrap_or_else(|| npe("modOuter"));
+    let mod_inner: &dyn Modifier = micros
+        .mod_inner
+        .as_deref()
+        .unwrap_or_else(|| npe("modInner"));
+    let mod_middle: &dyn Modifier = micros
+        .mod_middle
+        .as_deref()
+        .unwrap_or_else(|| npe("modMiddle"));
+    let mod_outer: &dyn Modifier = micros
+        .mod_outer
+        .as_deref()
+        .unwrap_or_else(|| npe("modOuter"));
     let padding: &Padder = micros.padding.as_ref().unwrap_or_else(|| npe("padding"));
     // Always apply the inner modifier (which is "strong").
     let mut length = mod_inner.apply(string, start, end)?;
@@ -581,11 +668,20 @@ pub fn write_affixes(micros: &MicroProps, string: &mut FormattedStringBuilder, s
 /// Synthesizes the output string from a MicroProps and DecimalQuantity.
 /// This method formats only the main number, not affixes. Equivalent to
 /// `writeNumber(MicroProps, DecimalQuantity, FormattedStringBuilder, int)`.
-pub fn write_number(micros: &MicroProps, quantity: &dyn DecimalQuantity, string: &mut FormattedStringBuilder, index: i32) -> i32 {
+pub fn write_number(
+    micros: &MicroProps,
+    quantity: &dyn DecimalQuantity,
+    string: &mut FormattedStringBuilder,
+    index: i32,
+) -> i32 {
     let symbols = micros.symbols();
     let mut length = 0;
     if quantity.is_infinite() {
-        length += string.insert(length + index, symbols.get_infinity(), fo(&nf_field::INTEGER));
+        length += string.insert(
+            length + index,
+            symbols.get_infinity(),
+            fo(&nf_field::INTEGER),
+        );
     } else if quantity.is_nan() {
         length += string.insert(length + index, symbols.get_nan(), fo(&nf_field::INTEGER));
     } else {
@@ -593,7 +689,9 @@ pub fn write_number(micros: &MicroProps, quantity: &dyn DecimalQuantity, string:
         length += write_integer_digits(micros, quantity, string, length + index);
 
         // Add the decimal point
-        if quantity.get_lower_display_magnitude() < 0 || micros.decimal == Some(DecimalSeparatorDisplay::Always) {
+        if quantity.get_lower_display_magnitude() < 0
+            || micros.decimal == Some(DecimalSeparatorDisplay::Always)
+        {
             if let Some(cad) = &micros.currency_as_decimal {
                 // Note: This assumes that the currency code is not empty.
                 length += string.insert(length + index, cad, fo(&nf_field::CURRENCY));
@@ -604,8 +702,11 @@ pub fn write_number(micros: &MicroProps, quantity: &dyn DecimalQuantity, string:
                     fo(&nf_field::DECIMAL_SEPARATOR),
                 );
             } else {
-                length +=
-                    string.insert(length + index, symbols.get_decimal_separator_string(), fo(&nf_field::DECIMAL_SEPARATOR));
+                length += string.insert(
+                    length + index,
+                    symbols.get_decimal_separator_string(),
+                    fo(&nf_field::DECIMAL_SEPARATOR),
+                );
             }
         }
 
@@ -615,9 +716,17 @@ pub fn write_number(micros: &MicroProps, quantity: &dyn DecimalQuantity, string:
         if length == 0 {
             // Force output of the digit for value 0
             if symbols.get_code_point_zero() != -1 {
-                length += string.insert_code_point(index, symbols.get_code_point_zero(), fo(&nf_field::INTEGER));
+                length += string.insert_code_point(
+                    index,
+                    symbols.get_code_point_zero(),
+                    fo(&nf_field::INTEGER),
+                );
             } else {
-                length += string.insert(index, &symbols.get_digit_strings_local()[0], fo(&nf_field::INTEGER));
+                length += string.insert(
+                    index,
+                    &symbols.get_digit_strings_local()[0],
+                    fo(&nf_field::INTEGER),
+                );
             }
         }
     }
@@ -627,9 +736,17 @@ pub fn write_number(micros: &MicroProps, quantity: &dyn DecimalQuantity, string:
 
 /// `writeIntegerDigits(MicroProps, DecimalQuantity, FormattedStringBuilder,
 /// int)`.
-fn write_integer_digits(micros: &MicroProps, quantity: &dyn DecimalQuantity, string: &mut FormattedStringBuilder, index: i32) -> i32 {
+fn write_integer_digits(
+    micros: &MicroProps,
+    quantity: &dyn DecimalQuantity,
+    string: &mut FormattedStringBuilder,
+    index: i32,
+) -> i32 {
     let symbols = micros.symbols();
-    let grouping = micros.grouping.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: grouping"));
+    let grouping = micros
+        .grouping
+        .as_ref()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: grouping"));
     let mut length = 0;
     let integer_count = quantity.get_upper_display_magnitude() + 1;
     for i in 0..integer_count {
@@ -647,9 +764,17 @@ fn write_integer_digits(micros: &MicroProps, quantity: &dyn DecimalQuantity, str
         let next_digit = quantity.get_digit(i);
         // Get and append the next digit value
         if symbols.get_code_point_zero() != -1 {
-            length += string.insert_code_point(index, symbols.get_code_point_zero() + next_digit as i32, fo(&nf_field::INTEGER));
+            length += string.insert_code_point(
+                index,
+                symbols.get_code_point_zero() + next_digit as i32,
+                fo(&nf_field::INTEGER),
+            );
         } else {
-            length += string.insert(index, &symbols.get_digit_strings_local()[next_digit as usize], fo(&nf_field::INTEGER));
+            length += string.insert(
+                index,
+                &symbols.get_digit_strings_local()[next_digit as usize],
+                fo(&nf_field::INTEGER),
+            );
         }
     }
     length
@@ -657,7 +782,12 @@ fn write_integer_digits(micros: &MicroProps, quantity: &dyn DecimalQuantity, str
 
 /// `writeFractionDigits(MicroProps, DecimalQuantity, FormattedStringBuilder,
 /// int)`.
-fn write_fraction_digits(micros: &MicroProps, quantity: &dyn DecimalQuantity, string: &mut FormattedStringBuilder, index: i32) -> i32 {
+fn write_fraction_digits(
+    micros: &MicroProps,
+    quantity: &dyn DecimalQuantity,
+    string: &mut FormattedStringBuilder,
+    index: i32,
+) -> i32 {
     let symbols = micros.symbols();
     let mut length = 0;
     let fraction_count = -quantity.get_lower_display_magnitude();

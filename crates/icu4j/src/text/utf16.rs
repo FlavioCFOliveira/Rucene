@@ -65,8 +65,8 @@ impl UTF16 {
     /// `TRAIL_SURROGATE_MASK_`.
     const TRAIL_SURROGATE_MASK: i32 = 0x3FF;
     /// `LEAD_SURROGATE_OFFSET_`.
-    const LEAD_SURROGATE_OFFSET: i32 =
-        Self::LEAD_SURROGATE_MIN_VALUE - (Self::SUPPLEMENTARY_MIN_VALUE >> Self::LEAD_SURROGATE_SHIFT);
+    const LEAD_SURROGATE_OFFSET: i32 = Self::LEAD_SURROGATE_MIN_VALUE
+        - (Self::SUPPLEMENTARY_MIN_VALUE >> Self::LEAD_SURROGATE_SHIFT);
 
     // ------------------------------------------------------------------
     // charAt
@@ -101,7 +101,9 @@ impl UTF16 {
             offset16 += 1;
             if source.len() as i32 != offset16 {
                 let trail = source[offset16 as usize] as i32;
-                if (Self::TRAIL_SURROGATE_MIN_VALUE..=Self::TRAIL_SURROGATE_MAX_VALUE).contains(&trail) {
+                if (Self::TRAIL_SURROGATE_MIN_VALUE..=Self::TRAIL_SURROGATE_MAX_VALUE)
+                    .contains(&trail)
+                {
                     return crate::jdk::to_code_point(single, trail as u16);
                 }
             }
@@ -110,7 +112,8 @@ impl UTF16 {
             if offset16 >= 0 {
                 // single is a trail surrogate so
                 let lead = source[offset16 as usize] as i32;
-                if (Self::LEAD_SURROGATE_MIN_VALUE..=Self::LEAD_SURROGATE_MAX_VALUE).contains(&lead) {
+                if (Self::LEAD_SURROGATE_MIN_VALUE..=Self::LEAD_SURROGATE_MAX_VALUE).contains(&lead)
+                {
                     return crate::jdk::to_code_point(lead as u16, single);
                 }
             }
@@ -270,7 +273,9 @@ impl UTF16 {
         if Self::is_surrogate(ch as i32) {
             if Self::is_lead_surrogate(ch as i32) {
                 offset16 += 1;
-                if offset16 < source.len() as i32 && Self::is_trail_surrogate(source[offset16 as usize] as i32) {
+                if offset16 < source.len() as i32
+                    && Self::is_trail_surrogate(source[offset16 as usize] as i32)
+                {
                     return Self::LEAD_SURROGATE_BOUNDARY;
                 }
             } else {
@@ -332,7 +337,8 @@ impl UTF16 {
     /// point, else 0.
     pub fn get_lead_surrogate(char32: i32) -> u16 {
         if char32 >= Self::SUPPLEMENTARY_MIN_VALUE {
-            return Self::LEAD_SURROGATE_OFFSET.wrapping_add(char32 >> Self::LEAD_SURROGATE_SHIFT) as u16;
+            return Self::LEAD_SURROGATE_OFFSET.wrapping_add(char32 >> Self::LEAD_SURROGATE_SHIFT)
+                as u16;
         }
         0
     }
@@ -341,7 +347,8 @@ impl UTF16 {
     /// code point, else `(char) char32`.
     pub fn get_trail_surrogate(char32: i32) -> u16 {
         if char32 >= Self::SUPPLEMENTARY_MIN_VALUE {
-            return (Self::TRAIL_SURROGATE_MIN_VALUE + (char32 & Self::TRAIL_SURROGATE_MASK)) as u16;
+            return (Self::TRAIL_SURROGATE_MIN_VALUE + (char32 & Self::TRAIL_SURROGATE_MASK))
+                as u16;
         }
         char32 as u16
     }
@@ -436,7 +443,12 @@ impl UTF16 {
     ///
     /// `ArrayIndexOutOfBoundsException(offset32)` when it is outside the
     /// range.
-    pub fn find_offset_from_code_point_chars(source: &[u16], start: i32, limit: i32, offset32: i32) -> i32 {
+    pub fn find_offset_from_code_point_chars(
+        source: &[u16],
+        start: i32,
+        limit: i32,
+        offset32: i32,
+    ) -> i32 {
         let mut result = start;
         let mut count = offset32;
         if offset32 > limit - start {
@@ -505,7 +517,12 @@ impl UTF16 {
     ///
     /// `StringIndexOutOfBoundsException(start + offset16)` when it is above
     /// `limit`.
-    pub fn find_code_point_offset_chars(source: &[u16], start: i32, limit: i32, mut offset16: i32) -> i32 {
+    pub fn find_code_point_offset_chars(
+        source: &[u16],
+        start: i32,
+        limit: i32,
+        mut offset16: i32,
+    ) -> i32 {
         offset16 += start;
         if offset16 > limit {
             string_index_out_of_bounds(offset16);
@@ -609,7 +626,7 @@ impl UTF16 {
     pub fn count_code_point(source: Option<&[u16]>) -> i32 {
         match source {
             None => 0,
-            Some(s) if s.is_empty() => 0,
+            Some([]) => 0,
             Some(s) => Self::find_code_point_offset(s, s.len() as i32),
         }
     }
@@ -622,7 +639,7 @@ impl UTF16 {
     pub fn count_code_point_chars(source: Option<&[u16]>, start: i32, limit: i32) -> i32 {
         match source {
             None => 0,
-            Some(s) if s.is_empty() => 0,
+            Some([]) => 0,
             Some(s) => Self::find_code_point_offset_chars(s, start, limit, limit - start),
         }
     }
@@ -663,7 +680,12 @@ impl UTF16 {
             }
         }
         let value = Self::value_of(char32)?;
-        crate::text::replaceable_string::string_buffer_replace(target, offset16, offset16 + count, &value);
+        crate::text::replaceable_string::string_buffer_replace(
+            target,
+            offset16,
+            offset16 + count,
+            &value,
+        );
         Ok(())
     }
 
@@ -679,7 +701,12 @@ impl UTF16 {
     /// # Panics
     ///
     /// `ArrayIndexOutOfBoundsException(offset16)` when `offset16 >= limit`.
-    pub fn set_char_at_chars(target: &mut [u16], limit: i32, mut offset16: i32, char32: i32) -> Result<i32> {
+    pub fn set_char_at_chars(
+        target: &mut [u16],
+        limit: i32,
+        mut offset16: i32,
+        char32: i32,
+    ) -> Result<i32> {
         if offset16 >= limit {
             array_index_out_of_bounds(offset16);
         }
@@ -878,7 +905,9 @@ impl UTF16 {
     /// `0..=length`.
     pub fn insert(target: &mut Vec<u16>, mut offset16: i32, char32: i32) -> Result<&mut Vec<u16>> {
         let s = Self::value_of(char32)?;
-        if offset16 != target.len() as i32 && Self::bounds(target, offset16) == Self::TRAIL_SURROGATE_BOUNDARY {
+        if offset16 != target.len() as i32
+            && Self::bounds(target, offset16) == Self::TRAIL_SURROGATE_BOUNDARY
+        {
             offset16 += 1;
         }
         assert!(
@@ -903,9 +932,16 @@ impl UTF16 {
     ///
     /// `ArrayIndexOutOfBoundsException(offset16 + size)` when the array has
     /// no room.
-    pub fn insert_chars(target: &mut [u16], limit: i32, mut offset16: i32, char32: i32) -> Result<i32> {
+    pub fn insert_chars(
+        target: &mut [u16],
+        limit: i32,
+        mut offset16: i32,
+        char32: i32,
+    ) -> Result<i32> {
         let s = Self::value_of(char32)?;
-        if offset16 != limit && Self::bounds_chars(target, 0, limit, offset16) == Self::TRAIL_SURROGATE_BOUNDARY {
+        if offset16 != limit
+            && Self::bounds_chars(target, 0, limit, offset16) == Self::TRAIL_SURROGATE_BOUNDARY
+        {
             offset16 += 1;
         }
         let size = s.len() as i32;
@@ -983,7 +1019,9 @@ impl UTF16 {
     /// codepoint")`.
     pub fn index_of(source: &[u16], char32: i32) -> Result<i32> {
         if !(Self::CODEPOINT_MIN_VALUE..=Self::CODEPOINT_MAX_VALUE).contains(&char32) {
-            return Err(LuceneError::illegal_argument("Argument char32 is not a valid codepoint"));
+            return Err(LuceneError::illegal_argument(
+                "Argument char32 is not a valid codepoint",
+            ));
         }
 
         // non-surrogate bmp
@@ -1023,7 +1061,9 @@ impl UTF16 {
     pub fn index_of_str(source: &[u16], s: &[u16]) -> i32 {
         let str_length = s.len() as i32;
         // non-surrogate ends
-        if !Self::is_trail_surrogate(s[0] as i32) && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32) {
+        if !Self::is_trail_surrogate(s[0] as i32)
+            && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32)
+        {
             return crate::jdk::index_of(source, s, 0);
         }
 
@@ -1056,7 +1096,9 @@ impl UTF16 {
     /// codepoint")`.
     pub fn index_of_from(source: &[u16], char32: i32, from_index: i32) -> Result<i32> {
         if !(Self::CODEPOINT_MIN_VALUE..=Self::CODEPOINT_MAX_VALUE).contains(&char32) {
-            return Err(LuceneError::illegal_argument("Argument char32 is not a valid codepoint"));
+            return Err(LuceneError::illegal_argument(
+                "Argument char32 is not a valid codepoint",
+            ));
         }
 
         // non-surrogate bmp
@@ -1095,7 +1137,9 @@ impl UTF16 {
     pub fn index_of_str_from(source: &[u16], s: &[u16], from_index: i32) -> i32 {
         let str_length = s.len() as i32;
         // non-surrogate ends
-        if !Self::is_trail_surrogate(s[0] as i32) && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32) {
+        if !Self::is_trail_surrogate(s[0] as i32)
+            && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32)
+        {
             return crate::jdk::index_of(source, s, from_index);
         }
 
@@ -1128,7 +1172,9 @@ impl UTF16 {
     /// codepoint")`.
     pub fn last_index_of(source: &[u16], char32: i32) -> Result<i32> {
         if !(Self::CODEPOINT_MIN_VALUE..=Self::CODEPOINT_MAX_VALUE).contains(&char32) {
-            return Err(LuceneError::illegal_argument("Argument char32 is not a valid codepoint"));
+            return Err(LuceneError::illegal_argument(
+                "Argument char32 is not a valid codepoint",
+            ));
         }
 
         let from = source.len() as i32 - 1;
@@ -1157,7 +1203,11 @@ impl UTF16 {
         }
         // supplementary
         let char32str = Self::to_string(char32);
-        Ok(crate::jdk::last_index_of(source, &char32str, source.len() as i32))
+        Ok(crate::jdk::last_index_of(
+            source,
+            &char32str,
+            source.len() as i32,
+        ))
     }
 
     /// `lastIndexOf(String source, String str)`.
@@ -1168,7 +1218,9 @@ impl UTF16 {
     pub fn last_index_of_str(source: &[u16], s: &[u16]) -> i32 {
         let str_length = s.len() as i32;
         // non-surrogate ends
-        if !Self::is_trail_surrogate(s[0] as i32) && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32) {
+        if !Self::is_trail_surrogate(s[0] as i32)
+            && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32)
+        {
             return crate::jdk::last_index_of(source, s, source.len() as i32);
         }
 
@@ -1200,14 +1252,20 @@ impl UTF16 {
     /// codepoint")`.
     pub fn last_index_of_from(source: &[u16], char32: i32, from_index: i32) -> Result<i32> {
         if !(Self::CODEPOINT_MIN_VALUE..=Self::CODEPOINT_MAX_VALUE).contains(&char32) {
-            return Err(LuceneError::illegal_argument("Argument char32 is not a valid codepoint"));
+            return Err(LuceneError::illegal_argument(
+                "Argument char32 is not a valid codepoint",
+            ));
         }
 
         // non-surrogate bmp
         if char32 < Self::LEAD_SURROGATE_MIN_VALUE
             || (char32 > Self::TRAIL_SURROGATE_MAX_VALUE && char32 < Self::SUPPLEMENTARY_MIN_VALUE)
         {
-            return Ok(crate::jdk::last_index_of_unit(source, char32 as u16, from_index));
+            return Ok(crate::jdk::last_index_of_unit(
+                source,
+                char32 as u16,
+                from_index,
+            ));
         }
         // surrogate
         if char32 < Self::SUPPLEMENTARY_MIN_VALUE {
@@ -1239,7 +1297,9 @@ impl UTF16 {
     pub fn last_index_of_str_from(source: &[u16], s: &[u16], from_index: i32) -> i32 {
         let str_length = s.len() as i32;
         // non-surrogate ends
-        if !Self::is_trail_surrogate(s[0] as i32) && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32) {
+        if !Self::is_trail_surrogate(s[0] as i32)
+            && !Self::is_lead_surrogate(s[(str_length - 1) as usize] as i32)
+        {
             return crate::jdk::last_index_of(source, s, from_index);
         }
 
@@ -1272,10 +1332,14 @@ impl UTF16 {
     /// `1..=0x10ffff`.
     pub fn replace(source: &[u16], old_char32: i32, new_char32: i32) -> Result<Vec<u16>> {
         if old_char32 <= 0 || old_char32 > Self::CODEPOINT_MAX_VALUE {
-            return Err(LuceneError::illegal_argument("Argument oldChar32 is not a valid codepoint"));
+            return Err(LuceneError::illegal_argument(
+                "Argument oldChar32 is not a valid codepoint",
+            ));
         }
         if new_char32 <= 0 || new_char32 > Self::CODEPOINT_MAX_VALUE {
-            return Err(LuceneError::illegal_argument("Argument newChar32 is not a valid codepoint"));
+            return Err(LuceneError::illegal_argument(
+                "Argument newChar32 is not a valid codepoint",
+            ));
         }
 
         let mut index = Self::index_of(source, old_char32)?;
@@ -1422,7 +1486,12 @@ impl UTF16 {
     ///
     /// `IndexOutOfBoundsException("Start and limit indexes should be
     /// non-negative and start <= limit")` for an invalid range.
-    pub fn has_more_code_points_than_chars(source: Option<&[u16]>, mut start: i32, limit: i32, mut number: i32) -> bool {
+    pub fn has_more_code_points_than_chars(
+        source: Option<&[u16]>,
+        mut start: i32,
+        limit: i32,
+        mut number: i32,
+    ) -> bool {
         let length = limit - start;
         if length < 0 || start < 0 || limit < 0 {
             index_out_of_bounds(Some(
@@ -1507,13 +1576,19 @@ impl UTF16 {
                         chars[w] = cp as u16;
                         w += 1;
                     } else {
-                        chars[w] = (Self::LEAD_SURROGATE_OFFSET + (cp >> Self::LEAD_SURROGATE_SHIFT)) as u16;
-                        chars[w + 1] = (Self::TRAIL_SURROGATE_MIN_VALUE + (cp & Self::TRAIL_SURROGATE_MASK)) as u16;
+                        chars[w] = (Self::LEAD_SURROGATE_OFFSET
+                            + (cp >> Self::LEAD_SURROGATE_SHIFT))
+                            as u16;
+                        chars[w + 1] = (Self::TRAIL_SURROGATE_MIN_VALUE
+                            + (cp & Self::TRAIL_SURROGATE_MASK))
+                            as u16;
                         w += 2;
                     }
                     break;
                 } else {
-                    let newlen = ((code_points.len() as f64 * (w + 2) as f64) / (r - offset + 1) as f64).ceil() as i32;
+                    let newlen = ((code_points.len() as f64 * (w + 2) as f64)
+                        / (r - offset + 1) as f64)
+                        .ceil() as i32;
                     let mut temp = vec![0u16; newlen as usize];
                     temp[..w].copy_from_slice(&chars[..w]);
                     chars = temp;
@@ -1618,7 +1693,8 @@ impl StringComparator {
 
     /// `StringComparator()`: code unit order, case-sensitive.
     pub fn new() -> Self {
-        Self::with_options(false, false, Self::FOLD_CASE_DEFAULT).expect("FOLD_CASE_DEFAULT is valid")
+        Self::with_options(false, false, Self::FOLD_CASE_DEFAULT)
+            .expect("FOLD_CASE_DEFAULT is valid")
     }
 
     /// `StringComparator(boolean codepointcompare, boolean ignorecase, int
@@ -1627,11 +1703,20 @@ impl StringComparator {
     /// # Errors
     ///
     /// `IllegalArgumentException("Invalid fold case option")`.
-    pub fn with_options(codepointcompare: bool, ignorecase: bool, foldcaseoption: i32) -> Result<Self> {
-        let mut c = Self { m_code_point_compare: 0, m_fold_case: 0, m_ignore_case: false };
+    pub fn with_options(
+        codepointcompare: bool,
+        ignorecase: bool,
+        foldcaseoption: i32,
+    ) -> Result<Self> {
+        let mut c = Self {
+            m_code_point_compare: 0,
+            m_fold_case: 0,
+            m_ignore_case: false,
+        };
         c.set_code_point_compare(codepointcompare);
         c.m_ignore_case = ignorecase;
-        if !(Self::FOLD_CASE_DEFAULT..=Self::FOLD_CASE_EXCLUDE_SPECIAL_I).contains(&foldcaseoption) {
+        if !(Self::FOLD_CASE_DEFAULT..=Self::FOLD_CASE_EXCLUDE_SPECIAL_I).contains(&foldcaseoption)
+        {
             return Err(LuceneError::illegal_argument("Invalid fold case option"));
         }
         c.m_fold_case = foldcaseoption;
@@ -1641,7 +1726,8 @@ impl StringComparator {
     /// `setCodePointCompare(boolean flag)`.
     pub fn set_code_point_compare(&mut self, flag: bool) {
         if flag {
-            self.m_code_point_compare = crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER;
+            self.m_code_point_compare =
+                crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER;
         } else {
             self.m_code_point_compare = 0;
         }
@@ -1654,7 +1740,8 @@ impl StringComparator {
     /// `IllegalArgumentException("Invalid fold case option")`.
     pub fn set_ignore_case(&mut self, ignorecase: bool, foldcaseoption: i32) -> Result<()> {
         self.m_ignore_case = ignorecase;
-        if !(Self::FOLD_CASE_DEFAULT..=Self::FOLD_CASE_EXCLUDE_SPECIAL_I).contains(&foldcaseoption) {
+        if !(Self::FOLD_CASE_DEFAULT..=Self::FOLD_CASE_EXCLUDE_SPECIAL_I).contains(&foldcaseoption)
+        {
             return Err(LuceneError::illegal_argument("Invalid fold case option"));
         }
         self.m_fold_case = foldcaseoption;
@@ -1697,7 +1784,9 @@ impl StringComparator {
         crate::text::normalizer::Normalizer::cmp_equiv_fold(
             s1,
             s2,
-            self.m_fold_case | self.m_code_point_compare | crate::text::normalizer::Normalizer::COMPARE_IGNORE_CASE,
+            self.m_fold_case
+                | self.m_code_point_compare
+                | crate::text::normalizer::Normalizer::COMPARE_IGNORE_CASE,
         )
         .expect("without COMPARE_EQUIV no normalization data is loaded")
     }
@@ -1735,13 +1824,21 @@ impl StringComparator {
             return result;
         }
 
-        let codepointcompare = self.m_code_point_compare == crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER;
+        let codepointcompare = self.m_code_point_compare
+            == crate::text::normalizer::Normalizer::COMPARE_CODE_POINT_ORDER;
         // if both values are in or above the surrogate range, fix them up
-        if c1 as i32 >= UTF16::LEAD_SURROGATE_MIN_VALUE && c2 as i32 >= UTF16::LEAD_SURROGATE_MIN_VALUE && codepointcompare {
+        if c1 as i32 >= UTF16::LEAD_SURROGATE_MIN_VALUE
+            && c2 as i32 >= UTF16::LEAD_SURROGATE_MIN_VALUE
+            && codepointcompare
+        {
             // subtract 0x2800 from BMP code points to make them smaller
             // than supplementary ones
-            if (c1 as i32 <= UTF16::LEAD_SURROGATE_MAX_VALUE && (index + 1) != length1 && UTF16::is_trail_surrogate(s1[index + 1] as i32))
-                || (UTF16::is_trail_surrogate(c1 as i32) && index != 0 && UTF16::is_lead_surrogate(s1[index - 1] as i32))
+            if (c1 as i32 <= UTF16::LEAD_SURROGATE_MAX_VALUE
+                && (index + 1) != length1
+                && UTF16::is_trail_surrogate(s1[index + 1] as i32))
+                || (UTF16::is_trail_surrogate(c1 as i32)
+                    && index != 0
+                    && UTF16::is_lead_surrogate(s1[index - 1] as i32))
             {
                 // part of a surrogate pair, leave >=d800
             } else {
@@ -1750,8 +1847,12 @@ impl StringComparator {
                 c1 = c1.wrapping_sub(CODE_POINT_COMPARE_SURROGATE_OFFSET);
             }
 
-            if (c2 as i32 <= UTF16::LEAD_SURROGATE_MAX_VALUE && (index + 1) != length2 && UTF16::is_trail_surrogate(s2[index + 1] as i32))
-                || (UTF16::is_trail_surrogate(c2 as i32) && index != 0 && UTF16::is_lead_surrogate(s2[index - 1] as i32))
+            if (c2 as i32 <= UTF16::LEAD_SURROGATE_MAX_VALUE
+                && (index + 1) != length2
+                && UTF16::is_trail_surrogate(s2[index + 1] as i32))
+                || (UTF16::is_trail_surrogate(c2 as i32)
+                    && index != 0
+                    && UTF16::is_lead_surrogate(s2[index - 1] as i32))
             {
                 // part of a surrogate pair, leave >=d800
             } else {

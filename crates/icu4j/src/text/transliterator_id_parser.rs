@@ -25,7 +25,8 @@ const ANY: &str = "Any";
 
 /// `SPECIAL_INVERSES`: special inverses, keyed by target, case-insensitive
 /// (`Collections.synchronizedMap(new HashMap<...>())`).
-static SPECIAL_INVERSES: LazyLock<Mutex<HashMap<CaseInsensitiveString, Vec<u16>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static SPECIAL_INVERSES: LazyLock<Mutex<HashMap<CaseInsensitiveString, Vec<u16>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn special_inverses() -> MutexGuard<'static, HashMap<CaseInsensitiveString, Vec<u16>>> {
     SPECIAL_INVERSES.lock().unwrap_or_else(|e| e.into_inner())
@@ -62,10 +63,10 @@ pub(crate) struct TransliteratorIDParser;
 /// Equivalent to the nested class `TransliteratorIDParser.Specs`.
 #[derive(Debug, Clone)]
 struct Specs {
-    source: Vec<u16>, // not null
-    target: Vec<u16>, // not null
+    source: Vec<u16>,          // not null
+    target: Vec<u16>,          // not null
     variant: Option<Vec<u16>>, // may be null
-    filter: Option<Vec<u16>>, // may be null
+    filter: Option<Vec<u16>>,  // may be null
     saw_source: bool,
 }
 
@@ -240,7 +241,11 @@ impl TransliteratorIDParser {
         let start = pos[0];
 
         if with_parens[0] == -1 {
-            with_parens[0] = if Utility::parse_char(id, pos, OPEN_REV) { 1 } else { 0 };
+            with_parens[0] = if Utility::parse_char(id, pos, OPEN_REV) {
+                1
+            } else {
+                0
+            };
         } else if with_parens[0] == 1 && !Utility::parse_char(id, pos, OPEN_REV) {
             pos[0] = start;
             return Ok(None);
@@ -320,7 +325,8 @@ impl TransliteratorIDParser {
 
         // Parse leading global filter, if any
         with_parens[0] = 0; // parens disallowed
-        let filter = Self::parse_global_filter(id, &mut pos, dir, &mut with_parens, Some(&mut *canon_id))?;
+        let filter =
+            Self::parse_global_filter(id, &mut pos, dir, &mut with_parens, Some(&mut *canon_id))?;
         if let Some(filter) = filter {
             if !Utility::parse_char(id, &mut pos, ID_DELIM) {
                 // Not a global filter; backup and resume
@@ -364,7 +370,13 @@ impl TransliteratorIDParser {
         // a trailing delimiter after the IDs.
         if saw_delimiter {
             with_parens[0] = 1; // parens required
-            let filter = Self::parse_global_filter(id, &mut pos, dir, &mut with_parens, Some(&mut *canon_id))?;
+            let filter = Self::parse_global_filter(
+                id,
+                &mut pos,
+                dir,
+                &mut with_parens,
+                Some(&mut *canon_id),
+            )?;
             if let Some(filter) = filter {
                 // Don't require trailing ';', but parse it if present
                 Utility::parse_char(id, &mut pos, ID_DELIM);
@@ -396,7 +408,10 @@ impl TransliteratorIDParser {
             match single.get_instance()? {
                 Some(t) => translits.push(t),
                 None => {
-                    return Err(LuceneError::illegal_argument(format!("Illegal ID {}", to_rust_string(&single.canon_id))));
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Illegal ID {}",
+                        to_rust_string(&single.canon_id)
+                    )));
                 }
             }
         }
@@ -407,7 +422,9 @@ impl TransliteratorIDParser {
                 Some(t) => translits.push(t),
                 None => {
                     // Should never happen
-                    return Err(LuceneError::illegal_argument("Internal error; cannot instantiate Any-Null"));
+                    return Err(LuceneError::illegal_argument(
+                        "Internal error; cannot instantiate Any-Null",
+                    ));
                 }
             }
         }
@@ -459,7 +476,16 @@ impl TransliteratorIDParser {
             variant = variant[1..].to_vec();
         }
 
-        (source, target, variant, if is_source_present { Some(Vec::new()) } else { None })
+        (
+            source,
+            target,
+            variant,
+            if is_source_present {
+                Some(Vec::new())
+            } else {
+                None
+            },
+        )
     }
 
     /// `STVtoID(String source, String target, String variant)`: given
@@ -490,9 +516,15 @@ impl TransliteratorIDParser {
     /// => Any-NFC.
     pub fn register_special_inverse(target: &[u16], inverse_target: &[u16], bidirectional: bool) {
         let mut map = special_inverses();
-        map.insert(CaseInsensitiveString::new(target.to_vec()), inverse_target.to_vec());
+        map.insert(
+            CaseInsensitiveString::new(target.to_vec()),
+            inverse_target.to_vec(),
+        );
         if bidirectional && !equals_ignore_case(target, inverse_target) {
-            map.insert(CaseInsensitiveString::new(inverse_target.to_vec()), target.to_vec());
+            map.insert(
+                CaseInsensitiveString::new(inverse_target.to_vec()),
+                target.to_vec(),
+            );
         }
     }
 
@@ -500,7 +532,11 @@ impl TransliteratorIDParser {
     /// allowFilter)`: parse an ID into component pieces. Take IDs of the
     /// form T, T/V, S-T, S-T/V, or S/V-T. If the source is missing, return
     /// a source of ANY.
-    fn parse_filter_id_specs(id: &[u16], pos: &mut [i32], allow_filter: bool) -> Result<Option<Specs>> {
+    fn parse_filter_id_specs(
+        id: &[u16],
+        pos: &mut [i32],
+        allow_filter: bool,
+    ) -> Result<Option<Specs>> {
         let mut first: Option<Vec<u16>> = None;
         let mut source: Option<Vec<u16>> = None;
         let mut target: Option<Vec<u16>> = None;
@@ -531,7 +567,8 @@ impl TransliteratorIDParser {
 
             if delimiter == 0 {
                 let c = id[pos[0] as usize];
-                if (c == TARGET_SEP && target.is_none()) || (c == VARIANT_SEP && variant.is_none()) {
+                if (c == TARGET_SEP && target.is_none()) || (c == VARIANT_SEP && variant.is_none())
+                {
                     delimiter = c;
                     pos[0] += 1;
                     continue;
@@ -643,7 +680,9 @@ impl TransliteratorIDParser {
         if !equals_ignore_case(&specs.source, &units(ANY)) {
             return None;
         }
-        let inverse_target = special_inverses().get(&CaseInsensitiveString::new(specs.target.clone())).cloned()?;
+        let inverse_target = special_inverses()
+            .get(&CaseInsensitiveString::new(specs.target.clone()))
+            .cloned()?;
         // If the original ID contained "Any-" then make the
         // special inverse "Any-Foo"; otherwise make it "Foo".
         // So "Any-NFC" => "Any-NFD" but "NFC" => "NFD".

@@ -17,8 +17,8 @@ use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 use crate::text::nf_rule::{self, NFRule};
 use crate::text::number_format::lock;
 use crate::text::rule_based_number_format::{
-    array_index, char_at, ends_with, find_rule_set_in, java_math_round, npe, starts_with, substring,
-    substring_from, RbnfFields, RuleGraph,
+    array_index, char_at, ends_with, find_rule_set_in, java_math_round, npe, starts_with,
+    substring, substring_from, RbnfFields, RuleGraph,
 };
 
 /// `NEGATIVE_RULE_INDEX`: the index of the negative-number rule in the
@@ -168,12 +168,15 @@ impl NFRuleSet {
         if description[0] == u16::from(b'%') {
             let mut pos = index_of_unit(&description, u16::from(b':'), 0);
             if pos == -1 {
-                return Err(LuceneError::illegal_argument("Rule set name doesn't end in colon"));
+                return Err(LuceneError::illegal_argument(
+                    "Rule set name doesn't end in colon",
+                ));
             } else {
                 let mut rule_name = substring(&description, 0, pos).to_vec();
                 is_parseable = !ends_with(&rule_name, &units("@noparse"));
                 if !is_parseable {
-                    rule_name = substring(&rule_name, 0, rule_name.len() as i32 - 8).to_vec(); // Remove the @noparse from the name
+                    rule_name = substring(&rule_name, 0, rule_name.len() as i32 - 8).to_vec();
+                    // Remove the @noparse from the name
                 }
                 name = rule_name;
 
@@ -216,7 +219,11 @@ impl NFRuleSet {
     ///
     /// `IllegalArgumentException("Rules are not in order, base: <b> <
     /// <default>")`; the errors of the rules.
-    pub(crate) fn parse_rules(ctx: &BuildContext<'_>, index: usize, description: &[u16]) -> Result<RuleSetBody> {
+    pub(crate) fn parse_rules(
+        ctx: &BuildContext<'_>,
+        index: usize,
+        description: &[u16],
+    ) -> Result<RuleSetBody> {
         // (the number of elements in the description list isn't necessarily
         // the number of rules-- some descriptions may expend into two rules)
         let mut temp_rules: Vec<NFRule> = Vec::new();
@@ -240,7 +247,14 @@ impl NFRuleSet {
             // makeRules (a factory method on NFRule) will return either
             // a single rule or an array of rules.  Either way, add them
             // to our rule vector
-            NFRule::make_rules(substring(description, old_p, p), index, predecessor, ctx, &mut body, &mut temp_rules)?;
+            NFRule::make_rules(
+                substring(description, old_p, p),
+                index,
+                predecessor,
+                ctx,
+                &mut body,
+                &mut temp_rules,
+            )?;
             if !temp_rules.is_empty() {
                 predecessor = Some(temp_rules.len() - 1);
             }
@@ -302,7 +316,11 @@ impl NFRuleSet {
     /// # Errors
     ///
     /// The errors of the formatter's decimal format symbols.
-    pub(crate) fn set_non_numerical_rule(body: &mut RuleSetBody, rule: NFRule, owner: &RbnfFields) -> Result<()> {
+    pub(crate) fn set_non_numerical_rule(
+        body: &mut RuleSetBody,
+        rule: NFRule,
+        owner: &RbnfFields,
+    ) -> Result<()> {
         let base_value = rule.get_base_value();
         body.special_rules.push(rule);
         let rule = body.special_rules.len() - 1;
@@ -330,8 +348,16 @@ impl NFRuleSet {
         new_rule: usize,
         owner: &RbnfFields,
     ) -> Result<()> {
-        body.fraction_rules.get_or_insert_with(Vec::new).push(new_rule);
-        Self::set_best_fraction_rule(&mut body.non_numerical_rules, &body.special_rules, original_index, new_rule, owner)
+        body.fraction_rules
+            .get_or_insert_with(Vec::new)
+            .push(new_rule);
+        Self::set_best_fraction_rule(
+            &mut body.non_numerical_rules,
+            &body.special_rules,
+            original_index,
+            new_rule,
+            owner,
+        )
     }
 
     /// Determine the best fraction rule to use. Rules matching the decimal
@@ -352,7 +378,9 @@ impl NFRuleSet {
             Some(_) => {
                 // We have more than one. Which one is better?
                 let decimal_format_symbols = owner.get_decimal_format_symbols()?;
-                if decimal_format_symbols.get_decimal_separator() == special_rules[new_rule].get_decimal_point() {
+                if decimal_format_symbols.get_decimal_separator()
+                    == special_rules[new_rule].get_decimal_point()
+                {
                     non_numerical_rules[original_index] = Some(new_rule);
                 }
                 // else leave it alone
@@ -381,7 +409,10 @@ impl NFRuleSet {
     /// non-numerical rules and rules. Equivalent to `equals(Object that)`.
     pub(crate) fn java_equals(&self, that2: &NFRuleSet) -> bool {
         // otherwise, compare the members one by one...
-        if self.name != that2.name || self.rules.len() != that2.rules.len() || self.is_fraction_set() != that2.is_fraction_set() {
+        if self.name != that2.name
+            || self.rules.len() != that2.rules.len()
+            || self.is_fraction_set() != that2.is_fraction_set()
+        {
             return false;
         }
 
@@ -389,7 +420,10 @@ impl NFRuleSet {
         let my_nn = *lock(&self.non_numerical_rules);
         let that_nn = *lock(&that2.non_numerical_rules);
         for i in 0..my_nn.len() {
-            let equal = match (self.non_numerical_rule(&my_nn, i), that2.non_numerical_rule(&that_nn, i)) {
+            let equal = match (
+                self.non_numerical_rule(&my_nn, i),
+                that2.non_numerical_rule(&that_nn, i),
+            ) {
                 (None, None) => true,
                 (Some(a), Some(b)) => a.java_equals(b),
                 _ => false,
@@ -411,6 +445,7 @@ impl NFRuleSet {
     }
 
     /// `hashCode()`: not designed (Java asserts and returns 42).
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn hash_code(&self) -> i32 {
         debug_assert!(false, "hashCode not designed");
         42
@@ -590,7 +625,10 @@ impl NFRuleSet {
             if number < 1.0 && nn[PROPER_FRACTION_RULE_INDEX].is_some() {
                 // if the number is between 0 and 1, return the proper
                 // fraction rule
-                return Ok(RuleRef::Borrowed(self.non_numerical_rule(&nn, PROPER_FRACTION_RULE_INDEX).expect("checked")));
+                return Ok(RuleRef::Borrowed(
+                    self.non_numerical_rule(&nn, PROPER_FRACTION_RULE_INDEX)
+                        .expect("checked"),
+                ));
             } else if let Some(rule) = self.non_numerical_rule(&nn, IMPROPER_FRACTION_RULE_INDEX) {
                 // otherwise, return the improper fraction rule
                 return Ok(RuleRef::Borrowed(rule));
@@ -623,7 +661,9 @@ impl NFRuleSet {
         // to find the rule (we should only go into this clause if the
         // value is 0)
         if self.is_fraction_set() {
-            return Ok(RuleRef::Borrowed(self.find_fraction_rule_set_rule(number as f64)?));
+            return Ok(RuleRef::Borrowed(
+                self.find_fraction_rule_set_rule(number as f64)?,
+            ));
         }
 
         let nn = *lock(&self.non_numerical_rules);
@@ -693,7 +733,9 @@ impl NFRuleSet {
             return Ok(RuleRef::Borrowed(result));
         }
         // else use the default rule
-        self.non_numerical_rule(&nn, DEFAULT_RULE_INDEX).map(RuleRef::Borrowed).ok_or_else(npe)
+        self.non_numerical_rule(&nn, DEFAULT_RULE_INDEX)
+            .map(RuleRef::Borrowed)
+            .ok_or_else(npe)
     }
 
     /// If this rule is a fraction rule set, this function is used by
@@ -718,7 +760,8 @@ impl NFRuleSet {
         // and multiply this by the number being formatted.  This is
         // all the precision we need, and we can do all of the rest
         // of the math using integer arithmetic
-        let mut least_common_multiple = self.rules[array_index(0, self.rules.len())].get_base_value();
+        let mut least_common_multiple =
+            self.rules[array_index(0, self.rules.len())].get_base_value();
         for rule in &self.rules[1..] {
             least_common_multiple = Self::lcm(least_common_multiple, rule.get_base_value())?;
         }
@@ -737,7 +780,9 @@ impl NFRuleSet {
             if least_common_multiple == 0 {
                 return Err(crate::jdk::arithmetic("/ by zero"));
             }
-            let mut temp_difference = numerator.wrapping_mul(rule.get_base_value()).wrapping_rem(least_common_multiple);
+            let mut temp_difference = numerator
+                .wrapping_mul(rule.get_base_value())
+                .wrapping_rem(least_common_multiple);
 
             // normalize the result of the above calculation: we want
             // the numerator's distance from the CLOSEST multiple
@@ -943,7 +988,11 @@ impl NFRuleSet {
     /// # Errors
     ///
     /// The errors of the decimal formats and of the formatter's symbols.
-    pub(crate) fn set_decimal_format_symbols(&self, new_symbols: &DecimalFormatSymbols, g: &RuleGraph) -> Result<()> {
+    pub(crate) fn set_decimal_format_symbols(
+        &self,
+        new_symbols: &DecimalFormatSymbols,
+        g: &RuleGraph,
+    ) -> Result<()> {
         for rule in &self.rules {
             rule.set_decimal_format_symbols(new_symbols)?;
         }
@@ -955,8 +1004,16 @@ impl NFRuleSet {
                 if nn[non_numerical_idx].is_some() {
                     for &rule in fraction_rules {
                         let current = nn[non_numerical_idx].expect("checked above");
-                        if self.special_rules[current].get_base_value() == self.special_rules[rule].get_base_value() {
-                            Self::set_best_fraction_rule(&mut nn, &self.special_rules, non_numerical_idx, rule, &owner)?;
+                        if self.special_rules[current].get_base_value()
+                            == self.special_rules[rule].get_base_value()
+                        {
+                            Self::set_best_fraction_rule(
+                                &mut nn,
+                                &self.special_rules,
+                                non_numerical_idx,
+                                rule,
+                                &owner,
+                            )?;
                         }
                     }
                 }

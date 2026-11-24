@@ -40,8 +40,18 @@ impl SimpleModifier {
     }
 
     /// Equivalent to `SimpleModifier(String, Field, boolean, Parameters)`.
-    pub fn with_parameters(compiled_pattern: &[u16], field: Option<FieldRef>, strong: bool, parameters: Option<Parameters>) -> Self {
-        Self { compiled_pattern: compiled_pattern.to_vec(), field, strong, parameters }
+    pub fn with_parameters(
+        compiled_pattern: &[u16],
+        field: Option<FieldRef>,
+        strong: bool,
+        parameters: Option<Parameters>,
+    ) -> Self {
+        Self {
+            compiled_pattern: compiled_pattern.to_vec(),
+            field,
+            strong,
+            parameters,
+        }
     }
 
     /// TODO: This belongs in SimpleFormatterImpl. The only reason I haven't
@@ -82,7 +92,13 @@ impl SimpleModifier {
             prefix_length = 0;
         } else {
             prefix_length -= ARG_NUM_LIMIT;
-            result.insert_range(index + length, compiled_pattern, offset, offset + prefix_length, field.clone());
+            result.insert_range(
+                index + length,
+                compiled_pattern,
+                offset,
+                offset + prefix_length,
+                field.clone(),
+            );
             offset += prefix_length;
             length += prefix_length;
             offset += 1;
@@ -95,7 +111,13 @@ impl SimpleModifier {
             infix_length = 0;
         } else {
             infix_length -= ARG_NUM_LIMIT;
-            result.insert_range(index + length, compiled_pattern, offset, offset + infix_length, field.clone());
+            result.insert_range(
+                index + length,
+                compiled_pattern,
+                offset,
+                offset + infix_length,
+                field.clone(),
+            );
             offset += infix_length;
             length += infix_length;
             offset += 1;
@@ -108,7 +130,13 @@ impl SimpleModifier {
         } else {
             suffix_length = compiled_pattern[offset as usize] as i32 - ARG_NUM_LIMIT;
             offset += 1;
-            result.insert_range(index + length, compiled_pattern, offset, offset + suffix_length, field);
+            result.insert_range(
+                index + length,
+                compiled_pattern,
+                offset,
+                offset + suffix_length,
+                field,
+            );
             length += suffix_length;
         }
 
@@ -121,16 +149,32 @@ impl SimpleModifier {
 }
 
 impl Modifier for SimpleModifier {
-    fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32> {
-        Ok(SimpleFormatterImpl::format_prefix_suffix(&self.compiled_pattern, self.field, left_index, right_index, output))
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        left_index: i32,
+        right_index: i32,
+    ) -> Result<i32> {
+        Ok(SimpleFormatterImpl::format_prefix_suffix(
+            &self.compiled_pattern,
+            self.field,
+            left_index,
+            right_index,
+            output,
+        ))
     }
 
     fn get_prefix_length(&self) -> Result<i32> {
-        Ok(SimpleFormatterImpl::get_prefix_length(&self.compiled_pattern))
+        Ok(SimpleFormatterImpl::get_prefix_length(
+            &self.compiled_pattern,
+        ))
     }
 
     fn get_code_point_count(&self) -> Result<i32> {
-        Ok(SimpleFormatterImpl::get_length(&self.compiled_pattern, true))
+        Ok(SimpleFormatterImpl::get_length(
+            &self.compiled_pattern,
+            true,
+        ))
     }
 
     fn is_strong(&self) -> bool {
@@ -152,7 +196,9 @@ impl Modifier for SimpleModifier {
             Some(o) => o,
             None => return false,
         };
-        self.compiled_pattern == other.compiled_pattern && same_field(self.field, other.field) && self.strong == other.strong
+        self.compiled_pattern == other.compiled_pattern
+            && same_field(self.field, other.field)
+            && self.strong == other.strong
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -34,7 +34,11 @@ impl CaseInsensitiveString {
 
     /// `CaseInsensitiveString(String s)`.
     pub fn new(s: Vec<u16>) -> Self {
-        Self { string: s, hash: OnceLock::new(), folded: OnceLock::new() }
+        Self {
+            string: s,
+            hash: OnceLock::new(),
+            folded: OnceLock::new(),
+        }
     }
 
     /// `getString()`.
@@ -45,7 +49,9 @@ impl CaseInsensitiveString {
     /// `hashCode()`: the hash code of the case-folded string.
     pub fn hash_code(&self) -> i32 {
         let folded = self.get_folded();
-        *self.hash.get_or_init(|| Utility::char_sequence_hash_code(folded))
+        *self
+            .hash
+            .get_or_init(|| Utility::char_sequence_hash_code(folded))
     }
 }
 

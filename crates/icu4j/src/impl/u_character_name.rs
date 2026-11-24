@@ -74,6 +74,7 @@ const NON_CHARACTER: i32 = ECharacterCategory::CHAR_CATEGORY_COUNT as i32;
 const LEAD_SURROGATE: i32 = ECharacterCategory::CHAR_CATEGORY_COUNT as i32 + 1;
 const TRAIL_SURROGATE: i32 = ECharacterCategory::CHAR_CATEGORY_COUNT as i32 + 2;
 /// `EXTENDED_CATEGORY_` (package-private): extended category count.
+#[allow(dead_code)] // Java member with no caller in the closure
 pub(crate) const EXTENDED_CATEGORY: i32 = ECharacterCategory::CHAR_CATEGORY_COUNT as i32 + 3;
 
 fn units(s: &str) -> Vec<u16> {
@@ -123,7 +124,11 @@ static INSTANCE: LazyLock<UCharacterName> = LazyLock::new(|| match UCharacterNam
     Ok(n) => n,
     Err(_) => panic!(
         "java.lang.ExceptionInInitializerError: {}",
-        missing_resource("Could not construct UCharacterName. Missing unames.icu", "", "")
+        missing_resource(
+            "Could not construct UCharacterName. Missing unames.icu",
+            "",
+            ""
+        )
     ),
 });
 
@@ -159,7 +164,9 @@ impl UCharacterName {
     /// `getName(int ch, int choice)`: the name of a code point, `None`
     /// when it has none.
     pub fn get_name(&self, ch: i32, choice: i32) -> Option<Vec<u16>> {
-        if !(UCharacter::MIN_VALUE..=UCharacter::MAX_VALUE).contains(&ch) || choice > UCharacterNameChoice::CHAR_NAME_CHOICE_COUNT {
+        if !(UCharacter::MIN_VALUE..=UCharacter::MAX_VALUE).contains(&ch)
+            || choice > UCharacterNameChoice::CHAR_NAME_CHOICE_COUNT
+        {
             return None;
         }
 
@@ -198,7 +205,9 @@ impl UCharacterName {
         // try algorithmic names first, if fails then try group names
         // int result = getAlgorithmChar(choice, uppercasename);
 
-        if choice == UCharacterNameChoice::UNICODE_CHAR_NAME || choice == UCharacterNameChoice::EXTENDED_CHAR_NAME {
+        if choice == UCharacterNameChoice::UNICODE_CHAR_NAME
+            || choice == UCharacterNameChoice::EXTENDED_CHAR_NAME
+        {
             let mut count = self.m_algorithm.len() as i32;
             count -= 1;
             while count >= 0 {
@@ -211,9 +220,11 @@ impl UCharacterName {
         }
 
         if choice == UCharacterNameChoice::EXTENDED_CHAR_NAME {
-            result = self.get_group_char_name(&upper_case_name, UCharacterNameChoice::UNICODE_CHAR_NAME);
+            result =
+                self.get_group_char_name(&upper_case_name, UCharacterNameChoice::UNICODE_CHAR_NAME);
             if result == -1 {
-                result = self.get_group_char_name(&upper_case_name, UCharacterNameChoice::CHAR_NAME_ALIAS);
+                result = self
+                    .get_group_char_name(&upper_case_name, UCharacterNameChoice::CHAR_NAME_ALIAS);
             }
         } else {
             result = self.get_group_char_name(&upper_case_name, choice);
@@ -226,7 +237,12 @@ impl UCharacterName {
     /// `getGroupLengths(int index, char offsets[], char lengths[])`: reads
     /// the offsets and lengths of the 32 lines of group `index`, returns
     /// the offset of the group's strings.
-    pub fn get_group_lengths(&self, mut index: i32, offsets: &mut [u16], lengths: &mut [u16]) -> i32 {
+    pub fn get_group_lengths(
+        &self,
+        mut index: i32,
+        offsets: &mut [u16],
+        lengths: &mut [u16],
+    ) -> i32 {
         let mut length: u16 = 0xffff;
         let mut n: i8;
         index *= self.m_groupsize;
@@ -246,7 +262,7 @@ impl UCharacterName {
 
             while shift >= 0 {
                 // getting nibble
-                n = ((b >> shift) & 0x0F);
+                n = (b >> shift) & 0x0F;
                 if length == 0xffff && n > SINGLE_NIBBLE_MAX {
                     length = ((n as i32 - 12) << 4) as u16;
                 } else {
@@ -257,7 +273,8 @@ impl UCharacterName {
                     }
 
                     if i < LINES_PER_GROUP {
-                        offsets[i as usize + 1] = offsets[i as usize].wrapping_add(lengths[i as usize]);
+                        offsets[i as usize + 1] =
+                            offsets[i as usize].wrapping_add(lengths[i as usize]);
                     }
 
                     length = 0xffff;
@@ -274,16 +291,29 @@ impl UCharacterName {
     /// `getGroupName(int index, int length, int choice)`: the name at
     /// `index` in the group strings, `None` when empty.
     pub fn get_group_name(&self, mut index: i32, mut length: i32, choice: i32) -> Option<Vec<u16>> {
-        if choice != UCharacterNameChoice::UNICODE_CHAR_NAME && choice != UCharacterNameChoice::EXTENDED_CHAR_NAME {
-            if (b';' as usize) >= self.m_tokentable.len() || self.m_tokentable[b';' as usize] == 0xFFFF {
+        if choice != UCharacterNameChoice::UNICODE_CHAR_NAME
+            && choice != UCharacterNameChoice::EXTENDED_CHAR_NAME
+        {
+            if (b';' as usize) >= self.m_tokentable.len()
+                || self.m_tokentable[b';' as usize] == 0xFFFF
+            {
                 /*
                  * skip the modern name if it is not requested _and_
                  * if the semicolon byte value is a character, not a token number
                  */
-                let mut field_index = if choice == UCharacterNameChoice::ISO_COMMENT { 2 } else { choice };
+                let mut field_index = if choice == UCharacterNameChoice::ISO_COMMENT {
+                    2
+                } else {
+                    choice
+                };
                 loop {
                     let oldindex = index;
-                    index += UCharacterUtility::skip_byte_sub_string(&self.m_groupstring, index, length, b';' as i8);
+                    index += UCharacterUtility::skip_byte_sub_string(
+                        &self.m_groupstring,
+                        index,
+                        length,
+                        b';' as i8,
+                    );
                     length -= index - oldindex;
                     field_index -= 1;
                     if field_index <= 0 {
@@ -315,7 +345,8 @@ impl UCharacterName {
                 let mut token = self.m_tokentable[(b as i32 & 0x00ff) as usize];
                 if token == 0xFFFE {
                     // this is a lead byte for a double-byte token
-                    let idx = ((b as i32) << 8) | (self.m_groupstring[(index + i) as usize] as i32 & 0x00ff);
+                    let idx = ((b as i32) << 8)
+                        | (self.m_groupstring[(index + i) as usize] as i32 & 0x00ff);
                     token = self.m_tokentable[idx as usize];
                     i += 1;
                 }
@@ -333,7 +364,11 @@ impl UCharacterName {
                     buf.push((b as i32 & 0x00ff) as u16);
                 } else {
                     // write token word
-                    UCharacterUtility::get_null_term_byte_sub_string(&mut buf, &self.m_tokenstring, token as i32);
+                    UCharacterUtility::get_null_term_byte_sub_string(
+                        &mut buf,
+                        &self.m_tokenstring,
+                        token as i32,
+                    );
                 }
             }
         }
@@ -378,7 +413,11 @@ impl UCharacterName {
         // TODO: Return Name_Alias/control names for control codes 0..1F & 7F..9F.
         let ty = Self::get_type(ch);
         // getting the type name
-        let result = if ty >= TYPE_NAMES.len() as i32 { UNKNOWN_TYPE_NAME } else { TYPE_NAMES[ty as usize] };
+        let result = if ty >= TYPE_NAMES.len() as i32 {
+            UNKNOWN_TYPE_NAME
+        } else {
+            TYPE_NAMES[ty as usize]
+        };
         let mut buf = units("<");
         buf.extend(units(result));
         buf.push(b'-' as u16);
@@ -462,7 +501,11 @@ impl UCharacterName {
             let mut lengths = [0u16; LINES_PER_GROUP as usize + 1];
             let index = self.get_group_lengths(group, &mut offsets, &mut lengths);
             let offset = (ch & GROUP_MASK) as usize;
-            return self.get_group_name(index + offsets[offset] as i32, lengths[offset] as i32, choice);
+            return self.get_group_name(
+                index + offsets[offset] as i32,
+                lengths[offset] as i32,
+                choice,
+            );
         }
 
         None
@@ -554,7 +597,9 @@ impl UCharacterName {
     /// Gets the algorithmic name for the argument codepoint.
     fn get_alg_name(&self, ch: i32, choice: i32) -> Option<Vec<u16>> {
         /* Only the normative character name can be algorithmic. */
-        if choice == UCharacterNameChoice::UNICODE_CHAR_NAME || choice == UCharacterNameChoice::EXTENDED_CHAR_NAME {
+        if choice == UCharacterNameChoice::UNICODE_CHAR_NAME
+            || choice == UCharacterNameChoice::EXTENDED_CHAR_NAME
+        {
             // index in terms integer index
             let mut buf = Vec::new();
             for index in (0..self.m_algorithm.len()).rev() {
@@ -579,7 +624,8 @@ impl UCharacterName {
             // shift out to function
             let result = self.get_group_char(startgpstrindex, &lengths, name, choice);
             if result != -1 {
-                return ((self.m_groupinfo[(i * self.m_groupsize) as usize] as i32) << GROUP_SHIFT) | result;
+                return ((self.m_groupinfo[(i * self.m_groupsize) as usize] as i32) << GROUP_SHIFT)
+                    | result;
             }
         }
         -1
@@ -600,15 +646,26 @@ impl UCharacterName {
             nindex = 0;
             len = length[result as usize] as i32;
 
-            if choice != UCharacterNameChoice::UNICODE_CHAR_NAME && choice != UCharacterNameChoice::EXTENDED_CHAR_NAME {
+            if choice != UCharacterNameChoice::UNICODE_CHAR_NAME
+                && choice != UCharacterNameChoice::EXTENDED_CHAR_NAME
+            {
                 /*
                  * skip the modern name if it is not requested _and_
                  * if the semicolon byte value is a character, not a token number
                  */
-                let mut field_index = if choice == UCharacterNameChoice::ISO_COMMENT { 2 } else { choice };
+                let mut field_index = if choice == UCharacterNameChoice::ISO_COMMENT {
+                    2
+                } else {
+                    choice
+                };
                 loop {
                     let oldindex = index;
-                    index += UCharacterUtility::skip_byte_sub_string(&self.m_groupstring, index, len, b';' as i8);
+                    index += UCharacterUtility::skip_byte_sub_string(
+                        &self.m_groupstring,
+                        index,
+                        len,
+                        b';' as i8,
+                    );
                     len -= index - oldindex;
                     field_index -= 1;
                     if field_index <= 0 {
@@ -634,7 +691,8 @@ impl UCharacterName {
                     token = self.m_tokentable[(b as i32 & 0xFF) as usize];
                     if token == 0xFFFE {
                         // this is a lead byte for a double-byte token
-                        let idx = ((b as i32) << 8) | (self.m_groupstring[(index + count) as usize] as i32 & 0x00ff);
+                        let idx = ((b as i32) << 8)
+                            | (self.m_groupstring[(index + count) as usize] as i32 & 0x00ff);
                         token = self.m_tokentable[idx as usize];
                         count += 1;
                     }
@@ -646,12 +704,19 @@ impl UCharacterName {
                         }
                     } else {
                         // compare token with name
-                        nindex = UCharacterUtility::compare_null_term_byte_sub_string(name, &self.m_tokenstring, nindex, token as i32);
+                        nindex = UCharacterUtility::compare_null_term_byte_sub_string(
+                            name,
+                            &self.m_tokenstring,
+                            nindex,
+                            token as i32,
+                        );
                     }
                 }
             }
 
-            if namelen == nindex && (count == len || self.m_groupstring[(index + count) as usize] == b';' as i8) {
+            if namelen == nindex
+                && (count == len || self.m_groupstring[(index + count) as usize] == b';' as i8)
+            {
                 return result;
             }
 
@@ -684,7 +749,8 @@ impl UCharacterName {
             if choice == UCharacterNameChoice::EXTENDED_CHAR_NAME {
                 let end_index = name.len() as i32 - 1;
                 if name[end_index as usize] == b'>' as u16 {
-                    let mut start_index = crate::jdk::last_index_of_unit(name, b'-' as u16, name.len() as i32 - 1);
+                    let mut start_index =
+                        crate::jdk::last_index_of_unit(name, b'-' as u16, name.len() as i32 - 1);
                     if start_index >= 0 {
                         // We've got a category.
                         start_index += 1;
@@ -694,7 +760,10 @@ impl UCharacterName {
                         if !(1..=8).contains(&hex_length) {
                             return -1;
                         }
-                        let result = match crate::jdk::parse_int(&name[start_index as usize..end_index as usize], 16) {
+                        let result = match crate::jdk::parse_int(
+                            &name[start_index as usize..end_index as usize],
+                            16,
+                        ) {
                             Ok(r) => r,
                             Err(_) => return -1,
                         };
@@ -766,11 +835,18 @@ impl UCharacterName {
 
     /// Adds names of a group to the argument set; returns
     /// `[name length, parsed length]`.
-    fn add_group_name_line(&self, offset: i32, length: i32, tokenlength: &mut [i8], set: &mut [i32; 8]) -> [i32; 2] {
+    fn add_group_name_line(
+        &self,
+        offset: i32,
+        length: i32,
+        tokenlength: &mut [i8],
+        set: &mut [i32; 8],
+    ) -> [i32; 2] {
         let mut resultnlength = 0;
         let mut resultplength = 0;
         while resultplength < length {
-            let mut b = (self.m_groupstring[(offset + resultplength) as usize] as i32 & 0xff) as u16;
+            let mut b =
+                (self.m_groupstring[(offset + resultplength) as usize] as i32 & 0xff) as u16;
             resultplength += 1;
             if b == b';' as u16 {
                 break;
@@ -783,7 +859,9 @@ impl UCharacterName {
                 let mut token = self.m_tokentable[(b & 0x00ff) as usize];
                 if token == 0xFFFE {
                     // this is a lead byte for a double-byte token
-                    b = (b << 8) | (self.m_groupstring[(offset + resultplength) as usize] as i32 & 0x00ff) as u16;
+                    b = (b << 8)
+                        | (self.m_groupstring[(offset + resultplength) as usize] as i32 & 0x00ff)
+                            as u16;
                     token = self.m_tokentable[b as usize];
                     resultplength += 1;
                 }
@@ -796,7 +874,11 @@ impl UCharacterName {
                     let mut tlength = tokenlength[b as usize];
                     if tlength == 0 {
                         let mut buf = Vec::new();
-                        UCharacterUtility::get_null_term_byte_sub_string(&mut buf, &self.m_tokenstring, token as i32);
+                        UCharacterUtility::get_null_term_byte_sub_string(
+                            &mut buf,
+                            &self.m_tokenstring,
+                            token as i32,
+                        );
                         tlength = Self::add_str(set, &buf) as i8;
                         tokenlength[b as usize] = tlength;
                     }
@@ -829,7 +911,12 @@ impl UCharacterName {
                 }
 
                 // read regular name
-                let mut parsed = self.add_group_name_line(lineoffset, length, &mut tokenlengths, &mut s.name_set);
+                let mut parsed = self.add_group_name_line(
+                    lineoffset,
+                    length,
+                    &mut tokenlengths,
+                    &mut s.name_set,
+                );
                 if parsed[0] > maxlength {
                     // 0 for name length
                     maxlength = parsed[0];
@@ -841,7 +928,12 @@ impl UCharacterName {
                 }
                 length -= parsed[1];
                 // read Unicode 1.0 name
-                parsed = self.add_group_name_line(lineoffset, length, &mut tokenlengths, &mut s.name_set);
+                parsed = self.add_group_name_line(
+                    lineoffset,
+                    length,
+                    &mut tokenlengths,
+                    &mut s.name_set,
+                );
                 if parsed[0] > maxlength {
                     // 0 for name length
                     maxlength = parsed[0];
@@ -853,7 +945,12 @@ impl UCharacterName {
                 }
                 length -= parsed[1];
                 // read ISO comment
-                parsed = self.add_group_name_line(lineoffset, length, &mut tokenlengths, &mut s.iso_comment_set);
+                parsed = self.add_group_name_line(
+                    lineoffset,
+                    length,
+                    &mut tokenlengths,
+                    &mut s.iso_comment_set,
+                );
                 if parsed[1] > maxisolength {
                     maxisolength = length;
                 }
@@ -911,7 +1008,10 @@ impl UCharacterName {
 
 /// `String.toLowerCase(Locale.ENGLISH)`.
 fn english_lower(name: &[u16]) -> Vec<u16> {
-    rucene_analysis_common::jdk::string::to_lower_case(name, &rucene_analysis_common::jdk::locale::Locale::english())
+    rucene_analysis_common::jdk::string::to_lower_case(
+        name,
+        &rucene_analysis_common::jdk::locale::Locale::english(),
+    )
 }
 
 /// `String.toUpperCase(Locale.ENGLISH)`.
@@ -993,7 +1093,10 @@ impl AlgorithmName {
         match self.m_type {
             Self::TYPE_0 => {
                 // prefix followed by hex digits indicating variants
-                str.extend(units(&Utility::hex_places(ch as i64, self.m_variant as i32)));
+                str.extend(units(&Utility::hex_places(
+                    ch as i64,
+                    self.m_variant as i32,
+                )));
             }
             Self::TYPE_1 => {
                 // prefix followed by factorized-elements
@@ -1068,7 +1171,12 @@ impl AlgorithmName {
                     indexes[0] = offset;
 
                     // joining up the factorized strings
-                    if self.compare_factor_string(&indexes, self.m_variant as i32, name, prefixlen as i32) {
+                    if self.compare_factor_string(
+                        &indexes,
+                        self.m_variant as i32,
+                        name,
+                        prefixlen as i32,
+                    ) {
                         return ch;
                     }
                 }
@@ -1100,7 +1208,11 @@ impl AlgorithmName {
                     let mut factor = self.m_factor[i as usize] as i32;
                     while factor > 0 {
                         let mut buf = Vec::new();
-                        count = UCharacterUtility::get_null_term_byte_sub_string(&mut buf, &self.m_factorstring, count);
+                        count = UCharacterUtility::get_null_term_byte_sub_string(
+                            &mut buf,
+                            &self.m_factorstring,
+                            count,
+                        );
                         UCharacterName::add_str(set, &buf);
                         if buf.len() as i32 > maxfactorlength {
                             maxfactorlength = buf.len() as i32;
@@ -1131,10 +1243,22 @@ impl AlgorithmName {
         size -= 1;
         for i in 0..=size {
             let factor = self.m_factor[i as usize] as i32;
-            count = UCharacterUtility::skip_null_term_byte_sub_string(&self.m_factorstring, count, index[i as usize]);
-            count = UCharacterUtility::get_null_term_byte_sub_string(&mut buf, &self.m_factorstring, count);
+            count = UCharacterUtility::skip_null_term_byte_sub_string(
+                &self.m_factorstring,
+                count,
+                index[i as usize],
+            );
+            count = UCharacterUtility::get_null_term_byte_sub_string(
+                &mut buf,
+                &self.m_factorstring,
+                count,
+            );
             if i != size {
-                count = UCharacterUtility::skip_null_term_byte_sub_string(&self.m_factorstring, count, factor - index[i as usize] - 1);
+                count = UCharacterUtility::skip_null_term_byte_sub_string(
+                    &self.m_factorstring,
+                    count,
+                    factor - index[i as usize] - 1,
+                );
             }
         }
         Some(buf)
@@ -1153,14 +1277,27 @@ impl AlgorithmName {
         size -= 1;
         for i in 0..=size {
             let factor = self.m_factor[i as usize] as i32;
-            count = UCharacterUtility::skip_null_term_byte_sub_string(&self.m_factorstring, count, index[i as usize]);
-            strcount = UCharacterUtility::compare_null_term_byte_sub_string(str, &self.m_factorstring, strcount, count);
+            count = UCharacterUtility::skip_null_term_byte_sub_string(
+                &self.m_factorstring,
+                count,
+                index[i as usize],
+            );
+            strcount = UCharacterUtility::compare_null_term_byte_sub_string(
+                str,
+                &self.m_factorstring,
+                strcount,
+                count,
+            );
             if strcount < 0 {
                 return false;
             }
 
             if i != size {
-                count = UCharacterUtility::skip_null_term_byte_sub_string(&self.m_factorstring, count, factor - index[i as usize]);
+                count = UCharacterUtility::skip_null_term_byte_sub_string(
+                    &self.m_factorstring,
+                    count,
+                    factor - index[i as usize],
+                );
             }
         }
         strcount == str.len() as i32
@@ -1193,7 +1330,10 @@ fn name_data_acceptable(version: &[u8; 4]) -> bool {
 fn get_bytes(bb: &mut ByteBuffer, size: i32) -> Result<Vec<i8>> {
     let mut b = vec![0u8; size.max(0) as usize];
     if size < 0 {
-        return Err(LuceneError::unchecked("java.lang.NegativeArraySizeException", size.to_string()));
+        return Err(LuceneError::unchecked(
+            "java.lang.NegativeArraySizeException",
+            size.to_string(),
+        ));
     }
     bb.get_bytes(&mut b)?;
     Ok(b.into_iter().map(|x| x as i8).collect())
@@ -1202,8 +1342,18 @@ fn get_bytes(bb: &mut ByteBuffer, size: i32) -> Result<Vec<i8>> {
 impl UCharacterNameReader {
     /// `UCharacterNameReader(ByteBuffer bytes)`.
     fn new(mut bytes: ByteBuffer) -> Result<Self> {
-        ICUBinary::read_header(&mut bytes, DATA_FORMAT_ID, Some(&name_data_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
-        Ok(Self { m_byte_buffer: bytes, m_tokenstringindex: 0, m_groupindex: 0, m_groupstringindex: 0, m_algnamesindex: 0 })
+        ICUBinary::read_header(
+            &mut bytes,
+            DATA_FORMAT_ID,
+            Some(&name_data_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
+        Ok(Self {
+            m_byte_buffer: bytes,
+            m_tokenstringindex: 0,
+            m_groupindex: 0,
+            m_groupstringindex: 0,
+            m_algnamesindex: 0,
+        })
     }
 
     /// `isDataVersionAcceptable(byte version[])`.
@@ -1215,7 +1365,8 @@ impl UCharacterNameReader {
     /// `authenticate(byte dataformatid[], byte dataformatversion[])`.
     #[allow(dead_code)]
     fn authenticate(&self, dataformatid: &[i8], dataformatversion: &[u8; 4]) -> bool {
-        ICUBinary::get_version_byte_array_from_compact_int(DATA_FORMAT_ID).as_slice() == dataformatid
+        ICUBinary::get_version_byte_array_from_compact_int(DATA_FORMAT_ID).as_slice()
+            == dataformatid
             && name_data_acceptable(dataformatversion)
     }
 

@@ -22,6 +22,7 @@ const DEFAULT_CAPACITY: i32 = 16;
 /// port never clears it (the crate's precedent for soft caches, allowed by
 /// the `SoftReference` contract; `clear()` still drops it).
 #[derive(Debug)]
+#[allow(clippy::type_complexity)] // type mirrors the Java signature
 pub struct SimpleCache<K, V> {
     cache_ref: Mutex<Option<Arc<Mutex<HashMap<K, V>>>>>,
     cache_type: i32,
@@ -37,7 +38,11 @@ impl<K, V> Default for SimpleCache<K, V> {
 impl<K, V> SimpleCache<K, V> {
     /// `new SimpleCache()`.
     pub fn new() -> Self {
-        Self { cache_ref: Mutex::new(None), cache_type: SOFT, capacity: DEFAULT_CAPACITY }
+        Self {
+            cache_ref: Mutex::new(None),
+            cache_type: SOFT,
+            capacity: DEFAULT_CAPACITY,
+        }
     }
 
     /// `new SimpleCache(int cacheType)`.
@@ -65,7 +70,11 @@ impl<K, V> SimpleCache<K, V> {
 
 impl<K: Eq + Hash + Send, V: Clone + Send> ICUCache<K, V> for SimpleCache<K, V> {
     fn get(&self, key: &K) -> Option<V> {
-        let r = self.cache_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let r = self
+            .cache_ref
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let map = r?;
         let guard = map.lock().unwrap_or_else(|e| e.into_inner());
         guard.get(key).cloned()
@@ -83,7 +92,9 @@ impl<K: Eq + Hash + Send, V: Clone + Send> ICUCache<K, V> for SimpleCache<K, V> 
                 }
             }
         };
-        map.lock().unwrap_or_else(|e| e.into_inner()).insert(key, value);
+        map.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, value);
     }
 
     fn clear(&self) {

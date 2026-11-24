@@ -43,7 +43,9 @@ macro_rules! impl_validation_matcher {
                 &self,
                 result: &mut $crate::r#impl::number::parse::parsed_number::ParsedNumber,
             ) -> rucene::error::Result<()> {
-                $crate::r#impl::number::parse::validation_matcher::ValidationMatcher::validate(self, result)
+                $crate::r#impl::number::parse::validation_matcher::ValidationMatcher::validate(
+                    self, result,
+                )
             }
 
             fn to_java_string(&self) -> String {
@@ -58,4 +60,3 @@ macro_rules! impl_validation_matcher {
     };
 }
 pub(crate) use impl_validation_matcher;
-

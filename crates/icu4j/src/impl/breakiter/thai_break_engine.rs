@@ -13,8 +13,9 @@ use crate::jdk::units;
 use crate::lang::u_character::UCharacter;
 use crate::lang::u_property::UProperty;
 use crate::lang::u_script::UScript;
-use crate::r#impl::breakiter::dictionary_break_engine::{uset_contains, 
-    dictionary_find_breaks, DequeI, DictionaryBreakEngine, DictionaryBreakEngineBase, PossibleWord,
+use crate::r#impl::breakiter::dictionary_break_engine::{
+    dictionary_find_breaks, uset_contains, DequeI, DictionaryBreakEngine,
+    DictionaryBreakEngineBase, PossibleWord,
 };
 use crate::r#impl::breakiter::dictionary_data::DictionaryData;
 use crate::r#impl::breakiter::dictionary_matcher::DictionaryMatcher;
@@ -152,7 +153,14 @@ impl LanguageBreakEngine for ThaiBreakEngine {
         found_breaks: &mut DequeI,
         is_phrase_breaking: bool,
     ) -> i32 {
-        dictionary_find_breaks(self, text, start_pos, end_pos, found_breaks, is_phrase_breaking)
+        dictionary_find_breaks(
+            self,
+            text,
+            start_pos,
+            end_pos,
+            found_breaks,
+            is_phrase_breaking,
+        )
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -218,7 +226,9 @@ impl DictionaryBreakEngine for ThaiBreakEngine {
                             // See if any of the possible second words is followed by a third word
                             loop {
                                 // If we find a third word, stop right away
-                                if words[ix(words_found + 2)].candidates(f_iter, dict, range_end) > 0 {
+                                if words[ix(words_found + 2)].candidates(f_iter, dict, range_end)
+                                    > 0
+                                {
                                     words[ix(words_found)].mark_current();
                                     break 'found_best;
                                 }
@@ -261,13 +271,16 @@ impl DictionaryBreakEngine for ThaiBreakEngine {
                         if remaining <= 0 {
                             break;
                         }
-                        if uset_contains(&self.f_end_word_set, pc) && uset_contains(&self.f_begin_word_set, uc) {
+                        if uset_contains(&self.f_end_word_set, pc)
+                            && uset_contains(&self.f_begin_word_set, uc)
+                        {
                             // Maybe. See if it's in the dictionary.
                             // NOTE: In the original Apple code, checked that the next
                             // two characters after uc were not 0x0E4C THANTHAKHAT before
                             // checking the dictionary. That is just a performance filter,
                             // but it's not clear it's faster than checking the trie
-                            let candidate = words[ix(words_found + 1)].candidates(f_iter, dict, range_end);
+                            let candidate =
+                                words[ix(words_found + 1)].candidates(f_iter, dict, range_end);
                             set_index(f_iter, current + word_length + chars);
                             if candidate > 0 {
                                 break;
@@ -292,7 +305,9 @@ impl DictionaryBreakEngine for ThaiBreakEngine {
             // Never stop before a combining mark.
             loop {
                 let curr_pos = f_iter.get_index();
-                if !(curr_pos < range_end && uset_contains(&self.f_mark_set, f_iter.current() as i32)) {
+                if !(curr_pos < range_end
+                    && uset_contains(&self.f_mark_set, f_iter.current() as i32))
+                {
                     break;
                 }
                 f_iter.next();

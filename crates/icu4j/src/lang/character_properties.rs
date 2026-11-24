@@ -72,7 +72,11 @@ impl CharacterProperties {
     }
 
     fn make_map(property: i32) -> Result<CodePointTrie> {
-        let null_value = if property == UProperty::SCRIPT { UScript::UNKNOWN } else { 0 };
+        let null_value = if property == UProperty::SCRIPT {
+            UScript::UNKNOWN
+        } else {
+            0
+        };
         let mut mutable_trie = MutableCodePointTrie::new(null_value, null_value);
         let inclusions = CharacterPropertiesImpl::get_inclusions_for_property(property)?;
         let num_ranges = inclusions.get_range_count();

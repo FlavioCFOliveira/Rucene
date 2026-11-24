@@ -17,8 +17,8 @@ use std::ops::Deref;
 
 use rucene::error::Result;
 
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::JavaNumber;
 use crate::jdk::currency::Currency as JavaCurrency;
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::JavaNumber;
 use crate::util::currency::Currency;
 use crate::util::measure::Measure;
 
@@ -39,7 +39,10 @@ impl CurrencyAmount {
     ///
     /// `NullPointerException("Number and MeasureUnit must not be null")`.
     pub fn new(number: Option<JavaNumber>, currency: Option<Currency>) -> Result<Self> {
-        Ok(CurrencyAmount(Measure::new(number, currency.map(Currency::into_measure_unit))?))
+        Ok(CurrencyAmount(Measure::new(
+            number,
+            currency.map(Currency::into_measure_unit),
+        )?))
     }
 
     /// Constructs a new object given a double value and a currency.

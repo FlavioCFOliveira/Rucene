@@ -34,7 +34,10 @@ pub(crate) struct IntPair {
 impl IntPair {
     /// `IntPair(int f, int s)`.
     pub(crate) fn new(f: i32, s: i32) -> Self {
-        Self { first: f, second: s }
+        Self {
+            first: f,
+            second: s,
+        }
     }
 }
 
@@ -191,17 +194,23 @@ impl RBBIRuleBuilder {
 
     /// `fSetBuilder`.
     pub(crate) fn set_builder(&self) -> &RBBISetBuilder {
-        self.f_set_builder.as_ref().expect("the set builder is in place")
+        self.f_set_builder
+            .as_ref()
+            .expect("the set builder is in place")
     }
 
     /// `fSetBuilder`, mutable.
     fn set_builder_mut(&mut self) -> &mut RBBISetBuilder {
-        self.f_set_builder.as_mut().expect("the set builder is in place")
+        self.f_set_builder
+            .as_mut()
+            .expect("the set builder is in place")
     }
 
     /// `fForwardTable`.
     fn forward_table(&self) -> &RBBITableBuilder {
-        self.f_forward_table.as_ref().expect("the forward table is built")
+        self.f_forward_table
+            .as_ref()
+            .expect("the forward table is built")
     }
 
     /// `align8(int i)`.
@@ -234,8 +243,12 @@ impl RBBIRuleBuilder {
         let stripped_rules_utf8: Vec<u8> = to_rust_string(&stripped_rules).into_bytes();
         let rules_size = Self::align8(stripped_rules_utf8.len() as i32 + 1);
 
-        let total_size =
-            header_size + forward_table_size + reverse_table_size + status_table_size + trie_size + rules_size;
+        let total_size = header_size
+            + forward_table_size
+            + reverse_table_size
+            + status_table_size
+            + trie_size
+            + rules_size;
         let mut output_pos = 0; // Track stream position, starting from RBBIDataHeader.
 
         let mut header = [0i32; RBBIDataWrapper::DH_SIZE as usize];
@@ -244,7 +257,12 @@ impl RBBIRuleBuilder {
             //
             // Write out an ICU Data Header
             //
-            ICUBinary::write_header(RBBIDataWrapper::DATA_FORMAT, RBBIDataWrapper::FORMAT_VERSION, 0, &mut dos)?;
+            ICUBinary::write_header(
+                RBBIDataWrapper::DATA_FORMAT,
+                RBBIDataWrapper::FORMAT_VERSION,
+                0,
+                &mut dos,
+            )?;
 
             //
             // Write out the RBBIDataHeader
@@ -252,18 +270,22 @@ impl RBBIRuleBuilder {
             header[RBBIDataWrapper::DH_MAGIC as usize] = 0xb1a0;
             header[RBBIDataWrapper::DH_FORMATVERSION as usize] = RBBIDataWrapper::FORMAT_VERSION;
             header[RBBIDataWrapper::DH_LENGTH as usize] = total_size; // fLength, the total size of all rule sections.
-            header[RBBIDataWrapper::DH_CATCOUNT as usize] = self.set_builder().get_num_char_categories(); // fCatCount.
+            header[RBBIDataWrapper::DH_CATCOUNT as usize] =
+                self.set_builder().get_num_char_categories(); // fCatCount.
 
             header[RBBIDataWrapper::DH_FTABLE as usize] = header_size; // fFTable
             header[RBBIDataWrapper::DH_FTABLELEN as usize] = forward_table_size; // fTableLen
 
-            header[RBBIDataWrapper::DH_RTABLE as usize] = header[RBBIDataWrapper::DH_FTABLE as usize] + forward_table_size; // fRTable
+            header[RBBIDataWrapper::DH_RTABLE as usize] =
+                header[RBBIDataWrapper::DH_FTABLE as usize] + forward_table_size; // fRTable
             header[RBBIDataWrapper::DH_RTABLELEN as usize] = reverse_table_size; // fRTableLen
 
-            header[RBBIDataWrapper::DH_TRIE as usize] =
-                header[RBBIDataWrapper::DH_RTABLE as usize] + header[RBBIDataWrapper::DH_RTABLELEN as usize]; // fTrie
-            header[RBBIDataWrapper::DH_TRIELEN as usize] = self.set_builder_mut().get_trie_size()?; // fTrieLen
-            header[RBBIDataWrapper::DH_STATUSTABLE as usize] = header[RBBIDataWrapper::DH_TRIE as usize] + trie_size;
+            header[RBBIDataWrapper::DH_TRIE as usize] = header[RBBIDataWrapper::DH_RTABLE as usize]
+                + header[RBBIDataWrapper::DH_RTABLELEN as usize]; // fTrie
+            header[RBBIDataWrapper::DH_TRIELEN as usize] =
+                self.set_builder_mut().get_trie_size()?; // fTrieLen
+            header[RBBIDataWrapper::DH_STATUSTABLE as usize] =
+                header[RBBIDataWrapper::DH_TRIE as usize] + trie_size;
             header[RBBIDataWrapper::DH_STATUSTABLELEN as usize] = status_table_size; // fStatusTableLen
             header[RBBIDataWrapper::DH_RULESOURCE as usize] =
                 header[RBBIDataWrapper::DH_STATUSTABLE as usize] + status_table_size;
@@ -356,7 +378,10 @@ impl RBBIRuleBuilder {
         //    Generate the mapping tables (TRIE) from input code points to
         //    the character categories.
         //
-        let mut set_builder = self.f_set_builder.take().expect("the set builder is in place");
+        let mut set_builder = self
+            .f_set_builder
+            .take()
+            .expect("the set builder is in place");
         let ranges = set_builder.build_ranges(self);
         self.f_set_builder = Some(set_builder);
         ranges?;
@@ -373,11 +398,18 @@ impl RBBIRuleBuilder {
         //   Optimize the DFA state transition table.
         //
         self.optimize_tables();
-        let mut forward_table = self.f_forward_table.take().expect("the forward table is built");
+        let mut forward_table = self
+            .f_forward_table
+            .take()
+            .expect("the forward table is built");
         forward_table.build_safe_reverse_table(self);
         self.f_forward_table = Some(forward_table);
 
-        if self.f_debug_env.as_deref().is_some_and(|e| e.contains("states")) {
+        if self
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("states"))
+        {
             self.forward_table().print_states(self);
             self.forward_table().print_rule_status_table(self);
             self.forward_table().print_reverse_table();
@@ -398,7 +430,10 @@ impl RBBIRuleBuilder {
     /// `optimizeTables()`: merges duplicate character categories and
     /// removes duplicate states until nothing changes.
     fn optimize_tables(&mut self) {
-        let mut forward_table = self.f_forward_table.take().expect("the forward table is built");
+        let mut forward_table = self
+            .f_forward_table
+            .take()
+            .expect("the forward table is built");
         loop {
             let mut did_something = false;
 

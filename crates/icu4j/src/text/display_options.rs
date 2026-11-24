@@ -67,7 +67,6 @@ impl DisplayOptions {
     pub fn get_substitute_handling(&self) -> SubstituteHandling {
         self.substitute_handling
     }
-
 }
 
 /// Responsible for building `DisplayOptions`.
@@ -149,7 +148,10 @@ impl Builder {
     }
 
     /// `setSubstituteHandling(SubstituteHandling substitute_handling)`.
-    pub fn set_substitute_handling(&mut self, substitute_handling: SubstituteHandling) -> &mut Self {
+    pub fn set_substitute_handling(
+        &mut self,
+        substitute_handling: SubstituteHandling,
+    ) -> &mut Self {
         self.substitute_handling = substitute_handling;
         self
     }
@@ -195,7 +197,17 @@ pub enum NounClass {
 
 impl NounClass {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [NounClass; 9] = [NounClass::Undefined, NounClass::Other, NounClass::Neuter, NounClass::Feminine, NounClass::Masculine, NounClass::Animate, NounClass::Inanimate, NounClass::Personal, NounClass::Common];
+    pub const VALUES: [NounClass; 9] = [
+        NounClass::Undefined,
+        NounClass::Other,
+        NounClass::Neuter,
+        NounClass::Feminine,
+        NounClass::Masculine,
+        NounClass::Animate,
+        NounClass::Inanimate,
+        NounClass::Personal,
+        NounClass::Common,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -263,7 +275,11 @@ pub enum NameStyle {
 
 impl NameStyle {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [NameStyle; 3] = [NameStyle::Undefined, NameStyle::StandardNames, NameStyle::DialectNames];
+    pub const VALUES: [NameStyle; 3] = [
+        NameStyle::Undefined,
+        NameStyle::StandardNames,
+        NameStyle::DialectNames,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -273,7 +289,6 @@ impl NameStyle {
             NameStyle::DialectNames => "DIALECT_NAMES",
         }
     }
-
 }
 
 impl fmt::Display for NameStyle {
@@ -297,7 +312,11 @@ pub enum SubstituteHandling {
 
 impl SubstituteHandling {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [SubstituteHandling; 3] = [SubstituteHandling::Undefined, SubstituteHandling::Substitute, SubstituteHandling::NoSubstitute];
+    pub const VALUES: [SubstituteHandling; 3] = [
+        SubstituteHandling::Undefined,
+        SubstituteHandling::Substitute,
+        SubstituteHandling::NoSubstitute,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -307,7 +326,6 @@ impl SubstituteHandling {
             SubstituteHandling::NoSubstitute => "NO_SUBSTITUTE",
         }
     }
-
 }
 
 impl fmt::Display for SubstituteHandling {
@@ -331,7 +349,11 @@ pub enum DisplayLength {
 
 impl DisplayLength {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [DisplayLength; 3] = [DisplayLength::Undefined, DisplayLength::LengthFull, DisplayLength::LengthShort];
+    pub const VALUES: [DisplayLength; 3] = [
+        DisplayLength::Undefined,
+        DisplayLength::LengthFull,
+        DisplayLength::LengthShort,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -341,7 +363,6 @@ impl DisplayLength {
             DisplayLength::LengthShort => "LENGTH_SHORT",
         }
     }
-
 }
 
 impl fmt::Display for DisplayLength {
@@ -369,7 +390,13 @@ pub enum Capitalization {
 
 impl Capitalization {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [Capitalization; 5] = [Capitalization::Undefined, Capitalization::BeginningOfSentence, Capitalization::MiddleOfSentence, Capitalization::Standalone, Capitalization::UiListOrMenu];
+    pub const VALUES: [Capitalization; 5] = [
+        Capitalization::Undefined,
+        Capitalization::BeginningOfSentence,
+        Capitalization::MiddleOfSentence,
+        Capitalization::Standalone,
+        Capitalization::UiListOrMenu,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -381,7 +408,6 @@ impl Capitalization {
             Capitalization::UiListOrMenu => "UI_LIST_OR_MENU",
         }
     }
-
 }
 
 impl fmt::Display for Capitalization {
@@ -413,7 +439,15 @@ pub enum PluralCategory {
 
 impl PluralCategory {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [PluralCategory; 7] = [PluralCategory::Undefined, PluralCategory::Zero, PluralCategory::One, PluralCategory::Two, PluralCategory::Few, PluralCategory::Many, PluralCategory::Other];
+    pub const VALUES: [PluralCategory; 7] = [
+        PluralCategory::Undefined,
+        PluralCategory::Zero,
+        PluralCategory::One,
+        PluralCategory::Two,
+        PluralCategory::Few,
+        PluralCategory::Many,
+        PluralCategory::Other,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {
@@ -501,7 +535,23 @@ pub enum GrammaticalCase {
 
 impl GrammaticalCase {
     /// `VALUES`: the unmodifiable list of every value.
-    pub const VALUES: [GrammaticalCase; 15] = [GrammaticalCase::Undefined, GrammaticalCase::Ablative, GrammaticalCase::Accusative, GrammaticalCase::Comitative, GrammaticalCase::Dative, GrammaticalCase::Ergative, GrammaticalCase::Genitive, GrammaticalCase::Instrumental, GrammaticalCase::Locative, GrammaticalCase::LocativeCopulative, GrammaticalCase::Nominative, GrammaticalCase::Oblique, GrammaticalCase::Prepositional, GrammaticalCase::Sociative, GrammaticalCase::Vocative];
+    pub const VALUES: [GrammaticalCase; 15] = [
+        GrammaticalCase::Undefined,
+        GrammaticalCase::Ablative,
+        GrammaticalCase::Accusative,
+        GrammaticalCase::Comitative,
+        GrammaticalCase::Dative,
+        GrammaticalCase::Ergative,
+        GrammaticalCase::Genitive,
+        GrammaticalCase::Instrumental,
+        GrammaticalCase::Locative,
+        GrammaticalCase::LocativeCopulative,
+        GrammaticalCase::Nominative,
+        GrammaticalCase::Oblique,
+        GrammaticalCase::Prepositional,
+        GrammaticalCase::Sociative,
+        GrammaticalCase::Vocative,
+    ];
 
     /// `name()`.
     pub fn name(self) -> &'static str {

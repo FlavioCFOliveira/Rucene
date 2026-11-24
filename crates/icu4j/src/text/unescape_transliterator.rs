@@ -11,7 +11,10 @@ use crate::jdk::units;
 use crate::lang::u_character::UCharacter;
 use crate::r#impl::utility::Utility;
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{factory, register_factory_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    factory, register_factory_in, transliterator_boilerplate, Position, Transliterator,
+    TransliteratorBase,
+};
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
 use crate::text::utf16::UTF16;
@@ -64,8 +67,10 @@ impl UnescapeTransliterator {
             registry,
             &units("Hex-Any/Java"),
             factory(|_id| {
-                Ok(Some(Arc::new(UnescapeTransliterator::new("Hex-Any/Java", vec![2, 0, 16, 4, 4, BS, b'u' as u16, END]))
-                    as Arc<dyn Transliterator>))
+                Ok(Some(Arc::new(UnescapeTransliterator::new(
+                    "Hex-Any/Java",
+                    vec![2, 0, 16, 4, 4, BS, b'u' as u16, END],
+                )) as Arc<dyn Transliterator>))
             }),
         )?;
 
@@ -76,7 +81,23 @@ impl UnescapeTransliterator {
             factory(|_id| {
                 Ok(Some(Arc::new(UnescapeTransliterator::new(
                     "Hex-Any/C",
-                    vec![2, 0, 16, 4, 4, BS, b'u' as u16, 2, 0, 16, 8, 8, BS, b'U' as u16, END],
+                    vec![
+                        2,
+                        0,
+                        16,
+                        4,
+                        4,
+                        BS,
+                        b'u' as u16,
+                        2,
+                        0,
+                        16,
+                        8,
+                        8,
+                        BS,
+                        b'U' as u16,
+                        END,
+                    ],
                 )) as Arc<dyn Transliterator>))
             }),
         )?;
@@ -88,7 +109,18 @@ impl UnescapeTransliterator {
             factory(|_id| {
                 Ok(Some(Arc::new(UnescapeTransliterator::new(
                     "Hex-Any/XML",
-                    vec![3, 1, 16, 1, 6, b'&' as u16, b'#' as u16, b'x' as u16, b';' as u16, END],
+                    vec![
+                        3,
+                        1,
+                        16,
+                        1,
+                        6,
+                        b'&' as u16,
+                        b'#' as u16,
+                        b'x' as u16,
+                        b';' as u16,
+                        END,
+                    ],
                 )) as Arc<dyn Transliterator>))
             }),
         )?;
@@ -112,7 +144,18 @@ impl UnescapeTransliterator {
             factory(|_id| {
                 Ok(Some(Arc::new(UnescapeTransliterator::new(
                     "Hex-Any/Perl",
-                    vec![3, 1, 16, 1, 6, BS, b'x' as u16, b'{' as u16, b'}' as u16, END],
+                    vec![
+                        3,
+                        1,
+                        16,
+                        1,
+                        6,
+                        BS,
+                        b'x' as u16,
+                        b'{' as u16,
+                        b'}' as u16,
+                        END,
+                    ],
                 )) as Arc<dyn Transliterator>))
             }),
         )?;
@@ -125,12 +168,53 @@ impl UnescapeTransliterator {
                 Ok(Some(Arc::new(UnescapeTransliterator::new(
                     "Hex-Any",
                     vec![
-                        2, 0, 16, 4, 6, b'U' as u16, b'+' as u16, // Unicode
-                        2, 0, 16, 4, 4, BS, b'u' as u16, // Java
-                        2, 0, 16, 8, 8, BS, b'U' as u16, // C (surrogates)
-                        3, 1, 16, 1, 6, b'&' as u16, b'#' as u16, b'x' as u16, b';' as u16, // XML
-                        2, 1, 10, 1, 7, b'&' as u16, b'#' as u16, b';' as u16, // XML10
-                        3, 1, 16, 1, 6, BS, b'x' as u16, b'{' as u16, b'}' as u16, // Perl
+                        2,
+                        0,
+                        16,
+                        4,
+                        6,
+                        b'U' as u16,
+                        b'+' as u16, // Unicode
+                        2,
+                        0,
+                        16,
+                        4,
+                        4,
+                        BS,
+                        b'u' as u16, // Java
+                        2,
+                        0,
+                        16,
+                        8,
+                        8,
+                        BS,
+                        b'U' as u16, // C (surrogates)
+                        3,
+                        1,
+                        16,
+                        1,
+                        6,
+                        b'&' as u16,
+                        b'#' as u16,
+                        b'x' as u16,
+                        b';' as u16, // XML
+                        2,
+                        1,
+                        10,
+                        1,
+                        7,
+                        b'&' as u16,
+                        b'#' as u16,
+                        b';' as u16, // XML10
+                        3,
+                        1,
+                        16,
+                        1,
+                        6,
+                        BS,
+                        b'x' as u16,
+                        b'{' as u16,
+                        b'}' as u16, // Perl
                         END,
                     ],
                 )) as Arc<dyn Transliterator>))
@@ -154,7 +238,12 @@ impl Transliterator for UnescapeTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position pos, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, pos: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         let spec = &self.spec;
         let mut start = pos.start;
         let mut limit = pos.limit;
@@ -276,7 +365,12 @@ impl Transliterator for UnescapeTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         // Each form consists of a prefix, suffix,
         // * radix, minimum digit count, and maximum digit count.  These
         // * values are stored as a five character header. ...

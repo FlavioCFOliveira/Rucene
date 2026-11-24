@@ -41,13 +41,20 @@ impl CombinedCurrencyMatcher {
     ///
     /// The errors of the currency name lookups (`NullPointerException` for a
     /// `null` name the constructor dereferences).
-    pub fn get_instance(currency: &Currency, dfs: &DecimalFormatSymbols, parse_flags: i32) -> Result<Arc<CombinedCurrencyMatcher>> {
+    pub fn get_instance(
+        currency: &Currency,
+        dfs: &DecimalFormatSymbols,
+        parse_flags: i32,
+    ) -> Result<Arc<CombinedCurrencyMatcher>> {
         // TODO: Cache these instances. They are somewhat expensive.
         Ok(Arc::new(Self::new(currency, dfs, parse_flags)?))
     }
 
     fn new(currency: &Currency, dfs: &DecimalFormatSymbols, parse_flags: i32) -> Result<Self> {
-        let iso_code = currency.get_subtype().ok_or_else(|| null_pointer("isoCode"))?.to_string();
+        let iso_code = currency
+            .get_subtype()
+            .ok_or_else(|| null_pointer("isoCode"))?
+            .to_string();
         let currency1 = units(
             &currency
                 .get_symbol_ulocale(&dfs.get_u_locale())?
@@ -68,8 +75,14 @@ impl CombinedCurrencyMatcher {
         if 0 == (parse_flags & ParsingUtils::PARSE_FLAG_NO_FOREIGN_CURRENCIES) {
             // TODO: Currency trie does not currently have an option for case folding. It defaults to use
             // case folding on long-names but not symbols.
-            long_name_trie = Some(Currency::get_parsing_trie(&dfs.get_u_locale(), currency::LONG_NAME)?);
-            symbol_trie = Some(Currency::get_parsing_trie(&dfs.get_u_locale(), currency::SYMBOL_NAME)?);
+            long_name_trie = Some(Currency::get_parsing_trie(
+                &dfs.get_u_locale(),
+                currency::LONG_NAME,
+            )?);
+            symbol_trie = Some(Currency::get_parsing_trie(
+                &dfs.get_u_locale(),
+                currency::SYMBOL_NAME,
+            )?);
             local_long_names = None;
         } else {
             long_name_trie = None;
@@ -78,7 +91,12 @@ impl CombinedCurrencyMatcher {
             for plural in StandardPlural::VALUES {
                 let plural_keyword = plural.get_keyword();
                 let name = currency
-                    .get_name_plural_locale(dfs.get_locale(), currency::PLURAL_LONG_NAME, plural_keyword, None)?
+                    .get_name_plural_locale(
+                        dfs.get_locale(),
+                        currency::PLURAL_LONG_NAME,
+                        plural_keyword,
+                        None,
+                    )?
                     .ok_or_else(|| null_pointer("localLongNames"))?;
                 names.push(units(&name));
             }
@@ -98,7 +116,11 @@ impl CombinedCurrencyMatcher {
     }
 
     /// Matches the currency string without concern for currency spacing.
-    fn match_currency(&self, segment: &mut StringSegment, result: &mut ParsedNumber) -> Result<bool> {
+    fn match_currency(
+        &self,
+        segment: &mut StringSegment,
+        result: &mut ParsedNumber,
+    ) -> Result<bool> {
         let mut maybe_more = false;
 
         let overlap1 = if !self.currency1.is_empty() {
@@ -135,7 +157,10 @@ impl CombinedCurrencyMatcher {
             let mut values = long_name_trie.get_from(&text, 0, Some(&mut trie_output))?;
             maybe_more = maybe_more || trie_output.partial_match;
             if values.is_none() {
-                let symbol_trie = self.symbol_trie.as_ref().ok_or_else(|| null_pointer("symbolTrie"))?;
+                let symbol_trie = self
+                    .symbol_trie
+                    .as_ref()
+                    .ok_or_else(|| null_pointer("symbolTrie"))?;
                 values = symbol_trie.get_from(&text, 0, Some(&mut trie_output))?;
                 maybe_more = maybe_more || trie_output.partial_match;
             }
@@ -148,7 +173,10 @@ impl CombinedCurrencyMatcher {
         } else {
             // Use the locale long names.
             let mut longest_full_match = 0;
-            let names = self.local_long_names.as_ref().ok_or_else(|| null_pointer("localLongNames"))?;
+            let names = self
+                .local_long_names
+                .as_ref()
+                .ok_or_else(|| null_pointer("localLongNames"))?;
             for name in names {
                 if name.is_empty() {
                     // This plural case has no data

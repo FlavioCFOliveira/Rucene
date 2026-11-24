@@ -14,7 +14,9 @@ use crate::r#impl::class_loader_util::ClassLoaderUtil;
 use crate::r#impl::icu_debug::ICUDebug;
 use crate::r#impl::soft_cache::SoftCache;
 use crate::util::u_locale::ULocale;
-use crate::util::u_resource_bundle::{is_missing_resource, missing_resource, ResourceObject, UResourceBundle};
+use crate::util::u_resource_bundle::{
+    is_missing_resource, missing_resource, ResourceObject, UResourceBundle,
+};
 
 /// `DEBUG`: flag for enabling/disabling debugging code.
 static DEBUG: LazyLock<bool> = LazyLock::new(|| ICUDebug::enabled_arg("resourceBundleWrapper"));
@@ -82,7 +84,9 @@ impl PropertyResourceBundle {
         match self.lookup.get(key) {
             Some(v) => Ok(v.clone()),
             None => Err(missing_resource(
-                format!("Can't find resource for bundle java.util.PropertyResourceBundle, key {key}"),
+                format!(
+                    "Can't find resource for bundle java.util.PropertyResourceBundle, key {key}"
+                ),
                 "java.util.PropertyResourceBundle",
                 key,
             )),
@@ -120,7 +124,13 @@ struct ChmBin {
 impl ChmOrder {
     /// `new ConcurrentHashMap<>(8)`: `sizeCtl` = `tableSizeFor((int) (1.0 + 8 / 0.75f))` = 16.
     fn new() -> Self {
-        Self { table: Vec::new(), size_ctl: ((1.0 + 8.0 / 0.75f32 as f64) as usize).max(1).next_power_of_two(), count: 0 }
+        Self {
+            table: Vec::new(),
+            size_ctl: ((1.0 + 8.0 / 0.75f32 as f64) as usize)
+                .max(1)
+                .next_power_of_two(),
+            count: 0,
+        }
     }
 
     fn spread(h: i32) -> i32 {
@@ -139,7 +149,11 @@ impl ChmOrder {
         let i = (hash as usize) & (n - 1);
         let bin = &mut self.table[i];
         let mut bin_count = 0usize;
-        if let Some(node) = bin.nodes.iter_mut().find(|node| node.0 == hash && node.1 == key) {
+        if let Some(node) = bin
+            .nodes
+            .iter_mut()
+            .find(|node| node.0 == hash && node.1 == key)
+        {
             node.2 = value;
             return;
         }
@@ -180,11 +194,20 @@ impl ChmOrder {
                 continue;
             }
             if bin.tree {
-                let (lo, hi): (Vec<_>, Vec<_>) = bin.nodes.into_iter().partition(|node| (node.0 as usize) & n == 0);
+                let (lo, hi): (Vec<_>, Vec<_>) = bin
+                    .nodes
+                    .into_iter()
+                    .partition(|node| (node.0 as usize) & n == 0);
                 let lo_tree = lo.len() > 6;
                 let hi_tree = hi.len() > 6;
-                next[i] = ChmBin { nodes: lo, tree: lo_tree };
-                next[i + n] = ChmBin { nodes: hi, tree: hi_tree };
+                next[i] = ChmBin {
+                    nodes: lo,
+                    tree: lo_tree,
+                };
+                next[i + n] = ChmBin {
+                    nodes: hi,
+                    tree: hi_tree,
+                };
             } else {
                 let nodes = bin.nodes;
                 let mut run_bit = (nodes[0].0 as usize) & n;
@@ -197,7 +220,11 @@ impl ChmOrder {
                     }
                 }
                 let tail = nodes[last_run..].to_vec();
-                let (mut ln, mut hn) = if run_bit == 0 { (tail, Vec::new()) } else { (Vec::new(), tail) };
+                let (mut ln, mut hn) = if run_bit == 0 {
+                    (tail, Vec::new())
+                } else {
+                    (Vec::new(), tail)
+                };
                 for node in &nodes[..last_run] {
                     if (node.0 as usize) & n == 0 {
                         ln.insert(0, node.clone());
@@ -205,8 +232,14 @@ impl ChmOrder {
                         hn.insert(0, node.clone());
                     }
                 }
-                next[i] = ChmBin { nodes: ln, tree: false };
-                next[i + n] = ChmBin { nodes: hn, tree: false };
+                next[i] = ChmBin {
+                    nodes: ln,
+                    tree: false,
+                };
+                next[i + n] = ChmBin {
+                    nodes: hn,
+                    tree: false,
+                };
             }
         }
         self.table = next;
@@ -215,7 +248,10 @@ impl ChmOrder {
 
     /// `entrySet()` in iteration order.
     fn into_entries(self) -> impl Iterator<Item = (String, String)> {
-        self.table.into_iter().flat_map(|bin| bin.nodes.into_iter()).map(|(_, k, v)| (k, v))
+        self.table
+            .into_iter()
+            .flat_map(|bin| bin.nodes.into_iter())
+            .map(|(_, k, v)| (k, v))
     }
 }
 
@@ -259,7 +295,10 @@ impl ResourceBundleWrapper {
         match obj {
             Some(o) => Ok(ResourceObject::String(o.encode_utf16().collect())),
             None => Err(missing_resource(
-                format!("Can't find resource for bundle {}, key {}", self.base_name, a_key),
+                format!(
+                    "Can't find resource for bundle {}, key {}",
+                    self.base_name, a_key
+                ),
                 "com.ibm.icu.impl.ResourceBundleWrapper",
                 a_key,
             )),
@@ -384,9 +423,21 @@ impl ResourceBundleWrapper {
             let mut parent_is_root = false;
             if let Some(i) = i {
                 let loc_name = &locale_id[..i];
-                parent = Self::instantiate_bundle(&base_name, loc_name, default_id.as_deref(), root, disable_fallback)?;
+                parent = Self::instantiate_bundle(
+                    &base_name,
+                    loc_name,
+                    default_id.as_deref(),
+                    root,
+                    disable_fallback,
+                )?;
             } else if !locale_id.is_empty() {
-                parent = Self::instantiate_bundle(&base_name, "", default_id.as_deref(), root, disable_fallback)?;
+                parent = Self::instantiate_bundle(
+                    &base_name,
+                    "",
+                    default_id.as_deref(),
+                    root,
+                    disable_fallback,
+                )?;
                 parent_is_root = true;
             }
             let mut b: Option<Arc<ResourceBundleWrapper>> = None;
@@ -422,7 +473,10 @@ impl ResourceBundleWrapper {
                         && !disable_fallback
                         && !locale_id.is_empty()
                         && !locale_id.contains('_')
-                        && !Self::locale_id_starts_with_lang_subtag(default_id.as_deref().unwrap_or("null"), &locale_id)
+                        && !Self::locale_id_starts_with_lang_subtag(
+                            default_id.as_deref().unwrap_or("null"),
+                            &locale_id,
+                        )
                     {
                         // localeID is only a language subtag, different from the default language.
                         b = Self::instantiate_bundle(

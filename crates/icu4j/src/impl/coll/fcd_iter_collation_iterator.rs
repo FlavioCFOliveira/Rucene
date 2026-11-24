@@ -5,7 +5,10 @@
 
 use std::sync::Arc;
 
-use crate::jdk::{append_code_point, char_count, code_point_at, code_point_before, is_high_surrogate, is_low_surrogate, to_code_point};
+use crate::jdk::{
+    append_code_point, char_count, code_point_at, code_point_before, is_high_surrogate,
+    is_low_surrogate, to_code_point,
+};
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_fcd::CollationFCD;
@@ -68,7 +71,12 @@ pub struct FCDIterCollationIterator {
 
 impl FCDIterCollationIterator {
     /// `FCDIterCollationIterator(CollationData, boolean, UCharacterIterator, int)`.
-    pub fn new(data: Arc<CollationData>, numeric: bool, ui: Box<dyn UCharacterIterator>, start_index: i32) -> Self {
+    pub fn new(
+        data: Arc<CollationData>,
+        numeric: bool,
+        ui: Box<dyn UCharacterIterator>,
+        start_index: i32,
+    ) -> Self {
         let nfc_impl = data.nfc_impl.clone();
         Self {
             base: CollationIteratorBase::with_numeric(data, numeric),
@@ -84,14 +92,17 @@ impl FCDIterCollationIterator {
     }
 
     fn normalized(&self) -> &Vec<u16> {
-        self.normalized.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.normalized
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn switch_to_forward(&mut self) {
         debug_assert!(
             self.state == State::IterCheckBwd
                 || (self.state == State::IterInFcdSegment && self.pos == self.limit)
-                || (self.state >= State::InNormIterAtLimit && self.pos as usize == self.normalized().len())
+                || (self.state >= State::InNormIterAtLimit
+                    && self.pos as usize == self.normalized().len())
         );
         if self.state == State::IterCheckBwd {
             // Turn around from backward checking.
@@ -141,7 +152,9 @@ impl FCDIterCollationIterator {
                 break;
             }
             append_cp(&mut s, c);
-            if lead_cc != 0 && (prev_cc > lead_cc || CollationFCD::is_fcd16_of_tibetan_composite_vowel(fcd16)) {
+            if lead_cc != 0
+                && (prev_cc > lead_cc || CollationFCD::is_fcd16_of_tibetan_composite_vowel(fcd16))
+            {
                 // Fails FCD check. Find the next FCD boundary and normalize.
                 loop {
                     c = self.iter.next_code_point();
@@ -231,7 +244,8 @@ impl FCDIterCollationIterator {
             }
             append_cp(&mut s, c);
             if trail_cc != 0
-                && ((next_cc != 0 && trail_cc > next_cc) || CollationFCD::is_fcd16_of_tibetan_composite_vowel(fcd16))
+                && ((next_cc != 0 && trail_cc > next_cc)
+                    || CollationFCD::is_fcd16_of_tibetan_composite_vowel(fcd16))
             {
                 // Fails FCD check. Find the previous FCD boundary and normalize.
                 while fcd16 > 0xff {
@@ -314,7 +328,8 @@ impl CollationIterator for FCDIterCollationIterator {
                     return c;
                 }
                 if CollationFCD::has_tccc(c)
-                    && (CollationFCD::maybe_tibetan_composite_vowel(c) || CollationFCD::has_lccc(self.iter.current()))
+                    && (CollationFCD::maybe_tibetan_composite_vowel(c)
+                        || CollationFCD::has_lccc(self.iter.current()))
                 {
                     self.iter.previous();
                     if !self.next_segment() {
@@ -336,7 +351,9 @@ impl CollationIterator for FCDIterCollationIterator {
                 self.pos += char_count(c);
                 debug_assert!(c >= 0);
                 return c;
-            } else if self.state >= State::InNormIterAtLimit && self.pos as usize != self.normalized().len() {
+            } else if self.state >= State::InNormIterAtLimit
+                && self.pos as usize != self.normalized().len()
+            {
                 c = code_point_at(self.normalized(), self.pos);
                 self.pos += char_count(c);
                 return c;
@@ -410,7 +427,8 @@ impl CollationIterator for FCDIterCollationIterator {
                     return NO_CP_AND_CE32;
                 }
                 if CollationFCD::has_tccc(ch)
-                    && (CollationFCD::maybe_tibetan_composite_vowel(ch) || CollationFCD::has_lccc(self.iter.current()))
+                    && (CollationFCD::maybe_tibetan_composite_vowel(ch)
+                        || CollationFCD::has_lccc(self.iter.current()))
                 {
                     self.iter.previous();
                     if !self.next_segment() {
@@ -425,7 +443,9 @@ impl CollationIterator for FCDIterCollationIterator {
                 self.pos += 1;
                 debug_assert!(c >= 0);
                 break;
-            } else if self.state >= State::InNormIterAtLimit && self.pos as usize != self.normalized().len() {
+            } else if self.state >= State::InNormIterAtLimit
+                && self.pos as usize != self.normalized().len()
+            {
                 c = self.normalized()[self.pos as usize] as i32;
                 self.pos += 1;
                 break;
@@ -433,8 +453,15 @@ impl CollationIterator for FCDIterCollationIterator {
                 self.switch_to_forward();
             }
         }
-        let trie = self.base.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
-        CollationIteratorBase::make_code_point_and_ce32_pair(c, trie.get_from_u16_single_lead(c as u16))
+        let trie = self
+            .base
+            .trie
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        CollationIteratorBase::make_code_point_and_ce32_pair(
+            c,
+            trie.get_from_u16_single_lead(c as u16),
+        )
     }
 
     fn handle_get_trail_surrogate(&mut self) -> u16 {

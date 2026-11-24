@@ -134,7 +134,11 @@ impl RBBISetBuilder {
     /// `IllegalStateException` (`Assert.assrt`) for an internal
     /// inconsistency.
     pub(crate) fn build_ranges(&mut self, rb: &mut RBBIRuleBuilder) -> Result<()> {
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("usets")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("usets"))
+        {
             self.print_sets(rb);
         }
 
@@ -217,7 +221,11 @@ impl RBBISetBuilder {
             }
         }
 
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("range")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("range"))
+        {
             self.print_ranges(rb);
         }
 
@@ -237,9 +245,12 @@ impl RBBISetBuilder {
         let ids = self.range_ids();
         for (pos, &rl_range) in ids.iter().enumerate() {
             for &rl_search_range in &ids[..pos] {
-                if self.ranges[rl_range].f_includes_sets == self.ranges[rl_search_range].f_includes_sets {
+                if self.ranges[rl_range].f_includes_sets
+                    == self.ranges[rl_search_range].f_includes_sets
+                {
                     self.ranges[rl_range].f_num = self.ranges[rl_search_range].f_num;
-                    self.ranges[rl_range].f_includes_dict = self.ranges[rl_search_range].f_includes_dict;
+                    self.ranges[rl_range].f_includes_dict =
+                        self.ranges[rl_search_range].f_includes_dict;
                     break;
                 }
             }
@@ -300,10 +311,18 @@ impl RBBISetBuilder {
             }
         }
 
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("rgroup")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("rgroup"))
+        {
             self.print_range_groups(rb);
         }
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("esets")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("esets"))
+        {
             self.print_sets(rb);
         }
         Ok(())
@@ -338,7 +357,8 @@ impl RBBISetBuilder {
         debug_assert!(categories.first >= 1);
         debug_assert!(categories.second > categories.first);
         debug_assert!(
-            (categories.first < self.f_dict_categories_start && categories.second < self.f_dict_categories_start)
+            (categories.first < self.f_dict_categories_start
+                && categories.second < self.f_dict_categories_start)
                 || (categories.first >= self.f_dict_categories_start
                     && categories.second >= self.f_dict_categories_start)
         );
@@ -371,7 +391,11 @@ impl RBBISetBuilder {
                 .unwrap_or_else(|| panic!("java.lang.NullPointerException: fTrie"));
             self.f_frozen_trie = Some(trie.build_immutable(
                 Some(TrieType::Fast),
-                Some(if use_8_bits { ValueWidth::Bits8 } else { ValueWidth::Bits16 }),
+                Some(if use_8_bits {
+                    ValueWidth::Bits8
+                } else {
+                    ValueWidth::Bits16
+                }),
             )?);
         }
         Ok(())
@@ -397,7 +421,10 @@ impl RBBISetBuilder {
     /// The `IOException` of the stream.
     pub(crate) fn serialize_trie(&mut self, os: &mut dyn OutputStream) -> Result<()> {
         self.freeze_trie_if_not_yet()?;
-        self.f_frozen_trie.as_ref().expect("frozen above").to_binary(os)?;
+        self.f_frozen_trie
+            .as_ref()
+            .expect("frozen above")
+            .to_binary(os)?;
         Ok(())
     }
 
@@ -552,4 +579,3 @@ impl RBBISetBuilder {
         println!();
     }
 }
-

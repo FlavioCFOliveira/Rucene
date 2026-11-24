@@ -25,8 +25,9 @@ const SLOPE_REACH_POS_1_: i32 = SLOPE_SINGLE_;
 const SLOPE_REACH_NEG_1_: i32 = -SLOPE_SINGLE_;
 const SLOPE_REACH_POS_2_: i32 = SLOPE_LEAD_2_ * SLOPE_TAIL_COUNT_ + SLOPE_LEAD_2_ - 1;
 const SLOPE_REACH_NEG_2_: i32 = -SLOPE_REACH_POS_2_ - 1;
-const SLOPE_REACH_POS_3_: i32 =
-    SLOPE_LEAD_3_ * SLOPE_TAIL_COUNT_ * SLOPE_TAIL_COUNT_ + (SLOPE_LEAD_3_ - 1) * SLOPE_TAIL_COUNT_ + (SLOPE_TAIL_COUNT_ - 1);
+const SLOPE_REACH_POS_3_: i32 = SLOPE_LEAD_3_ * SLOPE_TAIL_COUNT_ * SLOPE_TAIL_COUNT_
+    + (SLOPE_LEAD_3_ - 1) * SLOPE_TAIL_COUNT_
+    + (SLOPE_TAIL_COUNT_ - 1);
 const SLOPE_REACH_NEG_3_: i32 = -SLOPE_REACH_POS_3_ - 1;
 const SLOPE_START_POS_2_: i32 = SLOPE_MIDDLE_ + SLOPE_SINGLE_ + 1;
 const SLOPE_START_POS_3_: i32 = SLOPE_START_POS_2_ + SLOPE_LEAD_2_;
@@ -39,14 +40,23 @@ impl BOCSU {
     ///
     /// Equivalent to `writeIdenticalLevelRun(int, CharSequence, int, int,
     /// ByteArrayWrapper)`; returns the new "prev" code point.
-    pub fn write_identical_level_run(mut prev: i32, s: &[u16], mut i: i32, length: i32, sink: &mut ByteArrayWrapper) -> i32 {
+    pub fn write_identical_level_run(
+        mut prev: i32,
+        s: &[u16],
+        mut i: i32,
+        length: i32,
+        sink: &mut ByteArrayWrapper,
+    ) -> i32 {
         while i < length {
             // We must have capacity>=SLOPE_MAX_BYTES in case writeDiff() writes that much,
             // but we do not want to force the sink to allocate
             // for a large min_capacity because we might actually only write one byte.
             ensure_append_capacity(sink, 16, s.len() as i32 * 2);
             let size = sink.size;
-            let buffer = sink.bytes.as_mut().expect("ensureAppendCapacity allocated the buffer");
+            let buffer = sink
+                .bytes
+                .as_mut()
+                .expect("ensureAppendCapacity allocated the buffer");
             let capacity = buffer.len() as i32;
             let mut p = size;
             let last_safe = capacity - SLOPE_MAX_BYTES_;
@@ -76,7 +86,11 @@ impl BOCSU {
     }
 }
 
-fn ensure_append_capacity(sink: &mut ByteArrayWrapper, min_capacity: i32, mut desired_capacity: i32) {
+fn ensure_append_capacity(
+    sink: &mut ByteArrayWrapper,
+    min_capacity: i32,
+    mut desired_capacity: i32,
+) {
     let len = sink.bytes.as_ref().map_or(0, |b| b.len() as i32);
     let remaining_capacity = len - sink.size;
     if remaining_capacity >= min_capacity {

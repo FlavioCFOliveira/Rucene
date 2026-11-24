@@ -198,7 +198,10 @@ impl LocaleIDParser {
             let c = self.id[1];
             if c == HYPHEN || c == UNDERSCORE {
                 let c = self.id[0];
-                return c == b'x' as u16 || c == b'X' as u16 || c == b'i' as u16 || c == b'I' as u16;
+                return c == b'x' as u16
+                    || c == b'X' as u16
+                    || c == b'i' as u16
+                    || c == b'I' as u16;
             }
         }
         false
@@ -339,7 +342,9 @@ impl LocaleIDParser {
                 self.buffer.truncate(old_blen);
                 self.had_country = false;
             } else if chars_appended == 3 {
-                if let Some(region) = LocaleIDs::three_to_two_letter_region(&self.get_string(old_blen)) {
+                if let Some(region) =
+                    LocaleIDs::three_to_two_letter_region(&self.get_string(old_blen))
+                {
                     self.set(old_blen, &region);
                 }
             }
@@ -581,7 +586,9 @@ impl LocaleIDParser {
         let start = self.index;
         while !Self::is_done_or_keyword_assign(self.next()) {}
         self.index -= 1;
-        AsciiUtil::to_lower_string(&String::from_utf16_lossy(trim16(&self.id[start..self.index])))
+        AsciiUtil::to_lower_string(&String::from_utf16_lossy(trim16(
+            &self.id[start..self.index],
+        )))
     }
 
     fn get_value(&mut self) -> String {
@@ -652,7 +659,11 @@ impl LocaleIDParser {
         if !entries.is_empty() {
             let mut first = true;
             for (k, v) in entries {
-                self.append(if first { KEYWORD_SEPARATOR } else { ITEM_SEPARATOR });
+                self.append(if first {
+                    KEYWORD_SEPARATOR
+                } else {
+                    ITEM_SEPARATOR
+                });
                 first = false;
                 self.append_str(&k);
                 self.append(KEYWORD_ASSIGN);
@@ -693,7 +704,11 @@ impl LocaleIDParser {
     /// # Errors
     ///
     /// As [`set_keyword_value`](Self::set_keyword_value).
-    pub fn default_keyword_value(&mut self, keyword_name: Option<&str>, value: Option<&str>) -> Result<()> {
+    pub fn default_keyword_value(
+        &mut self,
+        keyword_name: Option<&str>,
+        value: Option<&str>,
+    ) -> Result<()> {
         self.set_keyword_value_impl(keyword_name, value, false)
     }
 
@@ -704,11 +719,20 @@ impl LocaleIDParser {
     ///
     /// `IllegalArgumentException("keyword must not be empty")` or `("value
     /// must not be empty")`.
-    pub fn set_keyword_value(&mut self, keyword_name: Option<&str>, value: Option<&str>) -> Result<()> {
+    pub fn set_keyword_value(
+        &mut self,
+        keyword_name: Option<&str>,
+        value: Option<&str>,
+    ) -> Result<()> {
         self.set_keyword_value_impl(keyword_name, value, true)
     }
 
-    fn set_keyword_value_impl(&mut self, keyword_name: Option<&str>, value: Option<&str>, reset: bool) -> Result<()> {
+    fn set_keyword_value_impl(
+        &mut self,
+        keyword_name: Option<&str>,
+        value: Option<&str>,
+        reset: bool,
+    ) -> Result<()> {
         match keyword_name {
             None => {
                 if reset {

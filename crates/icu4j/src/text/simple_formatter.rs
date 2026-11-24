@@ -38,7 +38,8 @@ impl SimpleFormatter {
     /// too many arguments.
     pub fn compile_min_max_arguments(pattern: &[u16], min: i32, max: i32) -> Result<Self> {
         let mut sb = Vec::new();
-        let compiled_pattern = SimpleFormatterImpl::compile_to_string_min_max_arguments(pattern, &mut sb, min, max)?;
+        let compiled_pattern =
+            SimpleFormatterImpl::compile_to_string_min_max_arguments(pattern, &mut sb, min, max)?;
         Ok(Self { compiled_pattern })
     }
 
@@ -90,7 +91,9 @@ impl SimpleFormatter {
 
     /// `toString()`: the pattern with `{i}` for every argument.
     pub fn to_java_string(&self) -> Vec<u16> {
-        let values: Vec<Vec<u16>> = (0..self.get_argument_limit()).map(|i| units(&format!("{{{i}}}"))).collect();
+        let values: Vec<Vec<u16>> = (0..self.get_argument_limit())
+            .map(|i| units(&format!("{{{i}}}")))
+            .collect();
         let args: Vec<Arg<'_>> = values.iter().map(|v| Arg::Text(v)).collect();
         let mut sb = Vec::new();
         // The values are exactly getArgumentLimit() texts: cannot fail.

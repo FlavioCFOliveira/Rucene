@@ -55,10 +55,18 @@ impl Data {
         }
     }
 
-    fn get_value<'v>(table: &dyn Table, key: &str, value: &'v mut ReaderValue) -> Result<&'v mut ReaderValue> {
+    fn get_value<'v>(
+        table: &dyn Table,
+        key: &str,
+        value: &'v mut ReaderValue,
+    ) -> Result<&'v mut ReaderValue> {
         let k: Vec<u16> = key.encode_utf16().collect();
         if !table.find_value(&k, value) {
-            return Err(missing_resource("langInfo.res missing data", "", format!("likely/{key}")));
+            return Err(missing_resource(
+                "langInfo.res missing data",
+                "",
+                format!("likely/{key}"),
+            ));
         }
         Ok(value)
     }
@@ -68,7 +76,10 @@ impl Data {
         let mut m = HashMap::with_capacity(pairs.len() / 2);
         let mut i = 0;
         while i < pairs.len() {
-            m.insert(String::from_utf16_lossy(&pairs[i]), String::from_utf16_lossy(&pairs[i + 1]));
+            m.insert(
+                String::from_utf16_lossy(&pairs[i]),
+                String::from_utf16_lossy(&pairs[i + 1]),
+            );
             i += 2;
         }
         Ok(m)
@@ -103,7 +114,8 @@ impl Data {
             HashMap::new()
         };
 
-        let mut buffer = Self::get_value(likely_table.as_ref(), "trie", &mut value)?.get_binary()?;
+        let mut buffer =
+            Self::get_value(likely_table.as_ref(), "trie", &mut value)?.get_binary()?;
         let mut trie = vec![0u8; buffer.remaining() as usize];
         buffer.get_bytes(&mut trie)?;
         let trie: Vec<i8> = trie.into_iter().map(|b| b as i8).collect();
@@ -112,9 +124,15 @@ impl Data {
             .into_iter()
             .map(|s| String::from_utf16_lossy(&s))
             .collect();
-        let nums = Self::get_value(likely_table.as_ref(), "lsrnum", &mut value)?.get_int_vector()?;
+        let nums =
+            Self::get_value(likely_table.as_ref(), "lsrnum", &mut value)?.get_int_vector()?;
         let lsrs = LSR::decode_ints(&nums, &m49)?;
-        Ok(Data::new(language_aliases, region_aliases, Arc::from(trie), lsrs))
+        Ok(Data::new(
+            language_aliases,
+            region_aliases,
+            Arc::from(trie),
+            lsrs,
+        ))
     }
 }
 
@@ -134,8 +152,11 @@ pub struct LikelySubtags {
 }
 
 /// `INSTANCE`, or the message of its initializer's exception.
-static INSTANCE: LazyLock<std::result::Result<Arc<LikelySubtags>, String>> =
-    LazyLock::new(|| Data::load().map(|d| Arc::new(LikelySubtags::new(d))).map_err(|e| e.to_string()));
+static INSTANCE: LazyLock<std::result::Result<Arc<LikelySubtags>, String>> = LazyLock::new(|| {
+    Data::load()
+        .map(|d| Arc::new(LikelySubtags::new(d)))
+        .map_err(|e| e.to_string())
+});
 
 impl LikelySubtags {
     /// `SKIP_SCRIPT`.
@@ -210,7 +231,10 @@ impl LikelySubtags {
     }
 
     fn get_canonical(aliases: &HashMap<String, String>, alias: &str) -> String {
-        aliases.get(alias).cloned().unwrap_or_else(|| alias.to_string())
+        aliases
+            .get(alias)
+            .cloned()
+            .unwrap_or_else(|| alias.to_string())
     }
 
     /// `makeMaximizedLsrFrom(ULocale locale, boolean returnInputIfUnmatch)`.
@@ -218,7 +242,11 @@ impl LikelySubtags {
     /// # Errors
     ///
     /// The errors of loading the region data.
-    pub fn make_maximized_lsr_from(&self, locale: &ULocale, return_input_if_unmatch: bool) -> Result<LSR> {
+    pub fn make_maximized_lsr_from(
+        &self,
+        locale: &ULocale,
+        return_input_if_unmatch: bool,
+    ) -> Result<LSR> {
         let name = locale.get_name(); // Faster than .toLanguageTag().
         if name.starts_with("@x=") {
             let tag = locale.to_language_tag();
@@ -340,7 +368,11 @@ impl LikelySubtags {
 
     fn is_macroregion(region: &str) -> Result<bool> {
         let ty = Region::get_instance(region)?.get_type();
-        Ok(ty == RegionType::World || ty == RegionType::Continent || ty == RegionType::Subcontinent)
+        Ok(
+            ty == RegionType::World
+                || ty == RegionType::Continent
+                || ty == RegionType::Subcontinent,
+        )
     }
 
     fn first_letter_value(&self, iter: &mut BytesTrie, language: &str) -> i32 {
@@ -357,12 +389,19 @@ impl LikelySubtags {
         Self::trie_next(iter, &lb, 0)
     }
 
-    fn maximize(&self, language: &str, script: &str, region: &str, return_input_if_unmatch: bool) -> Result<LSR> {
+    fn maximize(
+        &self,
+        language: &str,
+        script: &str,
+        region: &str,
+        return_input_if_unmatch: bool,
+    ) -> Result<LSR> {
         let mut language = if language == "und" { "" } else { language }.to_string();
         let mut script = if script == "Zzzz" { "" } else { script }.to_string();
         let mut region = if region == "ZZ" { "" } else { region }.to_string();
         if !script.is_empty() && !region.is_empty() && !language.is_empty() {
-            return Ok(LSR::new(&language, &script, &region, LSR::EXPLICIT_LSR)); // already maximized
+            return Ok(LSR::new(&language, &script, &region, LSR::EXPLICIT_LSR));
+            // already maximized
         }
         let retain_language;
         let retain_script;
@@ -434,7 +473,9 @@ impl LikelySubtags {
         }
         let result = &self.lsrs[value as usize];
 
-        if return_input_if_unmatch && !(match_language || match_script || (match_region && language.is_empty())) {
+        if return_input_if_unmatch
+            && !(match_language || match_script || (match_region && language.is_empty()))
+        {
             return Ok(LSR::new("", "", "", LSR::EXPLICIT_LSR)); // no matching.
         }
         if language.is_empty() {
@@ -588,11 +629,22 @@ impl LikelySubtags {
     /// # Errors
     ///
     /// The errors of loading the region data.
-    pub fn minimize_subtags(&self, language_in: &str, script_in: &str, region_in: &str, field_to_favor: Minimize) -> Result<LSR> {
+    pub fn minimize_subtags(
+        &self,
+        language_in: &str,
+        script_in: &str,
+        region_in: &str,
+        field_to_favor: Minimize,
+    ) -> Result<LSR> {
         let max = self.maximize(language_in, script_in, region_in, true)?;
         if max.language.is_empty() && max.region.is_empty() && max.script.is_empty() {
             // Cannot match, return as is
-            return Ok(LSR::new(language_in, script_in, region_in, LSR::EXPLICIT_LSR));
+            return Ok(LSR::new(
+                language_in,
+                script_in,
+                region_in,
+                LSR::EXPLICIT_LSR,
+            ));
         }
         let test = self.maximize(&max.language, "", "", true)?;
         if test.is_equivalent_to(&max) {
@@ -602,23 +654,48 @@ impl LikelySubtags {
         if Minimize::FavorRegion == field_to_favor {
             let test = self.maximize(&max.language, "", &max.region, true)?;
             if test.is_equivalent_to(&max) {
-                return Ok(LSR::new(&max.language, "", &max.region, LSR::DONT_CARE_FLAGS));
+                return Ok(LSR::new(
+                    &max.language,
+                    "",
+                    &max.region,
+                    LSR::DONT_CARE_FLAGS,
+                ));
             }
             let test = self.maximize(&max.language, &max.script, "", true)?;
             if test.is_equivalent_to(&max) {
-                return Ok(LSR::new(&max.language, &max.script, "", LSR::DONT_CARE_FLAGS));
+                return Ok(LSR::new(
+                    &max.language,
+                    &max.script,
+                    "",
+                    LSR::DONT_CARE_FLAGS,
+                ));
             }
         } else {
             let test = self.maximize(&max.language, &max.script, "", true)?;
             if test.is_equivalent_to(&max) {
-                return Ok(LSR::new(&max.language, &max.script, "", LSR::DONT_CARE_FLAGS));
+                return Ok(LSR::new(
+                    &max.language,
+                    &max.script,
+                    "",
+                    LSR::DONT_CARE_FLAGS,
+                ));
             }
             let test = self.maximize(&max.language, "", &max.region, true)?;
             if test.is_equivalent_to(&max) {
-                return Ok(LSR::new(&max.language, "", &max.region, LSR::DONT_CARE_FLAGS));
+                return Ok(LSR::new(
+                    &max.language,
+                    "",
+                    &max.region,
+                    LSR::DONT_CARE_FLAGS,
+                ));
             }
         }
-        Ok(LSR::new(&max.language, &max.script, &max.region, LSR::DONT_CARE_FLAGS))
+        Ok(LSR::new(
+            &max.language,
+            &max.script,
+            &max.region,
+            LSR::DONT_CARE_FLAGS,
+        ))
     }
 
     /// `getTable()` (private): the trie's strings and their LSRs, sorted.

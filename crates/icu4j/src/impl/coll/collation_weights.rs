@@ -78,11 +78,15 @@ impl CollationWeights {
     }
 
     fn r(&self, i: i32) -> &WeightRange {
-        self.ranges[i as usize].as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.ranges[i as usize]
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn rm(&mut self, i: i32) -> &mut WeightRange {
-        self.ranges[i as usize].as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.ranges[i as usize]
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `initForPrimary(boolean)`.
@@ -247,8 +251,11 @@ impl CollationWeights {
             } else {
                 // Split the offset between this byte and the previous one.
                 offset -= self.min_bytes[length as usize];
-                weight =
-                    set_weight_byte(weight, length, self.min_bytes[length as usize] + offset % self.count_bytes(length));
+                weight = set_weight_byte(
+                    weight,
+                    length,
+                    self.min_bytes[length as usize] + offset % self.count_bytes(length),
+                );
                 offset /= self.count_bytes(length);
                 length -= 1;
                 debug_assert!(length > 0);
@@ -282,7 +289,8 @@ impl CollationWeights {
         }
 
         // check that neither is a prefix of the other
-        if lower_length < upper_length && lower_limit == truncate_weight(upper_limit, lower_length) {
+        if lower_length < upper_length && lower_limit == truncate_weight(upper_limit, lower_length)
+        {
             return false;
         }
         // if the upper limit is a prefix of the lower limit then the earlier test lowerLimit>=upperLimit has caught it
@@ -346,7 +354,8 @@ impl CollationWeights {
         // set the middle range
         middle.length = self.middle_length;
         if middle.end >= middle.start {
-            middle.count = ((middle.end - middle.start) >> (8 * (4 - self.middle_length))) as i32 + 1;
+            middle.count =
+                ((middle.end - middle.start) >> (8 * (4 - self.middle_length))) as i32 + 1;
         } else {
             // Merge overlapping ranges, or join adjacent ones.
             let mut length = 4;
@@ -371,11 +380,16 @@ impl CollationWeights {
                             // lowerEnd>upperStart is only possible
                             // if the leading bytes are equal
                             // and lastByte(lowerEnd)>lastByte(upperStart).
-                            debug_assert!(truncate_weight(lower_end, length - 1) == truncate_weight(upper_start, length - 1));
+                            debug_assert!(
+                                truncate_weight(lower_end, length - 1)
+                                    == truncate_weight(upper_start, length - 1)
+                            );
                             // Intersect these two ranges.
                             let lo_m = lower[li].as_mut().expect("checked");
                             lo_m.end = up.end;
-                            lo_m.count = get_weight_trail(lo_m.end, length) - get_weight_trail(lo_m.start, length) + 1;
+                            lo_m.count = get_weight_trail(lo_m.end, length)
+                                - get_weight_trail(lo_m.start, length)
+                                + 1;
                             // count might be <= 0 in which case there is no room,
                             // and the range-collecting code below will ignore this range.
                             merged = true;
@@ -445,8 +459,10 @@ impl CollationWeights {
                 self.range_count = i + 1;
                 // Sort the ranges by weight values.
                 if self.range_count > 1 {
-                    self.ranges[..self.range_count as usize]
-                        .sort_by_key(|r| r.unwrap_or_else(|| panic!("java.lang.NullPointerException")).start);
+                    self.ranges[..self.range_count as usize].sort_by_key(|r| {
+                        r.unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+                            .start
+                    });
                 }
                 return true;
             }
@@ -461,7 +477,9 @@ impl CollationWeights {
         // when we split one and lengthen the following ones.
         let mut count = 0;
         let mut min_length_range_count = 0;
-        while min_length_range_count < self.range_count && self.r(min_length_range_count).length == min_length {
+        while min_length_range_count < self.range_count
+            && self.r(min_length_range_count).length == min_length
+        {
             count += self.r(min_length_range_count).count;
             min_length_range_count += 1;
         }

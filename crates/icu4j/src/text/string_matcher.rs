@@ -73,12 +73,24 @@ impl StringMatcher {
     ///
     /// Where Java throws `StringIndexOutOfBoundsException`: an invalid range
     /// (`TransliteratorParser` checks it first, as its `catch` does).
-    pub(crate) fn new_range(the_string: &[u16], start: i32, limit: i32, segment_num: i32, the_data: &Arc<Data>) -> Self {
-        Self::new(the_string[start as usize..limit as usize].to_vec(), segment_num, the_data)
+    pub(crate) fn new_range(
+        the_string: &[u16],
+        start: i32,
+        limit: i32,
+        segment_num: i32,
+        the_data: &Arc<Data>,
+    ) -> Self {
+        Self::new(
+            the_string[start as usize..limit as usize].to_vec(),
+            segment_num,
+            the_data,
+        )
     }
 
     fn data(&self) -> Arc<Data> {
-        self.data.upgrade().expect("RuleBasedTransliterator.Data released while its StringMatcher is in use")
+        self.data
+            .upgrade()
+            .expect("RuleBasedTransliterator.Data released while its StringMatcher is in use")
     }
 
     /// `resetMatch()`: removes any match information.
@@ -90,20 +102,40 @@ impl StringMatcher {
 
 /// `Utility.appendToRule` for a value that is a UTF-16 unit or -1, which
 /// never fails.
-fn append_to_rule_unit(rule: &mut Vec<u16>, c: i32, is_literal: bool, escape_unprintable: bool, quote_buf: &mut Vec<u16>) {
-    Utility::append_to_rule(rule, c, is_literal, escape_unprintable, quote_buf).expect("a UTF-16 unit is a valid code point");
+fn append_to_rule_unit(
+    rule: &mut Vec<u16>,
+    c: i32,
+    is_literal: bool,
+    escape_unprintable: bool,
+    quote_buf: &mut Vec<u16>,
+) {
+    Utility::append_to_rule(rule, c, is_literal, escape_unprintable, quote_buf)
+        .expect("a UTF-16 unit is a valid code point");
 }
 
 /// `Utility.appendToRule(StringBuffer, String, ...)` for UTF-16 text, which
 /// never fails.
-fn append_to_rule_text(rule: &mut Vec<u16>, text: &[u16], is_literal: bool, escape_unprintable: bool, quote_buf: &mut Vec<u16>) {
-    Utility::append_to_rule_str(rule, text, is_literal, escape_unprintable, quote_buf).expect("a UTF-16 unit is a valid code point");
+fn append_to_rule_text(
+    rule: &mut Vec<u16>,
+    text: &[u16],
+    is_literal: bool,
+    escape_unprintable: bool,
+    quote_buf: &mut Vec<u16>,
+) {
+    Utility::append_to_rule_str(rule, text, is_literal, escape_unprintable, quote_buf)
+        .expect("a UTF-16 unit is a valid code point");
 }
 
 impl UnicodeMatcher for StringMatcher {
     /// `matches(Replaceable text, int[] offset, int limit, boolean
     /// incremental)`.
-    fn matches(&self, text: &dyn Replaceable, offset: &mut [i32], limit: i32, incremental: bool) -> Result<i32> {
+    fn matches(
+        &self,
+        text: &dyn Replaceable,
+        offset: &mut [i32],
+        limit: i32,
+        incremental: bool,
+    ) -> Result<i32> {
         let data = self.data();
         // Note (1): We process text in 16-bit code units, rather than
         // 32-bit code points.  This works because stand-ins are
@@ -188,10 +220,20 @@ impl UnicodeMatcher for StringMatcher {
         }
         for &key_char in &self.pattern {
             match data.lookup_matcher(key_char as i32) {
-                None => append_to_rule_unit(&mut result, key_char as i32, false, escape_unprintable, &mut quote_buf),
-                Some(m) => {
-                    append_to_rule_text(&mut result, &m.to_pattern(escape_unprintable), true, escape_unprintable, &mut quote_buf)
-                }
+                None => append_to_rule_unit(
+                    &mut result,
+                    key_char as i32,
+                    false,
+                    escape_unprintable,
+                    &mut quote_buf,
+                ),
+                Some(m) => append_to_rule_text(
+                    &mut result,
+                    &m.to_pattern(escape_unprintable),
+                    true,
+                    escape_unprintable,
+                    &mut quote_buf,
+                ),
             }
         }
         if self.segment_number > 0 {
@@ -240,7 +282,13 @@ impl UnicodeMatcher for StringMatcher {
 
 impl UnicodeReplacer for StringMatcher {
     /// `replace(Replaceable text, int start, int limit, int[] cursor)`.
-    fn replace(&self, text: &dyn Replaceable, start: i32, limit: i32, _cursor: &mut [i32]) -> Result<i32> {
+    fn replace(
+        &self,
+        text: &dyn Replaceable,
+        start: i32,
+        limit: i32,
+        _cursor: &mut [i32],
+    ) -> Result<i32> {
         let mut out_len = 0;
 
         // Copy segment with out-of-band data

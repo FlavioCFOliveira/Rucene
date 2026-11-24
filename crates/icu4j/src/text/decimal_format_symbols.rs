@@ -58,7 +58,8 @@ const SYMBOL_KEYS: [&str; 13] = [
 const DEF_DIGIT_STRINGS_ARRAY: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 /// `DEF_DIGIT_CHARS_ARRAY`.
-const DEF_DIGIT_CHARS_ARRAY: [u16; 10] = [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39];
+const DEF_DIGIT_CHARS_ARRAY: [u16; 10] =
+    [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39];
 
 /// `DEF_DECIMAL_SEPARATOR`.
 const DEF_DECIMAL_SEPARATOR: u16 = b'.' as u16;
@@ -104,8 +105,11 @@ pub const SERIAL_VERSION_UID: i64 = 5772796243397350300;
 const CURRENT_SERIAL_VERSION: i32 = 10;
 
 /// `cachedLocaleData`.
-static CACHED_LOCALE_DATA: LazyLock<SoftCache<ULocale, Arc<CacheData>, ()>> =
-    LazyLock::new(|| SoftCache::new(|locale: &ULocale, _unused: ()| DecimalFormatSymbols::load_data(locale).map(Some)));
+static CACHED_LOCALE_DATA: LazyLock<SoftCache<ULocale, Arc<CacheData>, ()>> = LazyLock::new(|| {
+    SoftCache::new(|locale: &ULocale, _unused: ()| {
+        DecimalFormatSymbols::load_data(locale).map(Some)
+    })
+});
 
 /// The locale data `loadData` reads. Equivalent to
 /// `DecimalFormatSymbols.CacheData`.
@@ -322,7 +326,10 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// The errors of the locale data.
-    pub fn for_numbering_system_locale(locale: &Locale, ns: &NumberingSystem) -> Result<DecimalFormatSymbols> {
+    pub fn for_numbering_system_locale(
+        locale: &Locale,
+        ns: &NumberingSystem,
+    ) -> Result<DecimalFormatSymbols> {
         let ulocale = ULocale::for_locale(Some(locale))?.unwrap_or_else(ULocale::root);
         DecimalFormatSymbols::for_ulocale_ns(&ulocale, ns)
     }
@@ -332,7 +339,10 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// The errors of the locale data.
-    pub fn for_numbering_system(locale: &ULocale, ns: &NumberingSystem) -> Result<DecimalFormatSymbols> {
+    pub fn for_numbering_system(
+        locale: &ULocale,
+        ns: &NumberingSystem,
+    ) -> Result<DecimalFormatSymbols> {
         DecimalFormatSymbols::for_ulocale_ns(locale, ns)
     }
 
@@ -425,9 +435,12 @@ impl DecimalFormatSymbols {
     /// `IllegalArgumentException("The input digit string array contains a
     /// null element")`.
     pub fn set_digit_strings(&mut self, digit_strings: Option<&[Option<Vec<u16>>]>) -> Result<()> {
-        let digit_strings = digit_strings.ok_or_else(|| null_pointer("The input digit string array is null"))?;
+        let digit_strings =
+            digit_strings.ok_or_else(|| null_pointer("The input digit string array is null"))?;
         if digit_strings.len() != 10 {
-            return Err(LuceneError::illegal_argument("Number of digit strings is not 10"));
+            return Err(LuceneError::illegal_argument(
+                "Number of digit strings is not 10",
+            ));
         }
 
         // Scan input array and create char[] representation if possible
@@ -454,10 +467,9 @@ impl DecimalFormatSymbols {
             if cc == digit_str.len() as i32 {
                 // One code point in this digit.
                 // If it is 1 UTF-16 code unit long, set it in tmpDigits.
-                if cc == 1 && tmp_digits.is_some() {
-                    tmp_digits.as_mut().expect("checked")[i] = cp as u16;
-                } else {
-                    tmp_digits = None;
+                match tmp_digits.as_mut() {
+                    Some(digits) if cc == 1 => digits[i] = cp as u16,
+                    _ => tmp_digits = None,
                 }
 
                 if i == 0 {
@@ -527,8 +539,12 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// `NullPointerException("The input grouping separator is null")`.
-    pub fn set_grouping_separator_string(&mut self, grouping_separator_string: Option<&[u16]>) -> Result<()> {
-        let s = grouping_separator_string.ok_or_else(|| null_pointer("The input grouping separator is null"))?;
+    pub fn set_grouping_separator_string(
+        &mut self,
+        grouping_separator_string: Option<&[u16]>,
+    ) -> Result<()> {
+        let s = grouping_separator_string
+            .ok_or_else(|| null_pointer("The input grouping separator is null"))?;
         self.grouping_separator_string = s.to_vec();
         if s.len() == 1 {
             self.grouping_separator = s[0];
@@ -564,8 +580,12 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// `NullPointerException("The input decimal separator is null")`.
-    pub fn set_decimal_separator_string(&mut self, decimal_separator_string: Option<&[u16]>) -> Result<()> {
-        let s = decimal_separator_string.ok_or_else(|| null_pointer("The input decimal separator is null"))?;
+    pub fn set_decimal_separator_string(
+        &mut self,
+        decimal_separator_string: Option<&[u16]>,
+    ) -> Result<()> {
+        let s = decimal_separator_string
+            .ok_or_else(|| null_pointer("The input decimal separator is null"))?;
         self.decimal_separator_string = s.to_vec();
         if s.len() == 1 {
             self.decimal_separator = s[0];
@@ -780,8 +800,12 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// `NullPointerException("The input plus sign is null")` (sic).
-    pub fn set_approximately_sign_string(&mut self, approximately_sign_string: Option<&[u16]>) -> Result<()> {
-        let s = approximately_sign_string.ok_or_else(|| null_pointer("The input plus sign is null"))?;
+    pub fn set_approximately_sign_string(
+        &mut self,
+        approximately_sign_string: Option<&[u16]>,
+    ) -> Result<()> {
+        let s =
+            approximately_sign_string.ok_or_else(|| null_pointer("The input plus sign is null"))?;
         self.approximately_string = s.to_vec();
         Ok(())
     }
@@ -839,11 +863,17 @@ impl DecimalFormatSymbols {
     fn display_info(ulocale: &ULocale) -> Result<Arc<dyn CurrencyDisplayInfo>> {
         currency_data::provider()
             .get_instance(Some(ulocale), true)?
-            .ok_or_else(|| LuceneError::null_pointer_with_message("CurrencyData.provider.getInstance"))
+            .ok_or_else(|| {
+                LuceneError::null_pointer_with_message("CurrencyData.provider.getInstance")
+            })
     }
 
     /// `setCurrencyOrNull(Currency, CurrencyDisplayInfo)`.
-    fn set_currency_or_null(&mut self, currency: Option<Currency>, display_info: &dyn CurrencyDisplayInfo) -> Result<()> {
+    fn set_currency_or_null(
+        &mut self,
+        currency: Option<Currency>,
+        display_info: &dyn CurrencyDisplayInfo,
+    ) -> Result<()> {
         self.currency = currency.clone();
 
         let currency = match currency {
@@ -863,8 +893,12 @@ impl DecimalFormatSymbols {
         };
 
         if let Some(format_info) = display_info.get_format_info(&currency.get_currency_code())? {
-            self.set_monetary_decimal_separator_string(Some(&units(&format_info.monetary_decimal_separator)))?;
-            self.set_monetary_grouping_separator_string(Some(&units(&format_info.monetary_grouping_separator)))?;
+            self.set_monetary_decimal_separator_string(Some(&units(
+                &format_info.monetary_decimal_separator,
+            )))?;
+            self.set_monetary_grouping_separator_string(Some(&units(
+                &format_info.monetary_grouping_separator,
+            )))?;
             self.currency_pattern = Some(units(&format_info.currency_pattern));
         }
         Ok(())
@@ -897,7 +931,8 @@ impl DecimalFormatSymbols {
     /// `NullPointerException("The input monetary decimal separator is
     /// null")`.
     pub fn set_monetary_decimal_separator_string(&mut self, sep: Option<&[u16]>) -> Result<()> {
-        let sep = sep.ok_or_else(|| null_pointer("The input monetary decimal separator is null"))?;
+        let sep =
+            sep.ok_or_else(|| null_pointer("The input monetary decimal separator is null"))?;
         self.monetary_separator_string = sep.to_vec();
         if sep.len() == 1 {
             self.monetary_separator = sep[0];
@@ -935,7 +970,8 @@ impl DecimalFormatSymbols {
     /// `NullPointerException("The input monetary grouping separator is
     /// null")`.
     pub fn set_monetary_grouping_separator_string(&mut self, sep: Option<&[u16]>) -> Result<()> {
-        let sep = sep.ok_or_else(|| null_pointer("The input monetary grouping separator is null"))?;
+        let sep =
+            sep.ok_or_else(|| null_pointer("The input monetary grouping separator is null"))?;
         self.monetary_grouping_separator_string = sep.to_vec();
         if sep.len() == 1 {
             self.monetary_grouping_separator = sep[0];
@@ -994,11 +1030,21 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// `IllegalArgumentException("unknown currency spacing: <itemType>")`.
-    pub fn get_pattern_for_currency_spacing(&self, item_type: i32, before_currency: bool) -> Result<Option<&[u16]>> {
+    pub fn get_pattern_for_currency_spacing(
+        &self,
+        item_type: i32,
+        before_currency: bool,
+    ) -> Result<Option<&[u16]>> {
         if !(CURRENCY_SPC_CURRENCY_MATCH..=CURRENCY_SPC_INSERT).contains(&item_type) {
-            return Err(LuceneError::illegal_argument(format!("unknown currency spacing: {item_type}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "unknown currency spacing: {item_type}"
+            )));
         }
-        let symbols = if before_currency { &self.currency_spc_before_sym } else { &self.currency_spc_after_sym };
+        let symbols = if before_currency {
+            &self.currency_spc_before_sym
+        } else {
+            &self.currency_spc_after_sym
+        };
         Ok(symbols[item_type as usize].as_deref())
     }
 
@@ -1008,11 +1054,22 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// `IllegalArgumentException("unknown currency spacing: <itemType>")`.
-    pub fn set_pattern_for_currency_spacing(&mut self, item_type: i32, before_currency: bool, pattern: Option<&[u16]>) -> Result<()> {
+    pub fn set_pattern_for_currency_spacing(
+        &mut self,
+        item_type: i32,
+        before_currency: bool,
+        pattern: Option<&[u16]>,
+    ) -> Result<()> {
         if !(CURRENCY_SPC_CURRENCY_MATCH..=CURRENCY_SPC_INSERT).contains(&item_type) {
-            return Err(LuceneError::illegal_argument(format!("unknown currency spacing: {item_type}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "unknown currency spacing: {item_type}"
+            )));
         }
-        let target = if before_currency { &mut self.currency_spc_before_sym } else { &mut self.currency_spc_after_sym };
+        let target = if before_currency {
+            &mut self.currency_spc_before_sym
+        } else {
+            &mut self.currency_spc_after_sym
+        };
         let mut copy = target.as_ref().clone();
         copy[item_type as usize] = pattern.map(<[u16]>::to_vec);
         *target = Arc::new(copy);
@@ -1037,10 +1094,16 @@ impl DecimalFormatSymbols {
             return true;
         }
         for i in 0..=CURRENCY_SPC_INSERT as usize {
-            if !java_string_equals(&self.currency_spc_before_sym[i], &other.currency_spc_before_sym[i]) {
+            if !java_string_equals(
+                &self.currency_spc_before_sym[i],
+                &other.currency_spc_before_sym[i],
+            ) {
                 return false;
             }
-            if !java_string_equals(&self.currency_spc_after_sym[i], &other.currency_spc_after_sym[i]) {
+            if !java_string_equals(
+                &self.currency_spc_after_sym[i],
+                &other.currency_spc_after_sym[i],
+            ) {
                 return false;
             }
         }
@@ -1075,8 +1138,12 @@ impl DecimalFormatSymbols {
     /// Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
         let mut result = self.digits[0] as i32;
-        result = result.wrapping_mul(37).wrapping_add(self.grouping_separator as i32);
-        result = result.wrapping_mul(37).wrapping_add(self.decimal_separator as i32);
+        result = result
+            .wrapping_mul(37)
+            .wrapping_add(self.grouping_separator as i32);
+        result = result
+            .wrapping_mul(37)
+            .wrapping_add(self.decimal_separator as i32);
         result
     }
 
@@ -1099,7 +1166,10 @@ impl DecimalFormatSymbols {
             .get_instance(key_locale, ())?
             .expect("loadData always answers data");
 
-        self.set_locale(Some(data.valid_locale.clone()), Some(data.valid_locale.clone()))?;
+        self.set_locale(
+            Some(data.valid_locale.clone()),
+            Some(data.valid_locale.clone()),
+        )?;
         let digits: Vec<Option<Vec<u16>>> = data.digits.iter().cloned().map(Some).collect();
         self.set_digit_strings(Some(&digits))?;
         let number_elements = &data.number_elements;
@@ -1144,7 +1214,10 @@ impl DecimalFormatSymbols {
         // the locale requested
         let ns = NumberingSystem::get_instance_for(locale)?;
         let digits: Vec<Vec<u16>>;
-        if ns.get_radix() == 10 && !ns.is_algorithmic() && NumberingSystem::is_valid_digit_string(ns.get_description()) {
+        if ns.get_radix() == 10
+            && !ns.is_algorithmic()
+            && NumberingSystem::is_valid_digit_string(ns.get_description())
+        {
             let digit_string = ns.get_description();
             let mut d = Vec::with_capacity(10);
             let mut offset = 0;
@@ -1165,7 +1238,8 @@ impl DecimalFormatSymbols {
         // Open the resource bundle and get the locale IDs.
         // TODO: Is there a better way to get the locale than making an
         // ICUResourceBundle?
-        let rb = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
+        let rb =
+            UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
         let rb = rb.as_icu()?.clone();
 
         // TODO: Determine actual and valid locale correctly.
@@ -1175,8 +1249,13 @@ impl DecimalFormatSymbols {
 
         // Load using a data sink
         {
-            let mut sink = DecFmtDataSink { number_elements: &mut number_elements };
-            match rb.get_all_items_with_fallback(&format!("{NUMBER_ELEMENTS}/{ns_name}/{SYMBOLS}"), &mut sink) {
+            let mut sink = DecFmtDataSink {
+                number_elements: &mut number_elements,
+            };
+            match rb.get_all_items_with_fallback(
+                &format!("{NUMBER_ELEMENTS}/{ns_name}/{SYMBOLS}"),
+                &mut sink,
+            ) {
                 Ok(()) => {}
                 Err(e) if MissingResourceException::of(&e).is_some() => {
                     // The symbols don't exist for the given nsName and
@@ -1190,8 +1269,13 @@ impl DecimalFormatSymbols {
         // Load the Latin fallback if necessary
         let has_null = number_elements.iter().any(Option::is_none);
         if has_null && ns_name != LATIN_NUMBERING_SYSTEM {
-            let mut sink = DecFmtDataSink { number_elements: &mut number_elements };
-            rb.get_all_items_with_fallback(&format!("{NUMBER_ELEMENTS}/{LATIN_NUMBERING_SYSTEM}/{SYMBOLS}"), &mut sink)?;
+            let mut sink = DecFmtDataSink {
+                number_elements: &mut number_elements,
+            };
+            rb.get_all_items_with_fallback(
+                &format!("{NUMBER_ELEMENTS}/{LATIN_NUMBERING_SYSTEM}/{SYMBOLS}"),
+                &mut sink,
+            )?;
         }
 
         // Fill in any remaining missing values
@@ -1210,18 +1294,34 @@ impl DecimalFormatSymbols {
             number_elements[10] = number_elements[1].clone();
         }
 
-        let number_elements: Vec<Vec<u16>> =
-            number_elements.into_iter().map(|e| e.expect("every element is set above")).collect();
-        Ok(Arc::new(CacheData { valid_locale, digits, number_elements }))
+        let number_elements: Vec<Vec<u16>> = number_elements
+            .into_iter()
+            .map(|e| e.expect("every element is set above"))
+            .collect();
+        Ok(Arc::new(CacheData {
+            valid_locale,
+            digits,
+            number_elements,
+        }))
     }
 
     /// Obtains currency spacing patterns from the spacing info. Equivalent
     /// to `initSpacingInfo(CurrencySpacingInfo)`.
     fn init_spacing_info(&mut self, spc_info: &CurrencySpacingInfo) {
-        self.currency_spc_before_sym =
-            Arc::new(spc_info.get_before_symbols().iter().map(|s| s.as_deref().map(units)).collect());
-        self.currency_spc_after_sym =
-            Arc::new(spc_info.get_after_symbols().iter().map(|s| s.as_deref().map(units)).collect());
+        self.currency_spc_before_sym = Arc::new(
+            spc_info
+                .get_before_symbols()
+                .iter()
+                .map(|s| s.as_deref().map(units))
+                .collect(),
+        );
+        self.currency_spc_after_sym = Arc::new(
+            spc_info
+                .get_after_symbols()
+                .iter()
+                .map(|s| s.as_deref().map(units))
+                .collect(),
+        );
     }
 
     /// Reads the default serializable fields, then if
@@ -1262,7 +1362,8 @@ impl DecimalFormatSymbols {
         }
         if self.serial_version_on_stream < 4 {
             // use same default behavior as for versions with no Locale
-            self.ulocale = ULocale::for_locale(Some(&self.requested_locale))?.unwrap_or_else(ULocale::root);
+            self.ulocale =
+                ULocale::for_locale(Some(&self.requested_locale))?.unwrap_or_else(ULocale::root);
         }
         if self.serial_version_on_stream < 5 {
             // use the same one for groupingSeparator
@@ -1293,7 +1394,9 @@ impl DecimalFormatSymbols {
         self.serial_version_on_stream = CURRENT_SERIAL_VERSION;
 
         // recreate
-        self.currency = Some(Currency::get_instance(Some(&crate::jdk::to_rust_string(&self.intl_currency_symbol)))?);
+        self.currency = Some(Currency::get_instance(Some(&crate::jdk::to_rust_string(
+            &self.intl_currency_symbol,
+        )))?);
 
         // Refresh digitStrings in order to populate codePointZero.
         let digits: Vec<Option<Vec<u16>>> = self.digit_strings.iter().cloned().map(Some).collect();
@@ -1317,7 +1420,11 @@ impl DecimalFormatSymbols {
     /// # Errors
     ///
     /// `IllegalArgumentException` when exactly one of them is `None`.
-    pub(crate) fn set_locale(&mut self, valid: Option<ULocale>, actual: Option<ULocale>) -> Result<()> {
+    pub(crate) fn set_locale(
+        &mut self,
+        valid: Option<ULocale>,
+        actual: Option<ULocale>,
+    ) -> Result<()> {
         // Change the following to an assertion later
         if valid.is_none() != actual.is_none() {
             return Err(crate::jdk::illegal_argument_no_message());

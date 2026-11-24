@@ -13,8 +13,8 @@ use rucene_queryparser::jdk::resource_bundle::MissingResourceException;
 use crate::r#impl::coll::collation_loader::CollationLoader;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_locale_service::{
-    locale_key_factory_display_name, ICULocaleService, ICULocaleServiceSubclass, ICUResourceBundleFactory, LocaleKey,
-    LocaleKeyFactory,
+    locale_key_factory_display_name, ICULocaleService, ICULocaleServiceSubclass,
+    ICUResourceBundleFactory, LocaleKey, LocaleKeyFactory,
 };
 use crate::r#impl::icu_resource_bundle::{icu_data_class_loader, ICUResourceBundle};
 use crate::r#impl::icu_service::{Factory, ICUService, Key, ServiceObject, VisibleIDMap};
@@ -43,17 +43,24 @@ impl ServiceShim for CollatorServiceShim {
         //              return new RuleBasedCollator(locale);
         //          }
         let mut actual_loc: Option<ULocale> = None;
-        let coll = SERVICE.get_locale_kind(Some(locale), LocaleKey::KIND_ANY, Some(&mut actual_loc))?;
+        let coll =
+            SERVICE.get_locale_kind(Some(locale), LocaleKey::KIND_ANY, Some(&mut actual_loc))?;
         let Some(coll) = coll.as_ref().and_then(collator_of) else {
             // CLOVER:OFF
             //Can't really change coll after it's been initialized
-            return Err(MissingResourceException::new("Could not locate Collator data", "", "").error());
+            return Err(
+                MissingResourceException::new("Could not locate Collator data", "", "").error(),
+            );
             // CLOVER:ON
         };
         coll.clone_box()
     }
 
-    fn register_instance(&self, mut collator: Box<dyn Collator>, locale: &ULocale) -> Result<RegistryKey> {
+    fn register_instance(
+        &self,
+        mut collator: Box<dyn Collator>,
+        locale: &ULocale,
+    ) -> Result<RegistryKey> {
         // Set the collator locales while registering so that getInstance()
         // need not guess whether the collator's locales are already set properly
         // (as they are by the data loader).
@@ -94,7 +101,11 @@ impl ServiceShim for CollatorServiceShim {
         }
     }
 
-    fn get_display_name(&self, object_locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+    fn get_display_name(
+        &self,
+        object_locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         let id = object_locale.get_name();
         SERVICE.get_display_name_in(id, Some(display_locale))
     }
@@ -114,7 +125,12 @@ impl LocaleKeyFactory for CFactory {
         self.delegate.visible()
     }
 
-    fn handle_create(&self, loc: &ULocale, _kind: i32, _srvc: &ICUService) -> Result<Option<ServiceObject>> {
+    fn handle_create(
+        &self,
+        loc: &ULocale,
+        _kind: i32,
+        _srvc: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
         let coll = self.delegate.create_collator(loc)?;
         Ok(coll.map(|c| Arc::new(c) as ServiceObject))
     }
@@ -134,7 +150,11 @@ impl Factory for CFactory {
         self.lkf_update_visible_ids(me, result)
     }
 
-    fn get_display_name(&self, id: &str, display_locale: Option<&ULocale>) -> Result<Option<String>> {
+    fn get_display_name(
+        &self,
+        id: &str,
+        display_locale: Option<&ULocale>,
+    ) -> Result<Option<String>> {
         let object_locale = ULocale::new(id)?;
         match display_locale {
             Some(dl) => self.delegate.get_display_name(&object_locale, dl),
@@ -167,7 +187,12 @@ impl LocaleKeyFactory for CServiceCollatorFactory {
         self.inner.get_supported_ids()
     }
 
-    fn handle_create(&self, uloc: &ULocale, _kind: i32, _srvc: &ICUService) -> Result<Option<ServiceObject>> {
+    fn handle_create(
+        &self,
+        uloc: &ULocale,
+        _kind: i32,
+        _srvc: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
         Ok(Some(Arc::new(make_instance(uloc)?)))
     }
 }
@@ -179,8 +204,10 @@ impl Factory for CServiceCollatorFactory {
 
     fn update_visible_ids(self: Arc<Self>, result: &mut VisibleIDMap) -> Result<()> {
         // ICUResourceBundleFactory.updateVisibleIDs: only visible ids
-        let visible_ids =
-            ICUResourceBundle::get_available_locale_name_set_of(&self.inner.bundle_name, self.inner.loader())?;
+        let visible_ids = ICUResourceBundle::get_available_locale_name_set_of(
+            &self.inner.bundle_name,
+            self.inner.loader(),
+        )?;
         for id in visible_ids.iter() {
             let me: Arc<dyn Factory> = self.clone();
             result.insert(id.clone(), me);
@@ -193,7 +220,11 @@ impl Factory for CServiceCollatorFactory {
     }
 
     fn to_java_string(&self) -> String {
-        format!("{}, bundle: {}", self.lkf_to_string(), self.inner.bundle_name)
+        format!(
+            "{}, bundle: {}",
+            self.lkf_to_string(),
+            self.inner.bundle_name
+        )
     }
 }
 
@@ -242,5 +273,8 @@ static SERVICE: LazyLock<ICULocaleService> = LazyLock::new(|| {
 fn make_instance(desired_locale: &ULocale) -> Result<Box<dyn Collator>> {
     let mut valid_locale = Output::with_value(ULocale::root());
     let t = CollationLoader::load_tailoring(desired_locale, &mut valid_locale)?;
-    Ok(Box::new(RuleBasedCollator::from_tailoring(t, valid_locale.value)))
+    Ok(Box::new(RuleBasedCollator::from_tailoring(
+        t,
+        valid_locale.value,
+    )))
 }

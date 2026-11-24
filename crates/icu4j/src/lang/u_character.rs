@@ -17,6 +17,7 @@ use crate::lang::u_property::{NameChoice, UProperty};
 use crate::r#impl::case_map_impl::CaseMapImpl;
 use crate::r#impl::emoji_props::EmojiProps;
 use crate::r#impl::illegal_icu_argument_exception::IllegalIcuArgumentException;
+use crate::r#impl::trie2::Trie2Iterator;
 use crate::r#impl::u_bidi_props::UBiDiProps;
 use crate::r#impl::u_case_props::UCaseProps;
 use crate::r#impl::u_character_name::UCharacterName;
@@ -24,7 +25,6 @@ use crate::r#impl::u_character_name_choice::UCharacterNameChoice;
 use crate::r#impl::u_character_property::{self as ucp, UCharacterProperty};
 use crate::r#impl::u_character_utility::UCharacterUtility;
 use crate::r#impl::u_property_aliases::UPropertyAliases;
-use crate::r#impl::trie2::Trie2Iterator;
 use crate::text::break_iterator::BreakIterator;
 use crate::text::normalizer2;
 use crate::util::range_value_iterator::{Element as RangeElement, RangeValueIterator};
@@ -70,7 +70,9 @@ impl UnicodeBlock {
         if ch > UCharacter::MAX_VALUE {
             return Self::INVALID_CODE;
         }
-        Self::get_instance(UCharacterProperty::instance().get_int_property_value(ch, UProperty::BLOCK))
+        Self::get_instance(
+            UCharacterProperty::instance().get_int_property_value(ch, UProperty::BLOCK),
+        )
     }
 
     /// `forName(String blockName)`: the block whose name (ignoring case,
@@ -88,8 +90,12 @@ impl UnicodeBlock {
                 None => {
                     let mut m = HashMap::with_capacity(BLOCKS.len());
                     for b in BLOCKS.iter() {
-                        let name = UCharacter::get_property_value_name(UProperty::BLOCK, b.get_id(), NameChoice::LONG)?
-                            .unwrap_or_else(|| "null".to_string());
+                        let name = UCharacter::get_property_value_name(
+                            UProperty::BLOCK,
+                            b.get_id(),
+                            NameChoice::LONG,
+                        )?
+                        .unwrap_or_else(|| "null".to_string());
                         m.insert(Self::trim_block_name(&name), *b);
                     }
                     let m = Arc::new(m);
@@ -107,7 +113,10 @@ impl UnicodeBlock {
     fn trim_block_name(name: &str) -> String {
         let units: Vec<u16> = name.encode_utf16().collect();
         let upper = rucene_analysis_common::jdk::character::to_upper_case_root(&units);
-        let result: Vec<u16> = upper.into_iter().filter(|&c| c != b' ' as u16 && c != b'_' as u16 && c != b'-' as u16).collect();
+        let result: Vec<u16> = upper
+            .into_iter()
+            .filter(|&c| c != b' ' as u16 && c != b'_' as u16 && c != b'-' as u16)
+            .collect();
         String::from_utf16_lossy(&result)
     }
 
@@ -808,689 +817,1712 @@ impl UnicodeBlock {
     /// `COUNT`.
     pub const COUNT: i32 = 339;
     /// `NO_BLOCK`.
-    pub const NO_BLOCK: UnicodeBlock = UnicodeBlock { name: "NO_BLOCK", id: 0 };
+    pub const NO_BLOCK: UnicodeBlock = UnicodeBlock {
+        name: "NO_BLOCK",
+        id: 0,
+    };
     /// `BASIC_LATIN`.
-    pub const BASIC_LATIN: UnicodeBlock = UnicodeBlock { name: "BASIC_LATIN", id: Self::BASIC_LATIN_ID };
+    pub const BASIC_LATIN: UnicodeBlock = UnicodeBlock {
+        name: "BASIC_LATIN",
+        id: Self::BASIC_LATIN_ID,
+    };
     /// `LATIN_1_SUPPLEMENT`.
-    pub const LATIN_1_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "LATIN_1_SUPPLEMENT", id: Self::LATIN_1_SUPPLEMENT_ID };
+    pub const LATIN_1_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_1_SUPPLEMENT",
+        id: Self::LATIN_1_SUPPLEMENT_ID,
+    };
     /// `LATIN_EXTENDED_A`.
-    pub const LATIN_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_A", id: Self::LATIN_EXTENDED_A_ID };
+    pub const LATIN_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_A",
+        id: Self::LATIN_EXTENDED_A_ID,
+    };
     /// `LATIN_EXTENDED_B`.
-    pub const LATIN_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_B", id: Self::LATIN_EXTENDED_B_ID };
+    pub const LATIN_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_B",
+        id: Self::LATIN_EXTENDED_B_ID,
+    };
     /// `IPA_EXTENSIONS`.
-    pub const IPA_EXTENSIONS: UnicodeBlock = UnicodeBlock { name: "IPA_EXTENSIONS", id: Self::IPA_EXTENSIONS_ID };
+    pub const IPA_EXTENSIONS: UnicodeBlock = UnicodeBlock {
+        name: "IPA_EXTENSIONS",
+        id: Self::IPA_EXTENSIONS_ID,
+    };
     /// `SPACING_MODIFIER_LETTERS`.
-    pub const SPACING_MODIFIER_LETTERS: UnicodeBlock = UnicodeBlock { name: "SPACING_MODIFIER_LETTERS", id: Self::SPACING_MODIFIER_LETTERS_ID };
+    pub const SPACING_MODIFIER_LETTERS: UnicodeBlock = UnicodeBlock {
+        name: "SPACING_MODIFIER_LETTERS",
+        id: Self::SPACING_MODIFIER_LETTERS_ID,
+    };
     /// `COMBINING_DIACRITICAL_MARKS`.
-    pub const COMBINING_DIACRITICAL_MARKS: UnicodeBlock = UnicodeBlock { name: "COMBINING_DIACRITICAL_MARKS", id: Self::COMBINING_DIACRITICAL_MARKS_ID };
+    pub const COMBINING_DIACRITICAL_MARKS: UnicodeBlock = UnicodeBlock {
+        name: "COMBINING_DIACRITICAL_MARKS",
+        id: Self::COMBINING_DIACRITICAL_MARKS_ID,
+    };
     /// `GREEK`.
-    pub const GREEK: UnicodeBlock = UnicodeBlock { name: "GREEK", id: Self::GREEK_ID };
+    pub const GREEK: UnicodeBlock = UnicodeBlock {
+        name: "GREEK",
+        id: Self::GREEK_ID,
+    };
     /// `CYRILLIC`.
-    pub const CYRILLIC: UnicodeBlock = UnicodeBlock { name: "CYRILLIC", id: Self::CYRILLIC_ID };
+    pub const CYRILLIC: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC",
+        id: Self::CYRILLIC_ID,
+    };
     /// `ARMENIAN`.
-    pub const ARMENIAN: UnicodeBlock = UnicodeBlock { name: "ARMENIAN", id: Self::ARMENIAN_ID };
+    pub const ARMENIAN: UnicodeBlock = UnicodeBlock {
+        name: "ARMENIAN",
+        id: Self::ARMENIAN_ID,
+    };
     /// `HEBREW`.
-    pub const HEBREW: UnicodeBlock = UnicodeBlock { name: "HEBREW", id: Self::HEBREW_ID };
+    pub const HEBREW: UnicodeBlock = UnicodeBlock {
+        name: "HEBREW",
+        id: Self::HEBREW_ID,
+    };
     /// `ARABIC`.
-    pub const ARABIC: UnicodeBlock = UnicodeBlock { name: "ARABIC", id: Self::ARABIC_ID };
+    pub const ARABIC: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC",
+        id: Self::ARABIC_ID,
+    };
     /// `SYRIAC`.
-    pub const SYRIAC: UnicodeBlock = UnicodeBlock { name: "SYRIAC", id: Self::SYRIAC_ID };
+    pub const SYRIAC: UnicodeBlock = UnicodeBlock {
+        name: "SYRIAC",
+        id: Self::SYRIAC_ID,
+    };
     /// `THAANA`.
-    pub const THAANA: UnicodeBlock = UnicodeBlock { name: "THAANA", id: Self::THAANA_ID };
+    pub const THAANA: UnicodeBlock = UnicodeBlock {
+        name: "THAANA",
+        id: Self::THAANA_ID,
+    };
     /// `DEVANAGARI`.
-    pub const DEVANAGARI: UnicodeBlock = UnicodeBlock { name: "DEVANAGARI", id: Self::DEVANAGARI_ID };
+    pub const DEVANAGARI: UnicodeBlock = UnicodeBlock {
+        name: "DEVANAGARI",
+        id: Self::DEVANAGARI_ID,
+    };
     /// `BENGALI`.
-    pub const BENGALI: UnicodeBlock = UnicodeBlock { name: "BENGALI", id: Self::BENGALI_ID };
+    pub const BENGALI: UnicodeBlock = UnicodeBlock {
+        name: "BENGALI",
+        id: Self::BENGALI_ID,
+    };
     /// `GURMUKHI`.
-    pub const GURMUKHI: UnicodeBlock = UnicodeBlock { name: "GURMUKHI", id: Self::GURMUKHI_ID };
+    pub const GURMUKHI: UnicodeBlock = UnicodeBlock {
+        name: "GURMUKHI",
+        id: Self::GURMUKHI_ID,
+    };
     /// `GUJARATI`.
-    pub const GUJARATI: UnicodeBlock = UnicodeBlock { name: "GUJARATI", id: Self::GUJARATI_ID };
+    pub const GUJARATI: UnicodeBlock = UnicodeBlock {
+        name: "GUJARATI",
+        id: Self::GUJARATI_ID,
+    };
     /// `ORIYA`.
-    pub const ORIYA: UnicodeBlock = UnicodeBlock { name: "ORIYA", id: Self::ORIYA_ID };
+    pub const ORIYA: UnicodeBlock = UnicodeBlock {
+        name: "ORIYA",
+        id: Self::ORIYA_ID,
+    };
     /// `TAMIL`.
-    pub const TAMIL: UnicodeBlock = UnicodeBlock { name: "TAMIL", id: Self::TAMIL_ID };
+    pub const TAMIL: UnicodeBlock = UnicodeBlock {
+        name: "TAMIL",
+        id: Self::TAMIL_ID,
+    };
     /// `TELUGU`.
-    pub const TELUGU: UnicodeBlock = UnicodeBlock { name: "TELUGU", id: Self::TELUGU_ID };
+    pub const TELUGU: UnicodeBlock = UnicodeBlock {
+        name: "TELUGU",
+        id: Self::TELUGU_ID,
+    };
     /// `KANNADA`.
-    pub const KANNADA: UnicodeBlock = UnicodeBlock { name: "KANNADA", id: Self::KANNADA_ID };
+    pub const KANNADA: UnicodeBlock = UnicodeBlock {
+        name: "KANNADA",
+        id: Self::KANNADA_ID,
+    };
     /// `MALAYALAM`.
-    pub const MALAYALAM: UnicodeBlock = UnicodeBlock { name: "MALAYALAM", id: Self::MALAYALAM_ID };
+    pub const MALAYALAM: UnicodeBlock = UnicodeBlock {
+        name: "MALAYALAM",
+        id: Self::MALAYALAM_ID,
+    };
     /// `SINHALA`.
-    pub const SINHALA: UnicodeBlock = UnicodeBlock { name: "SINHALA", id: Self::SINHALA_ID };
+    pub const SINHALA: UnicodeBlock = UnicodeBlock {
+        name: "SINHALA",
+        id: Self::SINHALA_ID,
+    };
     /// `THAI`.
-    pub const THAI: UnicodeBlock = UnicodeBlock { name: "THAI", id: Self::THAI_ID };
+    pub const THAI: UnicodeBlock = UnicodeBlock {
+        name: "THAI",
+        id: Self::THAI_ID,
+    };
     /// `LAO`.
-    pub const LAO: UnicodeBlock = UnicodeBlock { name: "LAO", id: Self::LAO_ID };
+    pub const LAO: UnicodeBlock = UnicodeBlock {
+        name: "LAO",
+        id: Self::LAO_ID,
+    };
     /// `TIBETAN`.
-    pub const TIBETAN: UnicodeBlock = UnicodeBlock { name: "TIBETAN", id: Self::TIBETAN_ID };
+    pub const TIBETAN: UnicodeBlock = UnicodeBlock {
+        name: "TIBETAN",
+        id: Self::TIBETAN_ID,
+    };
     /// `MYANMAR`.
-    pub const MYANMAR: UnicodeBlock = UnicodeBlock { name: "MYANMAR", id: Self::MYANMAR_ID };
+    pub const MYANMAR: UnicodeBlock = UnicodeBlock {
+        name: "MYANMAR",
+        id: Self::MYANMAR_ID,
+    };
     /// `GEORGIAN`.
-    pub const GEORGIAN: UnicodeBlock = UnicodeBlock { name: "GEORGIAN", id: Self::GEORGIAN_ID };
+    pub const GEORGIAN: UnicodeBlock = UnicodeBlock {
+        name: "GEORGIAN",
+        id: Self::GEORGIAN_ID,
+    };
     /// `HANGUL_JAMO`.
-    pub const HANGUL_JAMO: UnicodeBlock = UnicodeBlock { name: "HANGUL_JAMO", id: Self::HANGUL_JAMO_ID };
+    pub const HANGUL_JAMO: UnicodeBlock = UnicodeBlock {
+        name: "HANGUL_JAMO",
+        id: Self::HANGUL_JAMO_ID,
+    };
     /// `ETHIOPIC`.
-    pub const ETHIOPIC: UnicodeBlock = UnicodeBlock { name: "ETHIOPIC", id: Self::ETHIOPIC_ID };
+    pub const ETHIOPIC: UnicodeBlock = UnicodeBlock {
+        name: "ETHIOPIC",
+        id: Self::ETHIOPIC_ID,
+    };
     /// `CHEROKEE`.
-    pub const CHEROKEE: UnicodeBlock = UnicodeBlock { name: "CHEROKEE", id: Self::CHEROKEE_ID };
+    pub const CHEROKEE: UnicodeBlock = UnicodeBlock {
+        name: "CHEROKEE",
+        id: Self::CHEROKEE_ID,
+    };
     /// `UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS`.
-    pub const UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS: UnicodeBlock = UnicodeBlock { name: "UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS", id: Self::UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_ID };
+    pub const UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS: UnicodeBlock = UnicodeBlock {
+        name: "UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS",
+        id: Self::UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_ID,
+    };
     /// `OGHAM`.
-    pub const OGHAM: UnicodeBlock = UnicodeBlock { name: "OGHAM", id: Self::OGHAM_ID };
+    pub const OGHAM: UnicodeBlock = UnicodeBlock {
+        name: "OGHAM",
+        id: Self::OGHAM_ID,
+    };
     /// `RUNIC`.
-    pub const RUNIC: UnicodeBlock = UnicodeBlock { name: "RUNIC", id: Self::RUNIC_ID };
+    pub const RUNIC: UnicodeBlock = UnicodeBlock {
+        name: "RUNIC",
+        id: Self::RUNIC_ID,
+    };
     /// `KHMER`.
-    pub const KHMER: UnicodeBlock = UnicodeBlock { name: "KHMER", id: Self::KHMER_ID };
+    pub const KHMER: UnicodeBlock = UnicodeBlock {
+        name: "KHMER",
+        id: Self::KHMER_ID,
+    };
     /// `MONGOLIAN`.
-    pub const MONGOLIAN: UnicodeBlock = UnicodeBlock { name: "MONGOLIAN", id: Self::MONGOLIAN_ID };
+    pub const MONGOLIAN: UnicodeBlock = UnicodeBlock {
+        name: "MONGOLIAN",
+        id: Self::MONGOLIAN_ID,
+    };
     /// `LATIN_EXTENDED_ADDITIONAL`.
-    pub const LATIN_EXTENDED_ADDITIONAL: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_ADDITIONAL", id: Self::LATIN_EXTENDED_ADDITIONAL_ID };
+    pub const LATIN_EXTENDED_ADDITIONAL: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_ADDITIONAL",
+        id: Self::LATIN_EXTENDED_ADDITIONAL_ID,
+    };
     /// `GREEK_EXTENDED`.
-    pub const GREEK_EXTENDED: UnicodeBlock = UnicodeBlock { name: "GREEK_EXTENDED", id: Self::GREEK_EXTENDED_ID };
+    pub const GREEK_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "GREEK_EXTENDED",
+        id: Self::GREEK_EXTENDED_ID,
+    };
     /// `GENERAL_PUNCTUATION`.
-    pub const GENERAL_PUNCTUATION: UnicodeBlock = UnicodeBlock { name: "GENERAL_PUNCTUATION", id: Self::GENERAL_PUNCTUATION_ID };
+    pub const GENERAL_PUNCTUATION: UnicodeBlock = UnicodeBlock {
+        name: "GENERAL_PUNCTUATION",
+        id: Self::GENERAL_PUNCTUATION_ID,
+    };
     /// `SUPERSCRIPTS_AND_SUBSCRIPTS`.
-    pub const SUPERSCRIPTS_AND_SUBSCRIPTS: UnicodeBlock = UnicodeBlock { name: "SUPERSCRIPTS_AND_SUBSCRIPTS", id: Self::SUPERSCRIPTS_AND_SUBSCRIPTS_ID };
+    pub const SUPERSCRIPTS_AND_SUBSCRIPTS: UnicodeBlock = UnicodeBlock {
+        name: "SUPERSCRIPTS_AND_SUBSCRIPTS",
+        id: Self::SUPERSCRIPTS_AND_SUBSCRIPTS_ID,
+    };
     /// `CURRENCY_SYMBOLS`.
-    pub const CURRENCY_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "CURRENCY_SYMBOLS", id: Self::CURRENCY_SYMBOLS_ID };
+    pub const CURRENCY_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "CURRENCY_SYMBOLS",
+        id: Self::CURRENCY_SYMBOLS_ID,
+    };
     /// `COMBINING_MARKS_FOR_SYMBOLS`.
-    pub const COMBINING_MARKS_FOR_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "COMBINING_MARKS_FOR_SYMBOLS", id: Self::COMBINING_MARKS_FOR_SYMBOLS_ID };
+    pub const COMBINING_MARKS_FOR_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "COMBINING_MARKS_FOR_SYMBOLS",
+        id: Self::COMBINING_MARKS_FOR_SYMBOLS_ID,
+    };
     /// `LETTERLIKE_SYMBOLS`.
-    pub const LETTERLIKE_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "LETTERLIKE_SYMBOLS", id: Self::LETTERLIKE_SYMBOLS_ID };
+    pub const LETTERLIKE_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "LETTERLIKE_SYMBOLS",
+        id: Self::LETTERLIKE_SYMBOLS_ID,
+    };
     /// `NUMBER_FORMS`.
-    pub const NUMBER_FORMS: UnicodeBlock = UnicodeBlock { name: "NUMBER_FORMS", id: Self::NUMBER_FORMS_ID };
+    pub const NUMBER_FORMS: UnicodeBlock = UnicodeBlock {
+        name: "NUMBER_FORMS",
+        id: Self::NUMBER_FORMS_ID,
+    };
     /// `ARROWS`.
-    pub const ARROWS: UnicodeBlock = UnicodeBlock { name: "ARROWS", id: Self::ARROWS_ID };
+    pub const ARROWS: UnicodeBlock = UnicodeBlock {
+        name: "ARROWS",
+        id: Self::ARROWS_ID,
+    };
     /// `MATHEMATICAL_OPERATORS`.
-    pub const MATHEMATICAL_OPERATORS: UnicodeBlock = UnicodeBlock { name: "MATHEMATICAL_OPERATORS", id: Self::MATHEMATICAL_OPERATORS_ID };
+    pub const MATHEMATICAL_OPERATORS: UnicodeBlock = UnicodeBlock {
+        name: "MATHEMATICAL_OPERATORS",
+        id: Self::MATHEMATICAL_OPERATORS_ID,
+    };
     /// `MISCELLANEOUS_TECHNICAL`.
-    pub const MISCELLANEOUS_TECHNICAL: UnicodeBlock = UnicodeBlock { name: "MISCELLANEOUS_TECHNICAL", id: Self::MISCELLANEOUS_TECHNICAL_ID };
+    pub const MISCELLANEOUS_TECHNICAL: UnicodeBlock = UnicodeBlock {
+        name: "MISCELLANEOUS_TECHNICAL",
+        id: Self::MISCELLANEOUS_TECHNICAL_ID,
+    };
     /// `CONTROL_PICTURES`.
-    pub const CONTROL_PICTURES: UnicodeBlock = UnicodeBlock { name: "CONTROL_PICTURES", id: Self::CONTROL_PICTURES_ID };
+    pub const CONTROL_PICTURES: UnicodeBlock = UnicodeBlock {
+        name: "CONTROL_PICTURES",
+        id: Self::CONTROL_PICTURES_ID,
+    };
     /// `OPTICAL_CHARACTER_RECOGNITION`.
-    pub const OPTICAL_CHARACTER_RECOGNITION: UnicodeBlock = UnicodeBlock { name: "OPTICAL_CHARACTER_RECOGNITION", id: Self::OPTICAL_CHARACTER_RECOGNITION_ID };
+    pub const OPTICAL_CHARACTER_RECOGNITION: UnicodeBlock = UnicodeBlock {
+        name: "OPTICAL_CHARACTER_RECOGNITION",
+        id: Self::OPTICAL_CHARACTER_RECOGNITION_ID,
+    };
     /// `ENCLOSED_ALPHANUMERICS`.
-    pub const ENCLOSED_ALPHANUMERICS: UnicodeBlock = UnicodeBlock { name: "ENCLOSED_ALPHANUMERICS", id: Self::ENCLOSED_ALPHANUMERICS_ID };
+    pub const ENCLOSED_ALPHANUMERICS: UnicodeBlock = UnicodeBlock {
+        name: "ENCLOSED_ALPHANUMERICS",
+        id: Self::ENCLOSED_ALPHANUMERICS_ID,
+    };
     /// `BOX_DRAWING`.
-    pub const BOX_DRAWING: UnicodeBlock = UnicodeBlock { name: "BOX_DRAWING", id: Self::BOX_DRAWING_ID };
+    pub const BOX_DRAWING: UnicodeBlock = UnicodeBlock {
+        name: "BOX_DRAWING",
+        id: Self::BOX_DRAWING_ID,
+    };
     /// `BLOCK_ELEMENTS`.
-    pub const BLOCK_ELEMENTS: UnicodeBlock = UnicodeBlock { name: "BLOCK_ELEMENTS", id: Self::BLOCK_ELEMENTS_ID };
+    pub const BLOCK_ELEMENTS: UnicodeBlock = UnicodeBlock {
+        name: "BLOCK_ELEMENTS",
+        id: Self::BLOCK_ELEMENTS_ID,
+    };
     /// `GEOMETRIC_SHAPES`.
-    pub const GEOMETRIC_SHAPES: UnicodeBlock = UnicodeBlock { name: "GEOMETRIC_SHAPES", id: Self::GEOMETRIC_SHAPES_ID };
+    pub const GEOMETRIC_SHAPES: UnicodeBlock = UnicodeBlock {
+        name: "GEOMETRIC_SHAPES",
+        id: Self::GEOMETRIC_SHAPES_ID,
+    };
     /// `MISCELLANEOUS_SYMBOLS`.
-    pub const MISCELLANEOUS_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "MISCELLANEOUS_SYMBOLS", id: Self::MISCELLANEOUS_SYMBOLS_ID };
+    pub const MISCELLANEOUS_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "MISCELLANEOUS_SYMBOLS",
+        id: Self::MISCELLANEOUS_SYMBOLS_ID,
+    };
     /// `DINGBATS`.
-    pub const DINGBATS: UnicodeBlock = UnicodeBlock { name: "DINGBATS", id: Self::DINGBATS_ID };
+    pub const DINGBATS: UnicodeBlock = UnicodeBlock {
+        name: "DINGBATS",
+        id: Self::DINGBATS_ID,
+    };
     /// `BRAILLE_PATTERNS`.
-    pub const BRAILLE_PATTERNS: UnicodeBlock = UnicodeBlock { name: "BRAILLE_PATTERNS", id: Self::BRAILLE_PATTERNS_ID };
+    pub const BRAILLE_PATTERNS: UnicodeBlock = UnicodeBlock {
+        name: "BRAILLE_PATTERNS",
+        id: Self::BRAILLE_PATTERNS_ID,
+    };
     /// `CJK_RADICALS_SUPPLEMENT`.
-    pub const CJK_RADICALS_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "CJK_RADICALS_SUPPLEMENT", id: Self::CJK_RADICALS_SUPPLEMENT_ID };
+    pub const CJK_RADICALS_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "CJK_RADICALS_SUPPLEMENT",
+        id: Self::CJK_RADICALS_SUPPLEMENT_ID,
+    };
     /// `KANGXI_RADICALS`.
-    pub const KANGXI_RADICALS: UnicodeBlock = UnicodeBlock { name: "KANGXI_RADICALS", id: Self::KANGXI_RADICALS_ID };
+    pub const KANGXI_RADICALS: UnicodeBlock = UnicodeBlock {
+        name: "KANGXI_RADICALS",
+        id: Self::KANGXI_RADICALS_ID,
+    };
     /// `IDEOGRAPHIC_DESCRIPTION_CHARACTERS`.
-    pub const IDEOGRAPHIC_DESCRIPTION_CHARACTERS: UnicodeBlock = UnicodeBlock { name: "IDEOGRAPHIC_DESCRIPTION_CHARACTERS", id: Self::IDEOGRAPHIC_DESCRIPTION_CHARACTERS_ID };
+    pub const IDEOGRAPHIC_DESCRIPTION_CHARACTERS: UnicodeBlock = UnicodeBlock {
+        name: "IDEOGRAPHIC_DESCRIPTION_CHARACTERS",
+        id: Self::IDEOGRAPHIC_DESCRIPTION_CHARACTERS_ID,
+    };
     /// `CJK_SYMBOLS_AND_PUNCTUATION`.
-    pub const CJK_SYMBOLS_AND_PUNCTUATION: UnicodeBlock = UnicodeBlock { name: "CJK_SYMBOLS_AND_PUNCTUATION", id: Self::CJK_SYMBOLS_AND_PUNCTUATION_ID };
+    pub const CJK_SYMBOLS_AND_PUNCTUATION: UnicodeBlock = UnicodeBlock {
+        name: "CJK_SYMBOLS_AND_PUNCTUATION",
+        id: Self::CJK_SYMBOLS_AND_PUNCTUATION_ID,
+    };
     /// `HIRAGANA`.
-    pub const HIRAGANA: UnicodeBlock = UnicodeBlock { name: "HIRAGANA", id: Self::HIRAGANA_ID };
+    pub const HIRAGANA: UnicodeBlock = UnicodeBlock {
+        name: "HIRAGANA",
+        id: Self::HIRAGANA_ID,
+    };
     /// `KATAKANA`.
-    pub const KATAKANA: UnicodeBlock = UnicodeBlock { name: "KATAKANA", id: Self::KATAKANA_ID };
+    pub const KATAKANA: UnicodeBlock = UnicodeBlock {
+        name: "KATAKANA",
+        id: Self::KATAKANA_ID,
+    };
     /// `BOPOMOFO`.
-    pub const BOPOMOFO: UnicodeBlock = UnicodeBlock { name: "BOPOMOFO", id: Self::BOPOMOFO_ID };
+    pub const BOPOMOFO: UnicodeBlock = UnicodeBlock {
+        name: "BOPOMOFO",
+        id: Self::BOPOMOFO_ID,
+    };
     /// `HANGUL_COMPATIBILITY_JAMO`.
-    pub const HANGUL_COMPATIBILITY_JAMO: UnicodeBlock = UnicodeBlock { name: "HANGUL_COMPATIBILITY_JAMO", id: Self::HANGUL_COMPATIBILITY_JAMO_ID };
+    pub const HANGUL_COMPATIBILITY_JAMO: UnicodeBlock = UnicodeBlock {
+        name: "HANGUL_COMPATIBILITY_JAMO",
+        id: Self::HANGUL_COMPATIBILITY_JAMO_ID,
+    };
     /// `KANBUN`.
-    pub const KANBUN: UnicodeBlock = UnicodeBlock { name: "KANBUN", id: Self::KANBUN_ID };
+    pub const KANBUN: UnicodeBlock = UnicodeBlock {
+        name: "KANBUN",
+        id: Self::KANBUN_ID,
+    };
     /// `BOPOMOFO_EXTENDED`.
-    pub const BOPOMOFO_EXTENDED: UnicodeBlock = UnicodeBlock { name: "BOPOMOFO_EXTENDED", id: Self::BOPOMOFO_EXTENDED_ID };
+    pub const BOPOMOFO_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "BOPOMOFO_EXTENDED",
+        id: Self::BOPOMOFO_EXTENDED_ID,
+    };
     /// `ENCLOSED_CJK_LETTERS_AND_MONTHS`.
-    pub const ENCLOSED_CJK_LETTERS_AND_MONTHS: UnicodeBlock = UnicodeBlock { name: "ENCLOSED_CJK_LETTERS_AND_MONTHS", id: Self::ENCLOSED_CJK_LETTERS_AND_MONTHS_ID };
+    pub const ENCLOSED_CJK_LETTERS_AND_MONTHS: UnicodeBlock = UnicodeBlock {
+        name: "ENCLOSED_CJK_LETTERS_AND_MONTHS",
+        id: Self::ENCLOSED_CJK_LETTERS_AND_MONTHS_ID,
+    };
     /// `CJK_COMPATIBILITY`.
-    pub const CJK_COMPATIBILITY: UnicodeBlock = UnicodeBlock { name: "CJK_COMPATIBILITY", id: Self::CJK_COMPATIBILITY_ID };
+    pub const CJK_COMPATIBILITY: UnicodeBlock = UnicodeBlock {
+        name: "CJK_COMPATIBILITY",
+        id: Self::CJK_COMPATIBILITY_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS`.
-    pub const CJK_UNIFIED_IDEOGRAPHS: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS", id: Self::CJK_UNIFIED_IDEOGRAPHS_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_ID,
+    };
     /// `YI_SYLLABLES`.
-    pub const YI_SYLLABLES: UnicodeBlock = UnicodeBlock { name: "YI_SYLLABLES", id: Self::YI_SYLLABLES_ID };
+    pub const YI_SYLLABLES: UnicodeBlock = UnicodeBlock {
+        name: "YI_SYLLABLES",
+        id: Self::YI_SYLLABLES_ID,
+    };
     /// `YI_RADICALS`.
-    pub const YI_RADICALS: UnicodeBlock = UnicodeBlock { name: "YI_RADICALS", id: Self::YI_RADICALS_ID };
+    pub const YI_RADICALS: UnicodeBlock = UnicodeBlock {
+        name: "YI_RADICALS",
+        id: Self::YI_RADICALS_ID,
+    };
     /// `HANGUL_SYLLABLES`.
-    pub const HANGUL_SYLLABLES: UnicodeBlock = UnicodeBlock { name: "HANGUL_SYLLABLES", id: Self::HANGUL_SYLLABLES_ID };
+    pub const HANGUL_SYLLABLES: UnicodeBlock = UnicodeBlock {
+        name: "HANGUL_SYLLABLES",
+        id: Self::HANGUL_SYLLABLES_ID,
+    };
     /// `HIGH_SURROGATES`.
-    pub const HIGH_SURROGATES: UnicodeBlock = UnicodeBlock { name: "HIGH_SURROGATES", id: Self::HIGH_SURROGATES_ID };
+    pub const HIGH_SURROGATES: UnicodeBlock = UnicodeBlock {
+        name: "HIGH_SURROGATES",
+        id: Self::HIGH_SURROGATES_ID,
+    };
     /// `HIGH_PRIVATE_USE_SURROGATES`.
-    pub const HIGH_PRIVATE_USE_SURROGATES: UnicodeBlock = UnicodeBlock { name: "HIGH_PRIVATE_USE_SURROGATES", id: Self::HIGH_PRIVATE_USE_SURROGATES_ID };
+    pub const HIGH_PRIVATE_USE_SURROGATES: UnicodeBlock = UnicodeBlock {
+        name: "HIGH_PRIVATE_USE_SURROGATES",
+        id: Self::HIGH_PRIVATE_USE_SURROGATES_ID,
+    };
     /// `LOW_SURROGATES`.
-    pub const LOW_SURROGATES: UnicodeBlock = UnicodeBlock { name: "LOW_SURROGATES", id: Self::LOW_SURROGATES_ID };
+    pub const LOW_SURROGATES: UnicodeBlock = UnicodeBlock {
+        name: "LOW_SURROGATES",
+        id: Self::LOW_SURROGATES_ID,
+    };
     /// `PRIVATE_USE_AREA`.
-    pub const PRIVATE_USE_AREA: UnicodeBlock = UnicodeBlock { name: "PRIVATE_USE_AREA", id: 78 };
+    pub const PRIVATE_USE_AREA: UnicodeBlock = UnicodeBlock {
+        name: "PRIVATE_USE_AREA",
+        id: 78,
+    };
     /// `PRIVATE_USE`.
     pub const PRIVATE_USE: UnicodeBlock = Self::PRIVATE_USE_AREA;
     /// `CJK_COMPATIBILITY_IDEOGRAPHS`.
-    pub const CJK_COMPATIBILITY_IDEOGRAPHS: UnicodeBlock = UnicodeBlock { name: "CJK_COMPATIBILITY_IDEOGRAPHS", id: Self::CJK_COMPATIBILITY_IDEOGRAPHS_ID };
+    pub const CJK_COMPATIBILITY_IDEOGRAPHS: UnicodeBlock = UnicodeBlock {
+        name: "CJK_COMPATIBILITY_IDEOGRAPHS",
+        id: Self::CJK_COMPATIBILITY_IDEOGRAPHS_ID,
+    };
     /// `ALPHABETIC_PRESENTATION_FORMS`.
-    pub const ALPHABETIC_PRESENTATION_FORMS: UnicodeBlock = UnicodeBlock { name: "ALPHABETIC_PRESENTATION_FORMS", id: Self::ALPHABETIC_PRESENTATION_FORMS_ID };
+    pub const ALPHABETIC_PRESENTATION_FORMS: UnicodeBlock = UnicodeBlock {
+        name: "ALPHABETIC_PRESENTATION_FORMS",
+        id: Self::ALPHABETIC_PRESENTATION_FORMS_ID,
+    };
     /// `ARABIC_PRESENTATION_FORMS_A`.
-    pub const ARABIC_PRESENTATION_FORMS_A: UnicodeBlock = UnicodeBlock { name: "ARABIC_PRESENTATION_FORMS_A", id: Self::ARABIC_PRESENTATION_FORMS_A_ID };
+    pub const ARABIC_PRESENTATION_FORMS_A: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_PRESENTATION_FORMS_A",
+        id: Self::ARABIC_PRESENTATION_FORMS_A_ID,
+    };
     /// `COMBINING_HALF_MARKS`.
-    pub const COMBINING_HALF_MARKS: UnicodeBlock = UnicodeBlock { name: "COMBINING_HALF_MARKS", id: Self::COMBINING_HALF_MARKS_ID };
+    pub const COMBINING_HALF_MARKS: UnicodeBlock = UnicodeBlock {
+        name: "COMBINING_HALF_MARKS",
+        id: Self::COMBINING_HALF_MARKS_ID,
+    };
     /// `CJK_COMPATIBILITY_FORMS`.
-    pub const CJK_COMPATIBILITY_FORMS: UnicodeBlock = UnicodeBlock { name: "CJK_COMPATIBILITY_FORMS", id: Self::CJK_COMPATIBILITY_FORMS_ID };
+    pub const CJK_COMPATIBILITY_FORMS: UnicodeBlock = UnicodeBlock {
+        name: "CJK_COMPATIBILITY_FORMS",
+        id: Self::CJK_COMPATIBILITY_FORMS_ID,
+    };
     /// `SMALL_FORM_VARIANTS`.
-    pub const SMALL_FORM_VARIANTS: UnicodeBlock = UnicodeBlock { name: "SMALL_FORM_VARIANTS", id: Self::SMALL_FORM_VARIANTS_ID };
+    pub const SMALL_FORM_VARIANTS: UnicodeBlock = UnicodeBlock {
+        name: "SMALL_FORM_VARIANTS",
+        id: Self::SMALL_FORM_VARIANTS_ID,
+    };
     /// `ARABIC_PRESENTATION_FORMS_B`.
-    pub const ARABIC_PRESENTATION_FORMS_B: UnicodeBlock = UnicodeBlock { name: "ARABIC_PRESENTATION_FORMS_B", id: Self::ARABIC_PRESENTATION_FORMS_B_ID };
+    pub const ARABIC_PRESENTATION_FORMS_B: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_PRESENTATION_FORMS_B",
+        id: Self::ARABIC_PRESENTATION_FORMS_B_ID,
+    };
     /// `SPECIALS`.
-    pub const SPECIALS: UnicodeBlock = UnicodeBlock { name: "SPECIALS", id: Self::SPECIALS_ID };
+    pub const SPECIALS: UnicodeBlock = UnicodeBlock {
+        name: "SPECIALS",
+        id: Self::SPECIALS_ID,
+    };
     /// `HALFWIDTH_AND_FULLWIDTH_FORMS`.
-    pub const HALFWIDTH_AND_FULLWIDTH_FORMS: UnicodeBlock = UnicodeBlock { name: "HALFWIDTH_AND_FULLWIDTH_FORMS", id: Self::HALFWIDTH_AND_FULLWIDTH_FORMS_ID };
+    pub const HALFWIDTH_AND_FULLWIDTH_FORMS: UnicodeBlock = UnicodeBlock {
+        name: "HALFWIDTH_AND_FULLWIDTH_FORMS",
+        id: Self::HALFWIDTH_AND_FULLWIDTH_FORMS_ID,
+    };
     /// `OLD_ITALIC`.
-    pub const OLD_ITALIC: UnicodeBlock = UnicodeBlock { name: "OLD_ITALIC", id: Self::OLD_ITALIC_ID };
+    pub const OLD_ITALIC: UnicodeBlock = UnicodeBlock {
+        name: "OLD_ITALIC",
+        id: Self::OLD_ITALIC_ID,
+    };
     /// `GOTHIC`.
-    pub const GOTHIC: UnicodeBlock = UnicodeBlock { name: "GOTHIC", id: Self::GOTHIC_ID };
+    pub const GOTHIC: UnicodeBlock = UnicodeBlock {
+        name: "GOTHIC",
+        id: Self::GOTHIC_ID,
+    };
     /// `DESERET`.
-    pub const DESERET: UnicodeBlock = UnicodeBlock { name: "DESERET", id: Self::DESERET_ID };
+    pub const DESERET: UnicodeBlock = UnicodeBlock {
+        name: "DESERET",
+        id: Self::DESERET_ID,
+    };
     /// `BYZANTINE_MUSICAL_SYMBOLS`.
-    pub const BYZANTINE_MUSICAL_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "BYZANTINE_MUSICAL_SYMBOLS", id: Self::BYZANTINE_MUSICAL_SYMBOLS_ID };
+    pub const BYZANTINE_MUSICAL_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "BYZANTINE_MUSICAL_SYMBOLS",
+        id: Self::BYZANTINE_MUSICAL_SYMBOLS_ID,
+    };
     /// `MUSICAL_SYMBOLS`.
-    pub const MUSICAL_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "MUSICAL_SYMBOLS", id: Self::MUSICAL_SYMBOLS_ID };
+    pub const MUSICAL_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "MUSICAL_SYMBOLS",
+        id: Self::MUSICAL_SYMBOLS_ID,
+    };
     /// `MATHEMATICAL_ALPHANUMERIC_SYMBOLS`.
-    pub const MATHEMATICAL_ALPHANUMERIC_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "MATHEMATICAL_ALPHANUMERIC_SYMBOLS", id: Self::MATHEMATICAL_ALPHANUMERIC_SYMBOLS_ID };
+    pub const MATHEMATICAL_ALPHANUMERIC_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "MATHEMATICAL_ALPHANUMERIC_SYMBOLS",
+        id: Self::MATHEMATICAL_ALPHANUMERIC_SYMBOLS_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B_ID,
+    };
     /// `CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT`.
-    pub const CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT", id: Self::CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT_ID };
+    pub const CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT",
+        id: Self::CJK_COMPATIBILITY_IDEOGRAPHS_SUPPLEMENT_ID,
+    };
     /// `TAGS`.
-    pub const TAGS: UnicodeBlock = UnicodeBlock { name: "TAGS", id: Self::TAGS_ID };
+    pub const TAGS: UnicodeBlock = UnicodeBlock {
+        name: "TAGS",
+        id: Self::TAGS_ID,
+    };
     /// `CYRILLIC_SUPPLEMENTARY`.
-    pub const CYRILLIC_SUPPLEMENTARY: UnicodeBlock = UnicodeBlock { name: "CYRILLIC_SUPPLEMENTARY", id: Self::CYRILLIC_SUPPLEMENTARY_ID };
+    pub const CYRILLIC_SUPPLEMENTARY: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC_SUPPLEMENTARY",
+        id: Self::CYRILLIC_SUPPLEMENTARY_ID,
+    };
     /// `CYRILLIC_SUPPLEMENT`.
-    pub const CYRILLIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "CYRILLIC_SUPPLEMENT", id: Self::CYRILLIC_SUPPLEMENT_ID };
+    pub const CYRILLIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC_SUPPLEMENT",
+        id: Self::CYRILLIC_SUPPLEMENT_ID,
+    };
     /// `TAGALOG`.
-    pub const TAGALOG: UnicodeBlock = UnicodeBlock { name: "TAGALOG", id: Self::TAGALOG_ID };
+    pub const TAGALOG: UnicodeBlock = UnicodeBlock {
+        name: "TAGALOG",
+        id: Self::TAGALOG_ID,
+    };
     /// `HANUNOO`.
-    pub const HANUNOO: UnicodeBlock = UnicodeBlock { name: "HANUNOO", id: Self::HANUNOO_ID };
+    pub const HANUNOO: UnicodeBlock = UnicodeBlock {
+        name: "HANUNOO",
+        id: Self::HANUNOO_ID,
+    };
     /// `BUHID`.
-    pub const BUHID: UnicodeBlock = UnicodeBlock { name: "BUHID", id: Self::BUHID_ID };
+    pub const BUHID: UnicodeBlock = UnicodeBlock {
+        name: "BUHID",
+        id: Self::BUHID_ID,
+    };
     /// `TAGBANWA`.
-    pub const TAGBANWA: UnicodeBlock = UnicodeBlock { name: "TAGBANWA", id: Self::TAGBANWA_ID };
+    pub const TAGBANWA: UnicodeBlock = UnicodeBlock {
+        name: "TAGBANWA",
+        id: Self::TAGBANWA_ID,
+    };
     /// `MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A`.
-    pub const MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A: UnicodeBlock = UnicodeBlock { name: "MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A", id: Self::MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A_ID };
+    pub const MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A: UnicodeBlock = UnicodeBlock {
+        name: "MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A",
+        id: Self::MISCELLANEOUS_MATHEMATICAL_SYMBOLS_A_ID,
+    };
     /// `SUPPLEMENTAL_ARROWS_A`.
-    pub const SUPPLEMENTAL_ARROWS_A: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTAL_ARROWS_A", id: Self::SUPPLEMENTAL_ARROWS_A_ID };
+    pub const SUPPLEMENTAL_ARROWS_A: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTAL_ARROWS_A",
+        id: Self::SUPPLEMENTAL_ARROWS_A_ID,
+    };
     /// `SUPPLEMENTAL_ARROWS_B`.
-    pub const SUPPLEMENTAL_ARROWS_B: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTAL_ARROWS_B", id: Self::SUPPLEMENTAL_ARROWS_B_ID };
+    pub const SUPPLEMENTAL_ARROWS_B: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTAL_ARROWS_B",
+        id: Self::SUPPLEMENTAL_ARROWS_B_ID,
+    };
     /// `MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B`.
-    pub const MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B: UnicodeBlock = UnicodeBlock { name: "MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B", id: Self::MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B_ID };
+    pub const MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B: UnicodeBlock = UnicodeBlock {
+        name: "MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B",
+        id: Self::MISCELLANEOUS_MATHEMATICAL_SYMBOLS_B_ID,
+    };
     /// `SUPPLEMENTAL_MATHEMATICAL_OPERATORS`.
-    pub const SUPPLEMENTAL_MATHEMATICAL_OPERATORS: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTAL_MATHEMATICAL_OPERATORS", id: Self::SUPPLEMENTAL_MATHEMATICAL_OPERATORS_ID };
+    pub const SUPPLEMENTAL_MATHEMATICAL_OPERATORS: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTAL_MATHEMATICAL_OPERATORS",
+        id: Self::SUPPLEMENTAL_MATHEMATICAL_OPERATORS_ID,
+    };
     /// `KATAKANA_PHONETIC_EXTENSIONS`.
-    pub const KATAKANA_PHONETIC_EXTENSIONS: UnicodeBlock = UnicodeBlock { name: "KATAKANA_PHONETIC_EXTENSIONS", id: Self::KATAKANA_PHONETIC_EXTENSIONS_ID };
+    pub const KATAKANA_PHONETIC_EXTENSIONS: UnicodeBlock = UnicodeBlock {
+        name: "KATAKANA_PHONETIC_EXTENSIONS",
+        id: Self::KATAKANA_PHONETIC_EXTENSIONS_ID,
+    };
     /// `VARIATION_SELECTORS`.
-    pub const VARIATION_SELECTORS: UnicodeBlock = UnicodeBlock { name: "VARIATION_SELECTORS", id: Self::VARIATION_SELECTORS_ID };
+    pub const VARIATION_SELECTORS: UnicodeBlock = UnicodeBlock {
+        name: "VARIATION_SELECTORS",
+        id: Self::VARIATION_SELECTORS_ID,
+    };
     /// `SUPPLEMENTARY_PRIVATE_USE_AREA_A`.
-    pub const SUPPLEMENTARY_PRIVATE_USE_AREA_A: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTARY_PRIVATE_USE_AREA_A", id: Self::SUPPLEMENTARY_PRIVATE_USE_AREA_A_ID };
+    pub const SUPPLEMENTARY_PRIVATE_USE_AREA_A: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTARY_PRIVATE_USE_AREA_A",
+        id: Self::SUPPLEMENTARY_PRIVATE_USE_AREA_A_ID,
+    };
     /// `SUPPLEMENTARY_PRIVATE_USE_AREA_B`.
-    pub const SUPPLEMENTARY_PRIVATE_USE_AREA_B: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTARY_PRIVATE_USE_AREA_B", id: Self::SUPPLEMENTARY_PRIVATE_USE_AREA_B_ID };
+    pub const SUPPLEMENTARY_PRIVATE_USE_AREA_B: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTARY_PRIVATE_USE_AREA_B",
+        id: Self::SUPPLEMENTARY_PRIVATE_USE_AREA_B_ID,
+    };
     /// `LIMBU`.
-    pub const LIMBU: UnicodeBlock = UnicodeBlock { name: "LIMBU", id: Self::LIMBU_ID };
+    pub const LIMBU: UnicodeBlock = UnicodeBlock {
+        name: "LIMBU",
+        id: Self::LIMBU_ID,
+    };
     /// `TAI_LE`.
-    pub const TAI_LE: UnicodeBlock = UnicodeBlock { name: "TAI_LE", id: Self::TAI_LE_ID };
+    pub const TAI_LE: UnicodeBlock = UnicodeBlock {
+        name: "TAI_LE",
+        id: Self::TAI_LE_ID,
+    };
     /// `KHMER_SYMBOLS`.
-    pub const KHMER_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "KHMER_SYMBOLS", id: Self::KHMER_SYMBOLS_ID };
+    pub const KHMER_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "KHMER_SYMBOLS",
+        id: Self::KHMER_SYMBOLS_ID,
+    };
     /// `PHONETIC_EXTENSIONS`.
-    pub const PHONETIC_EXTENSIONS: UnicodeBlock = UnicodeBlock { name: "PHONETIC_EXTENSIONS", id: Self::PHONETIC_EXTENSIONS_ID };
+    pub const PHONETIC_EXTENSIONS: UnicodeBlock = UnicodeBlock {
+        name: "PHONETIC_EXTENSIONS",
+        id: Self::PHONETIC_EXTENSIONS_ID,
+    };
     /// `MISCELLANEOUS_SYMBOLS_AND_ARROWS`.
-    pub const MISCELLANEOUS_SYMBOLS_AND_ARROWS: UnicodeBlock = UnicodeBlock { name: "MISCELLANEOUS_SYMBOLS_AND_ARROWS", id: Self::MISCELLANEOUS_SYMBOLS_AND_ARROWS_ID };
+    pub const MISCELLANEOUS_SYMBOLS_AND_ARROWS: UnicodeBlock = UnicodeBlock {
+        name: "MISCELLANEOUS_SYMBOLS_AND_ARROWS",
+        id: Self::MISCELLANEOUS_SYMBOLS_AND_ARROWS_ID,
+    };
     /// `YIJING_HEXAGRAM_SYMBOLS`.
-    pub const YIJING_HEXAGRAM_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "YIJING_HEXAGRAM_SYMBOLS", id: Self::YIJING_HEXAGRAM_SYMBOLS_ID };
+    pub const YIJING_HEXAGRAM_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "YIJING_HEXAGRAM_SYMBOLS",
+        id: Self::YIJING_HEXAGRAM_SYMBOLS_ID,
+    };
     /// `LINEAR_B_SYLLABARY`.
-    pub const LINEAR_B_SYLLABARY: UnicodeBlock = UnicodeBlock { name: "LINEAR_B_SYLLABARY", id: Self::LINEAR_B_SYLLABARY_ID };
+    pub const LINEAR_B_SYLLABARY: UnicodeBlock = UnicodeBlock {
+        name: "LINEAR_B_SYLLABARY",
+        id: Self::LINEAR_B_SYLLABARY_ID,
+    };
     /// `LINEAR_B_IDEOGRAMS`.
-    pub const LINEAR_B_IDEOGRAMS: UnicodeBlock = UnicodeBlock { name: "LINEAR_B_IDEOGRAMS", id: Self::LINEAR_B_IDEOGRAMS_ID };
+    pub const LINEAR_B_IDEOGRAMS: UnicodeBlock = UnicodeBlock {
+        name: "LINEAR_B_IDEOGRAMS",
+        id: Self::LINEAR_B_IDEOGRAMS_ID,
+    };
     /// `AEGEAN_NUMBERS`.
-    pub const AEGEAN_NUMBERS: UnicodeBlock = UnicodeBlock { name: "AEGEAN_NUMBERS", id: Self::AEGEAN_NUMBERS_ID };
+    pub const AEGEAN_NUMBERS: UnicodeBlock = UnicodeBlock {
+        name: "AEGEAN_NUMBERS",
+        id: Self::AEGEAN_NUMBERS_ID,
+    };
     /// `UGARITIC`.
-    pub const UGARITIC: UnicodeBlock = UnicodeBlock { name: "UGARITIC", id: Self::UGARITIC_ID };
+    pub const UGARITIC: UnicodeBlock = UnicodeBlock {
+        name: "UGARITIC",
+        id: Self::UGARITIC_ID,
+    };
     /// `SHAVIAN`.
-    pub const SHAVIAN: UnicodeBlock = UnicodeBlock { name: "SHAVIAN", id: Self::SHAVIAN_ID };
+    pub const SHAVIAN: UnicodeBlock = UnicodeBlock {
+        name: "SHAVIAN",
+        id: Self::SHAVIAN_ID,
+    };
     /// `OSMANYA`.
-    pub const OSMANYA: UnicodeBlock = UnicodeBlock { name: "OSMANYA", id: Self::OSMANYA_ID };
+    pub const OSMANYA: UnicodeBlock = UnicodeBlock {
+        name: "OSMANYA",
+        id: Self::OSMANYA_ID,
+    };
     /// `CYPRIOT_SYLLABARY`.
-    pub const CYPRIOT_SYLLABARY: UnicodeBlock = UnicodeBlock { name: "CYPRIOT_SYLLABARY", id: Self::CYPRIOT_SYLLABARY_ID };
+    pub const CYPRIOT_SYLLABARY: UnicodeBlock = UnicodeBlock {
+        name: "CYPRIOT_SYLLABARY",
+        id: Self::CYPRIOT_SYLLABARY_ID,
+    };
     /// `TAI_XUAN_JING_SYMBOLS`.
-    pub const TAI_XUAN_JING_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "TAI_XUAN_JING_SYMBOLS", id: Self::TAI_XUAN_JING_SYMBOLS_ID };
+    pub const TAI_XUAN_JING_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "TAI_XUAN_JING_SYMBOLS",
+        id: Self::TAI_XUAN_JING_SYMBOLS_ID,
+    };
     /// `VARIATION_SELECTORS_SUPPLEMENT`.
-    pub const VARIATION_SELECTORS_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "VARIATION_SELECTORS_SUPPLEMENT", id: Self::VARIATION_SELECTORS_SUPPLEMENT_ID };
+    pub const VARIATION_SELECTORS_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "VARIATION_SELECTORS_SUPPLEMENT",
+        id: Self::VARIATION_SELECTORS_SUPPLEMENT_ID,
+    };
     /// `ANCIENT_GREEK_MUSICAL_NOTATION`.
-    pub const ANCIENT_GREEK_MUSICAL_NOTATION: UnicodeBlock = UnicodeBlock { name: "ANCIENT_GREEK_MUSICAL_NOTATION", id: Self::ANCIENT_GREEK_MUSICAL_NOTATION_ID };
+    pub const ANCIENT_GREEK_MUSICAL_NOTATION: UnicodeBlock = UnicodeBlock {
+        name: "ANCIENT_GREEK_MUSICAL_NOTATION",
+        id: Self::ANCIENT_GREEK_MUSICAL_NOTATION_ID,
+    };
     /// `ANCIENT_GREEK_NUMBERS`.
-    pub const ANCIENT_GREEK_NUMBERS: UnicodeBlock = UnicodeBlock { name: "ANCIENT_GREEK_NUMBERS", id: Self::ANCIENT_GREEK_NUMBERS_ID };
+    pub const ANCIENT_GREEK_NUMBERS: UnicodeBlock = UnicodeBlock {
+        name: "ANCIENT_GREEK_NUMBERS",
+        id: Self::ANCIENT_GREEK_NUMBERS_ID,
+    };
     /// `ARABIC_SUPPLEMENT`.
-    pub const ARABIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "ARABIC_SUPPLEMENT", id: Self::ARABIC_SUPPLEMENT_ID };
+    pub const ARABIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_SUPPLEMENT",
+        id: Self::ARABIC_SUPPLEMENT_ID,
+    };
     /// `BUGINESE`.
-    pub const BUGINESE: UnicodeBlock = UnicodeBlock { name: "BUGINESE", id: Self::BUGINESE_ID };
+    pub const BUGINESE: UnicodeBlock = UnicodeBlock {
+        name: "BUGINESE",
+        id: Self::BUGINESE_ID,
+    };
     /// `CJK_STROKES`.
-    pub const CJK_STROKES: UnicodeBlock = UnicodeBlock { name: "CJK_STROKES", id: Self::CJK_STROKES_ID };
+    pub const CJK_STROKES: UnicodeBlock = UnicodeBlock {
+        name: "CJK_STROKES",
+        id: Self::CJK_STROKES_ID,
+    };
     /// `COMBINING_DIACRITICAL_MARKS_SUPPLEMENT`.
-    pub const COMBINING_DIACRITICAL_MARKS_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "COMBINING_DIACRITICAL_MARKS_SUPPLEMENT", id: Self::COMBINING_DIACRITICAL_MARKS_SUPPLEMENT_ID };
+    pub const COMBINING_DIACRITICAL_MARKS_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "COMBINING_DIACRITICAL_MARKS_SUPPLEMENT",
+        id: Self::COMBINING_DIACRITICAL_MARKS_SUPPLEMENT_ID,
+    };
     /// `COPTIC`.
-    pub const COPTIC: UnicodeBlock = UnicodeBlock { name: "COPTIC", id: Self::COPTIC_ID };
+    pub const COPTIC: UnicodeBlock = UnicodeBlock {
+        name: "COPTIC",
+        id: Self::COPTIC_ID,
+    };
     /// `ETHIOPIC_EXTENDED`.
-    pub const ETHIOPIC_EXTENDED: UnicodeBlock = UnicodeBlock { name: "ETHIOPIC_EXTENDED", id: Self::ETHIOPIC_EXTENDED_ID };
+    pub const ETHIOPIC_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "ETHIOPIC_EXTENDED",
+        id: Self::ETHIOPIC_EXTENDED_ID,
+    };
     /// `ETHIOPIC_SUPPLEMENT`.
-    pub const ETHIOPIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "ETHIOPIC_SUPPLEMENT", id: Self::ETHIOPIC_SUPPLEMENT_ID };
+    pub const ETHIOPIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "ETHIOPIC_SUPPLEMENT",
+        id: Self::ETHIOPIC_SUPPLEMENT_ID,
+    };
     /// `GEORGIAN_SUPPLEMENT`.
-    pub const GEORGIAN_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "GEORGIAN_SUPPLEMENT", id: Self::GEORGIAN_SUPPLEMENT_ID };
+    pub const GEORGIAN_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "GEORGIAN_SUPPLEMENT",
+        id: Self::GEORGIAN_SUPPLEMENT_ID,
+    };
     /// `GLAGOLITIC`.
-    pub const GLAGOLITIC: UnicodeBlock = UnicodeBlock { name: "GLAGOLITIC", id: Self::GLAGOLITIC_ID };
+    pub const GLAGOLITIC: UnicodeBlock = UnicodeBlock {
+        name: "GLAGOLITIC",
+        id: Self::GLAGOLITIC_ID,
+    };
     /// `KHAROSHTHI`.
-    pub const KHAROSHTHI: UnicodeBlock = UnicodeBlock { name: "KHAROSHTHI", id: Self::KHAROSHTHI_ID };
+    pub const KHAROSHTHI: UnicodeBlock = UnicodeBlock {
+        name: "KHAROSHTHI",
+        id: Self::KHAROSHTHI_ID,
+    };
     /// `MODIFIER_TONE_LETTERS`.
-    pub const MODIFIER_TONE_LETTERS: UnicodeBlock = UnicodeBlock { name: "MODIFIER_TONE_LETTERS", id: Self::MODIFIER_TONE_LETTERS_ID };
+    pub const MODIFIER_TONE_LETTERS: UnicodeBlock = UnicodeBlock {
+        name: "MODIFIER_TONE_LETTERS",
+        id: Self::MODIFIER_TONE_LETTERS_ID,
+    };
     /// `NEW_TAI_LUE`.
-    pub const NEW_TAI_LUE: UnicodeBlock = UnicodeBlock { name: "NEW_TAI_LUE", id: Self::NEW_TAI_LUE_ID };
+    pub const NEW_TAI_LUE: UnicodeBlock = UnicodeBlock {
+        name: "NEW_TAI_LUE",
+        id: Self::NEW_TAI_LUE_ID,
+    };
     /// `OLD_PERSIAN`.
-    pub const OLD_PERSIAN: UnicodeBlock = UnicodeBlock { name: "OLD_PERSIAN", id: Self::OLD_PERSIAN_ID };
+    pub const OLD_PERSIAN: UnicodeBlock = UnicodeBlock {
+        name: "OLD_PERSIAN",
+        id: Self::OLD_PERSIAN_ID,
+    };
     /// `PHONETIC_EXTENSIONS_SUPPLEMENT`.
-    pub const PHONETIC_EXTENSIONS_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "PHONETIC_EXTENSIONS_SUPPLEMENT", id: Self::PHONETIC_EXTENSIONS_SUPPLEMENT_ID };
+    pub const PHONETIC_EXTENSIONS_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "PHONETIC_EXTENSIONS_SUPPLEMENT",
+        id: Self::PHONETIC_EXTENSIONS_SUPPLEMENT_ID,
+    };
     /// `SUPPLEMENTAL_PUNCTUATION`.
-    pub const SUPPLEMENTAL_PUNCTUATION: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTAL_PUNCTUATION", id: Self::SUPPLEMENTAL_PUNCTUATION_ID };
+    pub const SUPPLEMENTAL_PUNCTUATION: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTAL_PUNCTUATION",
+        id: Self::SUPPLEMENTAL_PUNCTUATION_ID,
+    };
     /// `SYLOTI_NAGRI`.
-    pub const SYLOTI_NAGRI: UnicodeBlock = UnicodeBlock { name: "SYLOTI_NAGRI", id: Self::SYLOTI_NAGRI_ID };
+    pub const SYLOTI_NAGRI: UnicodeBlock = UnicodeBlock {
+        name: "SYLOTI_NAGRI",
+        id: Self::SYLOTI_NAGRI_ID,
+    };
     /// `TIFINAGH`.
-    pub const TIFINAGH: UnicodeBlock = UnicodeBlock { name: "TIFINAGH", id: Self::TIFINAGH_ID };
+    pub const TIFINAGH: UnicodeBlock = UnicodeBlock {
+        name: "TIFINAGH",
+        id: Self::TIFINAGH_ID,
+    };
     /// `VERTICAL_FORMS`.
-    pub const VERTICAL_FORMS: UnicodeBlock = UnicodeBlock { name: "VERTICAL_FORMS", id: Self::VERTICAL_FORMS_ID };
+    pub const VERTICAL_FORMS: UnicodeBlock = UnicodeBlock {
+        name: "VERTICAL_FORMS",
+        id: Self::VERTICAL_FORMS_ID,
+    };
     /// `NKO`.
-    pub const NKO: UnicodeBlock = UnicodeBlock { name: "NKO", id: Self::NKO_ID };
+    pub const NKO: UnicodeBlock = UnicodeBlock {
+        name: "NKO",
+        id: Self::NKO_ID,
+    };
     /// `BALINESE`.
-    pub const BALINESE: UnicodeBlock = UnicodeBlock { name: "BALINESE", id: Self::BALINESE_ID };
+    pub const BALINESE: UnicodeBlock = UnicodeBlock {
+        name: "BALINESE",
+        id: Self::BALINESE_ID,
+    };
     /// `LATIN_EXTENDED_C`.
-    pub const LATIN_EXTENDED_C: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_C", id: Self::LATIN_EXTENDED_C_ID };
+    pub const LATIN_EXTENDED_C: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_C",
+        id: Self::LATIN_EXTENDED_C_ID,
+    };
     /// `LATIN_EXTENDED_D`.
-    pub const LATIN_EXTENDED_D: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_D", id: Self::LATIN_EXTENDED_D_ID };
+    pub const LATIN_EXTENDED_D: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_D",
+        id: Self::LATIN_EXTENDED_D_ID,
+    };
     /// `PHAGS_PA`.
-    pub const PHAGS_PA: UnicodeBlock = UnicodeBlock { name: "PHAGS_PA", id: Self::PHAGS_PA_ID };
+    pub const PHAGS_PA: UnicodeBlock = UnicodeBlock {
+        name: "PHAGS_PA",
+        id: Self::PHAGS_PA_ID,
+    };
     /// `PHOENICIAN`.
-    pub const PHOENICIAN: UnicodeBlock = UnicodeBlock { name: "PHOENICIAN", id: Self::PHOENICIAN_ID };
+    pub const PHOENICIAN: UnicodeBlock = UnicodeBlock {
+        name: "PHOENICIAN",
+        id: Self::PHOENICIAN_ID,
+    };
     /// `CUNEIFORM`.
-    pub const CUNEIFORM: UnicodeBlock = UnicodeBlock { name: "CUNEIFORM", id: Self::CUNEIFORM_ID };
+    pub const CUNEIFORM: UnicodeBlock = UnicodeBlock {
+        name: "CUNEIFORM",
+        id: Self::CUNEIFORM_ID,
+    };
     /// `CUNEIFORM_NUMBERS_AND_PUNCTUATION`.
-    pub const CUNEIFORM_NUMBERS_AND_PUNCTUATION: UnicodeBlock = UnicodeBlock { name: "CUNEIFORM_NUMBERS_AND_PUNCTUATION", id: Self::CUNEIFORM_NUMBERS_AND_PUNCTUATION_ID };
+    pub const CUNEIFORM_NUMBERS_AND_PUNCTUATION: UnicodeBlock = UnicodeBlock {
+        name: "CUNEIFORM_NUMBERS_AND_PUNCTUATION",
+        id: Self::CUNEIFORM_NUMBERS_AND_PUNCTUATION_ID,
+    };
     /// `COUNTING_ROD_NUMERALS`.
-    pub const COUNTING_ROD_NUMERALS: UnicodeBlock = UnicodeBlock { name: "COUNTING_ROD_NUMERALS", id: Self::COUNTING_ROD_NUMERALS_ID };
+    pub const COUNTING_ROD_NUMERALS: UnicodeBlock = UnicodeBlock {
+        name: "COUNTING_ROD_NUMERALS",
+        id: Self::COUNTING_ROD_NUMERALS_ID,
+    };
     /// `SUNDANESE`.
-    pub const SUNDANESE: UnicodeBlock = UnicodeBlock { name: "SUNDANESE", id: Self::SUNDANESE_ID };
+    pub const SUNDANESE: UnicodeBlock = UnicodeBlock {
+        name: "SUNDANESE",
+        id: Self::SUNDANESE_ID,
+    };
     /// `LEPCHA`.
-    pub const LEPCHA: UnicodeBlock = UnicodeBlock { name: "LEPCHA", id: Self::LEPCHA_ID };
+    pub const LEPCHA: UnicodeBlock = UnicodeBlock {
+        name: "LEPCHA",
+        id: Self::LEPCHA_ID,
+    };
     /// `OL_CHIKI`.
-    pub const OL_CHIKI: UnicodeBlock = UnicodeBlock { name: "OL_CHIKI", id: Self::OL_CHIKI_ID };
+    pub const OL_CHIKI: UnicodeBlock = UnicodeBlock {
+        name: "OL_CHIKI",
+        id: Self::OL_CHIKI_ID,
+    };
     /// `CYRILLIC_EXTENDED_A`.
-    pub const CYRILLIC_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "CYRILLIC_EXTENDED_A", id: Self::CYRILLIC_EXTENDED_A_ID };
+    pub const CYRILLIC_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC_EXTENDED_A",
+        id: Self::CYRILLIC_EXTENDED_A_ID,
+    };
     /// `VAI`.
-    pub const VAI: UnicodeBlock = UnicodeBlock { name: "VAI", id: Self::VAI_ID };
+    pub const VAI: UnicodeBlock = UnicodeBlock {
+        name: "VAI",
+        id: Self::VAI_ID,
+    };
     /// `CYRILLIC_EXTENDED_B`.
-    pub const CYRILLIC_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "CYRILLIC_EXTENDED_B", id: Self::CYRILLIC_EXTENDED_B_ID };
+    pub const CYRILLIC_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC_EXTENDED_B",
+        id: Self::CYRILLIC_EXTENDED_B_ID,
+    };
     /// `SAURASHTRA`.
-    pub const SAURASHTRA: UnicodeBlock = UnicodeBlock { name: "SAURASHTRA", id: Self::SAURASHTRA_ID };
+    pub const SAURASHTRA: UnicodeBlock = UnicodeBlock {
+        name: "SAURASHTRA",
+        id: Self::SAURASHTRA_ID,
+    };
     /// `KAYAH_LI`.
-    pub const KAYAH_LI: UnicodeBlock = UnicodeBlock { name: "KAYAH_LI", id: Self::KAYAH_LI_ID };
+    pub const KAYAH_LI: UnicodeBlock = UnicodeBlock {
+        name: "KAYAH_LI",
+        id: Self::KAYAH_LI_ID,
+    };
     /// `REJANG`.
-    pub const REJANG: UnicodeBlock = UnicodeBlock { name: "REJANG", id: Self::REJANG_ID };
+    pub const REJANG: UnicodeBlock = UnicodeBlock {
+        name: "REJANG",
+        id: Self::REJANG_ID,
+    };
     /// `CHAM`.
-    pub const CHAM: UnicodeBlock = UnicodeBlock { name: "CHAM", id: Self::CHAM_ID };
+    pub const CHAM: UnicodeBlock = UnicodeBlock {
+        name: "CHAM",
+        id: Self::CHAM_ID,
+    };
     /// `ANCIENT_SYMBOLS`.
-    pub const ANCIENT_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "ANCIENT_SYMBOLS", id: Self::ANCIENT_SYMBOLS_ID };
+    pub const ANCIENT_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "ANCIENT_SYMBOLS",
+        id: Self::ANCIENT_SYMBOLS_ID,
+    };
     /// `PHAISTOS_DISC`.
-    pub const PHAISTOS_DISC: UnicodeBlock = UnicodeBlock { name: "PHAISTOS_DISC", id: Self::PHAISTOS_DISC_ID };
+    pub const PHAISTOS_DISC: UnicodeBlock = UnicodeBlock {
+        name: "PHAISTOS_DISC",
+        id: Self::PHAISTOS_DISC_ID,
+    };
     /// `LYCIAN`.
-    pub const LYCIAN: UnicodeBlock = UnicodeBlock { name: "LYCIAN", id: Self::LYCIAN_ID };
+    pub const LYCIAN: UnicodeBlock = UnicodeBlock {
+        name: "LYCIAN",
+        id: Self::LYCIAN_ID,
+    };
     /// `CARIAN`.
-    pub const CARIAN: UnicodeBlock = UnicodeBlock { name: "CARIAN", id: Self::CARIAN_ID };
+    pub const CARIAN: UnicodeBlock = UnicodeBlock {
+        name: "CARIAN",
+        id: Self::CARIAN_ID,
+    };
     /// `LYDIAN`.
-    pub const LYDIAN: UnicodeBlock = UnicodeBlock { name: "LYDIAN", id: Self::LYDIAN_ID };
+    pub const LYDIAN: UnicodeBlock = UnicodeBlock {
+        name: "LYDIAN",
+        id: Self::LYDIAN_ID,
+    };
     /// `MAHJONG_TILES`.
-    pub const MAHJONG_TILES: UnicodeBlock = UnicodeBlock { name: "MAHJONG_TILES", id: Self::MAHJONG_TILES_ID };
+    pub const MAHJONG_TILES: UnicodeBlock = UnicodeBlock {
+        name: "MAHJONG_TILES",
+        id: Self::MAHJONG_TILES_ID,
+    };
     /// `DOMINO_TILES`.
-    pub const DOMINO_TILES: UnicodeBlock = UnicodeBlock { name: "DOMINO_TILES", id: Self::DOMINO_TILES_ID };
+    pub const DOMINO_TILES: UnicodeBlock = UnicodeBlock {
+        name: "DOMINO_TILES",
+        id: Self::DOMINO_TILES_ID,
+    };
     /// `SAMARITAN`.
-    pub const SAMARITAN: UnicodeBlock = UnicodeBlock { name: "SAMARITAN", id: Self::SAMARITAN_ID };
+    pub const SAMARITAN: UnicodeBlock = UnicodeBlock {
+        name: "SAMARITAN",
+        id: Self::SAMARITAN_ID,
+    };
     /// `UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED`.
-    pub const UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED: UnicodeBlock = UnicodeBlock { name: "UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED", id: Self::UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_ID };
+    pub const UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED",
+        id: Self::UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_ID,
+    };
     /// `TAI_THAM`.
-    pub const TAI_THAM: UnicodeBlock = UnicodeBlock { name: "TAI_THAM", id: Self::TAI_THAM_ID };
+    pub const TAI_THAM: UnicodeBlock = UnicodeBlock {
+        name: "TAI_THAM",
+        id: Self::TAI_THAM_ID,
+    };
     /// `VEDIC_EXTENSIONS`.
-    pub const VEDIC_EXTENSIONS: UnicodeBlock = UnicodeBlock { name: "VEDIC_EXTENSIONS", id: Self::VEDIC_EXTENSIONS_ID };
+    pub const VEDIC_EXTENSIONS: UnicodeBlock = UnicodeBlock {
+        name: "VEDIC_EXTENSIONS",
+        id: Self::VEDIC_EXTENSIONS_ID,
+    };
     /// `LISU`.
-    pub const LISU: UnicodeBlock = UnicodeBlock { name: "LISU", id: Self::LISU_ID };
+    pub const LISU: UnicodeBlock = UnicodeBlock {
+        name: "LISU",
+        id: Self::LISU_ID,
+    };
     /// `BAMUM`.
-    pub const BAMUM: UnicodeBlock = UnicodeBlock { name: "BAMUM", id: Self::BAMUM_ID };
+    pub const BAMUM: UnicodeBlock = UnicodeBlock {
+        name: "BAMUM",
+        id: Self::BAMUM_ID,
+    };
     /// `COMMON_INDIC_NUMBER_FORMS`.
-    pub const COMMON_INDIC_NUMBER_FORMS: UnicodeBlock = UnicodeBlock { name: "COMMON_INDIC_NUMBER_FORMS", id: Self::COMMON_INDIC_NUMBER_FORMS_ID };
+    pub const COMMON_INDIC_NUMBER_FORMS: UnicodeBlock = UnicodeBlock {
+        name: "COMMON_INDIC_NUMBER_FORMS",
+        id: Self::COMMON_INDIC_NUMBER_FORMS_ID,
+    };
     /// `DEVANAGARI_EXTENDED`.
-    pub const DEVANAGARI_EXTENDED: UnicodeBlock = UnicodeBlock { name: "DEVANAGARI_EXTENDED", id: Self::DEVANAGARI_EXTENDED_ID };
+    pub const DEVANAGARI_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "DEVANAGARI_EXTENDED",
+        id: Self::DEVANAGARI_EXTENDED_ID,
+    };
     /// `HANGUL_JAMO_EXTENDED_A`.
-    pub const HANGUL_JAMO_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "HANGUL_JAMO_EXTENDED_A", id: Self::HANGUL_JAMO_EXTENDED_A_ID };
+    pub const HANGUL_JAMO_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "HANGUL_JAMO_EXTENDED_A",
+        id: Self::HANGUL_JAMO_EXTENDED_A_ID,
+    };
     /// `JAVANESE`.
-    pub const JAVANESE: UnicodeBlock = UnicodeBlock { name: "JAVANESE", id: Self::JAVANESE_ID };
+    pub const JAVANESE: UnicodeBlock = UnicodeBlock {
+        name: "JAVANESE",
+        id: Self::JAVANESE_ID,
+    };
     /// `MYANMAR_EXTENDED_A`.
-    pub const MYANMAR_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "MYANMAR_EXTENDED_A", id: Self::MYANMAR_EXTENDED_A_ID };
+    pub const MYANMAR_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "MYANMAR_EXTENDED_A",
+        id: Self::MYANMAR_EXTENDED_A_ID,
+    };
     /// `TAI_VIET`.
-    pub const TAI_VIET: UnicodeBlock = UnicodeBlock { name: "TAI_VIET", id: Self::TAI_VIET_ID };
+    pub const TAI_VIET: UnicodeBlock = UnicodeBlock {
+        name: "TAI_VIET",
+        id: Self::TAI_VIET_ID,
+    };
     /// `MEETEI_MAYEK`.
-    pub const MEETEI_MAYEK: UnicodeBlock = UnicodeBlock { name: "MEETEI_MAYEK", id: Self::MEETEI_MAYEK_ID };
+    pub const MEETEI_MAYEK: UnicodeBlock = UnicodeBlock {
+        name: "MEETEI_MAYEK",
+        id: Self::MEETEI_MAYEK_ID,
+    };
     /// `HANGUL_JAMO_EXTENDED_B`.
-    pub const HANGUL_JAMO_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "HANGUL_JAMO_EXTENDED_B", id: Self::HANGUL_JAMO_EXTENDED_B_ID };
+    pub const HANGUL_JAMO_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "HANGUL_JAMO_EXTENDED_B",
+        id: Self::HANGUL_JAMO_EXTENDED_B_ID,
+    };
     /// `IMPERIAL_ARAMAIC`.
-    pub const IMPERIAL_ARAMAIC: UnicodeBlock = UnicodeBlock { name: "IMPERIAL_ARAMAIC", id: Self::IMPERIAL_ARAMAIC_ID };
+    pub const IMPERIAL_ARAMAIC: UnicodeBlock = UnicodeBlock {
+        name: "IMPERIAL_ARAMAIC",
+        id: Self::IMPERIAL_ARAMAIC_ID,
+    };
     /// `OLD_SOUTH_ARABIAN`.
-    pub const OLD_SOUTH_ARABIAN: UnicodeBlock = UnicodeBlock { name: "OLD_SOUTH_ARABIAN", id: Self::OLD_SOUTH_ARABIAN_ID };
+    pub const OLD_SOUTH_ARABIAN: UnicodeBlock = UnicodeBlock {
+        name: "OLD_SOUTH_ARABIAN",
+        id: Self::OLD_SOUTH_ARABIAN_ID,
+    };
     /// `AVESTAN`.
-    pub const AVESTAN: UnicodeBlock = UnicodeBlock { name: "AVESTAN", id: Self::AVESTAN_ID };
+    pub const AVESTAN: UnicodeBlock = UnicodeBlock {
+        name: "AVESTAN",
+        id: Self::AVESTAN_ID,
+    };
     /// `INSCRIPTIONAL_PARTHIAN`.
-    pub const INSCRIPTIONAL_PARTHIAN: UnicodeBlock = UnicodeBlock { name: "INSCRIPTIONAL_PARTHIAN", id: Self::INSCRIPTIONAL_PARTHIAN_ID };
+    pub const INSCRIPTIONAL_PARTHIAN: UnicodeBlock = UnicodeBlock {
+        name: "INSCRIPTIONAL_PARTHIAN",
+        id: Self::INSCRIPTIONAL_PARTHIAN_ID,
+    };
     /// `INSCRIPTIONAL_PAHLAVI`.
-    pub const INSCRIPTIONAL_PAHLAVI: UnicodeBlock = UnicodeBlock { name: "INSCRIPTIONAL_PAHLAVI", id: Self::INSCRIPTIONAL_PAHLAVI_ID };
+    pub const INSCRIPTIONAL_PAHLAVI: UnicodeBlock = UnicodeBlock {
+        name: "INSCRIPTIONAL_PAHLAVI",
+        id: Self::INSCRIPTIONAL_PAHLAVI_ID,
+    };
     /// `OLD_TURKIC`.
-    pub const OLD_TURKIC: UnicodeBlock = UnicodeBlock { name: "OLD_TURKIC", id: Self::OLD_TURKIC_ID };
+    pub const OLD_TURKIC: UnicodeBlock = UnicodeBlock {
+        name: "OLD_TURKIC",
+        id: Self::OLD_TURKIC_ID,
+    };
     /// `RUMI_NUMERAL_SYMBOLS`.
-    pub const RUMI_NUMERAL_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "RUMI_NUMERAL_SYMBOLS", id: Self::RUMI_NUMERAL_SYMBOLS_ID };
+    pub const RUMI_NUMERAL_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "RUMI_NUMERAL_SYMBOLS",
+        id: Self::RUMI_NUMERAL_SYMBOLS_ID,
+    };
     /// `KAITHI`.
-    pub const KAITHI: UnicodeBlock = UnicodeBlock { name: "KAITHI", id: Self::KAITHI_ID };
+    pub const KAITHI: UnicodeBlock = UnicodeBlock {
+        name: "KAITHI",
+        id: Self::KAITHI_ID,
+    };
     /// `EGYPTIAN_HIEROGLYPHS`.
-    pub const EGYPTIAN_HIEROGLYPHS: UnicodeBlock = UnicodeBlock { name: "EGYPTIAN_HIEROGLYPHS", id: Self::EGYPTIAN_HIEROGLYPHS_ID };
+    pub const EGYPTIAN_HIEROGLYPHS: UnicodeBlock = UnicodeBlock {
+        name: "EGYPTIAN_HIEROGLYPHS",
+        id: Self::EGYPTIAN_HIEROGLYPHS_ID,
+    };
     /// `ENCLOSED_ALPHANUMERIC_SUPPLEMENT`.
-    pub const ENCLOSED_ALPHANUMERIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "ENCLOSED_ALPHANUMERIC_SUPPLEMENT", id: Self::ENCLOSED_ALPHANUMERIC_SUPPLEMENT_ID };
+    pub const ENCLOSED_ALPHANUMERIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "ENCLOSED_ALPHANUMERIC_SUPPLEMENT",
+        id: Self::ENCLOSED_ALPHANUMERIC_SUPPLEMENT_ID,
+    };
     /// `ENCLOSED_IDEOGRAPHIC_SUPPLEMENT`.
-    pub const ENCLOSED_IDEOGRAPHIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "ENCLOSED_IDEOGRAPHIC_SUPPLEMENT", id: Self::ENCLOSED_IDEOGRAPHIC_SUPPLEMENT_ID };
+    pub const ENCLOSED_IDEOGRAPHIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "ENCLOSED_IDEOGRAPHIC_SUPPLEMENT",
+        id: Self::ENCLOSED_IDEOGRAPHIC_SUPPLEMENT_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_C_ID,
+    };
     /// `MANDAIC`.
-    pub const MANDAIC: UnicodeBlock = UnicodeBlock { name: "MANDAIC", id: Self::MANDAIC_ID };
+    pub const MANDAIC: UnicodeBlock = UnicodeBlock {
+        name: "MANDAIC",
+        id: Self::MANDAIC_ID,
+    };
     /// `BATAK`.
-    pub const BATAK: UnicodeBlock = UnicodeBlock { name: "BATAK", id: Self::BATAK_ID };
+    pub const BATAK: UnicodeBlock = UnicodeBlock {
+        name: "BATAK",
+        id: Self::BATAK_ID,
+    };
     /// `ETHIOPIC_EXTENDED_A`.
-    pub const ETHIOPIC_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "ETHIOPIC_EXTENDED_A", id: Self::ETHIOPIC_EXTENDED_A_ID };
+    pub const ETHIOPIC_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "ETHIOPIC_EXTENDED_A",
+        id: Self::ETHIOPIC_EXTENDED_A_ID,
+    };
     /// `BRAHMI`.
-    pub const BRAHMI: UnicodeBlock = UnicodeBlock { name: "BRAHMI", id: Self::BRAHMI_ID };
+    pub const BRAHMI: UnicodeBlock = UnicodeBlock {
+        name: "BRAHMI",
+        id: Self::BRAHMI_ID,
+    };
     /// `BAMUM_SUPPLEMENT`.
-    pub const BAMUM_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "BAMUM_SUPPLEMENT", id: Self::BAMUM_SUPPLEMENT_ID };
+    pub const BAMUM_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "BAMUM_SUPPLEMENT",
+        id: Self::BAMUM_SUPPLEMENT_ID,
+    };
     /// `KANA_SUPPLEMENT`.
-    pub const KANA_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "KANA_SUPPLEMENT", id: Self::KANA_SUPPLEMENT_ID };
+    pub const KANA_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "KANA_SUPPLEMENT",
+        id: Self::KANA_SUPPLEMENT_ID,
+    };
     /// `PLAYING_CARDS`.
-    pub const PLAYING_CARDS: UnicodeBlock = UnicodeBlock { name: "PLAYING_CARDS", id: Self::PLAYING_CARDS_ID };
+    pub const PLAYING_CARDS: UnicodeBlock = UnicodeBlock {
+        name: "PLAYING_CARDS",
+        id: Self::PLAYING_CARDS_ID,
+    };
     /// `MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS`.
-    pub const MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS: UnicodeBlock = UnicodeBlock { name: "MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS", id: Self::MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS_ID };
+    pub const MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS: UnicodeBlock = UnicodeBlock {
+        name: "MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS",
+        id: Self::MISCELLANEOUS_SYMBOLS_AND_PICTOGRAPHS_ID,
+    };
     /// `EMOTICONS`.
-    pub const EMOTICONS: UnicodeBlock = UnicodeBlock { name: "EMOTICONS", id: Self::EMOTICONS_ID };
+    pub const EMOTICONS: UnicodeBlock = UnicodeBlock {
+        name: "EMOTICONS",
+        id: Self::EMOTICONS_ID,
+    };
     /// `TRANSPORT_AND_MAP_SYMBOLS`.
-    pub const TRANSPORT_AND_MAP_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "TRANSPORT_AND_MAP_SYMBOLS", id: Self::TRANSPORT_AND_MAP_SYMBOLS_ID };
+    pub const TRANSPORT_AND_MAP_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "TRANSPORT_AND_MAP_SYMBOLS",
+        id: Self::TRANSPORT_AND_MAP_SYMBOLS_ID,
+    };
     /// `ALCHEMICAL_SYMBOLS`.
-    pub const ALCHEMICAL_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "ALCHEMICAL_SYMBOLS", id: Self::ALCHEMICAL_SYMBOLS_ID };
+    pub const ALCHEMICAL_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "ALCHEMICAL_SYMBOLS",
+        id: Self::ALCHEMICAL_SYMBOLS_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_D_ID,
+    };
     /// `ARABIC_EXTENDED_A`.
-    pub const ARABIC_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "ARABIC_EXTENDED_A", id: Self::ARABIC_EXTENDED_A_ID };
+    pub const ARABIC_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_EXTENDED_A",
+        id: Self::ARABIC_EXTENDED_A_ID,
+    };
     /// `ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS`.
-    pub const ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS", id: Self::ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS_ID };
+    pub const ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS",
+        id: Self::ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS_ID,
+    };
     /// `CHAKMA`.
-    pub const CHAKMA: UnicodeBlock = UnicodeBlock { name: "CHAKMA", id: Self::CHAKMA_ID };
+    pub const CHAKMA: UnicodeBlock = UnicodeBlock {
+        name: "CHAKMA",
+        id: Self::CHAKMA_ID,
+    };
     /// `MEETEI_MAYEK_EXTENSIONS`.
-    pub const MEETEI_MAYEK_EXTENSIONS: UnicodeBlock = UnicodeBlock { name: "MEETEI_MAYEK_EXTENSIONS", id: Self::MEETEI_MAYEK_EXTENSIONS_ID };
+    pub const MEETEI_MAYEK_EXTENSIONS: UnicodeBlock = UnicodeBlock {
+        name: "MEETEI_MAYEK_EXTENSIONS",
+        id: Self::MEETEI_MAYEK_EXTENSIONS_ID,
+    };
     /// `MEROITIC_CURSIVE`.
-    pub const MEROITIC_CURSIVE: UnicodeBlock = UnicodeBlock { name: "MEROITIC_CURSIVE", id: Self::MEROITIC_CURSIVE_ID };
+    pub const MEROITIC_CURSIVE: UnicodeBlock = UnicodeBlock {
+        name: "MEROITIC_CURSIVE",
+        id: Self::MEROITIC_CURSIVE_ID,
+    };
     /// `MEROITIC_HIEROGLYPHS`.
-    pub const MEROITIC_HIEROGLYPHS: UnicodeBlock = UnicodeBlock { name: "MEROITIC_HIEROGLYPHS", id: Self::MEROITIC_HIEROGLYPHS_ID };
+    pub const MEROITIC_HIEROGLYPHS: UnicodeBlock = UnicodeBlock {
+        name: "MEROITIC_HIEROGLYPHS",
+        id: Self::MEROITIC_HIEROGLYPHS_ID,
+    };
     /// `MIAO`.
-    pub const MIAO: UnicodeBlock = UnicodeBlock { name: "MIAO", id: Self::MIAO_ID };
+    pub const MIAO: UnicodeBlock = UnicodeBlock {
+        name: "MIAO",
+        id: Self::MIAO_ID,
+    };
     /// `SHARADA`.
-    pub const SHARADA: UnicodeBlock = UnicodeBlock { name: "SHARADA", id: Self::SHARADA_ID };
+    pub const SHARADA: UnicodeBlock = UnicodeBlock {
+        name: "SHARADA",
+        id: Self::SHARADA_ID,
+    };
     /// `SORA_SOMPENG`.
-    pub const SORA_SOMPENG: UnicodeBlock = UnicodeBlock { name: "SORA_SOMPENG", id: Self::SORA_SOMPENG_ID };
+    pub const SORA_SOMPENG: UnicodeBlock = UnicodeBlock {
+        name: "SORA_SOMPENG",
+        id: Self::SORA_SOMPENG_ID,
+    };
     /// `SUNDANESE_SUPPLEMENT`.
-    pub const SUNDANESE_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "SUNDANESE_SUPPLEMENT", id: Self::SUNDANESE_SUPPLEMENT_ID };
+    pub const SUNDANESE_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "SUNDANESE_SUPPLEMENT",
+        id: Self::SUNDANESE_SUPPLEMENT_ID,
+    };
     /// `TAKRI`.
-    pub const TAKRI: UnicodeBlock = UnicodeBlock { name: "TAKRI", id: Self::TAKRI_ID };
+    pub const TAKRI: UnicodeBlock = UnicodeBlock {
+        name: "TAKRI",
+        id: Self::TAKRI_ID,
+    };
     /// `BASSA_VAH`.
-    pub const BASSA_VAH: UnicodeBlock = UnicodeBlock { name: "BASSA_VAH", id: Self::BASSA_VAH_ID };
+    pub const BASSA_VAH: UnicodeBlock = UnicodeBlock {
+        name: "BASSA_VAH",
+        id: Self::BASSA_VAH_ID,
+    };
     /// `CAUCASIAN_ALBANIAN`.
-    pub const CAUCASIAN_ALBANIAN: UnicodeBlock = UnicodeBlock { name: "CAUCASIAN_ALBANIAN", id: Self::CAUCASIAN_ALBANIAN_ID };
+    pub const CAUCASIAN_ALBANIAN: UnicodeBlock = UnicodeBlock {
+        name: "CAUCASIAN_ALBANIAN",
+        id: Self::CAUCASIAN_ALBANIAN_ID,
+    };
     /// `COPTIC_EPACT_NUMBERS`.
-    pub const COPTIC_EPACT_NUMBERS: UnicodeBlock = UnicodeBlock { name: "COPTIC_EPACT_NUMBERS", id: Self::COPTIC_EPACT_NUMBERS_ID };
+    pub const COPTIC_EPACT_NUMBERS: UnicodeBlock = UnicodeBlock {
+        name: "COPTIC_EPACT_NUMBERS",
+        id: Self::COPTIC_EPACT_NUMBERS_ID,
+    };
     /// `COMBINING_DIACRITICAL_MARKS_EXTENDED`.
-    pub const COMBINING_DIACRITICAL_MARKS_EXTENDED: UnicodeBlock = UnicodeBlock { name: "COMBINING_DIACRITICAL_MARKS_EXTENDED", id: Self::COMBINING_DIACRITICAL_MARKS_EXTENDED_ID };
+    pub const COMBINING_DIACRITICAL_MARKS_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "COMBINING_DIACRITICAL_MARKS_EXTENDED",
+        id: Self::COMBINING_DIACRITICAL_MARKS_EXTENDED_ID,
+    };
     /// `DUPLOYAN`.
-    pub const DUPLOYAN: UnicodeBlock = UnicodeBlock { name: "DUPLOYAN", id: Self::DUPLOYAN_ID };
+    pub const DUPLOYAN: UnicodeBlock = UnicodeBlock {
+        name: "DUPLOYAN",
+        id: Self::DUPLOYAN_ID,
+    };
     /// `ELBASAN`.
-    pub const ELBASAN: UnicodeBlock = UnicodeBlock { name: "ELBASAN", id: Self::ELBASAN_ID };
+    pub const ELBASAN: UnicodeBlock = UnicodeBlock {
+        name: "ELBASAN",
+        id: Self::ELBASAN_ID,
+    };
     /// `GEOMETRIC_SHAPES_EXTENDED`.
-    pub const GEOMETRIC_SHAPES_EXTENDED: UnicodeBlock = UnicodeBlock { name: "GEOMETRIC_SHAPES_EXTENDED", id: Self::GEOMETRIC_SHAPES_EXTENDED_ID };
+    pub const GEOMETRIC_SHAPES_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "GEOMETRIC_SHAPES_EXTENDED",
+        id: Self::GEOMETRIC_SHAPES_EXTENDED_ID,
+    };
     /// `GRANTHA`.
-    pub const GRANTHA: UnicodeBlock = UnicodeBlock { name: "GRANTHA", id: Self::GRANTHA_ID };
+    pub const GRANTHA: UnicodeBlock = UnicodeBlock {
+        name: "GRANTHA",
+        id: Self::GRANTHA_ID,
+    };
     /// `KHOJKI`.
-    pub const KHOJKI: UnicodeBlock = UnicodeBlock { name: "KHOJKI", id: Self::KHOJKI_ID };
+    pub const KHOJKI: UnicodeBlock = UnicodeBlock {
+        name: "KHOJKI",
+        id: Self::KHOJKI_ID,
+    };
     /// `KHUDAWADI`.
-    pub const KHUDAWADI: UnicodeBlock = UnicodeBlock { name: "KHUDAWADI", id: Self::KHUDAWADI_ID };
+    pub const KHUDAWADI: UnicodeBlock = UnicodeBlock {
+        name: "KHUDAWADI",
+        id: Self::KHUDAWADI_ID,
+    };
     /// `LATIN_EXTENDED_E`.
-    pub const LATIN_EXTENDED_E: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_E", id: Self::LATIN_EXTENDED_E_ID };
+    pub const LATIN_EXTENDED_E: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_E",
+        id: Self::LATIN_EXTENDED_E_ID,
+    };
     /// `LINEAR_A`.
-    pub const LINEAR_A: UnicodeBlock = UnicodeBlock { name: "LINEAR_A", id: Self::LINEAR_A_ID };
+    pub const LINEAR_A: UnicodeBlock = UnicodeBlock {
+        name: "LINEAR_A",
+        id: Self::LINEAR_A_ID,
+    };
     /// `MAHAJANI`.
-    pub const MAHAJANI: UnicodeBlock = UnicodeBlock { name: "MAHAJANI", id: Self::MAHAJANI_ID };
+    pub const MAHAJANI: UnicodeBlock = UnicodeBlock {
+        name: "MAHAJANI",
+        id: Self::MAHAJANI_ID,
+    };
     /// `MANICHAEAN`.
-    pub const MANICHAEAN: UnicodeBlock = UnicodeBlock { name: "MANICHAEAN", id: Self::MANICHAEAN_ID };
+    pub const MANICHAEAN: UnicodeBlock = UnicodeBlock {
+        name: "MANICHAEAN",
+        id: Self::MANICHAEAN_ID,
+    };
     /// `MENDE_KIKAKUI`.
-    pub const MENDE_KIKAKUI: UnicodeBlock = UnicodeBlock { name: "MENDE_KIKAKUI", id: Self::MENDE_KIKAKUI_ID };
+    pub const MENDE_KIKAKUI: UnicodeBlock = UnicodeBlock {
+        name: "MENDE_KIKAKUI",
+        id: Self::MENDE_KIKAKUI_ID,
+    };
     /// `MODI`.
-    pub const MODI: UnicodeBlock = UnicodeBlock { name: "MODI", id: Self::MODI_ID };
+    pub const MODI: UnicodeBlock = UnicodeBlock {
+        name: "MODI",
+        id: Self::MODI_ID,
+    };
     /// `MRO`.
-    pub const MRO: UnicodeBlock = UnicodeBlock { name: "MRO", id: Self::MRO_ID };
+    pub const MRO: UnicodeBlock = UnicodeBlock {
+        name: "MRO",
+        id: Self::MRO_ID,
+    };
     /// `MYANMAR_EXTENDED_B`.
-    pub const MYANMAR_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "MYANMAR_EXTENDED_B", id: Self::MYANMAR_EXTENDED_B_ID };
+    pub const MYANMAR_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "MYANMAR_EXTENDED_B",
+        id: Self::MYANMAR_EXTENDED_B_ID,
+    };
     /// `NABATAEAN`.
-    pub const NABATAEAN: UnicodeBlock = UnicodeBlock { name: "NABATAEAN", id: Self::NABATAEAN_ID };
+    pub const NABATAEAN: UnicodeBlock = UnicodeBlock {
+        name: "NABATAEAN",
+        id: Self::NABATAEAN_ID,
+    };
     /// `OLD_NORTH_ARABIAN`.
-    pub const OLD_NORTH_ARABIAN: UnicodeBlock = UnicodeBlock { name: "OLD_NORTH_ARABIAN", id: Self::OLD_NORTH_ARABIAN_ID };
+    pub const OLD_NORTH_ARABIAN: UnicodeBlock = UnicodeBlock {
+        name: "OLD_NORTH_ARABIAN",
+        id: Self::OLD_NORTH_ARABIAN_ID,
+    };
     /// `OLD_PERMIC`.
-    pub const OLD_PERMIC: UnicodeBlock = UnicodeBlock { name: "OLD_PERMIC", id: Self::OLD_PERMIC_ID };
+    pub const OLD_PERMIC: UnicodeBlock = UnicodeBlock {
+        name: "OLD_PERMIC",
+        id: Self::OLD_PERMIC_ID,
+    };
     /// `ORNAMENTAL_DINGBATS`.
-    pub const ORNAMENTAL_DINGBATS: UnicodeBlock = UnicodeBlock { name: "ORNAMENTAL_DINGBATS", id: Self::ORNAMENTAL_DINGBATS_ID };
+    pub const ORNAMENTAL_DINGBATS: UnicodeBlock = UnicodeBlock {
+        name: "ORNAMENTAL_DINGBATS",
+        id: Self::ORNAMENTAL_DINGBATS_ID,
+    };
     /// `PAHAWH_HMONG`.
-    pub const PAHAWH_HMONG: UnicodeBlock = UnicodeBlock { name: "PAHAWH_HMONG", id: Self::PAHAWH_HMONG_ID };
+    pub const PAHAWH_HMONG: UnicodeBlock = UnicodeBlock {
+        name: "PAHAWH_HMONG",
+        id: Self::PAHAWH_HMONG_ID,
+    };
     /// `PALMYRENE`.
-    pub const PALMYRENE: UnicodeBlock = UnicodeBlock { name: "PALMYRENE", id: Self::PALMYRENE_ID };
+    pub const PALMYRENE: UnicodeBlock = UnicodeBlock {
+        name: "PALMYRENE",
+        id: Self::PALMYRENE_ID,
+    };
     /// `PAU_CIN_HAU`.
-    pub const PAU_CIN_HAU: UnicodeBlock = UnicodeBlock { name: "PAU_CIN_HAU", id: Self::PAU_CIN_HAU_ID };
+    pub const PAU_CIN_HAU: UnicodeBlock = UnicodeBlock {
+        name: "PAU_CIN_HAU",
+        id: Self::PAU_CIN_HAU_ID,
+    };
     /// `PSALTER_PAHLAVI`.
-    pub const PSALTER_PAHLAVI: UnicodeBlock = UnicodeBlock { name: "PSALTER_PAHLAVI", id: Self::PSALTER_PAHLAVI_ID };
+    pub const PSALTER_PAHLAVI: UnicodeBlock = UnicodeBlock {
+        name: "PSALTER_PAHLAVI",
+        id: Self::PSALTER_PAHLAVI_ID,
+    };
     /// `SHORTHAND_FORMAT_CONTROLS`.
-    pub const SHORTHAND_FORMAT_CONTROLS: UnicodeBlock = UnicodeBlock { name: "SHORTHAND_FORMAT_CONTROLS", id: Self::SHORTHAND_FORMAT_CONTROLS_ID };
+    pub const SHORTHAND_FORMAT_CONTROLS: UnicodeBlock = UnicodeBlock {
+        name: "SHORTHAND_FORMAT_CONTROLS",
+        id: Self::SHORTHAND_FORMAT_CONTROLS_ID,
+    };
     /// `SIDDHAM`.
-    pub const SIDDHAM: UnicodeBlock = UnicodeBlock { name: "SIDDHAM", id: Self::SIDDHAM_ID };
+    pub const SIDDHAM: UnicodeBlock = UnicodeBlock {
+        name: "SIDDHAM",
+        id: Self::SIDDHAM_ID,
+    };
     /// `SINHALA_ARCHAIC_NUMBERS`.
-    pub const SINHALA_ARCHAIC_NUMBERS: UnicodeBlock = UnicodeBlock { name: "SINHALA_ARCHAIC_NUMBERS", id: Self::SINHALA_ARCHAIC_NUMBERS_ID };
+    pub const SINHALA_ARCHAIC_NUMBERS: UnicodeBlock = UnicodeBlock {
+        name: "SINHALA_ARCHAIC_NUMBERS",
+        id: Self::SINHALA_ARCHAIC_NUMBERS_ID,
+    };
     /// `SUPPLEMENTAL_ARROWS_C`.
-    pub const SUPPLEMENTAL_ARROWS_C: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTAL_ARROWS_C", id: Self::SUPPLEMENTAL_ARROWS_C_ID };
+    pub const SUPPLEMENTAL_ARROWS_C: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTAL_ARROWS_C",
+        id: Self::SUPPLEMENTAL_ARROWS_C_ID,
+    };
     /// `TIRHUTA`.
-    pub const TIRHUTA: UnicodeBlock = UnicodeBlock { name: "TIRHUTA", id: Self::TIRHUTA_ID };
+    pub const TIRHUTA: UnicodeBlock = UnicodeBlock {
+        name: "TIRHUTA",
+        id: Self::TIRHUTA_ID,
+    };
     /// `WARANG_CITI`.
-    pub const WARANG_CITI: UnicodeBlock = UnicodeBlock { name: "WARANG_CITI", id: Self::WARANG_CITI_ID };
+    pub const WARANG_CITI: UnicodeBlock = UnicodeBlock {
+        name: "WARANG_CITI",
+        id: Self::WARANG_CITI_ID,
+    };
     /// `AHOM`.
-    pub const AHOM: UnicodeBlock = UnicodeBlock { name: "AHOM", id: Self::AHOM_ID };
+    pub const AHOM: UnicodeBlock = UnicodeBlock {
+        name: "AHOM",
+        id: Self::AHOM_ID,
+    };
     /// `ANATOLIAN_HIEROGLYPHS`.
-    pub const ANATOLIAN_HIEROGLYPHS: UnicodeBlock = UnicodeBlock { name: "ANATOLIAN_HIEROGLYPHS", id: Self::ANATOLIAN_HIEROGLYPHS_ID };
+    pub const ANATOLIAN_HIEROGLYPHS: UnicodeBlock = UnicodeBlock {
+        name: "ANATOLIAN_HIEROGLYPHS",
+        id: Self::ANATOLIAN_HIEROGLYPHS_ID,
+    };
     /// `CHEROKEE_SUPPLEMENT`.
-    pub const CHEROKEE_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "CHEROKEE_SUPPLEMENT", id: Self::CHEROKEE_SUPPLEMENT_ID };
+    pub const CHEROKEE_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "CHEROKEE_SUPPLEMENT",
+        id: Self::CHEROKEE_SUPPLEMENT_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_E_ID,
+    };
     /// `EARLY_DYNASTIC_CUNEIFORM`.
-    pub const EARLY_DYNASTIC_CUNEIFORM: UnicodeBlock = UnicodeBlock { name: "EARLY_DYNASTIC_CUNEIFORM", id: Self::EARLY_DYNASTIC_CUNEIFORM_ID };
+    pub const EARLY_DYNASTIC_CUNEIFORM: UnicodeBlock = UnicodeBlock {
+        name: "EARLY_DYNASTIC_CUNEIFORM",
+        id: Self::EARLY_DYNASTIC_CUNEIFORM_ID,
+    };
     /// `HATRAN`.
-    pub const HATRAN: UnicodeBlock = UnicodeBlock { name: "HATRAN", id: Self::HATRAN_ID };
+    pub const HATRAN: UnicodeBlock = UnicodeBlock {
+        name: "HATRAN",
+        id: Self::HATRAN_ID,
+    };
     /// `MULTANI`.
-    pub const MULTANI: UnicodeBlock = UnicodeBlock { name: "MULTANI", id: Self::MULTANI_ID };
+    pub const MULTANI: UnicodeBlock = UnicodeBlock {
+        name: "MULTANI",
+        id: Self::MULTANI_ID,
+    };
     /// `OLD_HUNGARIAN`.
-    pub const OLD_HUNGARIAN: UnicodeBlock = UnicodeBlock { name: "OLD_HUNGARIAN", id: Self::OLD_HUNGARIAN_ID };
+    pub const OLD_HUNGARIAN: UnicodeBlock = UnicodeBlock {
+        name: "OLD_HUNGARIAN",
+        id: Self::OLD_HUNGARIAN_ID,
+    };
     /// `SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS`.
-    pub const SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS: UnicodeBlock = UnicodeBlock { name: "SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS", id: Self::SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS_ID };
+    pub const SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS: UnicodeBlock = UnicodeBlock {
+        name: "SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS",
+        id: Self::SUPPLEMENTAL_SYMBOLS_AND_PICTOGRAPHS_ID,
+    };
     /// `SUTTON_SIGNWRITING`.
-    pub const SUTTON_SIGNWRITING: UnicodeBlock = UnicodeBlock { name: "SUTTON_SIGNWRITING", id: Self::SUTTON_SIGNWRITING_ID };
+    pub const SUTTON_SIGNWRITING: UnicodeBlock = UnicodeBlock {
+        name: "SUTTON_SIGNWRITING",
+        id: Self::SUTTON_SIGNWRITING_ID,
+    };
     /// `ADLAM`.
-    pub const ADLAM: UnicodeBlock = UnicodeBlock { name: "ADLAM", id: Self::ADLAM_ID };
+    pub const ADLAM: UnicodeBlock = UnicodeBlock {
+        name: "ADLAM",
+        id: Self::ADLAM_ID,
+    };
     /// `BHAIKSUKI`.
-    pub const BHAIKSUKI: UnicodeBlock = UnicodeBlock { name: "BHAIKSUKI", id: Self::BHAIKSUKI_ID };
+    pub const BHAIKSUKI: UnicodeBlock = UnicodeBlock {
+        name: "BHAIKSUKI",
+        id: Self::BHAIKSUKI_ID,
+    };
     /// `CYRILLIC_EXTENDED_C`.
-    pub const CYRILLIC_EXTENDED_C: UnicodeBlock = UnicodeBlock { name: "CYRILLIC_EXTENDED_C", id: Self::CYRILLIC_EXTENDED_C_ID };
+    pub const CYRILLIC_EXTENDED_C: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC_EXTENDED_C",
+        id: Self::CYRILLIC_EXTENDED_C_ID,
+    };
     /// `GLAGOLITIC_SUPPLEMENT`.
-    pub const GLAGOLITIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "GLAGOLITIC_SUPPLEMENT", id: Self::GLAGOLITIC_SUPPLEMENT_ID };
+    pub const GLAGOLITIC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "GLAGOLITIC_SUPPLEMENT",
+        id: Self::GLAGOLITIC_SUPPLEMENT_ID,
+    };
     /// `IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION`.
-    pub const IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION: UnicodeBlock = UnicodeBlock { name: "IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION", id: Self::IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION_ID };
+    pub const IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION: UnicodeBlock = UnicodeBlock {
+        name: "IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION",
+        id: Self::IDEOGRAPHIC_SYMBOLS_AND_PUNCTUATION_ID,
+    };
     /// `MARCHEN`.
-    pub const MARCHEN: UnicodeBlock = UnicodeBlock { name: "MARCHEN", id: Self::MARCHEN_ID };
+    pub const MARCHEN: UnicodeBlock = UnicodeBlock {
+        name: "MARCHEN",
+        id: Self::MARCHEN_ID,
+    };
     /// `MONGOLIAN_SUPPLEMENT`.
-    pub const MONGOLIAN_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "MONGOLIAN_SUPPLEMENT", id: Self::MONGOLIAN_SUPPLEMENT_ID };
+    pub const MONGOLIAN_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "MONGOLIAN_SUPPLEMENT",
+        id: Self::MONGOLIAN_SUPPLEMENT_ID,
+    };
     /// `NEWA`.
-    pub const NEWA: UnicodeBlock = UnicodeBlock { name: "NEWA", id: Self::NEWA_ID };
+    pub const NEWA: UnicodeBlock = UnicodeBlock {
+        name: "NEWA",
+        id: Self::NEWA_ID,
+    };
     /// `OSAGE`.
-    pub const OSAGE: UnicodeBlock = UnicodeBlock { name: "OSAGE", id: Self::OSAGE_ID };
+    pub const OSAGE: UnicodeBlock = UnicodeBlock {
+        name: "OSAGE",
+        id: Self::OSAGE_ID,
+    };
     /// `TANGUT`.
-    pub const TANGUT: UnicodeBlock = UnicodeBlock { name: "TANGUT", id: Self::TANGUT_ID };
+    pub const TANGUT: UnicodeBlock = UnicodeBlock {
+        name: "TANGUT",
+        id: Self::TANGUT_ID,
+    };
     /// `TANGUT_COMPONENTS`.
-    pub const TANGUT_COMPONENTS: UnicodeBlock = UnicodeBlock { name: "TANGUT_COMPONENTS", id: Self::TANGUT_COMPONENTS_ID };
+    pub const TANGUT_COMPONENTS: UnicodeBlock = UnicodeBlock {
+        name: "TANGUT_COMPONENTS",
+        id: Self::TANGUT_COMPONENTS_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_F_ID,
+    };
     /// `KANA_EXTENDED_A`.
-    pub const KANA_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "KANA_EXTENDED_A", id: Self::KANA_EXTENDED_A_ID };
+    pub const KANA_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "KANA_EXTENDED_A",
+        id: Self::KANA_EXTENDED_A_ID,
+    };
     /// `MASARAM_GONDI`.
-    pub const MASARAM_GONDI: UnicodeBlock = UnicodeBlock { name: "MASARAM_GONDI", id: Self::MASARAM_GONDI_ID };
+    pub const MASARAM_GONDI: UnicodeBlock = UnicodeBlock {
+        name: "MASARAM_GONDI",
+        id: Self::MASARAM_GONDI_ID,
+    };
     /// `NUSHU`.
-    pub const NUSHU: UnicodeBlock = UnicodeBlock { name: "NUSHU", id: Self::NUSHU_ID };
+    pub const NUSHU: UnicodeBlock = UnicodeBlock {
+        name: "NUSHU",
+        id: Self::NUSHU_ID,
+    };
     /// `SOYOMBO`.
-    pub const SOYOMBO: UnicodeBlock = UnicodeBlock { name: "SOYOMBO", id: Self::SOYOMBO_ID };
+    pub const SOYOMBO: UnicodeBlock = UnicodeBlock {
+        name: "SOYOMBO",
+        id: Self::SOYOMBO_ID,
+    };
     /// `SYRIAC_SUPPLEMENT`.
-    pub const SYRIAC_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "SYRIAC_SUPPLEMENT", id: Self::SYRIAC_SUPPLEMENT_ID };
+    pub const SYRIAC_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "SYRIAC_SUPPLEMENT",
+        id: Self::SYRIAC_SUPPLEMENT_ID,
+    };
     /// `ZANABAZAR_SQUARE`.
-    pub const ZANABAZAR_SQUARE: UnicodeBlock = UnicodeBlock { name: "ZANABAZAR_SQUARE", id: Self::ZANABAZAR_SQUARE_ID };
+    pub const ZANABAZAR_SQUARE: UnicodeBlock = UnicodeBlock {
+        name: "ZANABAZAR_SQUARE",
+        id: Self::ZANABAZAR_SQUARE_ID,
+    };
     /// `CHESS_SYMBOLS`.
-    pub const CHESS_SYMBOLS: UnicodeBlock = UnicodeBlock { name: "CHESS_SYMBOLS", id: Self::CHESS_SYMBOLS_ID };
+    pub const CHESS_SYMBOLS: UnicodeBlock = UnicodeBlock {
+        name: "CHESS_SYMBOLS",
+        id: Self::CHESS_SYMBOLS_ID,
+    };
     /// `DOGRA`.
-    pub const DOGRA: UnicodeBlock = UnicodeBlock { name: "DOGRA", id: Self::DOGRA_ID };
+    pub const DOGRA: UnicodeBlock = UnicodeBlock {
+        name: "DOGRA",
+        id: Self::DOGRA_ID,
+    };
     /// `GEORGIAN_EXTENDED`.
-    pub const GEORGIAN_EXTENDED: UnicodeBlock = UnicodeBlock { name: "GEORGIAN_EXTENDED", id: Self::GEORGIAN_EXTENDED_ID };
+    pub const GEORGIAN_EXTENDED: UnicodeBlock = UnicodeBlock {
+        name: "GEORGIAN_EXTENDED",
+        id: Self::GEORGIAN_EXTENDED_ID,
+    };
     /// `GUNJALA_GONDI`.
-    pub const GUNJALA_GONDI: UnicodeBlock = UnicodeBlock { name: "GUNJALA_GONDI", id: Self::GUNJALA_GONDI_ID };
+    pub const GUNJALA_GONDI: UnicodeBlock = UnicodeBlock {
+        name: "GUNJALA_GONDI",
+        id: Self::GUNJALA_GONDI_ID,
+    };
     /// `HANIFI_ROHINGYA`.
-    pub const HANIFI_ROHINGYA: UnicodeBlock = UnicodeBlock { name: "HANIFI_ROHINGYA", id: Self::HANIFI_ROHINGYA_ID };
+    pub const HANIFI_ROHINGYA: UnicodeBlock = UnicodeBlock {
+        name: "HANIFI_ROHINGYA",
+        id: Self::HANIFI_ROHINGYA_ID,
+    };
     /// `INDIC_SIYAQ_NUMBERS`.
-    pub const INDIC_SIYAQ_NUMBERS: UnicodeBlock = UnicodeBlock { name: "INDIC_SIYAQ_NUMBERS", id: Self::INDIC_SIYAQ_NUMBERS_ID };
+    pub const INDIC_SIYAQ_NUMBERS: UnicodeBlock = UnicodeBlock {
+        name: "INDIC_SIYAQ_NUMBERS",
+        id: Self::INDIC_SIYAQ_NUMBERS_ID,
+    };
     /// `MAKASAR`.
-    pub const MAKASAR: UnicodeBlock = UnicodeBlock { name: "MAKASAR", id: Self::MAKASAR_ID };
+    pub const MAKASAR: UnicodeBlock = UnicodeBlock {
+        name: "MAKASAR",
+        id: Self::MAKASAR_ID,
+    };
     /// `MAYAN_NUMERALS`.
-    pub const MAYAN_NUMERALS: UnicodeBlock = UnicodeBlock { name: "MAYAN_NUMERALS", id: Self::MAYAN_NUMERALS_ID };
+    pub const MAYAN_NUMERALS: UnicodeBlock = UnicodeBlock {
+        name: "MAYAN_NUMERALS",
+        id: Self::MAYAN_NUMERALS_ID,
+    };
     /// `MEDEFAIDRIN`.
-    pub const MEDEFAIDRIN: UnicodeBlock = UnicodeBlock { name: "MEDEFAIDRIN", id: Self::MEDEFAIDRIN_ID };
+    pub const MEDEFAIDRIN: UnicodeBlock = UnicodeBlock {
+        name: "MEDEFAIDRIN",
+        id: Self::MEDEFAIDRIN_ID,
+    };
     /// `OLD_SOGDIAN`.
-    pub const OLD_SOGDIAN: UnicodeBlock = UnicodeBlock { name: "OLD_SOGDIAN", id: Self::OLD_SOGDIAN_ID };
+    pub const OLD_SOGDIAN: UnicodeBlock = UnicodeBlock {
+        name: "OLD_SOGDIAN",
+        id: Self::OLD_SOGDIAN_ID,
+    };
     /// `SOGDIAN`.
-    pub const SOGDIAN: UnicodeBlock = UnicodeBlock { name: "SOGDIAN", id: Self::SOGDIAN_ID };
+    pub const SOGDIAN: UnicodeBlock = UnicodeBlock {
+        name: "SOGDIAN",
+        id: Self::SOGDIAN_ID,
+    };
     /// `EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS`.
-    pub const EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS: UnicodeBlock = UnicodeBlock { name: "EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS", id: Self::EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS_ID };
+    pub const EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS: UnicodeBlock = UnicodeBlock {
+        name: "EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS",
+        id: Self::EGYPTIAN_HIEROGLYPH_FORMAT_CONTROLS_ID,
+    };
     /// `ELYMAIC`.
-    pub const ELYMAIC: UnicodeBlock = UnicodeBlock { name: "ELYMAIC", id: Self::ELYMAIC_ID };
+    pub const ELYMAIC: UnicodeBlock = UnicodeBlock {
+        name: "ELYMAIC",
+        id: Self::ELYMAIC_ID,
+    };
     /// `NANDINAGARI`.
-    pub const NANDINAGARI: UnicodeBlock = UnicodeBlock { name: "NANDINAGARI", id: Self::NANDINAGARI_ID };
+    pub const NANDINAGARI: UnicodeBlock = UnicodeBlock {
+        name: "NANDINAGARI",
+        id: Self::NANDINAGARI_ID,
+    };
     /// `NYIAKENG_PUACHUE_HMONG`.
-    pub const NYIAKENG_PUACHUE_HMONG: UnicodeBlock = UnicodeBlock { name: "NYIAKENG_PUACHUE_HMONG", id: Self::NYIAKENG_PUACHUE_HMONG_ID };
+    pub const NYIAKENG_PUACHUE_HMONG: UnicodeBlock = UnicodeBlock {
+        name: "NYIAKENG_PUACHUE_HMONG",
+        id: Self::NYIAKENG_PUACHUE_HMONG_ID,
+    };
     /// `OTTOMAN_SIYAQ_NUMBERS`.
-    pub const OTTOMAN_SIYAQ_NUMBERS: UnicodeBlock = UnicodeBlock { name: "OTTOMAN_SIYAQ_NUMBERS", id: Self::OTTOMAN_SIYAQ_NUMBERS_ID };
+    pub const OTTOMAN_SIYAQ_NUMBERS: UnicodeBlock = UnicodeBlock {
+        name: "OTTOMAN_SIYAQ_NUMBERS",
+        id: Self::OTTOMAN_SIYAQ_NUMBERS_ID,
+    };
     /// `SMALL_KANA_EXTENSION`.
-    pub const SMALL_KANA_EXTENSION: UnicodeBlock = UnicodeBlock { name: "SMALL_KANA_EXTENSION", id: Self::SMALL_KANA_EXTENSION_ID };
+    pub const SMALL_KANA_EXTENSION: UnicodeBlock = UnicodeBlock {
+        name: "SMALL_KANA_EXTENSION",
+        id: Self::SMALL_KANA_EXTENSION_ID,
+    };
     /// `SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A`.
-    pub const SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A", id: Self::SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A_ID };
+    pub const SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A",
+        id: Self::SYMBOLS_AND_PICTOGRAPHS_EXTENDED_A_ID,
+    };
     /// `TAMIL_SUPPLEMENT`.
-    pub const TAMIL_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "TAMIL_SUPPLEMENT", id: Self::TAMIL_SUPPLEMENT_ID };
+    pub const TAMIL_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "TAMIL_SUPPLEMENT",
+        id: Self::TAMIL_SUPPLEMENT_ID,
+    };
     /// `WANCHO`.
-    pub const WANCHO: UnicodeBlock = UnicodeBlock { name: "WANCHO", id: Self::WANCHO_ID };
+    pub const WANCHO: UnicodeBlock = UnicodeBlock {
+        name: "WANCHO",
+        id: Self::WANCHO_ID,
+    };
     /// `CHORASMIAN`.
-    pub const CHORASMIAN: UnicodeBlock = UnicodeBlock { name: "CHORASMIAN", id: Self::CHORASMIAN_ID };
+    pub const CHORASMIAN: UnicodeBlock = UnicodeBlock {
+        name: "CHORASMIAN",
+        id: Self::CHORASMIAN_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_G_ID,
+    };
     /// `DIVES_AKURU`.
-    pub const DIVES_AKURU: UnicodeBlock = UnicodeBlock { name: "DIVES_AKURU", id: Self::DIVES_AKURU_ID };
+    pub const DIVES_AKURU: UnicodeBlock = UnicodeBlock {
+        name: "DIVES_AKURU",
+        id: Self::DIVES_AKURU_ID,
+    };
     /// `KHITAN_SMALL_SCRIPT`.
-    pub const KHITAN_SMALL_SCRIPT: UnicodeBlock = UnicodeBlock { name: "KHITAN_SMALL_SCRIPT", id: Self::KHITAN_SMALL_SCRIPT_ID };
+    pub const KHITAN_SMALL_SCRIPT: UnicodeBlock = UnicodeBlock {
+        name: "KHITAN_SMALL_SCRIPT",
+        id: Self::KHITAN_SMALL_SCRIPT_ID,
+    };
     /// `LISU_SUPPLEMENT`.
-    pub const LISU_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "LISU_SUPPLEMENT", id: Self::LISU_SUPPLEMENT_ID };
+    pub const LISU_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "LISU_SUPPLEMENT",
+        id: Self::LISU_SUPPLEMENT_ID,
+    };
     /// `SYMBOLS_FOR_LEGACY_COMPUTING`.
-    pub const SYMBOLS_FOR_LEGACY_COMPUTING: UnicodeBlock = UnicodeBlock { name: "SYMBOLS_FOR_LEGACY_COMPUTING", id: Self::SYMBOLS_FOR_LEGACY_COMPUTING_ID };
+    pub const SYMBOLS_FOR_LEGACY_COMPUTING: UnicodeBlock = UnicodeBlock {
+        name: "SYMBOLS_FOR_LEGACY_COMPUTING",
+        id: Self::SYMBOLS_FOR_LEGACY_COMPUTING_ID,
+    };
     /// `TANGUT_SUPPLEMENT`.
-    pub const TANGUT_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "TANGUT_SUPPLEMENT", id: Self::TANGUT_SUPPLEMENT_ID };
+    pub const TANGUT_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "TANGUT_SUPPLEMENT",
+        id: Self::TANGUT_SUPPLEMENT_ID,
+    };
     /// `YEZIDI`.
-    pub const YEZIDI: UnicodeBlock = UnicodeBlock { name: "YEZIDI", id: Self::YEZIDI_ID };
+    pub const YEZIDI: UnicodeBlock = UnicodeBlock {
+        name: "YEZIDI",
+        id: Self::YEZIDI_ID,
+    };
     /// `ARABIC_EXTENDED_B`.
-    pub const ARABIC_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "ARABIC_EXTENDED_B", id: Self::ARABIC_EXTENDED_B_ID };
+    pub const ARABIC_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_EXTENDED_B",
+        id: Self::ARABIC_EXTENDED_B_ID,
+    };
     /// `CYPRO_MINOAN`.
-    pub const CYPRO_MINOAN: UnicodeBlock = UnicodeBlock { name: "CYPRO_MINOAN", id: Self::CYPRO_MINOAN_ID };
+    pub const CYPRO_MINOAN: UnicodeBlock = UnicodeBlock {
+        name: "CYPRO_MINOAN",
+        id: Self::CYPRO_MINOAN_ID,
+    };
     /// `ETHIOPIC_EXTENDED_B`.
-    pub const ETHIOPIC_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "ETHIOPIC_EXTENDED_B", id: Self::ETHIOPIC_EXTENDED_B_ID };
+    pub const ETHIOPIC_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "ETHIOPIC_EXTENDED_B",
+        id: Self::ETHIOPIC_EXTENDED_B_ID,
+    };
     /// `KANA_EXTENDED_B`.
-    pub const KANA_EXTENDED_B: UnicodeBlock = UnicodeBlock { name: "KANA_EXTENDED_B", id: Self::KANA_EXTENDED_B_ID };
+    pub const KANA_EXTENDED_B: UnicodeBlock = UnicodeBlock {
+        name: "KANA_EXTENDED_B",
+        id: Self::KANA_EXTENDED_B_ID,
+    };
     /// `LATIN_EXTENDED_F`.
-    pub const LATIN_EXTENDED_F: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_F", id: Self::LATIN_EXTENDED_F_ID };
+    pub const LATIN_EXTENDED_F: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_F",
+        id: Self::LATIN_EXTENDED_F_ID,
+    };
     /// `LATIN_EXTENDED_G`.
-    pub const LATIN_EXTENDED_G: UnicodeBlock = UnicodeBlock { name: "LATIN_EXTENDED_G", id: Self::LATIN_EXTENDED_G_ID };
+    pub const LATIN_EXTENDED_G: UnicodeBlock = UnicodeBlock {
+        name: "LATIN_EXTENDED_G",
+        id: Self::LATIN_EXTENDED_G_ID,
+    };
     /// `OLD_UYGHUR`.
-    pub const OLD_UYGHUR: UnicodeBlock = UnicodeBlock { name: "OLD_UYGHUR", id: Self::OLD_UYGHUR_ID };
+    pub const OLD_UYGHUR: UnicodeBlock = UnicodeBlock {
+        name: "OLD_UYGHUR",
+        id: Self::OLD_UYGHUR_ID,
+    };
     /// `TANGSA`.
-    pub const TANGSA: UnicodeBlock = UnicodeBlock { name: "TANGSA", id: Self::TANGSA_ID };
+    pub const TANGSA: UnicodeBlock = UnicodeBlock {
+        name: "TANGSA",
+        id: Self::TANGSA_ID,
+    };
     /// `TOTO`.
-    pub const TOTO: UnicodeBlock = UnicodeBlock { name: "TOTO", id: Self::TOTO_ID };
+    pub const TOTO: UnicodeBlock = UnicodeBlock {
+        name: "TOTO",
+        id: Self::TOTO_ID,
+    };
     /// `UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A`.
-    pub const UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A", id: Self::UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A_ID };
+    pub const UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A",
+        id: Self::UNIFIED_CANADIAN_ABORIGINAL_SYLLABICS_EXTENDED_A_ID,
+    };
     /// `VITHKUQI`.
-    pub const VITHKUQI: UnicodeBlock = UnicodeBlock { name: "VITHKUQI", id: Self::VITHKUQI_ID };
+    pub const VITHKUQI: UnicodeBlock = UnicodeBlock {
+        name: "VITHKUQI",
+        id: Self::VITHKUQI_ID,
+    };
     /// `ZNAMENNY_MUSICAL_NOTATION`.
-    pub const ZNAMENNY_MUSICAL_NOTATION: UnicodeBlock = UnicodeBlock { name: "ZNAMENNY_MUSICAL_NOTATION", id: Self::ZNAMENNY_MUSICAL_NOTATION_ID };
+    pub const ZNAMENNY_MUSICAL_NOTATION: UnicodeBlock = UnicodeBlock {
+        name: "ZNAMENNY_MUSICAL_NOTATION",
+        id: Self::ZNAMENNY_MUSICAL_NOTATION_ID,
+    };
     /// `ARABIC_EXTENDED_C`.
-    pub const ARABIC_EXTENDED_C: UnicodeBlock = UnicodeBlock { name: "ARABIC_EXTENDED_C", id: Self::ARABIC_EXTENDED_C_ID };
+    pub const ARABIC_EXTENDED_C: UnicodeBlock = UnicodeBlock {
+        name: "ARABIC_EXTENDED_C",
+        id: Self::ARABIC_EXTENDED_C_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_H_ID,
+    };
     /// `CYRILLIC_EXTENDED_D`.
-    pub const CYRILLIC_EXTENDED_D: UnicodeBlock = UnicodeBlock { name: "CYRILLIC_EXTENDED_D", id: Self::CYRILLIC_EXTENDED_D_ID };
+    pub const CYRILLIC_EXTENDED_D: UnicodeBlock = UnicodeBlock {
+        name: "CYRILLIC_EXTENDED_D",
+        id: Self::CYRILLIC_EXTENDED_D_ID,
+    };
     /// `DEVANAGARI_EXTENDED_A`.
-    pub const DEVANAGARI_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "DEVANAGARI_EXTENDED_A", id: Self::DEVANAGARI_EXTENDED_A_ID };
+    pub const DEVANAGARI_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "DEVANAGARI_EXTENDED_A",
+        id: Self::DEVANAGARI_EXTENDED_A_ID,
+    };
     /// `KAKTOVIK_NUMERALS`.
-    pub const KAKTOVIK_NUMERALS: UnicodeBlock = UnicodeBlock { name: "KAKTOVIK_NUMERALS", id: Self::KAKTOVIK_NUMERALS_ID };
+    pub const KAKTOVIK_NUMERALS: UnicodeBlock = UnicodeBlock {
+        name: "KAKTOVIK_NUMERALS",
+        id: Self::KAKTOVIK_NUMERALS_ID,
+    };
     /// `KAWI`.
-    pub const KAWI: UnicodeBlock = UnicodeBlock { name: "KAWI", id: Self::KAWI_ID };
+    pub const KAWI: UnicodeBlock = UnicodeBlock {
+        name: "KAWI",
+        id: Self::KAWI_ID,
+    };
     /// `NAG_MUNDARI`.
-    pub const NAG_MUNDARI: UnicodeBlock = UnicodeBlock { name: "NAG_MUNDARI", id: Self::NAG_MUNDARI_ID };
+    pub const NAG_MUNDARI: UnicodeBlock = UnicodeBlock {
+        name: "NAG_MUNDARI",
+        id: Self::NAG_MUNDARI_ID,
+    };
     /// `CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I`.
-    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I: UnicodeBlock = UnicodeBlock { name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I", id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I_ID };
+    pub const CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I: UnicodeBlock = UnicodeBlock {
+        name: "CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I",
+        id: Self::CJK_UNIFIED_IDEOGRAPHS_EXTENSION_I_ID,
+    };
     /// `EGYPTIAN_HIEROGLYPHS_EXTENDED_A`.
-    pub const EGYPTIAN_HIEROGLYPHS_EXTENDED_A: UnicodeBlock = UnicodeBlock { name: "EGYPTIAN_HIEROGLYPHS_EXTENDED_A", id: Self::EGYPTIAN_HIEROGLYPHS_EXTENDED_A_ID };
+    pub const EGYPTIAN_HIEROGLYPHS_EXTENDED_A: UnicodeBlock = UnicodeBlock {
+        name: "EGYPTIAN_HIEROGLYPHS_EXTENDED_A",
+        id: Self::EGYPTIAN_HIEROGLYPHS_EXTENDED_A_ID,
+    };
     /// `GARAY`.
-    pub const GARAY: UnicodeBlock = UnicodeBlock { name: "GARAY", id: Self::GARAY_ID };
+    pub const GARAY: UnicodeBlock = UnicodeBlock {
+        name: "GARAY",
+        id: Self::GARAY_ID,
+    };
     /// `GURUNG_KHEMA`.
-    pub const GURUNG_KHEMA: UnicodeBlock = UnicodeBlock { name: "GURUNG_KHEMA", id: Self::GURUNG_KHEMA_ID };
+    pub const GURUNG_KHEMA: UnicodeBlock = UnicodeBlock {
+        name: "GURUNG_KHEMA",
+        id: Self::GURUNG_KHEMA_ID,
+    };
     /// `KIRAT_RAI`.
-    pub const KIRAT_RAI: UnicodeBlock = UnicodeBlock { name: "KIRAT_RAI", id: Self::KIRAT_RAI_ID };
+    pub const KIRAT_RAI: UnicodeBlock = UnicodeBlock {
+        name: "KIRAT_RAI",
+        id: Self::KIRAT_RAI_ID,
+    };
     /// `MYANMAR_EXTENDED_C`.
-    pub const MYANMAR_EXTENDED_C: UnicodeBlock = UnicodeBlock { name: "MYANMAR_EXTENDED_C", id: Self::MYANMAR_EXTENDED_C_ID };
+    pub const MYANMAR_EXTENDED_C: UnicodeBlock = UnicodeBlock {
+        name: "MYANMAR_EXTENDED_C",
+        id: Self::MYANMAR_EXTENDED_C_ID,
+    };
     /// `OL_ONAL`.
-    pub const OL_ONAL: UnicodeBlock = UnicodeBlock { name: "OL_ONAL", id: Self::OL_ONAL_ID };
+    pub const OL_ONAL: UnicodeBlock = UnicodeBlock {
+        name: "OL_ONAL",
+        id: Self::OL_ONAL_ID,
+    };
     /// `SUNUWAR`.
-    pub const SUNUWAR: UnicodeBlock = UnicodeBlock { name: "SUNUWAR", id: Self::SUNUWAR_ID };
+    pub const SUNUWAR: UnicodeBlock = UnicodeBlock {
+        name: "SUNUWAR",
+        id: Self::SUNUWAR_ID,
+    };
     /// `SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT`.
-    pub const SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT: UnicodeBlock = UnicodeBlock { name: "SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT", id: Self::SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT_ID };
+    pub const SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT: UnicodeBlock = UnicodeBlock {
+        name: "SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT",
+        id: Self::SYMBOLS_FOR_LEGACY_COMPUTING_SUPPLEMENT_ID,
+    };
     /// `TODHRI`.
-    pub const TODHRI: UnicodeBlock = UnicodeBlock { name: "TODHRI", id: Self::TODHRI_ID };
+    pub const TODHRI: UnicodeBlock = UnicodeBlock {
+        name: "TODHRI",
+        id: Self::TODHRI_ID,
+    };
     /// `TULU_TIGALARI`.
-    pub const TULU_TIGALARI: UnicodeBlock = UnicodeBlock { name: "TULU_TIGALARI", id: Self::TULU_TIGALARI_ID };
+    pub const TULU_TIGALARI: UnicodeBlock = UnicodeBlock {
+        name: "TULU_TIGALARI",
+        id: Self::TULU_TIGALARI_ID,
+    };
     /// `INVALID_CODE`.
-    pub const INVALID_CODE: UnicodeBlock = UnicodeBlock { name: "INVALID_CODE", id: Self::INVALID_CODE_ID };
+    pub const INVALID_CODE: UnicodeBlock = UnicodeBlock {
+        name: "INVALID_CODE",
+        id: Self::INVALID_CODE_ID,
+    };
 }
 
 /// `BLOCKS_`: the blocks by id.
@@ -2857,7 +3889,8 @@ impl UCharacter {
 
     /// `isISOControl(int ch)`.
     pub fn is_iso_control(ch: i32) -> bool {
-        (0..=APPLICATION_PROGRAM_COMMAND).contains(&ch) && ((ch <= UNIT_SEPARATOR) || (ch >= DELETE))
+        (0..=APPLICATION_PROGRAM_COMMAND).contains(&ch)
+            && ((ch <= UNIT_SEPARATOR) || (ch >= DELETE))
     }
 
     /// `isLetter(int ch)`.
@@ -2982,7 +4015,8 @@ impl UCharacter {
         // see java.lang.Character.isIdentifierIgnorable() on range of
         // ignorable characters.
         if ch <= 0x9f {
-            return Self::is_iso_control(ch) && !((0x9..=0xd).contains(&ch) || (0x1c..=0x1f).contains(&ch));
+            return Self::is_iso_control(ch)
+                && !((0x9..=0xd).contains(&ch) || (0x1c..=0x1f).contains(&ch));
         }
         Self::get_type(ch) == ECharacterCategory::FORMAT as i32
     }
@@ -3191,7 +4225,8 @@ impl UCharacter {
     /// None in practice; `Result` for the `UnicodeSet` caller's
     /// convenience.
     pub fn get_char_from_extended_name(name: &[u16]) -> Result<i32> {
-        Ok(UCharacterName::instance().get_char_from_name(UCharacterNameChoice::EXTENDED_CHAR_NAME, Some(name)))
+        Ok(UCharacterName::instance()
+            .get_char_from_name(UCharacterNameChoice::EXTENDED_CHAR_NAME, Some(name)))
     }
 
     /// `getCharFromNameAlias(String name)`.
@@ -3236,7 +4271,11 @@ impl UCharacter {
     ///
     /// `IllegalArgumentException` for an invalid property, value or name
     /// choice; `MissingResourceException` when the data is missing.
-    pub fn get_property_value_name(property: i32, value: i32, name_choice: i32) -> Result<Option<String>> {
+    pub fn get_property_value_name(
+        property: i32,
+        value: i32,
+        name_choice: i32,
+    ) -> Result<Option<String>> {
         if (property == UProperty::CANONICAL_COMBINING_CLASS
             || property == UProperty::LEAD_CANONICAL_COMBINING_CLASS
             || property == UProperty::TRAIL_CANONICAL_COMBINING_CLASS)
@@ -3246,7 +4285,11 @@ impl UCharacter {
         {
             // this is hard coded for the valid cc
             // because PropertyValueAliases.txt does not contain all of them
-            return match UPropertyAliases::instance()?.get_property_value_name(property, value, name_choice) {
+            return match UPropertyAliases::instance()?.get_property_value_name(
+                property,
+                value,
+                name_choice,
+            ) {
                 Ok(n) => Ok(n),
                 Err(e) if e.is_illegal_argument_exception() => Ok(None),
                 Err(e) => Err(e),
@@ -3262,7 +4305,8 @@ impl UCharacter {
     /// `IllegalIcuArgumentException("Invalid name: <alias>")` for an unknown
     /// alias; `IllegalArgumentException` for an invalid property.
     pub fn get_property_value_enum(property: i32, value_alias: &[u16]) -> Result<i32> {
-        let prop_enum = UPropertyAliases::instance()?.get_property_value_enum(property, value_alias)?;
+        let prop_enum =
+            UPropertyAliases::instance()?.get_property_value_enum(property, value_alias)?;
         if prop_enum == UProperty::UNDEFINED {
             return Err(IllegalIcuArgumentException::with_message(format!(
                 "Invalid name: {}",
@@ -3331,7 +4375,10 @@ impl UCharacter {
     /// # Errors
     ///
     /// The errors of the break iterator factory.
-    pub fn to_title_case_str(str: &[u16], breakiter: Option<&mut dyn BreakIterator>) -> Result<Vec<u16>> {
+    pub fn to_title_case_str(
+        str: &[u16],
+        breakiter: Option<&mut dyn BreakIterator>,
+    ) -> Result<Vec<u16>> {
         Self::to_title_case_locale_options(Some(&Locale::get_default()), str, breakiter, 0)
     }
 
@@ -3364,7 +4411,8 @@ impl UCharacter {
 
     /// `toUpperCase(ULocale locale, String str)`.
     pub fn to_upper_case_ulocale(locale: &ULocale, str: &[u16]) -> Vec<u16> {
-        CaseMapImpl::to_upper_str(Self::get_case_locale(Some(locale)), 0, str).expect("Edits of a case mapping are well-formed")
+        CaseMapImpl::to_upper_str(Self::get_case_locale(Some(locale)), 0, str)
+            .expect("Edits of a case mapping are well-formed")
     }
 
     /// `toLowerCase(Locale locale, String str)`.
@@ -3378,7 +4426,8 @@ impl UCharacter {
 
     /// `toLowerCase(ULocale locale, String str)`.
     pub fn to_lower_case_ulocale(locale: &ULocale, str: &[u16]) -> Vec<u16> {
-        CaseMapImpl::to_lower_str(Self::get_case_locale(Some(locale)), 0, str).expect("Edits of a case mapping are well-formed")
+        CaseMapImpl::to_lower_str(Self::get_case_locale(Some(locale)), 0, str)
+            .expect("Edits of a case mapping are well-formed")
     }
 
     /// `toTitleCase(Locale locale, String str, BreakIterator breakiter)`.
@@ -3386,7 +4435,11 @@ impl UCharacter {
     /// # Errors
     ///
     /// The errors of the break iterator factory.
-    pub fn to_title_case_locale(locale: Option<&Locale>, str: &[u16], breakiter: Option<&mut dyn BreakIterator>) -> Result<Vec<u16>> {
+    pub fn to_title_case_locale(
+        locale: Option<&Locale>,
+        str: &[u16],
+        breakiter: Option<&mut dyn BreakIterator>,
+    ) -> Result<Vec<u16>> {
         Self::to_title_case_locale_options(locale, str, breakiter, 0)
     }
 
@@ -3395,7 +4448,11 @@ impl UCharacter {
     /// # Errors
     ///
     /// The errors of the break iterator factory.
-    pub fn to_title_case_ulocale(locale: &ULocale, str: &[u16], title_iter: Option<&mut dyn BreakIterator>) -> Result<Vec<u16>> {
+    pub fn to_title_case_ulocale(
+        locale: &ULocale,
+        str: &[u16],
+        title_iter: Option<&mut dyn BreakIterator>,
+    ) -> Result<Vec<u16>> {
         Self::to_title_case_ulocale_options(Some(locale), str, title_iter, 0)
     }
 
@@ -3424,7 +4481,9 @@ impl UCharacter {
         match title_iter {
             Some(it) => {
                 if (options & 0xe0) != 0 {
-                    return Err(LuceneError::illegal_argument("titlecasing iterator option together with an explicit iterator"));
+                    return Err(LuceneError::illegal_argument(
+                        "titlecasing iterator option together with an explicit iterator",
+                    ));
                 }
                 it.set_text_string(str);
                 CaseMapImpl::to_title_str(Self::get_case_locale(locale), options, it, str)
@@ -3461,7 +4520,9 @@ impl UCharacter {
         match title_iter {
             Some(it) => {
                 if (options & 0xe0) != 0 {
-                    return Err(LuceneError::illegal_argument("titlecasing iterator option together with an explicit iterator"));
+                    return Err(LuceneError::illegal_argument(
+                        "titlecasing iterator option together with an explicit iterator",
+                    ));
                 }
                 it.set_text_string(str);
                 CaseMapImpl::to_title_str(Self::get_case_locale_jdk(locale), options, it, str)
@@ -3470,19 +4531,38 @@ impl UCharacter {
                 let l = locale.cloned().unwrap_or_else(Locale::get_default);
                 let mut it = CaseMapImpl::get_title_break_iterator_locale(&l, options, None)?;
                 it.set_text_string(str);
-                CaseMapImpl::to_title_str(Self::get_case_locale_jdk(locale), options, it.as_mut(), str)
+                CaseMapImpl::to_title_str(
+                    Self::get_case_locale_jdk(locale),
+                    options,
+                    it.as_mut(),
+                    str,
+                )
             }
         }
     }
 
     /// `foldCase(int ch, boolean defaultmapping)`.
     pub fn fold_case_cp(ch: i32, defaultmapping: bool) -> i32 {
-        Self::fold_case_cp_options(ch, if defaultmapping { Self::FOLD_CASE_DEFAULT } else { Self::FOLD_CASE_EXCLUDE_SPECIAL_I })
+        Self::fold_case_cp_options(
+            ch,
+            if defaultmapping {
+                Self::FOLD_CASE_DEFAULT
+            } else {
+                Self::FOLD_CASE_EXCLUDE_SPECIAL_I
+            },
+        )
     }
 
     /// `foldCase(String str, boolean defaultmapping)`.
     pub fn fold_case_str(str: &[u16], defaultmapping: bool) -> Vec<u16> {
-        Self::fold_case_str_options(str, if defaultmapping { Self::FOLD_CASE_DEFAULT } else { Self::FOLD_CASE_EXCLUDE_SPECIAL_I })
+        Self::fold_case_str_options(
+            str,
+            if defaultmapping {
+                Self::FOLD_CASE_DEFAULT
+            } else {
+                Self::FOLD_CASE_EXCLUDE_SPECIAL_I
+            },
+        )
     }
 
     /// `foldCase(int ch, int options)`.
@@ -3525,7 +4605,10 @@ impl UCharacter {
 
     /// `getNameIterator()`.
     pub fn get_name_iterator() -> Box<dyn ValueIterator> {
-        Box::new(UCharacterNameIterator::new(UCharacterName::instance(), UCharacterNameChoice::UNICODE_CHAR_NAME))
+        Box::new(UCharacterNameIterator::new(
+            UCharacterName::instance(),
+            UCharacterNameChoice::UNICODE_CHAR_NAME,
+        ))
     }
 
     /// `getName1_0Iterator()` (deprecated): an empty iterator (ICU 49).
@@ -3535,7 +4618,10 @@ impl UCharacter {
 
     /// `getExtendedNameIterator()`.
     pub fn get_extended_name_iterator() -> Box<dyn ValueIterator> {
-        Box::new(UCharacterNameIterator::new(UCharacterName::instance(), UCharacterNameChoice::EXTENDED_CHAR_NAME))
+        Box::new(UCharacterNameIterator::new(
+            UCharacterName::instance(),
+            UCharacterNameChoice::EXTENDED_CHAR_NAME,
+        ))
     }
 
     /// `getAge(int ch)`: the Unicode version in which the code point was
@@ -3571,7 +4657,8 @@ impl UCharacter {
         }
         // Only call into EmojiProps for a relevant property,
         // so that we not unnecessarily try to load its data file.
-        (UProperty::BASIC_EMOJI..=UProperty::RGI_EMOJI).contains(&property) && EmojiProps::instance().has_binary_property_str(s, property)
+        (UProperty::BASIC_EMOJI..=UProperty::RGI_EMOJI).contains(&property)
+            && EmojiProps::instance().has_binary_property_str(s, property)
     }
 
     /// `isUAlphabetic(int ch)`.
@@ -3606,15 +4693,25 @@ impl UCharacter {
     ///
     /// `IllegalArgumentException("Illegal Property Enum")`; the errors of
     /// the property data.
-    pub fn get_string_property_value(property_enum: i32, codepoint: i32, name_choice: i32) -> Result<Option<Vec<u16>>> {
+    pub fn get_string_property_value(
+        property_enum: i32,
+        codepoint: i32,
+        name_choice: i32,
+    ) -> Result<Option<Vec<u16>>> {
         if (UProperty::BINARY_START..UProperty::BINARY_LIMIT).contains(&property_enum)
             || (UProperty::INT_START..UProperty::INT_LIMIT).contains(&property_enum)
         {
-            return Ok(Self::get_property_value_name(property_enum, Self::get_int_property_value(codepoint, property_enum), name_choice)?
-                .map(|s| to_units(&s)));
+            return Ok(Self::get_property_value_name(
+                property_enum,
+                Self::get_int_property_value(codepoint, property_enum),
+                name_choice,
+            )?
+            .map(|s| to_units(&s)));
         }
         if property_enum == UProperty::NUMERIC_VALUE {
-            return Ok(Some(to_units(&rucene::util::java_fmt::double_to_string(Self::get_unicode_numeric_value(codepoint)))));
+            return Ok(Some(to_units(&rucene::util::java_fmt::double_to_string(
+                Self::get_unicode_numeric_value(codepoint),
+            ))));
         }
         // otherwise must be string property
         Ok(match property_enum {
@@ -3624,10 +4721,18 @@ impl UCharacter {
             UProperty::CASE_FOLDING => Self::to_string_cp(Self::fold_case_cp(codepoint, true)),
             UProperty::LOWERCASE_MAPPING => Self::to_string_cp(Self::to_lower_case_cp(codepoint)),
             UProperty::NAME => Self::get_name_cp(codepoint),
-            UProperty::SIMPLE_CASE_FOLDING => Self::to_string_cp(Self::fold_case_cp(codepoint, true)),
-            UProperty::SIMPLE_LOWERCASE_MAPPING => Self::to_string_cp(Self::to_lower_case_cp(codepoint)),
-            UProperty::SIMPLE_TITLECASE_MAPPING => Self::to_string_cp(Self::to_title_case_cp(codepoint)),
-            UProperty::SIMPLE_UPPERCASE_MAPPING => Self::to_string_cp(Self::to_upper_case_cp(codepoint)),
+            UProperty::SIMPLE_CASE_FOLDING => {
+                Self::to_string_cp(Self::fold_case_cp(codepoint, true))
+            }
+            UProperty::SIMPLE_LOWERCASE_MAPPING => {
+                Self::to_string_cp(Self::to_lower_case_cp(codepoint))
+            }
+            UProperty::SIMPLE_TITLECASE_MAPPING => {
+                Self::to_string_cp(Self::to_title_case_cp(codepoint))
+            }
+            UProperty::SIMPLE_UPPERCASE_MAPPING => {
+                Self::to_string_cp(Self::to_upper_case_cp(codepoint))
+            }
             UProperty::TITLECASE_MAPPING => Self::to_string_cp(Self::to_title_case_cp(codepoint)),
             UProperty::UNICODE_1_NAME => Self::get_name1_0(codepoint),
             UProperty::UPPERCASE_MAPPING => Self::to_string_cp(Self::to_upper_case_cp(codepoint)),
@@ -3692,7 +4797,9 @@ impl UCharacter {
     /// in Java's wrapping `int` arithmetic.
     pub fn to_code_point(high: i32, low: i32) -> i32 {
         // see ICU4C U16_GET_SUPPLEMENTARY()
-        (high << 10).wrapping_add(low).wrapping_sub(U16_SURROGATE_OFFSET)
+        (high << 10)
+            .wrapping_add(low)
+            .wrapping_sub(U16_SURROGATE_OFFSET)
     }
 
     /// `codePointAt(CharSequence seq, int index)`.
@@ -3824,7 +4931,8 @@ impl UCharacter {
         while limit > start {
             limit -= 1;
             let mut ch = text[limit as usize];
-            while (Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) && limit > start {
+            while (Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) && limit > start
+            {
                 limit -= 1;
                 ch = text[limit as usize];
                 if (Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch) {
@@ -3843,7 +4951,10 @@ impl UCharacter {
     /// `IndexOutOfBoundsException` for an index outside the text.
     pub fn offset_by_code_points(text: &[u16], mut index: i32, mut code_point_offset: i32) -> i32 {
         if index < 0 || index > text.len() as i32 {
-            index_out_of_bounds(Some(format!("index ( {index}) out of range 0, {}", text.len())));
+            index_out_of_bounds(Some(format!(
+                "index ( {index}) out of range 0, {}",
+                text.len()
+            )));
         }
 
         if code_point_offset < 0 {
@@ -3854,7 +4965,8 @@ impl UCharacter {
                 }
                 index -= 1;
                 let mut ch = text[index as usize];
-                while (Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) && index > 0 {
+                while (Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) && index > 0
+                {
                     index -= 1;
                     ch = text[index as usize];
                     if !(Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch) {
@@ -3874,7 +4986,9 @@ impl UCharacter {
                 }
                 let mut ch = text[index as usize];
                 index += 1;
-                while (Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch) && index < limit {
+                while (Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch)
+                    && index < limit
+                {
                     ch = text[index as usize];
                     index += 1;
                     if !(Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) {
@@ -3896,9 +5010,16 @@ impl UCharacter {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException` for an invalid range or offset.
-    pub fn offset_by_code_points_range(text: &[u16], start: i32, count: i32, mut index: i32, mut code_point_offset: i32) -> i32 {
+    pub fn offset_by_code_points_range(
+        text: &[u16],
+        start: i32,
+        count: i32,
+        mut index: i32,
+        mut code_point_offset: i32,
+    ) -> i32 {
         let limit = start + count;
-        if start < 0 || limit < start || limit > text.len() as i32 || index < start || index > limit {
+        if start < 0 || limit < start || limit > text.len() as i32 || index < start || index > limit
+        {
             index_out_of_bounds(Some(format!(
                 "index ( {index}) out of range {start}, {limit} in array 0, {}",
                 text.len()
@@ -3916,7 +5037,9 @@ impl UCharacter {
                 if index < start {
                     index_out_of_bounds(Some(format!("index ( {index}) < start ({start})")));
                 }
-                while (Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) && index > start {
+                while (Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch)
+                    && index > start
+                {
                     index -= 1;
                     ch = text[index as usize];
                     if !(Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch) {
@@ -3938,7 +5061,9 @@ impl UCharacter {
                 if index > limit {
                     index_out_of_bounds(Some(format!("index ( {index}) > limit ({limit})")));
                 }
-                while (Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch) && index < limit {
+                while (Self::MIN_HIGH_SURROGATE..=Self::MAX_HIGH_SURROGATE).contains(&ch)
+                    && index < limit
+                {
                     ch = text[index as usize];
                     index += 1;
                     if !(Self::MIN_LOW_SURROGATE..=Self::MAX_LOW_SURROGATE).contains(&ch) {
@@ -3968,7 +5093,11 @@ fn mask_type(value: i32) -> i32 {
 
 impl UCharacterTypeIterator {
     fn new() -> Self {
-        Self { trie_iterator: UCharacterProperty::instance().m_trie.iterator_with(&mask_type) }
+        Self {
+            trie_iterator: UCharacterProperty::instance()
+                .m_trie
+                .iterator_with(&mask_type),
+        }
     }
 }
 
@@ -3989,7 +5118,9 @@ impl RangeValueIterator for UCharacterTypeIterator {
 
     // implements RangeValueIterator
     fn reset(&mut self) {
-        self.trie_iterator = UCharacterProperty::instance().m_trie.iterator_with(&mask_type);
+        self.trie_iterator = UCharacterProperty::instance()
+            .m_trie
+            .iterator_with(&mask_type);
     }
 }
 

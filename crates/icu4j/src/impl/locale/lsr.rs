@@ -97,7 +97,9 @@ impl LSR {
 
     /// `isEquivalentTo(LSR other)`: equal fields, ignoring the flags.
     pub fn is_equivalent_to(&self, other: &LSR) -> bool {
-        self.language == other.language && self.script == other.script && self.region == other.region
+        self.language == other.language
+            && self.script == other.script
+            && self.region == other.region
     }
 
     /// `hashCode()`: `Objects.hash(language, script, region, flags)`.
@@ -142,7 +144,10 @@ impl LSR {
     fn encode_region_to_int(&self, m49: &[String]) -> Result<i32> {
         debug_assert!((2..=3).contains(&len16(&self.region)));
         if len16(&self.region) == 3 {
-            let index = m49.iter().position(|r| *r == self.region).map_or(-1, |i| i as i32);
+            let index = m49
+                .iter()
+                .position(|r| *r == self.region)
+                .map_or(-1, |i| i as i32);
             debug_assert!(index >= 0);
             if index < 0 {
                 return Err(LuceneError::illegal_state(format!(
@@ -170,8 +175,10 @@ impl LSR {
     ///
     /// `IllegalStateException` for a numeric region missing from `m49`.
     pub fn encode_to_int_for_resource(&self, m49: &[String]) -> Result<i32> {
-        Ok((self.encode_language_to_int() + (27 * 27 * 27) * self.encode_region_to_int(m49)?)
-            | (self.encode_script_to_int()? << 24))
+        Ok(
+            (self.encode_language_to_int() + (27 * 27 * 27) * self.encode_region_to_int(m49)?)
+                | (self.encode_script_to_int()? << 24),
+        )
     }
 
     fn to_language(encoded: i32) -> String {

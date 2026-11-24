@@ -18,7 +18,9 @@ use rucene_queryparser::jdk::locale::Locale;
 use crate::jdk::text::{AttributeValue, AttributedCharacterIterator, FieldRef};
 use crate::jdk::units;
 use crate::r#impl::formatted_string_builder::{FieldObject, FormattedStringBuilder};
-use crate::r#impl::formatted_value_string_builder_impl::{FormattedValueStringBuilderImpl, SpanFieldPlaceholder};
+use crate::r#impl::formatted_value_string_builder_impl::{
+    FormattedValueStringBuilderImpl, SpanFieldPlaceholder,
+};
 use crate::r#impl::icu_cache::ICUCache;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::simple_cache::SimpleCache;
@@ -69,7 +71,10 @@ pub mod field {
             if self.get_name() == ELEMENT.get_name() {
                 return Ok(&ELEMENT);
             }
-            Err(LuceneError::unchecked("java.io.InvalidObjectException", "An invalid object."))
+            Err(LuceneError::unchecked(
+                "java.io.InvalidObjectException",
+                "An invalid object.",
+            ))
         }
     }
 }
@@ -104,7 +109,10 @@ pub mod span_field {
             if self.get_name() == LIST_SPAN.get_name() {
                 return Ok(&LIST_SPAN);
             }
-            Err(LuceneError::unchecked("java.io.InvalidObjectException", "An invalid object."))
+            Err(LuceneError::unchecked(
+                "java.io.InvalidObjectException",
+                "An invalid object.",
+            ))
         }
     }
 }
@@ -181,7 +189,10 @@ impl FormattedValue for FormattedList {
 #[derive(Debug, Clone)]
 enum PatternHandler {
     /// `StaticHandler`.
-    Static { two_pattern: Vec<u16>, end_pattern: Vec<u16> },
+    Static {
+        two_pattern: Vec<u16>,
+        end_pattern: Vec<u16>,
+    },
     /// `ContextualHandler`.
     Contextual {
         regexp: &'static LazyLock<JavaPattern>,
@@ -197,7 +208,12 @@ impl PatternHandler {
     fn get_two_pattern(&self, text: &[u16]) -> &[u16] {
         match self {
             PatternHandler::Static { two_pattern, .. } => two_pattern,
-            PatternHandler::Contextual { regexp, then_two_pattern, else_two_pattern, .. } => {
+            PatternHandler::Contextual {
+                regexp,
+                then_two_pattern,
+                else_two_pattern,
+                ..
+            } => {
                 if regexp.matches(&String::from_utf16_lossy(text)) {
                     then_two_pattern
                 } else {
@@ -211,7 +227,12 @@ impl PatternHandler {
     fn get_end_pattern(&self, text: &[u16]) -> &[u16] {
         match self {
             PatternHandler::Static { end_pattern, .. } => end_pattern,
-            PatternHandler::Contextual { regexp, then_end_pattern, else_end_pattern, .. } => {
+            PatternHandler::Contextual {
+                regexp,
+                then_end_pattern,
+                else_end_pattern,
+                ..
+            } => {
                 if regexp.matches(&String::from_utf16_lossy(text)) {
                     then_end_pattern
                 } else {
@@ -223,7 +244,8 @@ impl PatternHandler {
 }
 
 fn compile_static(pattern: &str) -> Vec<u16> {
-    ListFormatter::compile_pattern(&units(pattern), &mut Vec::new()).expect("the built-in list patterns are valid")
+    ListFormatter::compile_pattern(&units(pattern), &mut Vec::new())
+        .expect("the built-in list patterns are valid")
 }
 
 fn regex(pattern: &str, flags: u32) -> JavaPattern {
@@ -242,9 +264,11 @@ static COMPILED_U: LazyLock<Vec<u16>> = LazyLock::new(|| compile_static("{0} u {
 
 // Regex to match Spanish heuristic.
 /// `changeToE`.
-static CHANGE_TO_E: LazyLock<JavaPattern> = LazyLock::new(|| regex("(i.*|hi|hi[^ae].*)", CASE_INSENSITIVE));
+static CHANGE_TO_E: LazyLock<JavaPattern> =
+    LazyLock::new(|| regex("(i.*|hi|hi[^ae].*)", CASE_INSENSITIVE));
 /// `changeToU`.
-static CHANGE_TO_U: LazyLock<JavaPattern> = LazyLock::new(|| regex("((o|ho|8).*|11)", CASE_INSENSITIVE));
+static CHANGE_TO_U: LazyLock<JavaPattern> =
+    LazyLock::new(|| regex("((o|ho|8).*|11)", CASE_INSENSITIVE));
 
 // Compiled SimpleFormatter patterns.
 /// `compiledVav`.
@@ -254,10 +278,13 @@ static COMPILED_VAV_DASH: LazyLock<Vec<u16>> = LazyLock::new(|| compile_static("
 
 // Regex to match Hebrew heuristic.
 /// `changeToVavDash`.
-static CHANGE_TO_VAV_DASH: LazyLock<JavaPattern> = LazyLock::new(|| regex("^[\\P{InHebrew}].*$", 0));
+static CHANGE_TO_VAV_DASH: LazyLock<JavaPattern> =
+    LazyLock::new(|| regex("^[\\P{InHebrew}].*$", 0));
 
 /// `cache`.
-static CACHE: LazyLock<Cache> = LazyLock::new(|| Cache { cache: SimpleCache::new() });
+static CACHE: LazyLock<Cache> = LazyLock::new(|| Cache {
+    cache: SimpleCache::new(),
+});
 
 /// Immutable class for formatting a list, using data from CLDR (or
 /// supplied separately). The class is not subclassable.
@@ -295,9 +322,20 @@ impl ListFormatter {
     }
 
     /// `ListFormatter(String, String, String, String, ULocale)`.
-    fn with_locale(two: Vec<u16>, start: Vec<u16>, middle: Vec<u16>, end: Vec<u16>, locale: Option<ULocale>) -> Self {
+    fn with_locale(
+        two: Vec<u16>,
+        start: Vec<u16>,
+        middle: Vec<u16>,
+        end: Vec<u16>,
+        locale: Option<ULocale>,
+    ) -> Self {
         let pattern_handler = Self::create_pattern_handler(locale.as_ref(), two, end);
-        Self { start, middle, locale, pattern_handler }
+        Self {
+            start,
+            middle,
+            locale,
+            pattern_handler,
+        }
     }
 
     /// `compilePattern(String, StringBuilder)`.
@@ -312,9 +350,17 @@ impl ListFormatter {
     ///
     /// `IllegalArgumentException("Invalid list format type/width")`, and the
     /// errors of the list data.
-    pub fn get_instance_typed(locale: &ULocale, type_: Type, width: Width) -> Result<Arc<ListFormatter>> {
+    pub fn get_instance_typed(
+        locale: &ULocale,
+        type_: Type,
+        width: Width,
+    ) -> Result<Arc<ListFormatter>> {
         let style_name = match Self::type_width_to_style_string(type_, width) {
-            None => return Err(LuceneError::illegal_argument("Invalid list format type/width")),
+            None => {
+                return Err(LuceneError::illegal_argument(
+                    "Invalid list format type/width",
+                ))
+            }
             Some(s) => s,
         };
         CACHE.get(locale, style_name)
@@ -325,7 +371,11 @@ impl ListFormatter {
     /// # Errors
     ///
     /// As [`get_instance_typed`](Self::get_instance_typed).
-    pub fn get_instance_locale_typed(locale: &Locale, type_: Type, width: Width) -> Result<Arc<ListFormatter>> {
+    pub fn get_instance_locale_typed(
+        locale: &Locale,
+        type_: Type,
+        width: Width,
+    ) -> Result<Arc<ListFormatter>> {
         let ulocale = ULocale::for_locale(Some(locale))?.unwrap_or_else(ULocale::root);
         Self::get_instance_typed(&ulocale, type_, width)
     }
@@ -374,7 +424,11 @@ impl ListFormatter {
 
     /// Formats a collection of objects. Equivalent to the package-private
     /// `formatImpl(Collection<?>, boolean)`.
-    pub(crate) fn format_impl(&self, items: &[Vec<u16>], needs_fields: bool) -> FormattedListBuilder {
+    pub(crate) fn format_impl(
+        &self,
+        items: &[Vec<u16>],
+        needs_fields: bool,
+    ) -> FormattedListBuilder {
         let mut it = items.iter();
         let count = items.len() as i32;
         match count {
@@ -400,7 +454,11 @@ impl ListFormatter {
     }
 
     /// `createPatternHandler(String, String)`.
-    fn create_pattern_handler(locale: Option<&ULocale>, two: Vec<u16>, end: Vec<u16>) -> PatternHandler {
+    fn create_pattern_handler(
+        locale: Option<&ULocale>,
+        two: Vec<u16>,
+        end: Vec<u16>,
+    ) -> PatternHandler {
         if let Some(locale) = locale {
             let language = locale.get_language();
             if language == "es" {
@@ -409,9 +467,17 @@ impl ListFormatter {
                 if two_is_y || end_is_y {
                     return PatternHandler::Contextual {
                         regexp: &CHANGE_TO_E,
-                        then_two_pattern: if two_is_y { COMPILED_E.clone() } else { two.clone() },
+                        then_two_pattern: if two_is_y {
+                            COMPILED_E.clone()
+                        } else {
+                            two.clone()
+                        },
                         else_two_pattern: two,
-                        then_end_pattern: if end_is_y { COMPILED_E.clone() } else { end.clone() },
+                        then_end_pattern: if end_is_y {
+                            COMPILED_E.clone()
+                        } else {
+                            end.clone()
+                        },
                         else_end_pattern: end,
                     };
                 }
@@ -420,9 +486,17 @@ impl ListFormatter {
                 if two_is_o || end_is_o {
                     return PatternHandler::Contextual {
                         regexp: &CHANGE_TO_U,
-                        then_two_pattern: if two_is_o { COMPILED_U.clone() } else { two.clone() },
+                        then_two_pattern: if two_is_o {
+                            COMPILED_U.clone()
+                        } else {
+                            two.clone()
+                        },
                         else_two_pattern: two,
-                        then_end_pattern: if end_is_o { COMPILED_U.clone() } else { end.clone() },
+                        then_end_pattern: if end_is_o {
+                            COMPILED_U.clone()
+                        } else {
+                            end.clone()
+                        },
                         else_end_pattern: end,
                     };
                 }
@@ -432,15 +506,26 @@ impl ListFormatter {
                 if two_is_vav || end_is_vav {
                     return PatternHandler::Contextual {
                         regexp: &CHANGE_TO_VAV_DASH,
-                        then_two_pattern: if two_is_vav { COMPILED_VAV_DASH.clone() } else { two.clone() },
+                        then_two_pattern: if two_is_vav {
+                            COMPILED_VAV_DASH.clone()
+                        } else {
+                            two.clone()
+                        },
                         else_two_pattern: two,
-                        then_end_pattern: if end_is_vav { COMPILED_VAV_DASH.clone() } else { end.clone() },
+                        then_end_pattern: if end_is_vav {
+                            COMPILED_VAV_DASH.clone()
+                        } else {
+                            end.clone()
+                        },
                         else_end_pattern: end,
                     };
                 }
             }
         }
-        PatternHandler::Static { two_pattern: two, end_pattern: end }
+        PatternHandler::Static {
+            two_pattern: two,
+            end_pattern: end,
+        }
     }
 
     /// Returns the pattern to use for a particular item count. Equivalent to
@@ -494,7 +579,10 @@ impl FormattedListBuilder {
     fn new(start: &[u16], needs_fields: bool) -> Self {
         let mut string = FormattedStringBuilder::new();
         string.set_appendable_field(Some(FieldObject::Field(&field::LITERAL)));
-        let mut b = Self { string, needs_fields };
+        let mut b = Self {
+            string,
+            needs_fields,
+        };
         b.append_element(start, 0);
         b
     }
@@ -539,24 +627,31 @@ impl FormattedListBuilder {
                 start: -1,
                 length: element_string.len() as i32,
             };
-            self.string.append(element_string, Some(FieldObject::Wrapper(Arc::new(field))));
+            self.string
+                .append(element_string, Some(FieldObject::Wrapper(Arc::new(field))));
         } else {
             self.string.append(element_string, None);
         }
     }
 
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn append_to(&self, appendable: &mut Vec<u16>) {
         Utility::append_to(&self.string.to_java_string(), appendable);
     }
 
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn get_offset(&self, field_position_found_index: i32) -> i32 {
-        FormattedValueStringBuilderImpl::find_span(&self.string, &AttributeValue::Integer(field_position_found_index))
+        FormattedValueStringBuilderImpl::find_span(
+            &self.string,
+            &AttributeValue::Integer(field_position_found_index),
+        )
     }
 
     pub(crate) fn to_java_string(&self) -> Vec<u16> {
         self.string.to_java_string()
     }
 
+    #[allow(clippy::wrong_self_convention)] // Java method name and receiver
     pub(crate) fn to_value(self) -> FormattedList {
         FormattedList::new(self.string)
     }
@@ -579,11 +674,13 @@ impl Cache {
     }
 
     fn load(ulocale: &ULocale, style: &str) -> Result<ListFormatter> {
-        let r = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(ulocale))?;
+        let r =
+            UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(ulocale))?;
         let r = r.as_icu()?;
         let mut sb: Vec<u16> = Vec::new();
         let get = |part: &str| -> Result<Vec<u16>> {
-            r.get_with_fallback(&format!("listPattern/{style}/{part}"))?.get_string()
+            r.get_with_fallback(&format!("listPattern/{style}/{part}"))?
+                .get_string()
         };
         Ok(ListFormatter::with_locale(
             ListFormatter::compile_pattern(&get("2")?, &mut sb)?,

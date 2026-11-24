@@ -174,7 +174,10 @@ impl Edits {
             self.delta += new_delta;
         }
 
-        if 0 < old_length && old_length <= MAX_SHORT_CHANGE_OLD_LENGTH && new_length <= MAX_SHORT_CHANGE_NEW_LENGTH {
+        if 0 < old_length
+            && old_length <= MAX_SHORT_CHANGE_OLD_LENGTH
+            && new_length <= MAX_SHORT_CHANGE_NEW_LENGTH
+        {
             // Merge into previous same-lengths short-replacement record, if any.
             let u = (old_length << 12) | (new_length << 9);
             let last = self.last_unit();
@@ -245,7 +248,9 @@ impl Edits {
         let new_capacity = if self.array.len() == STACK_CAPACITY {
             2000
         } else if len == i32::MAX {
-            return Err(crate::jdk::unchecked_no_message("java.nio.BufferOverflowException"));
+            return Err(crate::jdk::unchecked_no_message(
+                "java.nio.BufferOverflowException",
+            ));
         } else if len >= (i32::MAX / 2) {
             i32::MAX
         } else {
@@ -253,7 +258,9 @@ impl Edits {
         };
         // Grow by at least 5 units so that a maximal change record will fit.
         if (new_capacity - len) < 5 {
-            return Err(crate::jdk::unchecked_no_message("java.nio.BufferOverflowException"));
+            return Err(crate::jdk::unchecked_no_message(
+                "java.nio.BufferOverflowException",
+            ));
         }
         let new = new_array(new_capacity as usize);
         for (i, v) in self.array.iter().enumerate() {
@@ -337,26 +344,25 @@ impl Edits {
             // However, the result is observably different when
             // ab deletions meet bc insertions at the same intermediate-string index.
             // Some users expect the bc insertions to come first, so we fetch from bc first.
-            if bc_b_length == 0
-                && bc_has_next && {
-                    bc_has_next = bc_iter.next();
-                    bc_has_next
-                } {
-                    bc_b_length = bc_iter.old_length();
-                    c_length = bc_iter.new_length();
-                    if bc_b_length == 0 {
-                        // insertion
-                        if ab_b_length == 0 || !ab_iter.has_change() {
-                            self.add_replace(pending_a_length, pending_c_length + c_length)?;
-                            pending_a_length = 0;
-                            pending_c_length = 0;
-                        } else {
-                            pending_c_length += c_length;
-                        }
-                        continue;
+            if bc_b_length == 0 && bc_has_next && {
+                bc_has_next = bc_iter.next();
+                bc_has_next
+            } {
+                bc_b_length = bc_iter.old_length();
+                c_length = bc_iter.new_length();
+                if bc_b_length == 0 {
+                    // insertion
+                    if ab_b_length == 0 || !ab_iter.has_change() {
+                        self.add_replace(pending_a_length, pending_c_length + c_length)?;
+                        pending_a_length = 0;
+                        pending_c_length = 0;
+                    } else {
+                        pending_c_length += c_length;
                     }
+                    continue;
                 }
-                // else see if the other iterator is done, too.
+            }
+            // else see if the other iterator is done, too.
             if ab_b_length == 0 {
                 if ab_has_next && {
                     ab_has_next = ab_iter.next();
@@ -405,7 +411,11 @@ impl Edits {
                     pending_a_length = 0;
                     pending_c_length = 0;
                 }
-                let unchanged_length = if a_length <= c_length { a_length } else { c_length };
+                let unchanged_length = if a_length <= c_length {
+                    a_length
+                } else {
+                    c_length
+                };
                 self.add_unchanged(unchanged_length)?;
                 a_length -= unchanged_length;
                 ab_b_length = a_length;
@@ -535,7 +545,9 @@ impl Iterator {
             debug_assert!((self.index + 2) <= self.length);
             debug_assert!(self.at(self.index) >= 0x8000);
             debug_assert!(self.at(self.index + 1) >= 0x8000);
-            let len = ((head & 1) << 30) | ((self.at(self.index) & 0x7fff) << 15) | (self.at(self.index + 1) & 0x7fff);
+            let len = ((head & 1) << 30)
+                | ((self.at(self.index) & 0x7fff) << 15)
+                | (self.at(self.index + 1) & 0x7fff);
             self.index += 2;
             len
         }
@@ -836,7 +848,11 @@ impl Iterator {
                 loop {
                     let has_previous = self.previous();
                     debug_assert!(has_previous); // because i>=0 and the first span starts at 0
-                    span_start = if find_source { self.src_index } else { self.dest_index };
+                    span_start = if find_source {
+                        self.src_index
+                    } else {
+                        self.dest_index
+                    };
                     if i >= span_start {
                         // The index is in the current span.
                         return 0;
@@ -844,7 +860,11 @@ impl Iterator {
                     if self.remaining > 0 {
                         // Is the index in one of the remaining compressed edits?
                         // spanStart is the start of the current span, first of the remaining ones.
-                        span_length = if find_source { self.old_length } else { self.new_length };
+                        span_length = if find_source {
+                            self.old_length
+                        } else {
+                            self.new_length
+                        };
                         let u = self.at(self.index);
                         debug_assert!(MAX_UNCHANGED < u && u <= MAX_SHORT_CHANGE);
                         let num = (u & SHORT_CHANGE_NUM_MASK) + 1 - self.remaining;
@@ -990,16 +1010,35 @@ impl fmt::Display for Iterator {
     /// hash; here the class name and the iterator's address, the identity
     /// a Rust value has) followed by the current span.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "com.ibm.icu.text.Edits$Iterator@{:x}", self as *const Self as usize)?;
-        write!(f, "{{ src[{}..{}", self.src_index, self.src_index + self.old_length)?;
+        write!(
+            f,
+            "com.ibm.icu.text.Edits$Iterator@{:x}",
+            self as *const Self as usize
+        )?;
+        write!(
+            f,
+            "{{ src[{}..{}",
+            self.src_index,
+            self.src_index + self.old_length
+        )?;
         if self.changed {
             f.write_str("] ⇝ dest[")?;
         } else {
             f.write_str("] ≡ dest[")?;
         }
-        write!(f, "{}..{}", self.dest_index, self.dest_index + self.new_length)?;
+        write!(
+            f,
+            "{}..{}",
+            self.dest_index,
+            self.dest_index + self.new_length
+        )?;
         if self.changed {
-            write!(f, "], repl[{}..{}] }}", self.repl_index, self.repl_index + self.new_length)
+            write!(
+                f,
+                "], repl[{}..{}] }}",
+                self.repl_index,
+                self.repl_index + self.new_length
+            )
         } else {
             f.write_str("] (no-change) }")
         }

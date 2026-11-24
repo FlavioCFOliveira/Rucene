@@ -10,7 +10,8 @@ use rucene::error::Result;
 use crate::jdk::units;
 use crate::text::replaceable::Replaceable;
 use crate::text::transliterator::{
-    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position,
+    Transliterator, TransliteratorBase,
 };
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
@@ -41,7 +42,11 @@ impl RemoveTransliterator {
         register_factory_in(
             registry,
             &units(Self::ID),
-            factory(|_id| Ok(Some(Arc::new(RemoveTransliterator::new()) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(
+                    Arc::new(RemoveTransliterator::new()) as Arc<dyn Transliterator>
+                ))
+            }),
         )?;
         register_special_inverse(&units("Remove"), &units("Null"), false);
         Ok(())
@@ -60,7 +65,12 @@ impl Transliterator for RemoveTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position index, boolean
     /// incremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, index: &mut Position, _incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        _incremental: bool,
+    ) -> Result<()> {
         // Our caller (filteredTransliterate) has already narrowed us
         // to an unfiltered run.  Delete it.
         text.replace(index.start, index.limit, &[]);
@@ -72,7 +82,12 @@ impl Transliterator for RemoveTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, _target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        _target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         // intersect myFilter with the input filter
         let my_filter = self.get_filter_as_unicode_set(input_filter)?;
         source_set.add_all(&my_filter)?;

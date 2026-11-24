@@ -51,8 +51,9 @@ const RBBI_END: i32 = 2;
 const RBBI_DEBUG_ARG: &str = "rbbi";
 
 /// `TRACE`: `ICUDebug.enabled("rbbi") && ICUDebug.value("rbbi").indexOf("trace") >= 0`.
-static TRACE: LazyLock<bool> =
-    LazyLock::new(|| ICUDebug::enabled_arg(RBBI_DEBUG_ARG) && ICUDebug::value(RBBI_DEBUG_ARG).contains("trace"));
+static TRACE: LazyLock<bool> = LazyLock::new(|| {
+    ICUDebug::enabled_arg(RBBI_DEBUG_ARG) && ICUDebug::value(RBBI_DEBUG_ARG).contains("trace")
+});
 
 /// `fDebugEnv`: the value of the `rbbi` debug argument, `null` when
 /// debugging is off.
@@ -78,10 +79,11 @@ static G_UNHANDLED_BREAK_ENGINE: LazyLock<Arc<UnhandledBreakEngine>> =
 /// `gAllBreakEngines`: the language break engines created by any break
 /// iterator; the `ConcurrentLinkedQueue` and its `synchronized` creation
 /// section are one lock.
-static G_ALL_BREAK_ENGINES: LazyLock<Mutex<Vec<Arc<dyn LanguageBreakEngine>>>> = LazyLock::new(|| {
-    let unhandled: Arc<dyn LanguageBreakEngine> = G_UNHANDLED_BREAK_ENGINE.clone();
-    Mutex::new(vec![unhandled])
-});
+static G_ALL_BREAK_ENGINES: LazyLock<Mutex<Vec<Arc<dyn LanguageBreakEngine>>>> =
+    LazyLock::new(|| {
+        let unhandled: Arc<dyn LanguageBreakEngine> = G_UNHANDLED_BREAK_ENGINE.clone();
+        Mutex::new(vec![unhandled])
+    });
 
 /// `java.io.ByteArrayOutputStream`: an output stream into a growing byte
 /// array.
@@ -128,7 +130,8 @@ impl OutputStream for ByteArrayOutputStream {
 
 /// `String.hashCode()` over UTF-16 units.
 fn java_string_hash(s: &[u16]) -> i32 {
-    s.iter().fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(c as i32))
+    s.iter()
+        .fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(c as i32))
 }
 
 /// `CharacterIterator.equals` for the iterators the port can compare: same
@@ -230,8 +233,12 @@ impl RuleBasedBreakIterator {
     /// # Errors
     ///
     /// The `IOException` of the stream or the data.
-    pub fn get_instance_from_compiled_rules_stream(is: &mut dyn InputStream) -> Result<RuleBasedBreakIterator> {
-        let data = RBBIDataWrapper::get(ICUBinary::get_byte_buffer_from_input_stream_and_close_stream(is)?)?;
+    pub fn get_instance_from_compiled_rules_stream(
+        is: &mut dyn InputStream,
+    ) -> Result<RuleBasedBreakIterator> {
+        let data = RBBIDataWrapper::get(
+            ICUBinary::get_byte_buffer_from_input_stream_and_close_stream(is)?,
+        )?;
         Ok(Self::with_data(data))
     }
 
@@ -279,7 +286,10 @@ impl RuleBasedBreakIterator {
                 //CLOVER:OFF
                 // An IO exception can only arrive here if there is a bug in the RBBI Rule compiler,
                 //  with the compiler (incorrectly) producing truncated rule data.
-                let message = e.original_message().map(str::to_string).unwrap_or_else(|| e.to_string());
+                let message = e
+                    .original_message()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| e.to_string());
                 Err(LuceneError::unchecked(
                     "java.lang.RuntimeException",
                     format!("RuleBasedBreakIterator rule compilation internal error: {message}"),
@@ -298,7 +308,8 @@ impl RuleBasedBreakIterator {
         if std::ptr::eq(self, other) {
             return true;
         }
-        if !Arc::ptr_eq(&self.f_r_data, &other.f_r_data) && self.f_r_data.f_rule_source != other.f_r_data.f_rule_source
+        if !Arc::ptr_eq(&self.f_r_data, &other.f_r_data)
+            && self.f_r_data.f_rule_source != other.f_r_data.f_rule_source
         {
             return false;
         }
@@ -379,7 +390,9 @@ impl RuleBasedBreakIterator {
         // First read without synchronization, which could lead to a new language
         // break engine being added and we didn't go over it.
         // In the port, both passes run under the one lock.
-        let mut engines = G_ALL_BREAK_ENGINES.lock().unwrap_or_else(|e| e.into_inner());
+        let mut engines = G_ALL_BREAK_ENGINES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for candidate in engines.iter() {
             if candidate.handles(c) {
                 return Some(candidate.clone());
@@ -409,9 +422,9 @@ impl RuleBasedBreakIterator {
                     .and_then(|data| LSTMBreakEngine::create(script, data))
                 {
                     Ok(e) => Ok(Some(Arc::new(e) as Arc<dyn LanguageBreakEngine>)),
-                    Err(e) if is_missing_resource(&e) => {
-                        wrap(ThaiBreakEngine::new().map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>))
-                    }
+                    Err(e) if is_missing_resource(&e) => wrap(
+                        ThaiBreakEngine::new().map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>),
+                    ),
                     Err(e) => Err(e),
                 }
             }
@@ -423,18 +436,19 @@ impl RuleBasedBreakIterator {
                     .and_then(|data| LSTMBreakEngine::create(script, data))
                 {
                     Ok(e) => Ok(Some(Arc::new(e) as Arc<dyn LanguageBreakEngine>)),
-                    Err(e) if is_missing_resource(&e) => {
-                        wrap(BurmeseBreakEngine::new().map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>))
-                    }
+                    Err(e) if is_missing_resource(&e) => wrap(
+                        BurmeseBreakEngine::new()
+                            .map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>),
+                    ),
                     Err(e) => Err(e),
                 }
             }
             s if s == UScript::KHMER => {
                 wrap(KhmerBreakEngine::new().map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>))
             }
-            s if s == UScript::HAN => {
-                wrap(CjkBreakEngine::new(false).map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>))
-            }
+            s if s == UScript::HAN => wrap(
+                CjkBreakEngine::new(false).map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>),
+            ),
             s if s == UScript::HANGUL => {
                 wrap(CjkBreakEngine::new(true).map(|e| Arc::new(e) as Arc<dyn LanguageBreakEngine>))
             }
@@ -507,7 +521,10 @@ impl RuleBasedBreakIterator {
             category = 2;
             mode = RBBI_START;
             if *TRACE {
-                print!("            {}", RBBIDataWrapper::int_to_string(text.get_index(), 5));
+                print!(
+                    "            {}",
+                    RBBIDataWrapper::int_to_string(text.get_index(), 5)
+                );
                 print!("{}", RBBIDataWrapper::int_to_hex_string(c, 10));
                 println!(
                     "{}{}",
@@ -547,7 +564,10 @@ impl RuleBasedBreakIterator {
                 }
 
                 if *TRACE {
-                    print!("            {}", RBBIDataWrapper::int_to_string(text.get_index(), 5));
+                    print!(
+                        "            {}",
+                        RBBIDataWrapper::int_to_string(text.get_index(), 5)
+                    );
                     print!("{}", RBBIDataWrapper::int_to_hex_string(c, 10));
                     println!(
                         "{}{}",
@@ -568,7 +588,8 @@ impl RuleBasedBreakIterator {
             }
 
             // look up a state transition in the state table
-            state = state_table[(row + RBBIDataWrapper::NEXTSTATES + category as i32) as usize] as i32;
+            state =
+                state_table[(row + RBBIDataWrapper::NEXTSTATES + category as i32) as usize] as i32;
             row = rdata.get_row_index(state);
             let accepting = state_table[(row + RBBIDataWrapper::ACCEPTING) as usize] as i32;
             if accepting == RBBIDataWrapper::ACCEPTING_UNCONDITIONAL {
@@ -581,12 +602,14 @@ impl RuleBasedBreakIterator {
                 }
 
                 //  Remember the break status (tag) values.
-                self.f_rule_status_index = state_table[(row + RBBIDataWrapper::TAGSIDX) as usize] as i32;
+                self.f_rule_status_index =
+                    state_table[(row + RBBIDataWrapper::TAGSIDX) as usize] as i32;
             } else if accepting > RBBIDataWrapper::ACCEPTING_UNCONDITIONAL {
                 // Lookahead match is completed
                 let lookahead_result = self.f_look_ahead_matches[accepting as usize];
                 if lookahead_result >= 0 {
-                    self.f_rule_status_index = state_table[(row + RBBIDataWrapper::TAGSIDX) as usize] as i32;
+                    self.f_rule_status_index =
+                        state_table[(row + RBBIDataWrapper::TAGSIDX) as usize] as i32;
                     self.f_position = lookahead_result;
                     return lookahead_result;
                 }
@@ -673,7 +696,10 @@ impl RuleBasedBreakIterator {
             //  Off the dictionary flag bit. For reverse iteration it is not used.
             category = trie.get(c) as i16;
             if *TRACE {
-                print!("            {}", RBBIDataWrapper::int_to_string(text.get_index(), 5));
+                print!(
+                    "            {}",
+                    RBBIDataWrapper::int_to_string(text.get_index(), 5)
+                );
                 print!("{}", RBBIDataWrapper::int_to_hex_string(c, 10));
                 println!(
                     "{}{}",
@@ -685,7 +711,8 @@ impl RuleBasedBreakIterator {
             // State Transition - move machine to its next state
             //
             debug_assert!((category as i32) < rdata.f_header.f_cat_count);
-            state = state_table[(row + RBBIDataWrapper::NEXTSTATES + category as i32) as usize] as i32;
+            state =
+                state_table[(row + RBBIDataWrapper::NEXTSTATES + category as i32) as usize] as i32;
             row = rdata.get_row_index(state);
 
             if state == STOP_STATE {
@@ -726,7 +753,13 @@ impl RuleBasedBreakIterator {
     /// `DictionaryCache.populateDictionary(int startPos, int endPos, int
     /// firstRuleStatus, int otherRuleStatus)`: runs the dictionary engines
     /// over a segment and fills the dictionary cache with the breaks.
-    fn dc_populate_dictionary(&mut self, start_pos: i32, end_pos: i32, first_rule_status: i32, other_rule_status: i32) {
+    fn dc_populate_dictionary(
+        &mut self,
+        start_pos: i32,
+        end_pos: i32,
+        first_rule_status: i32,
+        other_rule_status: i32,
+    ) {
         if (end_pos - start_pos) <= 1 {
             return;
         }
@@ -777,8 +810,13 @@ impl RuleBasedBreakIterator {
                     .f_text
                     .as_deref_mut()
                     .unwrap_or_else(|| panic!("java.lang.NullPointerException: fText"));
-                found_break_count +=
-                    lbe.find_breaks(text, range_start, range_end, &mut self.f_dictionary_cache.f_breaks, phrase);
+                found_break_count += lbe.find_breaks(
+                    text,
+                    range_start,
+                    range_end,
+                    &mut self.f_dictionary_cache.f_breaks,
+                    phrase,
+                );
             }
 
             // Reload the loop variables for the next go-round
@@ -824,7 +862,8 @@ impl RuleBasedBreakIterator {
         if bc.f_buf_idx == bc.f_end_buf_idx {
             self.f_done = !self.bc_populate_following();
             self.f_position = self.f_break_cache.f_text_idx;
-            self.f_rule_status_index = self.f_break_cache.f_statuses[self.f_break_cache.f_buf_idx as usize] as i32;
+            self.f_rule_status_index =
+                self.f_break_cache.f_statuses[self.f_break_cache.f_buf_idx as usize] as i32;
         } else {
             bc.f_buf_idx = BreakCache::mod_chunk_size(bc.f_buf_idx + 1);
             bc.f_text_idx = bc.f_boundaries[bc.f_buf_idx as usize];
@@ -904,7 +943,8 @@ impl RuleBasedBreakIterator {
     fn bc_populate_near(&mut self, position: i32) -> bool {
         debug_assert!(
             position < self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize]
-                || position > self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize]
+                || position
+                    > self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize]
         );
 
         // Add boundaries to the cache near the specified position.
@@ -947,7 +987,8 @@ impl RuleBasedBreakIterator {
             let backup_pos = self.handle_safe_previous(position);
 
             let end_b = self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize];
-            let start_b = self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize];
+            let start_b =
+                self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize];
             if end_b < position && end_b >= (backup_pos - CACHE_NEAR) {
                 // The requested position is beyond the end of the existing cache, but the
                 // reverse rules produced a position near or before the cached region.
@@ -999,7 +1040,9 @@ impl RuleBasedBreakIterator {
         if self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize] < position {
             // The last position in the cache precedes the requested position.
             // Add following position(s) to the cache.
-            while self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize] < position {
+            while self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize]
+                < position
+            {
                 if !self.bc_populate_following() {
                     debug_assert!(false);
                     return false;
@@ -1018,7 +1061,9 @@ impl RuleBasedBreakIterator {
         if self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize] > position {
             // The first position in the cache is beyond the requested position.
             // back up more until we get a boundary <= the requested position.
-            while self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize] > position {
+            while self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize]
+                > position
+            {
                 self.bc_populate_preceding();
             }
             let bc = &mut self.f_break_cache;
@@ -1043,15 +1088,22 @@ impl RuleBasedBreakIterator {
     /// `BreakCache.populateFollowing()`: adds boundaries following the
     /// cache's end, from the dictionary cache or the rules; `false` at the
     /// end of the text.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn bc_populate_following(&mut self) -> bool {
-        let from_position = self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize];
-        let from_rule_status_idx = self.f_break_cache.f_statuses[self.f_break_cache.f_end_buf_idx as usize] as i32;
+        let from_position =
+            self.f_break_cache.f_boundaries[self.f_break_cache.f_end_buf_idx as usize];
+        let from_rule_status_idx =
+            self.f_break_cache.f_statuses[self.f_break_cache.f_end_buf_idx as usize] as i32;
         let mut pos;
         let rule_status_idx;
 
         if self.f_dictionary_cache.following(from_position) {
-            let (b, s) = (self.f_dictionary_cache.f_boundary, self.f_dictionary_cache.f_status_index);
-            self.f_break_cache.add_following(b, s, UPDATE_CACHE_POSITION);
+            let (b, s) = (
+                self.f_dictionary_cache.f_boundary,
+                self.f_dictionary_cache.f_status_index,
+            );
+            self.f_break_cache
+                .add_following(b, s, UPDATE_CACHE_POSITION);
             return true;
         }
 
@@ -1067,8 +1119,12 @@ impl RuleBasedBreakIterator {
             // Subdivide it, with subdivided results going into the dictionary cache.
             self.dc_populate_dictionary(from_position, pos, from_rule_status_idx, rule_status_idx);
             if self.f_dictionary_cache.following(from_position) {
-                let (b, s) = (self.f_dictionary_cache.f_boundary, self.f_dictionary_cache.f_status_index);
-                self.f_break_cache.add_following(b, s, UPDATE_CACHE_POSITION);
+                let (b, s) = (
+                    self.f_dictionary_cache.f_boundary,
+                    self.f_dictionary_cache.f_status_index,
+                );
+                self.f_break_cache
+                    .add_following(b, s, UPDATE_CACHE_POSITION);
                 return true;
                 // TODO: may want to move a sizable chunk of the dictionary cache to the break cache at this point.
                 //       But be careful with interactions with populateNear().
@@ -1079,7 +1135,8 @@ impl RuleBasedBreakIterator {
         // Or, it did contain dictionary chars, but the dictionary segmenter didn't handle them,
         //    meaning that we didn't take the return, above.
         // Add its end point to the cache.
-        self.f_break_cache.add_following(pos, rule_status_idx, UPDATE_CACHE_POSITION);
+        self.f_break_cache
+            .add_following(pos, rule_status_idx, UPDATE_CACHE_POSITION);
 
         // Add several non-dictionary boundaries at this point, to optimize straight forward iteration.
         //    (subsequent calls to BreakIterator::next() will take the fast path, getting cached results.
@@ -1090,7 +1147,8 @@ impl RuleBasedBreakIterator {
                 break;
             }
             let s = self.f_rule_status_index;
-            self.f_break_cache.add_following(pos, s, RETAIN_CACHE_POSITION);
+            self.f_break_cache
+                .add_following(pos, s, RETAIN_CACHE_POSITION);
         }
         true
     }
@@ -1099,7 +1157,8 @@ impl RuleBasedBreakIterator {
     /// cache's start; `false` at the start of the text.
     fn bc_populate_preceding(&mut self) -> bool {
         let text_begin = self.text().get_begin_index();
-        let from_position = self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize];
+        let from_position =
+            self.f_break_cache.f_boundaries[self.f_break_cache.f_start_buf_idx as usize];
         if from_position == text_begin {
             return false;
         }
@@ -1108,8 +1167,12 @@ impl RuleBasedBreakIterator {
         let mut position_status_idx;
 
         if self.f_dictionary_cache.preceding(from_position) {
-            let (b, s) = (self.f_dictionary_cache.f_boundary, self.f_dictionary_cache.f_status_index);
-            self.f_break_cache.add_preceding(b, s, UPDATE_CACHE_POSITION);
+            let (b, s) = (
+                self.f_dictionary_cache.f_boundary,
+                self.f_dictionary_cache.f_status_index,
+            );
+            self.f_break_cache
+                .add_preceding(b, s, UPDATE_CACHE_POSITION);
             return true;
         }
 
@@ -1173,7 +1236,12 @@ impl RuleBasedBreakIterator {
                 // Segment from the rules includes dictionary characters.
                 // Subdivide it, with subdivided results going into the dictionary cache.
                 let dict_seg_end_position = position;
-                self.dc_populate_dictionary(prev_position, dict_seg_end_position, prev_status_idx, position_status_idx);
+                self.dc_populate_dictionary(
+                    prev_position,
+                    dict_seg_end_position,
+                    prev_status_idx,
+                    position_status_idx,
+                );
                 while self.f_dictionary_cache.following(prev_position) {
                     position = self.f_dictionary_cache.f_boundary;
                     position_status_idx = self.f_dictionary_cache.f_status_index;
@@ -1233,7 +1301,11 @@ impl Clone for RuleBasedBreakIterator {
             f_position: self.f_position,
             f_rule_status_index: self.f_rule_status_index,
             f_done: self.f_done,
-            f_look_ahead_matches: vec![0; self.f_r_data.f_table().f_look_ahead_results_size.max(0) as usize],
+            f_look_ahead_matches: vec![
+                0;
+                self.f_r_data.f_table().f_look_ahead_results_size.max(0)
+                    as usize
+            ],
             f_break_cache: BreakCache::copy_of(&self.f_break_cache),
             f_phrase_breaking: self.f_phrase_breaking,
             f_dictionary_char_count: self.f_dictionary_char_count,
@@ -1415,7 +1487,8 @@ impl BreakIterator for RuleBasedBreakIterator {
         //           Status val N-1  <--  the value we need to return
         //   The status values are sorted in ascending order.
         //   This function returns the last (largest) of the array of status values.
-        let idx = self.f_rule_status_index + self.f_r_data.f_status_table[self.f_rule_status_index as usize];
+        let idx = self.f_rule_status_index
+            + self.f_r_data.f_status_table[self.f_rule_status_index as usize];
         self.f_r_data.f_status_table[idx as usize]
     }
 
@@ -1704,7 +1777,8 @@ impl BreakCache {
         debug_assert!(rule_status_idx <= i16::MAX as i32);
         let next_idx = Self::mod_chunk_size(self.f_end_buf_idx + 1);
         if next_idx == self.f_start_buf_idx {
-            self.f_start_buf_idx = Self::mod_chunk_size(self.f_start_buf_idx + 6); // TODO: experiment. Probably revert to 1.
+            self.f_start_buf_idx = Self::mod_chunk_size(self.f_start_buf_idx + 6);
+            // TODO: experiment. Probably revert to 1.
         }
         self.f_boundaries[next_idx as usize] = position;
         self.f_statuses[next_idx as usize] = rule_status_idx as i16;

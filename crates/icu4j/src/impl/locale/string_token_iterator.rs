@@ -72,6 +72,7 @@ impl StringTokenIterator {
     }
 
     /// `next()`.
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn next(&mut self) -> Option<String> {
         if self.has_next() {
             self.start = self.end + 1;

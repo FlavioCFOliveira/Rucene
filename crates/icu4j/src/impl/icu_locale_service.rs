@@ -15,7 +15,9 @@ use crate::jdk::{ClassLoader, JavaClass};
 use crate::r#impl::class_loader_util::ClassLoaderUtil;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_resource_bundle::ICUResourceBundle;
-use crate::r#impl::icu_service::{Factory, ICUService, Key, ServiceObject, ServiceOverrides, VisibleIDMap};
+use crate::r#impl::icu_service::{
+    Factory, ICUService, Key, ServiceObject, ServiceOverrides, VisibleIDMap,
+};
 use crate::r#impl::locale::ascii_util::{len16, substring16, substring16_from};
 use crate::r#impl::locale_utility::LocaleUtility;
 use crate::util::u_locale::ULocale;
@@ -39,7 +41,11 @@ pub trait ICULocaleServiceSubclass: Send + Sync {
     }
 
     /// `reInitializeFactories()`: clears the factories by default.
-    fn re_initialize_factories(&self, _service: &ICUService, factories: &mut Vec<Arc<dyn Factory>>) {
+    fn re_initialize_factories(
+        &self,
+        _service: &ICUService,
+        factories: &mut Vec<Arc<dyn Factory>>,
+    ) {
         factories.clear();
     }
 
@@ -112,8 +118,14 @@ impl ServiceOverrides for LocaleOverridesHandle {
 impl ServiceOverrides for LocaleOverrides {
     fn create_key(&self, service: &ICUService, id: Option<&str>) -> Result<Option<Box<dyn Key>>> {
         let fallback = self.validate_fallback_locale(service);
-        Ok(LocaleKey::create_with_canonical_fallback(id, fallback.as_deref(), LocaleKey::KIND_ANY)?
-            .map(|k| Box::new(k) as Box<dyn Key>))
+        Ok(
+            LocaleKey::create_with_canonical_fallback(
+                id,
+                fallback.as_deref(),
+                LocaleKey::KIND_ANY,
+            )?
+            .map(|k| Box::new(k) as Box<dyn Key>),
+        )
     }
 
     fn handle_default(
@@ -160,7 +172,8 @@ impl ICULocaleService {
             state: Arc::new(Mutex::new(FallbackState::default())),
             sub,
         });
-        let service = ICUService::with_overrides(name, Box::new(LocaleOverridesHandle(overrides.clone())));
+        let service =
+            ICUService::with_overrides(name, Box::new(LocaleOverridesHandle(overrides.clone())));
         Self { service, overrides }
     }
 
@@ -221,7 +234,9 @@ impl ICULocaleService {
         kind: i32,
         visible: bool,
     ) -> Result<Arc<dyn Factory>> {
-        let factory: Arc<dyn Factory> = Arc::new(SimpleLocaleKeyFactory::new(obj, locale, kind, visible, None));
+        let factory: Arc<dyn Factory> = Arc::new(SimpleLocaleKeyFactory::new(
+            obj, locale, kind, visible, None,
+        ));
         self.service.register_factory(factory)
     }
 
@@ -233,7 +248,10 @@ impl ICULocaleService {
     pub fn get_available_locales(&self) -> Result<Vec<Locale>> {
         // TODO make this wrap getAvailableULocales later
         let vis_ids = self.service.get_visible_ids()?;
-        Ok(vis_ids.iter().map(|id| LocaleUtility::get_locale_from_name(id)).collect())
+        Ok(vis_ids
+            .iter()
+            .map(|id| LocaleUtility::get_locale_from_name(id))
+            .collect())
     }
 
     /// `getAvailableULocales()`.
@@ -263,13 +281,17 @@ impl ICULocaleService {
     /// The errors of `ULocale.getName`.
     pub fn create_key_kind(&self, id: Option<&str>, kind: i32) -> Result<Option<Box<dyn Key>>> {
         let fb = self.fallback();
-        Ok(LocaleKey::create_with_canonical_fallback(id, fb.as_deref(), kind)?.map(|k| Box::new(k) as Box<dyn Key>))
+        Ok(
+            LocaleKey::create_with_canonical_fallback(id, fb.as_deref(), kind)?
+                .map(|k| Box::new(k) as Box<dyn Key>),
+        )
     }
 
     /// `createKey(ULocale l, int kind)`.
     pub fn create_key_locale(&self, l: Option<&ULocale>, kind: i32) -> Option<Box<dyn Key>> {
         let fb = self.fallback();
-        LocaleKey::create_with_canonical(l, fb.as_deref(), kind).map(|k| Box::new(k) as Box<dyn Key>)
+        LocaleKey::create_with_canonical(l, fb.as_deref(), kind)
+            .map(|k| Box::new(k) as Box<dyn Key>)
     }
 }
 
@@ -305,20 +327,39 @@ impl LocaleKey {
             return Ok(None);
         };
         let canonical_primary_id = ULocale::get_name_of(Some(primary_id))?;
-        Ok(Some(LocaleKey::new(primary_id, Some(&canonical_primary_id), canonical_fallback_id, kind)))
+        Ok(Some(LocaleKey::new(
+            primary_id,
+            Some(&canonical_primary_id),
+            canonical_fallback_id,
+            kind,
+        )))
     }
 
     /// `createWithCanonical(ULocale locale, String canonicalFallbackID,
     /// int kind)`.
-    pub fn create_with_canonical(locale: Option<&ULocale>, canonical_fallback_id: Option<&str>, kind: i32) -> Option<LocaleKey> {
+    pub fn create_with_canonical(
+        locale: Option<&ULocale>,
+        canonical_fallback_id: Option<&str>,
+        kind: i32,
+    ) -> Option<LocaleKey> {
         let locale = locale?;
         let canonical_primary_id = locale.get_name();
-        Some(LocaleKey::new(canonical_primary_id, Some(canonical_primary_id), canonical_fallback_id, kind))
+        Some(LocaleKey::new(
+            canonical_primary_id,
+            Some(canonical_primary_id),
+            canonical_fallback_id,
+            kind,
+        ))
     }
 
     /// `LocaleKey(String primaryID, String canonicalPrimaryID, String
     /// canonicalFallbackID, int kind)` (protected).
-    pub fn new(primary_id: &str, canonical_primary_id: Option<&str>, canonical_fallback_id: Option<&str>, kind: i32) -> Self {
+    pub fn new(
+        primary_id: &str,
+        canonical_primary_id: Option<&str>,
+        canonical_fallback_id: Option<&str>,
+        kind: i32,
+    ) -> Self {
         let mut varstart = 0i32;
         let p: String;
         let fallback_id: Option<String>;
@@ -388,11 +429,18 @@ impl LocaleKey {
     /// The errors of `new ULocale`; `NullPointerException` after the last
     /// fallback.
     pub fn current_locale(&self) -> Result<ULocale> {
-        let current = self.current_id.as_deref().ok_or_else(LuceneError::null_pointer)?;
+        let current = self
+            .current_id
+            .as_deref()
+            .ok_or_else(LuceneError::null_pointer)?;
         if self.varstart == -1 {
             ULocale::new(current)
         } else {
-            ULocale::new(&format!("{}{}", current, substring16_from(&self.primary_id, self.varstart)))
+            ULocale::new(&format!(
+                "{}{}",
+                current,
+                substring16_from(&self.primary_id, self.varstart)
+            ))
         }
     }
 }
@@ -441,7 +489,11 @@ impl Key for LocaleKey {
         }
         if let Some(f) = self.fallback_id.clone() {
             self.current_id = Some(f.clone());
-            self.fallback_id = if f.is_empty() { None } else { Some(String::new()) };
+            self.fallback_id = if f.is_empty() {
+                None
+            } else {
+                Some(String::new())
+            };
             return true;
         }
         self.current_id = None;
@@ -475,10 +527,9 @@ pub trait LocaleKeyFactory: Send + Sync + Any {
     /// Whatever `handleCreate` throws.
     fn lkf_create(&self, key: &dyn Key, service: &ICUService) -> Result<Option<ServiceObject>> {
         if self.handles_key(Some(key))? {
-            let lkey = key
-                .as_any()
-                .downcast_ref::<LocaleKey>()
-                .ok_or_else(|| LuceneError::unchecked("java.lang.ClassCastException", "the key is not a LocaleKey"))?;
+            let lkey = key.as_any().downcast_ref::<LocaleKey>().ok_or_else(|| {
+                LuceneError::unchecked("java.lang.ClassCastException", "the key is not a LocaleKey")
+            })?;
             let kind = lkey.kind();
             let uloc = lkey.current_locale()?;
             return self.handle_create(&uloc, kind, service);
@@ -505,7 +556,11 @@ pub trait LocaleKeyFactory: Send + Sync + Any {
     /// # Errors
     ///
     /// Whatever `getSupportedIDs` throws.
-    fn lkf_update_visible_ids(&self, me: Arc<dyn Factory>, result: &mut VisibleIDMap) -> Result<()> {
+    fn lkf_update_visible_ids(
+        &self,
+        me: Arc<dyn Factory>,
+        result: &mut VisibleIDMap,
+    ) -> Result<()> {
         let cache = self.get_supported_ids()?;
         for id in cache {
             if self.visible() {
@@ -523,7 +578,12 @@ pub trait LocaleKeyFactory: Send + Sync + Any {
     /// # Errors
     ///
     /// Whatever the subclass throws.
-    fn handle_create(&self, _loc: &ULocale, _kind: i32, _service: &ICUService) -> Result<Option<ServiceObject>> {
+    fn handle_create(
+        &self,
+        _loc: &ULocale,
+        _kind: i32,
+        _service: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
         Ok(None)
     }
 
@@ -569,7 +629,10 @@ pub const INVISIBLE: bool = false;
 /// # Errors
 ///
 /// The errors of `new ULocale` and of the display-name lookup.
-pub fn locale_key_factory_display_name(id: &str, locale: Option<&ULocale>) -> Result<Option<String>> {
+pub fn locale_key_factory_display_name(
+    id: &str,
+    locale: Option<&ULocale>,
+) -> Result<Option<String>> {
     // assume if the user called this on us, we must have handled some fallback of this id
     //          if (isSupportedID(id)) {
     let locale = match locale {
@@ -597,7 +660,13 @@ pub struct SimpleLocaleKeyFactory {
 impl SimpleLocaleKeyFactory {
     /// `new SimpleLocaleKeyFactory(Object obj, ULocale locale, int kind,
     /// boolean visible, String name)`.
-    pub fn new(obj: ServiceObject, locale: &ULocale, kind: i32, visible: bool, name: Option<&str>) -> Self {
+    pub fn new(
+        obj: ServiceObject,
+        locale: &ULocale,
+        kind: i32,
+        visible: bool,
+        name: Option<&str>,
+    ) -> Self {
         Self {
             name: name.map(str::to_string),
             visible,
@@ -653,7 +722,12 @@ impl Factory for SimpleLocaleKeyFactory {
     }
 
     fn to_java_string(&self) -> String {
-        format!("{}, id: {}, kind: {}", self.lkf_to_string(), self.id, self.kind)
+        format!(
+            "{}, id: {}, kind: {}",
+            self.lkf_to_string(),
+            self.id,
+            self.kind
+        )
     }
 }
 
@@ -706,12 +780,24 @@ impl LocaleKeyFactory for ICUResourceBundleFactory {
 
     /// `getSupportedIDs()`: the full locale name set of the bundle.
     fn get_supported_ids(&self) -> Result<HashSet<String>> {
-        Ok((*ICUResourceBundle::get_full_locale_name_set_of(&self.bundle_name, self.loader())?).clone())
+        Ok(
+            (*ICUResourceBundle::get_full_locale_name_set_of(&self.bundle_name, self.loader())?)
+                .clone(),
+        )
     }
 
     /// `handleCreate(ULocale loc, int kind, ICUService service)`.
-    fn handle_create(&self, loc: &ULocale, _kind: i32, _service: &ICUService) -> Result<Option<ServiceObject>> {
-        let b = UResourceBundle::get_bundle_instance_for_loader(Some(&self.bundle_name), Some(loc), self.loader())?;
+    fn handle_create(
+        &self,
+        loc: &ULocale,
+        _kind: i32,
+        _service: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
+        let b = UResourceBundle::get_bundle_instance_for_loader(
+            Some(&self.bundle_name),
+            Some(loc),
+            self.loader(),
+        )?;
         Ok(Some(Arc::new(b)))
     }
 }
@@ -724,7 +810,8 @@ impl Factory for ICUResourceBundleFactory {
     /// `updateVisibleIDs(Map<String, Factory> result)`: only the visible
     /// ids (the available locale name set).
     fn update_visible_ids(self: Arc<Self>, result: &mut VisibleIDMap) -> Result<()> {
-        let visible_ids = ICUResourceBundle::get_available_locale_name_set_of(&self.bundle_name, self.loader())?; // only visible ids
+        let visible_ids =
+            ICUResourceBundle::get_available_locale_name_set_of(&self.bundle_name, self.loader())?; // only visible ids
         for id in visible_ids.iter() {
             result.insert(id.clone(), self.clone());
         }

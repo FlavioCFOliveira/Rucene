@@ -128,8 +128,12 @@ impl fmt::Display for DisplayContext {
             DisplayContext::StandardNames => "STANDARD_NAMES",
             DisplayContext::DialectNames => "DIALECT_NAMES",
             DisplayContext::CapitalizationNone => "CAPITALIZATION_NONE",
-            DisplayContext::CapitalizationForMiddleOfSentence => "CAPITALIZATION_FOR_MIDDLE_OF_SENTENCE",
-            DisplayContext::CapitalizationForBeginningOfSentence => "CAPITALIZATION_FOR_BEGINNING_OF_SENTENCE",
+            DisplayContext::CapitalizationForMiddleOfSentence => {
+                "CAPITALIZATION_FOR_MIDDLE_OF_SENTENCE"
+            }
+            DisplayContext::CapitalizationForBeginningOfSentence => {
+                "CAPITALIZATION_FOR_BEGINNING_OF_SENTENCE"
+            }
             DisplayContext::CapitalizationForUiListOrMenu => "CAPITALIZATION_FOR_UI_LIST_OR_MENU",
             DisplayContext::CapitalizationForStandalone => "CAPITALIZATION_FOR_STANDALONE",
             DisplayContext::LengthFull => "LENGTH_FULL",

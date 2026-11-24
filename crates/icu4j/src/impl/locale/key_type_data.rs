@@ -124,13 +124,20 @@ struct Tables {
 
 /// The static initializer's result (`initFromResourceBundle()`), or the
 /// message of its exception.
-static TABLES: LazyLock<std::result::Result<Arc<Tables>, String>> =
-    LazyLock::new(|| KeyTypeData::init_from_resource_bundle().map(Arc::new).map_err(|e| e.to_string()));
+static TABLES: LazyLock<std::result::Result<Arc<Tables>, String>> = LazyLock::new(|| {
+    KeyTypeData::init_from_resource_bundle()
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
+});
 
 fn tables() -> Result<Arc<Tables>> {
     match &*TABLES {
         Ok(t) => Ok(t.clone()),
-        Err(m) => Err(crate::util::u_resource_bundle::missing_resource(m.clone(), "", "")),
+        Err(m) => Err(crate::util::u_resource_bundle::missing_resource(
+            m.clone(),
+            "",
+            "",
+        )),
     }
 }
 
@@ -193,7 +200,11 @@ impl KeyTypeData {
                 k.value = Some(true);
             }
             if let Some(t) = key_data.type_map.get(&ty) {
-                return Ok(Some(if bcp { t.bcp_id.clone() } else { t.legacy_id.clone() }));
+                return Ok(Some(if bcp {
+                    t.bcp_id.clone()
+                } else {
+                    t.legacy_id.clone()
+                }));
             }
             if let Some(special_types) = &key_data.special_types {
                 for st in special_types {
@@ -256,7 +267,8 @@ impl KeyTypeData {
             OpenType::Direct,
         )?);
 
-        let (deprecated_keys, value_types) = Self::get_key_info(&key_type_data_res.get("keyInfo")?)?;
+        let (deprecated_keys, value_types) =
+            Self::get_key_info(&key_type_data_res.get("keyInfo")?)?;
         let deprecated_key_types = Self::get_type_info(&key_type_data_res.get("typeInfo")?)?;
 
         let key_map_res = key_type_data_res.get("keyMap")?;
@@ -291,7 +303,9 @@ impl KeyTypeData {
             // reverse type alias map
             let mut type_alias_map: Option<HashMap<String, HashSet<String>>> = None;
             if let Some(type_alias_res) = &type_alias_res {
-                if let Some(type_alias_res_by_key) = Self::get_optional(type_alias_res, &legacy_key_id)? {
+                if let Some(type_alias_res_by_key) =
+                    Self::get_optional(type_alias_res, &legacy_key_id)?
+                {
                     let mut m: HashMap<String, HashSet<String>> = HashMap::new();
                     let mut it = type_alias_res_by_key.get_iterator();
                     while it.has_next() {
@@ -340,12 +354,14 @@ impl KeyTypeData {
                 let mut it = type_map_res_by_key.get_iterator();
                 while it.has_next() {
                     let type_map_entry = it.next()?;
-                    let mut legacy_type_id = type_map_entry.get_key().unwrap_or_else(|| "null".into());
+                    let mut legacy_type_id =
+                        type_map_entry.get_key().unwrap_or_else(|| "null".into());
                     let mut bcp_type_id = s(type_map_entry.get_string()?);
 
                     // special types
                     let first = crate::r#impl::locale::ascii_util::char_at16(&legacy_type_id, 0);
-                    let is_special_type = (b'9' as u16) < first && first < (b'a' as u16) && bcp_type_id.is_empty();
+                    let is_special_type =
+                        (b'9' as u16) < first && first < (b'a' as u16) && bcp_type_id.is_empty();
                     if is_special_type {
                         let st = SpecialType::value_of(&legacy_type_id)?;
                         let set = special_type_set.get_or_insert_with(Vec::new);
@@ -432,7 +448,10 @@ impl KeyTypeData {
 
     /// `getKeyInfo(UResourceBundle keyInfoRes)` (private): the deprecated
     /// keys and the value types.
-    fn get_key_info(key_info_res: &UResourceBundle) -> Result<(Vec<String>, Vec<(String, ValueType)>)> {
+    #[allow(clippy::type_complexity)] // type mirrors the Java signature
+    fn get_key_info(
+        key_info_res: &UResourceBundle,
+    ) -> Result<(Vec<String>, Vec<(String, ValueType)>)> {
         let mut deprecated_keys: Vec<String> = Vec::new();
         let mut value_types: Vec<(String, ValueType)> = Vec::new();
         let mut it = key_info_res.get_iterator();
@@ -509,7 +528,11 @@ impl KeyTypeData {
     ///
     /// The errors of loading the data.
     pub fn get_bcp47_keys() -> Result<Vec<String>> {
-        Ok(tables()?.bcp47_keys.iter().map(|(k, _)| k.clone()).collect())
+        Ok(tables()?
+            .bcp47_keys
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect())
     }
 
     /// `getBcp47KeyTypes(String key)`.

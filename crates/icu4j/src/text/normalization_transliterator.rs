@@ -16,7 +16,8 @@ use crate::text::replaceable::Replaceable;
 use crate::text::source_target_utility::SourceTargetUtility;
 use crate::text::transform::Transform;
 use crate::text::transliterator::{
-    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position,
+    Transliterator, TransliteratorBase,
 };
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
@@ -27,7 +28,8 @@ use crate::text::unicode_set::UnicodeSet;
 /// (`NormalizationTransliterator.java:139`), which does not override
 /// `hashCode`/`equals` (identity); the key here is the object's address
 /// (the normalizers are process-wide singletons).
-static SOURCE_CACHE: LazyLock<Mutex<HashMap<usize, Arc<SourceTargetUtility>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static SOURCE_CACHE: LazyLock<Mutex<HashMap<usize, Arc<SourceTargetUtility>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// A transliterator that performs normalization.
 ///
@@ -46,41 +48,61 @@ impl NormalizationTransliterator {
         register_factory_in(
             registry,
             &units("Any-NFC"),
-            factory(|_id| Ok(Some(Arc::new(NormalizationTransliterator::new("NFC", normalizer2::get_nfc_instance()?)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(NormalizationTransliterator::new(
+                    "NFC",
+                    normalizer2::get_nfc_instance()?,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
         register_factory_in(
             registry,
             &units("Any-NFD"),
-            factory(|_id| Ok(Some(Arc::new(NormalizationTransliterator::new("NFD", normalizer2::get_nfd_instance()?)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(NormalizationTransliterator::new(
+                    "NFD",
+                    normalizer2::get_nfd_instance()?,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
         register_factory_in(
             registry,
             &units("Any-NFKC"),
             factory(|_id| {
-                Ok(Some(Arc::new(NormalizationTransliterator::new("NFKC", normalizer2::get_nfkc_instance()?)) as Arc<dyn Transliterator>))
+                Ok(Some(Arc::new(NormalizationTransliterator::new(
+                    "NFKC",
+                    normalizer2::get_nfkc_instance()?,
+                )) as Arc<dyn Transliterator>))
             }),
         )?;
         register_factory_in(
             registry,
             &units("Any-NFKD"),
             factory(|_id| {
-                Ok(Some(Arc::new(NormalizationTransliterator::new("NFKD", normalizer2::get_nfkd_instance()?)) as Arc<dyn Transliterator>))
+                Ok(Some(Arc::new(NormalizationTransliterator::new(
+                    "NFKD",
+                    normalizer2::get_nfkd_instance()?,
+                )) as Arc<dyn Transliterator>))
             }),
         )?;
         register_factory_in(
             registry,
             &units("Any-FCD"),
             factory(|_id| {
-                Ok(Some(Arc::new(NormalizationTransliterator::new("FCD", Norm2AllModes::get_fcd_normalizer2()?)) as Arc<dyn Transliterator>))
+                Ok(Some(Arc::new(NormalizationTransliterator::new(
+                    "FCD",
+                    Norm2AllModes::get_fcd_normalizer2()?,
+                )) as Arc<dyn Transliterator>))
             }),
         )?;
         register_factory_in(
             registry,
             &units("Any-FCC"),
             factory(|_id| {
-                Ok(Some(
-                    Arc::new(NormalizationTransliterator::new("FCC", Norm2AllModes::get_nfc_instance()?.fcc.clone())) as Arc<dyn Transliterator>
-                ))
+                Ok(Some(Arc::new(NormalizationTransliterator::new(
+                    "FCC",
+                    Norm2AllModes::get_nfc_instance()?.fcc.clone(),
+                )) as Arc<dyn Transliterator>))
             }),
         )?;
         register_special_inverse(&units("NFC"), &units("NFD"), true);
@@ -127,7 +149,12 @@ impl Transliterator for NormalizationTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, offsets: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        offsets: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         // start and limit of the input range
         let mut start = offsets.start;
         let mut limit = offsets.limit;
@@ -193,7 +220,12 @@ impl Transliterator for NormalizationTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let cache = {
             let mut map = SOURCE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
             let key = Arc::as_ptr(&self.norm2) as *const () as usize;

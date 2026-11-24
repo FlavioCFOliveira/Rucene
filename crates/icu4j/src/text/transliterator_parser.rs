@@ -8,7 +8,9 @@ use std::sync::{Arc, LazyLock};
 
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
 
-use crate::jdk::{index_of, index_of_unit, string_index_out_of_bounds, to_rust_string, units, ParsePosition};
+use crate::jdk::{
+    index_of, index_of_unit, string_index_out_of_bounds, to_rust_string, units, ParsePosition,
+};
 use crate::lang::u_character::UCharacter;
 use crate::r#impl::illegal_icu_argument_exception::IllegalIcuArgumentException;
 use crate::r#impl::pattern_props::PatternProps;
@@ -90,7 +92,8 @@ static ILLEGAL_TOP: LazyLock<UnicodeSet> = LazyLock::new(|| static_set("[\\)]"))
 static ILLEGAL_SEG: LazyLock<UnicodeSet> = LazyLock::new(|| static_set("[\\{\\}\\|\\@]"));
 
 // Special characters disallowed within a function argument
-static ILLEGAL_FUNC: LazyLock<UnicodeSet> = LazyLock::new(|| static_set("[\\^\\(\\.\\*\\+\\?\\{\\}\\|\\@]"));
+static ILLEGAL_FUNC: LazyLock<UnicodeSet> =
+    LazyLock::new(|| static_set("[\\^\\(\\.\\*\\+\\?\\{\\}\\|\\@]"));
 
 fn static_set(pattern: &str) -> UnicodeSet {
     match UnicodeSet::from_pattern(&units(pattern)) {
@@ -150,7 +153,9 @@ impl ParseData<'_> {
         let mut i = start;
         while i < limit {
             let c = char_at(text, i);
-            if (i == start && !UCharacter::is_unicode_identifier_start(c as i32)) || !UCharacter::is_unicode_identifier_part(c as i32) {
+            if (i == start && !UCharacter::is_unicode_identifier_start(c as i32))
+                || !UCharacter::is_unicode_identifier_part(c as i32)
+            {
                 break;
             }
             i += 1;
@@ -207,7 +212,12 @@ impl SymbolTable for ParseData<'_> {
 
     /// `parseReference(String text, ParsePosition pos, int limit)`: only
     /// the identifier is parsed; the caller looks it up.
-    fn parse_reference(&self, text: &[u16], pos: &mut ParsePosition, limit: i32) -> Result<Option<Vec<u16>>> {
+    fn parse_reference(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+        limit: i32,
+    ) -> Result<Option<Vec<u16>>> {
         Ok(Self::parse_reference_impl(text, pos, limit))
     }
 }
@@ -287,9 +297,9 @@ impl RuleBody for RuleArray {
 /// Equivalent to the nested class `TransliteratorParser.RuleHalf`.
 struct RuleHalf {
     text: Vec<u16>,
-    cursor: i32,        // position of cursor in text
-    ante: i32,          // position of ante context marker '{' in text
-    post: i32,          // position of post context marker '}' in text
+    cursor: i32, // position of cursor in text
+    ante: i32,   // position of ante context marker '{' in text
+    post: i32,   // position of post context marker '}' in text
     // Record the offset to the cursor either to the left or to the
     // right of the key.  This is indicated by characters on the output
     // side that allow the cursor to be positioned arbitrarily within
@@ -329,14 +339,24 @@ impl RuleHalf {
     /// parser)`: parse one side of a rule, stopping at either the limit,
     /// the END_OF_RULE character, or an operator. Returns the index after
     /// the terminating character, or if limit was reached, limit.
-    fn parse(&mut self, rule: &[u16], pos: i32, limit: i32, parser: &mut TransliteratorParser) -> Result<i32> {
+    fn parse(
+        &mut self,
+        rule: &[u16],
+        pos: i32,
+        limit: i32,
+        parser: &mut TransliteratorParser,
+    ) -> Result<i32> {
         let start = pos;
         let mut buf = Vec::new();
         let pos = self.parse_section(rule, pos, limit, parser, &mut buf, &ILLEGAL_TOP, false)?;
         self.text = buf;
 
         if self.cursor_offset > 0 && self.cursor != self.cursor_offset_pos {
-            return Err(syntax_error(&format!("Misplaced {}", CURSOR_POS as u8 as char), rule, start));
+            return Err(syntax_error(
+                &format!("Misplaced {}", CURSOR_POS as u8 as char),
+                rule,
+                start,
+            ));
         }
 
         Ok(pos)
@@ -452,7 +472,11 @@ impl RuleHalf {
             parser.check_variable_range(c as i32, rule, start)?;
 
             if illegal.contains_valid(c as i32) {
-                return Err(syntax_error(&format!("Illegal character '{}'", String::from_utf16_lossy(&[c])), rule, start));
+                return Err(syntax_error(
+                    &format!("Illegal character '{}'", String::from_utf16_lossy(&[c])),
+                    rule,
+                    start,
+                ));
             }
 
             match c {
@@ -484,7 +508,11 @@ impl RuleHalf {
                     // in buf, starting at offset bufSegStart.  Extract them
                     // into a string matcher, and replace them with a
                     // standin for that matcher.
-                    let m = Arc::new(StringMatcher::new(buf[buf_seg_start..].to_vec(), segment_number, parser.cur_data()));
+                    let m = Arc::new(StringMatcher::new(
+                        buf[buf_seg_start..].to_vec(),
+                        segment_number,
+                        parser.cur_data(),
+                    ));
 
                     // Record and associate object and segment number
                     parser.set_segment_object(segment_number, m)?;
@@ -495,7 +523,9 @@ impl RuleHalf {
                     iref[0] = pos;
                     let single = TransliteratorIDParser::parse_filter_id(rule, &mut iref)?;
                     // The next character MUST be a segment open
-                    let Some(single) = single.filter(|_| Utility::parse_char(rule, &mut iref, SEGMENT_OPEN)) else {
+                    let Some(single) =
+                        single.filter(|_| Utility::parse_char(rule, &mut iref, SEGMENT_OPEN))
+                    else {
                         return Err(syntax_error("Invalid function", rule, start));
                     };
 
@@ -508,15 +538,24 @@ impl RuleHalf {
                     let buf_seg_start = buf.len();
 
                     // Parse the segment
-                    pos = self.parse_section(rule, iref[0], limit, parser, buf, &ILLEGAL_FUNC, true)?;
+                    pos =
+                        self.parse_section(rule, iref[0], limit, parser, buf, &ILLEGAL_FUNC, true)?;
 
                     // After parsing a segment, the relevant characters are
                     // in buf, starting at offset bufSegStart.
-                    let r = FunctionReplacer::new(t, Box::new(StringReplacer::new(buf[buf_seg_start..].to_vec(), parser.cur_data())));
+                    let r = FunctionReplacer::new(
+                        t,
+                        Box::new(StringReplacer::new(
+                            buf[buf_seg_start..].to_vec(),
+                            parser.cur_data(),
+                        )),
+                    );
 
                     // Replace the buffer contents with a stand-in
                     buf.truncate(buf_seg_start);
-                    buf.push(parser.generate_stand_in_for(Variable::FunctionReplacer(Arc::new(r)))?);
+                    buf.push(
+                        parser.generate_stand_in_for(Variable::FunctionReplacer(Arc::new(r)))?,
+                    );
                 }
                 SYMBOL_REF => {
                     // Handle variable references and segment references "$1" .. "$9"
@@ -536,7 +575,11 @@ impl RuleHalf {
                             iref[0] = pos;
                             r = Utility::parse_number(rule, &mut iref, 10);
                             if r < 0 {
-                                return Err(syntax_error("Undefined segment reference", rule, start));
+                                return Err(syntax_error(
+                                    "Undefined segment reference",
+                                    rule,
+                                    start,
+                                ));
                             }
                             pos = iref[0];
                             buf.push(parser.get_segment_standin(r)?);
@@ -603,29 +646,35 @@ impl RuleHalf {
                     // new StringMatcher(buf.toString(), qstart, qlimit, ...)
                     // catches the RuntimeException of substring: the
                     // range check reproduces it.
-                    let m: Arc<dyn UnicodeMatcher> = if qstart >= 0 && qstart <= qlimit && qlimit as usize <= buf.len() {
-                        Arc::new(StringMatcher::new_range(buf, qstart, qlimit, 0, parser.cur_data()))
-                    } else {
-                        let cause = LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(format!(
-                            "begin {qstart}, end {qlimit}, length {}",
-                            buf.len()
-                        )));
-                        let precontext = if pos < 50 {
-                            to_rust_string(&substring(rule, 0, pos))
+                    let m: Arc<dyn UnicodeMatcher> =
+                        if qstart >= 0 && qstart <= qlimit && qlimit as usize <= buf.len() {
+                            Arc::new(StringMatcher::new_range(
+                                buf,
+                                qstart,
+                                qlimit,
+                                0,
+                                parser.cur_data(),
+                            ))
                         } else {
-                            format!("...{}", to_rust_string(&substring(rule, pos - 50, pos)))
+                            let cause = LuceneError::from(LuceneErrorKind::StringIndexOutOfBounds(
+                                format!("begin {qstart}, end {qlimit}, length {}", buf.len()),
+                            ));
+                            let precontext = if pos < 50 {
+                                to_rust_string(&substring(rule, 0, pos))
+                            } else {
+                                format!("...{}", to_rust_string(&substring(rule, pos - 50, pos)))
+                            };
+                            let post_context = if limit - pos <= 50 {
+                                to_rust_string(&substring(rule, pos, limit))
+                            } else {
+                                format!("{}...", to_rust_string(&substring(rule, pos, pos + 50)))
+                            };
+                            return Err(IllegalIcuArgumentException::with_message_and_cause(
+                                format!("Failure in rule: {precontext}$$${post_context}"),
+                                cause,
+                            )
+                            .error());
                         };
-                        let post_context = if limit - pos <= 50 {
-                            to_rust_string(&substring(rule, pos, limit))
-                        } else {
-                            format!("{}...", to_rust_string(&substring(rule, pos, pos + 50)))
-                        };
-                        return Err(IllegalIcuArgumentException::with_message_and_cause(
-                            format!("Failure in rule: {precontext}$$${post_context}"),
-                            cause,
-                        )
-                        .error());
-                    };
                     let mut min = 0;
                     let mut max = Quantifier::MAX;
                     match c {
@@ -678,12 +727,20 @@ impl RuleHalf {
                 CURSOR_OFFSET => {
                     if self.cursor_offset < 0 {
                         if !buf.is_empty() {
-                            return Err(syntax_error(&format!("Misplaced {}", c as u8 as char), rule, start));
+                            return Err(syntax_error(
+                                &format!("Misplaced {}", c as u8 as char),
+                                rule,
+                                start,
+                            ));
                         }
                         self.cursor_offset -= 1;
                     } else if self.cursor_offset > 0 {
                         if buf.len() as i32 != self.cursor_offset_pos || self.cursor >= 0 {
-                            return Err(syntax_error(&format!("Misplaced {}", c as u8 as char), rule, start));
+                            return Err(syntax_error(
+                                &format!("Misplaced {}", c as u8 as char),
+                                rule,
+                                start,
+                            ));
                         }
                         self.cursor_offset += 1;
                     } else if self.cursor == 0 && buf.is_empty() {
@@ -692,7 +749,11 @@ impl RuleHalf {
                         self.cursor_offset_pos = buf.len() as i32;
                         self.cursor_offset = 1;
                     } else {
-                        return Err(syntax_error(&format!("Misplaced {}", c as u8 as char), rule, start));
+                        return Err(syntax_error(
+                            &format!("Misplaced {}", c as u8 as char),
+                            rule,
+                            start,
+                        ));
                     }
                 }
 
@@ -708,7 +769,11 @@ impl RuleHalf {
                             || (b'A' as u16..=b'Z' as u16).contains(&c)
                             || (b'a' as u16..=b'z' as u16).contains(&c))
                     {
-                        return Err(syntax_error(&format!("Unquoted {}", c as u8 as char), rule, start));
+                        return Err(syntax_error(
+                            &format!("Unquoted {}", c as u8 as char),
+                            rule,
+                            start,
+                        ));
                     }
                     buf.push(c);
                 }
@@ -724,7 +789,11 @@ impl RuleHalf {
         self.text = substring(
             &self.text,
             if self.ante < 0 { 0 } else { self.ante },
-            if self.post < 0 { self.text.len() as i32 } else { self.post },
+            if self.post < 0 {
+                self.text.len() as i32
+            } else {
+                self.post
+            },
         );
         self.ante = -1;
         self.post = -1;
@@ -876,11 +945,18 @@ fn init_root_cause(error: LuceneError, cause: LuceneError) -> LuceneError {
         return IllegalIcuArgumentException::with_message_and_cause(message, new_cause).error();
     }
     match error.kind() {
-        LuceneErrorKind::IllegalArgument { message, cause: existing } => {
+        LuceneErrorKind::IllegalArgument {
+            message,
+            cause: existing,
+        } => {
             let new_cause = chain(existing.as_ref(), cause);
             LuceneError::illegal_argument_with_cause(message.clone(), Arc::new(new_cause))
         }
-        LuceneErrorKind::Unchecked { class, message, cause: existing } => {
+        LuceneErrorKind::Unchecked {
+            class,
+            message,
+            cause: existing,
+        } => {
             let new_cause = chain(existing.as_ref(), cause);
             LuceneError::from(LuceneErrorKind::Unchecked {
                 class,
@@ -945,9 +1021,11 @@ impl TransliteratorParser {
     /// Java's `NullPointerException` outside a rule section (does not
     /// occur: rules are only parsed inside one).
     fn cur_data(&self) -> &Arc<Data> {
-        self.cur_data
-            .as_ref()
-            .unwrap_or_else(|| panic!("java.lang.NullPointerException: Cannot read field \"curData\" because it is null"))
+        self.cur_data.as_ref().unwrap_or_else(|| {
+            panic!(
+                "java.lang.NullPointerException: Cannot read field \"curData\" because it is null"
+            )
+        })
     }
 
     //----------------------------------------------------------------------
@@ -991,10 +1069,7 @@ impl TransliteratorParser {
         self.compound_filter = None;
         let mut compound_filter_offset = -1;
 
-        'main: loop {
-            let Some(rule) = rule_array.next_line() else {
-                break;
-            };
+        'main: while let Some(rule) = rule_array.next_line() {
             let mut pos = 0i32;
             let limit = rule.len() as i32;
             while pos < limit {
@@ -1029,7 +1104,9 @@ impl TransliteratorParser {
                     pos -= 1;
                     // Look for an ID token.  Must have at least ID_TOKEN_LEN + 1
                     // chars left.
-                    if (pos + ID_TOKEN_LEN + 1) <= limit && rule[pos as usize..(pos + ID_TOKEN_LEN) as usize] == *ID_TOKEN {
+                    if (pos + ID_TOKEN_LEN + 1) <= limit
+                        && rule[pos as usize..(pos + ID_TOKEN_LEN) as usize] == *ID_TOKEN
+                    {
                         pos += ID_TOKEN_LEN;
                         let mut c = char_at(&rule, pos);
                         while PatternProps::is_white_space(c as i32) && pos < limit {
@@ -1049,7 +1126,8 @@ impl TransliteratorParser {
                             parsing_ids = true;
                         }
 
-                        let id = TransliteratorIDParser::parse_single_id(&rule, &mut p, self.direction)?;
+                        let id =
+                            TransliteratorIDParser::parse_single_id(&rule, &mut p, self.direction)?;
                         if p[0] != pos && Utility::parse_char(&rule, &mut p, END_OF_RULE) {
                             let id = id.expect("a single ID was parsed");
                             if self.direction == FORWARD {
@@ -1063,12 +1141,22 @@ impl TransliteratorParser {
                         } else {
                             // Couldn't parse an ID.  Try to parse a global filter
                             let mut with_parens = [-1i32];
-                            let f = TransliteratorIDParser::parse_global_filter(&rule, &mut p, self.direction, &mut with_parens, None)?;
+                            let f = TransliteratorIDParser::parse_global_filter(
+                                &rule,
+                                &mut p,
+                                self.direction,
+                                &mut with_parens,
+                                None,
+                            )?;
                             if f.is_some() && Utility::parse_char(&rule, &mut p, END_OF_RULE) {
                                 if (self.direction == FORWARD) == (with_parens[0] == 0) {
                                     if self.compound_filter.is_some() {
                                         // Multiple compound filters
-                                        return Err(syntax_error("Multiple global filters", &rule, pos));
+                                        return Err(syntax_error(
+                                            "Multiple global filters",
+                                            &rule,
+                                            pos,
+                                        ));
                                     }
                                     self.compound_filter = f;
                                     compound_filter_offset = rule_count;
@@ -1120,7 +1208,13 @@ impl TransliteratorParser {
                         return Err(e);
                     }
                     if error_count == 30 {
-                        errors.push(IllegalIcuArgumentException::with_message_and_cause("\nMore than 30 errors; further messages squelched", e).error());
+                        errors.push(
+                            IllegalIcuArgumentException::with_message_and_cause(
+                                "\nMore than 30 errors; further messages squelched",
+                                e,
+                            )
+                            .error(),
+                        );
                         break 'main;
                     }
                     errors.push(e);
@@ -1148,7 +1242,11 @@ impl TransliteratorParser {
         // Convert the set vector to an array
         for data in &self.data_vector {
             data.set_variables(self.variables_vector.clone());
-            data.variable_names().extend(self.variable_names.iter().map(|(k, v)| (k.clone(), v.clone())));
+            data.variable_names().extend(
+                self.variable_names
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
         }
         self.variables_vector = Vec::new();
 
@@ -1158,7 +1256,10 @@ impl TransliteratorParser {
                 && ((self.direction == FORWARD && compound_filter_offset != 1)
                     || (self.direction == REVERSE && compound_filter_offset != rule_count))
             {
-                return Err(IllegalIcuArgumentException::with_message("Compound filters misplaced").error());
+                return Err(IllegalIcuArgumentException::with_message(
+                    "Compound filters misplaced",
+                )
+                .error());
             }
 
             for data in &self.data_vector {
@@ -1209,6 +1310,7 @@ impl TransliteratorParser {
     /// creates a rule object and adds it to our rule list.
     ///
     /// This method is tightly coupled to the inner class RuleHalf.
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     fn parse_rule(&mut self, rule: &[u16], mut pos: i32, limit: i32) -> Result<i32> {
         let start = pos;
         let mut operator: u16 = 0;
@@ -1267,7 +1369,11 @@ impl TransliteratorParser {
             // We expect to see a single undefined variable (the one being
             // defined).
             let Some(undefined) = self.undefined_variable_name.clone() else {
-                return Err(syntax_error("Missing '$' or duplicate definition", rule, start));
+                return Err(syntax_error(
+                    "Missing '$' or duplicate definition",
+                    rule,
+                    start,
+                ));
             };
             if left.text.len() != 1 || left.text[0] != self.variable_limit {
                 return Err(syntax_error("Malformed LHS", rule, start));
@@ -1286,7 +1392,11 @@ impl TransliteratorParser {
         // If this is not a variable definition rule, we shouldn't have
         // any undefined variable names.
         if let Some(name) = &self.undefined_variable_name {
-            return Err(syntax_error(&format!("Undefined variable ${}", to_rust_string(name)), rule, start));
+            return Err(syntax_error(
+                &format!("Undefined variable ${}", to_rust_string(name)),
+                rule,
+                start,
+            ));
         }
 
         // Verify segments
@@ -1306,7 +1416,9 @@ impl TransliteratorParser {
 
         // If the direction we want doesn't match the rule
         // direction, do nothing.
-        if operator != FWDREV_RULE_OP && ((self.direction == FORWARD) != (operator == FORWARD_RULE_OP)) {
+        if operator != FWDREV_RULE_OP
+            && ((self.direction == FORWARD) != (operator == FORWARD_RULE_OP))
+        {
             return Ok(pos);
         }
 
@@ -1360,7 +1472,12 @@ impl TransliteratorParser {
 
         // Flatten segment objects vector to an array
         let segments_array = if !self.segment_objects.is_empty() {
-            Some(self.segment_objects.iter().map(|o| o.clone().expect("checked above")).collect::<Vec<_>>())
+            Some(
+                self.segment_objects
+                    .iter()
+                    .map(|o| o.clone().expect("checked above"))
+                    .collect::<Vec<_>>(),
+            )
         } else {
             None
         };
@@ -1387,7 +1504,10 @@ impl TransliteratorParser {
     /// `[start, end]` (inclusive).
     fn set_variable_range(&mut self, start: i32, end: i32) -> Result<()> {
         if start > end || start < 0 || end > 0xFFFF {
-            return Err(IllegalIcuArgumentException::with_message(format!("Invalid variable range {start}, {end}")).error());
+            return Err(IllegalIcuArgumentException::with_message(format!(
+                "Invalid variable range {start}, {end}"
+            ))
+            .error());
         }
 
         self.cur_data().set_variables_base(start as u16);
@@ -1405,7 +1525,11 @@ impl TransliteratorParser {
     /// not overlap characters used in a rule.
     fn check_variable_range(&self, ch: i32, rule: &[u16], start: i32) -> Result<()> {
         if ch >= self.cur_data().variables_base() as i32 && ch < self.variable_limit as i32 {
-            return Err(syntax_error("Variable range character in rule", rule, start));
+            return Err(syntax_error(
+                "Variable range character in rule",
+                rule,
+                start,
+            ));
         }
         Ok(())
     }
@@ -1418,7 +1542,10 @@ impl TransliteratorParser {
     /// 'backup', in response to a pragma statement.
     fn pragma_maximum_backup(&self, _backup: i32) -> Result<()> {
         //TODO Finish
-        Err(IllegalIcuArgumentException::with_message("use maximum backup pragma not implemented yet").error())
+        Err(IllegalIcuArgumentException::with_message(
+            "use maximum backup pragma not implemented yet",
+        )
+        .error())
     }
     //CLOVER:ON
 
@@ -1430,7 +1557,10 @@ impl TransliteratorParser {
     /// rules using the given mode, in response to a pragma statement.
     fn pragma_normalize_rules(&self, _mode: Mode) -> Result<()> {
         //TODO Finish
-        Err(IllegalIcuArgumentException::with_message("use normalize rules pragma not implemented yet").error())
+        Err(IllegalIcuArgumentException::with_message(
+            "use normalize rules pragma not implemented yet",
+        )
+        .error())
     }
     //CLOVER:ON
 
@@ -1457,7 +1587,13 @@ impl TransliteratorParser {
         // use variable range 0xE000 0xEFFF;
         // use maximum backup 16;
         // use nfd rules;
-        let p = Utility::parse_pattern(rule, pos, limit, &units("~variable range # #~;"), &mut array);
+        let p = Utility::parse_pattern(
+            rule,
+            pos,
+            limit,
+            &units("~variable range # #~;"),
+            &mut array,
+        );
         if p >= 0 {
             self.set_variable_range(array[0], array[1])?;
             return Ok(p);
@@ -1500,7 +1636,9 @@ impl TransliteratorParser {
     fn parse_set(&mut self, rule: &[u16], pos: &mut ParsePosition) -> Result<u16> {
         let mut set = UnicodeSet::from_pattern_pos(rule, pos, Some(&self.parse_data()))?;
         if self.variable_next >= self.variable_limit {
-            return Err(crate::jdk::runtime_exception(Some("Private use variables exhausted".to_string())));
+            return Err(crate::jdk::runtime_exception(Some(
+                "Private use variables exhausted".to_string(),
+            )));
         }
         set.compact()?;
         self.generate_stand_in_for(Variable::Set(Arc::new(set)))
@@ -1522,7 +1660,9 @@ impl TransliteratorParser {
         }
 
         if self.variable_next >= self.variable_limit {
-            return Err(crate::jdk::runtime_exception(Some("Variable range exhausted".to_string())));
+            return Err(crate::jdk::runtime_exception(Some(
+                "Variable range exhausted".to_string(),
+            )));
         }
         self.variables_vector.push(obj);
         let c = self.variable_next;
@@ -1539,7 +1679,9 @@ impl TransliteratorParser {
         let mut c = char_at(&self.segment_standins, seg - 1);
         if c == 0 {
             if self.variable_next >= self.variable_limit {
-                return Err(crate::jdk::runtime_exception(Some("Variable range exhausted".to_string())));
+                return Err(crate::jdk::runtime_exception(Some(
+                    "Variable range exhausted".to_string(),
+                )));
             }
             c = self.variable_next;
             self.variable_next = self.variable_next.wrapping_add(1);
@@ -1563,7 +1705,9 @@ impl TransliteratorParser {
             self.segment_objects.push(None);
         }
         let index = self.get_segment_standin(seg)? as i32 - self.cur_data().variables_base() as i32;
-        if self.segment_objects[(seg - 1) as usize].is_some() || !matches!(self.variables_vector[index as usize], Variable::Null) {
+        if self.segment_objects[(seg - 1) as usize].is_some()
+            || !matches!(self.variables_vector[index as usize], Variable::Null)
+        {
             return Err(crate::jdk::runtime_exception(None)); // should never happen
         }
         self.segment_objects[(seg - 1) as usize] = Some(obj.clone());
@@ -1598,12 +1742,18 @@ impl TransliteratorParser {
                 if self.undefined_variable_name.is_none() {
                     self.undefined_variable_name = Some(name.to_vec());
                     if self.variable_next >= self.variable_limit {
-                        return Err(crate::jdk::runtime_exception(Some("Private use variables exhausted".to_string())));
+                        return Err(crate::jdk::runtime_exception(Some(
+                            "Private use variables exhausted".to_string(),
+                        )));
                     }
                     self.variable_limit = self.variable_limit.wrapping_sub(1);
                     buf.push(self.variable_limit);
                 } else {
-                    return Err(IllegalIcuArgumentException::with_message(format!("Undefined variable ${}", to_rust_string(name))).error());
+                    return Err(IllegalIcuArgumentException::with_message(format!(
+                        "Undefined variable ${}",
+                        to_rust_string(name)
+                    ))
+                    .error());
                 }
             }
             Some(ch) => buf.extend_from_slice(ch),

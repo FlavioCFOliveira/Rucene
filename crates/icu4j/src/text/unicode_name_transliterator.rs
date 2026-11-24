@@ -10,7 +10,10 @@ use rucene::error::Result;
 use crate::jdk::units;
 use crate::lang::u_character::UCharacter;
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{factory, register_factory_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    factory, register_factory_in, transliterator_boilerplate, Position, Transliterator,
+    TransliteratorBase,
+};
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_filter::UnicodeFilter;
 use crate::text::unicode_set::UnicodeSet;
@@ -43,7 +46,11 @@ impl UnicodeNameTransliterator {
         register_factory_in(
             registry,
             &units(Self::ID),
-            factory(|_id| Ok(Some(Arc::new(UnicodeNameTransliterator::new(None)?) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(
+                    Arc::new(UnicodeNameTransliterator::new(None)?) as Arc<dyn Transliterator>
+                ))
+            }),
         )
     }
 
@@ -65,7 +72,12 @@ impl Transliterator for UnicodeNameTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, offsets: &mut Position, _is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        offsets: &mut Position,
+        _is_incremental: bool,
+    ) -> Result<()> {
         let mut cursor = offsets.start;
         let mut limit = offsets.limit;
 
@@ -97,7 +109,12 @@ impl Transliterator for UnicodeNameTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let my_filter = self.get_filter_as_unicode_set(input_filter)?;
         if my_filter.size() > 0 {
             source_set.add_all(&my_filter)?;

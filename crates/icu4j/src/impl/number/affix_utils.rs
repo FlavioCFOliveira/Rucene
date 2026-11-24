@@ -293,7 +293,11 @@ impl AffixUtils {
                     Some(FieldObject::Field(Self::get_field_for_type(type_or_cp))),
                 );
             } else {
-                length += output.insert_code_point(position + length, type_or_cp, field.map(FieldObject::Field));
+                length += output.insert_code_point(
+                    position + length,
+                    type_or_cp,
+                    field.map(FieldObject::Field),
+                );
             }
         }
         Ok(length)
@@ -307,7 +311,11 @@ impl AffixUtils {
     /// # Errors
     ///
     /// As [`unescape`](Self::unescape).
-    pub fn unescaped_count(affix_pattern: &[u16], length_or_count: bool, provider: &dyn SymbolProvider) -> Result<i32> {
+    pub fn unescaped_count(
+        affix_pattern: &[u16],
+        length_or_count: bool,
+        provider: &dyn SymbolProvider,
+    ) -> Result<i32> {
         let mut length = 0;
         let mut tag: i64 = 0;
         while Self::has_next(tag, affix_pattern) {
@@ -324,7 +332,11 @@ impl AffixUtils {
                     UCharacter::code_point_count(&symbol, 0, symbol.len() as i32)
                 };
             } else {
-                length += if length_or_count { char_count(type_or_cp) } else { 1 };
+                length += if length_or_count {
+                    char_count(type_or_cp)
+                } else {
+                    1
+                };
             }
         }
         Ok(length)
@@ -339,7 +351,7 @@ impl AffixUtils {
     pub fn contains_type(affix_pattern: Option<&[u16]>, type_: i32) -> Result<bool> {
         let affix_pattern = match affix_pattern {
             None => return Ok(false),
-            Some(p) if p.is_empty() => return Ok(false),
+            Some([]) => return Ok(false),
             Some(p) => p,
         };
         let mut tag: i64 = 0;
@@ -361,14 +373,16 @@ impl AffixUtils {
     pub fn has_currency_symbols(affix_pattern: Option<&[u16]>) -> Result<bool> {
         let affix_pattern = match affix_pattern {
             None => return Ok(false),
-            Some(p) if p.is_empty() => return Ok(false),
+            Some([]) => return Ok(false),
             Some(p) => p,
         };
         let mut tag: i64 = 0;
         while Self::has_next(tag, affix_pattern) {
             tag = Self::next_token(tag, affix_pattern)?;
             let type_or_cp = Self::get_type_or_cp(tag);
-            if type_or_cp < 0 && same_attribute(Self::get_field_for_type(type_or_cp), &nf_field::CURRENCY) {
+            if type_or_cp < 0
+                && same_attribute(Self::get_field_for_type(type_or_cp), &nf_field::CURRENCY)
+            {
                 return Ok(true);
             }
         }
@@ -382,10 +396,14 @@ impl AffixUtils {
     /// # Errors
     ///
     /// As [`unescape`](Self::unescape).
-    pub fn replace_type(affix_pattern: Option<&[u16]>, type_: i32, replacement_char: u16) -> Result<Vec<u16>> {
+    pub fn replace_type(
+        affix_pattern: Option<&[u16]>,
+        type_: i32,
+        replacement_char: u16,
+    ) -> Result<Vec<u16>> {
         let affix_pattern = match affix_pattern {
             None => return Ok(Vec::new()),
-            Some(p) if p.is_empty() => return Ok(Vec::new()),
+            Some([]) => return Ok(Vec::new()),
             Some(p) => p,
         };
         let mut chars = affix_pattern.to_vec();
@@ -407,7 +425,10 @@ impl AffixUtils {
     /// # Errors
     ///
     /// As [`unescape`](Self::unescape).
-    pub fn contains_only_symbols_and_ignorables(affix_pattern: Option<&[u16]>, ignorables: &UnicodeSet) -> Result<bool> {
+    pub fn contains_only_symbols_and_ignorables(
+        affix_pattern: Option<&[u16]>,
+        ignorables: &UnicodeSet,
+    ) -> Result<bool> {
         let affix_pattern = match affix_pattern {
             None => return Ok(true),
             Some(p) => p,
@@ -430,7 +451,10 @@ impl AffixUtils {
     /// # Errors
     ///
     /// As [`unescape`](Self::unescape).
-    pub fn iterate_with_consumer(affix_pattern: &[u16], consumer: &mut dyn TokenConsumer) -> Result<()> {
+    pub fn iterate_with_consumer(
+        affix_pattern: &[u16],
+        consumer: &mut dyn TokenConsumer,
+    ) -> Result<()> {
         let mut tag: i64 = 0;
         while Self::has_next(tag, affix_pattern) {
             tag = Self::next_token(tag, affix_pattern)?;
@@ -456,25 +480,65 @@ impl AffixUtils {
                         offset += count;
                         // continue to the next code point
                     }
-                    0x2d => return Ok(Self::make_tag(offset + count, TYPE_MINUS_SIGN, STATE_BASE, 0)),
-                    0x2b => return Ok(Self::make_tag(offset + count, TYPE_PLUS_SIGN, STATE_BASE, 0)),
-                    0x7e => return Ok(Self::make_tag(offset + count, TYPE_APPROXIMATELY_SIGN, STATE_BASE, 0)),
+                    0x2d => {
+                        return Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_MINUS_SIGN,
+                            STATE_BASE,
+                            0,
+                        ))
+                    }
+                    0x2b => {
+                        return Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_PLUS_SIGN,
+                            STATE_BASE,
+                            0,
+                        ))
+                    }
+                    0x7e => {
+                        return Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_APPROXIMATELY_SIGN,
+                            STATE_BASE,
+                            0,
+                        ))
+                    }
                     0x25 => return Ok(Self::make_tag(offset + count, TYPE_PERCENT, STATE_BASE, 0)),
-                    PERMILLE_SIGN => return Ok(Self::make_tag(offset + count, TYPE_PERMILLE, STATE_BASE, 0)),
+                    PERMILLE_SIGN => {
+                        return Ok(Self::make_tag(offset + count, TYPE_PERMILLE, STATE_BASE, 0))
+                    }
                     CURRENCY_SIGN => {
                         state = STATE_FIRST_CURR;
                         offset += count;
                         // continue to the next code point
                     }
-                    _ => return Ok(Self::make_tag(offset + count, TYPE_CODEPOINT, STATE_BASE, cp)),
+                    _ => {
+                        return Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_CODEPOINT,
+                            STATE_BASE,
+                            cp,
+                        ))
+                    }
                 },
                 STATE_FIRST_QUOTE => {
                     return if cp == QUOTE {
                         // Repeated quote
-                        Ok(Self::make_tag(offset + count, TYPE_CODEPOINT, STATE_BASE, cp))
+                        Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_CODEPOINT,
+                            STATE_BASE,
+                            cp,
+                        ))
                     } else {
                         // Quoted code point
-                        Ok(Self::make_tag(offset + count, TYPE_CODEPOINT, STATE_INSIDE_QUOTE, cp))
+                        Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_CODEPOINT,
+                            STATE_INSIDE_QUOTE,
+                            cp,
+                        ))
                     };
                 }
                 STATE_INSIDE_QUOTE => {
@@ -484,13 +548,23 @@ impl AffixUtils {
                         // continue to the next code point
                     } else {
                         // Quoted code point
-                        return Ok(Self::make_tag(offset + count, TYPE_CODEPOINT, STATE_INSIDE_QUOTE, cp));
+                        return Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_CODEPOINT,
+                            STATE_INSIDE_QUOTE,
+                            cp,
+                        ));
                     }
                 }
                 STATE_AFTER_QUOTE => {
                     if cp == QUOTE {
                         // Double quote inside of quoted sequence
-                        return Ok(Self::make_tag(offset + count, TYPE_CODEPOINT, STATE_INSIDE_QUOTE, cp));
+                        return Ok(Self::make_tag(
+                            offset + count,
+                            TYPE_CODEPOINT,
+                            STATE_INSIDE_QUOTE,
+                            cp,
+                        ));
                     } else {
                         // Unquoted symbol
                         state = STATE_BASE;
@@ -541,7 +615,12 @@ impl AffixUtils {
                     if cp == CURRENCY_SIGN {
                         offset += count;
                     } else {
-                        return Ok(Self::make_tag(offset, TYPE_CURRENCY_OVERFLOW, STATE_BASE, 0));
+                        return Ok(Self::make_tag(
+                            offset,
+                            TYPE_CURRENCY_OVERFLOW,
+                            STATE_BASE,
+                            0,
+                        ));
                     }
                 }
                 _ => panic!("java.lang.AssertionError"),
@@ -566,7 +645,12 @@ impl AffixUtils {
             STATE_THIRD_CURR => Ok(Self::make_tag(offset, TYPE_CURRENCY_TRIPLE, STATE_BASE, 0)),
             STATE_FOURTH_CURR => Ok(Self::make_tag(offset, TYPE_CURRENCY_QUAD, STATE_BASE, 0)),
             STATE_FIFTH_CURR => Ok(Self::make_tag(offset, TYPE_CURRENCY_QUINT, STATE_BASE, 0)),
-            STATE_OVERFLOW_CURR => Ok(Self::make_tag(offset, TYPE_CURRENCY_OVERFLOW, STATE_BASE, 0)),
+            STATE_OVERFLOW_CURR => Ok(Self::make_tag(
+                offset,
+                TYPE_CURRENCY_OVERFLOW,
+                STATE_BASE,
+                0,
+            )),
             _ => panic!("java.lang.AssertionError"),
         }
     }
@@ -579,7 +663,10 @@ impl AffixUtils {
         let state = Self::get_state(tag);
         let offset = Self::get_offset(tag);
         // Special case: the last character in string is an end quote.
-        if state == STATE_INSIDE_QUOTE && offset == string.len() as i32 - 1 && string[offset as usize] == QUOTE as u16 {
+        if state == STATE_INSIDE_QUOTE
+            && offset == string.len() as i32 - 1
+            && string[offset as usize] == QUOTE as u16
+        {
             false
         } else if state != STATE_BASE {
             true

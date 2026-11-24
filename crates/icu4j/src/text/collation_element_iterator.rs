@@ -99,7 +99,11 @@ impl CESink for MaxExpSink<'_> {
         }
         let mut count = 0; // number of CE "halves"
         for i in 0..length {
-            count += if ce_needs_two_parts(ces[(start + i) as usize]) { 2 } else { 1 };
+            count += if ce_needs_two_parts(ces[(start + i) as usize]) {
+                2
+            } else {
+                1
+            };
         }
         // last "half" of the last CE
         let ce = ces[(start + length - 1) as usize];
@@ -126,7 +130,7 @@ impl CESink for MaxExpSink<'_> {
 /// an alias of the collator (`rbc_`); the iterator borrows it.
 #[derive(Debug)]
 pub struct CollationElementIterator<'r> {
-    iter_: Option<OwnedIter>, // owned
+    iter_: Option<OwnedIter>,    // owned
     rbc_: &'r RuleBasedCollator, // aliased
     other_half_: i32,
     /// <0: backwards; 0: just after reset() (previous() begins from end);
@@ -163,7 +167,14 @@ impl<'r> CollationElementIterator<'r> {
     }
 
     fn with_collator(collator: &'r RuleBasedCollator) -> Self {
-        Self { iter_: None, rbc_: collator, other_half_: 0, dir_: 0, offsets_: None, string_: Vec::new() }
+        Self {
+            iter_: None,
+            rbc_: collator,
+            other_half_: 0,
+            dir_: 0,
+            offsets_: None,
+            string_: Vec::new(),
+        }
     }
 
     /// `CollationElementIterator(String, RuleBasedCollator)` (package
@@ -176,7 +187,10 @@ impl<'r> CollationElementIterator<'r> {
 
     /// `CollationElementIterator(CharacterIterator, RuleBasedCollator)`
     /// (package private).
-    pub(crate) fn from_character_iterator(source: Box<dyn CharacterIterator>, collator: &'r RuleBasedCollator) -> Self {
+    pub(crate) fn from_character_iterator(
+        source: Box<dyn CharacterIterator>,
+        collator: &'r RuleBasedCollator,
+    ) -> Self {
         let mut it = Self::with_collator(collator);
         it.set_text_character_iterator(source);
         it
@@ -184,18 +198,27 @@ impl<'r> CollationElementIterator<'r> {
 
     /// `CollationElementIterator(UCharacterIterator, RuleBasedCollator)`
     /// (package private).
-    pub(crate) fn from_u_character_iterator(source: &dyn UCharacterIterator, collator: &'r RuleBasedCollator) -> Self {
+    pub(crate) fn from_u_character_iterator(
+        source: &dyn UCharacterIterator,
+        collator: &'r RuleBasedCollator,
+    ) -> Self {
         let mut it = Self::with_collator(collator);
         it.set_text_u_character_iterator(source);
         it
     }
 
     fn iter(&mut self) -> &mut dyn CollationIterator {
-        self.iter_.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException")).get()
+        self.iter_
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+            .get()
     }
 
     fn iter_ref(&self) -> &dyn CollationIterator {
-        self.iter_.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException")).get_ref()
+        self.iter_
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+            .get_ref()
     }
 
     /// Returns the character offset in the source string corresponding to
@@ -227,6 +250,7 @@ impl<'r> CollationElementIterator<'r> {
     ///
     /// Java's `IllegalStateException("Illegal change of direction")`, which
     /// ICU throws (an unchecked exception no caller catches).
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn next(&mut self) -> i32 {
         if self.dir_ > 1 {
             // Continue forward iteration. Test this first.
@@ -294,7 +318,11 @@ impl<'r> CollationElementIterator<'r> {
         // If we already have expansion CEs, then we also have offsets.
         // Otherwise remember the trailing offset in case we need to
         // write offsets for an artificial expansion.
-        let limit_offset = if self.iter().base().get_ces_length() == 0 { self.iter().get_offset() } else { 0 };
+        let limit_offset = if self.iter().base().get_ces_length() == 0 {
+            self.iter().get_offset()
+        } else {
+            0
+        };
         let ce = self.iter().previous_ce(&mut offsets);
         if ce == Collation::NO_CE {
             self.offsets_ = Some(offsets);
@@ -340,7 +368,8 @@ impl<'r> CollationElementIterator<'r> {
             loop {
                 let c = self.string_[offset as usize];
                 if !self.rbc_.is_unsafe(c as i32)
-                    || (is_high_surrogate(c) && !self.rbc_.is_unsafe(code_point_at(&self.string_, offset)))
+                    || (is_high_surrogate(c)
+                        && !self.rbc_.is_unsafe(code_point_at(&self.string_, offset)))
                 {
                     break;
                 }
@@ -387,12 +416,26 @@ impl<'r> CollationElementIterator<'r> {
     /// Equivalent to `setText(String)`.
     pub fn set_text(&mut self, source: &[u16]) {
         self.string_ = source.to_vec(); // TODO: do we need to remember the source string in a field?
-        let ro = self.rbc_.settings.read_only().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let ro = self
+            .rbc_
+            .settings
+            .read_only()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         let numeric = ro.is_numeric();
         let new_iter = if ro.dont_check_fcd() {
-            OwnedIter::Utf16(UTF16CollationIterator::with_text(self.rbc_.data.clone(), numeric, &self.string_, 0))
+            OwnedIter::Utf16(UTF16CollationIterator::with_text(
+                self.rbc_.data.clone(),
+                numeric,
+                &self.string_,
+                0,
+            ))
         } else {
-            OwnedIter::FcdUtf16(FCDUTF16CollationIterator::with_text(self.rbc_.data.clone(), numeric, &self.string_, 0))
+            OwnedIter::FcdUtf16(FCDUTF16CollationIterator::with_text(
+                self.rbc_.data.clone(),
+                numeric,
+                &self.string_,
+                0,
+            ))
         };
         self.iter_ = Some(new_iter);
         self.other_half_ = 0;
@@ -409,19 +452,32 @@ impl<'r> CollationElementIterator<'r> {
     pub fn set_text_u_character_iterator(&mut self, source: &dyn UCharacterIterator) {
         let mut text_copy = source.clone_box();
         self.string_ = text_copy.get_text(); // TODO: do we need to remember the source string in a field?
-        // Note: In C++, we just setText(source.getText()).
-        // In Java, we actually operate on a character iterator.
-        // (The old code apparently did so only for a CharacterIterator;
-        // for a UCharacterIterator it also just used source.getText()).
-        // TODO: do we need to remember the cloned iterator in a field?
+                                             // Note: In C++, we just setText(source.getText()).
+                                             // In Java, we actually operate on a character iterator.
+                                             // (The old code apparently did so only for a CharacterIterator;
+                                             // for a UCharacterIterator it also just used source.getText()).
+                                             // TODO: do we need to remember the cloned iterator in a field?
         let mut src = source.clone_box();
         src.set_to_start();
-        let ro = self.rbc_.settings.read_only().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let ro = self
+            .rbc_
+            .settings
+            .read_only()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         let numeric = ro.is_numeric();
         let new_iter = if ro.dont_check_fcd() {
-            OwnedIter::Iter(IterCollationIterator::new(self.rbc_.data.clone(), numeric, src))
+            OwnedIter::Iter(IterCollationIterator::new(
+                self.rbc_.data.clone(),
+                numeric,
+                src,
+            ))
         } else {
-            OwnedIter::FcdIter(FCDIterCollationIterator::new(self.rbc_.data.clone(), numeric, src, 0))
+            OwnedIter::FcdIter(FCDIterCollationIterator::new(
+                self.rbc_.data.clone(),
+                numeric,
+                src,
+                0,
+            ))
         };
         self.iter_ = Some(new_iter);
         self.other_half_ = 0;
@@ -441,12 +497,25 @@ impl<'r> CollationElementIterator<'r> {
         let mut src: Box<dyn UCharacterIterator> = Box::new(CharacterIteratorWrapper::new(source));
         src.set_to_start();
         self.string_ = src.get_text(); // TODO: do we need to remember the source string in a field?
-        let ro = self.rbc_.settings.read_only().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let ro = self
+            .rbc_
+            .settings
+            .read_only()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         let numeric = ro.is_numeric();
         let new_iter = if ro.dont_check_fcd() {
-            OwnedIter::Iter(IterCollationIterator::new(self.rbc_.data.clone(), numeric, src))
+            OwnedIter::Iter(IterCollationIterator::new(
+                self.rbc_.data.clone(),
+                numeric,
+                src,
+            ))
         } else {
-            OwnedIter::FcdIter(FCDIterCollationIterator::new(self.rbc_.data.clone(), numeric, src, 0))
+            OwnedIter::FcdIter(FCDIterCollationIterator::new(
+                self.rbc_.data.clone(),
+                numeric,
+                src,
+                0,
+            ))
         };
         self.iter_ = Some(new_iter);
         self.other_half_ = 0;
@@ -457,7 +526,9 @@ impl<'r> CollationElementIterator<'r> {
     pub(crate) fn compute_max_expansions(data: &Arc<CollationData>) -> HashMap<i32, i32> {
         let mut max_expansions: HashMap<i32, i32> = HashMap::new();
         {
-            let mut sink = MaxExpSink { max_expansions: &mut max_expansions };
+            let mut sink = MaxExpSink {
+                max_expansions: &mut max_expansions,
+            };
             ContractionsAndExpansions::new(None, None, Some(&mut sink), true)
                 .for_data(data)
                 .unwrap_or_else(|e| panic!("{e}"));
@@ -474,7 +545,10 @@ impl<'r> CollationElementIterator<'r> {
     }
 
     /// `getMaxExpansion(Map, int)` (package private).
-    pub(crate) fn get_max_expansion_in(max_expansions: Option<&HashMap<i32, i32>>, order: i32) -> i32 {
+    pub(crate) fn get_max_expansion_in(
+        max_expansions: Option<&HashMap<i32, i32>>,
+        order: i32,
+    ) -> i32 {
         if order == 0 {
             return 1;
         }
@@ -502,7 +576,10 @@ impl<'r> CollationElementIterator<'r> {
     ///
     /// Equivalent to `equals(Object)` with a `CollationElementIterator`.
     pub fn equals(&self, thatceiter: &CollationElementIterator<'_>) -> bool {
-        if std::ptr::eq(self as *const _ as *const u8, thatceiter as *const _ as *const u8) {
+        if std::ptr::eq(
+            self as *const _ as *const u8,
+            thatceiter as *const _ as *const u8,
+        ) {
             return true;
         }
         use crate::text::collator::Collator;

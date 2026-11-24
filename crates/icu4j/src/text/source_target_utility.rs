@@ -18,7 +18,8 @@ use crate::text::utf16::UTF16;
 
 /// The `Transform<String,String>` of a `SourceTargetUtility`: a UTF-16
 /// string transform whose runtime exceptions are `Result` errors.
-pub(crate) type StringTransformer = Box<dyn for<'a> Transform<&'a [u16], Result<Vec<u16>>> + Send + Sync>;
+pub(crate) type StringTransformer =
+    Box<dyn for<'a> Transform<&'a [u16], Result<Vec<u16>>> + Send + Sync>;
 
 /// A `Transform<String,String>` over a closure (Java's anonymous
 /// `Transform` classes).
@@ -34,19 +35,22 @@ where
 }
 
 /// `NON_STARTERS`: the code points with a non-zero combining class.
-pub(crate) static NON_STARTERS: LazyLock<UnicodeSet> = LazyLock::new(|| match UnicodeSet::from_pattern(&units("[:^ccc=0:]")) {
-    Ok(mut set) => {
-        set.freeze();
-        set
-    }
-    Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
-});
+#[allow(dead_code)] // Java member with no caller in the closure
+pub(crate) static NON_STARTERS: LazyLock<UnicodeSet> =
+    LazyLock::new(|| match UnicodeSet::from_pattern(&units("[:^ccc=0:]")) {
+        Ok(mut set) => {
+            set.freeze();
+            set
+        }
+        Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
+    });
 
 /// `NFC`.
-static NFC: LazyLock<Arc<dyn Normalizer2>> = LazyLock::new(|| match normalizer2::get_nfc_instance() {
-    Ok(n) => n,
-    Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
-});
+static NFC: LazyLock<Arc<dyn Normalizer2>> =
+    LazyLock::new(|| match normalizer2::get_nfc_instance() {
+        Ok(n) => n,
+        Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
+    });
 
 /// Simple internal utility class for helping with `getSource/TargetSet`.
 ///
@@ -75,8 +79,15 @@ impl SourceTargetUtility {
     /// # Errors
     ///
     /// The errors of the transform and of the normalizer.
-    pub fn with_normalizer(transform: StringTransformer, normalizer: Option<&dyn Normalizer2>) -> Result<Self> {
-        let mut source_cache = if normalizer.is_some() { UnicodeSet::from_pattern(&units("[:^ccc=0:]"))? } else { UnicodeSet::new() };
+    pub fn with_normalizer(
+        transform: StringTransformer,
+        normalizer: Option<&dyn Normalizer2>,
+    ) -> Result<Self> {
+        let mut source_cache = if normalizer.is_some() {
+            UnicodeSet::from_pattern(&units("[:^ccc=0:]"))?
+        } else {
+            UnicodeSet::new()
+        };
         let mut source_strings = HashSet::new();
         for i in 0..=0x10FFFF {
             let s = transform.transform(&UTF16::value_of(i)?)?;
@@ -146,6 +157,8 @@ impl SourceTargetUtility {
 
 impl std::fmt::Debug for SourceTargetUtility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SourceTargetUtility").field("source_cache", &self.source_cache).finish_non_exhaustive()
+        f.debug_struct("SourceTargetUtility")
+            .field("source_cache", &self.source_cache)
+            .finish_non_exhaustive()
     }
 }

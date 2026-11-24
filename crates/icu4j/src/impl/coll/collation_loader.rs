@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use rucene::error::Result;
 
+use crate::jdk::to_rust_string;
 use crate::r#impl::coll::collation_data_reader::CollationDataReader;
 use crate::r#impl::coll::collation_root::CollationRoot;
 use crate::r#impl::coll::collation_tailoring::CollationTailoring;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_resource_bundle::{ICUResourceBundle, OpenType};
-use crate::jdk::to_rust_string;
 use crate::util::icu_unchecked_io_exception::ICUUncheckedIOException;
 use crate::util::output::Output;
 use crate::util::u_locale::ULocale;
@@ -59,8 +59,10 @@ impl CollationLoader {
         }
         let _guard = ROOT_RULES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if ROOT_RULES.get().is_none() {
-            let root_bundle =
-                UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_COLLATION_BASE_NAME), Some(&ULocale::root()))?;
+            let root_bundle = UResourceBundle::get_bundle_instance_for(
+                Some(ICUData::ICU_COLLATION_BASE_NAME),
+                Some(&ULocale::root()),
+            )?;
             let _ = ROOT_RULES.set(root_bundle.get_string_by_key("UCARules")?);
         }
         Ok(())
@@ -84,13 +86,24 @@ impl CollationLoader {
     ///
     /// `MissingResourceException` when the rules are missing.
     pub fn load_rules(locale: &ULocale, collation_type: &str) -> Result<Vec<u16>> {
-        let bundle = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_COLLATION_BASE_NAME), Some(locale))?;
-        let data = as_icu(&bundle).get_with_fallback(&format!("collations/{}", ascii_to_lower_case(collation_type)))?;
+        let bundle = UResourceBundle::get_bundle_instance_for(
+            Some(ICUData::ICU_COLLATION_BASE_NAME),
+            Some(locale),
+        )?;
+        let data = as_icu(&bundle).get_with_fallback(&format!(
+            "collations/{}",
+            ascii_to_lower_case(collation_type)
+        ))?;
         UResourceBundle::Icu(data).get_string_by_key("Sequence")
     }
 
-    fn find_with_fallback(table: &UResourceBundle, entry_name: &str) -> Result<Option<UResourceBundle>> {
-        Ok(as_icu(table).find_with_fallback(entry_name)?.map(UResourceBundle::Icu))
+    fn find_with_fallback(
+        table: &UResourceBundle,
+        entry_name: &str,
+    ) -> Result<Option<UResourceBundle>> {
+        Ok(as_icu(table)
+            .find_with_fallback(entry_name)?
+            .map(UResourceBundle::Icu))
     }
 
     /// `loadTailoring(ULocale, Output<ULocale>)`.
@@ -98,7 +111,10 @@ impl CollationLoader {
     /// # Errors
     ///
     /// The exceptions of loading the root and the tailoring data.
-    pub fn load_tailoring(locale: &ULocale, out_valid_locale: &mut Output<ULocale>) -> Result<Arc<CollationTailoring>> {
+    pub fn load_tailoring(
+        locale: &ULocale,
+        out_valid_locale: &mut Output<ULocale>,
+    ) -> Result<Arc<CollationTailoring>> {
         // Java porting note: ICU4J getWithFallback/getStringWithFallback currently does not
         // work well when alias table is involved in a resource path, unless full path is specified.
         // For now, collation resources does not contain such data, so the code below should work fine.
@@ -226,7 +242,8 @@ impl CollationLoader {
         // except when they match the default types (for brevity and backwards compatibility).
         // For the valid locale, suppress the default type.
         if type_ != default_type {
-            out_valid_locale.value = Some(valid_locale.set_keyword_value(Some("collation"), Some(&type_))?);
+            out_valid_locale.value =
+                Some(valid_locale.set_keyword_value(Some("collation"), Some(&type_))?);
         }
 
         // For the actual locale, suppress the default type *according to the actual locale*.
@@ -236,8 +253,10 @@ impl CollationLoader {
         // For the actual locale "zh" we need to suppress pinyin instead.
         if actual_locale != valid_locale {
             // Opening a bundle for the actual locale should always succeed.
-            let actual_bundle =
-                UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_COLLATION_BASE_NAME), Some(&actual_locale))?;
+            let actual_bundle = UResourceBundle::get_bundle_instance_for(
+                Some(ICUData::ICU_COLLATION_BASE_NAME),
+                Some(&actual_locale),
+            )?;
             let def_t = as_icu(&actual_bundle).find_string_with_fallback("collations/default")?;
             if let Some(def_t) = def_t {
                 default_type = to_rust_string(&def_t);
@@ -245,7 +264,10 @@ impl CollationLoader {
         }
 
         if type_ != default_type {
-            let current = t.actual_locale.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let current = t
+                .actual_locale
+                .clone()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             t.actual_locale = Some(current.set_keyword_value(Some("collation"), Some(&type_))?);
         }
 

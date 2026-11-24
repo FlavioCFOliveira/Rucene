@@ -56,7 +56,11 @@ fn ukw_find(map: &[(CaseInsensitiveString, String)], key: &CaseInsensitiveString
     map.iter().position(|(k, _)| k == key)
 }
 
-fn ukw_put(map: &mut Vec<(CaseInsensitiveString, String)>, key: CaseInsensitiveString, value: String) {
+fn ukw_put(
+    map: &mut Vec<(CaseInsensitiveString, String)>,
+    key: CaseInsensitiveString,
+    value: String,
+) {
     match ukw_find(map, &key) {
         Some(i) => map[i].1 = value,
         None => map.push((key, value)),
@@ -168,7 +172,10 @@ impl InternalLocaleBuilder {
     /// # Errors
     ///
     /// `LocaleSyntaxException("Ill-formed Unicode locale attribute: ...")`.
-    pub fn add_unicode_locale_attribute(&mut self, attribute: Option<&str>) -> BuilderResult<&mut Self> {
+    pub fn add_unicode_locale_attribute(
+        &mut self,
+        attribute: Option<&str>,
+    ) -> BuilderResult<&mut Self> {
         let attribute = match attribute {
             Some(a) if UnicodeLocaleExtension::is_attribute(a) => a,
             other => {
@@ -188,7 +195,10 @@ impl InternalLocaleBuilder {
     /// # Errors
     ///
     /// `LocaleSyntaxException("Ill-formed Unicode locale attribute: ...")`.
-    pub fn remove_unicode_locale_attribute(&mut self, attribute: Option<&str>) -> BuilderResult<&mut Self> {
+    pub fn remove_unicode_locale_attribute(
+        &mut self,
+        attribute: Option<&str>,
+    ) -> BuilderResult<&mut Self> {
         let attribute = match attribute {
             Some(a) if UnicodeLocaleExtension::is_attribute(a) => a,
             other => {
@@ -209,7 +219,11 @@ impl InternalLocaleBuilder {
     /// # Errors
     ///
     /// `LocaleSyntaxException` for an ill-formed key or type.
-    pub fn set_unicode_locale_keyword(&mut self, key: &str, ty: Option<&str>) -> BuilderResult<&mut Self> {
+    pub fn set_unicode_locale_keyword(
+        &mut self,
+        key: &str,
+        ty: Option<&str>,
+    ) -> BuilderResult<&mut Self> {
         if !UnicodeLocaleExtension::is_key(key) {
             return Err(LocaleSyntaxException::new(format!(
                 "Ill-formed Unicode locale keyword key: {key}"
@@ -253,7 +267,11 @@ impl InternalLocaleBuilder {
     /// # Errors
     ///
     /// `LocaleSyntaxException` for an ill-formed key or value.
-    pub fn set_extension(&mut self, singleton: char, value: Option<&str>) -> BuilderResult<&mut Self> {
+    pub fn set_extension(
+        &mut self,
+        singleton: char,
+        value: Option<&str>,
+    ) -> BuilderResult<&mut Self> {
         // validate key
         let is_bcp_privateuse = LanguageTag::is_privateuse_prefix_char(singleton);
         if !is_bcp_privateuse && !LanguageTag::is_extension_singleton_char(singleton) {
@@ -378,7 +396,10 @@ impl InternalLocaleBuilder {
                 }
                 if parsed <= start {
                     return Err(LocaleSyntaxException::with_index(
-                        format!("Incomplete privateuse:{}", substring16_from(&subtags, start)),
+                        format!(
+                            "Incomplete privateuse:{}",
+                            substring16_from(&subtags, start)
+                        ),
                         start,
                     ));
                 } else {
@@ -403,14 +424,21 @@ impl InternalLocaleBuilder {
     /// `setExtensions(List<String> bcpExtensions, String privateuse)`
     /// (private): BCP 47 extensions, already well-formed, but possibly with
     /// duplicates.
-    fn set_extensions_list(&mut self, bcp_extensions: Option<&[String]>, privateuse: Option<&str>) -> &mut Self {
+    fn set_extensions_list(
+        &mut self,
+        bcp_extensions: Option<&[String]>,
+        privateuse: Option<&str>,
+    ) -> &mut Self {
         self.clear_extensions();
 
         if let Some(bcp_extensions) = bcp_extensions.filter(|b| !b.is_empty()) {
             // Java never adds to its set of processed extensions, so
             // duplicates are not skipped: a later one replaces an earlier.
             for bcp_ext in bcp_extensions {
-                let first = bcp_ext.chars().next().expect("an extension has a singleton");
+                let first = bcp_ext
+                    .chars()
+                    .next()
+                    .expect("an extension has a singleton");
                 let key = CaseInsensitiveChar(first);
                 // each extension string contains singleton, e.g. "a-abc-def"
                 if UnicodeLocaleExtension::is_singleton_char(key.value()) {
@@ -422,7 +450,10 @@ impl InternalLocaleBuilder {
         }
         if let Some(privateuse) = privateuse.filter(|p| !p.is_empty()) {
             // privateuse string contains prefix, e.g. "x-abc-def"
-            let first = privateuse.chars().next().expect("a private use has a prefix");
+            let first = privateuse
+                .chars()
+                .next()
+                .expect("a private use has a prefix");
             ext_put(
                 &mut self.extensions,
                 CaseInsensitiveChar(first),
@@ -485,15 +516,21 @@ impl InternalLocaleBuilder {
         // LocaleExtensions always store validated/canonicalized values,
         // so no checks are necessary.
         if !language.is_empty() && !LanguageTag::is_language(language) {
-            return Err(LocaleSyntaxException::new(format!("Ill-formed language: {language}")));
+            return Err(LocaleSyntaxException::new(format!(
+                "Ill-formed language: {language}"
+            )));
         }
 
         if !script.is_empty() && !LanguageTag::is_script(script) {
-            return Err(LocaleSyntaxException::new(format!("Ill-formed script: {script}")));
+            return Err(LocaleSyntaxException::new(format!(
+                "Ill-formed script: {script}"
+            )));
         }
 
         if !region.is_empty() && !LanguageTag::is_region(region) {
-            return Err(LocaleSyntaxException::new(format!("Ill-formed region: {region}")));
+            return Err(LocaleSyntaxException::new(format!(
+                "Ill-formed region: {region}"
+            )));
         }
 
         if !variant.is_empty() {
@@ -592,7 +629,8 @@ impl InternalLocaleBuilder {
                     sb.push_str(BaseLocale::SEP);
                 }
                 sb.push_str(
-                    &substring16_from(privuse, priv_var_start).replace(LanguageTag::SEP, BaseLocale::SEP),
+                    &substring16_from(privuse, priv_var_start)
+                        .replace(LanguageTag::SEP, BaseLocale::SEP),
                 );
                 variant = sb;
             }

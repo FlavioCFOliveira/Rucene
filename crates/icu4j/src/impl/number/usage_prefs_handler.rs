@@ -36,9 +36,21 @@ impl UsagePrefsHandler {
     /// # Errors
     ///
     /// The errors of the unit parsing and of the router construction.
-    pub fn new(locale: &ULocale, input_unit: &MeasureUnit, usage: &str, parent: Arc<dyn MicroPropsGenerator>) -> Result<Self> {
-        let f_units_router = UnitsRouter::new(&MeasureUnitImpl::for_identifier(&input_unit.get_identifier())?, locale, usage)?;
-        Ok(UsagePrefsHandler { f_parent: parent, f_units_router })
+    pub fn new(
+        locale: &ULocale,
+        input_unit: &MeasureUnit,
+        usage: &str,
+        parent: Arc<dyn MicroPropsGenerator>,
+    ) -> Result<Self> {
+        let f_units_router = UnitsRouter::new(
+            &MeasureUnitImpl::for_identifier(&input_unit.get_identifier())?,
+            locale,
+            usage,
+        )?;
+        Ok(UsagePrefsHandler {
+            f_parent: parent,
+            f_units_router,
+        })
     }
 
     /// Populates micros.mixedMeasures and modifies quantity, based on the
@@ -57,16 +69,23 @@ impl UsagePrefsHandler {
         let measures: Vec<_> = complex_converter_result
             .measures
             .iter()
-            .map(|m| m.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException: unset measure")))
+            .map(|m| {
+                m.clone()
+                    .unwrap_or_else(|| panic!("java.lang.NullPointerException: unset measure"))
+            })
             .collect();
         out_micros.mixed_measures = Some(measures);
         out_micros.index_of_quantity = complex_converter_result.index_of_quantity;
-        let measure = &out_micros.mixed_measures.as_ref().expect("just set")[out_micros.index_of_quantity as usize];
+        let measure = &out_micros.mixed_measures.as_ref().expect("just set")
+            [out_micros.index_of_quantity as usize];
         match measure.get_number() {
             JavaNumber::BigDecimal(b) => quantity.set_to_big_decimal(b),
             other => Err(rucene::error::LuceneError::unchecked(
                 "java.lang.ClassCastException",
-                format!("class {} cannot be cast to class java.math.BigDecimal", other.class_name()),
+                format!(
+                    "class {} cannot be cast to class java.math.BigDecimal",
+                    other.class_name()
+                ),
             )),
         }
     }
@@ -84,11 +103,17 @@ impl MicroPropsGenerator for UsagePrefsHandler {
         let mut micros = self.f_parent.process_quantity(quantity)?;
 
         quantity.round_to_infinity(); // Enables toDouble
-        let routed = self.f_units_router.route(&quantity.to_big_decimal()?, Some(&mut micros))?;
+        let routed = self
+            .f_units_router
+            .route(&quantity.to_big_decimal()?, Some(&mut micros))?;
         let mut output_unit = routed.output_unit.clone();
         micros.output_unit = Some(output_unit.build()?);
 
-        UsagePrefsHandler::mixed_measures_to_micros(&routed.complex_converter_result, quantity, &mut micros)?;
+        UsagePrefsHandler::mixed_measures_to_micros(
+            &routed.complex_converter_result,
+            quantity,
+            &mut micros,
+        )?;
         Ok(micros)
     }
 }

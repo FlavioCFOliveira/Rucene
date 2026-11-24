@@ -17,8 +17,8 @@ use crate::text::number_format::INTEGER_FIELD;
 use crate::text::plural_format::PluralFormat;
 use crate::text::plural_rules::PluralType;
 use crate::text::rule_based_number_format::{
-    char_at, java_math_round, long_or_double, npe, sb_insert, starts_with, starts_with_at, substring, substring_from,
-    RuleGraph,
+    char_at, java_math_round, long_or_double, npe, sb_insert, starts_with, starts_with_at,
+    substring, substring_from, RuleGraph,
 };
 
 //-----------------------------------------------------------------------
@@ -50,7 +50,9 @@ pub(crate) const NAN_RULE: i64 = -6;
 pub(crate) const ZERO: JavaNumber = JavaNumber::Long(0);
 
 /// `RULE_PREFIXES` (private): the substitution tokens.
-const RULE_PREFIXES: [&str; 11] = ["<<", "<%", "<#", "<0", ">>", ">%", ">#", ">0", "=%", "=#", "=0"];
+const RULE_PREFIXES: [&str; 11] = [
+    "<<", "<%", "<#", "<0", ">>", ">%", ">#", ">0", "=%", "=#", "=0",
+];
 
 /// A class representing a single rule in a RuleBasedNumberFormat. A rule
 /// inserts its text into the result string and then passes control to its
@@ -126,7 +128,11 @@ impl NFRule {
         // check the description to see whether there's text enclosed
         // in brackets
         let brack1 = index_of_unit(&description, u16::from(b'['), 0);
-        let brack2 = if brack1 < 0 { -1 } else { index_of_unit(&description, u16::from(b']'), 0) };
+        let brack2 = if brack1 < 0 {
+            -1
+        } else {
+            index_of_unit(&description, u16::from(b']'), 0)
+        };
 
         // if the description doesn't contain a matched pair of brackets,
         // or if it's of a type that doesn't recognize bracketed text,
@@ -151,7 +157,10 @@ impl NFRule {
             // base value is an even multiple of its divisor (or it's one
             // of the special rules)
             if (rule1.base_value > 0
-                && checked_rem(rule1.base_value, power(i64::from(rule1.radix), rule1.exponent)?)? == 0)
+                && checked_rem(
+                    rule1.base_value,
+                    power(i64::from(rule1.radix), rule1.exponent)?,
+                )? == 0)
                 || rule1.base_value == IMPROPER_FRACTION_RULE
                 || rule1.base_value == DEFAULT_RULE
             {
@@ -192,7 +201,11 @@ impl NFRule {
                     sbuf.extend_from_slice(substring(&description, or_else_op + 1, brack2));
                 }
                 if brack2 + 1 < description.len() as i32 {
-                    sbuf.extend_from_slice(substring(&description, brack2 + 1, description.len() as i32));
+                    sbuf.extend_from_slice(substring(
+                        &description,
+                        brack2 + 1,
+                        description.len() as i32,
+                    ));
                 }
                 r2.extract_substitutions(owner, &sbuf, predecessor, ctx)?;
                 rule2 = Some(r2);
@@ -288,7 +301,9 @@ impl NFRule {
             // description
             let descriptor = substring(&description, 0, p).to_vec();
             p += 1;
-            while p < description.len() as i32 && PatternProps::is_white_space(i32::from(char_at(&description, p))) {
+            while p < description.len() as i32
+                && PatternProps::is_white_space(i32::from(char_at(&description, p)))
+            {
                 p += 1;
             }
             description = substring_from(&description, p).to_vec();
@@ -299,7 +314,9 @@ impl NFRule {
             let descriptor_length = descriptor.len() as i32;
             let first_char = char_at(&descriptor, 0);
             let last_char = char_at(&descriptor, descriptor_length - 1);
-            if (u16::from(b'0')..=u16::from(b'9')).contains(&first_char) && last_char != u16::from(b'x') {
+            if (u16::from(b'0')..=u16::from(b'9')).contains(&first_char)
+                && last_char != u16::from(b'x')
+            {
                 // if the rule descriptor begins with a digit, it's a descriptor
                 // for a normal rule
                 let mut temp_value: i64 = 0;
@@ -313,10 +330,14 @@ impl NFRule {
                 while p < descriptor_length {
                     c = char_at(&descriptor, p);
                     if (u16::from(b'0')..=u16::from(b'9')).contains(&c) {
-                        temp_value = temp_value.wrapping_mul(10).wrapping_add(i64::from(c - u16::from(b'0')));
+                        temp_value = temp_value
+                            .wrapping_mul(10)
+                            .wrapping_add(i64::from(c - u16::from(b'0')));
                     } else if c == u16::from(b'/') || c == u16::from(b'>') {
                         break;
-                    } else if !PatternProps::is_white_space(i32::from(c)) && c != u16::from(b',') && c != u16::from(b'.')
+                    } else if !PatternProps::is_white_space(i32::from(c))
+                        && c != u16::from(b',')
+                        && c != u16::from(b'.')
                     {
                         return Err(illegal_character(c));
                     }
@@ -336,7 +357,9 @@ impl NFRule {
                     while p < descriptor_length {
                         c = char_at(&descriptor, p);
                         if (u16::from(b'0')..=u16::from(b'9')).contains(&c) {
-                            temp_value = temp_value.wrapping_mul(10).wrapping_add(i64::from(c - u16::from(b'0')));
+                            temp_value = temp_value
+                                .wrapping_mul(10)
+                                .wrapping_add(i64::from(c - u16::from(b'0')));
                         } else if c == u16::from(b'>') {
                             break;
                         } else if !PatternProps::is_white_space(i32::from(c))
@@ -369,7 +392,9 @@ impl NFRule {
                         if c == u16::from(b'>') && self.exponent > 0 {
                             self.exponent -= 1;
                         } else {
-                            return Err(LuceneError::illegal_argument("Illegal character in rule descriptor"));
+                            return Err(LuceneError::illegal_argument(
+                                "Illegal character in rule descriptor",
+                            ));
                         }
                         p += 1;
                     }
@@ -435,8 +460,11 @@ impl NFRule {
         }
         let rule_text = self.rule_text.clone();
         let plural_rule_start = index_of(&rule_text, &units("$("), 0);
-        let plural_rule_end =
-            if plural_rule_start >= 0 { index_of(&rule_text, &units(")$"), plural_rule_start) } else { -1 };
+        let plural_rule_end = if plural_rule_start >= 0 {
+            index_of(&rule_text, &units(")$"), plural_rule_start)
+        } else {
+            -1
+        };
         if plural_rule_end >= 0 {
             let end_type = index_of_unit(&rule_text, u16::from(b','), plural_rule_start);
             if end_type < 0 {
@@ -456,8 +484,10 @@ impl NFRule {
                     String::from_utf16_lossy(&type_)
                 )));
             };
-            self.rule_pattern_format =
-                Some(ctx.owner.create_plural_format(plural_type, substring(&rule_text, end_type + 1, plural_rule_end))?);
+            self.rule_pattern_format = Some(ctx.owner.create_plural_format(
+                plural_type,
+                substring(&rule_text, end_type + 1, plural_rule_end),
+            )?);
         }
         Ok(())
     }
@@ -521,7 +551,8 @@ impl NFRule {
         // some text bounded by substitution token characters).  Use
         // makeSubstitution() to create the right kind of substitution
         let token = substring(&self.rule_text, sub_start, sub_end + 1).to_vec();
-        let result = NFSubstitution::make_substitution(sub_start, self, predecessor, owner, ctx, &token)?;
+        let result =
+            NFSubstitution::make_substitution(sub_start, self, predecessor, owner, ctx, &token)?;
 
         // remove the substitution from the rule text
         let mut new_text = substring(&self.rule_text, 0, sub_start).to_vec();
@@ -587,7 +618,8 @@ impl NFRule {
         // we get rounding error in some cases-- for example, log 1000 / log 10
         // gives us 1.9999999996 instead of 2.  The extra logic here is to take
         // that into account
-        let temp_result = (((self.base_value as f64).ln() / f64::from(self.radix).ln()) as i32) as i16;
+        let temp_result =
+            (((self.base_value as f64).ln() / f64::from(self.radix).ln()) as i32) as i16;
         if power(i64::from(self.radix), temp_result.wrapping_add(1))? <= self.base_value {
             Ok(temp_result.wrapping_add(1))
         } else {
@@ -618,6 +650,7 @@ impl NFRule {
     }
 
     /// `hashCode()`: not designed (Java asserts and returns 42).
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn hash_code(&self) -> i32 {
         debug_assert!(false, "hashCode not designed");
         42
@@ -632,7 +665,11 @@ impl NFRule {
     /// The errors of the patterns of the substitutions' decimal formats.
     pub(crate) fn to_java_string(&self, g: &RuleGraph) -> Result<Vec<u16>> {
         let mut result: Vec<u16> = Vec::new();
-        let decimal_point = if self.decimal_point == 0 { u16::from(b'.') } else { self.decimal_point };
+        let decimal_point = if self.decimal_point == 0 {
+            u16::from(b'.')
+        } else {
+            self.decimal_point
+        };
 
         // start with the rule descriptor.  Special-case the special rules
         if self.base_value == NEGATIVE_NUMBER_RULE {
@@ -675,7 +712,9 @@ impl NFRule {
         // if the rule text begins with a space, write an apostrophe
         // (whitespace after the rule descriptor is ignored; the
         // apostrophe is used to make the whitespace significant)
-        if starts_with(&self.rule_text, &units(" ")) && self.sub1.as_ref().is_none_or(|s| s.get_pos() != 0) {
+        if starts_with(&self.rule_text, &units(" "))
+            && self.sub1.as_ref().is_none_or(|s| s.get_pos() != 0)
+        {
             result.push(u16::from(b'\''));
         }
 
@@ -683,10 +722,18 @@ impl NFRule {
         // substitution tokens in the appropriate places
         let mut rule_text_copy = self.rule_text.clone();
         if let Some(sub2) = &self.sub2 {
-            sb_insert(&mut rule_text_copy, sub2.get_pos(), &sub2.to_java_string(g)?);
+            sb_insert(
+                &mut rule_text_copy,
+                sub2.get_pos(),
+                &sub2.to_java_string(g)?,
+            );
         }
         if let Some(sub1) = &self.sub1 {
-            sb_insert(&mut rule_text_copy, sub1.get_pos(), &sub1.to_java_string(g)?);
+            sb_insert(
+                &mut rule_text_copy,
+                sub1.get_pos(),
+                &sub1.to_java_string(g)?,
+            );
         }
         result.extend_from_slice(&rule_text_copy);
 
@@ -724,8 +771,13 @@ impl NFRule {
     /// Whether one of the substitutions is a `ModulusSubstitution`.
     /// Equivalent to `hasModulusSubstitution()`.
     pub(crate) fn has_modulus_substitution(&self) -> bool {
-        self.sub1.as_ref().is_some_and(NFSubstitution::is_modulus_substitution)
-            || self.sub2.as_ref().is_some_and(NFSubstitution::is_modulus_substitution)
+        self.sub1
+            .as_ref()
+            .is_some_and(NFSubstitution::is_modulus_substitution)
+            || self
+                .sub2
+                .as_ref()
+                .is_some_and(NFSubstitution::is_modulus_substitution)
     }
 
     //-----------------------------------------------------------------------
@@ -761,24 +813,59 @@ impl NFRule {
                 let plural_rule_end = index_of(&self.rule_text, &units(")$"), plural_rule_start);
                 let initial_length = to_insert_into.len() as i32;
                 if plural_rule_end < self.rule_text.len() as i32 - 1 {
-                    sb_insert(to_insert_into, pos, substring_from(&self.rule_text, plural_rule_end + 2));
+                    sb_insert(
+                        to_insert_into,
+                        pos,
+                        substring_from(&self.rule_text, plural_rule_end + 2),
+                    );
                 }
                 let divisor = power(i64::from(self.radix), self.exponent)?;
                 let quotient = checked_div(number, divisor)?;
-                sb_insert(to_insert_into, pos, &rule_pattern_format.format_f64(quotient as f64)?);
+                sb_insert(
+                    to_insert_into,
+                    pos,
+                    &rule_pattern_format.format_f64(quotient as f64)?,
+                );
                 if plural_rule_start > 0 {
-                    sb_insert(to_insert_into, pos, substring(&self.rule_text, 0, plural_rule_start));
+                    sb_insert(
+                        to_insert_into,
+                        pos,
+                        substring(&self.rule_text, 0, plural_rule_start),
+                    );
                 }
-                length_offset = self.rule_text.len() as i32 - (to_insert_into.len() as i32 - initial_length);
+                length_offset =
+                    self.rule_text.len() as i32 - (to_insert_into.len() as i32 - initial_length);
             }
         }
         if let Some(sub2) = &self.sub2 {
-            let offset = if sub2.get_pos() > plural_rule_start { length_offset } else { 0 };
-            sub2.do_substitution_long(number, to_insert_into, pos - offset, recursion_count, self, g)?;
+            let offset = if sub2.get_pos() > plural_rule_start {
+                length_offset
+            } else {
+                0
+            };
+            sub2.do_substitution_long(
+                number,
+                to_insert_into,
+                pos - offset,
+                recursion_count,
+                self,
+                g,
+            )?;
         }
         if let Some(sub1) = &self.sub1 {
-            let offset = if sub1.get_pos() > plural_rule_start { length_offset } else { 0 };
-            sub1.do_substitution_long(number, to_insert_into, pos - offset, recursion_count, self, g)?;
+            let offset = if sub1.get_pos() > plural_rule_start {
+                length_offset
+            } else {
+                0
+            };
+            sub1.do_substitution_long(
+                number,
+                to_insert_into,
+                pos - offset,
+                recursion_count,
+                self,
+                g,
+            )?;
         }
         Ok(())
     }
@@ -813,7 +900,11 @@ impl NFRule {
                 let plural_rule_end = index_of(&self.rule_text, &units(")$"), plural_rule_start);
                 let initial_length = to_insert_into.len() as i32;
                 if plural_rule_end < self.rule_text.len() as i32 - 1 {
-                    sb_insert(to_insert_into, pos, substring_from(&self.rule_text, plural_rule_end + 2));
+                    sb_insert(
+                        to_insert_into,
+                        pos,
+                        substring_from(&self.rule_text, plural_rule_end + 2),
+                    );
                 }
                 let mut plural_val = number;
                 let divisor = power(i64::from(self.radix), self.exponent)? as f64;
@@ -824,20 +915,51 @@ impl NFRule {
                 } else {
                     plural_val /= divisor;
                 }
-                sb_insert(to_insert_into, pos, &rule_pattern_format.format_f64((plural_val as i64) as f64)?);
+                sb_insert(
+                    to_insert_into,
+                    pos,
+                    &rule_pattern_format.format_f64((plural_val as i64) as f64)?,
+                );
                 if plural_rule_start > 0 {
-                    sb_insert(to_insert_into, pos, substring(&self.rule_text, 0, plural_rule_start));
+                    sb_insert(
+                        to_insert_into,
+                        pos,
+                        substring(&self.rule_text, 0, plural_rule_start),
+                    );
                 }
-                length_offset = self.rule_text.len() as i32 - (to_insert_into.len() as i32 - initial_length);
+                length_offset =
+                    self.rule_text.len() as i32 - (to_insert_into.len() as i32 - initial_length);
             }
         }
         if let Some(sub2) = &self.sub2 {
-            let offset = if sub2.get_pos() > plural_rule_start { length_offset } else { 0 };
-            sub2.do_substitution_double(number, to_insert_into, pos - offset, recursion_count, self, g)?;
+            let offset = if sub2.get_pos() > plural_rule_start {
+                length_offset
+            } else {
+                0
+            };
+            sub2.do_substitution_double(
+                number,
+                to_insert_into,
+                pos - offset,
+                recursion_count,
+                self,
+                g,
+            )?;
         }
         if let Some(sub1) = &self.sub1 {
-            let offset = if sub1.get_pos() > plural_rule_start { length_offset } else { 0 };
-            sub1.do_substitution_double(number, to_insert_into, pos - offset, recursion_count, self, g)?;
+            let offset = if sub1.get_pos() > plural_rule_start {
+                length_offset
+            } else {
+                0
+            };
+            sub1.do_substitution_double(
+                number,
+                to_insert_into,
+                pos - offset,
+                recursion_count,
+                self,
+                g,
+            )?;
         }
         Ok(())
     }
@@ -868,8 +990,14 @@ impl NFRule {
         // a modulus substitution, its base value isn't an even multiple
         // of 100, and the value we're trying to format _is_ an even
         // multiple of 100.  This is called the "rollback rule."
-        if !(self.sub1.as_ref().is_some_and(NFSubstitution::is_modulus_substitution)
-            || self.sub2.as_ref().is_some_and(NFSubstitution::is_modulus_substitution))
+        if !(self
+            .sub1
+            .as_ref()
+            .is_some_and(NFSubstitution::is_modulus_substitution)
+            || self
+                .sub2
+                .as_ref()
+                .is_some_and(NFSubstitution::is_modulus_substitution))
         {
             return Ok(false);
         }
@@ -912,9 +1040,16 @@ impl NFRule {
         // matches the text at the beginning of the string being
         // parsed.  If it does, strip that off the front of workText;
         // otherwise, dump out with a mismatch
-        let sub1_pos = self.sub1.as_ref().map_or(self.rule_text.len() as i32, NFSubstitution::get_pos);
-        let sub2_pos = self.sub2.as_ref().map_or(self.rule_text.len() as i32, NFSubstitution::get_pos);
-        let work_text = self.strip_prefix(text, substring(&self.rule_text, 0, sub1_pos), &mut pp, g)?;
+        let sub1_pos = self
+            .sub1
+            .as_ref()
+            .map_or(self.rule_text.len() as i32, NFSubstitution::get_pos);
+        let sub2_pos = self
+            .sub2
+            .as_ref()
+            .map_or(self.rule_text.len() as i32, NFSubstitution::get_pos);
+        let work_text =
+            self.strip_prefix(text, substring(&self.rule_text, 0, sub1_pos), &mut pp, g)?;
         let prefix_length = text.len() as i32 - work_text.len() as i32;
 
         if pp.get_index() == 0 && sub1_pos != 0 {
@@ -1090,7 +1225,13 @@ impl NFRule {
     /// # Errors
     ///
     /// The errors of the lenient scanner.
-    fn strip_prefix(&self, text: &[u16], prefix: &[u16], pp: &mut ParsePosition, g: &RuleGraph) -> Result<Vec<u16>> {
+    fn strip_prefix(
+        &self,
+        text: &[u16],
+        prefix: &[u16],
+        pp: &mut ParsePosition,
+        g: &RuleGraph,
+    ) -> Result<Vec<u16>> {
         // if the prefix text is empty, dump out without doing anything
         if prefix.is_empty() {
             Ok(text.to_vec())
@@ -1154,7 +1295,8 @@ impl NFRule {
             // element array: element 0 is the position of the match, and
             // element 1 is the number of characters that matched
             // "delimiter".
-            let mut temp = self.find_text(text, delimiter, plural_format_delimiter, start_pos, g)?;
+            let mut temp =
+                self.find_text(text, delimiter, plural_format_delimiter, start_pos, g)?;
             let mut d_pos = temp[0];
             let mut d_len = temp[1];
 
@@ -1200,7 +1342,8 @@ impl NFRule {
                 // copy of "delimiter" in "text" and repeat the loop if
                 // we find it
                 temp_pp.set_index(0);
-                temp = self.find_text(text, delimiter, plural_format_delimiter, d_pos + d_len, g)?;
+                temp =
+                    self.find_text(text, delimiter, plural_format_delimiter, d_pos + d_len, g)?;
                 d_pos = temp[0];
                 d_len = temp[1];
             }
@@ -1308,14 +1451,28 @@ impl NFRule {
             let start = position.get_begin_index();
             if start >= 0 {
                 let plural_rule_start = index_of(&self.rule_text, &units("$("), 0);
-                let plural_rule_suffix = index_of(&self.rule_text, &units(")$"), plural_rule_start) + 2;
+                let plural_rule_suffix =
+                    index_of(&self.rule_text, &units(")$"), plural_rule_start) + 2;
                 let match_len = position.get_end_index() - start;
                 let prefix = substring(&self.rule_text, 0, plural_rule_start);
                 let suffix = substring_from(&self.rule_text, plural_rule_suffix);
-                if region_matches(str, i64::from(start) - prefix.len() as i64, prefix, 0, prefix.len() as i64)
-                    && region_matches(str, i64::from(start + match_len), suffix, 0, suffix.len() as i64)
-                {
-                    return Ok([start - prefix.len() as i32, match_len + prefix.len() as i32 + suffix.len() as i32]);
+                if region_matches(
+                    str,
+                    i64::from(start) - prefix.len() as i64,
+                    prefix,
+                    0,
+                    prefix.len() as i64,
+                ) && region_matches(
+                    str,
+                    i64::from(start + match_len),
+                    suffix,
+                    0,
+                    suffix.len() as i64,
+                ) {
+                    return Ok([
+                        start - prefix.len() as i32,
+                        match_len + prefix.len() as i32 + suffix.len() as i32,
+                    ]);
                 }
             }
             return Ok([-1, 0]);
@@ -1347,7 +1504,7 @@ impl NFRule {
         // if the string is empty, we can just return true
         let str = match str {
             None => return Ok(true),
-            Some(s) if s.is_empty() => return Ok(true),
+            Some([]) => return Ok(true),
             Some(s) => s,
         };
         let scanner = g.owner().get_lenient_scanner()?;
@@ -1361,7 +1518,10 @@ impl NFRule {
     /// # Errors
     ///
     /// The errors of the decimal formats.
-    pub(crate) fn set_decimal_format_symbols(&self, new_symbols: &DecimalFormatSymbols) -> Result<()> {
+    pub(crate) fn set_decimal_format_symbols(
+        &self,
+        new_symbols: &DecimalFormatSymbols,
+    ) -> Result<()> {
         if let Some(sub1) = &self.sub1 {
             sub1.set_decimal_format_symbols(new_symbols)?;
         }
@@ -1375,7 +1535,10 @@ impl NFRule {
 /// `new IllegalArgumentException("Illegal character " + c + " in rule
 /// descriptor")`.
 fn illegal_character(c: u16) -> LuceneError {
-    LuceneError::illegal_argument(format!("Illegal character {} in rule descriptor", String::from_utf16_lossy(&[c])))
+    LuceneError::illegal_argument(format!(
+        "Illegal character {} in rule descriptor",
+        String::from_utf16_lossy(&[c])
+    ))
 }
 
 /// Searches the rule text for the first of the substitution tokens.
@@ -1403,7 +1566,9 @@ fn index_of_any_rule_prefix(rule_text: &[u16]) -> i32 {
 /// `IllegalArgumentException("Base can not be negative")`.
 pub(crate) fn power(base: i64, exponent: i16) -> Result<i64> {
     if exponent < 0 {
-        return Err(LuceneError::illegal_argument("Exponent can not be negative"));
+        return Err(LuceneError::illegal_argument(
+            "Exponent can not be negative",
+        ));
     }
     if base < 0 {
         return Err(LuceneError::illegal_argument("Base can not be negative"));

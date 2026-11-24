@@ -27,8 +27,12 @@ const MAX_ARG: i32 = 999999999; // maximum argument integer
 
 /// `plainMC`: the context for the methods without a `MathContext`
 /// (digits 0, `PLAIN`, no lost-digits checking, `ROUND_HALF_UP`).
-const PLAIN_MC: MathContext =
-    MathContext { digits: 0, form: MathContext::PLAIN, lost_digits: false, rounding_mode: MathContext::ROUND_HALF_UP };
+const PLAIN_MC: MathContext = MathContext {
+    digits: 0,
+    form: MathContext::PLAIN,
+    lost_digits: false,
+    rounding_mode: MathContext::ROUND_HALF_UP,
+};
 
 /// `BigDecimal.ZERO`: 0, scale 0.
 pub static ZERO: LazyLock<BigDecimal> = LazyLock::new(|| BigDecimal::from_long(0));
@@ -197,7 +201,12 @@ impl BigDecimal {
     /// The private constructor `BigDecimal()`: positive, `PLAIN`, empty
     /// mantissa, exponent 0.
     fn empty() -> Self {
-        Self { ind: 0, form: MathContext::PLAIN as i8, mant: Vec::new(), exp: 0 }
+        Self {
+            ind: 0,
+            form: MathContext::PLAIN as i8,
+            mant: Vec::new(),
+            exp: 0,
+        }
     }
 
     /// `new BigDecimal(java.math.BigDecimal bd)`: from `bd.toString()`.
@@ -226,7 +235,9 @@ impl BigDecimal {
     pub fn from_big_integer_scaled(bi: &BigInteger, scale: i32) -> Result<Self> {
         let mut r = Self::from_string(&units(&bi.to_string_radix(10)))?;
         if scale < 0 {
-            return Err(LuceneError::number_format(format!("Negative scale: {scale}")));
+            return Err(LuceneError::number_format(format!(
+                "Negative scale: {scale}"
+            )));
         }
         r.exp = -scale; // exponent is -scale
         Ok(r)
@@ -461,7 +472,7 @@ impl BigDecimal {
         // [form is already PLAIN]
         if this.mant[0] == 0 {
             this.ind = ISZERO; // force to show zero
-            // negative exponent is significant (e.g., -3 for 0.000) if plain
+                               // negative exponent is significant (e.g., -3 for 0.000) if plain
             if this.exp > 0 {
                 this.exp = 0; // positive exponent can be ignored
             }
@@ -635,6 +646,7 @@ impl BigDecimal {
     ///
     /// `ArithmeticException` (`Too many digits: ...` with lost-digits
     /// checking, `Exponent Overflow: ...`).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub fn add_mc(&self, rhs: &BigDecimal, set: &MathContext) -> Result<Self> {
         if set.lost_digits {
             self.checkdigits(Some(rhs), set.digits)?;
@@ -666,9 +678,9 @@ impl BigDecimal {
         let mut res = Self::empty(); // build result here
 
         /* Now see how much we have to pad or truncate lhs or rhs in order
-           to align the numbers.  If one number is much larger than the
-           other, then the smaller cannot affect the answer [but we may
-           still need to pad with up to DIGITS trailing zeros]. */
+        to align the numbers.  If one number is much larger than the
+        other, then the smaller cannot affect the answer [but we may
+        still need to pad with up to DIGITS trailing zeros]. */
         // Note sign may be 0 if digits (reqdig) is 0
         // usel and user will be the byte arrays passed to the adder; we'll
         // use them on all paths except quick exits
@@ -684,8 +696,8 @@ impl BigDecimal {
             // need to pad lhs and/or truncate rhs
             let mut newlen = (usellen + lhs.exp) - rhs.exp;
             /* If, after pad, lhs would be longer than rhs by digits+1 or
-               more (and digits>0) then rhs cannot affect answer, so we only
-               need to pad up to a length of DIGITS+1. */
+            more (and digits>0) then rhs cannot affect answer, so we only
+            need to pad up to a length of DIGITS+1. */
             if newlen >= ((userlen + reqdig) + 1) && reqdig > 0 {
                 // LHS is sufficient
                 res.mant = usel;
@@ -754,9 +766,9 @@ impl BigDecimal {
             mult = 1;
         } else {
             mult = -1; // will cause subtract
-            /* Before we can subtract we must determine which is the larger,
-               as our add/subtract routine only handles non-negative results
-               so we may need to swap the operands. */
+                       /* Before we can subtract we must determine which is the larger,
+                       as our add/subtract routine only handles non-negative results
+                       so we may need to swap the operands. */
             if rhs.ind == ISZERO {
                 // original A bigger
             } else if (usellen < userlen) | (lhs.ind == ISZERO) {
@@ -767,7 +779,8 @@ impl BigDecimal {
             } else if usellen > userlen {
                 // original A bigger
             } else {
-                /* logical lengths the same */ // need compare
+                /* logical lengths the same */
+                // need compare
                 /* may still need to swap: compare the strings */
                 let mut ia = 0usize;
                 let mut ib = 0usize;
@@ -844,7 +857,7 @@ impl BigDecimal {
                 return Ok(self.ind as i32);
             }
             /* lengths are the same; we can do a straight mantissa compare
-               unless maybe rounding [rounding is very unusual] */
+            unless maybe rounding [rounding is very unusual] */
             if (thislength as i32 <= set.digits) | (set.digits == 0) {
                 for i in 0..thislength {
                     if self.mant[i] < rhs.mant[i] {
@@ -1037,16 +1050,20 @@ impl BigDecimal {
 
         /* Calculate how long result byte array will be */
         let mut multandlen = (multer.len() + multand.len()) as i32 - 1; // effective length
-        // optimization when first digit of each is small
-        let acclen = if (multer[0] as i32 * multand[0] as i32) > 9 { multandlen + 1 } else { multandlen };
+                                                                        // optimization when first digit of each is small
+        let acclen = if (multer[0] as i32 * multand[0] as i32) > 9 {
+            multandlen + 1
+        } else {
+            multandlen
+        };
 
         /* Now the main long multiplication loop */
         let mut res = Self::empty(); // where we'll build result
         let mut acc = vec![0i8; acclen as usize]; // accumulator, all zeros
-        // 1998.07.01: calculate from left to right so that accumulator goes
-        // to likely final length on first addition; this avoids a one-digit
-        // extension (and object allocation) each time around the loop.
-        // Initial number therefore has virtual zeros added to right.
+                                                  // 1998.07.01: calculate from left to right so that accumulator goes
+                                                  // to likely final length on first addition; this avoids a one-digit
+                                                  // extension (and object allocation) each time around the loop.
+                                                  // Initial number therefore has virtual zeros added to right.
         for &mult in multer.iter() {
             if mult != 0 {
                 // [optimization]
@@ -1059,7 +1076,7 @@ impl BigDecimal {
 
         res.ind = lhs.ind * rhs.ind; // final sign
         res.exp = (lhs.exp + rhs.exp) - padding; // final exponent
-        // [overflow is checked by finish]
+                                                 // [overflow is checked by finish]
 
         /* add trailing zeros to the result, if necessary */
         if padding == 0 {
@@ -1146,6 +1163,7 @@ impl BigDecimal {
     /// `ArithmeticException` (`Negative power: ...`, `Too many digits:
     /// ...`, `Conversion overflow: ...`, `Decimal part non-zero: ...`, and
     /// those of the multiplications and division).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub fn pow_mc(&self, rhs: &BigDecimal, set: &MathContext) -> Result<Self> {
         if set.lost_digits {
             self.checkdigits(Some(rhs), set.digits)?;
@@ -1179,7 +1197,12 @@ impl BigDecimal {
         /* Create a copy of set for working settings */
         // Note: no need to check for lostDigits again.
         // 1999.07.17 Note: this construction must follow RHS check
-        let workset = MathContext { digits: workdigits, form: set.form, lost_digits: false, rounding_mode: set.rounding_mode };
+        let workset = MathContext {
+            digits: workdigits,
+            form: set.form,
+            lost_digits: false,
+            rounding_mode: set.rounding_mode,
+        };
 
         let mut res = ONE.clone(); // accumulator
         if n == 0 {
@@ -1327,7 +1350,14 @@ impl BigDecimal {
     ///
     /// As [`format_full`](Self::format_full).
     pub fn format(&self, before: i32, after: i32) -> Result<String> {
-        self.format_full(before, after, -1, -1, MathContext::SCIENTIFIC, Self::ROUND_HALF_UP)
+        self.format_full(
+            before,
+            after,
+            -1,
+            -1,
+            MathContext::SCIENTIFIC,
+            Self::ROUND_HALF_UP,
+        )
     }
 
     /// `format(int before, int after, int explaces, int exdigits, int
@@ -1339,7 +1369,15 @@ impl BigDecimal {
     /// for a bad argument or a result that does not fit, and
     /// `ArithmeticException` (`Exponent Overflow: ...`, `Rounding
     /// necessary`).
-    pub fn format_full(&self, before: i32, after: i32, explaces: i32, exdigits: i32, mut exformint: i32, mut exround: i32) -> Result<String> {
+    pub fn format_full(
+        &self,
+        before: i32,
+        after: i32,
+        explaces: i32,
+        exdigits: i32,
+        mut exformint: i32,
+        mut exround: i32,
+    ) -> Result<String> {
         /* Check arguments */
         if (before < -1) | (before == 0) {
             return Err(badarg("format", 1, &before.to_string()));
@@ -1400,9 +1438,9 @@ impl BigDecimal {
         }
 
         /* If 'after' was specified then we may need to adjust the
-           mantissa.  This is a little tricky, as we must conform to the
-           rules of exponential layout if necessary (e.g., we cannot end up
-           with 10.0 if scientific). */
+        mantissa.  This is a little tricky, as we must conform to the
+        rules of exponential layout if necessary (e.g., we cannot end up
+        with 10.0 if scientific). */
         if after >= 0 {
             'setafter: loop {
                 // calculate the current after-length
@@ -1430,7 +1468,10 @@ impl BigDecimal {
                 if thisafter < after {
                     // need added trailing zeros
                     // [thisafter can be negative]
-                    let newmant = extend(&num.mant, ((num.mant.len() as i32 + after) - thisafter) as usize);
+                    let newmant = extend(
+                        &num.mant,
+                        ((num.mant.len() as i32 + after) - thisafter) as usize,
+                    );
                     num.mant = newmant;
                     num.exp -= after - thisafter; // adjust exponent
                     if num.exp < MIN_EXP {
@@ -1559,6 +1600,7 @@ impl BigDecimal {
     ///
     /// `ArithmeticException` (`Decimal part non-zero: ...`, `Conversion
     /// overflow: ...`).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub fn int_value_exact(&self) -> Result<i32> {
         // This does not use longValueExact() as the latter can be much
         // slower.
@@ -1571,7 +1613,7 @@ impl BigDecimal {
         let useexp;
         if self.exp < 0 {
             lodigit += self.exp; // reduces by -(-exp)
-            /* all decimal places must be 0 */
+                                 /* all decimal places must be 0 */
             if !allzero(&self.mant, lodigit + 1) {
                 return Err(arith(format!("Decimal part non-zero: {self}")));
             }
@@ -1630,6 +1672,7 @@ impl BigDecimal {
     ///
     /// `ArithmeticException` (`Decimal part non-zero: ...`, `Conversion
     /// overflow: ...`).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub fn long_value_exact(&self) -> Result<i64> {
         /* Identical to intValueExact except for result=long, and exp>=20 test */
         if self.ind == 0 {
@@ -1639,7 +1682,7 @@ impl BigDecimal {
         let useexp;
         if self.exp < 0 {
             lodigit += self.exp; // -(-exp)
-            /* all decimal places must be 0 */
+                                 /* all decimal places must be 0 */
             let cstart = if lodigit < 0 { 0 } else { lodigit + 1 };
             if !allzero(&self.mant, cstart) {
                 return Err(arith(format!("Decimal part non-zero: {self}")));
@@ -1738,7 +1781,7 @@ impl BigDecimal {
     /// value: <n>")`.
     pub fn set_scale_round(&self, scale: i32, round: i32) -> Result<Self> {
         /* if the number is already at the scale required then we
-           return it unless it has an exponent [form] */
+        return it unless it has an exponent [form] */
         let ourscale = self.scale();
         if ourscale == scale && self.form as i32 == MathContext::PLAIN {
             // already in plain form
@@ -1748,7 +1791,11 @@ impl BigDecimal {
         if ourscale <= scale {
             // simply zero-padding/changing form
             // if ourscale is 0 we may have lots of 0s to add
-            let padding = if ourscale == 0 { res.exp + scale } else { scale - ourscale };
+            let padding = if ourscale == 0 {
+                res.exp + scale
+            } else {
+                scale - ourscale
+            };
             res.mant = extend(&res.mant, (res.mant.len() as i32 + padding) as usize);
             res.exp = -scale; // as requested
         } else {
@@ -1759,8 +1806,8 @@ impl BigDecimal {
             // [round() will raise exception if invalid round]
             let newlen = res.mant.len() as i32 - (ourscale - scale); // [<=0 is OK]
             res.round(newlen, round)?; // round to required length
-            // This could have shifted left if round (say) 0.9->1[.0]
-            // Repair if so by adding a zero and reducing exponent
+                                       // This could have shifted left if round (say) 0.9->1[.0]
+                                       // Repair if so by adding a zero and reducing exponent
             if res.exp != -scale {
                 res.mant = extend(&res.mant, res.mant.len() + 1);
                 res.exp -= 1;
@@ -1819,8 +1866,9 @@ impl BigDecimal {
             }
         }
         // The layout of a plain integer is a valid BigInteger string.
-        BigInteger::from_string(&units(&String::from_utf8_lossy(&res.layout())))
-            .unwrap_or_else(|e| panic!("INVARIANT: a plain integer layout is a valid BigInteger: {e}"))
+        BigInteger::from_string(&units(&String::from_utf8_lossy(&res.layout()))).unwrap_or_else(
+            |e| panic!("INVARIANT: a plain integer layout is a valid BigInteger: {e}"),
+        )
     }
 
     /// `toBigIntegerExact()`.
@@ -1895,7 +1943,9 @@ impl BigDecimal {
             return Ok(res);
         }
         if scale < 0 {
-            return Err(LuceneError::number_format(format!("Negative scale: {scale}")));
+            return Err(LuceneError::number_format(format!(
+                "Negative scale: {scale}"
+            )));
         }
         res.exp = -scale; // exponent is -scale
         Ok(res)
@@ -1907,7 +1957,11 @@ impl BigDecimal {
 
     /// `layout()`: the characters of the number in its form (ASCII bytes).
     fn layout(&self) -> Vec<u8> {
-        let cmant: Vec<u8> = self.mant.iter().map(|&d| (d as i32 + b'0' as i32) as u8).collect();
+        let cmant: Vec<u8> = self
+            .mant
+            .iter()
+            .map(|&d| (d as i32 + b'0' as i32) as u8)
+            .collect();
 
         if self.form as i32 != MathContext::PLAIN {
             /* exponential notation needed */
@@ -1916,7 +1970,7 @@ impl BigDecimal {
                 sb.push(b'-');
             }
             let mut euse = (self.exp + cmant.len() as i32) - 1; // exponent to use
-            /* setup sig=significant digits and copy to result */
+                                                                /* setup sig=significant digits and copy to result */
             if self.form as i32 == MathContext::SCIENTIFIC {
                 // [default]
                 sb.push(cmant[0]); // significant character
@@ -1975,7 +2029,7 @@ impl BigDecimal {
         let needsign = if self.ind == ISNEG { 1 } else { 0 }; // space for sign?  0 or 1
 
         /* MAG is the position of the point in the mantissa (index of the
-           character it follows) */
+        character it follows) */
         let mag = self.exp + cmant.len() as i32;
 
         let mut rec: Vec<u8> = Vec::new();
@@ -1994,7 +2048,10 @@ impl BigDecimal {
         if mag > cmant.len() as i32 {
             /* xxxx0000 form */
             rec.extend_from_slice(&cmant);
-            rec.extend(std::iter::repeat_n(b'0', (mag - cmant.len() as i32) as usize));
+            rec.extend(std::iter::repeat_n(
+                b'0',
+                (mag - cmant.len() as i32) as usize,
+            ));
             return rec;
         }
 
@@ -2010,7 +2067,7 @@ impl BigDecimal {
     /// `min..=max`.
     fn intcheck(&self, min: i32, max: i32) -> Result<i32> {
         let i = self.int_value_exact()?; // [checks for non-0 decimal part]
-        // Use same message as though intValueExact failed due to size
+                                         // Use same message as though intValueExact failed due to size
         if (i < min) | (i > max) {
             return Err(arith(format!("Conversion overflow: {i}")));
         }
@@ -2019,7 +2076,14 @@ impl BigDecimal {
 
     /// `dodivide(char code, BigDecimal rhs, MathContext set, int scale)`:
     /// division (`'D'`), integer division (`'I'`) or remainder (`'R'`).
-    fn dodivide(&self, code: char, rhs: &BigDecimal, set: &MathContext, mut scale: i32) -> Result<Self> {
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+    fn dodivide(
+        &self,
+        code: char,
+        rhs: &BigDecimal,
+        set: &MathContext,
+        mut scale: i32,
+    ) -> Result<Self> {
         if set.lost_digits {
             self.checkdigits(Some(rhs), set.digits)?;
         }
@@ -2057,7 +2121,7 @@ impl BigDecimal {
             }
             // set reqdig to be at least large enough for the computation
             reqdig = lhs.mant.len() as i32; // base length
-            // next line handles both positive lhs.exp and also scale mismatch
+                                            // next line handles both positive lhs.exp and also scale mismatch
             if scale != -lhs.exp {
                 reqdig = (reqdig + scale) + lhs.exp;
             }
@@ -2129,14 +2193,14 @@ impl BigDecimal {
                     }
                     if !greater {
                         /* reach here if lhs and rhs are identical; subtraction will
-                           increase digit by one, and the residue will be 0 so we
-                           are done; leave the loop with residue set to 0 (in case
-                           code is 'R' or ROUND_UNNECESSARY or a DIVIDE) */
+                        increase digit by one, and the residue will be 0 so we
+                        are done; leave the loop with residue set to 0 (in case
+                        code is 'R' or ROUND_UNNECESSARY or a DIVIDE) */
                         thisdigit += 1;
                         res.mant[have as usize] = thisdigit as i8;
                         have += 1;
                         var1[0] = 0; // residue to 0 [this is all we'll test]
-                        // var1len=1 -- [optimized out]
+                                     // var1len=1 -- [optimized out]
                         break 'outer;
                     }
                     /* prepare for subtraction.  Estimate BA (lengths the same) */
@@ -2163,7 +2227,7 @@ impl BigDecimal {
                     continue 'inner; // maybe another subtract needed
                 }
                 /* V1 now probably has leading zeros, remove leading 0's and try
-                   again. (It could be longer than V2) */
+                again. (It could be longer than V2) */
                 let mut start = 0usize;
                 while (start as i32) <= var1len - 2 {
                     if var1[start] != 0 {
@@ -2200,8 +2264,8 @@ impl BigDecimal {
                 break 'outer;
             }
             res.exp -= 1; // reduce the exponent
-            /* to get here, V1 is less than V2, so divide V2 by 10 and go for
-               the next digit */
+                          /* to get here, V1 is less than V2, so divide V2 by 10 and go for
+                          the next digit */
             var2len -= 1;
         }
 
@@ -2227,13 +2291,13 @@ impl BigDecimal {
                     return Ok(ZERO.clone()); // simple 0 residue
                 }
                 res.ind = lhs.ind; // sign is always as LHS
-                /* Calculate the exponent by subtracting the number of padding zeros
-                   we added and adding the original exponent */
+                                   /* Calculate the exponent by subtracting the number of padding zeros
+                                   we added and adding the original exponent */
                 let padding = ((reqdig + reqdig) + 1) - lhs.mant.len() as i32;
                 res.exp = (res.exp - padding) + lhs.exp;
 
                 /* strip insignificant padding zeros from residue, and create/copy
-                   the resulting mantissa if need be */
+                the resulting mantissa if need be */
                 let mut d = var1len;
                 let mut i = d - 1;
                 while i >= 1 {
@@ -2280,8 +2344,8 @@ impl BigDecimal {
             // calculate number of digits we really want [may be 0]
             let actdig = res.mant.len() as i32 - (-res.exp - scale);
             res.round(actdig, set.rounding_mode)?; // round to desired length
-            // This could have shifted left if round (say) 0.9->1[.0]
-            // Repair if so by adding a zero and reducing exponent
+                                                   // This could have shifted left if round (say) 0.9->1[.0]
+                                                   // Repair if so by adding a zero and reducing exponent
             if res.exp != -scale {
                 res.mant = extend(&res.mant, res.mant.len() + 1);
                 res.exp -= 1;
@@ -2331,6 +2395,8 @@ impl BigDecimal {
 
     /// `round(int len, int mode)`: rounds this number in place to `len`
     /// digits.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+    #[allow(clippy::if_same_then_else)] // branches mirror the Java source
     fn round(&mut self, len: i32, mode: i32) -> Result<&mut Self> {
         let adjust = self.mant.len() as i32 - len;
         if adjust <= 0 {
@@ -2403,7 +2469,9 @@ impl BigDecimal {
                 increment = sign;
             }
         } else {
-            return Err(LuceneError::illegal_argument(format!("Bad round value: {mode}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Bad round value: {mode}"
+            )));
         }
 
         if increment != 0 {
@@ -2446,7 +2514,7 @@ impl BigDecimal {
         }
 
         /* If strip requested (and standard formatting), remove
-           insignificant trailing zeros. */
+        insignificant trailing zeros. */
         if strip && set.form != MathContext::PLAIN {
             let mut d = self.mant.len();
             /* see if we need to drop any trailing zeros */
@@ -2498,7 +2566,7 @@ impl BigDecimal {
                             sig += 3; // negative exponent
                         }
                         mag -= sig; // exponent to use
-                        // 1999.06.29: second test here must be MaxExp
+                                    // 1999.06.29: second test here must be MaxExp
                         if (MIN_EXP..=MAX_EXP).contains(&mag) {
                             return Ok(self);
                         }

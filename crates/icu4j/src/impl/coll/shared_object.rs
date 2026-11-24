@@ -33,14 +33,18 @@ pub struct Reference<T> {
 impl<T> Clone for Reference<T> {
     /// `clone()`: one more reference to the same object (`addRef()`).
     fn clone(&self) -> Self {
-        Self { ref_: self.ref_.clone() }
+        Self {
+            ref_: self.ref_.clone(),
+        }
     }
 }
 
 impl<T: Clone> Reference<T> {
     /// `Reference(T r)`.
     pub fn new(r: Option<T>) -> Self {
-        Self { ref_: r.map(Arc::new) }
+        Self {
+            ref_: r.map(Arc::new),
+        }
     }
 
     /// A reference to an object already shared as an [`Arc`].
@@ -81,6 +85,8 @@ impl<T: Clone> Reference<T> {
 
     /// `ref.getRefCount()`: the number of owners of the object (0 for `null`).
     pub fn get_ref_count(&self) -> i32 {
-        self.ref_.as_ref().map_or(0, |r| Arc::strong_count(r) as i32)
+        self.ref_
+            .as_ref()
+            .map_or(0, |r| Arc::strong_count(r) as i32)
     }
 }

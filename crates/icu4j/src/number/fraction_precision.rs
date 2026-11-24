@@ -88,7 +88,13 @@ impl FractionPrecision {
     /// `IllegalArgumentException` when the argument is outside `1..=999`.
     pub fn with_min_digits(&self, min_significant_digits: i32) -> Result<Precision> {
         if (1..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&min_significant_digits) {
-            Ok(Precision::construct_fraction_significant(self, 1, min_significant_digits, RoundingPriority::Relaxed, true))
+            Ok(Precision::construct_fraction_significant(
+                self,
+                1,
+                min_significant_digits,
+                RoundingPriority::Relaxed,
+                true,
+            ))
         } else {
             Err(LuceneError::illegal_argument(significant_digits_message()))
         }
@@ -103,7 +109,13 @@ impl FractionPrecision {
     /// `IllegalArgumentException` when the argument is outside `1..=999`.
     pub fn with_max_digits(&self, max_significant_digits: i32) -> Result<Precision> {
         if (1..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&max_significant_digits) {
-            Ok(Precision::construct_fraction_significant(self, 1, max_significant_digits, RoundingPriority::Strict, true))
+            Ok(Precision::construct_fraction_significant(
+                self,
+                1,
+                max_significant_digits,
+                RoundingPriority::Strict,
+                true,
+            ))
         } else {
             Err(LuceneError::illegal_argument(significant_digits_message()))
         }

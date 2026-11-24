@@ -8,6 +8,7 @@ use std::sync::Arc;
 use rucene::error::Result;
 
 use crate::jdk::{char_count, ParsePosition};
+use crate::number::number_formatter::GroupingStrategy;
 use crate::r#impl::number::affix_utils::{TYPE_PERCENT, TYPE_PERMILLE};
 use crate::r#impl::number::custom_symbol_currency::CustomSymbolCurrency;
 use crate::r#impl::number::decimal_format_properties::{DecimalFormatProperties, ParseMode};
@@ -38,7 +39,6 @@ use crate::r#impl::number::pattern_string_parser::PatternStringParser;
 use crate::r#impl::number::properties_affix_pattern_provider::PropertiesAffixPatternProvider;
 use crate::r#impl::number::rounding_utils::RoundingUtils;
 use crate::r#impl::string_segment::StringSegment;
-use crate::number::number_formatter::GroupingStrategy;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 use crate::util::currency::Currency;
 use crate::util::currency_amount::CurrencyAmount;
@@ -61,7 +61,11 @@ impl NumberParserImpl {
     /// # Errors
     ///
     /// The errors of the pattern parse, the locale data and the matchers.
-    pub fn create_simple_parser(locale: &ULocale, pattern: &[u16], parse_flags: i32) -> Result<NumberParserImpl> {
+    pub fn create_simple_parser(
+        locale: &ULocale,
+        pattern: &[u16],
+        parse_flags: i32,
+    ) -> Result<NumberParserImpl> {
         let mut parser = NumberParserImpl::new(parse_flags);
         let currency = Currency::get_instance(Some("USD"))?;
         let symbols = Arc::new(DecimalFormatSymbols::get_instance_ulocale(locale)?);
@@ -76,12 +80,23 @@ impl NumberParserImpl {
         };
 
         let pattern_info = PatternStringParser::parse_to_pattern_info(pattern)?;
-        AffixMatcher::create_matchers(&pattern_info, &mut parser, &factory, &ignorables, parse_flags)?;
+        AffixMatcher::create_matchers(
+            &pattern_info,
+            &mut parser,
+            &factory,
+            &ignorables,
+            parse_flags,
+        )?;
 
-        let grouper = Grouper::for_strategy(GroupingStrategy::Auto).with_locale_data(locale, &pattern_info)?;
+        let grouper = Grouper::for_strategy(GroupingStrategy::Auto)
+            .with_locale_data(locale, &pattern_info)?;
 
         parser.add_matcher(ignorables.clone());
-        parser.add_matcher(DecimalMatcher::get_instance(&symbols, &grouper, parse_flags)?);
+        parser.add_matcher(DecimalMatcher::get_instance(
+            &symbols,
+            &grouper,
+            parse_flags,
+        )?);
         parser.add_matcher(MinusSignMatcher::get_instance(&symbols, false));
         parser.add_matcher(PlusSignMatcher::get_instance(&symbols, false));
         parser.add_matcher(PercentMatcher::get_instance(&symbols));
@@ -90,7 +105,11 @@ impl NumberParserImpl {
         parser.add_matcher(InfinityMatcher::get_instance(&symbols));
         parser.add_matcher(PaddingMatcher::get_instance(&[u16::from(b'@')]));
         parser.add_matcher(ScientificMatcher::get_instance(&symbols, &grouper)?);
-        parser.add_matcher(CombinedCurrencyMatcher::get_instance(&currency, &symbols, parse_flags)?);
+        parser.add_matcher(CombinedCurrencyMatcher::get_instance(
+            &currency,
+            &symbols,
+            parse_flags,
+        )?);
         parser.add_matcher(Arc::new(RequireNumberValidator));
 
         parser.freeze();
@@ -236,14 +255,24 @@ impl NumberParserImpl {
         // ----
 
         // Set up a pattern modifier with mostly defaults to generate AffixMatchers.
-        AffixMatcher::create_matchers(affix_provider.as_ref(), &mut parser, &factory, &ignorables, parse_flags)?;
+        AffixMatcher::create_matchers(
+            affix_provider.as_ref(),
+            &mut parser,
+            &factory,
+            &ignorables,
+            parse_flags,
+        )?;
 
         // ----
         // CURRENCY MATCHER
         // ----
 
         if parse_currency || affix_provider.has_currency_sign() {
-            parser.add_matcher(CombinedCurrencyMatcher::get_instance(&currency, symbols, parse_flags)?);
+            parser.add_matcher(CombinedCurrencyMatcher::get_instance(
+                &currency,
+                symbols,
+                parse_flags,
+            )?);
         }
 
         ///////////////
@@ -275,7 +304,11 @@ impl NumberParserImpl {
             }
         }
         parser.add_matcher(ignorables.clone());
-        parser.add_matcher(DecimalMatcher::get_instance(symbols, &grouper, parse_flags)?);
+        parser.add_matcher(DecimalMatcher::get_instance(
+            symbols,
+            &grouper,
+            parse_flags,
+        )?);
         // NOTE: parseNoExponent doesn't disable scientific parsing if we have a scientific formatter
         if !properties.get_parse_no_exponent() || properties.get_minimum_exponent_digits() > 0 {
             parser.add_matcher(ScientificMatcher::get_instance(symbols, &grouper)?);
@@ -293,9 +326,11 @@ impl NumberParserImpl {
             parser.add_matcher(Arc::new(RequireCurrencyValidator));
         }
         if properties.get_decimal_pattern_match_required() {
-            let pattern_has_decimal_separator =
-                properties.get_decimal_separator_always_shown() || properties.get_maximum_fraction_digits() != 0;
-            parser.add_matcher(RequireDecimalSeparatorValidator::get_instance(pattern_has_decimal_separator));
+            let pattern_has_decimal_separator = properties.get_decimal_separator_always_shown()
+                || properties.get_maximum_fraction_digits() != 0;
+            parser.add_matcher(RequireDecimalSeparatorValidator::get_instance(
+                pattern_has_decimal_separator,
+            ));
         }
         // The multiplier takes care of scaling percentages.
         if let Some(multiplier) = RoundingUtils::scale_from_properties(properties)? {
@@ -309,7 +344,11 @@ impl NumberParserImpl {
     /// Creates a new, empty parser. Equivalent to
     /// `NumberParserImpl(int)`.
     pub fn new(parse_flags: i32) -> Self {
-        NumberParserImpl { parse_flags, matchers: Vec::new(), frozen: false }
+        NumberParserImpl {
+            parse_flags,
+            matchers: Vec::new(),
+            frozen: false,
+        }
     }
 
     /// Equivalent to `addMatcher(NumberParseMatcher)`.
@@ -319,7 +358,10 @@ impl NumberParserImpl {
     }
 
     /// Equivalent to `addMatchers(Collection)`.
-    pub fn add_matchers(&mut self, matchers: impl IntoIterator<Item = Arc<dyn NumberParseMatcher>>) {
+    pub fn add_matchers(
+        &mut self,
+        matchers: impl IntoIterator<Item = Arc<dyn NumberParseMatcher>>,
+    ) {
         debug_assert!(!self.frozen);
         self.matchers.extend(matchers);
     }
@@ -349,10 +391,19 @@ impl NumberParserImpl {
     /// # Errors
     ///
     /// The errors of the matchers.
-    pub fn parse_from(&self, input: &[u16], start: i32, greedy: bool, result: &mut ParsedNumber) -> Result<()> {
+    pub fn parse_from(
+        &self,
+        input: &[u16],
+        start: i32,
+        greedy: bool,
+        result: &mut ParsedNumber,
+    ) -> Result<()> {
         debug_assert!(self.frozen);
         debug_assert!(start >= 0 && start < input.len() as i32);
-        let mut segment = StringSegment::new(input, 0 != (self.parse_flags & ParsingUtils::PARSE_FLAG_IGNORE_CASE));
+        let mut segment = StringSegment::new(
+            input,
+            0 != (self.parse_flags & ParsingUtils::PARSE_FLAG_IGNORE_CASE),
+        );
         segment.adjust_offset(start);
         if greedy {
             self.parse_greedy(&mut segment, result)?;
@@ -398,7 +449,12 @@ impl NumberParserImpl {
         Ok(())
     }
 
-    fn parse_longest_recursive(&self, segment: &mut StringSegment, result: &mut ParsedNumber, recursion_levels: i32) -> Result<()> {
+    fn parse_longest_recursive(
+        &self,
+        segment: &mut StringSegment,
+        result: &mut ParsedNumber,
+        recursion_levels: i32,
+    ) -> Result<()> {
         // Base Case
         if segment.length() == 0 {
             return Ok(());
@@ -456,6 +512,9 @@ impl NumberParserImpl {
 
     /// Equivalent to `toString()`.
     pub fn to_java_string(&self) -> String {
-        format!("<NumberParserImpl matchers={}>", matchers_to_string(&self.matchers))
+        format!(
+            "<NumberParserImpl matchers={}>",
+            matchers_to_string(&self.matchers)
+        )
     }
 }

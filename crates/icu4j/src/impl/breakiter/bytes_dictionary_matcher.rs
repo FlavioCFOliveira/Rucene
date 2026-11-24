@@ -34,7 +34,8 @@ impl BytesDictionaryMatcher {
     /// offset transform.
     pub(crate) fn new(chars: Vec<i8>, transform: i32) -> Result<Self> {
         Assert::assrt(
-            (transform & DictionaryData::TRANSFORM_TYPE_MASK) == DictionaryData::TRANSFORM_TYPE_OFFSET,
+            (transform & DictionaryData::TRANSFORM_TYPE_MASK)
+                == DictionaryData::TRANSFORM_TYPE_OFFSET,
         )?;
         // while there is only one transform type so far, save the entire transform constant so that
         // if we add any others, we need only change code in transform() and the assert above rather

@@ -42,7 +42,12 @@ pub struct ConstantMultiFieldModifier {
 impl ConstantMultiFieldModifier {
     /// Equivalent to `ConstantMultiFieldModifier(FormattedStringBuilder,
     /// FormattedStringBuilder, boolean, boolean)`.
-    pub fn new(prefix: &FormattedStringBuilder, suffix: &FormattedStringBuilder, overwrite: bool, strong: bool) -> Self {
+    pub fn new(
+        prefix: &FormattedStringBuilder,
+        suffix: &FormattedStringBuilder,
+        overwrite: bool,
+        strong: bool,
+    ) -> Self {
         Self::with_parameters(prefix, suffix, overwrite, strong, None)
     }
 
@@ -76,19 +81,33 @@ impl ConstantMultiFieldModifier {
         let mut s = units("<ConstantMultiFieldModifier prefix:'");
         s.extend_from_slice(&temp.sub_sequence(0, prefix_length).to_java_string());
         s.extend_from_slice(&units("' suffix:'"));
-        s.extend_from_slice(&temp.sub_sequence(prefix_length, temp.length()).to_java_string());
+        s.extend_from_slice(
+            &temp
+                .sub_sequence(prefix_length, temp.length())
+                .to_java_string(),
+        );
         s.extend_from_slice(&units("'>"));
         s
     }
 }
 
 impl Modifier for ConstantMultiFieldModifier {
-    fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32> {
-        let mut length = output.insert_chars(left_index, &self.prefix_chars, Some(&self.prefix_fields));
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        left_index: i32,
+        right_index: i32,
+    ) -> Result<i32> {
+        let mut length =
+            output.insert_chars(left_index, &self.prefix_chars, Some(&self.prefix_fields));
         if self.overwrite {
             length += output.splice(left_index + length, right_index + length, &[], 0, 0, None);
         }
-        length += output.insert_chars(right_index + length, &self.suffix_chars, Some(&self.suffix_fields));
+        length += output.insert_chars(
+            right_index + length,
+            &self.suffix_chars,
+            Some(&self.suffix_fields),
+        );
         Ok(length)
     }
 
@@ -97,8 +116,14 @@ impl Modifier for ConstantMultiFieldModifier {
     }
 
     fn get_code_point_count(&self) -> Result<i32> {
-        Ok(UCharacter::code_point_count(&self.prefix_chars, 0, self.prefix_chars.len() as i32)
-            + UCharacter::code_point_count(&self.suffix_chars, 0, self.suffix_chars.len() as i32))
+        Ok(
+            UCharacter::code_point_count(&self.prefix_chars, 0, self.prefix_chars.len() as i32)
+                + UCharacter::code_point_count(
+                    &self.suffix_chars,
+                    0,
+                    self.suffix_chars.len() as i32,
+                ),
+        )
     }
 
     fn is_strong(&self) -> bool {

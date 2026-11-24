@@ -5,11 +5,14 @@
 
 use rucene::error::{LuceneError, Result};
 
-use crate::util::code_point_map::{CodePointMap, Range, RangeIterator, StringIterator, StringIteratorKind, ValueFilter};
+use crate::util::code_point_map::{
+    CodePointMap, Range, RangeIterator, StringIterator, StringIteratorKind, ValueFilter,
+};
 use crate::util::code_point_trie::{
-    CodePointTrie, Data, Type, ValueWidth, CP_PER_INDEX_2_ENTRY, FAST_DATA_BLOCK_LENGTH, FAST_SHIFT,
-    INDEX_2_BLOCK_LENGTH, INDEX_2_MASK, INDEX_3_BLOCK_LENGTH, NO_DATA_NULL_OFFSET, NO_INDEX3_NULL_OFFSET,
-    SHIFT_1_2, SHIFT_2_3, SHIFT_3, SMALL_DATA_BLOCK_LENGTH, SMALL_DATA_MASK, SMALL_LIMIT,
+    CodePointTrie, Data, Type, ValueWidth, CP_PER_INDEX_2_ENTRY, FAST_DATA_BLOCK_LENGTH,
+    FAST_SHIFT, INDEX_2_BLOCK_LENGTH, INDEX_2_MASK, INDEX_3_BLOCK_LENGTH, NO_DATA_NULL_OFFSET,
+    NO_INDEX3_NULL_OFFSET, SHIFT_1_2, SHIFT_2_3, SHIFT_3, SMALL_DATA_BLOCK_LENGTH, SMALL_DATA_MASK,
+    SMALL_LIMIT,
 };
 
 /// `MAX_UNICODE`.
@@ -78,7 +81,11 @@ impl Clone for MutableCodePointTrie {
     /// `clone()`: a copy with a fresh index of the current capacity class
     /// and the flags of the used part.
     fn clone(&self) -> Self {
-        let i_capacity = if self.high_start <= BMP_LIMIT { BMP_I_LIMIT } else { I_LIMIT };
+        let i_capacity = if self.high_start <= BMP_LIMIT {
+            BMP_I_LIMIT
+        } else {
+            I_LIMIT
+        };
         let mut index = vec![0i32; i_capacity as usize];
         let mut flags = vec![0i8; (UNICODE_LIMIT >> SHIFT_3) as usize];
         let i_limit = (self.high_start >> SHIFT_3) as usize;
@@ -138,7 +145,9 @@ impl MutableCodePointTrie {
             let value = range.get_value();
             if value != initial_value {
                 if start == end {
-                    mutable_trie.set(start, value).expect("a range start is a code point");
+                    mutable_trie
+                        .set(start, value)
+                        .expect("a range start is a code point");
                 } else {
                     mutable_trie
                         .set_range(start, end, value)
@@ -163,7 +172,12 @@ impl MutableCodePointTrie {
 
     /// `maybeFilterValue(int value, int initialValue, int nullValue,
     /// ValueFilter filter)` (private).
-    fn maybe_filter_value(mut value: i32, initial_value: i32, null_value: i32, filter: Option<ValueFilter<'_>>) -> i32 {
+    fn maybe_filter_value(
+        mut value: i32,
+        initial_value: i32,
+        null_value: i32,
+        filter: Option<ValueFilter<'_>>,
+    ) -> i32 {
         if value == initial_value {
             value = null_value;
         } else if let Some(f) = filter {
@@ -217,10 +231,20 @@ impl MutableCodePointTrie {
             let block = self.get_data_block(start >> SHIFT_3);
             let next_start = (start + SMALL_DATA_MASK) & !SMALL_DATA_MASK;
             if next_start <= limit {
-                self.fill_block(block, start & SMALL_DATA_MASK, SMALL_DATA_BLOCK_LENGTH, value);
+                self.fill_block(
+                    block,
+                    start & SMALL_DATA_MASK,
+                    SMALL_DATA_BLOCK_LENGTH,
+                    value,
+                );
                 start = next_start;
             } else {
-                self.fill_block(block, start & SMALL_DATA_MASK, limit & SMALL_DATA_MASK, value);
+                self.fill_block(
+                    block,
+                    start & SMALL_DATA_MASK,
+                    limit & SMALL_DATA_MASK,
+                    value,
+                );
                 return Ok(());
             }
         }
@@ -265,13 +289,21 @@ impl MutableCodePointTrie {
     ///
     /// `IndexOutOfBoundsException("The trie data exceeds limitations of the
     /// data structure.")`.
-    pub fn build_immutable(&mut self, type_: Option<Type>, value_width: Option<ValueWidth>) -> Result<CodePointTrie> {
+    pub fn build_immutable(
+        &mut self,
+        type_: Option<Type>,
+        value_width: Option<ValueWidth>,
+    ) -> Result<CodePointTrie> {
         let (Some(type_), Some(value_width)) = (type_, value_width) else {
-            return Err(LuceneError::illegal_argument("The type and valueWidth must be specified."));
+            return Err(LuceneError::illegal_argument(
+                "The type and valueWidth must be specified.",
+            ));
         };
 
         // try { return build(type, valueWidth); } finally { clear(); }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.build(type_, value_width)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.build(type_, value_width)
+        }));
         self.clear();
         match result {
             Ok(trie) => Ok(trie),
@@ -319,7 +351,8 @@ impl MutableCodePointTrie {
                 panic!("java.lang.AssertionError");
             };
             let mut new_data = vec![0i32; capacity as usize];
-            new_data[..self.data_length as usize].copy_from_slice(&self.data[..self.data_length as usize]);
+            new_data[..self.data_length as usize]
+                .copy_from_slice(&self.data[..self.data_length as usize]);
             self.data = new_data;
         }
         self.data_length = new_top;
@@ -411,7 +444,11 @@ impl MutableCodePointTrie {
 
     /// `compactWholeDataBlocks(int fastILimit, AllSameBlocks allSameBlocks)`
     /// (private).
-    fn compact_whole_data_blocks(&mut self, fast_i_limit: i32, all_same_blocks: &mut AllSameBlocks) -> i32 {
+    fn compact_whole_data_blocks(
+        &mut self,
+        fast_i_limit: i32,
+        all_same_blocks: &mut AllSameBlocks,
+    ) -> i32 {
         // ASCII data will be stored as a linear table, even if the following code
         // does not yet count it that way.
         let mut new_data_capacity = ASCII_LIMIT;
@@ -506,7 +543,13 @@ impl MutableCodePointTrie {
 
     /// `compactData(int fastILimit, int[] newData, int dataNullIndex,
     /// MixedBlocks mixedBlocks)` (private).
-    fn compact_data(&mut self, fast_i_limit: i32, new_data: &mut [i32], data_null_index: i32, mixed_blocks: &mut MixedBlocks) -> i32 {
+    fn compact_data(
+        &mut self,
+        fast_i_limit: i32,
+        new_data: &mut [i32],
+        data_null_index: i32,
+        mixed_blocks: &mut MixedBlocks,
+    ) -> i32 {
         // The linear ASCII data has been copied into newData already.
         let mut new_data_length = 0;
         let mut i = 0;
@@ -563,17 +606,32 @@ impl MutableCodePointTrie {
                         new_data_length += 1;
                         n += 1;
                     }
-                    mixed_blocks.extend(BlockData::Ints(new_data), 0, prev_data_length, new_data_length);
+                    mixed_blocks.extend(
+                        BlockData::Ints(new_data),
+                        0,
+                        prev_data_length,
+                        new_data_length,
+                    );
                 }
             } else if self.flags[i as usize] == MIXED {
                 // Find an earlier part of the data array of length blockLength
                 // that is filled with this value.
                 let block = self.index[i as usize];
-                let mut n = mixed_blocks.find_block(BlockData::Ints(new_data), BlockData::Ints(&self.data), block);
+                let mut n = mixed_blocks.find_block(
+                    BlockData::Ints(new_data),
+                    BlockData::Ints(&self.data),
+                    block,
+                );
                 if n >= 0 {
                     self.index[i as usize] = n;
                 } else {
-                    n = get_overlap(BlockData::Ints(new_data), new_data_length, BlockData::Ints(&self.data), block, block_length);
+                    n = get_overlap(
+                        BlockData::Ints(new_data),
+                        new_data_length,
+                        BlockData::Ints(&self.data),
+                        block,
+                        block_length,
+                    );
                     self.index[i as usize] = new_data_length - n;
                     let prev_data_length = new_data_length;
                     while n < block_length {
@@ -581,7 +639,12 @@ impl MutableCodePointTrie {
                         new_data_length += 1;
                         n += 1;
                     }
-                    mixed_blocks.extend(BlockData::Ints(new_data), 0, prev_data_length, new_data_length);
+                    mixed_blocks.extend(
+                        BlockData::Ints(new_data),
+                        0,
+                        prev_data_length,
+                        new_data_length,
+                    );
                 }
             } else {
                 // SAME_AS
@@ -620,7 +683,9 @@ impl MutableCodePointTrie {
             if i3 == self.data_null_offset {
                 if i3_first_null < 0 {
                     i3_first_null = j;
-                } else if self.index3_null_offset < 0 && (j - i3_first_null + 1) == INDEX_3_BLOCK_LENGTH {
+                } else if self.index3_null_offset < 0
+                    && (j - i3_first_null + 1) == INDEX_3_BLOCK_LENGTH
+                {
                     self.index3_null_offset = i3_first_null;
                 }
             } else {
@@ -657,7 +722,11 @@ impl MutableCodePointTrie {
         // If the fast index covers the whole BMP, then
         // the multi-stage index is only for supplementary code points.
         // Otherwise, the multi-stage index covers all of Unicode.
-        let i_start = if fast_i_limit < BMP_I_LIMIT { 0 } else { BMP_I_LIMIT };
+        let i_start = if fast_i_limit < BMP_I_LIMIT {
+            0
+        } else {
+            BMP_I_LIMIT
+        };
         let i_limit = self.high_start >> SHIFT_3;
         let mut i = i_start;
         while i < i_limit {
@@ -688,7 +757,11 @@ impl MutableCodePointTrie {
                     i3_first_null = 0;
                 }
             } else if ored_i3 <= 0xffff {
-                let n = mixed_blocks.find_block(BlockData::Chars(&fast_index), BlockData::Ints(&self.index), i);
+                let n = mixed_blocks.find_block(
+                    BlockData::Chars(&fast_index),
+                    BlockData::Ints(&self.index),
+                    i,
+                );
                 if n >= 0 {
                     self.flags[i as usize] = I3_BMP;
                     self.index[i as usize] = n;
@@ -711,7 +784,8 @@ impl MutableCodePointTrie {
 
         // Index table: Fast index, index-1, index-3, index-2.
         // +1 for possible index table padding.
-        let index16_capacity = fast_index_length + index1_length + index3_capacity + index2_capacity + 1;
+        let index16_capacity =
+            fast_index_length + index1_length + index3_capacity + index2_capacity + 1;
         let mut index16 = fast_index.clone();
         index16.resize(index16_capacity as usize, 0);
 
@@ -735,7 +809,11 @@ impl MutableCodePointTrie {
             let mut f = self.flags[i as usize];
             if f == I3_NULL && i3_first_null < 0 {
                 // First index-3 null block. Write & overlap it like a normal block, then remember it.
-                f = if self.data_null_offset <= 0xffff { I3_16 } else { I3_18 };
+                f = if self.data_null_offset <= 0xffff {
+                    I3_16
+                } else {
+                    I3_18
+                };
                 i3_first_null = 0;
             }
             if f == I3_NULL {
@@ -743,7 +821,11 @@ impl MutableCodePointTrie {
             } else if f == I3_BMP {
                 i3 = self.index[i as usize];
             } else if f == I3_16 {
-                let mut n = mixed_blocks.find_block(BlockData::Chars(&index16), BlockData::Ints(&self.index), i);
+                let mut n = mixed_blocks.find_block(
+                    BlockData::Chars(&index16),
+                    BlockData::Ints(&self.index),
+                    i,
+                );
                 if n >= 0 {
                     i3 = n;
                 } else {
@@ -766,14 +848,22 @@ impl MutableCodePointTrie {
                         index_length += 1;
                         n += 1;
                     }
-                    mixed_blocks.extend(BlockData::Chars(&index16), index3_start, prev_index_length, index_length);
+                    mixed_blocks.extend(
+                        BlockData::Chars(&index16),
+                        index3_start,
+                        prev_index_length,
+                        index_length,
+                    );
                     if has_long_i3_blocks {
-                        long_i3_blocks.as_mut().expect("created when needed").extend(
-                            BlockData::Chars(&index16),
-                            index3_start,
-                            prev_index_length,
-                            index_length,
-                        );
+                        long_i3_blocks
+                            .as_mut()
+                            .expect("created when needed")
+                            .extend(
+                                BlockData::Chars(&index16),
+                                index3_start,
+                                prev_index_length,
+                                index_length,
+                            );
                     }
                 }
             } else {
@@ -831,7 +921,11 @@ impl MutableCodePointTrie {
                     }
                 }
                 let long = long_i3_blocks.as_mut().expect("created when needed");
-                let mut n = long.find_block(BlockData::Chars(&index16), BlockData::Chars(&index16), index_length);
+                let mut n = long.find_block(
+                    BlockData::Chars(&index16),
+                    BlockData::Chars(&index16),
+                    index_length,
+                );
                 if n >= 0 {
                     i3 = n | 0x8000;
                 } else {
@@ -859,14 +953,22 @@ impl MutableCodePointTrie {
                     } else {
                         index_length += INDEX_3_18BIT_BLOCK_LENGTH;
                     }
-                    mixed_blocks.extend(BlockData::Chars(&index16), index3_start, prev_index_length, index_length);
+                    mixed_blocks.extend(
+                        BlockData::Chars(&index16),
+                        index3_start,
+                        prev_index_length,
+                        index_length,
+                    );
                     if has_long_i3_blocks {
-                        long_i3_blocks.as_mut().expect("created when needed").extend(
-                            BlockData::Chars(&index16),
-                            index3_start,
-                            prev_index_length,
-                            index_length,
-                        );
+                        long_i3_blocks
+                            .as_mut()
+                            .expect("created when needed")
+                            .extend(
+                                BlockData::Chars(&index16),
+                                index3_start,
+                                prev_index_length,
+                                index_length,
+                            );
                     }
                 }
             }
@@ -903,11 +1005,22 @@ impl MutableCodePointTrie {
             if (i2_length - i) >= block_length {
                 // normal block
                 debug_assert!(block_length == INDEX_2_BLOCK_LENGTH);
-                n = mixed_blocks.find_block(BlockData::Chars(&index16), BlockData::Chars(&index2), i);
+                n = mixed_blocks.find_block(
+                    BlockData::Chars(&index16),
+                    BlockData::Chars(&index2),
+                    i,
+                );
             } else {
                 // highStart is inside the last index-2 block. Shorten it.
                 block_length = i2_length - i;
-                n = find_same_block(&index16, index3_start, index_length, &index2, i, block_length);
+                n = find_same_block(
+                    &index16,
+                    index3_start,
+                    index_length,
+                    &index2,
+                    i,
+                    block_length,
+                );
             }
             let i2;
             if n >= 0 {
@@ -917,7 +1030,13 @@ impl MutableCodePointTrie {
                     // No overlap at the boundary between the index-1 and index-3/2 tables.
                     n = 0;
                 } else {
-                    n = get_overlap(BlockData::Chars(&index16), index_length, BlockData::Chars(&index2), i, block_length);
+                    n = get_overlap(
+                        BlockData::Chars(&index16),
+                        index_length,
+                        BlockData::Chars(&index2),
+                        i,
+                        block_length,
+                    );
                 }
                 i2 = index_length - n;
                 let prev_index_length = index_length;
@@ -926,7 +1045,12 @@ impl MutableCodePointTrie {
                     index_length += 1;
                     n += 1;
                 }
-                mixed_blocks.extend(BlockData::Chars(&index16), index3_start, prev_index_length, index_length);
+                mixed_blocks.extend(
+                    BlockData::Chars(&index16),
+                    index3_start,
+                    prev_index_length,
+                    index_length,
+                );
             }
             // Set the index-1 table entry.
             index16[i1 as usize] = i2 as u16;
@@ -951,7 +1075,8 @@ impl MutableCodePointTrie {
         debug_assert!((self.high_start & (CP_PER_INDEX_2_ENTRY - 1)) == 0);
         self.high_value = self.get(MAX_UNICODE);
         let mut real_high_start = self.find_high_start();
-        real_high_start = (real_high_start + (CP_PER_INDEX_2_ENTRY - 1)) & !(CP_PER_INDEX_2_ENTRY - 1);
+        real_high_start =
+            (real_high_start + (CP_PER_INDEX_2_ENTRY - 1)) & !(CP_PER_INDEX_2_ENTRY - 1);
         if real_high_start == UNICODE_LIMIT {
             self.high_value = self.initial_value;
         }
@@ -985,7 +1110,12 @@ impl MutableCodePointTrie {
         let data_null_index = all_same_blocks.find_most_used();
 
         let mut mixed_blocks = MixedBlocks::new();
-        let new_data_length = self.compact_data(fast_i_limit, &mut new_data, data_null_index, &mut mixed_blocks);
+        let new_data_length = self.compact_data(
+            fast_i_limit,
+            &mut new_data,
+            data_null_index,
+            &mut mixed_blocks,
+        );
         debug_assert!(new_data_length <= new_data_capacity);
         self.data = new_data;
         self.data_length = new_data_length;
@@ -1020,12 +1150,17 @@ impl MutableCodePointTrie {
             ValueWidth::Bits8 => self.mask_values(0xff),
         }
 
-        let fast_limit = if type_ == Type::Fast { BMP_LIMIT } else { SMALL_LIMIT };
+        let fast_limit = if type_ == Type::Fast {
+            BMP_LIMIT
+        } else {
+            SMALL_LIMIT
+        };
         let mut index_length = self.compact_trie(fast_limit >> SHIFT_3);
 
         // Ensure data table alignment: The index length must be even for uint32_t data.
         if value_width == ValueWidth::Bits32 && (index_length & 1) != 0 {
-            self.index16.as_mut().expect("compactIndex built index16")[index_length as usize] = 0xffee; // arbitrary value
+            self.index16.as_mut().expect("compactIndex built index16")[index_length as usize] =
+                0xffee; // arbitrary value
             index_length += 1;
         }
 
@@ -1101,11 +1236,20 @@ impl MutableCodePointTrie {
         // Write the data array.
         let dlen = self.data_length as usize;
         let data = match value_width {
-            ValueWidth::Bits16 => Data::Data16(self.data[..dlen].iter().map(|&v| v as u16).collect()),
+            ValueWidth::Bits16 => {
+                Data::Data16(self.data[..dlen].iter().map(|&v| v as u16).collect())
+            }
             ValueWidth::Bits32 => Data::Data32(self.data[..dlen].to_vec()),
             ValueWidth::Bits8 => Data::Data8(self.data[..dlen].iter().map(|&v| v as i8).collect()),
         };
-        CodePointTrie::from_parts(type_, trie_index, data, self.high_start, self.index3_null_offset, self.data_null_offset)
+        CodePointTrie::from_parts(
+            type_,
+            trie_index,
+            data,
+            self.high_start,
+            self.index3_null_offset,
+            self.data_null_offset,
+        )
     }
 }
 
@@ -1153,7 +1297,12 @@ impl CodePointMap for MutableCodePointTrie {
                 if have_value {
                     if trie_value2 != trie_value {
                         if filter.is_none()
-                            || Self::maybe_filter_value(trie_value2, self.initial_value, null_value, filter) != value
+                            || Self::maybe_filter_value(
+                                trie_value2,
+                                self.initial_value,
+                                null_value,
+                                filter,
+                            ) != value
                         {
                             range.set(start, c - 1, value);
                             return true;
@@ -1162,7 +1311,12 @@ impl CodePointMap for MutableCodePointTrie {
                     }
                 } else {
                     trie_value = trie_value2;
-                    value = Self::maybe_filter_value(trie_value2, self.initial_value, null_value, filter);
+                    value = Self::maybe_filter_value(
+                        trie_value2,
+                        self.initial_value,
+                        null_value,
+                        filter,
+                    );
                     have_value = true;
                 }
                 c = (c + SMALL_DATA_BLOCK_LENGTH) & !SMALL_DATA_MASK;
@@ -1172,7 +1326,12 @@ impl CodePointMap for MutableCodePointTrie {
                 if have_value {
                     if trie_value2 != trie_value {
                         if filter.is_none()
-                            || Self::maybe_filter_value(trie_value2, self.initial_value, null_value, filter) != value
+                            || Self::maybe_filter_value(
+                                trie_value2,
+                                self.initial_value,
+                                null_value,
+                                filter,
+                            ) != value
                         {
                             range.set(start, c - 1, value);
                             return true;
@@ -1181,7 +1340,12 @@ impl CodePointMap for MutableCodePointTrie {
                     }
                 } else {
                     trie_value = trie_value2;
-                    value = Self::maybe_filter_value(trie_value2, self.initial_value, null_value, filter);
+                    value = Self::maybe_filter_value(
+                        trie_value2,
+                        self.initial_value,
+                        null_value,
+                        filter,
+                    );
                     have_value = true;
                 }
                 loop {
@@ -1193,7 +1357,12 @@ impl CodePointMap for MutableCodePointTrie {
                     trie_value2 = self.data[di as usize];
                     if trie_value2 != trie_value {
                         if filter.is_none()
-                            || Self::maybe_filter_value(trie_value2, self.initial_value, null_value, filter) != value
+                            || Self::maybe_filter_value(
+                                trie_value2,
+                                self.initial_value,
+                                null_value,
+                                filter,
+                            ) != value
                         {
                             range.set(start, c - 1, value);
                             return true;
@@ -1208,7 +1377,9 @@ impl CodePointMap for MutableCodePointTrie {
             }
         }
         debug_assert!(have_value);
-        if Self::maybe_filter_value(self.high_value, self.initial_value, null_value, filter) != value {
+        if Self::maybe_filter_value(self.high_value, self.initial_value, null_value, filter)
+            != value
+        {
             range.set(start, c - 1, value);
         } else {
             range.set(start, MAX_UNICODE, value);
@@ -1244,7 +1415,13 @@ impl BlockData<'_> {
 
 /// `equalBlocks(int[]|char[] s, int si, int[]|char[] t, int ti, int
 /// length)` (private).
-fn equal_blocks(s: BlockData<'_>, mut si: i32, t: BlockData<'_>, mut ti: i32, mut length: i32) -> bool {
+fn equal_blocks(
+    s: BlockData<'_>,
+    mut si: i32,
+    t: BlockData<'_>,
+    mut ti: i32,
+    mut length: i32,
+) -> bool {
     while length > 0 && s.at(si) == t.at(ti) {
         si += 1;
         ti += 1;
@@ -1265,12 +1442,25 @@ fn all_values_same_as(p: &[i32], mut pi: i32, length: i32, value: i32) -> bool {
 /// `findSameBlock(char[] p, int pStart, int length, char[] q, int qStart,
 /// int blockLength)` (private): the start of a block of `p` equal to `q`
 /// at `q_start`, or -1.
-fn find_same_block(p: &[u16], mut p_start: i32, mut length: i32, q: &[u16], q_start: i32, block_length: i32) -> i32 {
+fn find_same_block(
+    p: &[u16],
+    mut p_start: i32,
+    mut length: i32,
+    q: &[u16],
+    q_start: i32,
+    block_length: i32,
+) -> i32 {
     // Ensure that we do not even partially get past length.
     length -= block_length;
 
     while p_start <= length {
-        if equal_blocks(BlockData::Chars(p), p_start, BlockData::Chars(q), q_start, block_length) {
+        if equal_blocks(
+            BlockData::Chars(p),
+            p_start,
+            BlockData::Chars(q),
+            q_start,
+            block_length,
+        ) {
             return p_start;
         }
         p_start += 1;
@@ -1280,7 +1470,13 @@ fn find_same_block(p: &[u16], mut p_start: i32, mut length: i32, q: &[u16], q_st
 
 /// `findAllSameBlock(int[] p, int start, int limit, int value, int
 /// blockLength)` (private).
-fn find_all_same_block(p: &[i32], start: i32, mut limit: i32, value: i32, block_length: i32) -> i32 {
+fn find_all_same_block(
+    p: &[i32],
+    start: i32,
+    mut limit: i32,
+    value: i32,
+    block_length: i32,
+) -> i32 {
     // Ensure that we do not even partially get past limit.
     limit -= block_length;
 
@@ -1308,7 +1504,13 @@ fn find_all_same_block(p: &[i32], start: i32, mut limit: i32, value: i32, block_
 /// blockLength)` (private): the length of the longest suffix of
 /// `p[..length]` that is a prefix of the block of `q`, below the block
 /// length.
-fn get_overlap(p: BlockData<'_>, length: i32, q: BlockData<'_>, q_start: i32, block_length: i32) -> i32 {
+fn get_overlap(
+    p: BlockData<'_>,
+    length: i32,
+    q: BlockData<'_>,
+    q_start: i32,
+    block_length: i32,
+) -> i32 {
     let mut overlap = block_length - 1;
     debug_assert!(overlap <= length);
     while overlap > 0 && !equal_blocks(p, length - overlap, q, q_start, overlap) {
@@ -1419,6 +1621,7 @@ impl AllSameBlocks {
 
     /// `findMostUsed()`: the index of the most-used same-value block, -1
     /// when there is none.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn find_most_used(&self) -> i32 {
         if self.length == 0 {
             return -1;
@@ -1498,7 +1701,13 @@ impl MixedBlocks {
 
     /// `extend(int[]|char[] data, int minStart, int prevDataLength, int
     /// newDataLength)`.
-    fn extend(&mut self, data: BlockData<'_>, min_start: i32, prev_data_length: i32, new_data_length: i32) {
+    fn extend(
+        &mut self,
+        data: BlockData<'_>,
+        min_start: i32,
+        prev_data_length: i32,
+        new_data_length: i32,
+    ) {
         let mut start = prev_data_length - self.block_length;
         if start >= min_start {
             start += 1; // Skip the last block that we added last time.
@@ -1542,7 +1751,9 @@ impl MixedBlocks {
         let mut hash_code = block_data.at(block_start);
         block_start += 1;
         loop {
-            hash_code = hash_code.wrapping_mul(37).wrapping_add(block_data.at(block_start));
+            hash_code = hash_code
+                .wrapping_mul(37)
+                .wrapping_add(block_data.at(block_start));
             block_start += 1;
             if block_start >= block_limit {
                 break;
@@ -1562,7 +1773,13 @@ impl MixedBlocks {
 
     /// `addEntry(int[] data32, char[] data16, int blockStart, int hashCode,
     /// int dataIndex)` (private).
-    fn add_entry(&mut self, data: BlockData<'_>, block_start: i32, hash_code: i32, data_index: i32) {
+    fn add_entry(
+        &mut self,
+        data: BlockData<'_>,
+        block_start: i32,
+        hash_code: i32,
+        data_index: i32,
+    ) {
         debug_assert!(0 <= data_index && data_index < self.mask);
         let entry_index = self.find_entry(data, data, block_start, hash_code);
         if entry_index < 0 {
@@ -1574,7 +1791,13 @@ impl MixedBlocks {
 
     /// `findEntry(int[] data32, char[] data16, int[] blockData32, char[]
     /// blockData16, int blockStart, int hashCode)` (private).
-    fn find_entry(&self, data: BlockData<'_>, block_data: BlockData<'_>, block_start: i32, hash_code: i32) -> i32 {
+    fn find_entry(
+        &self,
+        data: BlockData<'_>,
+        block_data: BlockData<'_>,
+        block_start: i32,
+        hash_code: i32,
+    ) -> i32 {
         let shifted_hash_code = hash_code << self.shift;
         let initial_entry_index = Self::modulo(hash_code, self.length - 1) + 1; // 1..length-1
         let table = self.table();

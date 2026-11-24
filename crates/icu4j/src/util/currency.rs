@@ -35,7 +35,9 @@ use crate::r#impl::text_trie_map::{ResultHandler, TextTrieMap};
 use crate::text::currency_display_names::{self, CurrencyDisplayNames};
 use crate::text::currency_meta_info::{self, CurrencyFilter};
 use crate::util::currency_service_shim::CurrencyServiceShim;
-use crate::util::measure_unit::{CurrencyFactory, CustomSymbols, MeasureUnit, MeasureUnitProxy, UnitClass};
+use crate::util::measure_unit::{
+    CurrencyFactory, CustomSymbols, MeasureUnit, MeasureUnitProxy, UnitClass,
+};
 use crate::util::u_locale::{Category, ULocale};
 use crate::util::u_resource_bundle::UResourceBundle;
 
@@ -118,7 +120,10 @@ fn get_shim() -> Result<Arc<dyn ServiceShim>> {
             Err(e) => {
                 // if(DEBUG) e.printStackTrace(); (DEBUG is false unless the
                 // "currency" debug flag is set)
-                return Err(LuceneError::unchecked_with_message("java.lang.RuntimeException", Some(e.to_string())));
+                return Err(LuceneError::unchecked_with_message(
+                    "java.lang.RuntimeException",
+                    Some(e.to_string()),
+                ));
             }
         }
     }
@@ -138,10 +143,13 @@ static REGION_CURRENCY_CACHE: LazyLock<SoftCache<String, Currency, ()>> =
     LazyLock::new(|| SoftCache::new(|key: &String, _unused: ()| Currency::load_currency(key)));
 
 /// `UND`.
-static UND: LazyLock<ULocale> = LazyLock::new(|| ULocale::new("und").expect("und is a valid locale"));
+static UND: LazyLock<ULocale> =
+    LazyLock::new(|| ULocale::new("und").expect("und is a valid locale"));
 
 /// `POW10`.
-const POW10: [i32; 10] = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000];
+const POW10: [i32; 10] = [
+    1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000,
+];
 
 /// `ALL_TENDER_CODES` (a soft reference never cleared, crate precedent).
 static ALL_TENDER_CODES: Mutex<Option<Arc<Vec<String>>>> = Mutex::new(None);
@@ -174,7 +182,10 @@ impl Currency {
         Currency(MeasureUnit::with_class(
             Some("currency".to_string()),
             Some(the_iso_code.to_string()),
-            UnitClass::Currency { iso_code: the_iso_code.to_string(), custom: None },
+            UnitClass::Currency {
+                iso_code: the_iso_code.to_string(),
+                custom: None,
+            },
         ))
     }
 
@@ -184,7 +195,10 @@ impl Currency {
         Currency(MeasureUnit::with_class(
             Some("currency".to_string()),
             Some(iso_code.to_string()),
-            UnitClass::Currency { iso_code: iso_code.to_string(), custom: Some(CustomSymbols { symbol1, symbol2 }) },
+            UnitClass::Currency {
+                iso_code: iso_code.to_string(),
+                custom: Some(CustomSymbols { symbol1, symbol2 }),
+            },
         ))
     }
 
@@ -287,7 +301,10 @@ impl Currency {
     /// # Errors
     ///
     /// As [`get_available_currency_codes`](Self::get_available_currency_codes).
-    pub fn get_available_currency_codes_locale(loc: &Locale, d: &Date) -> Result<Option<Vec<String>>> {
+    pub fn get_available_currency_codes_locale(
+        loc: &Locale,
+        d: &Date,
+    ) -> Result<Option<Vec<String>>> {
         let ulocale = ULocale::for_locale(Some(loc))?.unwrap_or_else(ULocale::root);
         Self::get_available_currency_codes(&ulocale, d)
     }
@@ -354,9 +371,14 @@ impl Currency {
             Some(c) => c,
         };
         if !Self::is_alpha3_code(the_iso_code) {
-            return Err(LuceneError::illegal_argument("The input currency code is not 3-letter alphabetic code."));
+            return Err(LuceneError::illegal_argument(
+                "The input currency code is not 3-letter alphabetic code.",
+            ));
         }
-        Ok(Currency::cast(MeasureUnit::internal_get_instance("currency", &the_iso_code.to_ascii_uppercase())?))
+        Ok(Currency::cast(MeasureUnit::internal_get_instance(
+            "currency",
+            &the_iso_code.to_ascii_uppercase(),
+        )?))
     }
 
     /// `isAlpha3Code(String)`.
@@ -414,7 +436,11 @@ impl Currency {
     /// `IllegalArgumentException("registryKey must not be null")`.
     pub fn unregister(registry_key: Option<&RegistryKey>) -> Result<bool> {
         let registry_key = match registry_key {
-            None => return Err(LuceneError::illegal_argument("registryKey must not be null")),
+            None => {
+                return Err(LuceneError::illegal_argument(
+                    "registryKey must not be null",
+                ))
+            }
             Some(k) => k,
         };
         match current_shim() {
@@ -458,7 +484,11 @@ impl Currency {
     /// # Errors
     ///
     /// The errors of the locale data.
-    pub fn get_keyword_values_for_locale(key: &str, locale: &ULocale, commonly_used: bool) -> Result<Vec<String>> {
+    pub fn get_keyword_values_for_locale(
+        key: &str,
+        locale: &ULocale,
+        commonly_used: bool,
+    ) -> Result<Vec<String>> {
         // The only keyword we recognize is 'currency'
         if "currency" != key {
             return Ok(Vec::new());
@@ -562,7 +592,12 @@ impl Currency {
     /// # Errors
     ///
     /// As [`get_name`](Self::get_name).
-    pub fn get_name_locale(&self, locale: &Locale, name_style: i32, is_choice_format: Option<&mut [bool]>) -> Result<Option<String>> {
+    pub fn get_name_locale(
+        &self,
+        locale: &Locale,
+        name_style: i32,
+        is_choice_format: Option<&mut [bool]>,
+    ) -> Result<Option<String>> {
         let ulocale = ULocale::for_locale(Some(locale))?.unwrap_or_else(ULocale::root);
         self.get_name(&ulocale, name_style, is_choice_format)
     }
@@ -575,7 +610,12 @@ impl Currency {
     ///
     /// `IllegalArgumentException("bad name style: <style>")`, and the errors
     /// of the display-name data.
-    pub fn get_name(&self, locale: &ULocale, name_style: i32, is_choice_format: Option<&mut [bool]>) -> Result<Option<String>> {
+    pub fn get_name(
+        &self,
+        locale: &ULocale,
+        name_style: i32,
+        is_choice_format: Option<&mut [bool]>,
+    ) -> Result<Option<String>> {
         if let Some(custom) = self.custom_symbols() {
             if name_style == SYMBOL_NAME {
                 if let Some(c) = is_choice_format {
@@ -598,7 +638,9 @@ impl Currency {
             FORMAL_SYMBOL_NAME => names.get_formal_symbol(sub_type),
             VARIANT_SYMBOL_NAME => names.get_variant_symbol(sub_type),
             LONG_NAME => names.get_name(sub_type),
-            _ => Err(LuceneError::illegal_argument(format!("bad name style: {name_style}"))),
+            _ => Err(LuceneError::illegal_argument(format!(
+                "bad name style: {name_style}"
+            ))),
         }
     }
 
@@ -673,7 +715,12 @@ impl Currency {
     /// # Errors
     ///
     /// The errors of the display-name data.
-    pub fn parse(locale: &ULocale, text: &[u16], type_: i32, pos: &mut ParsePosition) -> Result<Option<String>> {
+    pub fn parse(
+        locale: &ULocale,
+        text: &[u16],
+        type_: i32,
+        pos: &mut ParsePosition,
+    ) -> Result<Option<String>> {
         let currency_trie_vec = Self::get_currency_trie_vec(locale)?;
         let mut max_length;
         let mut iso_result;
@@ -705,7 +752,10 @@ impl Currency {
     /// # Errors
     ///
     /// The errors of the display-name data.
-    pub fn get_parsing_trie(locale: &ULocale, type_: i32) -> Result<Arc<TextTrieMap<CurrencyStringInfo>>> {
+    pub fn get_parsing_trie(
+        locale: &ULocale,
+        type_: i32,
+    ) -> Result<Arc<TextTrieMap<CurrencyStringInfo>>> {
         let currency_trie_vec = Self::get_currency_trie_vec(locale)?;
         if type_ == LONG_NAME {
             Ok(currency_trie_vec[1].clone())
@@ -730,7 +780,10 @@ impl Currency {
     }
 
     /// `setupCurrencyTrieVec(ULocale, List<TextTrieMap<CurrencyStringInfo>>)`.
-    fn setup_currency_trie_vec(locale: &ULocale, trie_vec: &[Arc<TextTrieMap<CurrencyStringInfo>>]) -> Result<()> {
+    fn setup_currency_trie_vec(
+        locale: &ULocale,
+        trie_vec: &[Arc<TextTrieMap<CurrencyStringInfo>>],
+    ) -> Result<()> {
         let sym_trie = &trie_vec[0];
         let trie = &trie_vec[1];
 
@@ -755,7 +808,10 @@ impl Currency {
             }
         }
         for (name, iso_code) in names.name_map()?.iter() {
-            trie.put(&units(name), CurrencyStringInfo::new(iso_code.clone(), name.clone()));
+            trie.put(
+                &units(name),
+                CurrencyStringInfo::new(iso_code.clone(), name.clone()),
+            );
         }
         Ok(())
     }
@@ -849,7 +905,11 @@ impl Currency {
         let mut guard = ALL_CODES_AS_SET.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             let info = currency_meta_info::get_instance();
-            *guard = Some(Arc::new(info.currencies(&CurrencyFilter::all())?.into_iter().collect()));
+            *guard = Some(Arc::new(
+                info.currencies(&CurrencyFilter::all())?
+                    .into_iter()
+                    .collect(),
+            ));
         }
         Ok(guard.clone().expect("set above"))
     }
@@ -882,7 +942,8 @@ impl Currency {
 
         // If caller passed a date range, we cannot rely solely on the cache
         let info = currency_meta_info::get_instance();
-        let all_active = info.currencies(&CurrencyFilter::on_date_range(from, to).with_currency(Some(&code)))?;
+        let all_active =
+            info.currencies(&CurrencyFilter::on_date_range(from, to).with_currency(Some(&code)))?;
 
         Ok(all_active.contains(&code))
     }
@@ -946,7 +1007,10 @@ pub struct CurrencyStringInfo {
 impl CurrencyStringInfo {
     /// Equivalent to `CurrencyStringInfo(String, String)`.
     pub fn new(iso_code: String, currency_string: String) -> Self {
-        Self { iso_code, currency_string }
+        Self {
+            iso_code,
+            currency_string,
+        }
     }
 
     /// Equivalent to `getISOCode()`.

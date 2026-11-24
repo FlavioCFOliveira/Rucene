@@ -7,7 +7,9 @@
 use std::any::Any;
 
 use rucene::error::{LuceneError, Result};
-use rucene::util::java_collections::{java_identity_hash_code_stand_in, JavaHashCode, JavaObjectHashSet};
+use rucene::util::java_collections::{
+    java_identity_hash_code_stand_in, JavaHashCode, JavaObjectHashSet,
+};
 use rucene_analysis_common::jdk::character_iterator::CharacterIterator;
 use rucene_queryparser::jdk::locale::Locale;
 
@@ -34,7 +36,7 @@ use crate::util::u_resource_bundle::UResourceBundle;
 pub struct SimpleFilteredSentenceBreakIterator {
     delegate: Box<dyn BreakIterator>,
     text: Option<Box<dyn UCharacterIterator>>,
-    backwards_trie: Option<CharsTrie>,         // i.e. ".srM" for Mrs.
+    backwards_trie: Option<CharsTrie>, // i.e. ".srM" for Mrs.
     forwards_partial_trie: Option<CharsTrie>, // Has ".a" for "a.M."
     locales: BreakIteratorLocales,
 }
@@ -154,7 +156,11 @@ impl SimpleFilteredSentenceBreakIterator {
         }
         self.reset_state();
 
-        let text_len = self.text.as_deref().expect("resetState() set the text").get_length();
+        let text_len = self
+            .text
+            .as_deref()
+            .expect("resetState() set the text")
+            .get_length();
 
         while n != DONE && n != text_len {
             // outer loop runs once per underlying break (from fDelegate).
@@ -215,9 +221,17 @@ impl SimpleFilteredSentenceBreakIterator {
             return true;
         }
         let delegate_any = other.delegate.as_any();
-        let delegates_equal = if let Some(rbbi) = self.delegate.as_any().downcast_ref::<RuleBasedBreakIterator>() {
+        let delegates_equal = if let Some(rbbi) = self
+            .delegate
+            .as_any()
+            .downcast_ref::<RuleBasedBreakIterator>()
+        {
             rbbi.java_equals(delegate_any)
-        } else if let Some(sfsbi) = self.delegate.as_any().downcast_ref::<SimpleFilteredSentenceBreakIterator>() {
+        } else if let Some(sfsbi) = self
+            .delegate
+            .as_any()
+            .downcast_ref::<SimpleFilteredSentenceBreakIterator>()
+        {
             sfsbi.java_equals(delegate_any)
         } else {
             false
@@ -246,9 +260,17 @@ impl SimpleFilteredSentenceBreakIterator {
         if self.forwards_partial_trie.is_none() || self.backwards_trie.is_none() {
             panic!("java.lang.NullPointerException: trie");
         }
-        let delegate_hash = if let Some(rbbi) = self.delegate.as_any().downcast_ref::<RuleBasedBreakIterator>() {
+        let delegate_hash = if let Some(rbbi) = self
+            .delegate
+            .as_any()
+            .downcast_ref::<RuleBasedBreakIterator>()
+        {
             rbbi.hash_code()
-        } else if let Some(sfsbi) = self.delegate.as_any().downcast_ref::<SimpleFilteredSentenceBreakIterator>() {
+        } else if let Some(sfsbi) = self
+            .delegate
+            .as_any()
+            .downcast_ref::<SimpleFilteredSentenceBreakIterator>()
+        {
             sfsbi.hash_code()
         } else {
             java_identity_hash_code_stand_in("com.ibm.icu.text.BreakIterator")
@@ -353,7 +375,9 @@ struct FilterString(Vec<u16>);
 
 impl JavaHashCode for FilterString {
     fn java_hash_code(&self) -> i32 {
-        self.0.iter().fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(c as i32))
+        self.0
+            .iter()
+            .fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(c as i32))
     }
 }
 
@@ -451,7 +475,10 @@ impl FilteredBreakIteratorBuilder for Builder {
         self.filter_set.remove(&FilterString(str.to_vec()))
     }
 
-    fn wrap_iterator_with_filter(&self, adopt_break_iterator: Box<dyn BreakIterator>) -> Result<Box<dyn BreakIterator>> {
+    fn wrap_iterator_with_filter(
+        &self,
+        adopt_break_iterator: Box<dyn BreakIterator>,
+    ) -> Result<Box<dyn BreakIterator>> {
         if self.filter_set.is_empty() {
             // Short circuit - nothing to except.
             return Ok(adopt_break_iterator);

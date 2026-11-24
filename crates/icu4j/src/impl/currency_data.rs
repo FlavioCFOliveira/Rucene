@@ -27,7 +27,11 @@ pub trait CurrencyDisplayInfoProvider: Send + Sync {
     /// # Errors
     ///
     /// `MissingResourceException` when the data cannot be loaded.
-    fn get_instance(&self, locale: Option<&ULocale>, with_fallback: bool) -> Result<Option<Arc<dyn CurrencyDisplayInfo>>>;
+    fn get_instance(
+        &self,
+        locale: Option<&ULocale>,
+        with_fallback: bool,
+    ) -> Result<Option<Arc<dyn CurrencyDisplayInfo>>>;
 
     /// `hasData()`.
     fn has_data(&self) -> bool;
@@ -77,7 +81,12 @@ pub struct CurrencyFormatInfo {
 impl CurrencyFormatInfo {
     /// `new CurrencyFormatInfo(String isoCode, String currencyPattern,
     /// String monetarySeparator, String monetaryGroupingSeparator)`.
-    pub fn new(iso_code: &str, currency_pattern: &str, monetary_separator: &str, monetary_grouping_separator: &str) -> Self {
+    pub fn new(
+        iso_code: &str,
+        currency_pattern: &str,
+        monetary_separator: &str,
+        monetary_grouping_separator: &str,
+    ) -> Self {
         Self {
             iso_code: iso_code.to_string(),
             currency_pattern: currency_pattern.to_string(),
@@ -155,6 +164,7 @@ impl CurrencySpacingInfo {
 
     /// `new CurrencySpacingInfo(String... strings)`: six strings, before
     /// then after, each in `SpacingPattern` order.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub fn from_strings(strings: &[&str]) -> Self {
         debug_assert!(strings.len() == 6);
         let mut s = Self::default();
@@ -213,7 +223,11 @@ pub fn provider() -> Arc<dyn CurrencyDisplayInfoProvider> {
 pub struct FallbackCurrencyDisplayInfoProvider;
 
 impl CurrencyDisplayInfoProvider for FallbackCurrencyDisplayInfoProvider {
-    fn get_instance(&self, _locale: Option<&ULocale>, with_fallback: bool) -> Result<Option<Arc<dyn CurrencyDisplayInfo>>> {
+    fn get_instance(
+        &self,
+        _locale: Option<&ULocale>,
+        with_fallback: bool,
+    ) -> Result<Option<Arc<dyn CurrencyDisplayInfo>>> {
         Ok(Some(DefaultInfo::get_with_fallback(with_fallback)))
     }
 
@@ -231,9 +245,12 @@ pub struct DefaultInfo {
     fallback: bool,
 }
 
-static FALLBACK_INSTANCE: LazyLock<Arc<DefaultInfo>> = LazyLock::new(|| Arc::new(DefaultInfo { fallback: true }));
-static NO_FALLBACK_INSTANCE: LazyLock<Arc<DefaultInfo>> = LazyLock::new(|| Arc::new(DefaultInfo { fallback: false }));
-static EMPTY_MAP: LazyLock<Arc<JavaHashMap<String>>> = LazyLock::new(|| Arc::new(JavaHashMap::new()));
+static FALLBACK_INSTANCE: LazyLock<Arc<DefaultInfo>> =
+    LazyLock::new(|| Arc::new(DefaultInfo { fallback: true }));
+static NO_FALLBACK_INSTANCE: LazyLock<Arc<DefaultInfo>> =
+    LazyLock::new(|| Arc::new(DefaultInfo { fallback: false }));
+static EMPTY_MAP: LazyLock<Arc<JavaHashMap<String>>> =
+    LazyLock::new(|| Arc::new(JavaHashMap::new()));
 
 impl DefaultInfo {
     /// `getWithFallback(boolean fallback)`.
@@ -305,6 +322,10 @@ impl CurrencyDisplayInfo for DefaultInfo {
     }
 
     fn get_spacing_info(&self) -> Result<Option<Arc<CurrencySpacingInfo>>> {
-        Ok(if self.fallback { Some(CurrencySpacingInfo::default_info()) } else { None })
+        Ok(if self.fallback {
+            Some(CurrencySpacingInfo::default_info())
+        } else {
+            None
+        })
     }
 }

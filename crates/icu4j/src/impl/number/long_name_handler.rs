@@ -73,11 +73,15 @@ fn get_index(plural_keyword: &str) -> Result<usize> {
 ///
 /// `ICUException("Could not find data in 'other' plural variant")`.
 pub(crate) fn get_with_plural(strings: &UnitData, plural: StandardPlural) -> Result<Vec<u16>> {
-    let result = strings[plural.ordinal() as usize].as_ref().or(strings[StandardPlural::Other.ordinal() as usize].as_ref());
+    let result = strings[plural.ordinal() as usize]
+        .as_ref()
+        .or(strings[StandardPlural::Other.ordinal() as usize].as_ref());
     match result {
         Some(r) => Ok(r.clone()),
         // There should always be data in the "other" plural variant.
-        None => Err(ICUException::with_message("Could not find data in 'other' plural variant").error()),
+        None => {
+            Err(ICUException::with_message("Could not find data in 'other' plural variant").error())
+        }
     }
 }
 
@@ -136,20 +140,35 @@ fn extract_core_pattern(pattern: &[u16]) -> ExtractCorePatternResult {
             }
         }
     } else if index_of(pattern, &placeholder, 1) == -1 {
-        ExtractCorePatternResult { core_unit: pattern.to_vec(), placeholder_position: PlaceholderPosition::None, joiner_char: 0 }
+        ExtractCorePatternResult {
+            core_unit: pattern.to_vec(),
+            placeholder_position: PlaceholderPosition::None,
+            joiner_char: 0,
+        }
     } else {
-        ExtractCorePatternResult { core_unit: pattern.to_vec(), placeholder_position: PlaceholderPosition::Middle, joiner_char: 0 }
+        ExtractCorePatternResult {
+            core_unit: pattern.to_vec(),
+            placeholder_position: PlaceholderPosition::Middle,
+            joiner_char: 0,
+        }
     }
 }
 
 /// The `ICUResourceBundle` of a base name and locale.
 fn bundle(base_name: &str, locale: &ULocale) -> Result<Arc<ICUResourceBundle>> {
-    Ok(UResourceBundle::get_bundle_instance_for(Some(base_name), Some(locale))?.as_icu()?.clone())
+    Ok(
+        UResourceBundle::get_bundle_instance_for(Some(base_name), Some(locale))?
+            .as_icu()?
+            .clone(),
+    )
 }
 
 /// `getGenderForBuiltin(ULocale, MeasureUnit)`: loads and returns the
 /// gender of the specified builtin unit.
-fn get_gender_for_builtin(locale: &ULocale, builtin_unit: Option<&MeasureUnit>) -> Result<Vec<u16>> {
+fn get_gender_for_builtin(
+    locale: &ULocale,
+    builtin_unit: Option<&MeasureUnit>,
+) -> Result<Vec<u16>> {
     let builtin_unit = builtin_unit.ok_or_else(|| crate::jdk::null_pointer("builtinUnit"))?;
     let units_bundle = bundle(ICUData::ICU_UNIT_BASE_NAME, locale)?;
 
@@ -193,11 +212,19 @@ struct InflectedPluralSink<'a> {
 }
 
 impl<'a> InflectedPluralSink<'a> {
-    fn new(gender: Option<Vec<u16>>, case_variant: Option<String>, out_array: &'a mut UnitData) -> Self {
+    fn new(
+        gender: Option<Vec<u16>>,
+        case_variant: Option<String>,
+        out_array: &'a mut UnitData,
+    ) -> Self {
         for slot in out_array.iter_mut().take(ARRAY_LENGTH) {
             *slot = None;
         }
-        InflectedPluralSink { gender, case_variant, out_array }
+        InflectedPluralSink {
+            gender,
+            case_variant,
+            out_array,
+        }
     }
 
     /// Tries to load data for the configured gender from `genderTable`.
@@ -205,7 +232,11 @@ impl<'a> InflectedPluralSink<'a> {
     /// data will be for the configured gender if found, falling back to
     /// "neuter" and no-gender if not. The caseVariant property is used to
     /// look up the appropriate case.
-    fn load_for_plural_form(&self, gender_table: &dyn Table, value: &mut dyn Value) -> Result<bool> {
+    fn load_for_plural_form(
+        &self,
+        gender_table: &dyn Table,
+        value: &mut dyn Value,
+    ) -> Result<bool> {
         if let Some(gender) = self.gender.as_ref().filter(|g| !g.is_empty()) {
             if self.load_for_gender(gender_table, gender, value)? {
                 return Ok(true);
@@ -213,16 +244,23 @@ impl<'a> InflectedPluralSink<'a> {
             // Java compares with the literal by identity (`gender !=
             // "neuter"`); a value equal to "neuter" was looked up above
             // already, so comparing values gives the same lookups.
-            if *gender != units("neuter") && self.load_for_gender(gender_table, &units("neuter"), value)? {
+            if *gender != units("neuter")
+                && self.load_for_gender(gender_table, &units("neuter"), value)?
+            {
                 return Ok(true);
             }
         }
-        Ok(self.load_for_gender(gender_table, &units("_"), value)?)
+        self.load_for_gender(gender_table, &units("_"), value)
     }
 
     /// Tries to load data for the given gender from `genderTable`.
     /// Returns true if found, returning the data in `value`.
-    fn load_for_gender(&self, gender_table: &dyn Table, gender_val: &[u16], value: &mut dyn Value) -> Result<bool> {
+    fn load_for_gender(
+        &self,
+        gender_table: &dyn Table,
+        gender_val: &[u16],
+        value: &mut dyn Value,
+    ) -> Result<bool> {
         if !gender_table.find_value(gender_val, value) {
             return Ok(false);
         }
@@ -233,7 +271,9 @@ impl<'a> InflectedPluralSink<'a> {
             }
             // As above: identity in Java, an equal value repeats the
             // lookup above.
-            if case_variant != "nominative" && Self::load_for_case(case_table.as_ref(), &units("nominative"), value) {
+            if case_variant != "nominative"
+                && Self::load_for_case(case_table.as_ref(), &units("nominative"), value)
+            {
                 return Ok(true);
             }
         }
@@ -388,12 +428,15 @@ pub(crate) fn get_measure_data(
 
     // If the unit is an alias, replace it with the replacement.
     let mut unit_sub_type: Option<String> = unit.get_subtype().map(str::to_string);
-    let metadata_resource = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "metadata")?;
+    let metadata_resource =
+        UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "metadata")?;
     let mut alias_sink = AliasSink::default();
-    metadata_resource.as_icu()?.get_all_items_with_fallback_no_fail(
-        &format!("alias/unit/{}", unit_sub_type.as_deref().unwrap_or("null")),
-        &mut alias_sink,
-    )?;
+    metadata_resource
+        .as_icu()?
+        .get_all_items_with_fallback_no_fail(
+            &format!("alias/unit/{}", unit_sub_type.as_deref().unwrap_or("null")),
+            &mut alias_sink,
+        )?;
     if alias_sink.replacement.is_some() {
         unit_sub_type = alias_sink.replacement.clone();
     }
@@ -430,7 +473,9 @@ pub(crate) fn get_measure_data(
     if width == UnitWidth::FullName {
         if let Some(case) = unit_display_case.filter(|c| !c.is_empty()) {
             let case_key = format!("{key}/case/{case}");
-            match resource.get_all_items_with_fallback(&case_key, &mut PluralTableSink { out_array }) {
+            match resource
+                .get_all_items_with_fallback(&case_key, &mut PluralTableSink { out_array })
+            {
                 Ok(()) => {
                     // TODO(icu-units#138): our fallback logic is not
                     // spec-compliant: we might have found "other" data in
@@ -456,13 +501,20 @@ pub(crate) fn get_measure_data(
 }
 
 /// `getCurrencyLongNameData(ULocale, Currency, String[])`.
-fn get_currency_long_name_data(locale: &ULocale, currency: &Currency, out_array: &mut UnitData) -> Result<()> {
+fn get_currency_long_name_data(
+    locale: &ULocale,
+    currency: &Currency,
+    out_array: &mut UnitData,
+) -> Result<()> {
     // In ICU4J, this method gets a CurrencyData from CurrencyData.provider.
     // TODO(ICU4J): Implement this without going through CurrencyDisplayNames?
     let info = currency_data::provider()
         .get_instance(Some(locale), true)?
         .ok_or_else(|| crate::jdk::null_pointer("currency display info"))?;
-    let mut data = (*info.get_unit_patterns()?.ok_or_else(|| crate::jdk::null_pointer("unit patterns"))?).clone();
+    let mut data = (*info
+        .get_unit_patterns()?
+        .ok_or_else(|| crate::jdk::null_pointer("unit patterns"))?)
+    .clone();
     // Entries in the data map are filled in with any CurrencyUnitPatterns
     // data for locale, or if there is no CurrencyUnitPatterns data for
     // locale since the patterns all inherited from the "other" pattern in
@@ -554,9 +606,15 @@ impl DerivedComponents {
     /// Constructor. Equivalent to `DerivedComponents(ULocale, String,
     /// String)`.
     fn new(locale: &ULocale, feature: &str, structure: &str) -> Result<Self> {
-        let mut result = DerivedComponents { value0: Some(String::new()), value1: Some(String::new()) };
+        let mut result = DerivedComponents {
+            value0: Some(String::new()),
+            value1: Some(String::new()),
+        };
         let load = |result: &mut DerivedComponents| -> Result<()> {
-            let derivations_bundle = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "grammaticalFeatures")?;
+            let derivations_bundle = UResourceBundle::get_bundle_instance(
+                Some(ICUData::ICU_BASE_NAME),
+                "grammaticalFeatures",
+            )?;
             let derivations_bundle = derivations_bundle.get("grammaticalData")?;
             let derivations_bundle = derivations_bundle.get("derivations")?;
 
@@ -572,9 +630,17 @@ impl DerivedComponents {
             let stack_bundle = stack_bundle.get(feature)?;
             let stack_bundle = stack_bundle.get(structure)?;
             let value = to_rust_string(&stack_bundle.get_string_at(0)?);
-            result.value0 = if value == "compound" { None } else { Some(value) };
+            result.value0 = if value == "compound" {
+                None
+            } else {
+                Some(value)
+            };
             let value = to_rust_string(&stack_bundle.get_string_at(1)?);
-            result.value1 = if value == "compound" { None } else { Some(value) };
+            result.value1 = if value == "compound" {
+                None
+            } else {
+                Some(value)
+            };
             Ok(())
         };
         match load(&mut result) {
@@ -589,18 +655,23 @@ impl DerivedComponents {
 
     /// `value0(String)`.
     fn value0(&self, compound_value: Option<&str>) -> Option<String> {
-        self.value0.clone().or_else(|| compound_value.map(str::to_string))
+        self.value0
+            .clone()
+            .or_else(|| compound_value.map(str::to_string))
     }
 
     /// `value1(String)`.
     fn value1(&self, compound_value: Option<&str>) -> Option<String> {
-        self.value1.clone().or_else(|| compound_value.map(str::to_string))
+        self.value1
+            .clone()
+            .or_else(|| compound_value.map(str::to_string))
     }
 }
 
 /// `getDeriveCompoundRule(ULocale, String, String)`.
 fn get_derive_compound_rule(locale: &ULocale, feature: &str, structure: &str) -> Result<Vec<u16>> {
-    let derivations_bundle = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "grammaticalFeatures")?;
+    let derivations_bundle =
+        UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "grammaticalFeatures")?;
 
     let derivations_bundle = derivations_bundle.get("grammaticalData")?;
     let derivations_bundle = derivations_bundle.get("derivations")?;
@@ -651,7 +722,10 @@ fn calculate_gender_for_unit(locale: &ULocale, unit: &MeasureUnit) -> Result<Vec
     if mui.get_complexity() == Complexity::Compound {
         let mut start_slice = 0i32;
         let mut end_slice = single_units.len() as i32 - 1;
-        debug_assert!(end_slice > 0, "COMPOUND units have more than one single unit");
+        debug_assert!(
+            end_slice > 0,
+            "COMPOUND units have more than one single unit"
+        );
         if single_units[end_slice as usize].get_dimensionality() < 0 {
             // We have a -per- construct
             let per_rule = get_derive_compound_rule(locale, "gender", "per")?;
@@ -695,7 +769,10 @@ fn calculate_gender_for_unit(locale: &ULocale, unit: &MeasureUnit) -> Result<Vec
         debug_assert!(start_slice == end_slice);
         single_unit_index = start_slice as usize;
     } else if mui.get_complexity() == Complexity::Mixed {
-        return Err(ICUException::with_message("calculateGenderForUnit does not support MIXED units").error());
+        return Err(ICUException::with_message(
+            "calculateGenderForUnit does not support MIXED units",
+        )
+        .error());
     } else {
         debug_assert!(mui.get_complexity() == Complexity::Single);
         debug_assert!(single_units.len() == 1);
@@ -722,11 +799,18 @@ fn calculate_gender_for_unit(locale: &ULocale, unit: &MeasureUnit) -> Result<Vec
         }
         // Otherwise we use the gender of the simple unit (no prefix)
     }
-    get_gender_for_builtin(locale, MeasureUnit::for_identifier(Some(single_unit.get_simple_unit_id()))?.as_ref())
+    get_gender_for_builtin(
+        locale,
+        MeasureUnit::for_identifier(Some(single_unit.get_simple_unit_id()))?.as_ref(),
+    )
 }
 
 /// `maybeCalculateGender(ULocale, MeasureUnit, String[])`.
-fn maybe_calculate_gender(locale: &ULocale, unit: &MeasureUnit, out_array: &mut UnitData) -> Result<()> {
+fn maybe_calculate_gender(
+    locale: &ULocale,
+    unit: &MeasureUnit,
+    out_array: &mut UnitData,
+) -> Result<()> {
     if out_array[GENDER_INDEX].is_none() {
         let meter_gender = get_gender_for_builtin(locale, Some(&measure_unit::METER))?;
         if meter_gender.is_empty() {
@@ -753,7 +837,9 @@ struct HandlerModifierStore(Weak<LongNameHandler>);
 
 impl ModifierStore for HandlerModifierStore {
     fn get_modifier(&self, signum: Signum, plural: StandardPlural) -> Option<Arc<dyn Modifier>> {
-        self.0.upgrade().and_then(|h| h.get_modifier(signum, plural))
+        self.0
+            .upgrade()
+            .and_then(|h| h.get_modifier(signum, plural))
     }
 }
 
@@ -795,17 +881,30 @@ impl LongNameHandler {
     ) -> Arc<LongNameHandler> {
         Arc::new_cyclic(|weak: &Weak<LongNameHandler>| {
             let store: Arc<dyn ModifierStore> = Arc::new(HandlerModifierStore(weak.clone()));
-            let mut modifiers: Vec<Option<Arc<dyn Modifier>>> = vec![None; StandardPlural::COUNT as usize];
-            for (plural, compiled_pattern) in StandardPlural::VALUES.iter().zip(compiled.compiled.iter()) {
-                let parameters = Parameters { obj: Some(store.clone()), signum: None, plural: Some(*plural) };
-                modifiers[plural.ordinal() as usize] = Some(Arc::new(SimpleModifier::with_parameters(
-                    compiled_pattern,
-                    Some(compiled.field),
-                    false,
-                    Some(parameters),
-                )));
+            let mut modifiers: Vec<Option<Arc<dyn Modifier>>> =
+                vec![None; StandardPlural::COUNT as usize];
+            for (plural, compiled_pattern) in
+                StandardPlural::VALUES.iter().zip(compiled.compiled.iter())
+            {
+                let parameters = Parameters {
+                    obj: Some(store.clone()),
+                    signum: None,
+                    plural: Some(*plural),
+                };
+                modifiers[plural.ordinal() as usize] =
+                    Some(Arc::new(SimpleModifier::with_parameters(
+                        compiled_pattern,
+                        Some(compiled.field),
+                        false,
+                        Some(parameters),
+                    )));
             }
-            LongNameHandler { modifiers, rules: rules.clone(), parent, gender }
+            LongNameHandler {
+                modifiers,
+                rules: rules.clone(),
+                parent,
+                gender,
+            }
         })
     }
 
@@ -814,7 +913,11 @@ impl LongNameHandler {
     /// # Errors
     ///
     /// The errors of [`get_measure_data`].
-    pub fn get_unit_display_name(locale: &ULocale, unit: &MeasureUnit, width: UnitWidth) -> Result<Option<Vec<u16>>> {
+    pub fn get_unit_display_name(
+        locale: &ULocale,
+        unit: &MeasureUnit,
+        width: UnitWidth,
+    ) -> Result<Option<Vec<u16>>> {
         let mut measure_data = new_unit_data();
         get_measure_data(locale, unit, width, Some(""), &mut measure_data)?;
         Ok(measure_data[DNAM_INDEX].clone())
@@ -864,7 +967,8 @@ impl LongNameHandler {
             get_measure_data(locale, unit, width, unit_display_case, &mut simple_formats)?;
             maybe_calculate_gender(locale, unit, &mut simple_formats)?;
             // TODO(ICU4J): Reduce the number of object creations here?
-            let compiled = Self::simple_formats_to_modifiers(&simple_formats, &nf_field::MEASURE_UNIT)?;
+            let compiled =
+                Self::simple_formats_to_modifiers(&simple_formats, &nf_field::MEASURE_UNIT)?;
             let gender = match &simple_formats[GENDER_INDEX] {
                 Some(g) => to_rust_string(g),
                 None => String::new(),
@@ -968,17 +1072,29 @@ impl LongNameHandler {
                 // rawPerUnitFormat is something like "{0} per {1}"; we need
                 // to substitute in the plural form.
                 let per_pattern_formatter =
-                    SimpleFormatterImpl::compile_to_string_min_max_arguments(&raw_per_unit_format, &mut sb, 2, 2)?;
+                    SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                        &raw_per_unit_format,
+                        &mut sb,
+                        2,
+                        2,
+                    )?;
                 // Plural and placeholder handling for 7. denominatorUnitString:
                 // TODO(icu-units#139): hardcoded:
                 // <deriveComponent feature="plural" structure="per" value0="compound" value1="one"/>
-                let raw_denominator_format = get_with_plural(&denominator_unit_data, StandardPlural::One)?;
+                let raw_denominator_format =
+                    get_with_plural(&denominator_unit_data, StandardPlural::One)?;
                 // Some "one" pattern may not contain "{0}". For example in
                 // "ar" or "ne" locale.
                 let denominator_formatter =
-                    SimpleFormatterImpl::compile_to_string_min_max_arguments(&raw_denominator_format, &mut sb, 0, 1)?;
-                let denominator_string =
-                    PatternProps::trim_space_char(&SimpleFormatterImpl::get_text_with_no_arguments(&denominator_formatter));
+                    SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                        &raw_denominator_format,
+                        &mut sb,
+                        0,
+                        1,
+                    )?;
+                let denominator_string = PatternProps::trim_space_char(
+                    &SimpleFormatterImpl::get_text_with_no_arguments(&denominator_formatter),
+                );
                 // TODO(icu-units#28): Why does UnicodeString need to be
                 // explicit in the following line?
                 SimpleFormatterImpl::format_compiled_pattern(
@@ -991,7 +1107,11 @@ impl LongNameHandler {
         let compiled = if per_unit_pattern.is_empty() {
             Self::simple_formats_to_modifiers(&numerator_unit_data, &nf_field::MEASURE_UNIT)?
         } else {
-            Self::multi_simple_formats_to_modifiers(&numerator_unit_data, &per_unit_pattern, &nf_field::MEASURE_UNIT)?
+            Self::multi_simple_formats_to_modifiers(
+                &numerator_unit_data,
+                &per_unit_pattern,
+                &nf_field::MEASURE_UNIT,
+            )?
         };
 
         // Gender
@@ -1002,7 +1122,12 @@ impl LongNameHandler {
         //
         // gender/per deriveCompound rules don't say:
         // <deriveCompound feature="gender" structure="per" value="0"/> <!-- gender(gram-per-meter) ←  gender(gram) -->
-        let gender = get_derived_gender(loc, "per", &numerator_unit_data, Some(&denominator_unit_data))?;
+        let gender = get_derived_gender(
+            loc,
+            "per",
+            &numerator_unit_data,
+            Some(&denominator_unit_data),
+        )?;
         let gender = gender.map_or_else(String::new, |g| to_rust_string(&g));
 
         Ok(Self::build(compiled, rules, parent, gender))
@@ -1010,12 +1135,20 @@ impl LongNameHandler {
 
     /// `simpleFormatsToModifiers(String[], NumberFormat.Field)`: the
     /// compiled pattern of each plural form.
-    fn simple_formats_to_modifiers(simple_formats: &UnitData, field: FieldRef) -> Result<CompiledModifiers> {
+    fn simple_formats_to_modifiers(
+        simple_formats: &UnitData,
+        field: FieldRef,
+    ) -> Result<CompiledModifiers> {
         let mut sb = Vec::new();
         let mut compiled = Vec::with_capacity(StandardPlural::COUNT as usize);
         for plural in StandardPlural::VALUES {
             let simple_format = get_with_plural(simple_formats, plural)?;
-            compiled.push(SimpleFormatterImpl::compile_to_string_min_max_arguments(&simple_format, &mut sb, 0, 1)?);
+            compiled.push(SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                &simple_format,
+                &mut sb,
+                0,
+                1,
+            )?);
         }
         Ok(CompiledModifiers { compiled, field })
     }
@@ -1029,23 +1162,36 @@ impl LongNameHandler {
         field: FieldRef,
     ) -> Result<CompiledModifiers> {
         let mut sb = Vec::new();
-        let trail_compiled = SimpleFormatterImpl::compile_to_string_min_max_arguments(trail_format, &mut sb, 1, 1)?;
+        let trail_compiled =
+            SimpleFormatterImpl::compile_to_string_min_max_arguments(trail_format, &mut sb, 1, 1)?;
         let mut compiled = Vec::with_capacity(StandardPlural::COUNT as usize);
         for plural in StandardPlural::VALUES {
             let lead_format = get_with_plural(lead_formats, plural)?;
             let compound_format = if lead_format.is_empty() {
                 trail_format.to_vec()
             } else {
-                SimpleFormatterImpl::format_compiled_pattern(&trail_compiled, &[Arg::Text(&lead_format)])?
+                SimpleFormatterImpl::format_compiled_pattern(
+                    &trail_compiled,
+                    &[Arg::Text(&lead_format)],
+                )?
             };
-            compiled.push(SimpleFormatterImpl::compile_to_string_min_max_arguments(&compound_format, &mut sb, 0, 1)?);
+            compiled.push(SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                &compound_format,
+                &mut sb,
+                0,
+                1,
+            )?);
         }
         Ok(CompiledModifiers { compiled, field })
     }
 
     /// Equivalent to `getModifier(Signum, StandardPlural)` (the
     /// `ModifierStore` method).
-    pub fn get_modifier(&self, _signum: Signum, plural: StandardPlural) -> Option<Arc<dyn Modifier>> {
+    pub fn get_modifier(
+        &self,
+        _signum: Signum,
+        plural: StandardPlural,
+    ) -> Option<Arc<dyn Modifier>> {
         // Signum ignored
         self.modifiers[plural.ordinal() as usize].clone()
     }
@@ -1059,9 +1205,13 @@ impl ModifierStore for LongNameHandler {
 
 impl MicroPropsGenerator for LongNameHandler {
     fn process_quantity(&self, quantity: &mut dyn DecimalQuantity) -> Result<MicroProps> {
-        let parent = self.parent.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
+        let parent = self
+            .parent
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
         let mut micros = parent.process_quantity(quantity)?;
-        let plural_form = RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), quantity)?;
+        let plural_form =
+            RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), quantity)?;
         micros.mod_outer = self.modifiers[plural_form.ordinal() as usize].clone();
         micros.gender = Some(self.gender.clone());
         Ok(micros)
@@ -1072,9 +1222,14 @@ impl ParentlessMicroPropsGenerator for LongNameHandler {
     /// Produces a plural-appropriate Modifier for a unit: `quantity` is
     /// taken as the final smallest unit, while the larger unit values must
     /// be provided via `micros.mixedMeasures`.
-    fn process_quantity_with_micros(&self, quantity: &mut dyn DecimalQuantity, mut micros: MicroProps) -> Result<MicroProps> {
+    fn process_quantity_with_micros(
+        &self,
+        quantity: &mut dyn DecimalQuantity,
+        mut micros: MicroProps,
+    ) -> Result<MicroProps> {
         // TODO(units): Get the right plural form?
-        let plural_form = RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), quantity)?;
+        let plural_form =
+            RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), quantity)?;
         micros.mod_outer = self.modifiers[plural_form.ordinal() as usize].clone();
         Ok(micros)
     }
@@ -1092,8 +1247,14 @@ fn process_pattern_times(
     mut case_variant: Option<String>,
     out_array: &mut UnitData,
 ) -> Result<()> {
-    debug_assert!(out_array[StandardPlural::Other.ordinal() as usize].is_none(), "outArray must have only null values!");
-    debug_assert!(out_array[PER_INDEX].is_none(), "outArray must have only null values!");
+    debug_assert!(
+        out_array[StandardPlural::Other.ordinal() as usize].is_none(),
+        "outArray must have only null values!"
+    );
+    debug_assert!(
+        out_array[PER_INDEX].is_none(),
+        "outArray must have only null values!"
+    );
 
     let mut product_unit = match product_unit {
         None => {
@@ -1106,7 +1267,9 @@ fn process_pattern_times(
     if product_unit.get_complexity() == Complexity::Mixed {
         // TODO(icu-units#28): consider when serialize should be called.
         // (Java: Mixed units not supported.)
-        return Err(LuceneError::unsupported_operation("Mixed units not supported by LongNameHandler"));
+        return Err(LuceneError::unsupported_operation(
+            "Mixed units not supported by LongNameHandler",
+        ));
     }
 
     // 1. If the unitId is empty or invalid, fail
@@ -1134,7 +1297,8 @@ fn process_pattern_times(
     // 2. Set timesPattern to be getValue(times, locale, length)
     let times_pattern = get_compound_value("times", loc, width)?;
     let mut sb = Vec::new();
-    let times_pattern_formatter = SimpleFormatterImpl::compile_to_string_min_max_arguments(&times_pattern, &mut sb, 2, 2)?;
+    let times_pattern_formatter =
+        SimpleFormatterImpl::compile_to_string_min_max_arguments(&times_pattern, &mut sb, 2, 2)?;
 
     let mut global_placeholder: Vec<Option<PlaceholderPosition>> = vec![None; ARRAY_LENGTH];
     let mut global_joiner_char: u16 = 0;
@@ -1274,24 +1438,39 @@ fn process_pattern_times(
         let mut single_unit_array = new_unit_data();
         // At this point we are left with a Simple Unit:
         debug_assert!(
-            single_unit.build().map(|u| u.get_identifier()).ok().as_deref() == Some(single_unit.get_simple_unit_id()),
+            single_unit
+                .build()
+                .map(|u| u.get_identifier())
+                .ok()
+                .as_deref()
+                == Some(single_unit.get_simple_unit_id()),
             "Should be equal: singleUnit.build().getIdentifier() and singleUnit.getSimpleUnitID()"
         );
         let built = single_unit.build()?;
-        get_measure_data(loc, &built, width, single_case_variant.as_deref(), &mut single_unit_array)?;
+        get_measure_data(
+            loc,
+            &built,
+            width,
+            single_case_variant.as_deref(),
+            &mut single_unit_array,
+        )?;
         // TODO(icu-units#139): ...
         if single_unit_array[GENDER_INDEX].is_some() {
-            debug_assert!(!single_unit_array[GENDER_INDEX].as_ref().is_some_and(Vec::is_empty));
+            debug_assert!(!single_unit_array[GENDER_INDEX]
+                .as_ref()
+                .is_some_and(Vec::is_empty));
 
             if prefix != MeasurePrefix::One {
-                single_unit_array[GENDER_INDEX] = get_derived_gender(loc, "prefix", &single_unit_array, None)?;
+                single_unit_array[GENDER_INDEX] =
+                    get_derived_gender(loc, "prefix", &single_unit_array, None)?;
             }
 
             // Powers use compoundUnitPattern1, dimensionalityPrefixPatterns
             // may have a "gender" entry, but they're ignored for
             // determining the gender:
             if dimensionality != 1 {
-                single_unit_array[GENDER_INDEX] = get_derived_gender(loc, "power", &single_unit_array, None)?;
+                single_unit_array[GENDER_INDEX] =
+                    get_derived_gender(loc, "power", &single_unit_array, None)?;
             }
 
             let times_gender_rule = get_derive_compound_rule(loc, "gender", "times")?;
@@ -1301,7 +1480,9 @@ fn process_pattern_times(
                         debug_assert!(out_array[GENDER_INDEX].is_none());
                         out_array[GENDER_INDEX] = single_unit_array[GENDER_INDEX].clone();
                     }
-                } else if times_gender_rule[0] == '1' as u16 && single_unit_index == single_units_len - 1 {
+                } else if times_gender_rule[0] == '1' as u16
+                    && single_unit_index == single_units_len - 1
+                {
                     debug_assert!(out_array[GENDER_INDEX].is_none());
                     out_array[GENDER_INDEX] = single_unit_array[GENDER_INDEX].clone();
                 }
@@ -1339,7 +1520,9 @@ fn process_pattern_times(
 
             // 4.7 If the position is middle, then fail
             if r.placeholder_position == PlaceholderPosition::Middle {
-                return Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"));
+                return Err(crate::jdk::unchecked_no_message(
+                    "java.lang.UnsupportedOperationException",
+                ));
             }
 
             // 4.8. If globalPlaceholder is empty
@@ -1357,7 +1540,12 @@ fn process_pattern_times(
             // Not mentioned in spec: whether to apply the SI prefix
             // pattern first or the dimensionality prefix pattern first.
             if prefix != MeasurePrefix::One {
-                let prefix_compiled = SimpleFormatterImpl::compile_to_string_min_max_arguments(&prefix_pattern, &mut sb, 1, 1)?;
+                let prefix_compiled = SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                    &prefix_pattern,
+                    &mut sb,
+                    1,
+                    1,
+                )?;
 
                 // 4.9.1. If siPrefixPattern is not empty, then set
                 // coreUnit to be the combination of siPrefixPattern and
@@ -1366,24 +1554,30 @@ fn process_pattern_times(
                 if width == UnitWidth::FullName {
                     r.core_unit = UCharacter::to_lower_case_ulocale(loc, &r.core_unit);
                 }
-                r.core_unit = SimpleFormatterImpl::format_compiled_pattern(&prefix_compiled, &[Arg::Text(&r.core_unit)])?;
+                r.core_unit = SimpleFormatterImpl::format_compiled_pattern(
+                    &prefix_compiled,
+                    &[Arg::Text(&r.core_unit)],
+                )?;
             }
 
             // 4.9.2. If dimensionalityPrefixPattern is not empty, then set
             // coreUnit to be the combination of dimensionalityPrefixPattern
             // and coreUnit
             if dimensionality != 1 {
-                let dimensionality_compiled = SimpleFormatterImpl::compile_to_string_min_max_arguments(
-                    &get_with_plural(&dimensionality_prefix_patterns, plural)?,
-                    &mut sb,
-                    1,
-                    1,
-                )?;
+                let dimensionality_compiled =
+                    SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                        &get_with_plural(&dimensionality_prefix_patterns, plural)?,
+                        &mut sb,
+                        1,
+                        1,
+                    )?;
                 if width == UnitWidth::FullName {
                     r.core_unit = UCharacter::to_lower_case_ulocale(loc, &r.core_unit);
                 }
-                r.core_unit =
-                    SimpleFormatterImpl::format_compiled_pattern(&dimensionality_compiled, &[Arg::Text(&r.core_unit)])?;
+                r.core_unit = SimpleFormatterImpl::format_compiled_pattern(
+                    &dimensionality_compiled,
+                    &[Arg::Text(&r.core_unit)],
+                )?;
             }
 
             let current = out_array[plural_index].clone().unwrap_or_default();
@@ -1403,7 +1597,8 @@ fn process_pattern_times(
 
     // 5. Handling constant denominator if it exists.
     if product_unit.get_constant_denominator() != 0 {
-        out_array[CONSTANT_DENOMINATOR_INDEX] = Some(units(&product_unit.get_constant_denominator().to_string()));
+        out_array[CONSTANT_DENOMINATOR_INDEX] =
+            Some(units(&product_unit.get_constant_denominator().to_string()));
         let mut plural_index: Option<usize> = None;
         for plural_ in StandardPlural::VALUES {
             if out_array[plural_.ordinal() as usize].is_some() {
@@ -1412,7 +1607,10 @@ fn process_pattern_times(
             }
         }
 
-        debug_assert!(plural_index.is_some(), "No plural form found for constant denominator");
+        debug_assert!(
+            plural_index.is_some(),
+            "No plural form found for constant denominator"
+        );
         let plural_index = plural_index.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
 
         // TODO(ICU-23039):
@@ -1424,7 +1622,9 @@ fn process_pattern_times(
         // singular/plural usage: "second" or "seconds"? Similarly, "kilogram
         // per 1000 meters" should be checked for "meter" or "meters"?
         let current = out_array[plural_index].clone().unwrap_or_default();
-        let constant = out_array[CONSTANT_DENOMINATOR_INDEX].clone().unwrap_or_default();
+        let constant = out_array[CONSTANT_DENOMINATOR_INDEX]
+            .clone()
+            .unwrap_or_default();
         if current.is_empty() {
             out_array[plural_index] = Some(constant);
         } else {

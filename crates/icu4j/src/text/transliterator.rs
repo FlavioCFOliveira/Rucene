@@ -55,9 +55,11 @@ pub const REVERSE: i32 = 1;
 pub(crate) const ID_DELIM: u16 = b';' as u16;
 
 /// `ID_SEP`: delimiter before target in an ID.
+#[allow(dead_code)] // Java member with no caller in the closure
 pub(crate) const ID_SEP: u16 = b'-' as u16;
 
 /// `VARIANT_SEP`: delimiter before variant in an ID.
+#[allow(dead_code)] // Java member with no caller in the closure
 pub(crate) const VARIANT_SEP: u16 = b'/' as u16;
 
 /// `RB_DISPLAY_NAME_PREFIX`: prefix for resource bundle key for the display
@@ -139,7 +141,12 @@ impl Position {
     /// limit)`.
     pub fn hash_code(&self) -> i32 {
         let mut result = 1i32;
-        for v in [self.context_start, self.context_limit, self.start, self.limit] {
+        for v in [
+            self.context_start,
+            self.context_limit,
+            self.start,
+            self.limit,
+        ] {
             result = result.wrapping_mul(31).wrapping_add(v);
         }
         result
@@ -170,7 +177,11 @@ impl Position {
 impl fmt::Display for Position {
     /// `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[cs={}, s={}, l={}, cl={}]", self.context_start, self.start, self.limit, self.context_limit)
+        write!(
+            f,
+            "[cs={}, s={}, l={}, cl={}]",
+            self.context_start, self.start, self.limit, self.context_limit
+        )
     }
 }
 
@@ -232,7 +243,10 @@ impl TransliteratorBase {
 
     /// `getFilter()`: the filter, always a frozen `UnicodeSet`.
     pub fn get_filter(&self) -> Option<Arc<UnicodeSet>> {
-        self.filter.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.filter
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// `Transliterator.setFilter(UnicodeFilter filter)`: stores a frozen copy
@@ -276,7 +290,9 @@ impl TransliteratorBase {
     /// `IllegalArgumentException` for a negative length.
     pub fn set_maximum_context_length(&self, a: i32) -> Result<()> {
         if a < 0 {
-            return Err(LuceneError::illegal_argument(format!("Invalid context length {a}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Invalid context length {a}"
+            )));
         }
         self.maximum_context_length.store(a, Ordering::Relaxed);
         Ok(())
@@ -342,7 +358,12 @@ pub trait Transliterator: fmt::Debug + Send + Sync + Any {
     /// # Errors
     ///
     /// The errors of the transliteration.
-    fn handle_transliterate(&self, text: &dyn Replaceable, pos: &mut Position, incremental: bool) -> Result<()>;
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        incremental: bool,
+    ) -> Result<()>;
 
     /// `filteredTransliterate(Replaceable text, Position index, boolean
     /// incremental)`: transliterate a substring of text, as specified by
@@ -353,8 +374,14 @@ pub trait Transliterator: fmt::Debug + Send + Sync + Any {
     /// # Errors
     ///
     /// The errors of the transliteration.
-    fn filtered_transliterate(&self, text: &dyn Replaceable, index: &mut Position, incremental: bool) -> Result<()> {
-        self.as_dyn().filtered_transliterate_full(text, index, incremental, false)
+    fn filtered_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        incremental: bool,
+    ) -> Result<()> {
+        self.as_dyn()
+            .filtered_transliterate_full(text, index, incremental, false)
     }
 
     /// `setFilter(UnicodeFilter filter)`: changes the filter used by this
@@ -408,7 +435,12 @@ pub trait Transliterator: fmt::Debug + Send + Sync + Any {
     ///
     /// The errors of the transliteration and of the `UnicodeSet`
     /// operations.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let my_filter = self.get_filter_as_unicode_set(input_filter)?;
         let mut temp = UnicodeSet::from_set(&self.handle_get_source_set());
         temp.retain_all(&my_filter)?;
@@ -456,7 +488,12 @@ impl dyn Transliterator {
     /// # Errors
     ///
     /// The errors of the transliteration.
-    pub fn transliterate_range(&self, text: &dyn Replaceable, start: i32, limit: i32) -> Result<i32> {
+    pub fn transliterate_range(
+        &self,
+        text: &dyn Replaceable,
+        start: i32,
+        limit: i32,
+    ) -> Result<i32> {
         if start < 0 || limit < start || text.length() < limit {
             return Ok(-1);
         }
@@ -498,7 +535,12 @@ impl dyn Transliterator {
     ///
     /// `IllegalArgumentException` if `index` is invalid, and the errors of
     /// the transliteration.
-    pub fn transliterate_position_str(&self, text: &dyn Replaceable, index: &mut Position, insertion: Option<&[u16]>) -> Result<()> {
+    pub fn transliterate_position_str(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        insertion: Option<&[u16]>,
+    ) -> Result<()> {
         index.validate(text.length())?;
 
         if let Some(insertion) = insertion {
@@ -526,7 +568,12 @@ impl dyn Transliterator {
     ///
     /// As [`transliterate_position_str`](Self::transliterate_position_str),
     /// and `IllegalArgumentException` for an invalid code point.
-    pub fn transliterate_position_cp(&self, text: &dyn Replaceable, index: &mut Position, insertion: i32) -> Result<()> {
+    pub fn transliterate_position_cp(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        insertion: i32,
+    ) -> Result<()> {
         let insertion = UTF16::value_of(insertion)?;
         self.transliterate_position_str(text, index, Some(&insertion))
     }
@@ -538,7 +585,11 @@ impl dyn Transliterator {
     /// # Errors
     ///
     /// As [`transliterate_position_str`](Self::transliterate_position_str).
-    pub fn transliterate_position(&self, text: &dyn Replaceable, index: &mut Position) -> Result<()> {
+    pub fn transliterate_position(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+    ) -> Result<()> {
         self.transliterate_position_str(text, index, None)
     }
 
@@ -548,7 +599,11 @@ impl dyn Transliterator {
     /// # Errors
     ///
     /// As [`transliterate_position_str`](Self::transliterate_position_str).
-    pub fn finish_transliteration(&self, text: &dyn Replaceable, index: &mut Position) -> Result<()> {
+    pub fn finish_transliteration(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+    ) -> Result<()> {
         index.validate(text.length())?;
         self.filtered_transliterate_full(text, index, false, true)
     }
@@ -563,7 +618,13 @@ impl dyn Transliterator {
     ///
     /// The `if (DEBUG)` logging of Java is not ported: `DEBUG` is a
     /// `static final false` constant, so javac compiles it out.
-    fn filtered_transliterate_full(&self, text: &dyn Replaceable, index: &mut Position, incremental: bool, rollback: bool) -> Result<()> {
+    fn filtered_transliterate_full(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        incremental: bool,
+        rollback: bool,
+    ) -> Result<()> {
         let filter = self.base().get_filter();
 
         // Short circuit path for transliterators with no filter in
@@ -633,7 +694,11 @@ impl dyn Transliterator {
             // filtered text (if limit < globalLimit) then we pass in
             // an incremental value of false to force the subclass to
             // complete the transliteration for this run.
-            let is_incremental_run = if index.limit < global_limit { false } else { incremental };
+            let is_incremental_run = if index.limit < global_limit {
+                false
+            } else {
+                incremental
+            };
 
             let delta;
 
@@ -956,7 +1021,8 @@ static REGISTRY: LazyLock<TransliteratorRegistry> = LazyLock::new(|| match init_
 
 /// `displayNameCache`: a `Collections.synchronizedMap` of IDs to display
 /// names, for transliterators registered with `registerClass`.
-static DISPLAY_NAME_CACHE: LazyLock<Mutex<HashMap<CaseInsensitiveString, Vec<u16>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static DISPLAY_NAME_CACHE: LazyLock<Mutex<HashMap<CaseInsensitiveString, Vec<u16>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn display_name_cache() -> MutexGuard<'static, HashMap<CaseInsensitiveString, Vec<u16>>> {
     DISPLAY_NAME_CACHE.lock().unwrap_or_else(|e| e.into_inner())
@@ -1010,10 +1076,19 @@ fn init_registry() -> Result<TransliteratorRegistry> {
         }
     }
 
-    register_special_inverse(&units(NullTransliterator::SHORT_ID), &units(NullTransliterator::SHORT_ID), false);
+    register_special_inverse(
+        &units(NullTransliterator::SHORT_ID),
+        &units(NullTransliterator::SHORT_ID),
+        false,
+    );
 
     // Register non-rule-based transliterators
-    register_class_in(&registry, &units(NullTransliterator::ID), || Arc::new(NullTransliterator::new()), None)?;
+    register_class_in(
+        &registry,
+        &units(NullTransliterator::ID),
+        || Arc::new(NullTransliterator::new()),
+        None,
+    )?;
     RemoveTransliterator::register(&registry)?;
     EscapeTransliterator::register(&registry)?;
     UnescapeTransliterator::register(&registry)?;
@@ -1074,7 +1149,10 @@ pub fn get_display_name_ulocale(id: &[u16], in_locale: &ULocale) -> Result<Vec<u
     //If we ever integrate this with the Sun JDK, the resource bundle
     // root will change to sun.text.resources.LocaleElements
 
-    let bundle = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_TRANSLIT_BASE_NAME), Some(in_locale))?;
+    let bundle = UResourceBundle::get_bundle_instance_for(
+        Some(ICUData::ICU_TRANSLIT_BASE_NAME),
+        Some(in_locale),
+    )?;
 
     // Normalize the ID
     let stv = TransliteratorIDParser::id_to_stv(id);
@@ -1094,7 +1172,10 @@ pub fn get_display_name_ulocale(id: &[u16], in_locale: &ULocale) -> Result<Vec<u
 
     // Use display name for the entire transliterator, if it
     // exists.
-    match bundle.get_string_by_key(&format!("{RB_DISPLAY_NAME_PREFIX}{}", to_rust_string(&id_n))) {
+    match bundle.get_string_by_key(&format!(
+        "{RB_DISPLAY_NAME_PREFIX}{}",
+        to_rust_string(&id_n)
+    )) {
         Ok(s) => return Ok(s),
         Err(e) if is_missing_resource(&e) => {}
         Err(e) => return Err(e),
@@ -1114,8 +1195,13 @@ pub fn get_display_name_ulocale(id: &[u16], in_locale: &ULocale) -> Result<Vec<u
 
             // Use display names for the scripts, if they exist
             for arg in args.iter_mut().skip(1) {
-                let java_message_format::Arg::Str(s) = &*arg else { continue };
-                match bundle.get_string_by_key(&format!("{RB_SCRIPT_DISPLAY_NAME_PREFIX}{}", to_rust_string(s))) {
+                let java_message_format::Arg::Str(s) = &*arg else {
+                    continue;
+                };
+                match bundle.get_string_by_key(&format!(
+                    "{RB_SCRIPT_DISPLAY_NAME_PREFIX}{}",
+                    to_rust_string(s)
+                )) {
                     Ok(name) => *arg = java_message_format::Arg::Str(name),
                     Err(e) if is_missing_resource(&e) => {}
                     Err(e) => return Err(e),
@@ -1161,23 +1247,33 @@ pub fn get_instance_dir(id: &[u16], dir: i32) -> Result<Arc<dyn Transliterator>>
     let mut canon_id = Vec::new();
     let mut list = Vec::new();
     let mut global_filter: Option<UnicodeSet> = None;
-    if !TransliteratorIDParser::parse_compound_id(id, dir, &mut canon_id, &mut list, &mut global_filter)? {
-        return Err(LuceneError::illegal_argument(format!("Invalid ID {}", to_rust_string(id))));
+    if !TransliteratorIDParser::parse_compound_id(
+        id,
+        dir,
+        &mut canon_id,
+        &mut list,
+        &mut global_filter,
+    )? {
+        return Err(LuceneError::illegal_argument(format!(
+            "Invalid ID {}",
+            to_rust_string(id)
+        )));
     }
 
     let translits = TransliteratorIDParser::instantiate_list(&list)?;
 
     // assert(list.size() > 0);
-    let t: Arc<dyn Transliterator> = if list.len() > 1 || index_of(&canon_id, &[b';' as u16], 0) >= 0 {
-        // [NOTE: If it's a compoundID, we instantiate a CompoundTransliterator even if it only
-        // has one child transliterator.  This is so that toRules() will return the right thing
-        // (without any inactive ID), but our main ID still comes out correct.  That is, if we
-        // instantiate "(Lower);Latin-Greek;", we want the rules to come out as "::Latin-Greek;"
-        // even though the ID is "(Lower);Latin-Greek;".
-        Arc::new(CompoundTransliterator::new(translits)?)
-    } else {
-        translits[0].clone()
-    };
+    let t: Arc<dyn Transliterator> =
+        if list.len() > 1 || index_of(&canon_id, &[b';' as u16], 0) >= 0 {
+            // [NOTE: If it's a compoundID, we instantiate a CompoundTransliterator even if it only
+            // has one child transliterator.  This is so that toRules() will return the right thing
+            // (without any inactive ID), but our main ID still comes out correct.  That is, if we
+            // instantiate "(Lower);Latin-Greek;", we want the rules to come out as "::Latin-Greek;"
+            // even though the ID is "(Lower);Latin-Greek;".
+            Arc::new(CompoundTransliterator::new(translits)?)
+        } else {
+            translits[0].clone()
+        };
 
     t.set_id(canon_id);
     if let Some(global_filter) = global_filter {
@@ -1193,7 +1289,10 @@ pub fn get_instance_dir(id: &[u16], dir: i32) -> Result<Arc<dyn Transliterator>>
 /// # Errors
 ///
 /// The errors of the registry's instantiation.
-pub(crate) fn get_basic_instance(id: &[u16], canon_id: Option<&[u16]>) -> Result<Option<Arc<dyn Transliterator>>> {
+pub(crate) fn get_basic_instance(
+    id: &[u16],
+    canon_id: Option<&[u16]>,
+) -> Result<Option<Arc<dyn Transliterator>>> {
     let mut s = Vec::new();
     let mut t = registry().get(id, &mut s)?;
     if !s.is_empty() {
@@ -1219,56 +1318,67 @@ pub fn create_from_rules(id: &[u16], rules: &[u16], dir: i32) -> Result<Arc<dyn 
     parser.parse(rules, dir)?;
 
     // NOTE: The logic here matches that in TransliteratorRegistry.
-    let t: Arc<dyn Transliterator> = if parser.id_block_vector.is_empty() && parser.data_vector.is_empty() {
-        Arc::new(NullTransliterator::new())
-    } else if parser.id_block_vector.is_empty() && parser.data_vector.len() == 1 {
-        Arc::new(RuleBasedTransliterator::new(
-            id.to_vec(),
-            parser.data_vector[0].clone(),
-            parser.compound_filter.as_ref().map(|f| f as &dyn UnicodeFilter),
-        )?)
-    } else if parser.id_block_vector.len() == 1 && parser.data_vector.is_empty() {
-        // [NOTE: The logic here matches that in TransliteratorRegistry.]
-        let t = match &parser.compound_filter {
-            Some(compound_filter) => {
-                let mut s = compound_filter.to_pattern(false);
-                s.push(b';' as u16);
-                s.extend_from_slice(&parser.id_block_vector[0]);
-                get_instance(&s)?
-            }
-            None => get_instance(&parser.id_block_vector[0])?,
-        };
-        t.set_id(id.to_vec());
-        t
-    } else {
-        let mut transliterators: Vec<Arc<dyn Transliterator>> = Vec::new();
-        let mut pass_number = 1;
+    let t: Arc<dyn Transliterator> =
+        if parser.id_block_vector.is_empty() && parser.data_vector.is_empty() {
+            Arc::new(NullTransliterator::new())
+        } else if parser.id_block_vector.is_empty() && parser.data_vector.len() == 1 {
+            Arc::new(RuleBasedTransliterator::new(
+                id.to_vec(),
+                parser.data_vector[0].clone(),
+                parser
+                    .compound_filter
+                    .as_ref()
+                    .map(|f| f as &dyn UnicodeFilter),
+            )?)
+        } else if parser.id_block_vector.len() == 1 && parser.data_vector.is_empty() {
+            // [NOTE: The logic here matches that in TransliteratorRegistry.]
+            let t = match &parser.compound_filter {
+                Some(compound_filter) => {
+                    let mut s = compound_filter.to_pattern(false);
+                    s.push(b';' as u16);
+                    s.extend_from_slice(&parser.id_block_vector[0]);
+                    get_instance(&s)?
+                }
+                None => get_instance(&parser.id_block_vector[0])?,
+            };
+            t.set_id(id.to_vec());
+            t
+        } else {
+            let mut transliterators: Vec<Arc<dyn Transliterator>> = Vec::new();
+            let mut pass_number = 1;
 
-        let limit = parser.id_block_vector.len().max(parser.data_vector.len());
-        for i in 0..limit {
-            if i < parser.id_block_vector.len() {
-                let id_block = &parser.id_block_vector[i];
-                if !id_block.is_empty() {
-                    let temp = get_instance(id_block)?;
-                    if !temp.as_any().is::<NullTransliterator>() {
-                        transliterators.push(get_instance(id_block)?);
+            let limit = parser.id_block_vector.len().max(parser.data_vector.len());
+            for i in 0..limit {
+                if i < parser.id_block_vector.len() {
+                    let id_block = &parser.id_block_vector[i];
+                    if !id_block.is_empty() {
+                        let temp = get_instance(id_block)?;
+                        if !temp.as_any().is::<NullTransliterator>() {
+                            transliterators.push(get_instance(id_block)?);
+                        }
                     }
                 }
+                if i < parser.data_vector.len() {
+                    let data = parser.data_vector[i].clone();
+                    transliterators.push(Arc::new(RuleBasedTransliterator::new(
+                        units(&format!("%Pass{pass_number}")),
+                        data,
+                        None,
+                    )?));
+                    pass_number += 1;
+                }
             }
-            if i < parser.data_vector.len() {
-                let data = parser.data_vector[i].clone();
-                transliterators.push(Arc::new(RuleBasedTransliterator::new(units(&format!("%Pass{pass_number}")), data, None)?));
-                pass_number += 1;
-            }
-        }
 
-        let t: Arc<dyn Transliterator> = Arc::new(CompoundTransliterator::with_anonymous_rbts(transliterators, pass_number - 1)?);
-        t.set_id(id.to_vec());
-        if let Some(compound_filter) = &parser.compound_filter {
-            t.set_filter(Some(compound_filter))?;
-        }
-        t
-    };
+            let t: Arc<dyn Transliterator> = Arc::new(CompoundTransliterator::with_anonymous_rbts(
+                transliterators,
+                pass_number - 1,
+            )?);
+            t.set_id(id.to_vec());
+            if let Some(compound_filter) = &parser.compound_filter {
+                t.set_filter(Some(compound_filter))?;
+            }
+            t
+        };
 
     Ok(t)
 }
@@ -1297,7 +1407,10 @@ pub(crate) fn register_class_in(
 ) -> Result<()> {
     registry.put_class(id, trans_class, true)?;
     if let Some(display_name) = display_name {
-        display_name_cache().insert(CaseInsensitiveString::new(id.to_vec()), display_name.to_vec());
+        display_name_cache().insert(
+            CaseInsensitiveString::new(id.to_vec()),
+            display_name.to_vec(),
+        );
     }
     Ok(())
 }
@@ -1310,12 +1423,20 @@ pub(crate) fn register_class_in(
 /// # Errors
 ///
 /// The errors of the ID parsing (`UnicodeSet` patterns in the ID).
-pub fn register_class(id: &[u16], trans_class: TransliteratorClass, display_name: Option<&[u16]>) -> Result<()> {
+pub fn register_class(
+    id: &[u16],
+    trans_class: TransliteratorClass,
+    display_name: Option<&[u16]>,
+) -> Result<()> {
     register_class_in(registry(), id, trans_class, display_name)
 }
 
 /// `registerFactory(String ID, Factory factory)` on the given registry.
-pub(crate) fn register_factory_in(registry: &TransliteratorRegistry, id: &[u16], factory: Arc<dyn Factory>) -> Result<()> {
+pub(crate) fn register_factory_in(
+    registry: &TransliteratorRegistry,
+    id: &[u16],
+    factory: Arc<dyn Factory>,
+) -> Result<()> {
     registry.put_factory(id, factory, true)
 }
 
@@ -1341,7 +1462,11 @@ pub fn register_instance(trans: Arc<dyn Transliterator>) -> Result<()> {
 
 /// `registerInstance(Transliterator trans, boolean visible)` on the given
 /// registry.
-pub(crate) fn register_instance_in(registry: &TransliteratorRegistry, trans: Arc<dyn Transliterator>, visible: bool) -> Result<()> {
+pub(crate) fn register_instance_in(
+    registry: &TransliteratorRegistry,
+    trans: Arc<dyn Transliterator>,
+    visible: bool,
+) -> Result<()> {
     let id = trans.get_id();
     registry.put_transliterator(&id, trans, visible)
 }
@@ -1352,7 +1477,11 @@ pub(crate) fn register_instance_in(registry: &TransliteratorRegistry, trans: Arc
 /// # Errors
 ///
 /// As [`register_class`].
-pub(crate) fn register_instance_visible(trans: Arc<dyn Transliterator>, visible: bool) -> Result<()> {
+#[allow(dead_code)] // Java member with no caller in the closure
+pub(crate) fn register_instance_visible(
+    trans: Arc<dyn Transliterator>,
+    visible: bool,
+) -> Result<()> {
     register_instance_in(registry(), trans, visible)
 }
 
@@ -1368,7 +1497,11 @@ pub fn register_alias(alias_id: &[u16], real_id: &[u16]) -> Result<()> {
 
 /// `registerSpecialInverse(String target, String inverseTarget, boolean
 /// bidirectional)`: register two targets as being inverses of one another.
-pub(crate) fn register_special_inverse(target: &[u16], inverse_target: &[u16], bidirectional: bool) {
+pub(crate) fn register_special_inverse(
+    target: &[u16],
+    inverse_target: &[u16],
+    bidirectional: bool,
+) {
     TransliteratorIDParser::register_special_inverse(target, inverse_target, bidirectional);
 }
 
@@ -1531,6 +1664,7 @@ mod java_message_format {
         ///
         /// Java's `ArrayIndexOutOfBoundsException` for a pattern without
         /// choices.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)] // negated comparison keeps Java's NaN semantics
         fn format(&self, number: f64) -> Vec<u16> {
             let mut i = 0;
             while i < self.choice_limits.len() {
@@ -1543,7 +1677,9 @@ mod java_message_format {
             let i = i.saturating_sub(1);
             match self.choice_formats.get(i) {
                 Some(f) => f.clone(),
-                None => panic!("java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0"),
+                None => panic!(
+                    "java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0"
+                ),
             }
         }
     }
@@ -1666,7 +1802,9 @@ mod java_message_format {
                 i += 1;
             }
             if brace_stack == 0 && part != 0 {
-                return Err(LuceneError::illegal_argument("Unmatched braces in the pattern."));
+                return Err(LuceneError::illegal_argument(
+                    "Unmatched braces in the pattern.",
+                ));
             }
             this.pattern = segments[0].take().unwrap_or_default();
             Ok(this)
@@ -1674,8 +1812,15 @@ mod java_message_format {
 
         /// `setFormatFromPattern(int position, int offsetNumber,
         /// StringBuilder[] textSegments)`.
-        fn set_format_from_pattern(&mut self, offset_number: usize, text_segments: &[Option<Vec<u16>>; 4]) -> Result<()> {
-            let segments: Vec<Vec<u16>> = text_segments.iter().map(|s| s.clone().unwrap_or_default()).collect();
+        fn set_format_from_pattern(
+            &mut self,
+            offset_number: usize,
+            text_segments: &[Option<Vec<u16>>; 4],
+        ) -> Result<()> {
+            let segments: Vec<Vec<u16>> = text_segments
+                .iter()
+                .map(|s| s.clone().unwrap_or_default())
+                .collect();
 
             // get the argument number
             let index = to_rust_string(&segments[SEG_INDEX]);
@@ -1689,7 +1834,9 @@ mod java_message_format {
                 }
             };
             if argument_number < 0 {
-                return Err(LuceneError::illegal_argument(format!("negative argument number: {argument_number}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "negative argument number: {argument_number}"
+                )));
             }
             if argument_number >= MAX_ARGUMENT_INDEX {
                 return Err(LuceneError::illegal_argument(format!(
@@ -1698,7 +1845,10 @@ mod java_message_format {
             }
 
             let format = if !segments[SEG_TYPE].is_empty() {
-                Some(Self::format_from_pattern(&segments[SEG_TYPE], &segments[SEG_MODIFIER])?)
+                Some(Self::format_from_pattern(
+                    &segments[SEG_TYPE],
+                    &segments[SEG_MODIFIER],
+                )?)
             } else {
                 None
             };
@@ -1715,7 +1865,9 @@ mod java_message_format {
         /// `formatFromPattern(String type, String style)`.
         fn format_from_pattern(ty: &[u16], style: &[u16]) -> Result<SubFormat> {
             let ty_s = to_rust_string(ty);
-            let upper = ty_s.trim_matches(|c: char| c <= '\u{20}').to_ascii_uppercase();
+            let upper = ty_s
+                .trim_matches(|c: char| c <= '\u{20}')
+                .to_ascii_uppercase();
             const TYPES: [&str; 23] = [
                 "NUMBER",
                 "DATE",
@@ -1742,7 +1894,9 @@ mod java_message_format {
                 "RFC_1123_DATE_TIME",
             ];
             if !TYPES.contains(&upper.as_str()) {
-                return Err(LuceneError::illegal_argument(format!("unknown format type: {ty_s}")));
+                return Err(LuceneError::illegal_argument(format!(
+                    "unknown format type: {ty_s}"
+                )));
             }
             if upper != "CHOICE" {
                 return Err(LuceneError::unsupported_operation(format!(
@@ -1752,7 +1906,14 @@ mod java_message_format {
             // case CHOICE -> formatFromSubformatPattern(fType, style)
             match ChoiceFormat::new(style) {
                 Ok(c) => Ok(SubFormat::Choice(c)),
-                Err(e) if matches!(e.kind(), rucene::error::LuceneErrorKind::IllegalArgument { .. }) => Err(e),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        rucene::error::LuceneErrorKind::IllegalArgument { .. }
+                    ) =>
+                {
+                    Err(e)
+                }
                 Err(e) => Err(LuceneError::illegal_argument_with_cause(
                     format!("Choice pattern incorrect: {}", to_rust_string(style)),
                     std::sync::Arc::new(e),
@@ -1782,7 +1943,9 @@ mod java_message_format {
                         let number = match obj {
                             Arg::Integer(n) => *n as f64,
                             Arg::Str(_) => {
-                                return Err(LuceneError::illegal_argument("Cannot format given Object as a Number"));
+                                return Err(LuceneError::illegal_argument(
+                                    "Cannot format given Object as a Number",
+                                ));
                             }
                         };
                         let arg = choice.format(number);

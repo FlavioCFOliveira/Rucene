@@ -23,7 +23,10 @@ impl Default for UVector64 {
 impl UVector64 {
     /// `UVector64()`.
     pub fn new() -> Self {
-        Self { buffer: vec![0; 32], length: 0 }
+        Self {
+            buffer: vec![0; 32],
+            length: 0,
+        }
     }
 
     /// `isEmpty()`.

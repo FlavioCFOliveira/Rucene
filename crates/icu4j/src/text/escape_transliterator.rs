@@ -10,7 +10,10 @@ use rucene::error::Result;
 use crate::jdk::units;
 use crate::r#impl::utility::Utility;
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{factory, register_factory_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    factory, register_factory_in, transliterator_boilerplate, Position, Transliterator,
+    TransliteratorBase,
+};
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
 use crate::text::utf16::UTF16;
@@ -67,14 +70,34 @@ impl EscapeTransliterator {
         register_factory_in(
             registry,
             &units("Any-Hex/Unicode"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex/Unicode", "U+", "", 16, 4, true, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex/Unicode",
+                    "U+",
+                    "",
+                    16,
+                    4,
+                    true,
+                    None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
 
         // Java: "\\uFFFF" hex, min=4, max=4
         register_factory_in(
             registry,
             &units("Any-Hex/Java"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex/Java", "\\u", "", 16, 4, false, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex/Java",
+                    "\\u",
+                    "",
+                    16,
+                    4,
+                    false,
+                    None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
 
         // C: "\\uFFFF" hex, min=4, max=4; \\U0010FFFF hex, min=8, max=8
@@ -98,35 +121,79 @@ impl EscapeTransliterator {
         register_factory_in(
             registry,
             &units("Any-Hex/XML"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex/XML", "&#x", ";", 16, 1, true, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex/XML",
+                    "&#x",
+                    ";",
+                    16,
+                    1,
+                    true,
+                    None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
 
         // XML10: "&1114111;" dec, min=1, max=7 (not really "Hex-Any")
         register_factory_in(
             registry,
             &units("Any-Hex/XML10"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex/XML10", "&#", ";", 10, 1, true, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex/XML10",
+                    "&#",
+                    ";",
+                    10,
+                    1,
+                    true,
+                    None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
 
         // Perl: "\\x{263A}" hex, min=1, max=6
         register_factory_in(
             registry,
             &units("Any-Hex/Perl"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex/Perl", "\\x{", "}", 16, 1, true, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex/Perl",
+                    "\\x{",
+                    "}",
+                    16,
+                    1,
+                    true,
+                    None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
 
         // Plain: "FFFF" hex, min=4, max=6
         register_factory_in(
             registry,
             &units("Any-Hex/Plain"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex/Plain", "", "", 16, 4, true, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex/Plain",
+                    "",
+                    "",
+                    16,
+                    4,
+                    true,
+                    None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
 
         // Generic
         register_factory_in(
             registry,
             &units("Any-Hex"),
-            factory(|_id| Ok(Some(Arc::new(EscapeTransliterator::new("Any-Hex", "\\u", "", 16, 4, false, None)) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(Arc::new(EscapeTransliterator::new(
+                    "Any-Hex", "\\u", "", 16, 4, false, None,
+                )) as Arc<dyn Transliterator>))
+            }),
         )?;
         Ok(())
     }
@@ -162,7 +229,12 @@ impl Transliterator for EscapeTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position pos, boolean
     /// incremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, pos: &mut Position, _incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        _incremental: bool,
+    ) -> Result<()> {
         let mut start = pos.start;
         let mut limit = pos.limit;
 
@@ -171,11 +243,22 @@ impl Transliterator for EscapeTransliterator {
         let mut redo_prefix = false;
 
         while start < limit {
-            let c = if self.grok_supplementals { text.char32_at(start) } else { text.char_at(start) as i32 };
-            let char_len = if self.grok_supplementals { UTF16::get_char_count(c) } else { 1 };
+            let c = if self.grok_supplementals {
+                text.char32_at(start)
+            } else {
+                text.char_at(start) as i32
+            };
+            let char_len = if self.grok_supplementals {
+                UTF16::get_char_count(c)
+            } else {
+                1
+            };
 
-            if (c as u32 & 0xFFFF0000) != 0 && self.supplemental_handler.is_some() {
-                let handler = self.supplemental_handler.as_ref().expect("checked above");
+            if let Some(handler) = self
+                .supplemental_handler
+                .as_ref()
+                .filter(|_| (c as u32 & 0xFFFF0000) != 0)
+            {
                 buf.clear();
                 buf.extend_from_slice(&handler.prefix);
                 Utility::append_number(&mut buf, c, handler.radix, handler.min_digits)?;
@@ -206,7 +289,12 @@ impl Transliterator for EscapeTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         source_set.add_all(&self.get_filter_as_unicode_set(input_filter)?)?;
         let mut it = Some(self);
         while let Some(t) = it {

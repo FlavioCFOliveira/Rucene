@@ -13,8 +13,8 @@ use crate::lang::u_script::UScript;
 use crate::text::compound_transliterator::CompoundTransliterator;
 use crate::text::replaceable::Replaceable;
 use crate::text::transliterator::{
-    self, register_instance_in, register_special_inverse, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
-    FORWARD,
+    self, register_instance_in, register_special_inverse, transliterator_boilerplate, Position,
+    Transliterator, TransliteratorBase, FORWARD,
 };
 use crate::text::transliterator_id_parser::{equals_ignore_case, TransliteratorIDParser};
 use crate::text::transliterator_registry::TransliteratorRegistry;
@@ -34,10 +34,13 @@ const LATIN_PIVOT: &str = "-Latin;Latin-";
 /// `WidthFix.INSTANCE`: the transliterator that maps narrow and wide forms
 /// to their compatibility decompositions (the nested class `WidthFix`
 /// holds it for lazy initialization).
-static WIDTH_FIX: LazyLock<Arc<dyn Transliterator>> = LazyLock::new(|| match transliterator::get_instance(&units("[[:dt=Nar:][:dt=Wide:]] nfkd")) {
-    Ok(t) => t,
-    Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
-});
+static WIDTH_FIX: LazyLock<Arc<dyn Transliterator>> =
+    LazyLock::new(
+        || match transliterator::get_instance(&units("[[:dt=Nar:][:dt=Wide:]] nfkd")) {
+            Ok(t) => t,
+            Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
+        },
+    );
 
 /// A transliterator named Any-T or Any-T/V, where T is the target and V is
 /// the optional variant. The target T is a script. This transliterator
@@ -63,7 +66,12 @@ pub struct AnyTransliterator {
 impl AnyTransliterator {
     /// The private `AnyTransliterator(String id, String theTarget, String
     /// theVariant, int theTargetScript)`.
-    fn new_private(id: Vec<u16>, the_target: &[u16], the_variant: &[u16], the_target_script: i32) -> Self {
+    fn new_private(
+        id: Vec<u16>,
+        the_target: &[u16],
+        the_variant: &[u16],
+        the_target_script: i32,
+    ) -> Self {
         let mut target = the_target.to_vec();
         if !the_variant.is_empty() {
             target.push(VARIANT_SEP);
@@ -115,9 +123,15 @@ impl AnyTransliterator {
         }
 
         let key = source;
-        let mut t = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+        let mut t = self
+            .cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned();
         if t.is_none() {
-            let source_name = units(&UScript::get_name(source)?.unwrap_or_else(|| "null".to_string()));
+            let source_name =
+                units(&UScript::get_name(source)?.unwrap_or_else(|| "null".to_string()));
             let mut id = source_name.clone();
             id.push(TARGET_SEP);
             id.extend_from_slice(&self.target);
@@ -195,8 +209,10 @@ impl AnyTransliterator {
                     }
                     seen_variants.insert(variant.clone());
 
-                    let id = TransliteratorIDParser::stv_to_id(&units(ANY), &target, Some(&variant));
-                    let trans = AnyTransliterator::new_private(id, &target, &variant, target_script);
+                    let id =
+                        TransliteratorIDParser::stv_to_id(&units(ANY), &target, Some(&variant));
+                    let trans =
+                        AnyTransliterator::new_private(id, &target, &variant, target_script);
                     register_instance_in(registry, Arc::new(trans), true)?;
                     register_special_inverse(&target, &units(NULL_ID), false);
                 }
@@ -239,7 +255,12 @@ impl Transliterator for AnyTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position pos, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, pos: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         let all_start = pos.start;
         let mut all_limit = pos.limit;
 
@@ -287,7 +308,12 @@ impl Transliterator for AnyTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let my_filter = self.get_filter_as_unicode_set(input_filter)?;
         // Assume that it can modify any character to any character
         source_set.add_all(&my_filter)?;

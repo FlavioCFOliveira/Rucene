@@ -10,7 +10,9 @@ use rucene::error::{LuceneError, Result};
 use crate::jdk::{ByteBuffer, ByteOrder, DataOutputStream, OutputStream};
 use crate::r#impl::icu_binary::ICUBinary;
 use crate::r#impl::normalizer2_impl::UTF16Plus;
-use crate::util::code_point_map::{CodePointMap, Range, RangeIterator, StringIterator, StringIteratorKind, ValueFilter};
+use crate::util::code_point_map::{
+    CodePointMap, Range, RangeIterator, StringIterator, StringIteratorKind, ValueFilter,
+};
 use crate::util::icu_unchecked_io_exception::ICUUncheckedIOException;
 
 /// Selectors for the type of a `CodePointTrie`.
@@ -219,7 +221,14 @@ pub struct CodePointTrie {
 impl CodePointTrie {
     /// `CodePointTrie(char[] index, Data data, int highStart, int
     /// index3NullOffset, int dataNullOffset)` (private).
-    fn new(type_: Type, index: Vec<u16>, data: Data, high_start: i32, index3_null_offset: i32, data_null_offset: i32) -> Self {
+    fn new(
+        type_: Type,
+        index: Vec<u16>,
+        data: Data,
+        high_start: i32,
+        index3_null_offset: i32,
+        data_null_offset: i32,
+    ) -> Self {
         let data_length = data.get_data_length();
         let mut ascii = vec![0i32; ASCII_LIMIT as usize];
         for (c, a) in ascii.iter_mut().enumerate() {
@@ -254,7 +263,11 @@ impl CodePointTrie {
     /// `ICUUncheckedIOException` for a short buffer, a bad signature, an
     /// unsupported or unexpected type, width or options;
     /// `BufferUnderflowException` from the buffer.
-    pub fn from_binary(type_: Option<Type>, value_width: Option<ValueWidth>, bytes: &mut ByteBuffer) -> Result<CodePointTrie> {
+    pub fn from_binary(
+        type_: Option<Type>,
+        value_width: Option<ValueWidth>,
+        bytes: &mut ByteBuffer,
+    ) -> Result<CodePointTrie> {
         let outer_byte_order = bytes.order();
         let result = Self::from_binary_inner(type_, value_width, bytes, outer_byte_order);
         bytes.set_order(outer_byte_order);
@@ -333,7 +346,11 @@ impl CodePointTrie {
             0 => ValueWidth::Bits16,
             1 => ValueWidth::Bits32,
             2 => ValueWidth::Bits8,
-            _ => return Err(io("CodePointTrie data header has an unsupported value width")),
+            _ => {
+                return Err(io(
+                    "CodePointTrie data header has an unsupported value width",
+                ))
+            }
         };
 
         if (options & OPTIONS_RESERVED_MASK) != 0 {
@@ -373,7 +390,14 @@ impl CodePointTrie {
             ValueWidth::Bits32 => Data::Data32(ICUBinary::get_ints(bytes, data_length, 0)?),
             ValueWidth::Bits8 => Data::Data8(ICUBinary::get_bytes(bytes, data_length, 0)?),
         };
-        Ok(CodePointTrie::new(type_, index, data, high_start, index3_null_offset, data_null_offset))
+        Ok(CodePointTrie::new(
+            type_,
+            index,
+            data,
+            high_start,
+            index3_null_offset,
+            data_null_offset,
+        ))
     }
 
     /// `getType()`.
@@ -397,7 +421,12 @@ impl CodePointTrie {
 
     /// `maybeFilterValue(int value, int trieNullValue, int nullValue,
     /// ValueFilter filter)` (private).
-    fn maybe_filter_value(mut value: i32, trie_null_value: i32, null_value: i32, filter: Option<ValueFilter<'_>>) -> i32 {
+    fn maybe_filter_value(
+        mut value: i32,
+        trie_null_value: i32,
+        null_value: i32,
+        filter: Option<ValueFilter<'_>>,
+    ) -> i32 {
         if value == trie_null_value {
             value = null_value;
         } else if let Some(f) = filter {
@@ -473,7 +502,9 @@ impl CodePointTrie {
             debug_assert!(0 <= c && c < self.high_start && self.high_start > SMALL_LIMIT);
             i1 += SMALL_INDEX_LENGTH;
         }
-        let mut i3_block = self.index[(self.index[i1 as usize] as i32 + ((c >> SHIFT_2) & INDEX_2_MASK)) as usize] as i32;
+        let mut i3_block = self.index
+            [(self.index[i1 as usize] as i32 + ((c >> SHIFT_2) & INDEX_2_MASK)) as usize]
+            as i32;
         let mut i3 = (c >> SHIFT_3) & INDEX_3_MASK;
         let mut data_block;
         if (i3_block & 0x8000) == 0 {
@@ -532,6 +563,7 @@ impl CodePointTrie {
     }
 
     /// `FastStringIterator.next()`.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn fast_string_iterator_next(&self, it: &mut StringIterator<'_>) -> bool {
         if it.s_index >= it.s.len() as i32 {
             return false;
@@ -558,6 +590,7 @@ impl CodePointTrie {
     }
 
     /// `FastStringIterator.previous()`.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn fast_string_iterator_previous(&self, it: &mut StringIterator<'_>) -> bool {
         if it.s_index <= 0 {
             return false;
@@ -584,6 +617,7 @@ impl CodePointTrie {
     }
 
     /// `SmallStringIterator.next()`.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn small_string_iterator_next(&self, it: &mut StringIterator<'_>) -> bool {
         if it.s_index >= it.s.len() as i32 {
             return false;
@@ -610,6 +644,7 @@ impl CodePointTrie {
     }
 
     /// `SmallStringIterator.previous()`.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn small_string_iterator_previous(&self, it: &mut StringIterator<'_>) -> bool {
         if it.s_index <= 0 {
             return false;
@@ -680,7 +715,11 @@ impl CodePointMap for CodePointTrie {
                 if c <= 0xffff && (type_ == Type::Fast || c <= SMALL_MAX) {
                     i3_block = 0;
                     i3 = c >> FAST_SHIFT;
-                    i3_block_length = if type_ == Type::Fast { BMP_INDEX_LENGTH } else { SMALL_INDEX_LENGTH };
+                    i3_block_length = if type_ == Type::Fast {
+                        BMP_INDEX_LENGTH
+                    } else {
+                        SMALL_INDEX_LENGTH
+                    };
                     data_block_length = FAST_DATA_BLOCK_LENGTH;
                 } else {
                     // Use the multi-stage index.
@@ -692,8 +731,9 @@ impl CodePointMap for CodePointTrie {
                         debug_assert!(c < self.high_start && self.high_start > SMALL_LIMIT);
                         i1 += SMALL_INDEX_LENGTH;
                     }
-                    i3_block =
-                        self.index[(self.index[i1 as usize] as i32 + ((c >> SHIFT_2) & INDEX_2_MASK)) as usize] as i32;
+                    i3_block = self.index[(self.index[i1 as usize] as i32
+                        + ((c >> SHIFT_2) & INDEX_2_MASK))
+                        as usize] as i32;
                     if i3_block == prev_i3_block && (c - start) >= CP_PER_INDEX_2_ENTRY {
                         // The index-3 block is the same as the previous one, and filled with value.
                         debug_assert!((c & (CP_PER_INDEX_2_ENTRY - 1)) == 0);
@@ -760,8 +800,12 @@ impl CodePointMap for CodePointTrie {
                             if have_value {
                                 if trie_value2 != trie_value {
                                     if filter.is_none()
-                                        || Self::maybe_filter_value(trie_value2, self.null_value, null_value, filter)
-                                            != value
+                                        || Self::maybe_filter_value(
+                                            trie_value2,
+                                            self.null_value,
+                                            null_value,
+                                            filter,
+                                        ) != value
                                     {
                                         range.set(start, c - 1, value);
                                         return true;
@@ -770,7 +814,12 @@ impl CodePointMap for CodePointTrie {
                                 }
                             } else {
                                 trie_value = trie_value2;
-                                value = Self::maybe_filter_value(trie_value2, self.null_value, null_value, filter);
+                                value = Self::maybe_filter_value(
+                                    trie_value2,
+                                    self.null_value,
+                                    null_value,
+                                    filter,
+                                );
                                 have_value = true;
                             }
                             loop {
@@ -782,8 +831,12 @@ impl CodePointMap for CodePointTrie {
                                 trie_value2 = self.data.get_from_index(di);
                                 if trie_value2 != trie_value {
                                     if filter.is_none()
-                                        || Self::maybe_filter_value(trie_value2, self.null_value, null_value, filter)
-                                            != value
+                                        || Self::maybe_filter_value(
+                                            trie_value2,
+                                            self.null_value,
+                                            null_value,
+                                            filter,
+                                        ) != value
                                     {
                                         range.set(start, c - 1, value);
                                         return true;
@@ -919,7 +972,11 @@ impl Fast {
     ///
     /// As [`CodePointTrie::from_binary`].
     pub fn from_binary(value_width: Option<ValueWidth>, bytes: &mut ByteBuffer) -> Result<Fast> {
-        Ok(Fast(CodePointTrie::from_binary(Some(Type::Fast), value_width, bytes)?))
+        Ok(Fast(CodePointTrie::from_binary(
+            Some(Type::Fast),
+            value_width,
+            bytes,
+        )?))
     }
 }
 
@@ -944,7 +1001,11 @@ impl Small {
     ///
     /// As [`CodePointTrie::from_binary`].
     pub fn from_binary(value_width: Option<ValueWidth>, bytes: &mut ByteBuffer) -> Result<Small> {
-        Ok(Small(CodePointTrie::from_binary(Some(Type::Small), value_width, bytes)?))
+        Ok(Small(CodePointTrie::from_binary(
+            Some(Type::Small),
+            value_width,
+            bytes,
+        )?))
     }
 }
 
@@ -953,37 +1014,55 @@ trie_subclass!(
     ///
     /// Equivalent to `com.ibm.icu.util.CodePointTrie.Fast16`; `get`,
     /// `bmpGet` and `suppGet` read its 16-bit data array.
-    Fast16, Type::Fast, ValueWidth::Bits16, "Fast16"
+    Fast16,
+    Type::Fast,
+    ValueWidth::Bits16,
+    "Fast16"
 );
 trie_subclass!(
     /// Fast trie with 32-bit data.
     ///
     /// Equivalent to `com.ibm.icu.util.CodePointTrie.Fast32`.
-    Fast32, Type::Fast, ValueWidth::Bits32, "Fast32"
+    Fast32,
+    Type::Fast,
+    ValueWidth::Bits32,
+    "Fast32"
 );
 trie_subclass!(
     /// Fast trie with 8-bit data.
     ///
     /// Equivalent to `com.ibm.icu.util.CodePointTrie.Fast8`.
-    Fast8, Type::Fast, ValueWidth::Bits8, "Fast8"
+    Fast8,
+    Type::Fast,
+    ValueWidth::Bits8,
+    "Fast8"
 );
 trie_subclass!(
     /// Small trie with 16-bit data.
     ///
     /// Equivalent to `com.ibm.icu.util.CodePointTrie.Small16`.
-    Small16, Type::Small, ValueWidth::Bits16, "Small16"
+    Small16,
+    Type::Small,
+    ValueWidth::Bits16,
+    "Small16"
 );
 trie_subclass!(
     /// Small trie with 32-bit data.
     ///
     /// Equivalent to `com.ibm.icu.util.CodePointTrie.Small32`.
-    Small32, Type::Small, ValueWidth::Bits32, "Small32"
+    Small32,
+    Type::Small,
+    ValueWidth::Bits32,
+    "Small32"
 );
 trie_subclass!(
     /// Small trie with 8-bit data.
     ///
     /// Equivalent to `com.ibm.icu.util.CodePointTrie.Small8`.
-    Small8, Type::Small, ValueWidth::Bits8, "Small8"
+    Small8,
+    Type::Small,
+    ValueWidth::Bits8,
+    "Small8"
 );
 
 impl CodePointTrie {
@@ -997,6 +1076,13 @@ impl CodePointTrie {
         index3_null_offset: i32,
         data_null_offset: i32,
     ) -> CodePointTrie {
-        CodePointTrie::new(type_, index, data, high_start, index3_null_offset, data_null_offset)
+        CodePointTrie::new(
+            type_,
+            index,
+            data,
+            high_start,
+            index3_null_offset,
+            data_null_offset,
+        )
     }
 }

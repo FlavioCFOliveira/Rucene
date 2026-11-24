@@ -14,7 +14,9 @@ use crate::number::number_range_formatter_settings::{
 };
 use crate::number::unlocalized_number_range_formatter::UnlocalizedNumberRangeFormatter;
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 
 #[derive(Debug)]
 struct Inner {
@@ -36,7 +38,11 @@ impl LocalizedNumberRangeFormatter {
     /// Equivalent to the package-private
     /// `LocalizedNumberRangeFormatter(NumberRangeFormatterSettings<?>, int,
     /// Object)`.
-    pub(crate) fn with_parent(parent: &Arc<RangeSettingsNode>, key: i32, value: Option<RangeSettingValue>) -> Self {
+    pub(crate) fn with_parent(
+        parent: &Arc<RangeSettingsNode>,
+        key: i32,
+        value: Option<RangeSettingValue>,
+    ) -> Self {
         LocalizedNumberRangeFormatter(Arc::new(Inner {
             node: RangeSettingsNode::new(Some(parent.clone()), key, value),
             f_impl: Mutex::new(None),
@@ -79,9 +85,15 @@ impl LocalizedNumberRangeFormatter {
     ///
     /// `IllegalArgumentException("Cannot format null values in range")` for
     /// a `None`; the errors of the conversion and of the formatting.
-    pub fn format_range(&self, first: Option<&JavaNumber>, second: Option<&JavaNumber>) -> Result<FormattedNumberRange> {
+    pub fn format_range(
+        &self,
+        first: Option<&JavaNumber>,
+        second: Option<&JavaNumber>,
+    ) -> Result<FormattedNumberRange> {
         let (Some(first), Some(second)) = (first, second) else {
-            return Err(LuceneError::illegal_argument("Cannot format null values in range"));
+            return Err(LuceneError::illegal_argument(
+                "Cannot format null values in range",
+            ));
         };
         let dq1 = DecimalQuantity_DualStorageBCD::from_number(first)?;
         let dq2 = DecimalQuantity_DualStorageBCD::from_number(second)?;

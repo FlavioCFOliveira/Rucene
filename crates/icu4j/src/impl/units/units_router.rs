@@ -10,7 +10,9 @@ use crate::jdk::units;
 use crate::number::precision::Precision;
 use crate::r#impl::illegal_icu_argument_exception::IllegalIcuArgumentException;
 use crate::r#impl::number::micro_props::MicroProps;
-use crate::r#impl::units::complex_units_converter::{ComplexConverterResult, ComplexUnitsConverter};
+use crate::r#impl::units::complex_units_converter::{
+    ComplexConverterResult, ComplexUnitsConverter,
+};
 use crate::r#impl::units::conversion_rates::ConversionRates;
 use crate::r#impl::units::measure_unit_impl::{MeasureUnitImpl, UnitsParser};
 use crate::r#impl::units::units_data::UnitsData;
@@ -51,8 +53,16 @@ impl UnitsRouter {
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub fn from_identifier(input_unit_identifier: &str, locale: &ULocale, usage: &str) -> Result<Self> {
-        Self::new(&MeasureUnitImpl::for_identifier(input_unit_identifier)?, locale, usage)
+    pub fn from_identifier(
+        input_unit_identifier: &str,
+        locale: &ULocale,
+        usage: &str,
+    ) -> Result<Self> {
+        Self::new(
+            &MeasureUnitImpl::for_identifier(input_unit_identifier)?,
+            locale,
+            usage,
+        )
     }
 
     /// Equivalent to `UnitsRouter(MeasureUnitImpl, ULocale, String)`.
@@ -79,8 +89,9 @@ impl UnitsRouter {
         let mut converter_preferences = Vec::new();
         for preference in &unit_preferences {
             // Extract the complex unit from preference.
-            let mut complex_target_unit_impl = UnitsParser::parse_for_identifier(Some(preference.get_unit()))?
-                .ok_or_else(|| crate::jdk::null_pointer("empty preference unit"))?;
+            let mut complex_target_unit_impl =
+                UnitsParser::parse_for_identifier(Some(preference.get_unit()))?
+                    .ok_or_else(|| crate::jdk::null_pointer("empty preference unit"))?;
             let precision = preference.get_skeleton();
             if !precision.is_empty() && !precision.starts_with("precision-increment") {
                 // TODO: `precision-increment` is the only accepted skeleton
@@ -97,7 +108,10 @@ impl UnitsRouter {
                 data.get_conversion_rates(),
             )?);
         }
-        Ok(UnitsRouter { output_units, converter_preferences })
+        Ok(UnitsRouter {
+            output_units,
+            converter_preferences,
+        })
     }
 
     /// Equivalent to `route(BigDecimal, MicroProps)`: when `micros` is
@@ -107,25 +121,34 @@ impl UnitsRouter {
     ///
     /// The arithmetic errors of the conversion and of the increment
     /// parsing.
-    pub fn route(&self, quantity: &BigDecimal, micros: Option<&mut MicroProps>) -> Result<RouteResult> {
+    pub fn route(
+        &self,
+        quantity: &BigDecimal,
+        micros: Option<&mut MicroProps>,
+    ) -> Result<RouteResult> {
         let mut rounder: Option<Precision> = micros.as_ref().and_then(|m| m.rounder.clone());
 
         let mut converter_preference: Option<&ConverterPreference> = None;
         for itr in &self.converter_preferences {
             converter_preference = Some(itr);
-            if itr.converter.greater_than_or_equal(&quantity.abs(), &itr.limit)? {
+            if itr
+                .converter
+                .greater_than_or_equal(&quantity.abs(), &itr.limit)?
+            {
                 break;
             }
         }
         debug_assert!(converter_preference.is_some());
-        let converter_preference =
-            converter_preference.unwrap_or_else(|| panic!("java.lang.NullPointerException: no converter preference"));
+        let converter_preference = converter_preference
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: no converter preference"));
 
         // This code is a partial port of the C++ RoundingImpl class in
         // number_roundingutils.h:
         if let Some(bogus) = rounder.as_ref().filter(|r| r.is_bogus()).cloned() {
             if !converter_preference.precision.is_empty() {
-                rounder = Some(bogus.bogus_into(&Self::parse_skeleton_to_precision(&converter_preference.precision)?));
+                rounder = Some(bogus.bogus_into(&Self::parse_skeleton_to_precision(
+                    &converter_preference.precision,
+                )?));
             } else {
                 // We use the same rounding mode as COMPACT notation: known
                 // to be a human-friendly rounding mode: integers, but add a
@@ -139,7 +162,9 @@ impl UnitsRouter {
             micros.rounder = rounder.clone();
         }
         Ok(RouteResult {
-            complex_converter_result: converter_preference.converter.convert(quantity, rounder.as_ref())?,
+            complex_converter_result: converter_preference
+                .converter
+                .convert(quantity, rounder.as_ref())?,
             output_unit: converter_preference.target_unit.clone(),
         })
     }
@@ -148,8 +173,10 @@ impl UnitsRouter {
     fn parse_skeleton_to_precision(precision_skeleton: &str) -> Result<Precision> {
         const K_SKELETON_PREFIX: &str = "precision-increment/";
         if !precision_skeleton.starts_with(K_SKELETON_PREFIX) {
-            return Err(IllegalIcuArgumentException::with_message("precisionSkeleton is only precision-increment")
-                .error());
+            return Err(IllegalIcuArgumentException::with_message(
+                "precisionSkeleton is only precision-increment",
+            )
+            .error());
         }
 
         let increment_value = &precision_skeleton[K_SKELETON_PREFIX.len()..];
@@ -193,7 +220,13 @@ impl ConverterPreference {
         precision: &str,
         conversion_rates: &ConversionRates,
     ) -> Result<Self> {
-        Self::with_limit(source, target_unit, BigDecimal::value_of_double(f64::from_bits(1))?, precision, conversion_rates)
+        Self::with_limit(
+            source,
+            target_unit,
+            BigDecimal::value_of_double(f64::from_bits(1))?,
+            precision,
+            conversion_rates,
+        )
     }
 
     /// Equivalent to `ConverterPreference(MeasureUnitImpl, MeasureUnitImpl,

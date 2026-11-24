@@ -134,7 +134,8 @@ impl ScriptIterator {
         self.script_start = self.script_limit;
 
         while self.index < self.limit {
-            let ch = UTF16::char_at_chars(&self.text, self.start, self.limit, self.index - self.start);
+            let ch =
+                UTF16::char_at_chars(&self.text, self.start, self.limit, self.index - self.start);
             let sc = self.get_script(ch);
 
             /*
@@ -213,7 +214,10 @@ impl ScriptIterator {
             let script = UScript::get_script(codepoint)
                 .expect("INVARIANT: a code point read from UTF-16 text is a valid code point");
             if self.combine_cj {
-                if script == UScript::HAN || script == UScript::HIRAGANA || script == UScript::KATAKANA {
+                if script == UScript::HAN
+                    || script == UScript::HIRAGANA
+                    || script == UScript::KATAKANA
+                {
                     UScript::JAPANESE
                 } else if (0xFF10..=0xFF19).contains(&codepoint) {
                     // when using CJK dictionary breaking, don't let full width numbers go to it, otherwise

@@ -22,7 +22,9 @@ use std::sync::Arc;
 
 use icu4j::text::normalizer2::{self, Mode, Normalizer2};
 use rucene::analysis::character_utils::code_point_at;
-use rucene::analysis::{fill_buffer, new_character_buffer, CharFilter, CharReader, CharacterBuffer};
+use rucene::analysis::{
+    fill_buffer, new_character_buffer, CharFilter, CharReader, CharacterBuffer,
+};
 use rucene::error::{LuceneError, Result};
 use rucene_analysis_common::analysis::charfilter::base_char_filter::BaseCharFilter;
 
@@ -104,7 +106,10 @@ impl ICUNormalizer2CharFilter {
     ///
     /// None for the buffer size 128; see
     /// [`with_buffer_size`](Self::with_buffer_size).
-    pub fn with_normalizer(input: Box<dyn CharReader>, normalizer: Arc<dyn Normalizer2>) -> Result<Self> {
+    pub fn with_normalizer(
+        input: Box<dyn CharReader>,
+        normalizer: Arc<dyn Normalizer2>,
+    ) -> Result<Self> {
         Self::with_buffer_size(input, normalizer, 128)
     }
 
@@ -282,7 +287,8 @@ impl ICUNormalizer2CharFilter {
         let cumu_diff = self.base.get_last_cumulative_diff();
         if diff < 0 {
             for i in 1..=-diff {
-                self.base.add_off_correct_map(self.char_count + i, cumu_diff - i);
+                self.base
+                    .add_off_correct_map(self.char_count + i, cumu_diff - i);
             }
         } else {
             self.base
@@ -317,7 +323,10 @@ impl CharReader for ICUNormalizer2CharFilter {
             return Err(LuceneError::illegal_argument("len <= 0".to_string()));
         }
 
-        while !self.input_finished || !self.input_buffer.is_empty() || !self.result_buffer.is_empty() {
+        while !self.input_finished
+            || !self.input_buffer.is_empty()
+            || !self.result_buffer.is_empty()
+        {
             let mut ret_len;
 
             if !self.result_buffer.is_empty() {

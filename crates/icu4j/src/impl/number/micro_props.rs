@@ -115,7 +115,9 @@ impl MicroProps {
     ///
     /// Java's `NullPointerException` when they were never set.
     pub fn symbols(&self) -> &Arc<DecimalFormatSymbols> {
-        self.symbols.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: micros.symbols"))
+        self.symbols
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: micros.symbols"))
     }
 }
 
@@ -139,7 +141,9 @@ pub struct MicroPropsHead {
 impl MicroPropsHead {
     /// The head over `micros`.
     pub fn new(micros: MicroProps) -> Arc<MicroPropsHead> {
-        Arc::new(MicroPropsHead { micros: Mutex::new(micros) })
+        Arc::new(MicroPropsHead {
+            micros: Mutex::new(micros),
+        })
     }
 
     /// The object, to configure it.

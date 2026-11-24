@@ -53,9 +53,15 @@ impl CollationTailoring {
     pub fn new(base_settings: Option<&Reference<CollationSettings>>) -> Self {
         let settings = match base_settings {
             Some(base_settings) => {
-                debug_assert!(base_settings.read_only().is_some_and(|s| s.reorder_codes.is_empty()));
-                debug_assert!(base_settings.read_only().is_some_and(|s| s.reorder_table.is_none()));
-                debug_assert!(base_settings.read_only().is_some_and(|s| s.min_high_no_reorder == 0));
+                debug_assert!(base_settings
+                    .read_only()
+                    .is_some_and(|s| s.reorder_codes.is_empty()));
+                debug_assert!(base_settings
+                    .read_only()
+                    .is_some_and(|s| s.reorder_table.is_none()));
+                debug_assert!(base_settings
+                    .read_only()
+                    .is_some_and(|s| s.min_high_no_reorder == 0));
                 base_settings.clone()
             }
             None => Reference::new(Some(CollationSettings::new())),
@@ -106,12 +112,16 @@ impl CollationTailoring {
 
     /// The data; Java dereferences `data` without a check.
     pub fn data(&self) -> &Arc<CollationData> {
-        self.data.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.data
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// The settings; Java dereferences `settings.readOnly()` without a check.
     pub fn settings(&self) -> &CollationSettings {
-        self.settings.read_only().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.settings
+            .read_only()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `setRules(String)`.

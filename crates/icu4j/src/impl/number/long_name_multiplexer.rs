@@ -28,7 +28,11 @@ pub trait ParentlessMicroPropsGenerator: std::fmt::Debug + Send + Sync {
     ///
     /// The `ArithmeticException` of the plural rounding, and the errors of
     /// the formatting the mixed-unit handler performs.
-    fn process_quantity_with_micros(&self, quantity: &mut dyn DecimalQuantity, micros: MicroProps) -> Result<MicroProps>;
+    fn process_quantity_with_micros(
+        &self,
+        quantity: &mut dyn DecimalQuantity,
+        micros: MicroProps,
+    ) -> Result<MicroProps>;
 }
 
 /// A generator that selects, by the output unit of the micros, the
@@ -49,7 +53,11 @@ pub struct LongNameMultiplexer {
 impl LongNameMultiplexer {
     /// Equivalent to `LongNameMultiplexer(MicroPropsGenerator)`.
     pub fn new(f_parent: Arc<dyn MicroPropsGenerator>) -> Self {
-        LongNameMultiplexer { f_parent, f_handlers: Vec::new(), f_measure_units: Vec::new() }
+        LongNameMultiplexer {
+            f_parent,
+            f_handlers: Vec::new(),
+            f_measure_units: Vec::new(),
+        }
     }
 
     /// Produces a multiplexer that uses `LongNameHandler` or
@@ -76,10 +84,24 @@ impl LongNameMultiplexer {
         for unit in units {
             result.f_measure_units.push(unit.clone());
             if unit.get_complexity()? == Complexity::Mixed {
-                let mlnh = MixedUnitLongNameHandler::for_measure_unit(locale, unit, width, unit_display_case, rules, None)?;
+                let mlnh = MixedUnitLongNameHandler::for_measure_unit(
+                    locale,
+                    unit,
+                    width,
+                    unit_display_case,
+                    rules,
+                    None,
+                )?;
                 result.f_handlers.push(mlnh);
             } else {
-                let lnh = LongNameHandler::for_measure_unit(locale, unit, width, unit_display_case, rules, None)?;
+                let lnh = LongNameHandler::for_measure_unit(
+                    locale,
+                    unit,
+                    width,
+                    unit_display_case,
+                    rules,
+                    None,
+                )?;
                 result.f_handlers.push(lnh);
             }
         }

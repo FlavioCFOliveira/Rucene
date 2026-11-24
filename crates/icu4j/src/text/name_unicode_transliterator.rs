@@ -13,7 +13,10 @@ use crate::r#impl::pattern_props::PatternProps;
 use crate::r#impl::u_character_name::UCharacterName;
 use crate::r#impl::utility::Utility;
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{factory, register_factory_in, transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    factory, register_factory_in, transliterator_boilerplate, Position, Transliterator,
+    TransliteratorBase,
+};
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_filter::UnicodeFilter;
 use crate::text::unicode_name_transliterator::UnicodeNameTransliterator;
@@ -48,7 +51,11 @@ impl NameUnicodeTransliterator {
         register_factory_in(
             registry,
             &units(Self::ID),
-            factory(|_id| Ok(Some(Arc::new(NameUnicodeTransliterator::new(None)?) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(
+                    Arc::new(NameUnicodeTransliterator::new(None)?) as Arc<dyn Transliterator>
+                ))
+            }),
         )
     }
 
@@ -70,7 +77,12 @@ impl Transliterator for NameUnicodeTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, offsets: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        offsets: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         let max_len = UCharacterName::instance().get_max_char_name_length() + 1; // allow for temporary trailing space
 
         let mut name: Vec<u16> = Vec::with_capacity(max_len.max(0) as usize);
@@ -183,15 +195,26 @@ impl Transliterator for NameUnicodeTransliterator {
         offsets.limit = limit;
         // In incremental mode, only advance the cursor up to the last
         // open delimiter candidate.
-        offsets.start = if is_incremental && open_pos >= 0 { open_pos } else { cursor };
+        offsets.start = if is_incremental && open_pos >= 0 {
+            open_pos
+        } else {
+            cursor
+        };
         Ok(())
     }
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let my_filter = self.get_filter_as_unicode_set(input_filter)?;
-        if !my_filter.contains_all_str(&units(UnicodeNameTransliterator::OPEN_DELIM)) || !my_filter.contains(Self::CLOSE_DELIM as i32)? {
+        if !my_filter.contains_all_str(&units(UnicodeNameTransliterator::OPEN_DELIM))
+            || !my_filter.contains(Self::CLOSE_DELIM as i32)?
+        {
             return Ok(()); // we have to contain both prefix and suffix
         }
         let mut items = UnicodeSet::new();

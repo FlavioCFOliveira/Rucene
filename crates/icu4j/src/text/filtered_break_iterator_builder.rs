@@ -33,7 +33,10 @@ pub trait FilteredBreakIteratorBuilder: Send + Sync {
     /// # Errors
     ///
     /// The exceptions of the trie building.
-    fn wrap_iterator_with_filter(&self, wrapped_break_iterator: Box<dyn BreakIterator>) -> Result<Box<dyn BreakIterator>>;
+    fn wrap_iterator_with_filter(
+        &self,
+        wrapped_break_iterator: Box<dyn BreakIterator>,
+    ) -> Result<Box<dyn BreakIterator>>;
 }
 
 /// `getInstance(Locale where)`: a builder with the locale's suppressions.
@@ -41,7 +44,9 @@ pub trait FilteredBreakIteratorBuilder: Send + Sync {
 /// # Errors
 ///
 /// The exceptions of the bundle lookup.
-pub fn get_instance_locale(where_: Option<&Locale>) -> Result<Box<dyn FilteredBreakIteratorBuilder>> {
+pub fn get_instance_locale(
+    where_: Option<&Locale>,
+) -> Result<Box<dyn FilteredBreakIteratorBuilder>> {
     Ok(Box::new(Builder::new_locale(where_)?))
 }
 

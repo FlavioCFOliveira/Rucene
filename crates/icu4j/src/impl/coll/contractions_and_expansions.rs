@@ -89,7 +89,9 @@ impl<'a> ContractionsAndExpansions<'a> {
     }
 
     fn data(&self) -> &Arc<CollationData> {
-        self.data.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.data
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `forData(CollationData)`.
@@ -104,7 +106,10 @@ impl<'a> ContractionsAndExpansions<'a> {
         }
         self.data = Some(d.clone());
         let ranges: Vec<_> = {
-            let trie = d.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let trie = d
+                .trie
+                .as_deref()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             trie.iterator().take_while(|r| !r.lead_surrogate).collect()
         };
         for range in ranges {
@@ -118,7 +123,10 @@ impl<'a> ContractionsAndExpansions<'a> {
         self.check_tailored = 1;
         self.data = Some(base.clone());
         let ranges: Vec<_> = {
-            let trie = base.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let trie = base
+                .trie
+                .as_deref()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             trie.iterator().take_while(|r| !r.lead_surrogate).collect()
         };
         for range in ranges {
@@ -164,13 +172,17 @@ impl<'a> ContractionsAndExpansions<'a> {
         let mut d = d.clone();
         let mut ce32 = d.get_ce32(c);
         if ce32 == Collation::FALLBACK_CE32 {
-            d = d.base.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            d = d
+                .base
+                .clone()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             ce32 = d.get_ce32(c);
         }
         self.data = Some(d);
         self.handle_ce32(c, c, ce32)
     }
 
+    #[allow(clippy::unnecessary_unwrap)] // Java's null check; the guarded block also mutates other fields
     fn handle_ce32(&mut self, start: i32, end: i32, mut ce32: i32) -> Result<()> {
         loop {
             if (ce32 & 0xff) < Collation::SPECIAL_CE32_LOW_BYTE {
@@ -182,7 +194,9 @@ impl<'a> ContractionsAndExpansions<'a> {
             }
             match Collation::tag_from_ce32(ce32) {
                 Collation::FALLBACK_TAG => return Ok(()),
-                Collation::RESERVED_TAG_3 | Collation::BUILDER_DATA_TAG | Collation::LEAD_SURROGATE_TAG => {
+                Collation::RESERVED_TAG_3
+                | Collation::BUILDER_DATA_TAG
+                | Collation::LEAD_SURROGATE_TAG => {
                     // Java porting note: U_INTERNAL_PROGRAM_ERROR is set to errorCode in ICU4C.
                     panic!(
                         "java.lang.AssertionError: Unexpected CE32 tag type {} for ce32=0x{:08x}",
@@ -207,7 +221,10 @@ impl<'a> ContractionsAndExpansions<'a> {
                         self.ces[0] = Collation::latin_ce0_from_ce32(ce32);
                         self.ces[1] = Collation::latin_ce1_from_ce32(ce32);
                         let ces = self.ces;
-                        self.sink.as_mut().expect("checked").handle_expansion(&ces, 0, 2);
+                        self.sink
+                            .as_mut()
+                            .expect("checked")
+                            .handle_expansion(&ces, 0, 2);
                     }
                     // Optimization: If we have a prefix,
                     // then the relevant strings have been added already.
@@ -222,10 +239,14 @@ impl<'a> ContractionsAndExpansions<'a> {
                         let length = Collation::length_from_ce32(ce32);
                         let data = self.data().clone();
                         for i in 0..length {
-                            self.ces[i as usize] = Collation::ce_from_ce32(data.ce32s[(idx + i) as usize]);
+                            self.ces[i as usize] =
+                                Collation::ce_from_ce32(data.ce32s[(idx + i) as usize]);
                         }
                         let ces = self.ces;
-                        self.sink.as_mut().expect("checked").handle_expansion(&ces, 0, length);
+                        self.sink
+                            .as_mut()
+                            .expect("checked")
+                            .handle_expansion(&ces, 0, length);
                     }
                     // Optimization: If we have a prefix,
                     // then the relevant strings have been added already.
@@ -239,7 +260,10 @@ impl<'a> ContractionsAndExpansions<'a> {
                         let idx = Collation::index_from_ce32(ce32);
                         let length = Collation::length_from_ce32(ce32);
                         let data = self.data().clone();
-                        self.sink.as_mut().expect("checked").handle_expansion(&data.ces, idx, length);
+                        self.sink
+                            .as_mut()
+                            .expect("checked")
+                            .handle_expansion(&data.ces, idx, length);
                     }
                     // Optimization: If we have a prefix,
                     // then the relevant strings have been added already.
@@ -275,8 +299,14 @@ impl<'a> ContractionsAndExpansions<'a> {
                             iter.set_text(false, &hangul, 0);
                             let length = iter.fetch_ces();
                             // Ignore the terminating non-CE.
-                            debug_assert!(length >= 2 && iter.base().get_ce(length - 1) == Collation::NO_CE);
-                            self.sink.as_mut().expect("checked").handle_expansion(iter.base().get_ces(), 0, length - 1);
+                            debug_assert!(
+                                length >= 2 && iter.base().get_ce(length - 1) == Collation::NO_CE
+                            );
+                            self.sink.as_mut().expect("checked").handle_expansion(
+                                iter.base().get_ces(),
+                                0,
+                                length - 1,
+                            );
                         }
                     }
                     // Optimization: If we have a prefix,
@@ -385,7 +415,12 @@ impl<'a> ContractionsAndExpansions<'a> {
     /// # Errors
     ///
     /// `UnsupportedOperationException` when the set is frozen.
-    pub fn add_strings(&self, mut start: i32, end: i32, set: Option<&mut UnicodeSet>) -> Result<()> {
+    pub fn add_strings(
+        &self,
+        mut start: i32,
+        end: i32,
+        set: Option<&mut UnicodeSet>,
+    ) -> Result<()> {
         let Some(set) = set else {
             return Ok(());
         };

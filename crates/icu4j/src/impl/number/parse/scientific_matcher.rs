@@ -38,7 +38,10 @@ impl ScientificMatcher {
     /// # Errors
     ///
     /// The errors of `DecimalMatcher.getInstance`.
-    pub fn get_instance(symbols: &DecimalFormatSymbols, grouper: &Grouper) -> Result<Arc<ScientificMatcher>> {
+    pub fn get_instance(
+        symbols: &DecimalFormatSymbols,
+        grouper: &Grouper,
+    ) -> Result<Arc<ScientificMatcher>> {
         // TODO: Static-initialize most common instances?
         Ok(Arc::new(Self::new(symbols, grouper)?))
     }
@@ -50,12 +53,21 @@ impl ScientificMatcher {
             grouper,
             ParsingUtils::PARSE_FLAG_INTEGER_ONLY | ParsingUtils::PARSE_FLAG_GROUPING_DISABLED,
         )?;
-        let ignorables_matcher = IgnorablesMatcher::get_instance(ParsingUtils::PARSE_FLAG_STRICT_IGNORABLES);
+        let ignorables_matcher =
+            IgnorablesMatcher::get_instance(ParsingUtils::PARSE_FLAG_STRICT_IGNORABLES);
 
         let minus_sign = symbols.get_minus_sign_string();
-        let custom_minus_sign = if Self::minus_sign_set().contains_str(minus_sign) { None } else { Some(minus_sign.to_vec()) };
+        let custom_minus_sign = if Self::minus_sign_set().contains_str(minus_sign) {
+            None
+        } else {
+            Some(minus_sign.to_vec())
+        };
         let plus_sign = symbols.get_plus_sign_string();
-        let custom_plus_sign = if Self::plus_sign_set().contains_str(plus_sign) { None } else { Some(plus_sign.to_vec()) };
+        let custom_plus_sign = if Self::plus_sign_set().contains_str(plus_sign) {
+            None
+        } else {
+            Some(plus_sign.to_vec())
+        };
         Ok(ScientificMatcher {
             exponent_separator_string,
             exponent_matcher,
@@ -103,7 +115,8 @@ impl NumberParseMatcher for ScientificMatcher {
             // Note: call site is guarded by the segment.length() check above.
             // Note: the ignorables matcher neither reads nor writes the result
             // (Java passes null).
-            self.ignorables_matcher.match_(segment, &mut ParsedNumber::new())?;
+            self.ignorables_matcher
+                .match_(segment, &mut ParsedNumber::new())?;
             if segment.length() == 0 {
                 segment.set_offset(initial_offset);
                 return Ok(true);
@@ -147,7 +160,8 @@ impl NumberParseMatcher for ScientificMatcher {
 
             // Allow ignorables after the sign.
             // Note: call site is guarded by the segment.length() check above.
-            self.ignorables_matcher.match_(segment, &mut ParsedNumber::new())?;
+            self.ignorables_matcher
+                .match_(segment, &mut ParsedNumber::new())?;
             if segment.length() == 0 {
                 segment.set_offset(initial_offset);
                 return Ok(true);
@@ -159,7 +173,9 @@ impl NumberParseMatcher for ScientificMatcher {
                 result.quantity = Some(DecimalQuantity_DualStorageBCD::new());
             }
             let digits_offset = segment.get_offset();
-            let digits_return_value = self.exponent_matcher.match_exponent(segment, result, exponent_sign);
+            let digits_return_value =
+                self.exponent_matcher
+                    .match_exponent(segment, result, exponent_sign);
             if was_null {
                 result.quantity = None;
             }
@@ -192,7 +208,10 @@ impl NumberParseMatcher for ScientificMatcher {
     }
 
     fn to_java_string(&self) -> String {
-        format!("<ScientificMatcher {}>", String::from_utf16_lossy(&self.exponent_separator_string))
+        format!(
+            "<ScientificMatcher {}>",
+            String::from_utf16_lossy(&self.exponent_separator_string)
+        )
     }
 
     fn as_any(&self) -> &dyn Any {

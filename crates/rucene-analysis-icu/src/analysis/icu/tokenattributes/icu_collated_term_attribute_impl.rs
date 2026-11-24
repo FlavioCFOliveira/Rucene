@@ -259,7 +259,10 @@ impl AttributeImpl for ICUCollatedTermAttributeImpl {
 
     /// The inherited `CharTermAttributeImpl.equals`: the same term text.
     fn equals(&self, other: &dyn AttributeImpl) -> bool {
-        match other.as_any().downcast_ref::<ICUCollatedTermAttributeImpl>() {
+        match other
+            .as_any()
+            .downcast_ref::<ICUCollatedTermAttributeImpl>()
+        {
             Some(o) => self.inner.equals(&o.inner),
             None => self.inner.equals(other),
         }

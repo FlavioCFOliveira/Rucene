@@ -9,7 +9,9 @@ use std::sync::LazyLock;
 
 use rucene::error::{LuceneError, Result};
 
-use crate::jdk::{index_out_of_bounds, ByteBuffer, ByteOrder, ClassLoader, DataOutputStream, InputStream};
+use crate::jdk::{
+    index_out_of_bounds, ByteBuffer, ByteOrder, ClassLoader, DataOutputStream, InputStream,
+};
 use crate::r#impl::class_loader_util::ClassLoaderUtil;
 use crate::r#impl::icu_config::ICUConfig;
 use crate::r#impl::icu_data::ICUData;
@@ -146,8 +148,8 @@ impl DatPackageReader {
     fn get_name_offset(bytes: &ByteBuffer, index: i32) -> i32 {
         let base = bytes.position();
         debug_assert!(0 <= index && index < bytes.get_int_at(base)); // count
-        // The count integer (4 bytes)
-        // is followed by count (nameOffset, dataOffset) integer pairs (8 bytes per pair).
+                                                                     // The count integer (4 bytes)
+                                                                     // is followed by count (nameOffset, dataOffset) integer pairs (8 bytes per pair).
         base.wrapping_add(bytes.get_int_at(base + 4 + index * 8))
     }
 
@@ -271,7 +273,9 @@ impl DataFile for SingleDataFile {
             && item[f.len()] == b'/' as u16
             && crate::jdk::index_of_unit(&item, b'/' as u16, f.len() as i32 + 1) < 0
         {
-            names.insert(String::from_utf16_lossy(&item[f.len() + 1..item.len() - s.len()]));
+            names.insert(String::from_utf16_lossy(
+                &item[f.len() + 1..item.len() - s.len()],
+            ));
         }
     }
 }
@@ -754,7 +758,11 @@ impl ICUBinary {
     ///
     /// `BufferUnderflowException` or `IllegalArgumentException` from the
     /// buffer.
-    pub fn get_bytes(bytes: &mut ByteBuffer, length: i32, additional_skip_length: i32) -> Result<Vec<i8>> {
+    pub fn get_bytes(
+        bytes: &mut ByteBuffer,
+        length: i32,
+        additional_skip_length: i32,
+    ) -> Result<Vec<i8>> {
         let mut dest = vec![0u8; length as usize];
         bytes.get_bytes(&mut dest)?;
         if additional_skip_length > 0 {
@@ -774,7 +782,11 @@ impl ICUBinary {
     ///
     /// `IndexOutOfBoundsException` when fewer units remain
     /// (`CharBuffer.subSequence`).
-    pub fn get_string(bytes: &mut ByteBuffer, length: i32, additional_skip_length: i32) -> Result<Vec<u16>> {
+    pub fn get_string(
+        bytes: &mut ByteBuffer,
+        length: i32,
+        additional_skip_length: i32,
+    ) -> Result<Vec<u16>> {
         let available = bytes.remaining() / 2;
         if length < 0 || length > available {
             index_out_of_bounds(Some(format!(
@@ -783,7 +795,10 @@ impl ICUBinary {
         }
         let mut s = vec![0u16; length as usize];
         bytes.view_chars(&mut s)?;
-        Self::skip_bytes(bytes, length.wrapping_mul(2).wrapping_add(additional_skip_length))?;
+        Self::skip_bytes(
+            bytes,
+            length.wrapping_mul(2).wrapping_add(additional_skip_length),
+        )?;
         Ok(s)
     }
 
@@ -793,10 +808,17 @@ impl ICUBinary {
     ///
     /// `BufferUnderflowException` or `IllegalArgumentException` from the
     /// buffer.
-    pub fn get_chars(bytes: &mut ByteBuffer, length: i32, additional_skip_length: i32) -> Result<Vec<u16>> {
+    pub fn get_chars(
+        bytes: &mut ByteBuffer,
+        length: i32,
+        additional_skip_length: i32,
+    ) -> Result<Vec<u16>> {
         let mut dest = vec![0u16; length as usize];
         bytes.view_chars(&mut dest)?;
-        Self::skip_bytes(bytes, length.wrapping_mul(2).wrapping_add(additional_skip_length))?;
+        Self::skip_bytes(
+            bytes,
+            length.wrapping_mul(2).wrapping_add(additional_skip_length),
+        )?;
         Ok(dest)
     }
 
@@ -806,10 +828,17 @@ impl ICUBinary {
     ///
     /// `BufferUnderflowException` or `IllegalArgumentException` from the
     /// buffer.
-    pub fn get_shorts(bytes: &mut ByteBuffer, length: i32, additional_skip_length: i32) -> Result<Vec<i16>> {
+    pub fn get_shorts(
+        bytes: &mut ByteBuffer,
+        length: i32,
+        additional_skip_length: i32,
+    ) -> Result<Vec<i16>> {
         let mut dest = vec![0i16; length as usize];
         bytes.view_shorts(&mut dest)?;
-        Self::skip_bytes(bytes, length.wrapping_mul(2).wrapping_add(additional_skip_length))?;
+        Self::skip_bytes(
+            bytes,
+            length.wrapping_mul(2).wrapping_add(additional_skip_length),
+        )?;
         Ok(dest)
     }
 
@@ -819,10 +848,17 @@ impl ICUBinary {
     ///
     /// `BufferUnderflowException` or `IllegalArgumentException` from the
     /// buffer.
-    pub fn get_ints(bytes: &mut ByteBuffer, length: i32, additional_skip_length: i32) -> Result<Vec<i32>> {
+    pub fn get_ints(
+        bytes: &mut ByteBuffer,
+        length: i32,
+        additional_skip_length: i32,
+    ) -> Result<Vec<i32>> {
         let mut dest = vec![0i32; length as usize];
         bytes.view_ints(&mut dest)?;
-        Self::skip_bytes(bytes, length.wrapping_mul(4).wrapping_add(additional_skip_length))?;
+        Self::skip_bytes(
+            bytes,
+            length.wrapping_mul(4).wrapping_add(additional_skip_length),
+        )?;
         Ok(dest)
     }
 
@@ -832,10 +868,17 @@ impl ICUBinary {
     ///
     /// `BufferUnderflowException` or `IllegalArgumentException` from the
     /// buffer.
-    pub fn get_longs(bytes: &mut ByteBuffer, length: i32, additional_skip_length: i32) -> Result<Vec<i64>> {
+    pub fn get_longs(
+        bytes: &mut ByteBuffer,
+        length: i32,
+        additional_skip_length: i32,
+    ) -> Result<Vec<i64>> {
         let mut dest = vec![0i64; length as usize];
         bytes.view_longs(&mut dest)?;
-        Self::skip_bytes(bytes, length.wrapping_mul(8).wrapping_add(additional_skip_length))?;
+        Self::skip_bytes(
+            bytes,
+            length.wrapping_mul(8).wrapping_add(additional_skip_length),
+        )?;
         Ok(dest)
     }
 

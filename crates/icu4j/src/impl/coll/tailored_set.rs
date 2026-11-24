@@ -48,15 +48,25 @@ pub struct TailoredSet<'a> {
 impl<'a> TailoredSet<'a> {
     /// `TailoredSet(UnicodeSet t)`.
     pub fn new(t: &'a mut UnicodeSet) -> Self {
-        Self { data: None, base_data: None, tailored: t, unreversed_prefix: Vec::new(), suffix: None }
+        Self {
+            data: None,
+            base_data: None,
+            tailored: t,
+            unreversed_prefix: Vec::new(),
+            suffix: None,
+        }
     }
 
     fn data(&self) -> Arc<CollationData> {
-        self.data.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.data
+            .clone()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn base_data(&self) -> Arc<CollationData> {
-        self.base_data.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.base_data
+            .clone()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `forData(CollationData)`.
@@ -70,7 +80,10 @@ impl<'a> TailoredSet<'a> {
         debug_assert!(self.base_data.is_some());
         // utrie2_enum(data->trie, NULL, enumTailoredRange, this);
         let ranges: Vec<_> = {
-            let trie = d.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let trie = d
+                .trie
+                .as_deref()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             trie.iterator().take_while(|r| !r.lead_surrogate).collect()
         };
         for range in ranges {
@@ -103,7 +116,9 @@ impl<'a> TailoredSet<'a> {
             // Do not just continue if ce32 == baseCE32 because
             // contractions and expansions in different data objects
             // normally differ even if they have the same data offsets.
-            if Collation::is_self_contained_ce32(ce32) && Collation::is_self_contained_ce32(base_ce32) {
+            if Collation::is_self_contained_ce32(ce32)
+                && Collation::is_self_contained_ce32(base_ce32)
+            {
                 // fastpath
                 if ce32 != base_ce32 {
                     self.tailored.add(start)?;
@@ -128,7 +143,13 @@ impl<'a> TailoredSet<'a> {
             if Collation::is_prefix_ce32(base_ce32) {
                 let base_index = Collation::index_from_ce32(base_ce32);
                 base_ce32 = base_data.get_final_ce32(base_data.get_ce32_from_contexts(base_index));
-                self.compare_prefixes(c, data.contexts.clone(), data_index + 2, base_data.contexts.clone(), base_index + 2)?;
+                self.compare_prefixes(
+                    c,
+                    data.contexts.clone(),
+                    data_index + 2,
+                    base_data.contexts.clone(),
+                    base_index + 2,
+                )?;
             } else {
                 self.add_prefixes(&data, c, data.contexts.clone(), data_index + 2)?;
             }
@@ -150,9 +171,16 @@ impl<'a> TailoredSet<'a> {
                 if (base_ce32 & Collation::CONTRACT_SINGLE_CP_NO_MATCH) != 0 {
                     base_ce32 = Collation::NO_CE32;
                 } else {
-                    base_ce32 = base_data.get_final_ce32(base_data.get_ce32_from_contexts(base_index));
+                    base_ce32 =
+                        base_data.get_final_ce32(base_data.get_ce32_from_contexts(base_index));
                 }
-                self.compare_contractions(c, data.contexts.clone(), data_index + 2, base_data.contexts.clone(), base_index + 2)?;
+                self.compare_contractions(
+                    c,
+                    data.contexts.clone(),
+                    data_index + 2,
+                    base_data.contexts.clone(),
+                    base_index + 2,
+                )?;
             } else {
                 self.add_contractions(c, data.contexts.clone(), data_index + 2)?;
             }
@@ -254,7 +282,10 @@ impl<'a> TailoredSet<'a> {
         Ok(())
     }
 
-    fn next_fix(it: &mut crate::util::chars_trie::Iterator, sentinel: &[u16]) -> (Option<Entry>, Fix) {
+    fn next_fix(
+        it: &mut crate::util::chars_trie::Iterator,
+        sentinel: &[u16],
+    ) -> (Option<Entry>, Fix) {
         if it.has_next() {
             let e = it.next().expect("hasNext");
             let s = e.chars.clone();
@@ -264,14 +295,21 @@ impl<'a> TailoredSet<'a> {
         }
     }
 
-    fn compare_prefixes(&mut self, c: i32, p: Arc<[u16]>, pidx: i32, q: Arc<[u16]>, qidx: i32) -> Result<()> {
+    fn compare_prefixes(
+        &mut self,
+        c: i32,
+        p: Arc<[u16]>,
+        pidx: i32,
+        q: Arc<[u16]>,
+        qidx: i32,
+    ) -> Result<()> {
         // Parallel iteration over prefixes of both tables.
         let mut prefixes = CharsTrie::new(p, pidx).iterator();
         let mut base_prefixes = CharsTrie::new(q, qidx).iterator();
         let mut tp: Fix = None; // Tailoring prefix.
         let mut bp: Fix = None; // Base prefix.
-        // Use a string with a U+FFFF as the limit sentinel.
-        // U+FFFF is untailorable and will not occur in prefixes.
+                                // Use a string with a U+FFFF as the limit sentinel.
+                                // U+FFFF is untailorable and will not occur in prefixes.
         let none: [u16; 1] = [0xffff];
         let mut te: Option<Entry> = None;
         let mut be: Option<Entry> = None;
@@ -304,7 +342,10 @@ impl<'a> TailoredSet<'a> {
                 bp = None;
             } else {
                 self.set_prefix(&t);
-                let (tv, bv) = (te.as_ref().expect("tailoring entry").value, be.as_ref().expect("base entry").value);
+                let (tv, bv) = (
+                    te.as_ref().expect("tailoring entry").value,
+                    be.as_ref().expect("base entry").value,
+                );
                 self.compare(c, tv, bv)?;
                 self.reset_prefix();
                 te = None;
@@ -316,15 +357,22 @@ impl<'a> TailoredSet<'a> {
         Ok(())
     }
 
-    fn compare_contractions(&mut self, c: i32, p: Arc<[u16]>, pidx: i32, q: Arc<[u16]>, qidx: i32) -> Result<()> {
+    fn compare_contractions(
+        &mut self,
+        c: i32,
+        p: Arc<[u16]>,
+        pidx: i32,
+        q: Arc<[u16]>,
+        qidx: i32,
+    ) -> Result<()> {
         // Parallel iteration over suffixes of both tables.
         let mut suffixes = CharsTrie::new(p, pidx).iterator();
         let mut base_suffixes = CharsTrie::new(q, qidx).iterator();
         let mut ts: Fix = None; // Tailoring suffix.
         let mut bs: Fix = None; // Base suffix.
-        // Use a string with two U+FFFF as the limit sentinel.
-        // U+FFFF is untailorable and will not occur in contractions except maybe
-        // as a single suffix character for a root-collator boundary contraction.
+                                // Use a string with two U+FFFF as the limit sentinel.
+                                // U+FFFF is untailorable and will not occur in contractions except maybe
+                                // as a single suffix character for a root-collator boundary contraction.
         let none: [u16; 2] = [0xffff, 0xffff];
         let mut te: Option<Entry> = None;
         let mut be: Option<Entry> = None;
@@ -354,8 +402,12 @@ impl<'a> TailoredSet<'a> {
             } else {
                 self.suffix = Some(t.clone());
                 let (tv, bv) = (
-                    te.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException")).value,
-                    be.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException")).value,
+                    te.as_ref()
+                        .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+                        .value,
+                    be.as_ref()
+                        .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+                        .value,
                 );
                 self.compare(c, tv, bv)?;
                 self.suffix = None;

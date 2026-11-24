@@ -7,9 +7,9 @@ use std::any::Any;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::util::u_locale::Category;
 use rucene::error::{LuceneError, Result};
 use rucene_queryparser::jdk::locale::Locale;
-use crate::util::u_locale::Category;
 use rucene_queryparser::jdk::resource_bundle::MissingResourceException;
 
 use crate::jdk::math::{BigDecimal, BigInteger};
@@ -156,7 +156,10 @@ pub mod field {
                     return Ok(f);
                 }
             }
-            Err(LuceneError::unchecked("java.io.InvalidObjectException", "An invalid object."))
+            Err(LuceneError::unchecked(
+                "java.io.InvalidObjectException",
+                "An invalid object.",
+            ))
         }
     }
 }
@@ -213,7 +216,9 @@ impl NumberFormatBase {
 
     /// `hashCode()`: `maximumIntegerDigits * 37 + maxFractionDigits`.
     pub fn hash_code(&self) -> i32 {
-        self.maximum_integer_digits.wrapping_mul(37).wrapping_add(i32::from(self.max_fraction_digits))
+        self.maximum_integer_digits
+            .wrapping_mul(37)
+            .wrapping_add(i32::from(self.max_fraction_digits))
     }
 
     /// The field comparisons of `equals(Object)` (after the class check).
@@ -294,7 +299,10 @@ impl NumberFormatBase {
             || self.minimum_integer_digits < 0
             || self.minimum_fraction_digits < 0
         {
-            return Err(LuceneError::unchecked("java.io.InvalidObjectException", "Digit count range invalid"));
+            return Err(LuceneError::unchecked(
+                "java.io.InvalidObjectException",
+                "Digit count range invalid",
+            ));
         }
         self.serial_version_on_stream = CURRENT_SERIAL_VERSION;
         Ok(())
@@ -342,7 +350,12 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The implementation's.
-    fn format_double_to(&self, number: f64, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()>;
+    fn format_double_to(
+        &self,
+        number: f64,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()>;
 
     /// Equivalent to the abstract `format(long, StringBuffer,
     /// FieldPosition)`.
@@ -350,7 +363,12 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The implementation's.
-    fn format_long_to(&self, number: i64, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()>;
+    fn format_long_to(
+        &self,
+        number: i64,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()>;
 
     /// Equivalent to the abstract `format(BigInteger, StringBuffer,
     /// FieldPosition)`.
@@ -358,7 +376,12 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The implementation's.
-    fn format_big_integer_to(&self, number: &BigInteger, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()>;
+    fn format_big_integer_to(
+        &self,
+        number: &BigInteger,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()>;
 
     /// Equivalent to the abstract `format(java.math.BigDecimal,
     /// StringBuffer, FieldPosition)`.
@@ -366,7 +389,12 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The implementation's.
-    fn format_big_decimal_to(&self, number: &BigDecimal, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()>;
+    fn format_big_decimal_to(
+        &self,
+        number: &BigDecimal,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()>;
 
     /// Equivalent to the abstract `format(com.ibm.icu.math.BigDecimal,
     /// StringBuffer, FieldPosition)`.
@@ -389,7 +417,8 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The implementation's.
-    fn parse(&self, text: &[u16], parse_position: &mut ParsePosition) -> Result<Option<JavaNumber>>;
+    fn parse(&self, text: &[u16], parse_position: &mut ParsePosition)
+        -> Result<Option<JavaNumber>>;
 
     /// `clone()`.
     fn clone_number_format(&self) -> Box<dyn NumberFormat>;
@@ -429,12 +458,19 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The errors of the parse and of `getEffectiveCurrency`.
-    fn parse_currency(&self, text: &[u16], pos: &mut ParsePosition) -> Result<Option<CurrencyAmount>> {
+    fn parse_currency(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+    ) -> Result<Option<CurrencyAmount>> {
         // Default implementation only -- subclasses should override
         let n = self.parse(text, pos)?;
         match n {
             None => Ok(None),
-            Some(n) => Ok(Some(CurrencyAmount::new(Some(n), self.get_effective_currency()?)?)),
+            Some(n) => Ok(Some(CurrencyAmount::new(
+                Some(n),
+                self.get_effective_currency()?,
+            )?)),
         }
     }
 
@@ -675,7 +711,9 @@ pub trait NumberFormat: Format {
     ///
     /// `IllegalArgumentException` when exactly one of the two is `None`.
     fn set_locale(&self, valid: Option<ULocale>, actual: Option<ULocale>) -> Result<()> {
-        lock(self.number_format_base()).uformat.set_locale(valid, actual)
+        lock(self.number_format_base())
+            .uformat
+            .set_locale(valid, actual)
     }
 
     /// Equivalent to `hashCode()`.
@@ -706,7 +744,12 @@ pub trait NumberFormat: Format {
     /// # Errors
     ///
     /// The errors of the overload.
-    fn format_number_to(&self, number: &JavaNumber, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_number_to(
+        &self,
+        number: &JavaNumber,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         match number {
             JavaNumber::Long(l) => self.format_long_to(*l, to_append_to, pos),
             JavaNumber::BigInteger(b) => self.format_big_integer_to(b, to_append_to, pos),
@@ -727,7 +770,12 @@ pub trait NumberFormat: Format {
     ///
     /// `IllegalArgumentException("Cannot format given Object as a Number")`
     /// for any other object; the errors of the overload.
-    fn format_any_to(&self, number: &dyn Any, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_any_to(
+        &self,
+        number: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         if let Some(n) = number.downcast_ref::<JavaNumber>() {
             self.format_number_to(n, to_append_to, pos)
         } else if let Some(l) = number.downcast_ref::<i64>() {
@@ -747,7 +795,9 @@ pub trait NumberFormat: Format {
         } else if let Some(f) = number.downcast_ref::<f32>() {
             self.format_double_to(f64::from(*f), to_append_to, pos)
         } else {
-            Err(LuceneError::illegal_argument("Cannot format given Object as a Number"))
+            Err(LuceneError::illegal_argument(
+                "Cannot format given Object as a Number",
+            ))
         }
     }
 
@@ -880,7 +930,11 @@ pub trait NumberFormatFactory: Send + Sync {
     /// # Errors
     ///
     /// The implementation's.
-    fn create_format(&self, loc: &ULocale, format_type: i32) -> Result<Option<Box<dyn NumberFormat>>> {
+    fn create_format(
+        &self,
+        loc: &ULocale,
+        format_type: i32,
+    ) -> Result<Option<Box<dyn NumberFormat>>> {
         self.create_format_locale(&loc.to_locale(), format_type)
     }
 
@@ -892,7 +946,11 @@ pub trait NumberFormatFactory: Send + Sync {
     /// # Errors
     ///
     /// The implementation's.
-    fn create_format_locale(&self, loc: &Locale, format_type: i32) -> Result<Option<Box<dyn NumberFormat>>> {
+    fn create_format_locale(
+        &self,
+        loc: &Locale,
+        format_type: i32,
+    ) -> Result<Option<Box<dyn NumberFormat>>> {
         let uloc = ULocale::for_locale(Some(loc))?.unwrap_or_else(ULocale::root);
         self.create_format(&uloc, format_type)
     }
@@ -952,7 +1010,10 @@ impl SimpleNumberFormatFactory {
     pub fn new_visible(locale: &ULocale, visible: bool) -> Self {
         let mut locale_names = HashSet::new();
         locale_names.insert(locale.get_base_name());
-        SimpleNumberFormatFactory { locale_names, visible }
+        SimpleNumberFormatFactory {
+            locale_names,
+            visible,
+        }
     }
 
     /// Returns true if this factory is visible. Equivalent to `visible()`.
@@ -996,7 +1057,8 @@ fn get_shim() -> Arc<dyn NumberFormatShim> {
     // it's all in the class init.  The worst problem is we might instantiate
     // two shim instances, but they'll share the same state so that's ok.
     let mut shim = lock(&SHIM);
-    shim.get_or_insert_with(|| Arc::new(NumberFormatServiceShim)).clone()
+    shim.get_or_insert_with(|| Arc::new(NumberFormatServiceShim))
+        .clone()
 }
 
 /// `shim == null`.
@@ -1056,7 +1118,9 @@ pub fn register_factory(factory: Option<Arc<dyn NumberFormatFactory>>) -> Result
 /// `IllegalArgumentException("registryKey must not be null")`.
 pub fn unregister(registry_key: Option<&RegistryKey>) -> Result<bool> {
     let Some(registry_key) = registry_key else {
-        return Err(LuceneError::illegal_argument("registryKey must not be null"));
+        return Err(LuceneError::illegal_argument(
+            "registryKey must not be null",
+        ));
     };
     if shim_is_null() {
         return Ok(false);
@@ -1071,7 +1135,10 @@ pub fn unregister(registry_key: Option<&RegistryKey>) -> Result<bool> {
 ///
 /// As [`get_instance_style`].
 pub fn get_instance() -> Result<Box<dyn NumberFormat>> {
-    get_instance_style(&ULocale::get_default_category(Category::Format), NUMBERSTYLE)
+    get_instance_style(
+        &ULocale::get_default_category(Category::Format),
+        NUMBERSTYLE,
+    )
 }
 
 /// Returns the default number format for the specified locale. Equivalent
@@ -1126,7 +1193,10 @@ fn for_locale(locale: &Locale) -> Result<ULocale> {
 ///
 /// As [`get_instance_style`].
 pub fn get_number_instance() -> Result<Box<dyn NumberFormat>> {
-    get_instance_style(&ULocale::get_default_category(Category::Format), NUMBERSTYLE)
+    get_instance_style(
+        &ULocale::get_default_category(Category::Format),
+        NUMBERSTYLE,
+    )
 }
 
 /// Equivalent to `getNumberInstance(Locale)`.
@@ -1154,7 +1224,10 @@ pub fn get_number_instance_ulocale(in_locale: &ULocale) -> Result<Box<dyn Number
 ///
 /// As [`get_instance_style`].
 pub fn get_integer_instance() -> Result<Box<dyn NumberFormat>> {
-    get_instance_style(&ULocale::get_default_category(Category::Format), INTEGERSTYLE)
+    get_instance_style(
+        &ULocale::get_default_category(Category::Format),
+        INTEGERSTYLE,
+    )
 }
 
 /// Equivalent to `getIntegerInstance(Locale)`.
@@ -1182,7 +1255,10 @@ pub fn get_integer_instance_ulocale(in_locale: &ULocale) -> Result<Box<dyn Numbe
 ///
 /// As [`get_instance_style`].
 pub fn get_currency_instance() -> Result<Box<dyn NumberFormat>> {
-    get_instance_style(&ULocale::get_default_category(Category::Format), CURRENCYSTYLE)
+    get_instance_style(
+        &ULocale::get_default_category(Category::Format),
+        CURRENCYSTYLE,
+    )
 }
 
 /// Equivalent to `getCurrencyInstance(Locale)`.
@@ -1210,7 +1286,10 @@ pub fn get_currency_instance_ulocale(in_locale: &ULocale) -> Result<Box<dyn Numb
 ///
 /// As [`get_instance_style`].
 pub fn get_percent_instance() -> Result<Box<dyn NumberFormat>> {
-    get_instance_style(&ULocale::get_default_category(Category::Format), PERCENTSTYLE)
+    get_instance_style(
+        &ULocale::get_default_category(Category::Format),
+        PERCENTSTYLE,
+    )
 }
 
 /// Equivalent to `getPercentInstance(Locale)`.
@@ -1238,7 +1317,10 @@ pub fn get_percent_instance_ulocale(in_locale: &ULocale) -> Result<Box<dyn Numbe
 ///
 /// As [`get_instance_style`].
 pub fn get_scientific_instance() -> Result<Box<dyn NumberFormat>> {
-    get_instance_style(&ULocale::get_default_category(Category::Format), SCIENTIFICSTYLE)
+    get_instance_style(
+        &ULocale::get_default_category(Category::Format),
+        SCIENTIFICSTYLE,
+    )
 }
 
 /// Equivalent to `getScientificInstance(Locale)`.
@@ -1268,7 +1350,9 @@ pub fn get_scientific_instance_ulocale(in_locale: &ULocale) -> Result<Box<dyn Nu
 /// STANDARDCURRENCYSTYLE")`; the errors of the service.
 pub fn get_instance_style(desired_locale: &ULocale, choice: i32) -> Result<Box<dyn NumberFormat>> {
     if !(NUMBERSTYLE..=STANDARDCURRENCYSTYLE).contains(&choice) {
-        return Err(LuceneError::illegal_argument("choice should be from NUMBERSTYLE to STANDARDCURRENCYSTYLE"));
+        return Err(LuceneError::illegal_argument(
+            "choice should be from NUMBERSTYLE to STANDARDCURRENCYSTYLE",
+        ));
     }
     get_shim().create_instance(desired_locale, choice)
 }
@@ -1279,7 +1363,10 @@ pub fn get_instance_style(desired_locale: &ULocale, choice: i32) -> Result<Box<d
 /// # Errors
 ///
 /// The errors of the locale data and of the format construction.
-pub(crate) fn create_instance(desired_locale: &ULocale, choice: i32) -> Result<Option<Box<dyn NumberFormat>>> {
+pub(crate) fn create_instance(
+    desired_locale: &ULocale,
+    choice: i32,
+) -> Result<Option<Box<dyn NumberFormat>>> {
     // If the choice is PLURALCURRENCYSTYLE, the pattern is not a single
     // pattern, it is a pattern set, so we do not need to get them here.
     // If the choice is ISOCURRENCYSTYLE, the pattern is the currrency
@@ -1326,7 +1413,8 @@ pub(crate) fn create_instance(desired_locale: &ULocale, choice: i32) -> Result<O
 
         let ns_desc = ns.get_description();
         let first_slash = crate::jdk::index_of_unit(ns_desc, u16::from(b'/'), 0);
-        let last_slash = crate::jdk::last_index_of_unit(ns_desc, u16::from(b'/'), ns_desc.len() as i32 - 1);
+        let last_slash =
+            crate::jdk::last_index_of_unit(ns_desc, u16::from(b'/'), ns_desc.len() as i32 - 1);
 
         let (ns_loc, ns_rule_set_name) = if last_slash > first_slash {
             let ns_loc_id = String::from_utf16_lossy(&ns_desc[..first_slash as usize]);
@@ -1363,7 +1451,9 @@ pub(crate) fn create_instance(desired_locale: &ULocale, choice: i32) -> Result<O
             f.set_currency_usage(Some(CurrencyUsage::Cash))?;
         }
         if choice == PLURALCURRENCYSTYLE {
-            f.set_currency_plural_info(Some(&CurrencyPluralInfo::get_instance_ulocale(desired_locale)?))?;
+            f.set_currency_plural_info(Some(&CurrencyPluralInfo::get_instance_ulocale(
+                desired_locale,
+            )?))?;
         }
         Box::new(f)
     };
@@ -1406,7 +1496,9 @@ pub fn get_pattern(for_locale: &ULocale, choice: i32) -> Result<Vec<u16>> {
 /// The errors of the numbering system and of the resource lookup.
 pub fn get_pattern_for_style(for_locale: &ULocale, choice: i32) -> Result<Vec<u16>> {
     let ns = NumberingSystem::get_instance_for(for_locale)?;
-    let ns_name = ns.get_name().unwrap_or_else(|| panic!("java.lang.NullPointerException: nsName"));
+    let ns_name = ns
+        .get_name()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: nsName"));
     get_pattern_for_style_and_numbering_system(for_locale, ns_name, choice)
 }
 
@@ -1418,7 +1510,11 @@ pub fn get_pattern_for_style(for_locale: &ULocale, choice: i32) -> Result<Vec<u1
 ///
 /// The errors of the resource lookup (`MissingResourceException` when even
 /// the `latn` pattern is absent).
-pub fn get_pattern_for_style_and_numbering_system(for_locale: &ULocale, ns_name: &str, choice: i32) -> Result<Vec<u16>> {
+pub fn get_pattern_for_style_and_numbering_system(
+    for_locale: &ULocale,
+    ns_name: &str,
+    choice: i32,
+) -> Result<Vec<u16>> {
     /* for ISOCURRENCYSTYLE and PLURALCURRENCYSTYLE,
      * the pattern is the same as the pattern of CURRENCYSTYLE
      * but by replacing the single currency sign with
@@ -1444,10 +1540,12 @@ pub fn get_pattern_for_style_and_numbering_system(for_locale: &ULocale, ns_name:
         }
     };
 
-    let rb = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(for_locale))?;
+    let rb =
+        UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(for_locale))?;
     let rb = rb.as_icu()?.clone();
 
-    let result = rb.find_string_with_fallback(&format!("NumberElements/{ns_name}/patterns/{pattern_key}"))?;
+    let result =
+        rb.find_string_with_fallback(&format!("NumberElements/{ns_name}/patterns/{pattern_key}"))?;
     match result {
         Some(r) => Ok(r),
         None => rb.get_string_with_fallback(&format!("NumberElements/latn/patterns/{pattern_key}")),

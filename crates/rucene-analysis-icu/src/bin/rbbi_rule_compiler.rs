@@ -109,8 +109,8 @@ fn get_rules(rule_file: &Path) -> Result<Vec<u16>> {
 
 /// `String.replaceAll(regex, replacement)`.
 fn replace_all(s: &str, regex: &str, replacement: &str) -> Result<String> {
-    let pattern = JavaPattern::compile(regex, 0)
-        .map_err(|e| LuceneError::illegal_argument(e.to_string()))?;
+    let pattern =
+        JavaPattern::compile(regex, 0).map_err(|e| LuceneError::illegal_argument(e.to_string()))?;
     let units: Vec<u16> = s.encode_utf16().collect();
     let replaced = pattern.matcher(&units).replace_all(replacement)?;
     Ok(String::from_utf16_lossy(&replaced))

@@ -8,7 +8,9 @@ use rucene::error::{LuceneError, Result};
 use crate::jdk::{char_count, code_point_at};
 use crate::r#impl::number::affix_pattern_provider::{AffixPatternProvider, Flags};
 use crate::r#impl::number::affix_utils::AffixUtils;
-use crate::r#impl::number::decimal_format_properties::{empty_literal, new_jstring, DecimalFormatProperties, JString};
+use crate::r#impl::number::decimal_format_properties::{
+    empty_literal, new_jstring, DecimalFormatProperties, JString,
+};
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
 use crate::r#impl::number::decimal_quantity_abstract_bcd::DecimalQuantityAbstractBcd;
 use crate::r#impl::number::decimal_quantity_dual_storage_bcd::DecimalQuantity_DualStorageBCD;
@@ -48,7 +50,10 @@ impl PatternStringParser {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a malformed pattern.
-    pub fn parse_to_properties_ignore(pattern: Option<&[u16]>, ignore_rounding: i32) -> Result<DecimalFormatProperties> {
+    pub fn parse_to_properties_ignore(
+        pattern: Option<&[u16]>,
+        ignore_rounding: i32,
+    ) -> Result<DecimalFormatProperties> {
         let mut properties = DecimalFormatProperties::new();
         parse_to_existing_properties_impl(pattern, &mut properties, ignore_rounding)?;
         Ok(properties)
@@ -88,7 +93,10 @@ impl PatternStringParser {
     /// # Errors
     ///
     /// `IllegalArgumentException` for a malformed pattern.
-    pub fn parse_to_existing_properties(pattern: Option<&[u16]>, properties: &mut DecimalFormatProperties) -> Result<()> {
+    pub fn parse_to_existing_properties(
+        pattern: Option<&[u16]>,
+        properties: &mut DecimalFormatProperties,
+    ) -> Result<()> {
         Self::parse_to_existing_properties_ignore(pattern, properties, Self::IGNORE_ROUNDING_NEVER)
     }
 }
@@ -110,7 +118,11 @@ pub struct ParsedPatternInfo {
 
 impl ParsedPatternInfo {
     fn new(pattern: &[u16]) -> Self {
-        ParsedPatternInfo { pattern: pattern.to_vec(), positive: ParsedSubpatternInfo::default(), negative: None }
+        ParsedPatternInfo {
+            pattern: pattern.to_vec(),
+            positive: ParsedSubpatternInfo::default(),
+            negative: None,
+        }
     }
 
     /// Equivalent to `getLengthFromEndpoints(long)`.
@@ -155,7 +167,9 @@ impl ParsedPatternInfo {
     fn negative(&self) -> &ParsedSubpatternInfo {
         // Java dereferences `negative` here; callers ask only after
         // `hasNegativeSubpattern()`.
-        self.negative.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.negative
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 }
 
@@ -196,7 +210,8 @@ impl AffixPatternProvider for ParsedPatternInfo {
     }
 
     fn has_currency_sign(&self) -> bool {
-        self.positive.has_currency_sign || self.negative.as_ref().is_some_and(|n| n.has_currency_sign)
+        self.positive.has_currency_sign
+            || self.negative.as_ref().is_some_and(|n| n.has_currency_sign)
     }
 
     fn contains_symbol_type(&self, type_: i32) -> Result<bool> {
@@ -351,7 +366,7 @@ fn consume_pattern(state: &mut ParserState<'_>, result: &mut ParsedPatternInfo) 
     consume_subpattern(state, &mut result.positive)?;
     if state.peek() == i32::from(b';') {
         state.next(); // consume the ';'
-        // Disallow "a;b;" in ICU4J.
+                      // Disallow "a;b;" in ICU4J.
         if state.peek() != -1 {
             let mut negative = ParsedSubpatternInfo::default();
             let r = consume_subpattern(state, &mut negative);
@@ -365,7 +380,10 @@ fn consume_pattern(state: &mut ParserState<'_>, result: &mut ParsedPatternInfo) 
     Ok(())
 }
 
-fn consume_subpattern(state: &mut ParserState<'_>, result: &mut ParsedSubpatternInfo) -> Result<()> {
+fn consume_subpattern(
+    state: &mut ParserState<'_>,
+    result: &mut ParsedSubpatternInfo,
+) -> Result<()> {
     // subpattern := literals? number exponent? literals?
     consume_padding(state, result, PadPosition::BeforePrefix)?;
     result.prefix_endpoints = consume_affix(state, result)?;
@@ -378,7 +396,11 @@ fn consume_subpattern(state: &mut ParserState<'_>, result: &mut ParsedSubpattern
     Ok(())
 }
 
-fn consume_padding(state: &mut ParserState<'_>, result: &mut ParsedSubpatternInfo, padding_location: PadPosition) -> Result<()> {
+fn consume_padding(
+    state: &mut ParserState<'_>,
+    result: &mut ParsedSubpatternInfo,
+    padding_location: PadPosition,
+) -> Result<()> {
     if state.peek() != i32::from(b'*') {
         return Ok(());
     }
@@ -463,7 +485,10 @@ fn consume_format(state: &mut ParserState<'_>, result: &mut ParsedSubpatternInfo
     Ok(())
 }
 
-fn consume_integer_format(state: &mut ParserState<'_>, result: &mut ParsedSubpatternInfo) -> Result<()> {
+fn consume_integer_format(
+    state: &mut ParserState<'_>,
+    result: &mut ParsedSubpatternInfo,
+) -> Result<()> {
     loop {
         match state.peek() {
             0x2C /* , */ => {
@@ -528,7 +553,10 @@ fn consume_integer_format(state: &mut ParserState<'_>, result: &mut ParsedSubpat
     Ok(())
 }
 
-fn consume_fraction_format(state: &mut ParserState<'_>, result: &mut ParsedSubpatternInfo) -> Result<()> {
+fn consume_fraction_format(
+    state: &mut ParserState<'_>,
+    result: &mut ParsedSubpatternInfo,
+) -> Result<()> {
     let mut zero_counter = 0;
     loop {
         match state.peek() {
@@ -564,7 +592,9 @@ fn consume_exponent(state: &mut ParserState<'_>, result: &mut ParsedSubpatternIn
         return Ok(());
     }
     if (result.grouping_sizes & 0xffff0000) != 0xffff0000 {
-        return Err(state.to_parse_exception("Cannot have grouping separator in scientific notation"));
+        return Err(
+            state.to_parse_exception("Cannot have grouping separator in scientific notation")
+        );
     }
     state.next(); // consume the E
     result.width_except_affixes += 1;
@@ -660,13 +690,19 @@ fn pattern_info_to_properties(
         properties.set_maximum_fraction_digits(-1);
         properties.set_rounding_increment(None);
         properties.set_minimum_significant_digits(positive.integer_at_signs);
-        properties.set_maximum_significant_digits(positive.integer_at_signs + positive.integer_trailing_hash_signs);
+        properties.set_maximum_significant_digits(
+            positive.integer_at_signs + positive.integer_trailing_hash_signs,
+        );
     } else if let Some(rounding) = positive.rounding.as_ref() {
         if !ignore_rounding {
             properties.set_minimum_fraction_digits(min_frac);
             properties.set_maximum_fraction_digits(positive.fraction_total);
             let mut rounding = rounding.clone();
-            properties.set_rounding_increment(Some(rounding.to_big_decimal()?.set_scale_exact(positive.fraction_numerals)?));
+            properties.set_rounding_increment(Some(
+                rounding
+                    .to_big_decimal()?
+                    .set_scale_exact(positive.fraction_numerals)?,
+            ));
         } else {
             properties.set_minimum_fraction_digits(-1);
             properties.set_maximum_fraction_digits(-1);
@@ -739,7 +775,9 @@ fn pattern_info_to_properties(
                 properties.set_pad_string_jstring(Some(raw_padding_string));
             }
         } else {
-            properties.set_pad_string_jstring(Some(new_jstring(&raw_padding_string[1..raw_padding_string.len() - 1])));
+            properties.set_pad_string_jstring(Some(new_jstring(
+                &raw_padding_string[1..raw_padding_string.len() - 1],
+            )));
         }
         properties.set_pad_position(Some(padding_location));
     } else {
@@ -757,7 +795,9 @@ fn pattern_info_to_properties(
         properties.set_negative_prefix_pattern_jstring(Some(
             pattern_info.get_jstring(Flags::NEGATIVE_SUBPATTERN | Flags::PREFIX),
         ));
-        properties.set_negative_suffix_pattern_jstring(Some(pattern_info.get_jstring(Flags::NEGATIVE_SUBPATTERN)));
+        properties.set_negative_suffix_pattern_jstring(Some(
+            pattern_info.get_jstring(Flags::NEGATIVE_SUBPATTERN),
+        ));
     } else {
         properties.set_negative_prefix_pattern_jstring(None);
         properties.set_negative_suffix_pattern_jstring(None);

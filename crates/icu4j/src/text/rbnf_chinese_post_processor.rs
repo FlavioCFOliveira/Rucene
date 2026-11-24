@@ -8,7 +8,9 @@ use rucene::error::Result;
 use crate::jdk::{index_of, last_index_of, units};
 use crate::text::nf_rule_set::NFRuleSet;
 use crate::text::rbnf_post_processor::RBNFPostProcessor;
-use crate::text::rule_based_number_format::{char_at, npe, sb_delete, sb_insert, RuleBasedNumberFormat};
+use crate::text::rule_based_number_format::{
+    char_at, npe, sb_delete, sb_insert, RuleBasedNumberFormat,
+};
 
 /// `rulesetNames` (private static).
 const RULESET_NAMES: [&str; 4] = ["%traditional", "%simplified", "%accounting", "%time"];
@@ -107,7 +109,10 @@ impl RBNFPostProcessor for RBNFChinesePostProcessor {
 
         // mark chunks with '|' for convenience
         {
-            let m = &markers[crate::text::rule_based_number_format::array_index(self.format as i64, markers.len())];
+            let m = &markers[crate::text::rule_based_number_format::array_index(
+                self.format as i64,
+                markers.len(),
+            )];
             for marker in &m[..m.len() - 1] {
                 let marker = units(marker);
                 let n = index_of(buf, &marker, 0);
@@ -130,7 +135,11 @@ impl RBNFPostProcessor for RBNFChinesePostProcessor {
             let nn = last_index_of(buf, &ling, x);
             let mut ns = 0;
             if nn > m {
-                ns = if nn > 0 && char_at(buf, nn - 1) != u16::from(b'*') { 2 } else { 1 };
+                ns = if nn > 0 && char_at(buf, nn - 1) != u16::from(b'*') {
+                    2
+                } else {
+                    1
+                };
             }
             x = m - 1;
 

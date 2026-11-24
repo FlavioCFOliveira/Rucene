@@ -8,7 +8,9 @@ use std::sync::Arc;
 use crate::jdk::{is_high_surrogate, is_low_surrogate, to_code_point};
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
-use crate::r#impl::coll::collation_iterator::{CollationIterator, CollationIteratorBase, NO_CP_AND_CE32};
+use crate::r#impl::coll::collation_iterator::{
+    CollationIterator, CollationIteratorBase, NO_CP_AND_CE32,
+};
 
 /// UTF-16 collation element and character iterator. Handles normalized
 /// UTF-16 text, with length or NUL-terminated. Unnormalized text is
@@ -38,7 +40,13 @@ pub struct UTF16CollationIterator {
 impl UTF16CollationIterator {
     /// Partial constructor, see `CollationIterator(CollationData)`.
     pub fn new(d: Arc<CollationData>) -> Self {
-        Self { base: CollationIteratorBase::new(d), seq: Vec::new(), start: 0, pos: 0, limit: 0 }
+        Self {
+            base: CollationIteratorBase::new(d),
+            seq: Vec::new(),
+            start: 0,
+            pos: 0,
+            limit: 0,
+        }
     }
 
     /// `UTF16CollationIterator(CollationData, boolean, CharSequence, int)`.
@@ -138,8 +146,15 @@ impl CollationIterator for UTF16CollationIterator {
         }
         let c = self.char_at(self.pos);
         self.pos += 1;
-        let trie = self.base.trie.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
-        CollationIteratorBase::make_code_point_and_ce32_pair(c as i32, trie.get_from_u16_single_lead(c))
+        let trie = self
+            .base
+            .trie
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        CollationIteratorBase::make_code_point_and_ce32_pair(
+            c as i32,
+            trie.get_from_u16_single_lead(c),
+        )
     }
 
     fn handle_get_trail_surrogate(&mut self) -> u16 {
@@ -158,7 +173,10 @@ impl CollationIterator for UTF16CollationIterator {
             let c = self.char_at(self.pos);
             self.pos += 1;
             num -= 1;
-            if is_high_surrogate(c) && self.pos != self.limit && is_low_surrogate(self.char_at(self.pos)) {
+            if is_high_surrogate(c)
+                && self.pos != self.limit
+                && is_low_surrogate(self.char_at(self.pos))
+            {
                 self.pos += 1;
             }
         }
@@ -169,7 +187,10 @@ impl CollationIterator for UTF16CollationIterator {
             self.pos -= 1;
             let c = self.char_at(self.pos);
             num -= 1;
-            if is_low_surrogate(c) && self.pos != self.start && is_high_surrogate(self.char_at(self.pos - 1)) {
+            if is_low_surrogate(c)
+                && self.pos != self.start
+                && is_high_surrogate(self.char_at(self.pos - 1))
+            {
                 self.pos -= 1;
             }
         }

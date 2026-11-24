@@ -14,10 +14,14 @@ pub struct Grego;
 const JULIAN_1_CE: i64 = 1721426;
 const JULIAN_1970_CE: i64 = 2440588;
 
-const MONTH_LENGTH: [i32; 24] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const MONTH_LENGTH: [i32; 24] = [
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+];
 
-const DAYS_BEFORE: [i32; 24] =
-    [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335];
+const DAYS_BEFORE: [i32; 24] = [
+    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 0, 31, 60, 91, 121, 152, 182, 213, 244,
+    274, 305, 335,
+];
 
 impl Grego {
     /// `MIN_MILLIS`.
@@ -59,14 +63,13 @@ impl Grego {
     /// `fieldsToDay(int year, int month, int dom)`: days since 1970-01-01.
     pub fn fields_to_day(year: i32, month: i32, dom: i32) -> i64 {
         let y = (year - 1) as i64;
-        let julian = 365 * y
-            + Self::floor_divide(y, 4)
-            + (JULIAN_1_CE - 3)
-            + Self::floor_divide(y, 400)
-            - Self::floor_divide(y, 100)
-            + 2
-            + DAYS_BEFORE[(month + if Self::is_leap_year(year) { 12 } else { 0 }) as usize] as i64
-            + dom as i64;
+        let julian =
+            365 * y + Self::floor_divide(y, 4) + (JULIAN_1_CE - 3) + Self::floor_divide(y, 400)
+                - Self::floor_divide(y, 100)
+                + 2
+                + DAYS_BEFORE[(month + if Self::is_leap_year(year) { 12 } else { 0 }) as usize]
+                    as i64
+                + dom as i64;
         julian - JULIAN_1970_CE
     }
 
@@ -118,7 +121,8 @@ impl Grego {
             correction = if is_leap { 1 } else { 2 };
         }
         let month = (12 * (day_of_year - 1 + correction) + 6) / 367;
-        let day_of_month = day_of_year - DAYS_BEFORE[(if is_leap { month + 12 } else { month }) as usize];
+        let day_of_month =
+            day_of_year - DAYS_BEFORE[(if is_leap { month + 12 } else { month }) as usize];
         let mut day_of_week = ((day + 2) % 7) as i32;
         if day_of_week < 1 {
             day_of_week += 7;
@@ -162,10 +166,16 @@ impl Grego {
     /// `floorDivideAndRemainer(long numerator, int denominator)`.
     fn floor_divide_and_remainer(numerator: i64, denominator: i32) -> Pair<i64, i32> {
         if numerator >= 0 {
-            return Pair::new(Self::floor_divide(numerator, denominator as i64), (numerator % denominator as i64) as i32);
+            return Pair::new(
+                Self::floor_divide(numerator, denominator as i64),
+                (numerator % denominator as i64) as i32,
+            );
         }
         let quotient = Self::floor_divide(numerator, denominator as i64);
-        Pair::new(quotient, (numerator - (quotient * denominator as i64)) as i32)
+        Pair::new(
+            quotient,
+            (numerator - (quotient * denominator as i64)) as i32,
+        )
     }
 
     /// `getDayOfWeekInMonth(int year, int month, int dayOfMonth)`.

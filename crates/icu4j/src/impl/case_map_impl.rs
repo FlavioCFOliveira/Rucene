@@ -7,7 +7,10 @@ use rucene::error::{LuceneError, Result};
 use rucene_analysis_common::jdk::character_iterator::CharacterIterator;
 use rucene_queryparser::jdk::locale::Locale;
 
-use crate::jdk::{char_count, code_point_at, code_point_before, is_high_surrogate, is_low_surrogate, to_code_point, unsupported_operation};
+use crate::jdk::{
+    char_count, code_point_at, code_point_before, is_high_surrogate, is_low_surrogate,
+    to_code_point, unsupported_operation,
+};
 use crate::lang::u_character::UCharacter;
 use crate::lang::u_character_enums::ECharacterCategory;
 use crate::r#impl::u_case_props::{ContextIterator, LatinCase, UCaseProps};
@@ -32,13 +35,27 @@ pub struct StringContextIterator<'a> {
 impl<'a> StringContextIterator<'a> {
     /// `StringContextIterator(CharSequence src)`.
     pub fn new(src: &'a [u16]) -> Self {
-        Self { s: src, limit: src.len() as i32, cp_start: 0, cp_limit: 0, index: 0, dir: 0 }
+        Self {
+            s: src,
+            limit: src.len() as i32,
+            cp_start: 0,
+            cp_limit: 0,
+            index: 0,
+            dir: 0,
+        }
     }
 
     /// `StringContextIterator(CharSequence src, int cpStart, int cpLimit)`:
     /// the code point is at `[cp_start, cp_limit[`.
     pub fn new_cp(src: &'a [u16], cp_start: i32, cp_limit: i32) -> Self {
-        Self { s: src, index: 0, limit: src.len() as i32, cp_start, cp_limit, dir: 0 }
+        Self {
+            s: src,
+            index: 0,
+            limit: src.len() as i32,
+            cp_start,
+            cp_limit,
+            dir: 0,
+        }
     }
 
     /// `setLimit(int lim)`: sets the end of the iteration range.
@@ -168,7 +185,8 @@ fn is_lns(c: i32) -> bool {
     // Consider modifier letters only if they are cased.
     let gc = UCharacterProperty::instance().get_type(c);
     ((1 << gc) & LNS) != 0
-        || (gc == ECharacterCategory::MODIFIER_LETTER as i32 && UCaseProps::instance().get_type(c) != UCaseProps::NONE)
+        || (gc == ECharacterCategory::MODIFIER_LETTER as i32
+            && UCaseProps::instance().get_type(c) != UCaseProps::NONE)
 }
 
 /// Implementation of `CaseMap`, `UCharacter` case mapping and
@@ -188,7 +206,9 @@ impl CaseMapImpl {
     pub fn add_title_adjustment_option(options: i32, new_option: i32) -> Result<i32> {
         let adj_options = options & TITLECASE_ADJUSTMENT_MASK;
         if adj_options != 0 && adj_options != new_option {
-            return Err(LuceneError::illegal_argument("multiple titlecasing index adjustment options"));
+            return Err(LuceneError::illegal_argument(
+                "multiple titlecasing index adjustment options",
+            ));
         }
         Ok(options | new_option)
     }
@@ -201,7 +221,9 @@ impl CaseMapImpl {
     pub fn add_title_iterator_option(options: i32, new_option: i32) -> Result<i32> {
         let iter_options = options & TITLECASE_ITERATOR_MASK;
         if iter_options != 0 && iter_options != new_option {
-            return Err(LuceneError::illegal_argument("multiple titlecasing iterator options"));
+            return Err(LuceneError::illegal_argument(
+                "multiple titlecasing iterator options",
+            ));
         }
         Ok(options | new_option)
     }
@@ -213,10 +235,16 @@ impl CaseMapImpl {
     ///
     /// `IllegalArgumentException` for conflicting or unknown options; the
     /// errors of the break iterator factory.
-    pub fn get_title_break_iterator_locale(locale: &Locale, mut options: i32, iter: Option<Box<dyn BreakIterator>>) -> Result<Box<dyn BreakIterator>> {
+    pub fn get_title_break_iterator_locale(
+        locale: &Locale,
+        mut options: i32,
+        iter: Option<Box<dyn BreakIterator>>,
+    ) -> Result<Box<dyn BreakIterator>> {
         options &= TITLECASE_ITERATOR_MASK;
         if options != 0 && iter.is_some() {
-            return Err(LuceneError::illegal_argument("titlecasing iterator option together with an explicit iterator"));
+            return Err(LuceneError::illegal_argument(
+                "titlecasing iterator option together with an explicit iterator",
+            ));
         }
         match iter {
             Some(i) => Ok(i),
@@ -224,7 +252,9 @@ impl CaseMapImpl {
                 0 => break_iterator::get_word_instance_locale(locale),
                 TITLECASE_WHOLE_STRING => Ok(Box::new(WholeStringBreakIterator::default())),
                 TITLECASE_SENTENCES => break_iterator::get_sentence_instance_locale(locale),
-                _ => Err(LuceneError::illegal_argument("unknown titlecasing iterator option")),
+                _ => Err(LuceneError::illegal_argument(
+                    "unknown titlecasing iterator option",
+                )),
             },
         }
     }
@@ -235,10 +265,16 @@ impl CaseMapImpl {
     /// # Errors
     ///
     /// As [`get_title_break_iterator_locale`](Self::get_title_break_iterator_locale).
-    pub fn get_title_break_iterator(locale: &ULocale, mut options: i32, iter: Option<Box<dyn BreakIterator>>) -> Result<Box<dyn BreakIterator>> {
+    pub fn get_title_break_iterator(
+        locale: &ULocale,
+        mut options: i32,
+        iter: Option<Box<dyn BreakIterator>>,
+    ) -> Result<Box<dyn BreakIterator>> {
         options &= TITLECASE_ITERATOR_MASK;
         if options != 0 && iter.is_some() {
-            return Err(LuceneError::illegal_argument("titlecasing iterator option together with an explicit iterator"));
+            return Err(LuceneError::illegal_argument(
+                "titlecasing iterator option together with an explicit iterator",
+            ));
         }
         match iter {
             Some(i) => Ok(i),
@@ -246,7 +282,9 @@ impl CaseMapImpl {
                 0 => break_iterator::get_word_instance_ulocale(locale),
                 TITLECASE_WHOLE_STRING => Ok(Box::new(WholeStringBreakIterator::default())),
                 TITLECASE_SENTENCES => break_iterator::get_sentence_instance_ulocale(locale),
-                _ => Err(LuceneError::illegal_argument("unknown titlecasing iterator option")),
+                _ => Err(LuceneError::illegal_argument(
+                    "unknown titlecasing iterator option",
+                )),
             },
         }
     }
@@ -305,7 +343,9 @@ impl BreakIterator for WholeStringBreakIterator {
     }
     fn set_text(&mut self, new_text: Option<Box<dyn CharacterIterator>>) {
         // Java dereferences the argument (NullPointerException for null).
-        self.length = new_text.expect("java.lang.NullPointerException").get_end_index();
+        self.length = new_text
+            .expect("java.lang.NullPointerException")
+            .get_end_index();
     }
     fn set_text_char_sequence(&mut self, new_text: std::sync::Arc<[u16]>) {
         self.length = new_text.len() as i32;
@@ -333,7 +373,13 @@ fn append_code_point(a: &mut Vec<u16>, c: i32) -> i32 {
 }
 
 /// Appends a full case mapping result, see `UCaseProps.MAX_STRING_LENGTH`.
-fn append_result(result: i32, dest: &mut Vec<u16>, cp_length: i32, options: i32, edits: Option<&mut Edits>) -> Result<()> {
+fn append_result(
+    result: i32,
+    dest: &mut Vec<u16>,
+    cp_length: i32,
+    options: i32,
+    edits: Option<&mut Edits>,
+) -> Result<()> {
     // Decode the result.
     if result < 0 {
         // (not) original code point
@@ -359,7 +405,14 @@ fn append_result(result: i32, dest: &mut Vec<u16>, cp_length: i32, options: i32,
     Ok(())
 }
 
-fn append_unchanged(src: &[u16], start: i32, length: i32, dest: &mut Vec<u16>, options: i32, edits: Option<&mut Edits>) -> Result<()> {
+fn append_unchanged(
+    src: &[u16],
+    start: i32,
+    length: i32,
+    dest: &mut Vec<u16>,
+    options: i32,
+    edits: Option<&mut Edits>,
+) -> Result<()> {
     if length > 0 {
         if let Some(e) = edits {
             e.add_unchanged(length)?;
@@ -376,12 +429,14 @@ fn apply_edits(src: &[u16], replacement_chars: &[u16], edits: &Edits) -> Vec<u16
     if !edits.has_changes() {
         return src.to_vec();
     }
-    let mut result: Vec<u16> = Vec::with_capacity((src.len() as i32 + edits.length_delta()).max(0) as usize);
+    let mut result: Vec<u16> =
+        Vec::with_capacity((src.len() as i32 + edits.length_delta()).max(0) as usize);
     let mut ei = edits.get_coarse_iterator();
     while ei.next() {
         if ei.has_change() {
             let i = ei.replacement_index();
-            result.extend_from_slice(&replacement_chars[i as usize..(i + ei.new_length()) as usize]);
+            result
+                .extend_from_slice(&replacement_chars[i as usize..(i + ei.new_length()) as usize]);
         } else {
             let i = ei.source_index();
             result.extend_from_slice(&src[i as usize..(i + ei.old_length()) as usize]);
@@ -398,6 +453,7 @@ fn case_trie() -> &'static crate::r#impl::trie2_16::Trie2_16 {
 /// caseLocale >= 0: Lowercases [srcStart, srcLimit[ but takes context [0, src.length()[ into account.
 /// caseLocale < 0: Case-folds [srcStart, srcLimit[.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
 fn internal_to_lower(
     case_locale: i32,
     options: i32,
@@ -457,7 +513,14 @@ fn internal_to_lower(
                 delta = UCaseProps::get_delta(props);
             }
             lead = lead.wrapping_add(delta as u16);
-            append_unchanged(src, prev, src_index - 1 - prev, dest, options, edits.as_deref_mut())?;
+            append_unchanged(
+                src,
+                prev,
+                src_index - 1 - prev,
+                dest,
+                options,
+                edits.as_deref_mut(),
+            )?;
             dest.push(lead);
             if let Some(e) = edits.as_deref_mut() {
                 e.add_replace(1, 1)?;
@@ -468,7 +531,10 @@ fn internal_to_lower(
         let cp_start = src_index;
         src_index += 1;
         let c;
-        if is_high_surrogate(lead) && src_index < src_limit && is_low_surrogate(src[src_index as usize]) {
+        if is_high_surrogate(lead)
+            && src_index < src_limit
+            && is_low_surrogate(src[src_index as usize])
+        {
             c = to_code_point(lead, src[src_index as usize]);
             src_index += 1;
         } else {
@@ -477,22 +543,41 @@ fn internal_to_lower(
         // We need to append unchanged text before calling the UCaseProps.toFullXyz() methods
         // because they will sometimes append their mapping to dest,
         // and that must be after copying the previous text.
-        append_unchanged(src, prev, cp_start - prev, dest, options, edits.as_deref_mut())?;
+        append_unchanged(
+            src,
+            prev,
+            cp_start - prev,
+            dest,
+            options,
+            edits.as_deref_mut(),
+        )?;
         prev = cp_start;
         let r;
         if case_locale >= 0 {
             if let Some(i) = iter.as_deref_mut() {
                 i.set_cp_start_and_limit(cp_start, src_index);
-                r = UCaseProps::instance().to_full_lower(c, Some(i as &mut dyn ContextIterator), dest, case_locale);
+                r = UCaseProps::instance().to_full_lower(
+                    c,
+                    Some(i as &mut dyn ContextIterator),
+                    dest,
+                    case_locale,
+                );
             } else {
                 let i = match local_iter.as_mut() {
                     Some(i) => {
                         i.set_cp_start_and_limit(cp_start, src_index);
                         i
                     }
-                    None => local_iter.insert(StringContextIterator::new_cp(src, cp_start, src_index)),
+                    None => {
+                        local_iter.insert(StringContextIterator::new_cp(src, cp_start, src_index))
+                    }
                 };
-                r = UCaseProps::instance().to_full_lower(c, Some(i as &mut dyn ContextIterator), dest, case_locale);
+                r = UCaseProps::instance().to_full_lower(
+                    c,
+                    Some(i as &mut dyn ContextIterator),
+                    dest,
+                    case_locale,
+                );
             }
         } else {
             r = UCaseProps::instance().to_full_folding(c, dest, options);
@@ -505,10 +590,20 @@ fn internal_to_lower(
     append_unchanged(src, prev, src_index - prev, dest, options, edits)
 }
 
-fn internal_to_upper(case_locale: i32, options: i32, src: &[u16], dest: &mut Vec<u16>, mut edits: Option<&mut Edits>) -> Result<()> {
+#[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+fn internal_to_upper(
+    case_locale: i32,
+    options: i32,
+    src: &[u16],
+    dest: &mut Vec<u16>,
+    mut edits: Option<&mut Edits>,
+) -> Result<()> {
     let mut iter: Option<StringContextIterator<'_>> = None;
-    let latin_to_upper: &[i8; 0x180] =
-        if case_locale == UCaseProps::LOC_TURKISH { &LatinCase::TO_UPPER_TR } else { &LatinCase::TO_UPPER_NORMAL };
+    let latin_to_upper: &[i8; 0x180] = if case_locale == UCaseProps::LOC_TURKISH {
+        &LatinCase::TO_UPPER_TR
+    } else {
+        &LatinCase::TO_UPPER_NORMAL
+    };
     let mut prev = 0;
     let mut src_index = 0;
     let src_length = src.len() as i32;
@@ -539,13 +634,22 @@ fn internal_to_upper(case_locale: i32, options: i32, src: &[u16], dest: &mut Vec
                     break;
                 }
                 src_index += 1;
-                if UCaseProps::get_type_from_props(props) != UCaseProps::LOWER || UCaseProps::get_delta(props) == 0 {
+                if UCaseProps::get_type_from_props(props) != UCaseProps::LOWER
+                    || UCaseProps::get_delta(props) == 0
+                {
                     continue;
                 }
                 delta = UCaseProps::get_delta(props);
             }
             lead = lead.wrapping_add(delta as u16);
-            append_unchanged(src, prev, src_index - 1 - prev, dest, options, edits.as_deref_mut())?;
+            append_unchanged(
+                src,
+                prev,
+                src_index - 1 - prev,
+                dest,
+                options,
+                edits.as_deref_mut(),
+            )?;
             dest.push(lead);
             if let Some(e) = edits.as_deref_mut() {
                 e.add_replace(1, 1)?;
@@ -556,7 +660,10 @@ fn internal_to_upper(case_locale: i32, options: i32, src: &[u16], dest: &mut Vec
         let cp_start = src_index;
         src_index += 1;
         let c;
-        if is_high_surrogate(lead) && src_index < src_length && is_low_surrogate(src[src_index as usize]) {
+        if is_high_surrogate(lead)
+            && src_index < src_length
+            && is_low_surrogate(src[src_index as usize])
+        {
             c = to_code_point(lead, src[src_index as usize]);
             src_index += 1;
         } else {
@@ -572,9 +679,21 @@ fn internal_to_upper(case_locale: i32, options: i32, src: &[u16], dest: &mut Vec
         // We need to append unchanged text before calling the UCaseProps.toFullXyz() methods
         // because they will sometimes append their mapping to dest,
         // and that must be after copying the previous text.
-        append_unchanged(src, prev, cp_start - prev, dest, options, edits.as_deref_mut())?;
+        append_unchanged(
+            src,
+            prev,
+            cp_start - prev,
+            dest,
+            options,
+            edits.as_deref_mut(),
+        )?;
         prev = cp_start;
-        let r = UCaseProps::instance().to_full_upper(c, Some(it as &mut dyn ContextIterator), dest, case_locale);
+        let r = UCaseProps::instance().to_full_upper(
+            c,
+            Some(it as &mut dyn ContextIterator),
+            dest,
+            case_locale,
+        );
         if r >= 0 {
             append_result(r, dest, src_index - cp_start, options, edits.as_deref_mut())?;
             prev = src_index;
@@ -598,7 +717,13 @@ impl CaseMapImpl {
             // Good if no or few changes. Bad (slow) if many changes.
             let mut edits = Edits::new();
             let mut replacement_chars = Vec::new();
-            Self::to_lower(case_locale, options | OMIT_UNCHANGED_TEXT, src, &mut replacement_chars, Some(&mut edits))?;
+            Self::to_lower(
+                case_locale,
+                options | OMIT_UNCHANGED_TEXT,
+                src,
+                &mut replacement_chars,
+                Some(&mut edits),
+            )?;
             Ok(apply_edits(src, &replacement_chars, &edits))
         } else {
             let mut dest = Vec::with_capacity(src.len());
@@ -613,11 +738,26 @@ impl CaseMapImpl {
     /// # Errors
     ///
     /// The errors of `Edits`.
-    pub fn to_lower<'d>(case_locale: i32, options: i32, src: &[u16], dest: &'d mut Vec<u16>, mut edits: Option<&mut Edits>) -> Result<&'d mut Vec<u16>> {
+    pub fn to_lower<'d>(
+        case_locale: i32,
+        options: i32,
+        src: &[u16],
+        dest: &'d mut Vec<u16>,
+        mut edits: Option<&mut Edits>,
+    ) -> Result<&'d mut Vec<u16>> {
         if let Some(e) = edits.as_deref_mut() {
             e.reset();
         }
-        internal_to_lower(case_locale, options, src, 0, src.len() as i32, None, dest, edits)?;
+        internal_to_lower(
+            case_locale,
+            options,
+            src,
+            0,
+            src.len() as i32,
+            None,
+            dest,
+            edits,
+        )?;
         Ok(dest)
     }
 
@@ -635,7 +775,13 @@ impl CaseMapImpl {
             // Good if no or few changes. Bad (slow) if many changes.
             let mut edits = Edits::new();
             let mut replacement_chars = Vec::new();
-            Self::to_upper(case_locale, options | OMIT_UNCHANGED_TEXT, src, &mut replacement_chars, Some(&mut edits))?;
+            Self::to_upper(
+                case_locale,
+                options | OMIT_UNCHANGED_TEXT,
+                src,
+                &mut replacement_chars,
+                Some(&mut edits),
+            )?;
             Ok(apply_edits(src, &replacement_chars, &edits))
         } else {
             let mut dest = Vec::with_capacity(src.len());
@@ -650,7 +796,13 @@ impl CaseMapImpl {
     /// # Errors
     ///
     /// The errors of `Edits`.
-    pub fn to_upper<'d>(case_locale: i32, options: i32, src: &[u16], dest: &'d mut Vec<u16>, mut edits: Option<&mut Edits>) -> Result<&'d mut Vec<u16>> {
+    pub fn to_upper<'d>(
+        case_locale: i32,
+        options: i32,
+        src: &[u16],
+        dest: &'d mut Vec<u16>,
+        mut edits: Option<&mut Edits>,
+    ) -> Result<&'d mut Vec<u16>> {
         if let Some(e) = edits.as_deref_mut() {
             e.reset();
         }
@@ -667,7 +819,12 @@ impl CaseMapImpl {
     /// # Errors
     ///
     /// The errors of `Edits`.
-    pub fn to_title_str(case_locale: i32, options: i32, iter: &mut dyn BreakIterator, src: &[u16]) -> Result<Vec<u16>> {
+    pub fn to_title_str(
+        case_locale: i32,
+        options: i32,
+        iter: &mut dyn BreakIterator,
+        src: &[u16],
+    ) -> Result<Vec<u16>> {
         if src.len() <= 100 && (options & OMIT_UNCHANGED_TEXT) == 0 {
             if src.is_empty() {
                 return Ok(src.to_vec());
@@ -676,7 +833,14 @@ impl CaseMapImpl {
             // Good if no or few changes. Bad (slow) if many changes.
             let mut edits = Edits::new();
             let mut replacement_chars = Vec::new();
-            Self::to_title(case_locale, options | OMIT_UNCHANGED_TEXT, iter, src, &mut replacement_chars, Some(&mut edits))?;
+            Self::to_title(
+                case_locale,
+                options | OMIT_UNCHANGED_TEXT,
+                iter,
+                src,
+                &mut replacement_chars,
+                Some(&mut edits),
+            )?;
             Ok(apply_edits(src, &replacement_chars, &edits))
         } else {
             let mut dest = Vec::with_capacity(src.len());
@@ -741,7 +905,11 @@ impl CaseMapImpl {
                     // if there is a character to be titlecased,
                     // or else stop with titleStart==titleLimit==index.
                     let to_cased = (options & TITLECASE_ADJUST_TO_CASED) != 0;
-                    while (if to_cased { UCaseProps::NONE == UCaseProps::instance().get_type(c) } else { !is_lns(c) }) && {
+                    while (if to_cased {
+                        UCaseProps::NONE == UCaseProps::instance().get_type(c)
+                    } else {
+                        !is_lns(c)
+                    }) && {
                         c = iter.next_case_map_cp();
                         c >= 0
                     } {}
@@ -749,13 +917,25 @@ impl CaseMapImpl {
                     // and stopped with titleStart==titleLimit==index.
                     title_start = iter.get_cp_start();
                     if prev < title_start {
-                        append_unchanged(src, prev, title_start - prev, dest, options, edits.as_deref_mut())?;
+                        append_unchanged(
+                            src,
+                            prev,
+                            title_start - prev,
+                            dest,
+                            options,
+                            edits.as_deref_mut(),
+                        )?;
                     }
                 }
 
                 if title_start < index {
                     // titlecase c which is from [titleStart..titleLimit[
-                    c = UCaseProps::instance().to_full_title(c, Some(&mut iter as &mut dyn ContextIterator), dest, case_locale);
+                    c = UCaseProps::instance().to_full_title(
+                        c,
+                        Some(&mut iter as &mut dyn ContextIterator),
+                        dest,
+                        case_locale,
+                    );
                     append_result(c, dest, iter.get_cp_length(), options, edits.as_deref_mut())?;
 
                     // Special case Dutch IJ titlecasing
@@ -765,7 +945,15 @@ impl CaseMapImpl {
                             c = !c;
                         }
                         if c == b'I' as i32 || c == 0xCD {
-                            title_limit = maybe_title_dutch_ij(src, c, title_start + 1, index, dest, options, edits.as_deref_mut())?;
+                            title_limit = maybe_title_dutch_ij(
+                                src,
+                                c,
+                                title_start + 1,
+                                index,
+                                dest,
+                                options,
+                                edits.as_deref_mut(),
+                            )?;
                             iter.move_to(title_limit);
                         } else {
                             title_limit = iter.get_cp_limit();
@@ -778,10 +966,26 @@ impl CaseMapImpl {
                     if title_limit < index {
                         if (options & UCharacter::TITLECASE_NO_LOWERCASE) == 0 {
                             // Normal operation: Lowercase the rest of the word.
-                            internal_to_lower(case_locale, options, src, title_limit, index, Some(&mut iter), dest, edits.as_deref_mut())?;
+                            internal_to_lower(
+                                case_locale,
+                                options,
+                                src,
+                                title_limit,
+                                index,
+                                Some(&mut iter),
+                                dest,
+                                edits.as_deref_mut(),
+                            )?;
                         } else {
                             // Optionally just copy the rest of the word unchanged.
-                            append_unchanged(src, title_limit, index - title_limit, dest, options, edits.as_deref_mut())?;
+                            append_unchanged(
+                                src,
+                                title_limit,
+                                index - title_limit,
+                                dest,
+                                options,
+                                edits.as_deref_mut(),
+                            )?;
                         }
                         iter.move_to_limit();
                     }
@@ -807,7 +1011,12 @@ impl CaseMapImpl {
             // Good if no or few changes. Bad (slow) if many changes.
             let mut edits = Edits::new();
             let mut replacement_chars = Vec::new();
-            Self::fold(options | OMIT_UNCHANGED_TEXT, src, &mut replacement_chars, Some(&mut edits))?;
+            Self::fold(
+                options | OMIT_UNCHANGED_TEXT,
+                src,
+                &mut replacement_chars,
+                Some(&mut edits),
+            )?;
             Ok(apply_edits(src, &replacement_chars, &edits))
         } else {
             let mut dest = Vec::with_capacity(src.len());
@@ -821,7 +1030,12 @@ impl CaseMapImpl {
     /// # Errors
     ///
     /// The errors of `Edits`.
-    pub fn fold<'d>(options: i32, src: &[u16], dest: &'d mut Vec<u16>, mut edits: Option<&mut Edits>) -> Result<&'d mut Vec<u16>> {
+    pub fn fold<'d>(
+        options: i32,
+        src: &[u16],
+        dest: &'d mut Vec<u16>,
+        mut edits: Option<&mut Edits>,
+    ) -> Result<&'d mut Vec<u16>> {
         if let Some(e) = edits.as_deref_mut() {
             e.reset();
         }
@@ -838,7 +1052,15 @@ impl CaseMapImpl {
 ///
 /// Returns the src index after the titlecased j/J, or `start` if none was
 /// found.
-fn maybe_title_dutch_ij(src: &[u16], c: i32, start: i32, segment_limit: i32, dest: &mut Vec<u16>, options: i32, mut edits: Option<&mut Edits>) -> Result<i32> {
+fn maybe_title_dutch_ij(
+    src: &[u16],
+    c: i32,
+    start: i32,
+    segment_limit: i32,
+    dest: &mut Vec<u16>,
+    options: i32,
+    mut edits: Option<&mut Edits>,
+) -> Result<i32> {
     debug_assert!(start < segment_limit);
 
     let mut start = start;
@@ -947,60 +1169,44 @@ const AFTER_VOWEL_WITH_PRECOMPOSED_ACCENT: i32 = 4;
 // TODO: Move this data into ucase.icu.
 /// `data0370`.
 static DATA0370: [u16; 144] = [
-    0x0370, 0x0370, 0x0372, 0x0372, 0x0000, 0x0000, 0x0376, 0x0376,
-    0x0000, 0x0000, 0x037A, 0x03FD, 0x03FE, 0x03FF, 0x0000, 0x037F,
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x5391, 0x0000,
-    0x5395, 0x5397, 0x5399, 0x0000, 0x539F, 0x0000, 0x53A5, 0x53A9,
-    0xD399, 0x1391, 0x0392, 0x0393, 0x0394, 0x1395, 0x0396, 0x1397,
-    0x0398, 0x1399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x139F,
-    0x03A0, 0x03A1, 0x0000, 0x03A3, 0x03A4, 0x13A5, 0x03A6, 0x03A7,
-    0x03A8, 0x13A9, 0x9399, 0x93A5, 0x5391, 0x5395, 0x5397, 0x5399,
-    0xD3A5, 0x1391, 0x0392, 0x0393, 0x0394, 0x1395, 0x0396, 0x1397,
-    0x0398, 0x1399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x139F,
-    0x03A0, 0x03A1, 0x03A3, 0x03A3, 0x03A4, 0x13A5, 0x03A6, 0x03A7,
-    0x03A8, 0x13A9, 0x9399, 0x93A5, 0x539F, 0x53A5, 0x53A9, 0x03CF,
-    0x0392, 0x0398, 0x03D2, 0x43D2, 0x83D2, 0x03A6, 0x03A0, 0x03CF,
-    0x03D8, 0x03D8, 0x03DA, 0x03DA, 0x03DC, 0x03DC, 0x03DE, 0x03DE,
-    0x03E0, 0x03E0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-    0x039A, 0x03A1, 0x03F9, 0x037F, 0x03F4, 0x1395, 0x0000, 0x03F7,
-    0x03F7, 0x03F9, 0x03FA, 0x03FA, 0x03FC, 0x03FD, 0x03FE, 0x03FF,
+    0x0370, 0x0370, 0x0372, 0x0372, 0x0000, 0x0000, 0x0376, 0x0376, 0x0000, 0x0000, 0x037A, 0x03FD,
+    0x03FE, 0x03FF, 0x0000, 0x037F, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x5391, 0x0000,
+    0x5395, 0x5397, 0x5399, 0x0000, 0x539F, 0x0000, 0x53A5, 0x53A9, 0xD399, 0x1391, 0x0392, 0x0393,
+    0x0394, 0x1395, 0x0396, 0x1397, 0x0398, 0x1399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x139F,
+    0x03A0, 0x03A1, 0x0000, 0x03A3, 0x03A4, 0x13A5, 0x03A6, 0x03A7, 0x03A8, 0x13A9, 0x9399, 0x93A5,
+    0x5391, 0x5395, 0x5397, 0x5399, 0xD3A5, 0x1391, 0x0392, 0x0393, 0x0394, 0x1395, 0x0396, 0x1397,
+    0x0398, 0x1399, 0x039A, 0x039B, 0x039C, 0x039D, 0x039E, 0x139F, 0x03A0, 0x03A1, 0x03A3, 0x03A3,
+    0x03A4, 0x13A5, 0x03A6, 0x03A7, 0x03A8, 0x13A9, 0x9399, 0x93A5, 0x539F, 0x53A5, 0x53A9, 0x03CF,
+    0x0392, 0x0398, 0x03D2, 0x43D2, 0x83D2, 0x03A6, 0x03A0, 0x03CF, 0x03D8, 0x03D8, 0x03DA, 0x03DA,
+    0x03DC, 0x03DC, 0x03DE, 0x03DE, 0x03E0, 0x03E0, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x039A, 0x03A1, 0x03F9, 0x037F,
+    0x03F4, 0x1395, 0x0000, 0x03F7, 0x03F7, 0x03F9, 0x03FA, 0x03FA, 0x03FC, 0x03FD, 0x03FE, 0x03FF,
 ];
 
 /// `data1F00`.
 static DATA1F00: [u16; 256] = [
-    0x1391, 0x1391, 0x5391, 0x5391, 0x5391, 0x5391, 0x5391, 0x5391,
-    0x1391, 0x1391, 0x5391, 0x5391, 0x5391, 0x5391, 0x5391, 0x5391,
-    0x1395, 0x1395, 0x5395, 0x5395, 0x5395, 0x5395, 0x0000, 0x0000,
-    0x1395, 0x1395, 0x5395, 0x5395, 0x5395, 0x5395, 0x0000, 0x0000,
-    0x1397, 0x1397, 0x5397, 0x5397, 0x5397, 0x5397, 0x5397, 0x5397,
-    0x1397, 0x1397, 0x5397, 0x5397, 0x5397, 0x5397, 0x5397, 0x5397,
-    0x1399, 0x1399, 0x5399, 0x5399, 0x5399, 0x5399, 0x5399, 0x5399,
-    0x1399, 0x1399, 0x5399, 0x5399, 0x5399, 0x5399, 0x5399, 0x5399,
-    0x139F, 0x139F, 0x539F, 0x539F, 0x539F, 0x539F, 0x0000, 0x0000,
-    0x139F, 0x139F, 0x539F, 0x539F, 0x539F, 0x539F, 0x0000, 0x0000,
-    0x13A5, 0x13A5, 0x53A5, 0x53A5, 0x53A5, 0x53A5, 0x53A5, 0x53A5,
-    0x0000, 0x13A5, 0x0000, 0x53A5, 0x0000, 0x53A5, 0x0000, 0x53A5,
-    0x13A9, 0x13A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9,
-    0x13A9, 0x13A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9,
-    0x5391, 0x5391, 0x5395, 0x5395, 0x5397, 0x5397, 0x5399, 0x5399,
-    0x539F, 0x539F, 0x53A5, 0x53A5, 0x53A9, 0x53A9, 0x0000, 0x0000,
-    0x3391, 0x3391, 0x7391, 0x7391, 0x7391, 0x7391, 0x7391, 0x7391,
-    0x3391, 0x3391, 0x7391, 0x7391, 0x7391, 0x7391, 0x7391, 0x7391,
-    0x3397, 0x3397, 0x7397, 0x7397, 0x7397, 0x7397, 0x7397, 0x7397,
-    0x3397, 0x3397, 0x7397, 0x7397, 0x7397, 0x7397, 0x7397, 0x7397,
-    0x33A9, 0x33A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9,
-    0x33A9, 0x33A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9,
-    0x1391, 0x1391, 0x7391, 0x3391, 0x7391, 0x0000, 0x5391, 0x7391,
-    0x1391, 0x1391, 0x5391, 0x5391, 0x3391, 0x0000, 0x1399, 0x0000,
-    0x0000, 0x0000, 0x7397, 0x3397, 0x7397, 0x0000, 0x5397, 0x7397,
-    0x5395, 0x5395, 0x5397, 0x5397, 0x3397, 0x0000, 0x0000, 0x0000,
-    0x1399, 0x1399, 0xD399, 0xD399, 0x0000, 0x0000, 0x5399, 0xD399,
-    0x1399, 0x1399, 0x5399, 0x5399, 0x0000, 0x0000, 0x0000, 0x0000,
-    0x13A5, 0x13A5, 0xD3A5, 0xD3A5, 0x03A1, 0x03A1, 0x53A5, 0xD3A5,
-    0x13A5, 0x13A5, 0x53A5, 0x53A5, 0x03A1, 0x0000, 0x0000, 0x0000,
-    0x0000, 0x0000, 0x73A9, 0x33A9, 0x73A9, 0x0000, 0x53A9, 0x73A9,
-    0x539F, 0x539F, 0x53A9, 0x53A9, 0x33A9, 0x0000, 0x0000, 0x0000,
+    0x1391, 0x1391, 0x5391, 0x5391, 0x5391, 0x5391, 0x5391, 0x5391, 0x1391, 0x1391, 0x5391, 0x5391,
+    0x5391, 0x5391, 0x5391, 0x5391, 0x1395, 0x1395, 0x5395, 0x5395, 0x5395, 0x5395, 0x0000, 0x0000,
+    0x1395, 0x1395, 0x5395, 0x5395, 0x5395, 0x5395, 0x0000, 0x0000, 0x1397, 0x1397, 0x5397, 0x5397,
+    0x5397, 0x5397, 0x5397, 0x5397, 0x1397, 0x1397, 0x5397, 0x5397, 0x5397, 0x5397, 0x5397, 0x5397,
+    0x1399, 0x1399, 0x5399, 0x5399, 0x5399, 0x5399, 0x5399, 0x5399, 0x1399, 0x1399, 0x5399, 0x5399,
+    0x5399, 0x5399, 0x5399, 0x5399, 0x139F, 0x139F, 0x539F, 0x539F, 0x539F, 0x539F, 0x0000, 0x0000,
+    0x139F, 0x139F, 0x539F, 0x539F, 0x539F, 0x539F, 0x0000, 0x0000, 0x13A5, 0x13A5, 0x53A5, 0x53A5,
+    0x53A5, 0x53A5, 0x53A5, 0x53A5, 0x0000, 0x13A5, 0x0000, 0x53A5, 0x0000, 0x53A5, 0x0000, 0x53A5,
+    0x13A9, 0x13A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x13A9, 0x13A9, 0x53A9, 0x53A9,
+    0x53A9, 0x53A9, 0x53A9, 0x53A9, 0x5391, 0x5391, 0x5395, 0x5395, 0x5397, 0x5397, 0x5399, 0x5399,
+    0x539F, 0x539F, 0x53A5, 0x53A5, 0x53A9, 0x53A9, 0x0000, 0x0000, 0x3391, 0x3391, 0x7391, 0x7391,
+    0x7391, 0x7391, 0x7391, 0x7391, 0x3391, 0x3391, 0x7391, 0x7391, 0x7391, 0x7391, 0x7391, 0x7391,
+    0x3397, 0x3397, 0x7397, 0x7397, 0x7397, 0x7397, 0x7397, 0x7397, 0x3397, 0x3397, 0x7397, 0x7397,
+    0x7397, 0x7397, 0x7397, 0x7397, 0x33A9, 0x33A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9,
+    0x33A9, 0x33A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x73A9, 0x1391, 0x1391, 0x7391, 0x3391,
+    0x7391, 0x0000, 0x5391, 0x7391, 0x1391, 0x1391, 0x5391, 0x5391, 0x3391, 0x0000, 0x1399, 0x0000,
+    0x0000, 0x0000, 0x7397, 0x3397, 0x7397, 0x0000, 0x5397, 0x7397, 0x5395, 0x5395, 0x5397, 0x5397,
+    0x3397, 0x0000, 0x0000, 0x0000, 0x1399, 0x1399, 0xD399, 0xD399, 0x0000, 0x0000, 0x5399, 0xD399,
+    0x1399, 0x1399, 0x5399, 0x5399, 0x0000, 0x0000, 0x0000, 0x0000, 0x13A5, 0x13A5, 0xD3A5, 0xD3A5,
+    0x03A1, 0x03A1, 0x53A5, 0xD3A5, 0x13A5, 0x13A5, 0x53A5, 0x53A5, 0x03A1, 0x0000, 0x0000, 0x0000,
+    0x0000, 0x0000, 0x73A9, 0x33A9, 0x73A9, 0x0000, 0x53A9, 0x73A9, 0x539F, 0x539F, 0x53A9, 0x53A9,
+    0x33A9, 0x0000, 0x0000, 0x0000,
 ];
 /// `data2126`.
 const DATA2126: i32 = 0x03A9 | HAS_VOWEL; // Ω
@@ -1054,7 +1260,12 @@ impl GreekUpper {
     ///
     /// Several Greek letters and diacritics are uppercased and/or have
     /// their accents removed; see `CaseMapImpl.java`.
-    fn to_upper<'d>(options: i32, src: &[u16], dest: &'d mut Vec<u16>, mut edits: Option<&mut Edits>) -> Result<&'d mut Vec<u16>> {
+    fn to_upper<'d>(
+        options: i32,
+        src: &[u16],
+        dest: &'d mut Vec<u16>,
+        mut edits: Option<&mut Edits>,
+    ) -> Result<&'d mut Vec<u16>> {
         let mut state = 0;
         let mut i = 0;
         while i < src.len() as i32 {
@@ -1079,10 +1290,16 @@ impl GreekUpper {
                 // (which does not occur in normal writing) would require lookahead.
                 // Set the same flag as for preserving an existing dialytika.
                 if (data & HAS_VOWEL) != 0
-                    && (state & (AFTER_VOWEL_WITH_PRECOMPOSED_ACCENT | AFTER_VOWEL_WITH_COMBINING_ACCENT)) != 0
+                    && (state
+                        & (AFTER_VOWEL_WITH_PRECOMPOSED_ACCENT | AFTER_VOWEL_WITH_COMBINING_ACCENT))
+                        != 0
                     && (upper == 0x399 || upper == 0x3A5)
                 {
-                    data |= if (state & AFTER_VOWEL_WITH_PRECOMPOSED_ACCENT) != 0 { HAS_DIALYTIKA } else { HAS_COMBINING_DIALYTIKA };
+                    data |= if (state & AFTER_VOWEL_WITH_PRECOMPOSED_ACCENT) != 0 {
+                        HAS_DIALYTIKA
+                    } else {
+                        HAS_COMBINING_DIALYTIKA
+                    };
                 }
                 let mut num_ypogegrammeni = 0; // Map each one to a trailing, spacing, capital iota.
                 if (data & HAS_YPOGEGRAMMENI) != 0 {

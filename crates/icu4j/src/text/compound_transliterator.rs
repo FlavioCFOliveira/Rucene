@@ -9,7 +9,10 @@ use rucene::error::Result;
 
 use crate::jdk::{runtime_exception, to_rust_string};
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{transliterator_boilerplate, Position, Transliterator, TransliteratorBase, FORWARD, ID_DELIM, REVERSE};
+use crate::text::transliterator::{
+    transliterator_boilerplate, Position, Transliterator, TransliteratorBase, FORWARD, ID_DELIM,
+    REVERSE,
+};
 use crate::text::unicode_filter::UnicodeFilter;
 use crate::text::unicode_set::UnicodeSet;
 
@@ -52,7 +55,10 @@ impl CompoundTransliterator {
     /// # Errors
     ///
     /// As [`new`](Self::new).
-    pub(crate) fn with_anonymous_rbts(list: Vec<Arc<dyn Transliterator>>, num_anonymous_rbts: i32) -> Result<Self> {
+    pub(crate) fn with_anonymous_rbts(
+        list: Vec<Arc<dyn Transliterator>>,
+        num_anonymous_rbts: i32,
+    ) -> Result<Self> {
         let mut this = Self {
             base: TransliteratorBase::with_id(Vec::new()),
             trans: Arc::new(Vec::new()),
@@ -87,7 +93,12 @@ impl CompoundTransliterator {
     /// `direction` is either `FORWARD` or `REVERSE`; `fix_reverse_id`, if
     /// true, then reconstitute the ID of a reverse compound transliterator
     /// from the IDs of its elements, in reverse order.
-    fn init(&mut self, list: Vec<Arc<dyn Transliterator>>, direction: i32, fix_reverse_id: bool) -> Result<()> {
+    fn init(
+        &mut self,
+        list: Vec<Arc<dyn Transliterator>>,
+        direction: i32,
+        fix_reverse_id: bool,
+    ) -> Result<()> {
         // assert(trans == 0);
 
         // Allocate array
@@ -97,7 +108,11 @@ impl CompoundTransliterator {
         // Move the transliterators from the vector into an array.
         // Reverse the order if necessary.
         for i in 0..count {
-            let j = if direction == FORWARD { i } else { count - 1 - i };
+            let j = if direction == FORWARD {
+                i
+            } else {
+                count - 1 - i
+            };
             trans.push(list[j].clone());
         }
         self.trans = Arc::new(trans);
@@ -175,7 +190,13 @@ impl CompoundTransliterator {
 
 /// `String.startsWith("%Pass")`.
 fn starts_with_pass(id: &[u16]) -> bool {
-    id.starts_with(&[b'%' as u16, b'P' as u16, b'a' as u16, b's' as u16, b's' as u16])
+    id.starts_with(&[
+        b'%' as u16,
+        b'P' as u16,
+        b'a' as u16,
+        b's' as u16,
+        b's' as u16,
+    ])
 }
 
 impl Transliterator for CompoundTransliterator {
@@ -210,7 +231,10 @@ impl Transliterator for CompoundTransliterator {
             let id = self.trans[i].get_id();
             if starts_with_pass(&id) {
                 rule = self.trans[i].to_rules(escape_unprintable)?;
-                if self.num_anonymous_rbts > 1 && i > 0 && starts_with_pass(&self.trans[i - 1].get_id()) {
+                if self.num_anonymous_rbts > 1
+                    && i > 0
+                    && starts_with_pass(&self.trans[i - 1].get_id())
+                {
                     let mut r = crate::jdk::units("::Null;");
                     r.extend_from_slice(&rule);
                     rule = r;
@@ -236,7 +260,12 @@ impl Transliterator for CompoundTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet filter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let mut my_filter = UnicodeSet::from_set(&self.get_filter_as_unicode_set(filter)?);
         let mut temp_target_set = UnicodeSet::new();
         for t in self.trans.iter() {
@@ -252,7 +281,12 @@ impl Transliterator for CompoundTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position index, boolean
     /// incremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, index: &mut Position, incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        incremental: bool,
+    ) -> Result<()> {
         /* Call each transliterator with the same start value and
          * initial cursor index, but with the limit index as modified
          * by preceding transliterators.  The cursor index must be

@@ -93,7 +93,14 @@ impl Replaceable for ReplaceableString {
         string_buffer_replace(&mut buf, start, limit, text);
     }
 
-    fn replace_chars(&self, start: i32, limit: i32, chars: &[u16], chars_start: i32, chars_len: i32) {
+    fn replace_chars(
+        &self,
+        start: i32,
+        limit: i32,
+        chars: &[u16],
+        chars_start: i32,
+        chars_len: i32,
+    ) {
         let mut buf = self.buf();
         // buf.delete(start, limit)
         let len = buf.len() as i32;

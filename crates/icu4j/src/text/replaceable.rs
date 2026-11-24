@@ -42,7 +42,14 @@ pub trait Replaceable: Debug + Send + Sync {
     /// `replace(int start, int limit, char[] chars, int charsStart, int
     /// charsLen)`: replaces the units `start..limit` with
     /// `chars[charsStart..charsStart + charsLen]`.
-    fn replace_chars(&self, start: i32, limit: i32, chars: &[u16], chars_start: i32, chars_len: i32);
+    fn replace_chars(
+        &self,
+        start: i32,
+        limit: i32,
+        chars: &[u16],
+        chars_start: i32,
+        chars_len: i32,
+    );
 
     /// `copy(int start, int limit, int dest)`: copies the units
     /// `start..limit` (with their metadata) to `dest`, which is outside

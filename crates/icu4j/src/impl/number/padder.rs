@@ -42,7 +42,9 @@ impl PadPosition {
             DecimalFormat::PAD_AFTER_PREFIX => Ok(PadPosition::AfterPrefix),
             DecimalFormat::PAD_BEFORE_SUFFIX => Ok(PadPosition::BeforeSuffix),
             DecimalFormat::PAD_AFTER_SUFFIX => Ok(PadPosition::AfterSuffix),
-            _ => Err(LuceneError::illegal_argument(format!("Don't know how to map {old}"))),
+            _ => Err(LuceneError::illegal_argument(format!(
+                "Don't know how to map {old}"
+            ))),
         }
     }
 
@@ -81,9 +83,14 @@ pub static NONE: LazyLock<Padder> = LazyLock::new(|| Padder::new(None, -1, None)
 impl Padder {
     /// Equivalent to `Padder(String, int, PadPosition)` (`None` for Java's
     /// `null`).
-    pub fn new(padding_string: Option<&[u16]>, target_width: i32, position: Option<PadPosition>) -> Self {
+    pub fn new(
+        padding_string: Option<&[u16]>,
+        target_width: i32,
+        position: Option<PadPosition>,
+    ) -> Self {
         Padder(Arc::new(PadderData {
-            padding_string: padding_string.map_or_else(|| units(FALLBACK_PADDING_STRING), <[u16]>::to_vec),
+            padding_string: padding_string
+                .map_or_else(|| units(FALLBACK_PADDING_STRING), <[u16]>::to_vec),
             target_width,
             position: position.unwrap_or(PadPosition::BeforePrefix),
         }))
@@ -112,20 +119,30 @@ impl Padder {
     /// `IllegalArgumentException("Padding width must not be negative")`,
     /// and the `IllegalArgumentException` of `Character.toChars` for an
     /// invalid code point.
-    pub fn code_points(cp: i32, target_width: i32, position: Option<PadPosition>) -> Result<Padder> {
+    pub fn code_points(
+        cp: i32,
+        target_width: i32,
+        position: Option<PadPosition>,
+    ) -> Result<Padder> {
         // TODO: Validate the code point
         if target_width >= 0 {
             let mut padding_string = Vec::new();
             crate::jdk::append_code_point(&mut padding_string, cp)?;
             Ok(Padder::new(Some(&padding_string), target_width, position))
         } else {
-            Err(LuceneError::illegal_argument("Padding width must not be negative"))
+            Err(LuceneError::illegal_argument(
+                "Padding width must not be negative",
+            ))
         }
     }
 
     /// Equivalent to `forProperties(DecimalFormatProperties)`.
     pub fn for_properties(properties: &DecimalFormatProperties) -> Padder {
-        Padder::new(properties.get_pad_string(), properties.get_format_width(), properties.get_pad_position())
+        Padder::new(
+            properties.get_pad_string(),
+            properties.get_format_width(),
+            properties.get_pad_position(),
+        )
     }
 
     /// Equivalent to `isValid()`.
@@ -164,14 +181,24 @@ impl Padder {
         if position == PadPosition::AfterPrefix {
             length += add_padding_helper(padding_string, required_padding, string, left_index);
         } else if position == PadPosition::BeforeSuffix {
-            length += add_padding_helper(padding_string, required_padding, string, right_index + length);
+            length += add_padding_helper(
+                padding_string,
+                required_padding,
+                string,
+                right_index + length,
+            );
         }
         length += mod1.apply(string, left_index, right_index + length)?;
         length += mod2.apply(string, left_index, right_index + length)?;
         if position == PadPosition::BeforePrefix {
             length += add_padding_helper(padding_string, required_padding, string, left_index);
         } else if position == PadPosition::AfterSuffix {
-            length += add_padding_helper(padding_string, required_padding, string, right_index + length);
+            length += add_padding_helper(
+                padding_string,
+                required_padding,
+                string,
+                right_index + length,
+            );
         }
 
         Ok(length)
@@ -179,7 +206,12 @@ impl Padder {
 }
 
 /// `addPaddingHelper(String, int, FormattedStringBuilder, int)`.
-fn add_padding_helper(padding_string: &[u16], required_padding: i32, string: &mut FormattedStringBuilder, index: i32) -> i32 {
+fn add_padding_helper(
+    padding_string: &[u16],
+    required_padding: i32,
+    string: &mut FormattedStringBuilder,
+    index: i32,
+) -> i32 {
     for _ in 0..required_padding {
         // TODO: If appending to the end, this will cause actual insertion
         // operations. Improve.

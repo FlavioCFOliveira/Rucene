@@ -18,9 +18,9 @@ use crate::r#impl::soft_cache::SoftCache;
 use crate::r#impl::u_resource::{self, Key};
 use crate::util::icu_exception::ICUException;
 use crate::util::icu_unchecked_io_exception::ICUUncheckedIOException;
+use crate::util::u_locale::ULocale;
 use crate::util::u_resource_bundle::UResourceBundle;
 use crate::util::u_resource_type_mismatch_exception::type_mismatch;
-use crate::util::u_locale::ULocale;
 use crate::util::version_info::VersionInfo;
 
 /// `DATA_FORMAT`: "ResB".
@@ -103,47 +103,52 @@ struct ReaderCacheKey {
 
 /// `CACHE`: the readers by base name and locale ID; `None` caches a
 /// missing bundle (Java's `NULL_READER`).
-static CACHE: LazyLock<SoftCache<ReaderCacheKey, Option<Arc<ICUResourceBundleReader>>, ClassLoader>> =
-    LazyLock::new(|| {
-        SoftCache::new(|key: &ReaderCacheKey, loader: ClassLoader| {
-            let full_name = ICUResourceBundleReader::get_full_name(Some(&key.base_name), &key.locale_id);
-            let result = (|| -> Result<Option<Arc<ICUResourceBundleReader>>> {
-                let in_bytes;
-                if key.base_name.starts_with(ICUData::ICU_BASE_NAME) {
-                    let item_path = &full_name[ICUData::ICU_BASE_NAME.len() + 1..];
-                    in_bytes = match ICUBinary::get_data_with(Some(&loader), Some(&full_name), item_path)? {
+#[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+static CACHE: LazyLock<
+    SoftCache<ReaderCacheKey, Option<Arc<ICUResourceBundleReader>>, ClassLoader>,
+> = LazyLock::new(|| {
+    SoftCache::new(|key: &ReaderCacheKey, loader: ClassLoader| {
+        let full_name =
+            ICUResourceBundleReader::get_full_name(Some(&key.base_name), &key.locale_id);
+        let result = (|| -> Result<Option<Arc<ICUResourceBundleReader>>> {
+            let in_bytes;
+            if key.base_name.starts_with(ICUData::ICU_BASE_NAME) {
+                let item_path = &full_name[ICUData::ICU_BASE_NAME.len() + 1..];
+                in_bytes =
+                    match ICUBinary::get_data_with(Some(&loader), Some(&full_name), item_path)? {
                         Some(b) => b,
                         None => return Ok(None),
                     };
-                } else {
-                    // Closed by getByteBufferFromInputStreamAndCloseStream().
-                    let mut stream = match ICUData::get_stream_loader(&loader, &full_name) {
-                        Some(s) => s,
-                        None => return Ok(None),
-                    };
-                    in_bytes = ICUBinary::get_byte_buffer_from_input_stream_and_close_stream(&mut stream)?;
-                }
-                Ok(Some(Arc::new(ICUResourceBundleReader::new(
-                    in_bytes,
-                    &key.base_name,
-                    &key.locale_id,
-                    loader,
-                )?)))
-            })();
-            match result {
-                Ok(r) => Ok(Some(r)),
-                Err(ex) if ex.is_io_exception() => {
-                    let msg = io_message(&ex);
-                    Err(ICUUncheckedIOException::with_message_and_cause(
-                        format!("Data file {full_name} is corrupt - {msg}"),
-                        ex,
-                    )
-                    .error())
-                }
-                Err(ex) => Err(ex),
+            } else {
+                // Closed by getByteBufferFromInputStreamAndCloseStream().
+                let mut stream = match ICUData::get_stream_loader(&loader, &full_name) {
+                    Some(s) => s,
+                    None => return Ok(None),
+                };
+                in_bytes =
+                    ICUBinary::get_byte_buffer_from_input_stream_and_close_stream(&mut stream)?;
             }
-        })
-    });
+            Ok(Some(Arc::new(ICUResourceBundleReader::new(
+                in_bytes,
+                &key.base_name,
+                &key.locale_id,
+                loader,
+            )?)))
+        })();
+        match result {
+            Ok(r) => Ok(Some(r)),
+            Err(ex) if ex.is_io_exception() => {
+                let msg = io_message(&ex);
+                Err(ICUUncheckedIOException::with_message_and_cause(
+                    format!("Data file {full_name} is corrupt - {msg}"),
+                    ex,
+                )
+                .error())
+            }
+            Err(ex) => Err(ex),
+        }
+    })
+});
 
 /// `IOException.getMessage()`.
 fn io_message(e: &LuceneError) -> String {
@@ -159,7 +164,12 @@ fn empty_16_bit_units() -> Arc<[u16]> {
 }
 
 impl ICUResourceBundleReader {
-    fn new(in_bytes: ByteBuffer, base_name: &str, _locale_id: &str, loader: ClassLoader) -> Result<Self> {
+    fn new(
+        in_bytes: ByteBuffer,
+        base_name: &str,
+        _locale_id: &str,
+        loader: ClassLoader,
+    ) -> Result<Self> {
         let mut r = Self {
             b16_bit_units: empty_16_bit_units(),
             ..Self::default()
@@ -203,12 +213,15 @@ impl ICUResourceBundleReader {
     }
 
     fn bytes(&self) -> &ByteBuffer {
-        self.bytes.as_ref().expect("an initialized reader has bytes")
+        self.bytes
+            .as_ref()
+            .expect("an initialized reader has bytes")
     }
 
     // See res_init() in ICU4C/source/common/uresdata.c.
     fn init(&mut self, mut in_bytes: ByteBuffer) -> Result<()> {
-        self.data_version = ICUBinary::read_header(&mut in_bytes, DATA_FORMAT, Some(&is_acceptable))?;
+        self.data_version =
+            ICUBinary::read_header(&mut in_bytes, DATA_FORMAT, Some(&is_acceptable))?;
         let major_format_version = in_bytes.get_at(16) as i32;
         let mut bytes = ICUBinary::slice_with_order(&in_bytes);
         let data_length = bytes.remaining();
@@ -362,7 +375,9 @@ impl ICUResourceBundleReader {
 
     /// `URES_IS_TABLE(int type)` (package-private).
     pub(crate) fn ures_is_table(ty: i32) -> bool {
-        ty == UResourceBundle::TABLE || ty == ICUResourceBundle::TABLE16 || ty == ICUResourceBundle::TABLE32
+        ty == UResourceBundle::TABLE
+            || ty == ICUResourceBundle::TABLE16
+            || ty == ICUResourceBundle::TABLE32
     }
 
     fn get_chars(&self, mut offset: i32, count: i32) -> Vec<u16> {
@@ -428,7 +443,9 @@ impl ICUResourceBundleReader {
     }
 
     fn key_bytes(&self) -> &Arc<[i8]> {
-        self.key_bytes.as_ref().expect("a bundle with keys has key bytes")
+        self.key_bytes
+            .as_ref()
+            .expect("a bundle with keys has key bytes")
     }
 
     fn pool(&self) -> &ICUResourceBundleReader {
@@ -441,7 +458,10 @@ impl ICUResourceBundleReader {
         if key_offset < self.local_key_limit {
             Self::make_key_string_from_bytes(self.key_bytes(), key_offset)
         } else {
-            Self::make_key_string_from_bytes(self.pool().key_bytes(), key_offset - self.local_key_limit)
+            Self::make_key_string_from_bytes(
+                self.pool().key_bytes(),
+                key_offset - self.local_key_limit,
+            )
         }
     }
 
@@ -474,7 +494,11 @@ impl ICUResourceBundleReader {
         if key_offset < self.local_key_limit {
             ICUBinary::compare_keys_bytes(key, self.key_bytes(), key_offset)
         } else {
-            ICUBinary::compare_keys_bytes(key, self.pool().key_bytes(), key_offset - self.local_key_limit)
+            ICUBinary::compare_keys_bytes(
+                key,
+                self.pool().key_bytes(),
+                key_offset - self.local_key_limit,
+            )
         }
     }
 
@@ -493,6 +517,7 @@ impl ICUResourceBundleReader {
     }
 
     /// `getStringV2(int res)` (package-private).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn get_string_v2(&self, res: i32) -> Vec<u16> {
         // Use the pool bundle's resource cache for pool bundle strings;
         // use the local bundle's cache for local strings.
@@ -532,13 +557,17 @@ impl ICUResourceBundleReader {
                 length = ((first - 0xdfef) << 16) | units[(offset + 1) as usize] as i32;
                 offset += 2;
             } else {
-                length = ((units[(offset + 1) as usize] as i32) << 16) | units[(offset + 2) as usize] as i32;
+                length = ((units[(offset + 1) as usize] as i32) << 16)
+                    | units[(offset + 2) as usize] as i32;
                 offset += 3;
             }
             s = units[offset as usize..(offset + length) as usize].to_vec();
         }
         let size = s.len() as i32 * 2;
-        match self.cache().put_if_absent(res, CacheItem::Str(Arc::from(s)), size) {
+        match self
+            .cache()
+            .put_if_absent(res, CacheItem::Str(Arc::from(s)), size)
+        {
             CacheItem::Str(s) => s.to_vec(),
             _ => unreachable!("a string resource caches a string"),
         }
@@ -580,7 +609,10 @@ impl ICUResourceBundleReader {
         let length = self.get_int(offset);
         let s = self.make_string_from_bytes(offset + 4, length);
         let size = s.len() as i32 * 2;
-        match self.cache().put_if_absent(res, CacheItem::Str(Arc::from(s)), size) {
+        match self
+            .cache()
+            .put_if_absent(res, CacheItem::Str(Arc::from(s)), size)
+        {
             CacheItem::Str(s) => Some(s.to_vec()),
             _ => unreachable!("a string resource caches a string"),
         }
@@ -602,7 +634,8 @@ impl ICUResourceBundleReader {
             if offset < self.pool_string_index_limit {
                 return self.pool().is_string_v2_no_inheritance_marker(offset);
             } else {
-                return self.is_string_v2_no_inheritance_marker(offset - self.pool_string_index_limit);
+                return self
+                    .is_string_v2_no_inheritance_marker(offset - self.pool_string_index_limit);
             }
         }
         false
@@ -638,7 +671,10 @@ impl ICUResourceBundleReader {
                 offset = Self::get_resource_byte_offset(offset);
                 let length = self.get_int(offset);
                 let s = self.make_string_from_bytes(offset + 4, length);
-                match self.cache().put_if_absent(res, CacheItem::Str(Arc::from(s)), length * 2) {
+                match self
+                    .cache()
+                    .put_if_absent(res, CacheItem::Str(Arc::from(s)), length * 2)
+                {
                     CacheItem::Str(s) => Some(s.to_vec()),
                     _ => unreachable!("an alias resource caches a string"),
                 }
@@ -751,7 +787,10 @@ impl ICUResourceBundleReader {
         } else {
             Container::array16(self, offset)
         };
-        match self.cache().put_if_absent(res, CacheItem::Container(Arc::new(array)), 0) {
+        match self
+            .cache()
+            .put_if_absent(res, CacheItem::Container(Arc::new(array)), 0)
+        {
             CacheItem::Container(c) => Some(c),
             _ => unreachable!("an array resource caches a container"),
         }
@@ -759,6 +798,7 @@ impl ICUResourceBundleReader {
 
     /// `getTable(int res)` (package-private): `None` when `res` is not a
     /// table.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub(crate) fn get_table(&self, res: i32) -> Option<Arc<Container>> {
         let ty = Self::res_get_type(res);
         if !Self::ures_is_table(ty) {
@@ -785,7 +825,10 @@ impl ICUResourceBundleReader {
             table = Container::table32(self, offset);
             size = table.get_size() * 4;
         }
-        match self.cache().put_if_absent(res, CacheItem::Container(Arc::new(table)), size) {
+        match self
+            .cache()
+            .put_if_absent(res, CacheItem::Container(Arc::new(table)), size)
+        {
             CacheItem::Container(c) => Some(c),
             _ => unreachable!("a table resource caches a container"),
         }
@@ -887,11 +930,15 @@ impl u_resource::Value for ReaderValue {
     }
 
     fn get_string(&self) -> Result<Vec<u16>> {
-        self.reader().get_string(self.res).ok_or_else(|| type_mismatch(""))
+        self.reader()
+            .get_string(self.res)
+            .ok_or_else(|| type_mismatch(""))
     }
 
     fn get_alias_string(&self) -> Result<Vec<u16>> {
-        self.reader().get_alias(self.res).ok_or_else(|| type_mismatch(""))
+        self.reader()
+            .get_alias(self.res)
+            .ok_or_else(|| type_mismatch(""))
     }
 
     fn get_int(&self) -> Result<i32> {
@@ -909,11 +956,15 @@ impl u_resource::Value for ReaderValue {
     }
 
     fn get_int_vector(&self) -> Result<Vec<i32>> {
-        self.reader().get_int_vector(self.res).ok_or_else(|| type_mismatch(""))
+        self.reader()
+            .get_int_vector(self.res)
+            .ok_or_else(|| type_mismatch(""))
     }
 
     fn get_binary(&self) -> Result<ByteBuffer> {
-        self.reader().get_binary(self.res).ok_or_else(|| type_mismatch(""))
+        self.reader()
+            .get_binary(self.res)
+            .ok_or_else(|| type_mismatch(""))
     }
 
     fn get_array(&self) -> Result<Arc<dyn u_resource::Array>> {
@@ -1103,7 +1154,10 @@ impl Container {
     pub fn is_table(&self) -> bool {
         matches!(
             self.kind,
-            ContainerKind::EmptyTable | ContainerKind::Table1632 | ContainerKind::Table16 | ContainerKind::Table32
+            ContainerKind::EmptyTable
+                | ContainerKind::Table1632
+                | ContainerKind::Table16
+                | ContainerKind::Table32
         )
     }
 
@@ -1114,13 +1168,19 @@ impl Container {
 
     /// `getContainerResource(ICUResourceBundleReader reader, int index)`
     /// (package-private): `RES_BOGUS` when `index` is out of range.
-    pub(crate) fn get_container_resource(&self, reader: &ICUResourceBundleReader, index: i32) -> i32 {
+    pub(crate) fn get_container_resource(
+        &self,
+        reader: &ICUResourceBundleReader,
+        index: i32,
+    ) -> i32 {
         match self.kind {
             ContainerKind::EmptyArray | ContainerKind::EmptyTable => ICUResourceBundle::RES_BOGUS,
             ContainerKind::Array32 | ContainerKind::Table1632 | ContainerKind::Table32 => {
                 self.get_container32_resource(reader, index)
             }
-            ContainerKind::Array16 | ContainerKind::Table16 => self.get_container16_resource(reader, index),
+            ContainerKind::Array16 | ContainerKind::Table16 => {
+                self.get_container16_resource(reader, index)
+            }
         }
     }
 
@@ -1153,7 +1213,11 @@ impl Container {
     /// # Errors
     ///
     /// `NumberFormatException` for an array key that is not a number.
-    pub(crate) fn get_resource(&self, reader: &ICUResourceBundleReader, res_key: &str) -> Result<i32> {
+    pub(crate) fn get_resource(
+        &self,
+        reader: &ICUResourceBundleReader,
+        res_key: &str,
+    ) -> Result<i32> {
         if self.is_table() {
             let key: Vec<u16> = res_key.encode_utf16().collect();
             Ok(self.get_container_resource(reader, self.find_table_item(reader, &key)))
@@ -1173,7 +1237,9 @@ impl Container {
         Some(match &self.key_offsets {
             Some(k) => reader.get_key16_string(k[index as usize] as i32),
             None => reader.get_key32_string(
-                self.key32_offsets.as_ref().expect("a table has key offsets")[index as usize],
+                self.key32_offsets
+                    .as_ref()
+                    .expect("a table has key offsets")[index as usize],
             ),
         })
     }
@@ -1190,7 +1256,9 @@ impl Container {
                 Some(k) => reader.compare_keys(key, k[mid as usize]),
                 None => reader.compare_keys32(
                     key,
-                    self.key32_offsets.as_ref().expect("a table has key offsets")[mid as usize],
+                    self.key32_offsets
+                        .as_ref()
+                        .expect("a table has key offsets")[mid as usize],
                 ),
             };
             if result < 0 {
@@ -1214,7 +1282,10 @@ impl u_resource::Array for Container {
     fn get_value(&self, i: i32, value: &mut dyn u_resource::Value) -> bool {
         if 0 <= i && i < self.size {
             let reader_value = reader_value(value);
-            let reader = reader_value.reader.clone().expect("a reader value has a reader");
+            let reader = reader_value
+                .reader
+                .clone()
+                .expect("a reader value has a reader");
             reader_value.res = self.get_container_resource(&reader, i);
             return true;
         }
@@ -1230,11 +1301,16 @@ impl u_resource::Table for Container {
     fn get_key_and_value(&self, i: i32, key: &mut Key, value: &mut dyn u_resource::Value) -> bool {
         if 0 <= i && i < self.size {
             let reader_value = reader_value(value);
-            let reader = reader_value.reader.clone().expect("a reader value has a reader");
+            let reader = reader_value
+                .reader
+                .clone()
+                .expect("a reader value has a reader");
             match &self.key_offsets {
                 Some(k) => reader.set_key_from_key16(k[i as usize] as i32, key),
                 None => reader.set_key_from_key32(
-                    self.key32_offsets.as_ref().expect("a table has key offsets")[i as usize],
+                    self.key32_offsets
+                        .as_ref()
+                        .expect("a table has key offsets")[i as usize],
                     key,
                 ),
             }
@@ -1246,7 +1322,10 @@ impl u_resource::Table for Container {
 
     fn find_value(&self, key: &[u16], value: &mut dyn u_resource::Value) -> bool {
         let reader_value = reader_value(value);
-        let reader = reader_value.reader.clone().expect("a reader value has a reader");
+        let reader = reader_value
+            .reader
+            .clone()
+            .expect("a reader value has a reader");
         let i = self.find_table_item(&reader, key);
         if i >= 0 {
             reader_value.res = self.get_container_resource(&reader, i);
@@ -1348,7 +1427,10 @@ impl Level {
         }
         // Collision: Add a child level, move the old item there,
         // and then insert the current item.
-        let mut level = Level::new(self.level_bits_list >> 4, self.shift + (self.level_bits_list & 0xf));
+        let mut level = Level::new(
+            self.level_bits_list >> 4,
+            self.shift + (self.level_bits_list & 0xf),
+        );
         let i = ((k >> level.shift) & level.mask) as usize;
         level.keys[i] = k;
         level.values[i] = std::mem::replace(&mut self.values[index], Slot::Empty);
@@ -1395,6 +1477,7 @@ struct ResourceCache {
 }
 
 impl ResourceCache {
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn new(mut max_offset: i32) -> Self {
         debug_assert!(max_offset != 0);
         let mut max_offset_bits = 28;
@@ -1403,7 +1486,7 @@ impl ResourceCache {
             max_offset_bits -= 1;
         }
         let mut key_bits = max_offset_bits + 2; // +2 for mini type: at most 30 bits used in a key
-        // Precompute for each level the number of bits it handles.
+                                                // Precompute for each level the number of bits it handles.
         let level_bits_list;
         if key_bits <= ROOT_BITS {
             level_bits_list = key_bits;

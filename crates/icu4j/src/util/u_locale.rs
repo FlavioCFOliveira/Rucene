@@ -41,7 +41,9 @@ use crate::util::u_resource_bundle::UResourceBundle;
 
 /// `nameCache`: normalized names by locale ID.
 static NAME_CACHE: LazyLock<SoftCache<String, String, ()>> = LazyLock::new(|| {
-    SoftCache::new(|tmp_locale_id: &String, _unused: ()| Ok(Some(LocaleIDParser::new(tmp_locale_id).get_name()?)))
+    SoftCache::new(|tmp_locale_id: &String, _unused: ()| {
+        Ok(Some(LocaleIDParser::new(tmp_locale_id).get_name()?))
+    })
 });
 
 /// Types for `ULocale.getAvailableLocalesByType`.
@@ -127,24 +129,24 @@ const UNDEFINED_REGION: &str = "ZZ";
 
 /// `CANONICALIZE_MAP`.
 const CANONICALIZE_MAP: &[(&str, &str)] = &[
-    ("art__LOJBAN", "jbo"),          /* registered name */
+    ("art__LOJBAN", "jbo"),           /* registered name */
     ("cel__GAULISH", "cel__GAULISH"), /* registered name */
-    ("de__1901", "de__1901"),        /* registered name */
-    ("de__1906", "de__1906"),        /* registered name */
-    ("en__BOONT", "en__BOONT"),      /* registered name */
-    ("en__SCOUSE", "en__SCOUSE"),    /* registered name */
-    ("hy__AREVELA", "hy"),           /* Registered IANA variant */
-    ("hy__AREVMDA", "hyw"),          /* Registered IANA variant */
-    ("sl__ROZAJ", "sl__ROZAJ"),      /* registered name */
-    ("zh__GUOYU", "zh"),             /* registered name */
-    ("zh__HAKKA", "hak"),            /* registered name */
-    ("zh__XIANG", "hsn"),            /* registered name */
+    ("de__1901", "de__1901"),         /* registered name */
+    ("de__1906", "de__1906"),         /* registered name */
+    ("en__BOONT", "en__BOONT"),       /* registered name */
+    ("en__SCOUSE", "en__SCOUSE"),     /* registered name */
+    ("hy__AREVELA", "hy"),            /* Registered IANA variant */
+    ("hy__AREVMDA", "hyw"),           /* Registered IANA variant */
+    ("sl__ROZAJ", "sl__ROZAJ"),       /* registered name */
+    ("zh__GUOYU", "zh"),              /* registered name */
+    ("zh__HAKKA", "hak"),             /* registered name */
+    ("zh__XIANG", "hsn"),             /* registered name */
     // Three letter subtags won't be treated as variants.
-    ("zh_GAN", "gan"),        /* registered name */
-    ("zh_MIN", "zh__MIN"),    /* registered name */
-    ("zh_MIN_NAN", "nan"),    /* registered name */
-    ("zh_WUU", "wuu"),        /* registered name */
-    ("zh_YUE", "yue"),        /* registered name */
+    ("zh_GAN", "gan"),     /* registered name */
+    ("zh_MIN", "zh__MIN"), /* registered name */
+    ("zh_MIN_NAN", "nan"), /* registered name */
+    ("zh_WUU", "wuu"),     /* registered name */
+    ("zh_YUE", "yue"),     /* registered name */
 ];
 
 /// `LANG_DIR_STRING`.
@@ -189,71 +191,105 @@ macro_rules! ulocale_constant {
 
 ulocale_constant!(
     /// `ENGLISH`.
-    ENGLISH, "en", Some(Locale::of("en", "", ""))
+    ENGLISH,
+    "en",
+    Some(Locale::of("en", "", ""))
 );
 ulocale_constant!(
     /// `FRENCH`.
-    FRENCH, "fr", Some(Locale::of("fr", "", ""))
+    FRENCH,
+    "fr",
+    Some(Locale::of("fr", "", ""))
 );
 ulocale_constant!(
     /// `GERMAN`.
-    GERMAN, "de", Some(Locale::of("de", "", ""))
+    GERMAN,
+    "de",
+    Some(Locale::of("de", "", ""))
 );
 ulocale_constant!(
     /// `ITALIAN`.
-    ITALIAN, "it", Some(Locale::of("it", "", ""))
+    ITALIAN,
+    "it",
+    Some(Locale::of("it", "", ""))
 );
 ulocale_constant!(
     /// `JAPANESE`.
-    JAPANESE, "ja", Some(Locale::of("ja", "", ""))
+    JAPANESE,
+    "ja",
+    Some(Locale::of("ja", "", ""))
 );
 ulocale_constant!(
     /// `KOREAN`.
-    KOREAN, "ko", Some(Locale::of("ko", "", ""))
+    KOREAN,
+    "ko",
+    Some(Locale::of("ko", "", ""))
 );
 ulocale_constant!(
     /// `CHINESE`.
-    CHINESE, "zh", Some(Locale::of("zh", "", ""))
+    CHINESE,
+    "zh",
+    Some(Locale::of("zh", "", ""))
 );
 ulocale_constant!(
     /// `FRANCE`.
-    FRANCE, "fr_FR", Some(Locale::of("fr", "FR", ""))
+    FRANCE,
+    "fr_FR",
+    Some(Locale::of("fr", "FR", ""))
 );
 ulocale_constant!(
     /// `GERMANY`.
-    GERMANY, "de_DE", Some(Locale::of("de", "DE", ""))
+    GERMANY,
+    "de_DE",
+    Some(Locale::of("de", "DE", ""))
 );
 ulocale_constant!(
     /// `ITALY`.
-    ITALY, "it_IT", Some(Locale::of("it", "IT", ""))
+    ITALY,
+    "it_IT",
+    Some(Locale::of("it", "IT", ""))
 );
 ulocale_constant!(
     /// `JAPAN`.
-    JAPAN, "ja_JP", Some(Locale::of("ja", "JP", ""))
+    JAPAN,
+    "ja_JP",
+    Some(Locale::of("ja", "JP", ""))
 );
 ulocale_constant!(
     /// `KOREA`.
-    KOREA, "ko_KR", Some(Locale::of("ko", "KR", ""))
+    KOREA,
+    "ko_KR",
+    Some(Locale::of("ko", "KR", ""))
 );
 ulocale_constant!(
     /// `UK`.
-    UK, "en_GB", Some(Locale::of("en", "GB", ""))
+    UK,
+    "en_GB",
+    Some(Locale::of("en", "GB", ""))
 );
 ulocale_constant!(
     /// `US`.
-    US, "en_US", Some(Locale::of("en", "US", ""))
+    US,
+    "en_US",
+    Some(Locale::of("en", "US", ""))
 );
 ulocale_constant!(
     /// `CANADA`.
-    CANADA, "en_CA", Some(Locale::of("en", "CA", ""))
+    CANADA,
+    "en_CA",
+    Some(Locale::of("en", "CA", ""))
 );
 ulocale_constant!(
     /// `CANADA_FRENCH`.
-    CANADA_FRENCH, "fr_CA", Some(Locale::of("fr", "CA", ""))
+    CANADA_FRENCH,
+    "fr_CA",
+    Some(Locale::of("fr", "CA", ""))
 );
 ulocale_constant!(
     /// `ROOT`: the root locale (`EMPTY_LOCALE`, `new Locale("", "")`).
-    ROOT, "", Some(Locale::of("", "", ""))
+    ROOT,
+    "",
+    Some(Locale::of("", "", ""))
 );
 
 // Special note about static initializer for
@@ -292,8 +328,9 @@ pub static TAIWAN: LazyLock<ULocale> =
     LazyLock::new(|| ULocale::new("zh_Hant_TW").expect("a constant locale ID is valid"));
 
 /// `CACHE`: `forLocale` results by JDK locale.
-static CACHE: LazyLock<SoftCache<Locale, ULocale, ()>> =
-    LazyLock::new(|| SoftCache::new(|key: &Locale, _unused: ()| Ok(Some(JDKLocaleHelper::to_u_locale(key)?))));
+static CACHE: LazyLock<SoftCache<Locale, ULocale, ()>> = LazyLock::new(|| {
+    SoftCache::new(|key: &Locale, _unused: ()| Ok(Some(JDKLocaleHelper::to_u_locale(key)?)))
+});
 
 /// The default locales: `defaultULocale`, `defaultCategoryLocales` and
 /// `defaultCategoryULocales`.
@@ -348,12 +385,28 @@ fn ensure_defaults() {
 
 /// `RegionValidateMap.gValidRegionMap`.
 const G_VALID_REGION_MAP: [i32; 22] = [
-    0xeedf597cu32 as i32, 0xdeddbdefu32 as i32, 0x15943f3f, 0x0e00d580,
-    0xb0095c00u32 as i32, 0x0015fb9f, 0x781c068d, 0x0340400f,
-    0xf42b1d00u32 as i32, 0xfd4f8141u32 as i32, 0x25d7fffc, 0x0100084b,
-    0x538f3c40, 0x40000001, 0xfdf15100u32 as i32, 0x9fbb7ae7u32 as i32,
-    0x0410419a, 0x00408557, 0x00004002, 0x00100001,
-    0x00400408, 0x00000001,
+    0xeedf597cu32 as i32,
+    0xdeddbdefu32 as i32,
+    0x15943f3f,
+    0x0e00d580,
+    0xb0095c00u32 as i32,
+    0x0015fb9f,
+    0x781c068d,
+    0x0340400f,
+    0xf42b1d00u32 as i32,
+    0xfd4f8141u32 as i32,
+    0x25d7fffc,
+    0x0100084b,
+    0x538f3c40,
+    0x40000001,
+    0xfdf15100u32 as i32,
+    0x9fbb7ae7u32 as i32,
+    0x0410419a,
+    0x00408557,
+    0x00004002,
+    0x00100001,
+    0x00400408,
+    0x00000001,
 ];
 
 /// The valid region codes of CLDR, as a bit map.
@@ -502,7 +555,10 @@ impl ULocale {
     ///
     /// The errors of [`canonicalize`](Self::canonicalize).
     pub fn create_canonical(non_canonical_id: &str) -> Result<ULocale> {
-        Ok(Self::from_parts(&Self::canonicalize(non_canonical_id)?, None))
+        Ok(Self::from_parts(
+            &Self::canonicalize(non_canonical_id)?,
+            None,
+        ))
     }
 
     /// `createCanonical(ULocale locale)`.
@@ -514,7 +570,12 @@ impl ULocale {
         Self::create_canonical(locale.get_name())
     }
 
-    fn lscv_to_id(lang: Option<&str>, script: Option<&str>, country: Option<&str>, variant: Option<&str>) -> String {
+    fn lscv_to_id(
+        lang: Option<&str>,
+        script: Option<&str>,
+        country: Option<&str>,
+        variant: Option<&str>,
+    ) -> String {
         let mut buf = String::new();
 
         if let Some(l) = lang.filter(|l| !l.is_empty()) {
@@ -540,7 +601,10 @@ impl ULocale {
 
     /// `toLocale()`: the corresponding JDK locale.
     pub fn to_locale(&self) -> Locale {
-        self.0.locale.get_or_init(|| JDKLocaleHelper::to_locale(self)).clone()
+        self.0
+            .locale
+            .get_or_init(|| JDKLocaleHelper::to_locale(self))
+            .clone()
     }
 
     /// `getDefault()`: the current default `ULocale`, following changes of
@@ -604,7 +668,10 @@ impl ULocale {
         let idx = category.ordinal();
         let (stored_locale, stored) = {
             let d = lock_defaults();
-            (d.category_locales[idx].clone(), d.category_u_locales[idx].clone())
+            (
+                d.category_locales[idx].clone(),
+                d.category_u_locales[idx].clone(),
+            )
         };
         let Some(stored) = stored else {
             // Just in case this method is called during ULocale class
@@ -734,15 +801,17 @@ impl ULocale {
     /// it has no list of the type.
     pub fn get_available_locales_by_type(ty: AvailableType) -> Result<Vec<ULocale>> {
         if ty == AvailableType::WithLegacyAliases {
-            let mut result = ICUResourceBundle::get_available_u_locales_type(AvailableType::Default)?
-                .ok_or_else(LuceneError::null_pointer)?;
+            let mut result =
+                ICUResourceBundle::get_available_u_locales_type(AvailableType::Default)?
+                    .ok_or_else(LuceneError::null_pointer)?;
             result.extend(
                 ICUResourceBundle::get_available_u_locales_type(AvailableType::OnlyLegacyAliases)?
                     .ok_or_else(LuceneError::null_pointer)?,
             );
             Ok(result)
         } else {
-            ICUResourceBundle::get_available_u_locales_type(ty)?.ok_or_else(LuceneError::null_pointer)
+            ICUResourceBundle::get_available_u_locales_type(ty)?
+                .ok_or_else(LuceneError::null_pointer)
         }
     }
 
@@ -805,7 +874,11 @@ impl ULocale {
         if !(3..=6).contains(&n) {
             return None;
         }
-        let region = to_upper_case_default_locale(&crate::r#impl::locale::ascii_util::substring16(&subdivision, 0, 2));
+        let region = to_upper_case_default_locale(&crate::r#impl::locale::ascii_util::substring16(
+            &subdivision,
+            0,
+            2,
+        ));
         if BUILTIN.is_set(&region) {
             return Some(region);
         }
@@ -815,7 +888,10 @@ impl ULocale {
     /// `getRegionForSupplementalData(ULocale locale, boolean inferRegion)`
     /// (deprecated): the region of the `rg` keyword, else of the locale,
     /// else (when inferring) of the `sd` keyword or of the likely subtags.
-    pub fn get_region_for_supplemental_data(locale: &ULocale, infer_region: bool) -> Result<String> {
+    pub fn get_region_for_supplemental_data(
+        locale: &ULocale,
+        infer_region: bool,
+    ) -> Result<String> {
         if let Some(region) = Self::get_region_from_key(locale, "rg") {
             return Ok(region);
         }
@@ -851,7 +927,9 @@ impl ULocale {
     ///
     /// As [`get_name_of`](Self::get_name_of).
     pub fn get_fallback_of(locale_id: &str) -> Result<String> {
-        Ok(Self::get_fallback_string(&Self::get_name_of(Some(locale_id))?))
+        Ok(Self::get_fallback_string(&Self::get_name_of(Some(
+            locale_id,
+        ))?))
     }
 
     /// `getFallback()`: `None` for the root locale.
@@ -859,7 +937,10 @@ impl ULocale {
         if self.0.locale_id.is_empty() || self.0.locale_id.starts_with('@') {
             return None;
         }
-        Some(Self::from_parts(&Self::get_fallback_string(&self.0.locale_id), None))
+        Some(Self::from_parts(
+            &Self::get_fallback_string(&self.0.locale_id),
+            None,
+        ))
     }
 
     fn get_fallback_string(fallback: &str) -> String {
@@ -940,7 +1021,9 @@ impl ULocale {
                 if id.contains('_') && units[1] != b'_' as u16 && units[1] != b'-' as u16 {
                     tmp_locale_id = id.replace('_', "-");
                 }
-                tmp_locale_id = Self::for_language_tag(&tmp_locale_id)?.get_name().to_string();
+                tmp_locale_id = Self::for_language_tag(&tmp_locale_id)?
+                    .get_name()
+                    .to_string();
                 if tmp_locale_id.is_empty() {
                     tmp_locale_id = id.to_string();
                 }
@@ -1032,7 +1115,12 @@ impl ULocale {
 
         /* total mondo hack for Norwegian, fortunately the main NY case is handled earlier */
         if !found_variant && parser.get_language() == "nb" && parser.get_variant()? == "NY" {
-            let id = Self::lscv_to_id(Some("nn"), Some(&parser.get_script()), Some(&parser.get_country()), None);
+            let id = Self::lscv_to_id(
+                Some("nn"),
+                Some(&parser.get_script()),
+                Some(&parser.get_country()),
+                None,
+            );
             parser.set_base_name(&id);
         }
 
@@ -1061,25 +1149,183 @@ impl ULocale {
         }
         static G_KNOWN_CANONICALIZED_CASES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
             [
-                "af", "af_ZA", "am", "am_ET", "ar", "ar_001", "as", "as_IN", "az", "az_AZ",
-                "be", "be_BY", "bg", "bg_BG", "bn", "bn_IN", "bs", "bs_BA", "ca", "ca_ES",
-                "cs", "cs_CZ", "cy", "cy_GB", "da", "da_DK", "de", "de_DE", "el", "el_GR",
-                "en", "en_GB", "en_US", "es", "es_419", "es_ES", "et", "et_EE", "eu",
-                "eu_ES", "fa", "fa_IR", "fi", "fi_FI", "fil", "fil_PH", "fr", "fr_FR",
-                "ga", "ga_IE", "gl", "gl_ES", "gu", "gu_IN", "he", "he_IL", "hi", "hi_IN",
-                "hr", "hr_HR", "hu", "hu_HU", "hy", "hy_AM", "id", "id_ID", "is", "is_IS",
-                "it", "it_IT", "ja", "ja_JP", "jv", "jv_ID", "ka", "ka_GE", "kk", "kk_KZ",
-                "km", "km_KH", "kn", "kn_IN", "ko", "ko_KR", "ky", "ky_KG", "lo", "lo_LA",
-                "lt", "lt_LT", "lv", "lv_LV", "mk", "mk_MK", "ml", "ml_IN", "mn", "mn_MN",
-                "mr", "mr_IN", "ms", "ms_MY", "my", "my_MM", "nb", "nb_NO", "ne", "ne_NP",
-                "nl", "nl_NL", "no", "or", "or_IN", "pa", "pa_IN", "pl", "pl_PL", "ps", "ps_AF",
-                "pt", "pt_BR", "pt_PT", "ro", "ro_RO", "ru", "ru_RU", "sd", "sd_IN", "si",
-                "si_LK", "sk", "sk_SK", "sl", "sl_SI", "so", "so_SO", "sq", "sq_AL", "sr",
-                "sr_Cyrl_RS", "sr_Latn", "sr_RS", "sv", "sv_SE", "sw", "sw_TZ", "ta",
-                "ta_IN", "te", "te_IN", "th", "th_TH", "tk", "tk_TM", "tr", "tr_TR", "uk",
-                "uk_UA", "ur", "ur_PK", "uz", "uz_UZ", "vi", "vi_VN", "yue", "yue_Hant",
-                "yue_Hant_HK", "yue_HK", "zh", "zh_CN", "zh_Hans", "zh_Hans_CN", "zh_Hant",
-                "zh_Hant_TW", "zh_TW", "zu", "zu_ZA",
+                "af",
+                "af_ZA",
+                "am",
+                "am_ET",
+                "ar",
+                "ar_001",
+                "as",
+                "as_IN",
+                "az",
+                "az_AZ",
+                "be",
+                "be_BY",
+                "bg",
+                "bg_BG",
+                "bn",
+                "bn_IN",
+                "bs",
+                "bs_BA",
+                "ca",
+                "ca_ES",
+                "cs",
+                "cs_CZ",
+                "cy",
+                "cy_GB",
+                "da",
+                "da_DK",
+                "de",
+                "de_DE",
+                "el",
+                "el_GR",
+                "en",
+                "en_GB",
+                "en_US",
+                "es",
+                "es_419",
+                "es_ES",
+                "et",
+                "et_EE",
+                "eu",
+                "eu_ES",
+                "fa",
+                "fa_IR",
+                "fi",
+                "fi_FI",
+                "fil",
+                "fil_PH",
+                "fr",
+                "fr_FR",
+                "ga",
+                "ga_IE",
+                "gl",
+                "gl_ES",
+                "gu",
+                "gu_IN",
+                "he",
+                "he_IL",
+                "hi",
+                "hi_IN",
+                "hr",
+                "hr_HR",
+                "hu",
+                "hu_HU",
+                "hy",
+                "hy_AM",
+                "id",
+                "id_ID",
+                "is",
+                "is_IS",
+                "it",
+                "it_IT",
+                "ja",
+                "ja_JP",
+                "jv",
+                "jv_ID",
+                "ka",
+                "ka_GE",
+                "kk",
+                "kk_KZ",
+                "km",
+                "km_KH",
+                "kn",
+                "kn_IN",
+                "ko",
+                "ko_KR",
+                "ky",
+                "ky_KG",
+                "lo",
+                "lo_LA",
+                "lt",
+                "lt_LT",
+                "lv",
+                "lv_LV",
+                "mk",
+                "mk_MK",
+                "ml",
+                "ml_IN",
+                "mn",
+                "mn_MN",
+                "mr",
+                "mr_IN",
+                "ms",
+                "ms_MY",
+                "my",
+                "my_MM",
+                "nb",
+                "nb_NO",
+                "ne",
+                "ne_NP",
+                "nl",
+                "nl_NL",
+                "no",
+                "or",
+                "or_IN",
+                "pa",
+                "pa_IN",
+                "pl",
+                "pl_PL",
+                "ps",
+                "ps_AF",
+                "pt",
+                "pt_BR",
+                "pt_PT",
+                "ro",
+                "ro_RO",
+                "ru",
+                "ru_RU",
+                "sd",
+                "sd_IN",
+                "si",
+                "si_LK",
+                "sk",
+                "sk_SK",
+                "sl",
+                "sl_SI",
+                "so",
+                "so_SO",
+                "sq",
+                "sq_AL",
+                "sr",
+                "sr_Cyrl_RS",
+                "sr_Latn",
+                "sr_RS",
+                "sv",
+                "sv_SE",
+                "sw",
+                "sw_TZ",
+                "ta",
+                "ta_IN",
+                "te",
+                "te_IN",
+                "th",
+                "th_TH",
+                "tk",
+                "tk_TM",
+                "tr",
+                "tr_TR",
+                "uk",
+                "uk_UA",
+                "ur",
+                "ur_PK",
+                "uz",
+                "uz_UZ",
+                "vi",
+                "vi_VN",
+                "yue",
+                "yue_Hant",
+                "yue_Hant_HK",
+                "yue_HK",
+                "zh",
+                "zh_CN",
+                "zh_Hans",
+                "zh_Hans_CN",
+                "zh_Hant",
+                "zh_Hant_TW",
+                "zh_TW",
+                "zu",
+                "zu_ZA",
             ]
             .into_iter()
             .collect()
@@ -1106,7 +1352,11 @@ impl ULocale {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an empty keyword or value.
-    pub fn set_keyword_value_of(locale_id: &str, keyword: Option<&str>, value: Option<&str>) -> Result<String> {
+    pub fn set_keyword_value_of(
+        locale_id: &str,
+        keyword: Option<&str>,
+        value: Option<&str>,
+    ) -> Result<String> {
         let mut parser = LocaleIDParser::new(locale_id);
         parser.set_keyword_value(keyword, value)?;
         parser.get_name()
@@ -1139,7 +1389,13 @@ impl ULocale {
     ///
     /// The errors of opening the locale bundle.
     pub fn get_character_orientation(&self) -> Result<Option<String>> {
-        ICUResourceTableAccess::get_table_string(ICUData::ICU_BASE_NAME, self, "layout", "characters", Some("characters"))
+        ICUResourceTableAccess::get_table_string(
+            ICUData::ICU_BASE_NAME,
+            self,
+            "layout",
+            "characters",
+            Some("characters"),
+        )
     }
 
     /// `getLineOrientation()`.
@@ -1148,7 +1404,13 @@ impl ULocale {
     ///
     /// The errors of opening the locale bundle.
     pub fn get_line_orientation(&self) -> Result<Option<String>> {
-        ICUResourceTableAccess::get_table_string(ICUData::ICU_BASE_NAME, self, "layout", "lines", Some("lines"))
+        ICUResourceTableAccess::get_table_string(
+            ICUData::ICU_BASE_NAME,
+            self,
+            "layout",
+            "lines",
+            Some("lines"),
+        )
     }
 
     /// `isRightToLeft()`: whether this locale's script is written
@@ -1180,7 +1442,9 @@ impl ULocale {
             }
         }
         let script_code = crate::lang::u_script::UScript::get_code_from_name(&script)?;
-        Ok(crate::lang::u_script::UScript::is_right_to_left(script_code))
+        Ok(crate::lang::u_script::UScript::is_right_to_left(
+            script_code,
+        ))
     }
 
     /// `addLikelySubtags(ULocale loc)`: the maximized locale.
@@ -1199,10 +1463,15 @@ impl ULocale {
         }
 
         let max = LikelySubtags::instance()?.make_maximized_lsr_from(
-            &ULocale::new3(Some(&loc.get_language()), Some(&loc.get_script()), Some(&loc.get_country()))?,
+            &ULocale::new3(
+                Some(&loc.get_language()),
+                Some(&loc.get_script()),
+                Some(&loc.get_country()),
+            )?,
             true,
         )?;
-        let new_locale_id = Self::create_tag_string(&max.language, &max.script, &max.region, trailing.as_deref());
+        let new_locale_id =
+            Self::create_tag_string(&max.language, &max.script, &max.region, trailing.as_deref());
 
         Ok(match new_locale_id {
             None => loc.clone(),
@@ -1239,7 +1508,8 @@ impl ULocale {
             &loc.get_country(),
             field_to_favor,
         )?;
-        let new_locale_id = Self::create_tag_string(&lsr.language, &lsr.script, &lsr.region, trailing.as_deref());
+        let new_locale_id =
+            Self::create_tag_string(&lsr.language, &lsr.script, &lsr.region, trailing.as_deref());
         Ok(match new_locale_id {
             None => loc.clone(),
             Some(id) => ULocale::new(&id)?,
@@ -1255,7 +1525,12 @@ impl ULocale {
 
     /// `createTagString(String lang, String script, String region, String
     /// trailing)` (private); never `null` in Java, `Some` here.
-    fn create_tag_string(lang: &str, script: &str, region: &str, trailing: Option<&str>) -> Option<String> {
+    fn create_tag_string(
+        lang: &str,
+        script: &str,
+        region: &str,
+        trailing: Option<&str>,
+    ) -> Option<String> {
         let mut tag = String::new();
 
         if !lang.is_empty() {
@@ -1365,7 +1640,11 @@ impl ULocale {
         } else {
             let units: Vec<u16> = locale_id.encode_utf16().collect();
             let index = crate::jdk::index_of_unit(&units, b'@' as u16, 0);
-            Ok(if index == -1 { units.len() as i32 } else { index })
+            Ok(if index == -1 {
+                units.len() as i32
+            } else {
+                index
+            })
         }
     }
 
@@ -1386,9 +1665,14 @@ impl ULocale {
     /// `IllegalArgumentException("Invalid extension key: ...")`.
     pub fn get_extension(&self, key: char) -> Result<Option<String>> {
         if !LocaleExtensions::is_valid_key(key) {
-            return Err(LuceneError::illegal_argument(format!("Invalid extension key: {key}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Invalid extension key: {key}"
+            )));
         }
-        Ok(self.extensions().get_extension_value(key).map(str::to_string))
+        Ok(self
+            .extensions()
+            .get_extension_value(key)
+            .map(str::to_string))
     }
 
     /// `getExtensionKeys()`.
@@ -1398,7 +1682,10 @@ impl ULocale {
 
     /// `getUnicodeLocaleAttributes()`.
     pub fn get_unicode_locale_attributes(&self) -> Vec<String> {
-        self.extensions().get_unicode_locale_attributes().into_iter().collect()
+        self.extensions()
+            .get_unicode_locale_attributes()
+            .into_iter()
+            .collect()
     }
 
     /// `getUnicodeLocaleType(String key)`.
@@ -1408,7 +1695,9 @@ impl ULocale {
     /// `IllegalArgumentException("Invalid Unicode locale key: ...")`.
     pub fn get_unicode_locale_type(&self, key: &str) -> Result<Option<String>> {
         if !LocaleExtensions::is_valid_unicode_locale_key(key) {
-            return Err(LuceneError::illegal_argument(format!("Invalid Unicode locale key: {key}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Invalid Unicode locale key: {key}"
+            )));
         }
         Ok(self.extensions().get_unicode_locale_type(key))
     }
@@ -1425,13 +1714,21 @@ impl ULocale {
 
         if base.get_variant().eq_ignore_ascii_case("POSIX") {
             // special handling for variant POSIX
-            base = BaseLocale::get_instance(base.get_language(), base.get_script(), base.get_region(), "");
+            base = BaseLocale::get_instance(
+                base.get_language(),
+                base.get_script(),
+                base.get_region(),
+                "",
+            );
             if exts.get_unicode_locale_type("va").is_none() {
                 // add va-posix
                 let mut ilocbld = InternalLocaleBuilder::new();
                 ilocbld
                     .set_locale(&base_locale::ROOT, Some(&exts))
-                    .and_then(|b| b.set_unicode_locale_keyword("va", Some("posix")).map(|_| ()))
+                    .and_then(|b| {
+                        b.set_unicode_locale_keyword("va", Some("posix"))
+                            .map(|_| ())
+                    })
                     // this should not happen
                     .expect("va-posix is a valid keyword for valid extensions");
                 exts = ilocbld.get_locale_extensions();
@@ -1570,7 +1867,8 @@ impl ULocale {
             //  IDs. For now, we assume a valid type start with [0-9a-zA-Z], but may contain
             //  '-' '_' '/' in the middle.
             static PAT: LazyLock<JavaPattern> = LazyLock::new(|| {
-                JavaPattern::compile("[0-9a-zA-Z]+([_/\\-][0-9a-zA-Z]+)*", 0).expect("valid pattern")
+                JavaPattern::compile("[0-9a-zA-Z]+([_/\\-][0-9a-zA-Z]+)*", 0)
+                    .expect("valid pattern")
             });
             if PAT.matches(value) {
                 legacy_type = Some(AsciiUtil::to_lower_string(value));
@@ -1602,8 +1900,12 @@ impl ULocale {
                     for bcp_key in ukeys {
                         let bcp_type = uext.get_unicode_locale_type(&bcp_key).unwrap_or("");
                         // convert to legacy key/type
-                        let lkey = Self::to_legacy_key(&bcp_key)?.ok_or_else(LuceneError::null_pointer)?;
-                        let ltype = Self::to_legacy_type(&bcp_key, if bcp_type.is_empty() { "yes" } else { bcp_type })?; // use "yes" as the value of typeless keywords
+                        let lkey =
+                            Self::to_legacy_key(&bcp_key)?.ok_or_else(LuceneError::null_pointer)?;
+                        let ltype = Self::to_legacy_type(
+                            &bcp_key,
+                            if bcp_type.is_empty() { "yes" } else { bcp_type },
+                        )?; // use "yes" as the value of typeless keywords
                         let ltype = ltype.unwrap_or_else(|| "null".to_string());
                         // special handling for u-va-posix, since this is a variant, not a keyword
                         if lkey == "va" && ltype == "posix" && base.get_variant().is_empty() {
@@ -1696,7 +1998,8 @@ impl ULocale {
                     } else if len16(&key) == 1 && !key.starts_with(Self::UNICODE_LOCALE_EXTENSION) {
                         // ignore and fall through
                         let c = key.chars().next().expect("a one-unit key has a char");
-                        let _ = intbld.set_extension(c, Some(&value.replace('_', LanguageTag::SEP)));
+                        let _ =
+                            intbld.set_extension(c, Some(&value.replace('_', LanguageTag::SEP)));
                     }
                 }
                 intbld.get_locale_extensions()
@@ -1745,8 +2048,15 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_language_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_language_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?, false)
+    pub fn get_display_language_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_language_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+            false,
+        )
     }
 
     /// `getDisplayLanguage(String localeID, ULocale displayLocale)`.
@@ -1754,7 +2064,10 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_language_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_language_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_language_internal(&ULocale::new(locale_id)?, display_locale, false)
     }
 
@@ -1773,7 +2086,10 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of the display-name lookup.
-    pub fn get_display_language_with_dialect_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_language_with_dialect_in(
+        &self,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_language_internal(self, display_locale, true)
     }
 
@@ -1783,8 +2099,15 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_language_with_dialect_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_language_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?, true)
+    pub fn get_display_language_with_dialect_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_language_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+            true,
+        )
     }
 
     /// `getDisplayLanguageWithDialect(String localeID, ULocale
@@ -1793,12 +2116,23 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_language_with_dialect_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_language_with_dialect_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_language_internal(&ULocale::new(locale_id)?, display_locale, true)
     }
 
-    fn get_display_language_internal(locale: &ULocale, display_locale: &ULocale, use_dialect: bool) -> Result<Option<String>> {
-        let lang = if use_dialect { locale.get_base_name() } else { locale.get_language() };
+    fn get_display_language_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+        use_dialect: bool,
+    ) -> Result<Option<String>> {
+        let lang = if use_dialect {
+            locale.get_base_name()
+        } else {
+            locale.get_language()
+        };
         locale_display_names::get_instance(display_locale).language_display_name(&lang)
     }
 
@@ -1836,7 +2170,10 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of the display-name lookup.
-    pub fn get_display_script_in_context_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_script_in_context_in(
+        &self,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_script_in_context_internal(self, display_locale)
     }
 
@@ -1845,8 +2182,14 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_script_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_script_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    pub fn get_display_script_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_script_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayScriptInContext(String localeID, String displayLocaleID)`
@@ -1855,8 +2198,14 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_script_in_context_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_script_in_context_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    pub fn get_display_script_in_context_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_script_in_context_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayScript(String localeID, ULocale displayLocale)`.
@@ -1864,7 +2213,10 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_script_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_script_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_script_internal(&ULocale::new(locale_id)?, display_locale)
     }
 
@@ -1874,17 +2226,27 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_script_in_context_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_script_in_context_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_script_in_context_internal(&ULocale::new(locale_id)?, display_locale)
     }
 
     // displayLocaleID is canonical, localeID need not be since parsing will fix this.
-    fn get_display_script_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+    fn get_display_script_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         locale_display_names::get_instance(display_locale).script_display_name(&locale.get_script())
     }
 
-    fn get_display_script_in_context_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
-        locale_display_names::get_instance(display_locale).script_display_name_in_context(&locale.get_script())
+    fn get_display_script_in_context_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale)
+            .script_display_name_in_context(&locale.get_script())
     }
 
     /// `getDisplayCountry()`: this locale's country localized for display
@@ -1911,8 +2273,14 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_country_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_country_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    pub fn get_display_country_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_country_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayCountry(String localeID, ULocale displayLocale)`.
@@ -1920,13 +2288,20 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_country_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_country_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_country_internal(&ULocale::new(locale_id)?, display_locale)
     }
 
     // displayLocaleID is canonical, localeID need not be since parsing will fix this.
-    fn get_display_country_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
-        locale_display_names::get_instance(display_locale).region_display_name(&locale.get_country())
+    fn get_display_country_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale)
+            .region_display_name(&locale.get_country())
     }
 
     /// `getDisplayVariant()`: this locale's variant localized for display
@@ -1953,8 +2328,14 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_variant_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_variant_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    pub fn get_display_variant_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_variant_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayVariant(String localeID, ULocale displayLocale)`.
@@ -1962,12 +2343,19 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_variant_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_variant_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_variant_internal(&ULocale::new(locale_id)?, display_locale)
     }
 
-    fn get_display_variant_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
-        locale_display_names::get_instance(display_locale).variant_display_name(&locale.get_variant())
+    fn get_display_variant_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
+        locale_display_names::get_instance(display_locale)
+            .variant_display_name(&locale.get_variant())
     }
 
     /// `getDisplayKeyword(String keyword)`: a keyword localized for display
@@ -1985,7 +2373,10 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_keyword_of(keyword: &str, display_locale_id: &str) -> Result<Option<String>> {
+    pub fn get_display_keyword_of(
+        keyword: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
         Self::get_display_keyword_internal(keyword, &ULocale::new(display_locale_id)?)
     }
 
@@ -1994,11 +2385,17 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of the display-name lookup.
-    pub fn get_display_keyword_in(keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_keyword_in(
+        keyword: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_keyword_internal(keyword, display_locale)
     }
 
-    fn get_display_keyword_internal(keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    fn get_display_keyword_internal(
+        keyword: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         locale_display_names::get_instance(display_locale).key_display_name(keyword)
     }
 
@@ -2017,7 +2414,11 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of the display-name lookup.
-    pub fn get_display_keyword_value_in(&self, keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_keyword_value_in(
+        &self,
+        keyword: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_keyword_value_internal(self, keyword, display_locale)
     }
 
@@ -2027,8 +2428,16 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_keyword_value_of(locale_id: &str, keyword: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_keyword_value_internal(&ULocale::new(locale_id)?, keyword, &ULocale::new(display_locale_id)?)
+    pub fn get_display_keyword_value_of(
+        locale_id: &str,
+        keyword: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_keyword_value_internal(
+            &ULocale::new(locale_id)?,
+            keyword,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayKeywordValue(String localeID, String keyword, ULocale
@@ -2037,15 +2446,24 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_keyword_value_of_in(locale_id: &str, keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_keyword_value_of_in(
+        locale_id: &str,
+        keyword: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_keyword_value_internal(&ULocale::new(locale_id)?, keyword, display_locale)
     }
 
     // displayLocaleID is canonical, localeID need not be since parsing will fix this.
-    fn get_display_keyword_value_internal(locale: &ULocale, keyword: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    fn get_display_keyword_value_internal(
+        locale: &ULocale,
+        keyword: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         let keyword = AsciiUtil::to_lower_string(java_trim(keyword));
         let value = locale.get_keyword_value(&keyword);
-        locale_display_names::get_instance(display_locale).key_value_display_name(&keyword, value.as_deref())
+        locale_display_names::get_instance(display_locale)
+            .key_value_display_name(&keyword, value.as_deref())
     }
 
     /// `getDisplayName()`: this locale localized for display in the default
@@ -2073,7 +2491,10 @@ impl ULocale {
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
     pub fn get_display_name_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_name_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+        Self::get_display_name_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayName(String localeID, ULocale displayLocale)`.
@@ -2081,11 +2502,17 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_name_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_name_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_name_internal(&ULocale::new(locale_id)?, display_locale)
     }
 
-    fn get_display_name_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+    fn get_display_name_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         locale_display_names::get_instance(display_locale).locale_display_name(locale)
     }
 
@@ -2104,7 +2531,10 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of the display-name lookup.
-    pub fn get_display_name_with_dialect_in(&self, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_name_with_dialect_in(
+        &self,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_name_with_dialect_internal(self, display_locale)
     }
 
@@ -2113,8 +2543,14 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_name_with_dialect_of(locale_id: &str, display_locale_id: &str) -> Result<Option<String>> {
-        Self::get_display_name_with_dialect_internal(&ULocale::new(locale_id)?, &ULocale::new(display_locale_id)?)
+    pub fn get_display_name_with_dialect_of(
+        locale_id: &str,
+        display_locale_id: &str,
+    ) -> Result<Option<String>> {
+        Self::get_display_name_with_dialect_internal(
+            &ULocale::new(locale_id)?,
+            &ULocale::new(display_locale_id)?,
+        )
     }
 
     /// `getDisplayNameWithDialect(String localeID, ULocale displayLocale)`.
@@ -2122,12 +2558,19 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `new ULocale` and of the display-name lookup.
-    pub fn get_display_name_with_dialect_of_in(locale_id: &str, display_locale: &ULocale) -> Result<Option<String>> {
+    pub fn get_display_name_with_dialect_of_in(
+        locale_id: &str,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         Self::get_display_name_with_dialect_internal(&ULocale::new(locale_id)?, display_locale)
     }
 
-    fn get_display_name_with_dialect_internal(locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
-        locale_display_names::get_instance_dialect(display_locale, DialectHandling::DialectNames).locale_display_name(locale)
+    fn get_display_name_with_dialect_internal(
+        locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
+        locale_display_names::get_instance_dialect(display_locale, DialectHandling::DialectNames)
+            .locale_display_name(locale)
     }
 
     /// `acceptLanguage(String acceptLanguageList, ULocale[]
@@ -2214,8 +2657,15 @@ impl ULocale {
     /// # Errors
     ///
     /// The errors of `getAvailableLocales` and of the matcher.
-    pub fn accept_language_available(accept_language_list: &str, fallback: Option<&mut [bool]>) -> Result<Option<ULocale>> {
-        Self::accept_language(accept_language_list, &ULocale::get_available_locales()?, fallback)
+    pub fn accept_language_available(
+        accept_language_list: &str,
+        fallback: Option<&mut [bool]>,
+    ) -> Result<Option<ULocale>> {
+        Self::accept_language(
+            accept_language_list,
+            &ULocale::get_available_locales()?,
+            fallback,
+        )
     }
 
     /// `acceptLanguage(ULocale[] acceptLanguageList, boolean[] fallback)`:
@@ -2228,7 +2678,11 @@ impl ULocale {
         accept_language_list: &[ULocale],
         fallback: Option<&mut [bool]>,
     ) -> Result<Option<ULocale>> {
-        Self::accept_language_locales(accept_language_list, &ULocale::get_available_locales()?, fallback)
+        Self::accept_language_locales(
+            accept_language_list,
+            &ULocale::get_available_locales()?,
+            fallback,
+        )
     }
 }
 
@@ -2280,7 +2734,13 @@ struct AliasReplacer {
 }
 
 impl AliasReplacer {
-    fn new(language: String, script: String, region: String, variants: String, extensions: Option<String>) -> Self {
+    fn new(
+        language: String,
+        script: String,
+        region: String,
+        variants: String,
+        extensions: Option<String>,
+    ) -> Self {
         let variants = if !variants.is_empty() {
             Some(java_split(&variants, '_'))
         } else {
@@ -2301,7 +2761,10 @@ impl AliasReplacer {
     }
 
     fn joined_variants(&self) -> String {
-        self.variants.as_ref().map(|v| v.join("_")).unwrap_or_default()
+        self.variants
+            .as_ref()
+            .map(|v| v.join("_"))
+            .unwrap_or_default()
     }
 
     fn replace(&mut self) -> Result<Option<String>> {
@@ -2359,7 +2822,9 @@ impl AliasReplacer {
             if let Some(keywords) = temp.get_keywords() {
                 for key in keywords {
                     if key == "rg" || key == "sd" || key == "t" {
-                        let value = temp.get_keyword_value(&key).ok_or_else(LuceneError::null_pointer)?;
+                        let value = temp
+                            .get_keyword_value(&key)
+                            .ok_or_else(LuceneError::null_pointer)?;
                         let replacement = if key == "t" {
                             Some(self.replace_transformed_extensions(&value)?)
                         } else {
@@ -2520,7 +2985,11 @@ impl AliasReplacer {
         buf
     }
 
-    fn delete_or_replace(input: Option<&str>, ty: Option<&str>, replacement: Option<&str>) -> Option<String> {
+    fn delete_or_replace(
+        input: Option<&str>,
+        ty: Option<&str>,
+        replacement: Option<&str>,
+    ) -> Option<String> {
         if replacement.is_some_and(|r| !r.is_empty()) {
             if input.is_none_or(str::is_empty) {
                 replacement.map(str::to_string)
@@ -2534,7 +3003,12 @@ impl AliasReplacer {
         }
     }
 
-    fn replace_language(&mut self, check_language: bool, check_region: bool, check_variants: bool) -> bool {
+    fn replace_language(
+        &mut self,
+        check_language: bool,
+        check_region: bool,
+        check_variants: bool,
+    ) -> bool {
         if (check_region && self.region.is_empty()) || (check_variants && self.variants.is_none()) {
             // Nothing to search
             return false;
@@ -2552,17 +3026,26 @@ impl AliasReplacer {
         } else {
             UNDEFINED_LANGUAGE.to_string()
         };
-        let search_region = if check_region { Some(self.region.clone()) } else { None };
+        let search_region = if check_region {
+            Some(self.region.clone())
+        } else {
+            None
+        };
         let mut search_variant: Option<String> = None;
         for variant_index in 0..variant_size {
             if check_variants {
-                search_variant = Some(self.variants.as_ref().expect("checked above")[variant_index].clone());
+                search_variant =
+                    Some(self.variants.as_ref().expect("checked above")[variant_index].clone());
             }
             if search_variant.as_deref().is_some_and(|v| len16(v) < 4) {
                 // Do not consider  ill-formed variant subtag.
                 search_variant = None;
             }
-            let type_key = Self::generate_key(&search_language, search_region.as_deref(), search_variant.as_deref());
+            let type_key = Self::generate_key(
+                &search_language,
+                search_region.as_deref(),
+                search_variant.as_deref(),
+            );
             let replacement = match self.data().language_alias_map.get(&type_key) {
                 None => continue, // Found no replacement data.
                 Some(r) => r.clone(),
@@ -2616,9 +3099,13 @@ impl AliasReplacer {
                 }
             }
 
-            let replaced_script = Self::delete_or_replace(Some(&self.script), None, replaced_script.as_deref());
-            let replaced_region =
-                Self::delete_or_replace(Some(&self.region), search_region.as_deref(), replaced_region.as_deref());
+            let replaced_script =
+                Self::delete_or_replace(Some(&self.script), None, replaced_script.as_deref());
+            let replaced_region = Self::delete_or_replace(
+                Some(&self.region),
+                search_region.as_deref(),
+                replaced_region.as_deref(),
+            );
             let replaced_variant = Self::delete_or_replace(
                 search_variant.as_deref(),
                 search_variant.as_deref(),
@@ -2652,7 +3139,10 @@ impl AliasReplacer {
                     }
                 }
             }
-            if replaced_extensions.as_deref().is_some_and(|e| !e.is_empty()) {
+            if replaced_extensions
+                .as_deref()
+                .is_some_and(|e| !e.is_empty())
+            {
                 // DO NOTHING
                 // UTS35 does not specifiy what should we do if we have extensions in the
                 // replacement. Currently we know only the following 4 "BCP47 LegacyRules" have
@@ -2774,7 +3264,10 @@ impl AliasReplacer {
                 builder.push_str(subtag);
             } else if tlang_length != 0 {
                 builder.push_str(LanguageTag::SEP);
-                builder.push_str(&ULocale::to_unicode_locale_type(&tkey, subtag)?.unwrap_or_else(|| "null".into()));
+                builder.push_str(
+                    &ULocale::to_unicode_locale_type(&tkey, subtag)?
+                        .unwrap_or_else(|| "null".into()),
+                );
             }
             processed_length += len16(subtag) + 1;
         }
@@ -2790,7 +3283,9 @@ impl AliasReplacer {
             String::new()
         };
         if !tlang.is_empty() {
-            let canonicalized = ULocale::create_canonical_of(&ULocale::for_language_tag(extensions)?)?.to_language_tag();
+            let canonicalized =
+                ULocale::create_canonical_of(&ULocale::for_language_tag(extensions)?)?
+                    .to_language_tag();
             builder.push_str(&AsciiUtil::to_lower_string(&canonicalized));
         }
 
@@ -2913,7 +3408,9 @@ impl Builder {
     ///
     /// `IllformedLocaleException`.
     pub fn set_unicode_locale_keyword(&mut self, key: &str, ty: Option<&str>) -> Result<&mut Self> {
-        self.locbld.set_unicode_locale_keyword(key, ty).map_err(illformed)?;
+        self.locbld
+            .set_unicode_locale_keyword(key, ty)
+            .map_err(illformed)?;
         Ok(self)
     }
 
@@ -2923,7 +3420,9 @@ impl Builder {
     ///
     /// `IllformedLocaleException`.
     pub fn add_unicode_locale_attribute(&mut self, attribute: Option<&str>) -> Result<&mut Self> {
-        self.locbld.add_unicode_locale_attribute(attribute).map_err(illformed)?;
+        self.locbld
+            .add_unicode_locale_attribute(attribute)
+            .map_err(illformed)?;
         Ok(self)
     }
 
@@ -2932,8 +3431,13 @@ impl Builder {
     /// # Errors
     ///
     /// `IllformedLocaleException`.
-    pub fn remove_unicode_locale_attribute(&mut self, attribute: Option<&str>) -> Result<&mut Self> {
-        self.locbld.remove_unicode_locale_attribute(attribute).map_err(illformed)?;
+    pub fn remove_unicode_locale_attribute(
+        &mut self,
+        attribute: Option<&str>,
+    ) -> Result<&mut Self> {
+        self.locbld
+            .remove_unicode_locale_attribute(attribute)
+            .map_err(illformed)?;
         Ok(self)
     }
 
@@ -2955,7 +3459,10 @@ impl Builder {
     ///
     /// The errors of the key-type data lookups.
     pub fn build(&self) -> Result<ULocale> {
-        ULocale::get_instance(&self.locbld.get_base_locale(), &self.locbld.get_locale_extensions())
+        ULocale::get_instance(
+            &self.locbld.get_base_locale(),
+            &self.locbld.get_locale_extensions(),
+        )
     }
 }
 
@@ -3014,7 +3521,9 @@ impl JDKLocaleHelper {
                                     format!("{kw_val}_{variant}")
                                 };
                             } else {
-                                keywords.get_or_insert_with(KeywordMap::default).insert(kw_key, kw_val);
+                                keywords
+                                    .get_or_insert_with(KeywordMap::default)
+                                    .insert(kw_key, kw_val);
                             }
                         }
                     }
@@ -3083,8 +3592,11 @@ impl JDKLocaleHelper {
                     // Unicode locale key
                     kw_key = ULocale::to_legacy_key(&kw_key)?.unwrap_or_else(|| "null".to_string());
                     // use "yes" as the value of typeless keywords
-                    kw_val = ULocale::to_legacy_type(&kw_key, if kw_val.is_empty() { "yes" } else { &kw_val })?
-                        .unwrap_or_else(|| "null".to_string());
+                    kw_val = ULocale::to_legacy_type(
+                        &kw_key,
+                        if kw_val.is_empty() { "yes" } else { &kw_val },
+                    )?
+                    .unwrap_or_else(|| "null".to_string());
                 }
 
                 if add_sep {
@@ -3098,7 +3610,10 @@ impl JDKLocaleHelper {
             }
         }
 
-        Ok(ULocale::from_parts(&ULocale::get_name_of(Some(&buf))?, Some(loc.clone())))
+        Ok(ULocale::from_parts(
+            &ULocale::get_name_of(Some(&buf))?,
+            Some(loc.clone()),
+        ))
     }
 
     fn to_locale(uloc: &ULocale) -> Locale {
@@ -3133,7 +3648,11 @@ impl JDKLocaleHelper {
             None => {
                 // Without script or keywords, use a Locale constructor,
                 // so we can preserve any ill-formed variants.
-                Locale::of(&uloc.get_language(), &uloc.get_country(), &uloc.get_variant())
+                Locale::of(
+                    &uloc.get_language(),
+                    &uloc.get_country(),
+                    &uloc.get_variant(),
+                )
             }
         }
     }

@@ -78,6 +78,7 @@ impl TransliterationRuleSet {
     /// # Errors
     ///
     /// `IllegalArgumentException` if some rules are masked.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub fn freeze(&mut self) -> Result<()> {
         // Construct the rule array and index table.  We reorder the
         // rules by sorting them into 256 bins.  Each bin contains all
@@ -179,7 +180,12 @@ impl TransliterationRuleSet {
     /// # Panics
     ///
     /// Java's `NullPointerException` before [`freeze`](Self::freeze).
-    pub fn transliterate(&self, text: &dyn Replaceable, pos: &mut Position, incremental: bool) -> Result<bool> {
+    pub fn transliterate(
+        &self,
+        text: &dyn Replaceable,
+        pos: &mut Position,
+        incremental: bool,
+    ) -> Result<bool> {
         let rules = self
             .rules
             .as_ref()
@@ -221,7 +227,12 @@ impl TransliterationRuleSet {
     /// # Errors
     ///
     /// The errors of the `UnicodeSet` operations.
-    pub fn add_source_target_set(&self, filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    pub fn add_source_target_set(
+        &self,
+        filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let mut current_filter = UnicodeSet::from_set(filter);
         let mut revisiting = UnicodeSet::new();
         for r in &self.rule_vector {

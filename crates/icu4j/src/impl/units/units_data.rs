@@ -31,8 +31,13 @@ static SIMPLE_UNITS: LazyLock<SimpleUnits> = LazyLock::new(|| {
     let load = || -> Result<SimpleUnits> {
         let resource = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "units")?;
         let mut sink = SimpleUnitIdentifiersSink::default();
-        resource.as_icu()?.get_all_items_with_fallback("convertUnits", &mut sink)?;
-        Ok(SimpleUnits { simple_units: sink.simple_units, simple_unit_categories: sink.simple_unit_categories })
+        resource
+            .as_icu()?
+            .get_all_items_with_fallback("convertUnits", &mut sink)?;
+        Ok(SimpleUnits {
+            simple_units: sink.simple_units,
+            simple_unit_categories: sink.simple_unit_categories,
+        })
     };
     match load() {
         Ok(s) => s,
@@ -58,7 +63,10 @@ impl UnitsData {
     ///
     /// The errors of the data loading.
     pub fn new() -> Result<Self> {
-        Ok(UnitsData { conversion_rates: ConversionRates::new()?, unit_preferences: UnitPreferences::new()? })
+        Ok(UnitsData {
+            conversion_rates: ConversionRates::new()?,
+            unit_preferences: UnitPreferences::new()?,
+        })
     }
 
     /// Returns a list of all simple units. Equivalent to
@@ -99,11 +107,14 @@ impl UnitsData {
     /// `IllegalIcuArgumentException("This unit does not has a category" +
     /// identifier)`, and the errors of the serialization.
     pub fn get_category(&self, measure_unit: &MeasureUnitImpl) -> Result<String> {
-        let mut base_measure_unit_impl = self.get_conversion_rates().extract_compound_base_unit(measure_unit)?;
+        let mut base_measure_unit_impl = self
+            .get_conversion_rates()
+            .extract_compound_base_unit(measure_unit)?;
         base_measure_unit_impl.serialize()?;
         let mut identifier = base_measure_unit_impl.get_identifier();
         let base_unit_to_index = &CATEGORIES.base_unit_to_index;
-        let lookup = |id: &Option<String>| id.as_ref().and_then(|i| base_unit_to_index.get(i).copied());
+        let lookup =
+            |id: &Option<String>| id.as_ref().and_then(|i| base_unit_to_index.get(i).copied());
         let mut index = lookup(&identifier);
 
         // In case the base unit identifier did not match any entry.
@@ -149,8 +160,14 @@ impl UnitsData {
     /// # Errors
     ///
     /// The errors of the preference lookup.
-    pub fn get_preferences_for(&self, category: &str, usage: &str, locale: &ULocale) -> Result<Vec<UnitPreference>> {
-        self.unit_preferences.get_preferences_for(category, usage, locale, self)
+    pub fn get_preferences_for(
+        &self,
+        category: &str,
+        usage: &str,
+        locale: &ULocale,
+    ) -> Result<Vec<UnitPreference>> {
+        self.unit_preferences
+            .get_preferences_for(category, usage, locale, self)
     }
 }
 
@@ -187,7 +204,11 @@ impl Sink for SimpleUnitIdentifiersSink {
             if !table.find_value(&crate::jdk::units("target"), value) {
                 // TODO: is there a more idiomatic way to deal with Data
                 // errors?
-                debug_assert!(false, "Could not find \"target\" for simple unit: {}", key.as_string());
+                debug_assert!(
+                    false,
+                    "Could not find \"target\" for simple unit: {}",
+                    key.as_string()
+                );
                 continue;
             }
             let target = crate::jdk::to_rust_string(&value.get_string()?);
@@ -199,7 +220,9 @@ impl Sink for SimpleUnitIdentifiersSink {
                 .base_unit_to_index
                 .get(&target)
                 .copied()
-                .ok_or_else(|| crate::jdk::null_pointer("unitQuantities has no entry for the target"))?;
+                .ok_or_else(|| {
+                    crate::jdk::null_pointer("unitQuantities has no entry for the target")
+                })?;
             simple_unit_categories.push(category);
         }
 
@@ -256,8 +279,13 @@ static CATEGORIES: LazyLock<Categories> = LazyLock::new(|| {
     let load = || -> Result<Categories> {
         let resource = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "units")?;
         let mut sink = CategoriesSink::new();
-        resource.as_icu()?.get_all_items_with_fallback(Constants::CATEGORY_TABLE_NAME, &mut sink)?;
-        Ok(Categories { base_unit_to_index: sink.map_from_unit_to_index, index_to_category: sink.categories })
+        resource
+            .as_icu()?
+            .get_all_items_with_fallback(Constants::CATEGORY_TABLE_NAME, &mut sink)?;
+        Ok(Categories {
+            base_unit_to_index: sink.map_from_unit_to_index,
+            index_to_category: sink.categories,
+        })
     };
     match load() {
         Ok(c) => c,
@@ -297,10 +325,18 @@ impl Sink for CategoriesSink {
             i += 1;
             debug_assert!(value.get_type() == UResourceBundle::TABLE);
             let table = value.get_table()?;
-            debug_assert!(table.get_size() == 1, "expecting single-entry table, got size: {}", table.get_size());
+            debug_assert!(
+                table.get_size() == 1,
+                "expecting single-entry table, got size: {}",
+                table.get_size()
+            );
             table.get_key_and_value(0, key, value);
-            debug_assert!(value.get_type() == UResourceBundle::STRING, "expecting category string");
-            self.map_from_unit_to_index.insert(key.as_string(), self.categories.len() as i32);
+            debug_assert!(
+                value.get_type() == UResourceBundle::STRING,
+                "expecting category string"
+            );
+            self.map_from_unit_to_index
+                .insert(key.as_string(), self.categories.len() as i32);
             self.categories.push(value.to_java_string());
         }
         Ok(())

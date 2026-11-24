@@ -41,8 +41,13 @@ impl UnitConversionHandler {
     /// The errors of the unit parsing and of the conversion data.
     pub fn new(target_unit: &MeasureUnit, parent: Arc<dyn MicroPropsGenerator>) -> Result<Self> {
         let target_unit_impl = MeasureUnitImpl::for_identifier(&target_unit.get_identifier())?;
-        let f_complex_unit_converter = ComplexUnitsConverter::for_target(&target_unit_impl, &ConversionRates::new()?)?;
-        Ok(UnitConversionHandler { f_parent: parent, f_output_unit: target_unit.clone(), f_complex_unit_converter })
+        let f_complex_unit_converter =
+            ComplexUnitsConverter::for_target(&target_unit_impl, &ConversionRates::new()?)?;
+        Ok(UnitConversionHandler {
+            f_parent: parent,
+            f_output_unit: target_unit.clone(),
+            f_complex_unit_converter,
+        })
     }
 }
 
@@ -52,11 +57,16 @@ impl MicroPropsGenerator for UnitConversionHandler {
         let mut result = self.f_parent.process_quantity(quantity)?;
 
         quantity.round_to_infinity(); // Enables toDouble
-        let complex_converter_result =
-            self.f_complex_unit_converter.convert(&quantity.to_big_decimal()?, result.rounder.as_ref())?;
+        let complex_converter_result = self
+            .f_complex_unit_converter
+            .convert(&quantity.to_big_decimal()?, result.rounder.as_ref())?;
 
         result.output_unit = Some(self.f_output_unit.clone());
-        UsagePrefsHandler::mixed_measures_to_micros(&complex_converter_result, quantity, &mut result)?;
+        UsagePrefsHandler::mixed_measures_to_micros(
+            &complex_converter_result,
+            quantity,
+            &mut result,
+        )?;
 
         Ok(result)
     }

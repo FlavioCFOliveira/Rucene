@@ -159,7 +159,12 @@ impl ICUTokenizerLogic {
     /// commons-io's readFully, but without bugs if offset != 0
     ///
     /// Equivalent to `read(Reader, char[], int, int)`.
-    fn read(input: &mut dyn CharReader, buffer: &mut [u16], offset: i32, length: i32) -> Result<i32> {
+    fn read(
+        input: &mut dyn CharReader,
+        buffer: &mut [u16],
+        offset: i32,
+        length: i32,
+    ) -> Result<i32> {
         debug_assert!(length >= 0, "length must not be negative: {length}");
 
         let mut remaining = length;
@@ -181,7 +186,11 @@ impl ICUTokenizerLogic {
      * exhausted.
      */
     /// Equivalent to `incrementTokenBuffer()`.
-    fn increment_token_buffer(&mut self, source: &mut AttributeSource, input: &dyn CharReader) -> bool {
+    fn increment_token_buffer(
+        &mut self,
+        source: &mut AttributeSource,
+        input: &dyn CharReader,
+    ) -> bool {
         let mut start = self.breaker.current();
         debug_assert!(start != DONE);
 
@@ -207,9 +216,10 @@ impl ICUTokenizerLogic {
             .get_attribute_interface_mut::<dyn OffsetAttribute>()
             .expect("INVARIANT: the constructor added the OffsetAttribute")
             .set_offset(start_offset, end_offset);
-        let ty = self
-            .config
-            .get_type(self.breaker.get_script_code(), self.breaker.get_rule_status());
+        let ty = self.config.get_type(
+            self.breaker.get_script_code(),
+            self.breaker.get_rule_status(),
+        );
         {
             let mut type_att = source
                 .get_attribute_interface_mut::<dyn TypeAttribute>()

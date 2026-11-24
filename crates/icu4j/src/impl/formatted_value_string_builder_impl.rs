@@ -9,7 +9,8 @@ use std::sync::Arc;
 use rucene::error::{LuceneError, Result};
 
 use crate::jdk::text::{
-    same_attribute, AttributeRef, AttributeValue, AttributedCharacterIterator, AttributedString, FieldPosition, FieldRef,
+    same_attribute, AttributeRef, AttributeValue, AttributedCharacterIterator, AttributedString,
+    FieldPosition, FieldRef,
 };
 use crate::r#impl::formatted_string_builder::{FieldObject, FieldWrapper, FormattedStringBuilder};
 use crate::r#impl::static_unicode_sets::{Key, StaticUnicodeSets};
@@ -72,8 +73,14 @@ pub static NULL_FIELD_END: NullField = NullField::new("end");
 
 /// `cfpos.matchesField(field, value)` for the non-null fields this class
 /// passes (Java's `IllegalArgumentException` for a null field cannot occur).
-fn matches(cfpos: &ConstrainedFieldPosition, field: FieldRef, value: Option<&AttributeValue>) -> bool {
-    cfpos.matches_field(Some(field), value).expect("the field is not null")
+fn matches(
+    cfpos: &ConstrainedFieldPosition,
+    field: FieldRef,
+    value: Option<&AttributeValue>,
+) -> bool {
+    cfpos
+        .matches_field(Some(field), value)
+        .expect("the field is not null")
 }
 
 /// Implementation of FormattedValue based on FormattedStringBuilder.
@@ -91,7 +98,10 @@ impl FormattedValueStringBuilderImpl {
                 None => continue,
                 Some(ph) => ph,
             };
-            let ph_value = ph.value.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: value"));
+            let ph_value = ph
+                .value
+                .as_ref()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException: value"));
             if ph_value.java_equals(value) {
                 return i - self_.zero;
             }
@@ -107,7 +117,13 @@ impl FormattedValueStringBuilderImpl {
     ///
     /// Java's `ClassCastException` when a field of the range is already a
     /// placeholder (`(java.text.Format.Field) oldField`).
-    pub fn apply_span_range(self_: &mut FormattedStringBuilder, span_field: FieldRef, value: Option<AttributeValue>, start: i32, end: i32) {
+    pub fn apply_span_range(
+        self_: &mut FormattedStringBuilder,
+        span_field: FieldRef,
+        value: Option<AttributeValue>,
+        start: i32,
+        end: i32,
+    ) {
         for i in start + self_.zero..end + self_.zero {
             let old_field = match &self_.fields[i as usize] {
                 None => None,
@@ -121,7 +137,7 @@ impl FormattedValueStringBuilderImpl {
             let new_field = SpanFieldPlaceholder {
                 span_field: Some(span_field),
                 normal_field: old_field,
-                value: value,
+                value,
                 start,
                 length: end - start,
             };
@@ -137,7 +153,10 @@ impl FormattedValueStringBuilderImpl {
     /// `IllegalArgumentException("You must pass an instance of
     /// com.ibm.icu.text.NumberFormat.Field as your FieldPosition attribute.
     /// You passed: <class>")`.
-    pub fn next_field_position(self_: &FormattedStringBuilder, fp: &mut FieldPosition) -> Result<bool> {
+    pub fn next_field_position(
+        self_: &FormattedStringBuilder,
+        fp: &mut FieldPosition,
+    ) -> Result<bool> {
         let raw_field: FieldRef = match fp.get_field_attribute() {
             Some(f) => f,
             None => {
@@ -163,7 +182,12 @@ impl FormattedValueStringBuilderImpl {
 
         let mut cfpos = ConstrainedFieldPosition::new();
         cfpos.constrain_field(Some(raw_field))?;
-        cfpos.set_state(Some(raw_field), None, fp.get_begin_index(), fp.get_end_index());
+        cfpos.set_state(
+            Some(raw_field),
+            None,
+            fp.get_begin_index(),
+            fp.get_end_index(),
+        );
         if Self::next_position(self_, &mut cfpos, None) {
             fp.set_begin_index(cfpos.get_start());
             fp.set_end_index(cfpos.get_limit());
@@ -205,8 +229,15 @@ impl FormattedValueStringBuilderImpl {
         while Self::next_position(self_, &mut cfpos, numeric_field) {
             // Backwards compatibility: field value = field
             let field = cfpos.get_field().expect("a position found has a field");
-            let value = cfpos.get_field_value().unwrap_or_else(|| AttributeValue::of_field(field));
-            as_.add_attribute_range(field as AttributeRef, value, cfpos.get_start(), cfpos.get_limit())?;
+            let value = cfpos
+                .get_field_value()
+                .unwrap_or_else(|| AttributeValue::of_field(field));
+            as_.add_attribute_range(
+                field as AttributeRef,
+                value,
+                cfpos.get_start(),
+                cfpos.get_limit(),
+            )?;
         }
         Ok(Box::new(as_.get_iterator()))
     }
@@ -214,24 +245,34 @@ impl FormattedValueStringBuilderImpl {
     /// Implementation of nextPosition consistent with the contract of
     /// FormattedValue. Equivalent to `nextPosition(FormattedStringBuilder,
     /// ConstrainedFieldPosition, Field)`.
-    pub fn next_position(self_: &FormattedStringBuilder, cfpos: &mut ConstrainedFieldPosition, numeric_field: Option<FieldRef>) -> bool {
+    pub fn next_position(
+        self_: &FormattedStringBuilder,
+        cfpos: &mut ConstrainedFieldPosition,
+        numeric_field: Option<FieldRef>,
+    ) -> bool {
         let end_field = Some(FieldObject::Field(&NULL_FIELD_END));
         let mut field_start: i32 = -1;
         let mut curr_field: Option<FieldObject> = None;
         let mut prev_is_span = false;
         if cfpos.get_limit() > 0 {
-            prev_is_span = cfpos.get_field().is_some_and(|f| is_span_field(f)) && cfpos.get_start() < cfpos.get_limit();
+            prev_is_span = cfpos.get_field().is_some_and(|f| is_span_field(f))
+                && cfpos.get_start() < cfpos.get_limit();
         }
         let mut prev_is_numeric = false;
         if let Some(nf) = numeric_field {
             prev_is_numeric = cfpos.get_field().is_some_and(|f| same_attribute(f, nf));
         }
-        let mut prev_is_integer = cfpos.get_field().is_some_and(|f| same_attribute(f, &nf_field::INTEGER));
+        let mut prev_is_integer = cfpos
+            .get_field()
+            .is_some_and(|f| same_attribute(f, &nf_field::INTEGER));
 
         let mut i = self_.zero + cfpos.get_limit();
         while i <= self_.zero + self_.length {
-            let mut field: Option<FieldObject> =
-                if i < self_.zero + self_.length { self_.fields[i as usize].clone() } else { end_field.clone() };
+            let mut field: Option<FieldObject> = if i < self_.zero + self_.length {
+                self_.fields[i as usize].clone()
+            } else {
+                end_field.clone()
+            };
             // Case 1: currently scanning a field.
             if curr_field.is_some() {
                 if curr_field != field {
@@ -268,12 +309,20 @@ impl FormattedValueStringBuilderImpl {
                 let ph = as_placeholder(self_.fields[(i - 1) as usize].as_ref());
                 debug_assert!(ph.is_some());
                 let ph = ph.expect("the field before a span end is a placeholder");
-                if ph.normal_field.is_some_and(|f| same_attribute(f, &list_formatter::field::ELEMENT)) {
+                if ph
+                    .normal_field
+                    .is_some_and(|f| same_attribute(f, &list_formatter::field::ELEMENT))
+                {
                     // Special handling for ULISTFMT_ELEMENT_FIELD
                     if matches(cfpos, &list_formatter::field::ELEMENT, None) {
                         field_start = i - self_.zero - ph.length;
                         let end = field_start + ph.length;
-                        cfpos.set_state(Some(&list_formatter::field::ELEMENT), None, field_start, end);
+                        cfpos.set_state(
+                            Some(&list_formatter::field::ELEMENT),
+                            None,
+                            field_start,
+                            end,
+                        );
                         return true;
                     }
                 } else {
@@ -299,7 +348,12 @@ impl FormattedValueStringBuilderImpl {
                 while j >= self_.zero && Self::is_int_or_group(self_.fields[j as usize].as_ref()) {
                     j -= 1;
                 }
-                cfpos.set_state(Some(&nf_field::INTEGER), None, j - self_.zero + 1, i - self_.zero);
+                cfpos.set_state(
+                    Some(&nf_field::INTEGER),
+                    None,
+                    j - self_.zero + 1,
+                    i - self_.zero,
+                );
                 return true;
             }
             // Special case: coalesce NUMERIC if we are pointing at the end
@@ -314,7 +368,9 @@ impl FormattedValueStringBuilderImpl {
                     // Re-wind to the beginning of the field and then emit
                     // it
                     let mut j = i - 1;
-                    while j >= self_.zero && Self::is_numeric_field(self_.fields[j as usize].as_ref()) {
+                    while j >= self_.zero
+                        && Self::is_numeric_field(self_.fields[j as usize].as_ref())
+                    {
                         j -= 1;
                     }
                     cfpos.set_state(Some(nf), None, j - self_.zero + 1, i - self_.zero);
@@ -328,19 +384,30 @@ impl FormattedValueStringBuilderImpl {
                 field = p.normal_field.map(FieldObject::Field);
                 ph = Some(p);
             }
-            if let Some(ph) = ph.as_ref().filter(|ph| ph.start == -1 || ph.start == i - self_.zero) {
+            if let Some(ph) = ph
+                .as_ref()
+                .filter(|ph| ph.start == -1 || ph.start == i - self_.zero)
+            {
                 let span_field = ph.span_field.expect("a placeholder has a span field");
                 if matches(cfpos, span_field, ph.value.as_ref()) {
                     field_start = i - self_.zero;
                     let end = field_start + ph.length;
                     cfpos.set_state(Some(span_field), ph.value, field_start, end);
                     return true;
-                } else if ph.normal_field.is_some_and(|f| same_attribute(f, &list_formatter::field::ELEMENT)) {
+                } else if ph
+                    .normal_field
+                    .is_some_and(|f| same_attribute(f, &list_formatter::field::ELEMENT))
+                {
                     // Special handling for ULISTFMT_ELEMENT_FIELD
                     if matches(cfpos, &list_formatter::field::ELEMENT, None) {
                         field_start = i - self_.zero;
                         let end = field_start + ph.length;
-                        cfpos.set_state(Some(&list_formatter::field::ELEMENT), None, field_start, end);
+                        cfpos.set_state(
+                            Some(&list_formatter::field::ELEMENT),
+                            None,
+                            field_start,
+                            end,
+                        );
                         return true;
                     } else {
                         // Failed to match; jump ahead
@@ -375,14 +442,22 @@ impl FormattedValueStringBuilderImpl {
         debug_assert!(curr_field.is_none());
         // Always set the position to the end so that we don't revisit
         // previous sections
-        cfpos.set_state(cfpos.get_field(), cfpos.get_field_value(), self_.length, self_.length);
+        cfpos.set_state(
+            cfpos.get_field(),
+            cfpos.get_field_value(),
+            self_.length,
+            self_.length,
+        );
         false
     }
 
     /// `isIntOrGroup(Object)`.
     fn is_int_or_group(field: Option<&FieldObject>) -> bool {
         match FormattedStringBuilder::unwrap_field(field) {
-            Some(f) => same_attribute(f, &nf_field::INTEGER) || same_attribute(f, &nf_field::GROUPING_SEPARATOR),
+            Some(f) => {
+                same_attribute(f, &nf_field::INTEGER)
+                    || same_attribute(f, &nf_field::GROUPING_SEPARATOR)
+            }
             None => false,
         }
     }
@@ -404,7 +479,11 @@ impl FormattedValueStringBuilderImpl {
     /// `trimBack(FormattedStringBuilder, int)`.
     fn trim_back(self_: &FormattedStringBuilder, limit: i32) -> i32 {
         let text = &self_.chars[self_.zero as usize..(self_.zero + self_.length) as usize];
-        StaticUnicodeSets::get(Key::DefaultIgnorables).span_back(text, limit, SpanCondition::Contained)
+        StaticUnicodeSets::get(Key::DefaultIgnorables).span_back(
+            text,
+            limit,
+            SpanCondition::Contained,
+        )
     }
 
     /// `trimFront(FormattedStringBuilder, int)`.

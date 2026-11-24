@@ -8,7 +8,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use rucene::error::{LuceneError, Result};
 use rucene_analysis_common::jdk::character_iterator::CharacterIterator;
 
-use crate::jdk::{char_count, code_point_at, code_point_before, illegal_argument_no_message, index_out_of_bounds, to_code_point};
+use crate::jdk::{
+    char_count, code_point_at, code_point_before, illegal_argument_no_message, index_out_of_bounds,
+    to_code_point,
+};
 use crate::lang::u_character::UCharacter;
 use crate::r#impl::norm2_all_modes::{Norm2AllModes, NOOP_NORMALIZER2};
 use crate::r#impl::normalizer2_impl::UTF16Plus;
@@ -58,22 +61,25 @@ pub enum Mode {
 }
 
 /// `Unicode32.INSTANCE`: `[:age=3.2:]`, frozen.
-static UNICODE32: LazyLock<std::result::Result<Arc<UnicodeSet>, Arc<LuceneError>>> = LazyLock::new(|| {
-    let pattern: Vec<u16> = "[:age=3.2:]".encode_utf16().collect();
-    match UnicodeSet::from_pattern(&pattern) {
-        Ok(mut s) => {
-            s.freeze();
-            Ok(Arc::new(s))
+static UNICODE32: LazyLock<std::result::Result<Arc<UnicodeSet>, Arc<LuceneError>>> =
+    LazyLock::new(|| {
+        let pattern: Vec<u16> = "[:age=3.2:]".encode_utf16().collect();
+        match UnicodeSet::from_pattern(&pattern) {
+            Ok(mut s) => {
+                s.freeze();
+                Ok(Arc::new(s))
+            }
+            Err(e) => Err(Arc::new(e)),
         }
-        Err(e) => Err(Arc::new(e)),
-    }
-});
+    });
 
 /// A lazily created `ModeImpl.INSTANCE`: the normalizer of a mode, or the
 /// exception of its static initializer.
 type ModeImpl = LazyLock<std::result::Result<Arc<dyn Normalizer2>, Arc<LuceneError>>>;
 
-fn mode_impl(f: fn() -> Result<Arc<dyn Normalizer2>>) -> std::result::Result<Arc<dyn Normalizer2>, Arc<LuceneError>> {
+fn mode_impl(
+    f: fn() -> Result<Arc<dyn Normalizer2>>,
+) -> std::result::Result<Arc<dyn Normalizer2>, Arc<LuceneError>> {
     f().map_err(Arc::new)
 }
 
@@ -82,21 +88,32 @@ fn filtered(n2: Result<Arc<dyn Normalizer2>>) -> Result<Arc<dyn Normalizer2>> {
     Ok(Arc::new(FilteredNormalizer2::new(n2?, set)))
 }
 
-static NFD_MODE_IMPL: ModeImpl = LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfd_instance()? as Arc<dyn Normalizer2>)));
-static NFKD_MODE_IMPL: ModeImpl = LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfkd_instance()? as Arc<dyn Normalizer2>)));
-static NFC_MODE_IMPL: ModeImpl = LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfc_instance()? as Arc<dyn Normalizer2>)));
-static NFKC_MODE_IMPL: ModeImpl = LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfkc_instance()? as Arc<dyn Normalizer2>)));
-static FCD_MODE_IMPL: ModeImpl = LazyLock::new(|| mode_impl(|| Ok(Norm2AllModes::get_fcd_normalizer2()? as Arc<dyn Normalizer2>)));
-static NFD32_MODE_IMPL: ModeImpl =
-    LazyLock::new(|| mode_impl(|| filtered(normalizer2::get_nfd_instance().map(|n| n as Arc<dyn Normalizer2>))));
-static NFKD32_MODE_IMPL: ModeImpl =
-    LazyLock::new(|| mode_impl(|| filtered(normalizer2::get_nfkd_instance().map(|n| n as Arc<dyn Normalizer2>))));
-static NFC32_MODE_IMPL: ModeImpl =
-    LazyLock::new(|| mode_impl(|| filtered(normalizer2::get_nfc_instance().map(|n| n as Arc<dyn Normalizer2>))));
-static NFKC32_MODE_IMPL: ModeImpl =
-    LazyLock::new(|| mode_impl(|| filtered(normalizer2::get_nfkc_instance().map(|n| n as Arc<dyn Normalizer2>))));
-static FCD32_MODE_IMPL: ModeImpl =
-    LazyLock::new(|| mode_impl(|| filtered(Norm2AllModes::get_fcd_normalizer2().map(|n| n as Arc<dyn Normalizer2>))));
+static NFD_MODE_IMPL: ModeImpl =
+    LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfd_instance()? as Arc<dyn Normalizer2>)));
+static NFKD_MODE_IMPL: ModeImpl =
+    LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfkd_instance()? as Arc<dyn Normalizer2>)));
+static NFC_MODE_IMPL: ModeImpl =
+    LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfc_instance()? as Arc<dyn Normalizer2>)));
+static NFKC_MODE_IMPL: ModeImpl =
+    LazyLock::new(|| mode_impl(|| Ok(normalizer2::get_nfkc_instance()? as Arc<dyn Normalizer2>)));
+static FCD_MODE_IMPL: ModeImpl = LazyLock::new(|| {
+    mode_impl(|| Ok(Norm2AllModes::get_fcd_normalizer2()? as Arc<dyn Normalizer2>))
+});
+static NFD32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
+    mode_impl(|| filtered(normalizer2::get_nfd_instance().map(|n| n as Arc<dyn Normalizer2>)))
+});
+static NFKD32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
+    mode_impl(|| filtered(normalizer2::get_nfkd_instance().map(|n| n as Arc<dyn Normalizer2>)))
+});
+static NFC32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
+    mode_impl(|| filtered(normalizer2::get_nfc_instance().map(|n| n as Arc<dyn Normalizer2>)))
+});
+static NFKC32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
+    mode_impl(|| filtered(normalizer2::get_nfkc_instance().map(|n| n as Arc<dyn Normalizer2>)))
+});
+static FCD32_MODE_IMPL: ModeImpl = LazyLock::new(|| {
+    mode_impl(|| filtered(Norm2AllModes::get_fcd_normalizer2().map(|n| n as Arc<dyn Normalizer2>)))
+});
 
 fn get(m: &ModeImpl) -> Result<Arc<dyn Normalizer2>> {
     match &**m {
@@ -115,11 +132,31 @@ impl Mode {
         let u32_ = (options & Normalizer::UNICODE_3_2) != 0;
         match self {
             Mode::None => Ok(NOOP_NORMALIZER2.clone() as Arc<dyn Normalizer2>),
-            Mode::Nfd => get(if u32_ { &NFD32_MODE_IMPL } else { &NFD_MODE_IMPL }),
-            Mode::Nfkd => get(if u32_ { &NFKD32_MODE_IMPL } else { &NFKD_MODE_IMPL }),
-            Mode::Nfc => get(if u32_ { &NFC32_MODE_IMPL } else { &NFC_MODE_IMPL }),
-            Mode::Nfkc => get(if u32_ { &NFKC32_MODE_IMPL } else { &NFKC_MODE_IMPL }),
-            Mode::Fcd => get(if u32_ { &FCD32_MODE_IMPL } else { &FCD_MODE_IMPL }),
+            Mode::Nfd => get(if u32_ {
+                &NFD32_MODE_IMPL
+            } else {
+                &NFD_MODE_IMPL
+            }),
+            Mode::Nfkd => get(if u32_ {
+                &NFKD32_MODE_IMPL
+            } else {
+                &NFKD_MODE_IMPL
+            }),
+            Mode::Nfc => get(if u32_ {
+                &NFC32_MODE_IMPL
+            } else {
+                &NFC_MODE_IMPL
+            }),
+            Mode::Nfkc => get(if u32_ {
+                &NFKC32_MODE_IMPL
+            } else {
+                &NFKC_MODE_IMPL
+            }),
+            Mode::Fcd => get(if u32_ {
+                &FCD32_MODE_IMPL
+            } else {
+                &FCD_MODE_IMPL
+            }),
         }
     }
 }
@@ -251,7 +288,11 @@ impl Normalizer {
     /// # Errors
     ///
     /// The exception of loading the normalization data.
-    pub fn new_character_iterator(iter: &dyn CharacterIterator, mode: Mode, opt: i32) -> Result<Self> {
+    pub fn new_character_iterator(
+        iter: &dyn CharacterIterator,
+        mode: Mode,
+        opt: i32,
+    ) -> Result<Self> {
         Ok(Self {
             text: uci::get_instance_character_iterator(iter.clone_box()),
             mode,
@@ -270,7 +311,11 @@ impl Normalizer {
     /// # Errors
     ///
     /// The exception of loading the normalization data.
-    pub fn new_u_character_iterator(iter: &dyn UCharacterIterator, mode: Mode, options: i32) -> Result<Self> {
+    pub fn new_u_character_iterator(
+        iter: &dyn UCharacterIterator,
+        mode: Mode,
+        options: i32,
+    ) -> Result<Self> {
         Ok(Self {
             text: iter.clone_box(),
             mode,
@@ -322,9 +367,23 @@ impl Normalizer {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException(<length>)` when `target` is too small.
-    pub fn compose_chars(source: &[u16], target: &mut [u16], compat: bool, options: i32) -> Result<i32> {
+    pub fn compose_chars(
+        source: &[u16],
+        target: &mut [u16],
+        compat: bool,
+        options: i32,
+    ) -> Result<i32> {
         let tl = target.len() as i32;
-        Self::compose_chars_range(source, 0, source.len() as i32, target, 0, tl, compat, options)
+        Self::compose_chars_range(
+            source,
+            0,
+            source.len() as i32,
+            target,
+            0,
+            tl,
+            compat,
+            options,
+        )
     }
 
     /// `compose(char[] src, int srcStart, int srcLimit, char[] dest, int
@@ -384,9 +443,23 @@ impl Normalizer {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException(<length>)` when `target` is too small.
-    pub fn decompose_chars(source: &[u16], target: &mut [u16], compat: bool, options: i32) -> Result<i32> {
+    pub fn decompose_chars(
+        source: &[u16],
+        target: &mut [u16],
+        compat: bool,
+        options: i32,
+    ) -> Result<i32> {
         let tl = target.len() as i32;
-        Self::decompose_chars_range(source, 0, source.len() as i32, target, 0, tl, compat, options)
+        Self::decompose_chars_range(
+            source,
+            0,
+            source.len() as i32,
+            target,
+            0,
+            tl,
+            compat,
+            options,
+        )
     }
 
     /// `decompose(char[] src, int srcStart, int srcLimit, char[] dest, int
@@ -446,7 +519,12 @@ impl Normalizer {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException(<length>)` when `target` is too small.
-    pub fn normalize_chars(source: &[u16], target: &mut [u16], mode: Mode, options: i32) -> Result<i32> {
+    pub fn normalize_chars(
+        source: &[u16],
+        target: &mut [u16],
+        mode: Mode,
+        options: i32,
+    ) -> Result<i32> {
         let tl = target.len() as i32;
         Self::normalize_chars_range(source, 0, source.len() as i32, target, 0, tl, mode, options)
     }
@@ -476,7 +554,8 @@ impl Normalizer {
         let src_buffer = &src[src_start as usize..src_limit as usize];
         let mut app = CharsAppendable::new(dest, dest_start, dest_limit);
         let mut out = Vec::new();
-        mode.get_normalizer2(options)?.normalize_append(src_buffer, &mut out)?;
+        mode.get_normalizer2(options)?
+            .normalize_append(src_buffer, &mut out)?;
         app.append_range(&out, 0, out.len() as i32);
         Ok(app.length())
     }
@@ -540,8 +619,15 @@ impl Normalizer {
     /// # Errors
     ///
     /// The errors of the normalizer.
-    pub fn quick_check_chars_range(source: &[u16], start: i32, limit: i32, mode: Mode, options: i32) -> Result<QuickCheckResult> {
-        mode.get_normalizer2(options)?.quick_check(&source[start as usize..limit as usize])
+    pub fn quick_check_chars_range(
+        source: &[u16],
+        start: i32,
+        limit: i32,
+        mode: Mode,
+        options: i32,
+    ) -> Result<QuickCheckResult> {
+        mode.get_normalizer2(options)?
+            .quick_check(&source[start as usize..limit as usize])
     }
 
     /// `isNormalized(char[] src, int start, int limit, Mode mode, int
@@ -550,8 +636,15 @@ impl Normalizer {
     /// # Errors
     ///
     /// The errors of the normalizer.
-    pub fn is_normalized_chars(src: &[u16], start: i32, limit: i32, mode: Mode, options: i32) -> Result<bool> {
-        mode.get_normalizer2(options)?.is_normalized(&src[start as usize..limit as usize])
+    pub fn is_normalized_chars(
+        src: &[u16],
+        start: i32,
+        limit: i32,
+        mode: Mode,
+        options: i32,
+    ) -> Result<bool> {
+        mode.get_normalizer2(options)?
+            .is_normalized(&src[start as usize..limit as usize])
     }
 
     /// `isNormalized(String str, Mode mode, int options)`.
@@ -580,11 +673,29 @@ impl Normalizer {
     ///
     /// `IllegalArgumentException` for negative or reversed ranges; the
     /// errors of the normalizer.
-    pub fn compare_chars_range(s1: &[u16], s1_start: i32, s1_limit: i32, s2: &[u16], s2_start: i32, s2_limit: i32, options: i32) -> Result<i32> {
-        if s1_start < 0 || s1_limit < 0 || s2_start < 0 || s2_limit < 0 || s1_limit < s1_start || s2_limit < s2_start {
+    pub fn compare_chars_range(
+        s1: &[u16],
+        s1_start: i32,
+        s1_limit: i32,
+        s2: &[u16],
+        s2_start: i32,
+        s2_limit: i32,
+        options: i32,
+    ) -> Result<i32> {
+        if s1_start < 0
+            || s1_limit < 0
+            || s2_start < 0
+            || s2_limit < 0
+            || s1_limit < s1_start
+            || s2_limit < s2_start
+        {
             return Err(illegal_argument_no_message());
         }
-        Self::internal_compare(&s1[s1_start as usize..s1_limit as usize], &s2[s2_start as usize..s2_limit as usize], options)
+        Self::internal_compare(
+            &s1[s1_start as usize..s1_limit as usize],
+            &s2[s2_start as usize..s2_limit as usize],
+            options,
+        )
     }
 
     /// `compare(String s1, String s2, int options)`.
@@ -612,7 +723,11 @@ impl Normalizer {
     /// The errors of the normalizer; `IllegalArgumentException` for an
     /// invalid code point.
     pub fn compare_cps(char32a: i32, char32b: i32, options: i32) -> Result<i32> {
-        Self::internal_compare(&UTF16::value_of(char32a)?, &UTF16::value_of(char32b)?, options | Self::INPUT_IS_FCD)
+        Self::internal_compare(
+            &UTF16::value_of(char32a)?,
+            &UTF16::value_of(char32b)?,
+            options | Self::INPUT_IS_FCD,
+        )
     }
 
     /// `compare(int char32a, String str2, int options)`.
@@ -654,13 +769,17 @@ impl Normalizer {
         options: i32,
     ) -> Result<i32> {
         // allow left==dest
-        let mut dest_builder: Vec<u16> = Vec::with_capacity((left_limit - left_start + right_limit - right_start + 16).max(0) as usize);
+        let mut dest_builder: Vec<u16> = Vec::with_capacity(
+            (left_limit - left_start + right_limit - right_start + 16).max(0) as usize,
+        );
         dest_builder.extend_from_slice(&left[left_start as usize..left_limit as usize]);
         let right_buffer = &right[right_start as usize..right_limit as usize];
-        mode.get_normalizer2(options)?.append(&mut dest_builder, right_buffer)?;
+        mode.get_normalizer2(options)?
+            .append(&mut dest_builder, right_buffer)?;
         let dest_length = dest_builder.len() as i32;
         if dest_length <= (dest_limit - dest_start) {
-            dest[dest_start as usize..(dest_start + dest_length) as usize].copy_from_slice(&dest_builder);
+            dest[dest_start as usize..(dest_start + dest_length) as usize]
+                .copy_from_slice(&dest_builder);
             Ok(dest_length)
         } else {
             index_out_of_bounds(Some(dest_length.to_string()));
@@ -672,7 +791,12 @@ impl Normalizer {
     /// # Errors
     ///
     /// The errors of the normalizer.
-    pub fn concatenate_chars(left: &[u16], right: &[u16], mode: Mode, options: i32) -> Result<Vec<u16>> {
+    pub fn concatenate_chars(
+        left: &[u16],
+        right: &[u16],
+        mode: Mode,
+        options: i32,
+    ) -> Result<Vec<u16>> {
         let mut dest: Vec<u16> = Vec::with_capacity(left.len() + right.len() + 16);
         dest.extend_from_slice(left);
         mode.get_normalizer2(options)?.append(&mut dest, right)?;
@@ -684,7 +808,12 @@ impl Normalizer {
     /// # Errors
     ///
     /// The errors of the normalizer.
-    pub fn concatenate_str(left: &[u16], right: &[u16], mode: Mode, options: i32) -> Result<Vec<u16>> {
+    pub fn concatenate_str(
+        left: &[u16],
+        right: &[u16],
+        mode: Mode,
+        options: i32,
+    ) -> Result<Vec<u16>> {
         Self::concatenate_chars(left, right, mode, options)
     }
 
@@ -724,7 +853,10 @@ impl Normalizer {
         let mut folded: Vec<u16> = Vec::new();
         let folded1_length = csp.to_full_folding(c, &mut folded, 0);
         if folded1_length < 0 {
-            let nfkc_impl = &nfkc.as_with_impl().expect("the NFKC normalizer is a Normalizer2WithImpl").impl_;
+            let nfkc_impl = &nfkc
+                .as_with_impl()
+                .expect("the NFKC normalizer is a Normalizer2WithImpl")
+                .impl_;
             if nfkc_impl.get_comp_quick_check(nfkc_impl.get_norm16(c)) != 0 {
                 return Ok(Vec::new()); // c does not change at all under CaseFolding+NFKC
             }
@@ -765,6 +897,7 @@ impl Normalizer {
     /// # Errors
     ///
     /// The errors of the normalizer.
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn next(&mut self) -> Result<i32> {
         if self.buffer_pos < self.buffer.len() as i32 || self.next_normalize()? {
             let c = code_point_at(&self.buffer, self.buffer_pos);
@@ -1052,7 +1185,8 @@ impl Normalizer {
          */
         let mut f1: Option<Vec<u16>> = None;
         let mut f2: Option<Vec<u16>> = None;
-        if (options & Self::INPUT_IS_FCD) == 0 || (options & Self::FOLD_CASE_EXCLUDE_SPECIAL_I) != 0 {
+        if (options & Self::INPUT_IS_FCD) == 0 || (options & Self::FOLD_CASE_EXCLUDE_SPECIAL_I) != 0
+        {
             let n2 = if (options & Self::FOLD_CASE_EXCLUDE_SPECIAL_I) != 0 {
                 Mode::Nfd.get_normalizer2(norm_options)?
             } else {
@@ -1086,7 +1220,11 @@ impl Normalizer {
             }
         }
 
-        Self::cmp_equiv_fold(f1.as_deref().unwrap_or(s1), f2.as_deref().unwrap_or(s2), options)
+        Self::cmp_equiv_fold(
+            f1.as_deref().unwrap_or(s1),
+            f2.as_deref().unwrap_or(s2),
+            options,
+        )
     }
 
     /*
@@ -1203,7 +1341,11 @@ impl Normalizer {
         } else {
             None
         };
-        let csp = if (options & Self::COMPARE_IGNORE_CASE) != 0 { Some(UCaseProps::instance()) } else { None };
+        let csp = if (options & Self::COMPARE_IGNORE_CASE) != 0 {
+            Some(UCaseProps::instance())
+        } else {
+            None
+        };
         let mut fold1: Vec<u16> = Vec::new();
         let mut fold2: Vec<u16> = Vec::new();
 
@@ -1360,7 +1502,9 @@ impl Normalizer {
              */
 
             if level1 == 0 && (options & Self::COMPARE_IGNORE_CASE) != 0 && {
-                length = csp.expect("COMPARE_IGNORE_CASE").to_full_folding(cp1, &mut fold1, options);
+                length = csp
+                    .expect("COMPARE_IGNORE_CASE")
+                    .to_full_folding(cp1, &mut fold1, options);
                 length >= 0
             } {
                 // cp1 case-folds to the code point "length" or to p[length]
@@ -1407,7 +1551,9 @@ impl Normalizer {
             }
 
             if level2 == 0 && (options & Self::COMPARE_IGNORE_CASE) != 0 && {
-                length = csp.expect("COMPARE_IGNORE_CASE").to_full_folding(cp2, &mut fold2, options);
+                length = csp
+                    .expect("COMPARE_IGNORE_CASE")
+                    .to_full_folding(cp2, &mut fold2, options);
                 length >= 0
             } {
                 // cp2 case-folds to the code point "length" or to p[length]
@@ -1558,7 +1704,9 @@ impl Normalizer {
                 /* subtract 0x2800 from BMP code points to make them smaller than supplementary ones */
                 let t1 = text!(cs1);
                 if (c1 <= 0xdbff && s1 != limit1 && crate::jdk::is_low_surrogate(t1[s1 as usize]))
-                    || (crate::jdk::is_low_surrogate(c1 as u16) && 0 != (s1 - 1) && crate::jdk::is_high_surrogate(t1[(s1 - 2) as usize]))
+                    || (crate::jdk::is_low_surrogate(c1 as u16)
+                        && 0 != (s1 - 1)
+                        && crate::jdk::is_high_surrogate(t1[(s1 - 2) as usize]))
                 {
                     /* part of a surrogate pair, leave >=d800 */
                 } else {
@@ -1568,7 +1716,9 @@ impl Normalizer {
 
                 let t2 = text!(cs2);
                 if (c2 <= 0xdbff && s2 != limit2 && crate::jdk::is_low_surrogate(t2[s2 as usize]))
-                    || (crate::jdk::is_low_surrogate(c2 as u16) && 0 != (s2 - 1) && crate::jdk::is_high_surrogate(t2[(s2 - 2) as usize]))
+                    || (crate::jdk::is_low_surrogate(c2 as u16)
+                        && 0 != (s2 - 1)
+                        && crate::jdk::is_high_surrogate(t2[(s2 - 2) as usize]))
                 {
                     /* part of a surrogate pair, leave >=d800 */
                 } else {
@@ -1599,7 +1749,12 @@ struct CharsAppendable<'a> {
 
 impl<'a> CharsAppendable<'a> {
     fn new(dest: &'a mut [u16], dest_start: i32, dest_limit: i32) -> Self {
-        Self { chars: dest, start: dest_start, offset: dest_start, limit: dest_limit }
+        Self {
+            chars: dest,
+            start: dest_start,
+            offset: dest_start,
+            limit: dest_limit,
+        }
     }
 
     fn length(&self) -> i32 {

@@ -28,11 +28,19 @@ impl UnlocalizedNumberFormatter {
     /// Base constructor; called during startup only. Sets the threshold to
     /// the default value of 3. Equivalent to `UnlocalizedNumberFormatter()`.
     pub(crate) fn base() -> Self {
-        UnlocalizedNumberFormatter(SettingsNode::new(None, KEY_THRESHOLD, Some(SettingValue::Threshold(DEFAULT_THRESHOLD))))
+        UnlocalizedNumberFormatter(SettingsNode::new(
+            None,
+            KEY_THRESHOLD,
+            Some(SettingValue::Threshold(DEFAULT_THRESHOLD)),
+        ))
     }
 
     /// `UnlocalizedNumberFormatter(NumberFormatterSettings<?>, int, Object)`.
-    pub(crate) fn with_parent(parent: &Arc<SettingsNode>, key: i32, value: Option<SettingValue>) -> Self {
+    pub(crate) fn with_parent(
+        parent: &Arc<SettingsNode>,
+        key: i32,
+        value: Option<SettingValue>,
+    ) -> Self {
         UnlocalizedNumberFormatter(SettingsNode::new(Some(parent.clone()), key, value))
     }
 
@@ -44,7 +52,11 @@ impl UnlocalizedNumberFormatter {
     /// The errors of `ULocale.forLocale`.
     pub fn locale_java(&self, locale: &Locale) -> Result<LocalizedNumberFormatter> {
         let ulocale = ULocale::for_locale(Some(locale))?;
-        Ok(LocalizedNumberFormatter::with_parent(&self.0, KEY_LOCALE, ulocale.map(SettingValue::Locale)))
+        Ok(LocalizedNumberFormatter::with_parent(
+            &self.0,
+            KEY_LOCALE,
+            ulocale.map(SettingValue::Locale),
+        ))
     }
 
     /// `resolve().loc = loc`, from `NumberRangeFormatterSettings.resolve`.
@@ -54,7 +66,11 @@ impl UnlocalizedNumberFormatter {
 
     /// Equivalent to `locale(ULocale)`.
     pub fn locale(&self, locale: &ULocale) -> LocalizedNumberFormatter {
-        LocalizedNumberFormatter::with_parent(&self.0, KEY_LOCALE, Some(SettingValue::Locale(locale.clone())))
+        LocalizedNumberFormatter::with_parent(
+            &self.0,
+            KEY_LOCALE,
+            Some(SettingValue::Locale(locale.clone())),
+        )
     }
 }
 

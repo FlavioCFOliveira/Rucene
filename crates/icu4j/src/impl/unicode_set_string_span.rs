@@ -5,7 +5,10 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use crate::jdk::{code_point_at, code_point_before, is_high_surrogate, is_low_surrogate, offset_by_code_points, to_code_point};
+use crate::jdk::{
+    code_point_at, code_point_before, is_high_surrogate, is_low_surrogate, offset_by_code_points,
+    to_code_point,
+};
 use crate::text::unicode_set::{SpanCondition, UnicodeSet};
 use crate::text::utf16::UTF16;
 use crate::util::output_int::OutputInt;
@@ -90,6 +93,7 @@ impl Clone for UnicodeSetStringSpan {
 impl UnicodeSetStringSpan {
     /// `UnicodeSetStringSpan(UnicodeSet set, ArrayList<String> setStrings,
     /// int which)`: removes the empty strings of `set_strings`.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     pub fn new(set: &UnicodeSet, set_strings: Vec<Vec<u16>>, which: i32) -> Self {
         let mut span_set = UnicodeSet::new_range_unchecked(0, 0x10ffff);
         // TODO: With Java 6, just take the parent set's strings as is,
@@ -188,8 +192,12 @@ impl UnicodeSetStringSpan {
                         this.span_lengths[i] = make_span_length_byte(span_length);
                     }
                     if 0 != (which & BACK) {
-                        span_length = length16 - this.span_set.span_back(&string, length16, SpanCondition::Contained);
-                        this.span_lengths[span_back_lengths_offset + i] = make_span_length_byte(span_length);
+                        span_length = length16
+                            - this
+                                .span_set
+                                .span_back(&string, length16, SpanCondition::Contained);
+                        this.span_lengths[span_back_lengths_offset + i] =
+                            make_span_length_byte(span_length);
                     }
                 } else
                 /* not CONTAINED, not all, but NOT_CONTAINED */
@@ -232,7 +240,10 @@ impl UnicodeSetStringSpan {
 
     /// `UnicodeSetStringSpan(UnicodeSetStringSpan otherStringSpan,
     /// ArrayList<String> newParentSetStrings)`: a copy for a cloned parent.
-    pub fn from_other(other_string_span: &UnicodeSetStringSpan, new_parent_set_strings: Vec<Vec<u16>>) -> Self {
+    pub fn from_other(
+        other_string_span: &UnicodeSetStringSpan,
+        new_parent_set_strings: Vec<Vec<u16>>,
+    ) -> Self {
         let span_not_set = match &other_string_span.span_not_set {
             SpanNotSet::SameAsSpanSet => SpanNotSet::SameAsSpanSet,
             SpanNotSet::Own(s) => SpanNotSet::Own(s.clone()),
@@ -303,7 +314,13 @@ impl UnicodeSetStringSpan {
 
     /// Synchronized method for complicated spans using the offsets.
     /// Avoids synchronization for simple cases.
-    fn span_with_strings(&self, s: &[u16], start: i32, mut span_limit: i32, span_condition: SpanCondition) -> i32 {
+    fn span_with_strings(
+        &self,
+        s: &[u16],
+        start: i32,
+        mut span_limit: i32,
+        span_condition: SpanCondition,
+    ) -> i32 {
         let mut offsets = self.offsets();
         // Consider strings; they may overlap with the span,
         // and they may result in a longer match.
@@ -344,7 +361,9 @@ impl UnicodeSetStringSpan {
                             break;
                         }
                         // Try to match if the increment is not listed already.
-                        if !offsets.contains_offset(inc) && matches16_cpb(s, pos - overlap, length, string, length16) {
+                        if !offsets.contains_offset(inc)
+                            && matches16_cpb(s, pos - overlap, length, string, length16)
+                        {
                             if inc == rest {
                                 return length; // Reached the end of the string.
                             }
@@ -468,7 +487,14 @@ impl UnicodeSetStringSpan {
 
     /// `spanAndCount(CharSequence s, int start, SpanCondition spanCondition,
     /// OutputInt outCount)`: as `span`, counting code points and strings.
-    pub fn span_and_count(&self, s: &[u16], start: i32, span_condition: SpanCondition, out_count: &mut OutputInt) -> i32 {
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
+    pub fn span_and_count(
+        &self,
+        s: &[u16],
+        start: i32,
+        span_condition: SpanCondition,
+        out_count: &mut OutputInt,
+    ) -> i32 {
         if span_condition == SpanCondition::NotContained {
             return self.span_not(s, start, Some(out_count));
         }
@@ -491,7 +517,10 @@ impl UnicodeSetStringSpan {
             for i in 0..strings_length {
                 let string = &self.strings[i];
                 let length16 = string.len() as i32;
-                if max_inc < length16 && length16 <= rest && matches16_cpb(s, pos, length, string, length16) {
+                if max_inc < length16
+                    && length16 <= rest
+                    && matches16_cpb(s, pos, length, string, length16)
+                {
                     max_inc = length16;
                 }
             }
@@ -509,6 +538,7 @@ impl UnicodeSetStringSpan {
         pos
     }
 
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn span_contained_and_count(&self, s: &[u16], start: i32, out_count: &mut OutputInt) -> i32 {
         let mut offsets = self.offsets();
         // Use offset list to try all possibilities.
@@ -605,7 +635,9 @@ impl UnicodeSetStringSpan {
                             break;
                         }
                         // Try to match if the decrement is not listed already.
-                        if !offsets.contains_offset(dec) && matches16_cpb(s, pos - dec, length, string, length16) {
+                        if !offsets.contains_offset(dec)
+                            && matches16_cpb(s, pos - dec, length, string, length16)
+                        {
                             if dec == pos {
                                 return 0; // Reached the start of the string.
                             }
@@ -688,7 +720,9 @@ impl UnicodeSetStringSpan {
                     // No more strings matched before a previous string match.
                     // Try another code point span from before the last string match.
                     let old_pos = pos;
-                    pos = self.span_set.span_back(s, old_pos, SpanCondition::Contained);
+                    pos = self
+                        .span_set
+                        .span_back(s, old_pos, SpanCondition::Contained);
                     span_length = old_pos - pos;
                     if pos == 0 || // Reached the start of the string, or
                             span_length == 0
@@ -724,6 +758,7 @@ impl UnicodeSetStringSpan {
 
     /// Algorithm for String spanNot(): find the next position where some
     /// string or code point matches.
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     fn span_not(&self, s: &[u16], start: i32, mut out_count: Option<&mut OutputInt>) -> i32 {
         let length = s.len() as i32;
         let mut pos = start;
@@ -735,9 +770,15 @@ impl UnicodeSetStringSpan {
             // or a code point that starts or ends some string.
             let span_limit;
             match out_count.as_deref_mut() {
-                None => span_limit = self.span_not_set().span(s, pos, SpanCondition::NotContained),
+                None => {
+                    span_limit = self
+                        .span_not_set()
+                        .span(s, pos, SpanCondition::NotContained)
+                }
                 Some(oc) => {
-                    span_limit = self.span_not_set().span_and_count(s, pos, SpanCondition::NotContained, oc);
+                    span_limit =
+                        self.span_not_set()
+                            .span_and_count(s, pos, SpanCondition::NotContained, oc);
                     count += oc.value;
                     oc.value = count;
                 }
@@ -790,7 +831,9 @@ impl UnicodeSetStringSpan {
         loop {
             // Span until we find a code point from the set,
             // or a code point that starts or ends some string.
-            pos = self.span_not_set().span_back(s, pos, SpanCondition::NotContained);
+            pos = self
+                .span_not_set()
+                .span_back(s, pos, SpanCondition::NotContained);
             if pos == 0 {
                 return 0; // Reached the start of the string.
             }
@@ -858,7 +901,9 @@ fn matches16(s: &[u16], start: i32, t: &[u16], mut length: i32) -> bool {
 /// at code point boundaries.
 pub(crate) fn matches16_cpb(s: &[u16], start: i32, limit: i32, t: &[u16], tlength: i32) -> bool {
     matches16(s, start, t, tlength)
-        && !(0 < start && is_high_surrogate(s[start as usize - 1]) && is_low_surrogate(s[start as usize]))
+        && !(0 < start
+            && is_high_surrogate(s[start as usize - 1])
+            && is_low_surrogate(s[start as usize]))
         && !((start + tlength) < limit
             && is_high_surrogate(s[(start + tlength - 1) as usize])
             && is_low_surrogate(s[(start + tlength) as usize]))
@@ -873,7 +918,11 @@ pub(crate) fn span_one(set: &UnicodeSet, s: &[u16], start: i32, length: i32) -> 
         let c2 = s[start as usize + 1];
         if UTF16::is_trail_surrogate(c2 as i32) {
             let supplementary = to_code_point(c, c2);
-            return if set.contains_valid(supplementary) { 2 } else { -2 };
+            return if set.contains_valid(supplementary) {
+                2
+            } else {
+                -2
+            };
         }
     }
     if set.contains_valid(c as i32) {
@@ -890,7 +939,11 @@ pub(crate) fn span_one_back(set: &UnicodeSet, s: &[u16], length: i32) -> i32 {
         let c2 = s[length as usize - 2];
         if UTF16::is_lead_surrogate(c2 as i32) {
             let supplementary = to_code_point(c2, c);
-            return if set.contains_valid(supplementary) { 2 } else { -2 };
+            return if set.contains_valid(supplementary) {
+                2
+            } else {
+                -2
+            };
         }
     }
     if set.contains_valid(c as i32) {
@@ -941,7 +994,11 @@ struct OffsetList {
 
 impl OffsetList {
     fn new() -> Self {
-        Self { list: vec![0; 16], length: 0, start: 0 } // default size
+        Self {
+            list: vec![0; 16],
+            length: 0,
+            start: 0,
+        } // default size
     }
 
     fn set_max_length(&mut self, max_length: i32) {

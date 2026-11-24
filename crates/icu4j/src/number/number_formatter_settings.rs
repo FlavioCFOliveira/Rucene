@@ -10,7 +10,9 @@ use rucene::error::Result;
 use crate::jdk::math::RoundingMode;
 use crate::number::integer_width::IntegerWidth;
 use crate::number::notation::Notation;
-use crate::number::number_formatter::{DecimalSeparatorDisplay, GroupingStrategy, SignDisplay, UnitWidth};
+use crate::number::number_formatter::{
+    DecimalSeparatorDisplay, GroupingStrategy, SignDisplay, UnitWidth,
+};
 use crate::number::number_skeleton_impl::NumberSkeletonImpl;
 use crate::number::precision::Precision;
 use crate::number::scale::Scale;
@@ -117,8 +119,17 @@ pub struct SettingsNode {
 
 impl SettingsNode {
     /// `NumberFormatterSettings(NumberFormatterSettings<?>, int, Object)`.
-    pub(crate) fn new(parent: Option<Arc<SettingsNode>>, key: i32, value: Option<SettingValue>) -> Arc<SettingsNode> {
-        Arc::new(SettingsNode { parent, key, value, resolved_macros: Mutex::new(None) })
+    pub(crate) fn new(
+        parent: Option<Arc<SettingsNode>>,
+        key: i32,
+        value: Option<SettingValue>,
+    ) -> Arc<SettingsNode> {
+        Arc::new(SettingsNode {
+            parent,
+            key,
+            value,
+            resolved_macros: Mutex::new(None),
+        })
     }
 
     /// Equivalent to `resolve()` (package-private): the macros of the chain,
@@ -129,8 +140,13 @@ impl SettingsNode {
     /// Java's `AssertionError("Unknown key: <key>")` for a key outside the
     /// defined ones.
     pub(crate) fn resolve(&self) -> Arc<MacroProps> {
-        let mut cache = self.resolved_macros.lock().unwrap_or_else(|e| e.into_inner());
-        cache.get_or_insert_with(|| Arc::new(self.compute_macros())).clone()
+        let mut cache = self
+            .resolved_macros
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        cache
+            .get_or_insert_with(|| Arc::new(self.compute_macros()))
+            .clone()
     }
 
     /// `resolve().loc = loc` (`NumberRangeFormatterSettings.resolve` copies
@@ -140,7 +156,10 @@ impl SettingsNode {
     /// object, visible to every holder of it; the port replaces the cached
     /// value, which later `resolve()` calls answer (the only readers).
     pub(crate) fn set_resolved_loc(&self, loc: Option<ULocale>) {
-        let mut cache = self.resolved_macros.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self
+            .resolved_macros
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut macros = (**cache.get_or_insert_with(|| Arc::new(self.compute_macros()))).clone();
         macros.loc = loc;
         *cache = Some(Arc::new(macros));
@@ -331,13 +350,21 @@ pub trait NumberFormatterSettings: Sized {
     /// has more digits than fit in the desired precision. Equivalent to
     /// `roundingMode(RoundingMode)`.
     fn rounding_mode(&self, rounding_mode: impl Into<Option<RoundingMode>>) -> Self {
-        self.create(KEY_ROUNDING_MODE, rounding_mode.into().map(SettingValue::RoundingMode))
+        self.create(
+            KEY_ROUNDING_MODE,
+            rounding_mode.into().map(SettingValue::RoundingMode),
+        )
     }
 
     /// Specifies the grouping strategy to use when formatting numbers.
     /// Equivalent to `grouping(GroupingStrategy)`.
     fn grouping(&self, strategy: impl Into<Option<GroupingStrategy>>) -> Self {
-        self.create(KEY_GROUPING, strategy.into().map(|s| SettingValue::Grouping(GroupingObject::Strategy(s))))
+        self.create(
+            KEY_GROUPING,
+            strategy
+                .into()
+                .map(|s| SettingValue::Grouping(GroupingObject::Strategy(s))),
+        )
     }
 
     /// Specifies the minimum and maximum number of digits to render before
@@ -352,13 +379,21 @@ pub trait NumberFormatterSettings: Sized {
     /// cloned (Java NPE for `null`).
     fn symbols(&self, symbols: &DecimalFormatSymbols) -> Self {
         let symbols = symbols.clone();
-        self.create(KEY_SYMBOLS, Some(SettingValue::Symbols(SymbolsObject::Symbols(Arc::new(symbols)))))
+        self.create(
+            KEY_SYMBOLS,
+            Some(SettingValue::Symbols(SymbolsObject::Symbols(Arc::new(
+                symbols,
+            )))),
+        )
     }
 
     /// Specifies that the given numbering system should be used when
     /// fetching symbols. Equivalent to `symbols(NumberingSystem)`.
     fn symbols_numbering_system(&self, ns: Option<Arc<NumberingSystem>>) -> Self {
-        self.create(KEY_SYMBOLS, ns.map(|ns| SettingValue::Symbols(SymbolsObject::NumberingSystem(ns))))
+        self.create(
+            KEY_SYMBOLS,
+            ns.map(|ns| SettingValue::Symbols(SymbolsObject::NumberingSystem(ns))),
+        )
     }
 
     /// Sets the width of the unit (measure unit or currency). Equivalent to
@@ -405,7 +440,12 @@ pub trait NumberFormatterSettings: Sized {
 
         self.create(
             KEY_UNIT_DISPLAY_CASE,
-            Some(SettingValue::String(display_options.get_grammatical_case().get_identifier().to_string())),
+            Some(SettingValue::String(
+                display_options
+                    .get_grammatical_case()
+                    .get_identifier()
+                    .to_string(),
+            )),
         )
     }
 
@@ -413,7 +453,10 @@ pub trait NumberFormatterSettings: Sized {
     /// accusative, dative, genitive). Equivalent to
     /// `unitDisplayCase(String)` (internal).
     fn unit_display_case(&self, unit_display_case: Option<&str>) -> Self {
-        self.create(KEY_UNIT_DISPLAY_CASE, unit_display_case.map(|s| SettingValue::String(s.to_string())))
+        self.create(
+            KEY_UNIT_DISPLAY_CASE,
+            unit_display_case.map(|s| SettingValue::String(s.to_string())),
+        )
     }
 
     /// Internal fluent setter to overwrite the entire macros object.

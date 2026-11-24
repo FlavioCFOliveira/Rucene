@@ -46,8 +46,12 @@ impl UnitPreferences {
     pub fn new() -> Result<Self> {
         let resource = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "units")?;
         let mut sink = UnitPreferencesSink::new();
-        resource.as_icu()?.get_all_items_with_fallback(Constants::UNIT_PREFERENCE_TABLE_NAME, &mut sink)?;
-        Ok(UnitPreferences { map_to_unit_preferences: sink.get_map_to_unit_preferences() })
+        resource
+            .as_icu()?
+            .get_all_items_with_fallback(Constants::UNIT_PREFERENCE_TABLE_NAME, &mut sink)?;
+        Ok(UnitPreferences {
+            map_to_unit_preferences: sink.get_map_to_unit_preferences(),
+        })
     }
 
     /// Equivalent to `formMapKey(String, String)`.
@@ -101,10 +105,16 @@ impl UnitPreferences {
             // category.
             let locale_unit_category = match &locale_unit {
                 None => None,
-                Some(u) => MeasureUnitImpl::for_identifier(u).and_then(|m| data.get_category(&m)).ok(),
+                Some(u) => MeasureUnitImpl::for_identifier(u)
+                    .and_then(|m| data.get_category(&m))
+                    .ok(),
             };
             if locale_unit_category.as_deref() == Some(category) {
-                return Ok(vec![UnitPreference::new(locale_unit.as_deref().unwrap_or(""), None, None)?]);
+                return Ok(vec![UnitPreference::new(
+                    locale_unit.as_deref().unwrap_or(""),
+                    None,
+                    None,
+                )?]);
             }
         }
 
@@ -112,7 +122,10 @@ impl UnitPreferences {
 
         // Check the locale system as well, e.g. `ussystem` or `metric`
         let locale_system = locale.get_keyword_value("measure");
-        let is_locale_system = locale_system.as_deref().and_then(measurement_system).is_some();
+        let is_locale_system = locale_system
+            .as_deref()
+            .and_then(measurement_system)
+            .is_some();
 
         let sub_usages = Self::get_all_usages(usage);
         let mut result: Option<Vec<UnitPreference>> = None;
@@ -130,7 +143,8 @@ impl UnitPreferences {
                         let systems = rates
                             .extract_systems(single_unit)?
                             .ok_or_else(|| crate::jdk::null_pointer("systems"))?;
-                        if !systems.contains("metric_adjacent") && !systems.contains(locale_system) {
+                        if !systems.contains("metric_adjacent") && !systems.contains(locale_system)
+                        {
                             units_match_system = false;
                         }
                     }
@@ -152,7 +166,12 @@ impl UnitPreferences {
 
     /// Equivalent to `getUnitPreferences(String, String, String)`: `None`
     /// for Java's `null`.
-    fn get_unit_preferences(&self, category: &str, usage: &str, region: &str) -> Option<Vec<UnitPreference>> {
+    fn get_unit_preferences(
+        &self,
+        category: &str,
+        usage: &str,
+        region: &str,
+    ) -> Option<Vec<UnitPreference>> {
         let key = Self::form_map_key(category, usage);
         match self.map_to_unit_preferences.get(&key) {
             Some(unit_preferences_map) => {
@@ -228,14 +247,25 @@ impl UnitPreferencesSink {
     }
 
     /// Equivalent to `getMapToUnitPreferences()`.
-    pub fn get_map_to_unit_preferences(self) -> HashMap<String, HashMap<String, Vec<UnitPreference>>> {
+    pub fn get_map_to_unit_preferences(
+        self,
+    ) -> HashMap<String, HashMap<String, Vec<UnitPreference>>> {
         self.map_to_unit_preferences
     }
 
     /// `insertUnitPreferences(String, String, String, UnitPreference[])`.
-    fn insert_unit_preferences(&mut self, category: &str, usage: &str, region: &str, unit_preferences: Vec<UnitPreference>) {
+    fn insert_unit_preferences(
+        &mut self,
+        category: &str,
+        usage: &str,
+        region: &str,
+        unit_preferences: Vec<UnitPreference>,
+    ) {
         let key = UnitPreferences::form_map_key(category, usage);
-        self.map_to_unit_preferences.entry(key).or_default().insert(region.to_string(), unit_preferences);
+        self.map_to_unit_preferences
+            .entry(key)
+            .or_default()
+            .insert(region.to_string(), unit_preferences);
     }
 }
 

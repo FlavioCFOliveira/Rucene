@@ -62,7 +62,10 @@ impl CurrencyPrecision {
                 // Java writes the field of the returned object in place,
                 // also when it is a shared constant (FIXED_FRAC_2, NICKEL):
                 // reproduced through the shared cell.
-                retval.0.trailing_zero_display.set(self.trailing_zero_display_value());
+                retval
+                    .0
+                    .trailing_zero_display
+                    .set(self.trailing_zero_display_value());
                 Ok(retval)
             }
             None => Err(LuceneError::illegal_argument("Currency must not be null")),

@@ -58,7 +58,11 @@ static GROUPER_INDIC_MIN2: LazyLock<Grouper> = LazyLock::new(|| Grouper::new(3, 
 impl Grouper {
     /// `Grouper(short, short, short)` (private).
     fn new(grouping1: i16, grouping2: i16, min_grouping: i16) -> Self {
-        Grouper(Arc::new(GrouperData { grouping1, grouping2, min_grouping }))
+        Grouper(Arc::new(GrouperData {
+            grouping1,
+            grouping2,
+            min_grouping,
+        }))
     }
 
     /// Whether two handles are the same Java object.
@@ -123,8 +127,11 @@ impl Grouper {
     /// `getMinGroupingForLocale(ULocale)`.
     fn get_min_grouping_for_locale(locale: &ULocale) -> Result<i16> {
         // TODO: Cache this?
-        let resource = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
-        let result = resource.as_icu()?.get_string_with_fallback("NumberElements/minimumGroupingDigits")?;
+        let resource =
+            UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
+        let result = resource
+            .as_icu()?
+            .get_string_with_fallback("NumberElements/minimumGroupingDigits")?;
         parse_short(&to_rust_string(&result))
     }
 
@@ -134,7 +141,11 @@ impl Grouper {
     ///
     /// The errors of the data loading and the `NumberFormatException` of
     /// `Short.parseShort`.
-    pub fn with_locale_data(&self, locale: &ULocale, pattern_info: &ParsedPatternInfo) -> Result<Grouper> {
+    pub fn with_locale_data(
+        &self,
+        locale: &ULocale,
+        pattern_info: &ParsedPatternInfo,
+    ) -> Result<Grouper> {
         let min_grouping = if self.0.min_grouping == -2 {
             Self::get_min_grouping_for_locale(locale)?
         } else if self.0.min_grouping == -3 {
@@ -147,7 +158,11 @@ impl Grouper {
             if min_grouping == self.0.min_grouping {
                 return Ok(self.clone());
             }
-            return Ok(Self::get_instance(self.0.grouping1, self.0.grouping2, min_grouping));
+            return Ok(Self::get_instance(
+                self.0.grouping1,
+                self.0.grouping2,
+                min_grouping,
+            ));
         }
 
         let grouping_sizes = pattern_info.positive.grouping_sizes;
@@ -193,7 +208,9 @@ impl Grouper {
 fn parse_short(s: &str) -> Result<i16> {
     let i = crate::jdk::parse_int(&crate::jdk::units(s), 10)?;
     if !(i16::MIN as i32..=i16::MAX as i32).contains(&i) {
-        return Err(LuceneError::number_format(format!("Value out of range. Value:\"{s}\" Radix:10")));
+        return Err(LuceneError::number_format(format!(
+            "Value out of range. Value:\"{s}\" Radix:10"
+        )));
     }
     Ok(i as i16)
 }

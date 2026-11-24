@@ -13,7 +13,9 @@ use crate::number::number_formatter::{NumberFormatter, UnitWidth};
 use crate::r#impl::formatted_string_builder::FormattedStringBuilder;
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
 use crate::r#impl::number::decimal_quantity_dual_storage_bcd::DecimalQuantity_DualStorageBCD;
-use crate::r#impl::number::long_name_handler::{get_measure_data, get_with_plural, new_unit_data, UnitData};
+use crate::r#impl::number::long_name_handler::{
+    get_measure_data, get_with_plural, new_unit_data, UnitData,
+};
 use crate::r#impl::number::long_name_multiplexer::ParentlessMicroPropsGenerator;
 use crate::r#impl::number::micro_props::MicroProps;
 use crate::r#impl::number::micro_props_generator::MicroPropsGenerator;
@@ -103,7 +105,8 @@ impl MixedUnitLongNameHandler {
             _ => list_formatter::Width::Short,
         };
 
-        let f_list_formatter = ListFormatter::get_instance_typed(locale, list_formatter::Type::Units, list_width)?;
+        let f_list_formatter =
+            ListFormatter::get_instance_typed(locale, list_formatter::Type::Units, list_width)?;
 
         // We need a localised NumberFormatter for the integers of the
         // bigger units (providing Arabic numerals, for example).
@@ -121,7 +124,11 @@ impl MixedUnitLongNameHandler {
 
     /// Equivalent to `getModifier(Signum, StandardPlural)` (the
     /// `ModifierStore` method): unreachable in Java.
-    pub fn get_modifier(&self, _signum: Signum, _plural: StandardPlural) -> Option<Arc<dyn Modifier>> {
+    pub fn get_modifier(
+        &self,
+        _signum: Signum,
+        _plural: StandardPlural,
+    ) -> Option<Arc<dyn Modifier>> {
         // TODO(icu-units#28): investigate this method while investigating
         // where LongNameHandler.getModifier() gets used. To be sure it
         // remains unreachable:
@@ -134,11 +141,17 @@ impl MixedUnitLongNameHandler {
     /// is formatted using the integer formatter of the localized
     /// NumberFormatter. Equivalent to `getMixedUnitModifier(DecimalQuantity,
     /// MicroProps)`.
-    fn get_mixed_unit_modifier(&self, quantity: &mut dyn DecimalQuantity, micros: &MicroProps) -> Result<Arc<dyn Modifier>> {
+    fn get_mixed_unit_modifier(
+        &self,
+        quantity: &mut dyn DecimalQuantity,
+        micros: &MicroProps,
+    ) -> Result<Arc<dyn Modifier>> {
         let mixed_measures = micros.mixed_measures.as_deref().unwrap_or(&[]);
         if mixed_measures.is_empty() {
             debug_assert!(false, "Mixed unit: we must have more than one unit value");
-            return Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"));
+            return Err(crate::jdk::unchecked_no_message(
+                "java.lang.UnsupportedOperationException",
+            ));
         }
 
         // Algorithm:
@@ -160,9 +173,15 @@ impl MixedUnitLongNameHandler {
                     quantity.negate();
                 }
 
-                quantity_plural = RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), quantity)?;
-                let quantity_simple_format = get_with_plural(&self.f_mixed_unit_data[i], quantity_plural)?;
-                let final_formatter = SimpleFormatter::compile_min_max_arguments(&quantity_simple_format, 0, 1)?;
+                quantity_plural = RoundingUtils::get_plural_safe(
+                    micros.rounder.as_ref(),
+                    Some(&self.rules),
+                    quantity,
+                )?;
+                let quantity_simple_format =
+                    get_with_plural(&self.f_mixed_unit_data[i], quantity_plural)?;
+                let final_formatter =
+                    SimpleFormatter::compile_min_max_arguments(&quantity_simple_format, 0, 1)?;
                 output_measures_list.push(final_formatter.format(&[Arg::Text(&units("{0}"))])?);
                 continue;
             }
@@ -174,28 +193,48 @@ impl MixedUnitLongNameHandler {
                 fdec.negate();
             }
 
-            let plural_form = RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), &fdec)?;
+            let plural_form =
+                RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(&self.rules), &fdec)?;
 
             let simple_format = get_with_plural(&self.f_mixed_unit_data[i], plural_form)?;
-            let compiled_formatter = SimpleFormatter::compile_min_max_arguments(&simple_format, 0, 1)?;
+            let compiled_formatter =
+                SimpleFormatter::compile_min_max_arguments(&simple_format, 0, 1)?;
 
             let mut appendable = FormattedStringBuilder::new();
-            self.f_integer_formatter.format_impl(&mut fdec, &mut appendable)?;
-            output_measures_list.push(compiled_formatter.format(&[Arg::Text(&appendable.to_java_string())])?);
+            self.f_integer_formatter
+                .format_impl(&mut fdec, &mut appendable)?;
+            output_measures_list
+                .push(compiled_formatter.format(&[Arg::Text(&appendable.to_java_string())])?);
             // TODO(icu-units#67): fix field positions
         }
 
         // Combine list into a "premixed" pattern
         let premixed_format_pattern = self.f_list_formatter.format(&output_measures_list);
         let mut sb = Vec::new();
-        let premixed_compiled =
-            SimpleFormatterImpl::compile_to_string_min_max_arguments(&premixed_format_pattern, &mut sb, 0, 1)?;
+        let premixed_compiled = SimpleFormatterImpl::compile_to_string_min_max_arguments(
+            &premixed_format_pattern,
+            &mut sb,
+            0,
+            1,
+        )?;
 
         // TODO(icu-units#67): fix field positions
-        let this: Arc<dyn ModifierStore> = self.self_ref.upgrade().expect("the handler is alive while it runs");
-        let params = Parameters { obj: Some(this), signum: Some(Signum::PosZero), plural: Some(quantity_plural) };
+        let this: Arc<dyn ModifierStore> = self
+            .self_ref
+            .upgrade()
+            .expect("the handler is alive while it runs");
+        let params = Parameters {
+            obj: Some(this),
+            signum: Some(Signum::PosZero),
+            plural: Some(quantity_plural),
+        };
         // Return a SimpleModifier for the "premixed" pattern
-        Ok(Arc::new(SimpleModifier::with_parameters(&premixed_compiled, None, false, Some(params))))
+        Ok(Arc::new(SimpleModifier::with_parameters(
+            &premixed_compiled,
+            None,
+            false,
+            Some(params),
+        )))
     }
 }
 
@@ -211,7 +250,10 @@ impl MicroPropsGenerator for MixedUnitLongNameHandler {
     /// must be provided via `micros.mixedMeasures`.
     fn process_quantity(&self, quantity: &mut dyn DecimalQuantity) -> Result<MicroProps> {
         debug_assert!(self.f_mixed_unit_data.len() > 1);
-        let parent = self.parent.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
+        let parent = self
+            .parent
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
         let mut micros = parent.process_quantity(quantity)?;
         micros.mod_outer = Some(self.get_mixed_unit_modifier(quantity, &micros)?);
         Ok(micros)
@@ -224,7 +266,11 @@ impl ParentlessMicroPropsGenerator for MixedUnitLongNameHandler {
     /// must be provided by `micros.mixedMeasures`, micros being the
     /// MicroProps instance to populate. (Equivalent to MicroProps.processQuantity()
     /// without parent.)
-    fn process_quantity_with_micros(&self, quantity: &mut dyn DecimalQuantity, mut micros: MicroProps) -> Result<MicroProps> {
+    fn process_quantity_with_micros(
+        &self,
+        quantity: &mut dyn DecimalQuantity,
+        mut micros: MicroProps,
+    ) -> Result<MicroProps> {
         debug_assert!(self.f_mixed_unit_data.len() > 1);
         micros.mod_outer = Some(self.get_mixed_unit_modifier(quantity, &micros)?);
         Ok(micros)

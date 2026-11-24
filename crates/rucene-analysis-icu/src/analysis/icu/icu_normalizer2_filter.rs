@@ -117,7 +117,8 @@ pub type ICUNormalizer2Filter = TokenFilter<ICUNormalizer2FilterLogic>;
 /// The errors of loading the `nfkc_cf` data, and of adding the
 /// `CharTermAttribute`.
 pub fn new_icu_normalizer2_filter(input: Box<dyn TokenStream>) -> Result<ICUNormalizer2Filter> {
-    let normalizer: Arc<dyn Normalizer2> = normalizer2::get_instance(None, "nfkc_cf", Mode::Compose)?;
+    let normalizer: Arc<dyn Normalizer2> =
+        normalizer2::get_instance(None, "nfkc_cf", Mode::Compose)?;
     new_icu_normalizer2_filter_with(input, normalizer)
 }
 

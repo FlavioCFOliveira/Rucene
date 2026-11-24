@@ -90,10 +90,18 @@ impl Data {
         }
     }
 
-    fn get_value<'v>(table: &dyn Table, key: &str, value: &'v mut ReaderValue) -> Result<&'v mut ReaderValue> {
+    fn get_value<'v>(
+        table: &dyn Table,
+        key: &str,
+        value: &'v mut ReaderValue,
+    ) -> Result<&'v mut ReaderValue> {
         let k: Vec<u16> = key.encode_utf16().collect();
         if !table.find_value(&k, value) {
-            return Err(missing_resource("langInfo.res missing data", "", format!("match/{key}")));
+            return Err(missing_resource(
+                "langInfo.res missing data",
+                "",
+                format!("match/{key}"),
+            ));
         }
         Ok(value)
     }
@@ -121,23 +129,34 @@ impl Data {
         let match_table = value.get_table()?;
 
         let trie = Self::binary(Self::get_value(match_table.as_ref(), "trie", &mut value)?)?;
-        let region_to_partitions = Self::binary(Self::get_value(match_table.as_ref(), "regionToPartitions", &mut value)?)?;
+        let region_to_partitions = Self::binary(Self::get_value(
+            match_table.as_ref(),
+            "regionToPartitions",
+            &mut value,
+        )?)?;
         if (region_to_partitions.len() as i32) < LSR::REGION_INDEX_LIMIT {
-            return Err(missing_resource("langInfo.res binary data too short", "", "match/regionToPartitions"));
+            return Err(missing_resource(
+                "langInfo.res binary data too short",
+                "",
+                "match/regionToPartitions",
+            ));
         }
 
-        let partitions = Self::get_value(match_table.as_ref(), "partitions", &mut value)?.get_string_array()?;
+        let partitions =
+            Self::get_value(match_table.as_ref(), "partitions", &mut value)?.get_string_array()?;
 
         let paradigmnum: Vec<u16> = "paradigmnum".encode_utf16().collect();
         let paradigm_lsrs = if match_table.find_value(&paradigmnum, &mut value) {
             let mut likely_value = lang_info.get_value_with_fallback("likely")?;
             let likely_table = likely_value.get_table()?;
-            let m49: Vec<String> = Self::get_value(likely_table.as_ref(), "m49", &mut likely_value)?
-                .get_string_array()?
-                .into_iter()
-                .map(|s| String::from_utf16_lossy(&s))
-                .collect();
-            let nums = Self::get_value(match_table.as_ref(), "paradigmnum", &mut value)?.get_int_vector()?;
+            let m49: Vec<String> =
+                Self::get_value(likely_table.as_ref(), "m49", &mut likely_value)?
+                    .get_string_array()?
+                    .into_iter()
+                    .map(|s| String::from_utf16_lossy(&s))
+                    .collect();
+            let nums = Self::get_value(match_table.as_ref(), "paradigmnum", &mut value)?
+                .get_int_vector()?;
             let paradigms = LSR::decode_ints(&nums, &m49)?;
             // LinkedHashSet for stable order; otherwise a unit test is flaky.
             let mut set: Vec<LSR> = Vec::with_capacity(paradigms.len());
@@ -151,12 +170,23 @@ impl Data {
             Vec::new()
         };
 
-        let distances = Self::get_value(match_table.as_ref(), "distances", &mut value)?.get_int_vector()?;
+        let distances =
+            Self::get_value(match_table.as_ref(), "distances", &mut value)?.get_int_vector()?;
         if distances.len() < IX_LIMIT {
-            return Err(missing_resource("langInfo.res intvector too short", "", "match/distances"));
+            return Err(missing_resource(
+                "langInfo.res intvector too short",
+                "",
+                "match/distances",
+            ));
         }
 
-        Ok(Data::new(trie, region_to_partitions, partitions, paradigm_lsrs, distances))
+        Ok(Data::new(
+            trie,
+            region_to_partitions,
+            partitions,
+            paradigm_lsrs,
+            distances,
+        ))
     }
 }
 
@@ -168,7 +198,10 @@ impl PartialEq for Data {
             && self.region_to_partitions_index == od.region_to_partitions_index
             && self.partition_arrays == od.partition_arrays
             && self.paradigm_lsrs.len() == od.paradigm_lsrs.len()
-            && self.paradigm_lsrs.iter().all(|l| od.paradigm_lsrs.contains(l))
+            && self
+                .paradigm_lsrs
+                .iter()
+                .all(|l| od.paradigm_lsrs.contains(l))
             && self.distances == od.distances
     }
 }
@@ -197,8 +230,12 @@ pub struct LocaleDistance {
 }
 
 /// `INSTANCE`, or the message of its initializer's exception.
-static INSTANCE: LazyLock<std::result::Result<Arc<LocaleDistance>, String>> =
-    LazyLock::new(|| Data::load().and_then(LocaleDistance::new).map(Arc::new).map_err(|e| e.to_string()));
+static INSTANCE: LazyLock<std::result::Result<Arc<LocaleDistance>, String>> = LazyLock::new(|| {
+    Data::load()
+        .and_then(LocaleDistance::new)
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
+});
 
 impl LocaleDistance {
     /// `shiftDistance(int distance)`.
@@ -327,7 +364,11 @@ impl LocaleDistance {
         // Its "distance" is either a match point value of 0, or a non-match negative value.
         // Note: The data builder verifies that there are no <*, supported> or <desired, *> rules.
         let des_lang_distance = trie_next(&mut iter, &desired.language, false);
-        let des_lang_state = if des_lang_distance >= 0 && supported_lsrs_length > 1 { iter.get_state64() } else { 0 };
+        let des_lang_state = if des_lang_distance >= 0 && supported_lsrs_length > 1 {
+            iter.get_state64()
+        } else {
+            0
+        };
         // Index of the supported LSR with the lowest distance.
         let mut best_index: i32 = -1;
         // Cached lookup info from LikelySubtags.compareLikely().
@@ -390,7 +431,12 @@ impl LocaleDistance {
                 }
             } else {
                 let state = iter.get_state64();
-                let sd = get_des_supp_script_distance(&mut iter, state, &desired.script, &supported.script);
+                let sd = get_des_supp_script_distance(
+                    &mut iter,
+                    state,
+                    &desired.script,
+                    &supported.script,
+                );
                 flags = sd & DISTANCE_IS_FINAL;
                 script_distance = sd & !DISTANCE_IS_FINAL;
             }
@@ -591,7 +637,12 @@ impl fmt::Display for LocaleDistance {
     }
 }
 
-fn get_des_supp_script_distance(iter: &mut BytesTrie, start_state: i64, desired: &str, supported: &str) -> i32 {
+fn get_des_supp_script_distance(
+    iter: &mut BytesTrie,
+    start_state: i64,
+    desired: &str,
+    supported: &str,
+) -> i32 {
     // Note: The data builder verifies that there are no <*, supported> or <desired, *> rules.
     let mut distance = trie_next(iter, desired, false);
     if distance >= 0 {
@@ -644,7 +695,11 @@ fn get_region_partitions_distance(
         let result = iter.next(desired_partitions[di] as i32 | END_OF_SUBTAG);
         di += 1;
         if result.has_next() {
-            let des_state = if supp_length > 1 { iter.get_state64() } else { 0 };
+            let des_state = if supp_length > 1 {
+                iter.get_state64()
+            } else {
+                0
+            };
             let mut si = 0;
             loop {
                 let result = iter.next(supported_partitions[si] as i32 | END_OF_SUBTAG);

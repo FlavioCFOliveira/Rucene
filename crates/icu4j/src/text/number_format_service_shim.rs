@@ -10,21 +10,23 @@ use rucene::error::Result;
 use rucene_queryparser::jdk::locale::Locale;
 
 use crate::r#impl::icu_locale_service::{
-    locale_key_factory_display_name, ICULocaleService, ICUResourceBundleFactory, LocaleKey, LocaleKeyFactory,
+    locale_key_factory_display_name, ICULocaleService, ICUResourceBundleFactory, LocaleKey,
+    LocaleKeyFactory,
 };
 use crate::r#impl::icu_resource_bundle::ICUResourceBundle;
 use crate::r#impl::icu_service::{Factory, ICUService, Key, ServiceObject, VisibleIDMap};
 use crate::text::number_format::{
     self, unable_to_construct, NumberFormat, NumberFormatFactory, NumberFormatShim, RegistryKey,
-    ACCOUNTINGCURRENCYSTYLE, CASHCURRENCYSTYLE, CURRENCYSTYLE, ISOCURRENCYSTYLE, PLURALCURRENCYSTYLE,
-    STANDARDCURRENCYSTYLE,
+    ACCOUNTINGCURRENCYSTYLE, CASHCURRENCYSTYLE, CURRENCYSTYLE, ISOCURRENCYSTYLE,
+    PLURALCURRENCYSTYLE, STANDARDCURRENCYSTYLE,
 };
 use crate::util::currency::Currency;
 use crate::util::u_locale::ULocale;
 
 /// The `NumberFormat` a service object holds.
 fn number_format_of(obj: &ServiceObject) -> Option<&dyn NumberFormat> {
-    obj.downcast_ref::<Box<dyn NumberFormat>>().map(|b| b.as_ref())
+    obj.downcast_ref::<Box<dyn NumberFormat>>()
+        .map(|b| b.as_ref())
 }
 
 /// The registration service behind `NumberFormat.getInstance` and
@@ -54,7 +56,10 @@ impl NumberFormatShim for NumberFormatServiceShim {
     }
 
     fn register_factory(&self, factory: Arc<dyn NumberFormatFactory>) -> Result<RegistryKey> {
-        let f: Arc<NFFactory> = Arc::new_cyclic(|me| NFFactory { delegate: factory, me: me.clone() });
+        let f: Arc<NFFactory> = Arc::new_cyclic(|me| NFFactory {
+            delegate: factory,
+            me: me.clone(),
+        });
         SERVICE.register_factory(f)
     }
 
@@ -62,7 +67,11 @@ impl NumberFormatShim for NumberFormatServiceShim {
         SERVICE.unregister_factory(registry_key)
     }
 
-    fn create_instance(&self, desired_locale: &ULocale, choice: i32) -> Result<Box<dyn NumberFormat>> {
+    fn create_instance(
+        &self,
+        desired_locale: &ULocale,
+        choice: i32,
+    ) -> Result<Box<dyn NumberFormat>> {
         // use service cache
         //          if (service.isDefault()) {
         //              return NumberFormat.createInstance(desiredLocale, choice);
@@ -123,7 +132,9 @@ impl Factory for NFFactory {
         let Some(lkey) = key.as_any().downcast_ref::<LocaleKey>() else {
             return Ok(None);
         };
-        let result = self.delegate.create_format(&lkey.canonical_locale()?, lkey.kind())?;
+        let result = self
+            .delegate
+            .create_format(&lkey.canonical_locale()?, lkey.kind())?;
         match result {
             Some(r) => Ok(Some(Arc::new(r) as ServiceObject)),
             None => {
@@ -167,7 +178,12 @@ impl LocaleKeyFactory for RBNumberFormatFactory {
         self.inner.get_supported_ids()
     }
 
-    fn handle_create(&self, loc: &ULocale, kind: i32, _srvc: &ICUService) -> Result<Option<ServiceObject>> {
+    fn handle_create(
+        &self,
+        loc: &ULocale,
+        kind: i32,
+        _srvc: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
         Ok(number_format::create_instance(loc, kind)?.map(|f| Arc::new(f) as ServiceObject))
     }
 }
@@ -178,8 +194,10 @@ impl Factory for RBNumberFormatFactory {
     }
 
     fn update_visible_ids(self: Arc<Self>, result: &mut VisibleIDMap) -> Result<()> {
-        let visible_ids =
-            ICUResourceBundle::get_available_locale_name_set_of(&self.inner.bundle_name, self.inner.loader())?;
+        let visible_ids = ICUResourceBundle::get_available_locale_name_set_of(
+            &self.inner.bundle_name,
+            self.inner.loader(),
+        )?;
         for id in visible_ids.iter() {
             let me: Arc<dyn Factory> = self.clone();
             result.insert(id.clone(), me);
@@ -192,7 +210,11 @@ impl Factory for RBNumberFormatFactory {
     }
 
     fn to_java_string(&self) -> String {
-        format!("{}, bundle: {}", self.lkf_to_string(), self.inner.bundle_name)
+        format!(
+            "{}, bundle: {}",
+            self.lkf_to_string(),
+            self.inner.bundle_name
+        )
     }
 }
 
@@ -200,11 +222,12 @@ impl Factory for RBNumberFormatFactory {
 /// resource-bundle factory registered and marked default).
 static SERVICE: LazyLock<ICULocaleService> = LazyLock::new(|| {
     let service = ICULocaleService::new("NumberFormat");
-    let factory: Arc<dyn Factory> = Arc::new(RBNumberFormatFactory { inner: ICUResourceBundleFactory::new() });
+    let factory: Arc<dyn Factory> = Arc::new(RBNumberFormatFactory {
+        inner: ICUResourceBundleFactory::new(),
+    });
     service
         .register_factory(factory)
         .unwrap_or_else(|e| panic!("java.lang.ExceptionInInitializerError: {e}"));
     service.mark_default();
     service
 });
-

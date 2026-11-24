@@ -77,13 +77,17 @@ impl MeasureUnitImpl {
     /// `IllegalArgumentException` for a syntax error;
     /// `NullPointerException` for an empty identifier.
     pub fn for_identifier(identifier: &str) -> Result<MeasureUnitImpl> {
-        UnitsParser::parse_for_identifier(Some(identifier))?
-            .ok_or_else(|| crate::jdk::null_pointer("MeasureUnitImpl.forIdentifier: empty identifier"))
+        UnitsParser::parse_for_identifier(Some(identifier))?.ok_or_else(|| {
+            crate::jdk::null_pointer("MeasureUnitImpl.forIdentifier: empty identifier")
+        })
     }
 
     /// Used for currency units. Equivalent to `forCurrencyCode(String)`.
     pub fn for_currency_code(currency_code: &str) -> MeasureUnitImpl {
-        MeasureUnitImpl { identifier: Some(currency_code.to_string()), ..Self::new() }
+        MeasureUnitImpl {
+            identifier: Some(currency_code.to_string()),
+            ..Self::new()
+        }
     }
 
     /// Create a copy of this MeasureUnitImpl. Equivalent to `copy()`.
@@ -102,11 +106,13 @@ impl MeasureUnitImpl {
             let mut unit_exist = false;
             for result_single_unit in result.single_units.iter_mut() {
                 if result_single_unit.get_simple_unit_id() == single_unit.get_simple_unit_id()
-                    && result_single_unit.get_prefix().get_identifier() == single_unit.get_prefix().get_identifier()
+                    && result_single_unit.get_prefix().get_identifier()
+                        == single_unit.get_prefix().get_identifier()
                 {
                     unit_exist = true;
-                    result_single_unit
-                        .set_dimensionality(result_single_unit.get_dimensionality() + single_unit.get_dimensionality());
+                    result_single_unit.set_dimensionality(
+                        result_single_unit.get_dimensionality() + single_unit.get_dimensionality(),
+                    );
                     break;
                 }
             }
@@ -148,7 +154,10 @@ impl MeasureUnitImpl {
             // In case of mixed units, each single unit can be considered as
             // a stand alone MeasureUnitImpl.
             for (i, single_unit) in self.get_single_units().iter().enumerate() {
-                result.push(MeasureUnitImplWithIndex::new(i as i32, MeasureUnitImpl::from_single_unit(single_unit)));
+                result.push(MeasureUnitImplWithIndex::new(
+                    i as i32,
+                    MeasureUnitImpl::from_single_unit(single_unit),
+                ));
             }
             return result;
         }
@@ -178,12 +187,17 @@ impl MeasureUnitImpl {
         };
 
         // Find a similar unit that already exists, to attempt to coalesce
-        let old_unit = self.single_units.iter_mut().find(|candidate| candidate.is_compatible_with(single_unit));
+        let old_unit = self
+            .single_units
+            .iter_mut()
+            .find(|candidate| candidate.is_compatible_with(single_unit));
 
         if let Some(old_unit) = old_unit {
             // Both dimensionalities will be positive, or both will be
             // negative, by virtue of isCompatibleWith().
-            old_unit.set_dimensionality(old_unit.get_dimensionality() + single_unit.get_dimensionality());
+            old_unit.set_dimensionality(
+                old_unit.get_dimensionality() + single_unit.get_dimensionality(),
+            );
             return false;
         }
 
@@ -225,7 +239,9 @@ impl MeasureUnitImpl {
             return Ok(self.single_units[0].copy());
         }
 
-        Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"))
+        Err(crate::jdk::unchecked_no_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
     /// Returns the CLDR Unit Identifier, `None` (Java `null`) if not
@@ -352,7 +368,10 @@ impl MeasureUnitImpl {
     /// Those of [`build`](Self::build).
     pub fn to_java_string(&self) -> Result<String> {
         let mut copy = self.clone();
-        Ok(format!("MeasureUnitImpl [{}]", copy.build()?.get_identifier()))
+        Ok(format!(
+            "MeasureUnitImpl [{}]",
+            copy.build()?.get_identifier()
+        ))
     }
 }
 
@@ -433,7 +452,9 @@ impl InitialCompoundPart {
     /// # Errors
     ///
     /// `IllegalArgumentException("Incorrect trieIndex")`.
-    pub fn get_initial_compound_part_from_trie_index(trie_index: i32) -> Result<InitialCompoundPart> {
+    pub fn get_initial_compound_part_from_trie_index(
+        trie_index: i32,
+    ) -> Result<InitialCompoundPart> {
         let index = trie_index - Constants::K_INITIAL_COMPOUND_PART_OFFSET;
         if index == 0 {
             return Ok(InitialCompoundPart::InitialCompoundPartPer);
@@ -480,18 +501,27 @@ fn build_saved_trie() -> Result<CharsTrie> {
 
     // Add SI and binary prefixes
     for unit_prefix in MeasurePrefix::VALUES {
-        trie_builder.add(&units(unit_prefix.get_identifier()), UnitsParser::get_trie_index_for_prefix(unit_prefix))?;
+        trie_builder.add(
+            &units(unit_prefix.get_identifier()),
+            UnitsParser::get_trie_index_for_prefix(unit_prefix),
+        )?;
     }
 
     // Add syntax parts (compound, power prefixes)
     trie_builder.add(&units("-per-"), CompoundPart::Per.get_trie_index())?;
     trie_builder.add(&units("-"), CompoundPart::Times.get_trie_index())?;
     trie_builder.add(&units("-and-"), CompoundPart::And.get_trie_index())?;
-    trie_builder.add(&units("per-"), InitialCompoundPart::InitialCompoundPartPer.get_trie_index())?;
+    trie_builder.add(
+        &units("per-"),
+        InitialCompoundPart::InitialCompoundPartPer.get_trie_index(),
+    )?;
     trie_builder.add(&units("square-"), PowerPart::get_trie_index(2))?;
     trie_builder.add(&units("cubic-"), PowerPart::get_trie_index(3))?;
     for power in 2..=15 {
-        trie_builder.add(&units(&format!("pow{power}-")), PowerPart::get_trie_index(power))?;
+        trie_builder.add(
+            &units(&format!("pow{power}-")),
+            PowerPart::get_trie_index(power),
+        )?;
     }
 
     // Add simple units
@@ -516,14 +546,20 @@ struct SingleUnitOrConstant {
 impl SingleUnitOrConstant {
     fn new(single_unit: Option<SingleUnitImpl>, constant: Option<i64>) -> Result<Self> {
         if single_unit.is_some() && constant.is_some() {
-            return Err(LuceneError::illegal_argument("It is a SingleUnit Or a Constant, not both"));
+            return Err(LuceneError::illegal_argument(
+                "It is a SingleUnit Or a Constant, not both",
+            ));
         }
-        Ok(SingleUnitOrConstant { single_unit, constant })
+        Ok(SingleUnitOrConstant {
+            single_unit,
+            constant,
+        })
     }
 }
 
 /// Equivalent to `UnitsParser.TokenState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // variant names mirror the Java constants
 enum TokenState {
     /// `NO_TOKENS_SEEN`.
     NoTokensSeen,
@@ -618,7 +654,9 @@ impl UnitsParser {
 
             let added = result.append_single_unit(Some(&single_unit));
             if self.f_saw_and && !added {
-                return Err(LuceneError::illegal_argument("Two similar units are not allowed in a mixed unit."));
+                return Err(LuceneError::illegal_argument(
+                    "Two similar units are not allowed in a mixed unit.",
+                ));
             }
 
             if result.single_units.len() >= 2 {
@@ -626,7 +664,11 @@ impl UnitsParser {
                 // the same identifier. It doesn't fail for other compound
                 // units (COMPOUND_PART_TIMES). Consequently we take care of
                 // that here.
-                let complexity = if self.f_saw_and { Complexity::Mixed } else { Complexity::Compound };
+                let complexity = if self.f_saw_and {
+                    Complexity::Mixed
+                } else {
+                    Complexity::Compound
+                };
                 if result.get_single_units().len() == 2 {
                     // After appending two singleUnits, the complexity will
                     // be `UMEASURE_UNIT_COMPOUND`
@@ -634,13 +676,17 @@ impl UnitsParser {
                     result.set_complexity(complexity);
                 } else if result.get_complexity() != complexity {
                     // Can't have mixed compound units
-                    return Err(LuceneError::illegal_argument("Can't have mixed compound units"));
+                    return Err(LuceneError::illegal_argument(
+                        "Can't have mixed compound units",
+                    ));
                 }
             }
         }
 
         if result.get_single_units().is_empty() {
-            return Err(LuceneError::illegal_argument("Error in parsing a unit identifier."));
+            return Err(LuceneError::illegal_argument(
+                "Error in parsing a unit identifier.",
+            ));
         }
 
         Ok(Some(result))
@@ -667,11 +713,16 @@ impl UnitsParser {
         if at_start {
             // Identifiers optionally start with "per-".
             if token.get_type() == TokenType::TypeUnitConstant {
-                return Err(LuceneError::illegal_argument("Unit constant cannot be the first token"));
+                return Err(LuceneError::illegal_argument(
+                    "Unit constant cannot be the first token",
+                ));
             }
 
             if token.get_type() == TokenType::TypeInitialCompoundPart {
-                debug_assert!(token.get_initial_compound_part()? == InitialCompoundPart::InitialCompoundPartPer);
+                debug_assert!(
+                    token.get_initial_compound_part()?
+                        == InitialCompoundPart::InitialCompoundPartPer
+                );
 
                 self.f_after_per = true;
                 self.f_just_after_per = true;
@@ -683,14 +734,18 @@ impl UnitsParser {
             // All other SingleUnit's are separated from previous SingleUnit's
             // via a compound part:
             if token.get_type() != TokenType::TypeCompoundPart {
-                return Err(LuceneError::illegal_argument("token type must be TYPE_COMPOUND_PART"));
+                return Err(LuceneError::illegal_argument(
+                    "token type must be TYPE_COMPOUND_PART",
+                ));
             }
 
             let compound_part = CompoundPart::get_compound_part_from_trie_index(token.get_match());
             match compound_part {
                 CompoundPart::Per => {
                     if self.f_saw_and {
-                        return Err(LuceneError::illegal_argument("Mixed compound units not yet supported"));
+                        return Err(LuceneError::illegal_argument(
+                            "Mixed compound units not yet supported",
+                        ));
                         // TODO(CLDR-13701).
                     }
 
@@ -719,7 +774,9 @@ impl UnitsParser {
 
         if token.get_type() == TokenType::TypeUnitConstant {
             if !self.f_just_after_per {
-                return Err(LuceneError::illegal_argument("Unit constant cannot be the first token"));
+                return Err(LuceneError::illegal_argument(
+                    "Unit constant cannot be the first token",
+                ));
             }
 
             return SingleUnitOrConstant::new(None, Some(token.get_constant_denominator()));
@@ -745,7 +802,10 @@ impl UnitsParser {
                     state = TokenState::PrefixTokenSeen;
                 }
                 TokenType::TypeSimpleUnit => {
-                    result.set_simple_unit(token.get_simple_unit_index(), UnitsData::get_simple_units());
+                    result.set_simple_unit(
+                        token.get_simple_unit_index(),
+                        UnitsData::get_simple_units(),
+                    );
                     return SingleUnitOrConstant::new(Some(result), None);
                 }
                 _ => return Err(crate::jdk::illegal_argument_no_message()),
@@ -792,7 +852,9 @@ impl UnitsParser {
             }
 
             if result != TrieResult::IntermediateValue {
-                return Err(LuceneError::illegal_argument("Result must have an intermediate value"));
+                return Err(LuceneError::illegal_argument(
+                    "Result must have an intermediate value",
+                ));
             }
 
             // continue;
@@ -802,10 +864,15 @@ impl UnitsParser {
             if self.f_just_after_per {
                 // We've just parsed a "per-", so we can expect a unit
                 // constant.
-                let hyphen_index = crate::jdk::index_of_unit(&self.f_source, '-' as u16, saved_index);
+                let hyphen_index =
+                    crate::jdk::index_of_unit(&self.f_source, '-' as u16, saved_index);
 
                 // extract unit constant from the string
-                let end = if hyphen_index == -1 { self.f_source.len() as i32 } else { hyphen_index };
+                let end = if hyphen_index == -1 {
+                    self.f_source.len() as i32
+                } else {
+                    hyphen_index
+                };
                 let unit_constant = self.f_source[saved_index as usize..end as usize].to_vec();
                 self.f_index = end;
 
@@ -825,6 +892,7 @@ impl UnitsParser {
 
 /// Equivalent to `UnitsParser.Token.Type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // variant names mirror the Java constants
 enum TokenType {
     /// `TYPE_UNDEFINED`.
     #[allow(dead_code)]
@@ -854,7 +922,10 @@ struct Token {
 impl Token {
     /// `Token(long)`.
     fn new(f_match: i64) -> Result<Token> {
-        Ok(Token { f_match, type_: Self::calculate_type(f_match) })
+        Ok(Token {
+            f_match,
+            type_: Self::calculate_type(f_match),
+        })
     }
 
     /// `tokenWithConstant(String)`.
@@ -864,9 +935,14 @@ impl Token {
             && unit_constant_value.compare_to(&BigDecimal::zero()) >= 0
             && unit_constant_value.compare_to(&BigDecimal::value_of(i64::MAX)) <= 0
         {
-            Ok(Token { f_match: unit_constant_value.long_value_exact()?, type_: TokenType::TypeUnitConstant })
+            Ok(Token {
+                f_match: unit_constant_value.long_value_exact()?,
+                type_: TokenType::TypeUnitConstant,
+            })
         } else {
-            Err(LuceneError::illegal_argument("The unit constant value is not a valid non-negative long integer."))
+            Err(LuceneError::illegal_argument(
+                "The unit constant value is not a valid non-negative long integer.",
+            ))
         }
     }
 
@@ -962,8 +1038,14 @@ impl<'a> MeasureUnitImplComparator<'a> {
                 (Some(a), Some(b)) => java_compare_str(&a, &b),
             });
         }
-        let factor1 = self.conversion_rates.get_factor_to_base(o1)?.get_conversion_rate()?;
-        let factor2 = self.conversion_rates.get_factor_to_base(o2)?.get_conversion_rate()?;
+        let factor1 = self
+            .conversion_rates
+            .get_factor_to_base(o1)?
+            .get_conversion_rate()?;
+        let factor2 = self
+            .conversion_rates
+            .get_factor_to_base(o2)?
+            .get_conversion_rate()?;
 
         Ok(factor1.compare_to(&factor2))
     }
@@ -983,7 +1065,9 @@ pub(crate) struct MeasureUnitImplWithIndexComparator<'a> {
 
 impl<'a> MeasureUnitImplWithIndexComparator<'a> {
     pub(crate) fn new(conversion_rates: &'a ConversionRates) -> Self {
-        MeasureUnitImplWithIndexComparator { measure_unit_impl_comparator: MeasureUnitImplComparator::new(conversion_rates) }
+        MeasureUnitImplWithIndexComparator {
+            measure_unit_impl_comparator: MeasureUnitImplComparator::new(conversion_rates),
+        }
     }
 
     /// `compare(MeasureUnitImplWithIndex, MeasureUnitImplWithIndex)`.
@@ -991,8 +1075,13 @@ impl<'a> MeasureUnitImplWithIndexComparator<'a> {
     /// # Errors
     ///
     /// As [`MeasureUnitImplComparator::compare`].
-    pub(crate) fn compare(&self, o1: &MeasureUnitImplWithIndex, o2: &MeasureUnitImplWithIndex) -> Result<i32> {
-        self.measure_unit_impl_comparator.compare(&o1.unit_impl, &o2.unit_impl)
+    pub(crate) fn compare(
+        &self,
+        o1: &MeasureUnitImplWithIndex,
+        o2: &MeasureUnitImplWithIndex,
+    ) -> Result<i32> {
+        self.measure_unit_impl_comparator
+            .compare(&o1.unit_impl, &o2.unit_impl)
     }
 }
 

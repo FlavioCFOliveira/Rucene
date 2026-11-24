@@ -263,7 +263,11 @@ impl<'a> ThrowableRef<'a> {
                         suppressed.extend(exception.get_suppressed().iter().map(ThrowableRef::Io));
                     }
                 }
-                suppressed.extend(t.get_suppressed().iter().map(|s| ThrowableRef::Lucene(s.as_ref())));
+                suppressed.extend(
+                    t.get_suppressed()
+                        .iter()
+                        .map(|s| ThrowableRef::Lucene(s.as_ref())),
+                );
                 suppressed
             }
         }
@@ -390,7 +394,10 @@ fn expand_data_file_rules(file: &Path) -> Result<()> {
         // `Files.writeString(file, builder.toString(), UTF_8)`: an unpaired
         // surrogate is a `MalformedInputException` of the encoder.
         let text = String::from_utf16(&builder).map_err(|_| {
-            io_exception("java.nio.charset.MalformedInputException", "Input length = 1".to_string())
+            io_exception(
+                "java.nio.charset.MalformedInputException",
+                "Input length = 1".to_string(),
+            )
         })?;
         std::fs::write(file, text.as_bytes())?;
     }
@@ -495,7 +502,9 @@ const MAX_REDIRECTS: u32 = 20;
 /// (`URL.DefaultFactory` and the `sun.net.www.protocol.<protocol>.Handler`
 /// classes of `java.base`): any other is `MalformedURLException("unknown
 /// protocol: <protocol>")`.
-const KNOWN_PROTOCOLS: [&str; 8] = ["file", "ftp", "http", "https", "jar", "jmod", "jrt", "mailto"];
+const KNOWN_PROTOCOLS: [&str; 8] = [
+    "file", "ftp", "http", "https", "jar", "jmod", "jrt", "mailto",
+];
 
 const MALFORMED_URL_EXCEPTION: &str = "java.net.MalformedURLException";
 const PROTOCOL_EXCEPTION: &str = "java.net.ProtocolException";
@@ -528,7 +537,10 @@ impl UrlConnection {
             }
             return Err(io_exception(
                 "java.io.IOException",
-                format!("Server returned HTTP response code: {} for URL: {url}", self.status),
+                format!(
+                    "Server returned HTTP response code: {} for URL: {url}",
+                    self.status
+                ),
             ));
         }
         let body = self.body.take().expect("INVARIANT: the body is read once");
@@ -815,9 +827,13 @@ fn socket_exception_of(e: &std::io::Error) -> Option<(&'static str, String)> {
         .unwrap_or(&text)
         .to_string();
     let class = match e.kind() {
-        ErrorKind::ConnectionRefused | ErrorKind::TimedOut | ErrorKind::NotConnected => CONNECT_EXCEPTION,
+        ErrorKind::ConnectionRefused | ErrorKind::TimedOut | ErrorKind::NotConnected => {
+            CONNECT_EXCEPTION
+        }
         ErrorKind::HostUnreachable => NO_ROUTE_TO_HOST_EXCEPTION,
-        ErrorKind::AddrInUse | ErrorKind::AddrNotAvailable | ErrorKind::PermissionDenied => BIND_EXCEPTION,
+        ErrorKind::AddrInUse | ErrorKind::AddrNotAvailable | ErrorKind::PermissionDenied => {
+            BIND_EXCEPTION
+        }
         _ => SOCKET_EXCEPTION,
     };
     Some((class, message))
@@ -882,7 +898,12 @@ fn certificate_exception(tls: &str, host: &str) -> Option<LuceneError> {
             return None;
         }
         let message = format!("No subject alternative DNS name matching {host} found.");
-        let cause = jdk_exception("java.security.cert.CertificateException", false, message.clone(), None);
+        let cause = jdk_exception(
+            "java.security.cert.CertificateException",
+            false,
+            message.clone(),
+            None,
+        );
         return Some(jdk_exception(
             SSL_HANDSHAKE_EXCEPTION,
             true,
@@ -996,7 +1017,12 @@ impl JavaThrowable for JdkException {
 
 /// `new <class>(message)` with `initCause(cause)`; `io` tells whether the
 /// class extends `java.io.IOException`.
-fn jdk_exception(class: &'static str, io: bool, message: String, cause: Option<LuceneError>) -> LuceneError {
+fn jdk_exception(
+    class: &'static str,
+    io: bool,
+    message: String,
+    cause: Option<LuceneError>,
+) -> LuceneError {
     LuceneError::from(LuceneErrorKind::Throwable(Arc::new(JdkException {
         class,
         message,
@@ -1255,7 +1281,10 @@ impl JavaUrl {
                                 if !is_ipv6_literal_address(&literal) {
                                     return Err(malformed_caused_by(
                                         "java.lang.IllegalArgumentException",
-                                        format!("Invalid host: {}", String::from_utf16_lossy(&h[..=ind])),
+                                        format!(
+                                            "Invalid host: {}",
+                                            String::from_utf16_lossy(&h[..=ind])
+                                        ),
                                     ));
                                 }
                                 self.port = -1;
@@ -1419,7 +1448,11 @@ impl JavaUrl {
     /// `URLStreamHandler.getDefaultPort()` of the `http` (80) and `https`
     /// (443) handlers.
     fn default_port(&self) -> i32 {
-        if self.protocol == "https" { 443 } else { 80 }
+        if self.protocol == "https" {
+            443
+        } else {
+            80
+        }
     }
 }
 
@@ -1507,7 +1540,11 @@ fn check_chars(s: &str, offset: usize, component: &str, input: &str) -> Result<(
 
 /// The path, query and fragment of a relative reference or of the part of
 /// an absolute URI after its authority, validated.
-fn split_reference(s: &str, offset: usize, input: &str) -> Result<(String, Option<String>, Option<String>)> {
+fn split_reference(
+    s: &str,
+    offset: usize,
+    input: &str,
+) -> Result<(String, Option<String>, Option<String>)> {
     let (before_fragment, fragment) = match s.find('#') {
         Some(i) => (&s[..i], Some(&s[i + 1..])),
         None => (s, None),
@@ -1522,7 +1559,12 @@ fn split_reference(s: &str, offset: usize, input: &str) -> Result<(String, Optio
         check_chars(query, offset + len16(path) + 1, "query", input)?;
     }
     if let Some(fragment) = fragment {
-        check_chars(fragment, offset + len16(before_fragment) + 1, "fragment", input)?;
+        check_chars(
+            fragment,
+            offset + len16(before_fragment) + 1,
+            "fragment",
+            input,
+        )?;
     }
     Ok((
         path.to_string(),
@@ -1644,7 +1686,11 @@ impl Uri {
 /// # Errors
 ///
 /// The `IllegalArgumentException` of a malformed `UnicodeSet` pattern.
-fn expand_single_rule(builder: &mut Vec<u16>, left_hand_side: &[u16], right_hand_side: &[u16]) -> Result<()> {
+fn expand_single_rule(
+    builder: &mut Vec<u16>,
+    left_hand_side: &[u16],
+    right_hand_side: &[u16],
+) -> Result<()> {
     let set = UnicodeSet::from_pattern_options(left_hand_side, UnicodeSet::IGNORE_SPACE)?;
     let numeric_value = matches(&numeric_value_pattern(), right_hand_side);
     let mut it = UnicodeSetIterator::new(&set);

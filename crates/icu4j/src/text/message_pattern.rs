@@ -1,13 +1,13 @@
 // © 2016 and later: Unicode, Inc. and others.
 // License & terms of use: http://www.unicode.org/copyright.html
 /*
-*******************************************************************************
-*   Copyright (C) 2010-2016, International Business Machines
-*   Corporation and others.  All Rights Reserved.
-*******************************************************************************
-*   created on: 2010aug21
-*   created by: Markus W. Scherer
-*/
+ *******************************************************************************
+ *   Copyright (C) 2010-2016, International Business Machines
+ *   Corporation and others.  All Rights Reserved.
+ *******************************************************************************
+ *   created on: 2010aug21
+ *   created by: Markus W. Scherer
+ */
 
 //! `com.ibm.icu.text.MessagePattern`.
 
@@ -156,8 +156,14 @@ pub enum ArgType {
 }
 
 /// `argTypes`: `ArgType.values()`.
-const ARG_TYPES: [ArgType; 6] =
-    [ArgType::None, ArgType::Simple, ArgType::Choice, ArgType::Plural, ArgType::Select, ArgType::SelectOrdinal];
+const ARG_TYPES: [ArgType; 6] = [
+    ArgType::None,
+    ArgType::Simple,
+    ArgType::Choice,
+    ArgType::Plural,
+    ArgType::Select,
+    ArgType::SelectOrdinal,
+];
 
 impl ArgType {
     /// `ordinal()`.
@@ -208,7 +214,13 @@ const MAX_VALUE: i32 = i16::MAX as i32;
 
 impl Part {
     fn new(t: PartType, i: i32, l: i32, v: i32) -> Self {
-        Self { part_type: t, index: i, length: l as u16, value: v as i16, limit_part_index: 0 }
+        Self {
+            part_type: t,
+            index: i,
+            length: l as u16,
+            value: v as i16,
+            limit_part_index: 0,
+        }
     }
 
     /// `getType()`.
@@ -253,10 +265,15 @@ impl Part {
     /// [`java_identity_hash_code_stand_in`] of
     /// `com.ibm.icu.text.MessagePattern$Part$Type.<NAME>`.
     pub fn hash_code(&self) -> i32 {
-        let t = java_identity_hash_code_stand_in(&format!("com.ibm.icu.text.MessagePattern$Part$Type.{}", self.part_type.name()));
-        ((t.wrapping_mul(37).wrapping_add(self.index)).wrapping_mul(37).wrapping_add(self.length as i32))
+        let t = java_identity_hash_code_stand_in(&format!(
+            "com.ibm.icu.text.MessagePattern$Part$Type.{}",
+            self.part_type.name()
+        ));
+        ((t.wrapping_mul(37).wrapping_add(self.index))
             .wrapping_mul(37)
-            .wrapping_add(self.value as i32)
+            .wrapping_add(self.length as i32))
+        .wrapping_mul(37)
+        .wrapping_add(self.value as i32)
     }
 }
 
@@ -264,12 +281,19 @@ impl fmt::Display for Part {
     /// `toString()`: `TYPE(value)@index`, the value being the argument
     /// type name for `ARG_START`/`ARG_LIMIT`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value_string = if self.part_type == PartType::ArgStart || self.part_type == PartType::ArgLimit {
-            self.get_arg_type().name().to_string()
-        } else {
-            self.value.to_string()
-        };
-        write!(f, "{}({})@{}", self.part_type.name(), value_string, self.index)
+        let value_string =
+            if self.part_type == PartType::ArgStart || self.part_type == PartType::ArgLimit {
+                self.get_arg_type().name().to_string()
+            } else {
+                self.value.to_string()
+            };
+        write!(
+            f,
+            "{}({})@{}",
+            self.part_type.name(),
+            value_string,
+            self.index
+        )
     }
 }
 
@@ -278,8 +302,13 @@ impl fmt::Display for Part {
 /// `DOUBLE_OPTIONAL`); a bad value fails the class initialization (Java's
 /// `ExceptionInInitializerError`, a panic here, crate precedent).
 static DEFAULT_APOS_MODE: LazyLock<ApostropheMode> = LazyLock::new(|| {
-    let name = ICUConfig::get_or("com.ibm.icu.text.MessagePattern.ApostropheMode", Some("DOUBLE_OPTIONAL")).unwrap_or_default();
-    ApostropheMode::value_of(&name).unwrap_or_else(|e| panic!("java.lang.ExceptionInInitializerError: {e}"))
+    let name = ICUConfig::get_or(
+        "com.ibm.icu.text.MessagePattern.ApostropheMode",
+        Some("DOUBLE_OPTIONAL"),
+    )
+    .unwrap_or_default();
+    ApostropheMode::value_of(&name)
+        .unwrap_or_else(|e| panic!("java.lang.ExceptionInInitializerError: {e}"))
 });
 
 /// `ARG_NAME_NOT_NUMBER`: [`MessagePattern::validate_argument_name`]
@@ -430,7 +459,9 @@ impl MessagePattern {
     pub fn clear(&mut self) -> Result<()> {
         // Mostly the same as preParse().
         if self.is_frozen() {
-            return Err(LuceneError::unsupported_operation("Attempt to clear() a frozen MessagePattern instance."));
+            return Err(LuceneError::unsupported_operation(
+                "Attempt to clear() a frozen MessagePattern instance.",
+            ));
         }
         self.msg = None;
         self.has_arg_names = false;
@@ -462,9 +493,17 @@ impl MessagePattern {
             "com.ibm.icu.text.MessagePattern$ApostropheMode.{}",
             self.apos_mode.name()
         ));
-        let msg_hash = self.msg.as_ref().map_or(0, |m| m.iter().fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(c as i32)));
-        let parts_hash = self.parts.iter().fold(1i32, |h, p| h.wrapping_mul(31).wrapping_add(p.hash_code()));
-        (apos.wrapping_mul(37).wrapping_add(msg_hash)).wrapping_mul(37).wrapping_add(parts_hash)
+        let msg_hash = self.msg.as_ref().map_or(0, |m| {
+            m.iter()
+                .fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(c as i32))
+        });
+        let parts_hash = self
+            .parts
+            .iter()
+            .fold(1i32, |h, p| h.wrapping_mul(31).wrapping_add(p.hash_code()));
+        (apos.wrapping_mul(37).wrapping_add(msg_hash))
+            .wrapping_mul(37)
+            .wrapping_add(parts_hash)
     }
 
     /// `getApostropheMode()`.
@@ -561,7 +600,8 @@ impl MessagePattern {
 
     /// `partSubstringMatches(Part part, String s)`.
     pub fn part_substring_matches(&self, part: &Part, s: &[u16]) -> bool {
-        part.length as usize == s.len() && region_matches(self.m(), part.index, s, 0, part.length as i32)
+        part.length as usize == s.len()
+            && region_matches(self.m(), part.index, s, 0, part.length as i32)
     }
 
     /// `getNumericValue(Part part)`: the part's numeric value, or
@@ -571,7 +611,9 @@ impl MessagePattern {
         if t == PartType::ArgInt {
             part.value as f64
         } else if t == PartType::ArgDouble {
-            self.numeric_values.as_ref().map_or(0.0, |n| n[part.value as usize])
+            self.numeric_values
+                .as_ref()
+                .map_or(0.0, |n| n[part.value as usize])
         } else {
             NO_NUMERIC_VALUE
         }
@@ -640,7 +682,13 @@ impl MessagePattern {
         }
     }
 
-    fn parse_message(&mut self, mut index: i32, msg_start_length: i32, nesting_level: i32, parent_type: ArgType) -> Result<i32> {
+    fn parse_message(
+        &mut self,
+        mut index: i32,
+        msg_start_length: i32,
+        nesting_level: i32,
+        parent_type: ArgType,
+    ) -> Result<i32> {
         if nesting_level > MAX_VALUE {
             crate::jdk::index_out_of_bounds(None);
         }
@@ -674,7 +722,9 @@ impl MessagePattern {
                         loop {
                             index = index_of_unit(self.m(), b'\'' as u16, index + 1);
                             if index >= 0 {
-                                if (index + 1) < self.len() && self.char_at(index + 1) == b'\'' as u16 {
+                                if (index + 1) < self.len()
+                                    && self.char_at(index + 1) == b'\'' as u16
+                                {
                                     // double apostrophe inside quoted literal text
                                     // still encodes a single apostrophe, skip the second one
                                     index += 1;
@@ -707,12 +757,24 @@ impl MessagePattern {
                 self.add_part(PartType::ReplaceNumber, index - 1, 1, 0);
             } else if c == b'{' as u16 {
                 index = self.parse_arg(index - 1, 1, nesting_level)?;
-            } else if (nesting_level > 0 && c == b'}' as u16) || (parent_type == ArgType::Choice && c == b'|' as u16) {
+            } else if (nesting_level > 0 && c == b'}' as u16)
+                || (parent_type == ArgType::Choice && c == b'|' as u16)
+            {
                 // Finish the message before the terminator.
                 // In a choice style, report the "}" substring only for the following ARG_LIMIT,
                 // not for this MSG_LIMIT.
-                let limit_length = if parent_type == ArgType::Choice && c == b'}' as u16 { 0 } else { 1 };
-                self.add_limit_part(msg_start, PartType::MsgLimit, index - 1, limit_length, nesting_level);
+                let limit_length = if parent_type == ArgType::Choice && c == b'}' as u16 {
+                    0
+                } else {
+                    1
+                };
+                self.add_limit_part(
+                    msg_start,
+                    PartType::MsgLimit,
+                    index - 1,
+                    limit_length,
+                    nesting_level,
+                );
                 if parent_type == ArgType::Choice {
                     // Let the choice style parser see the '}' or '|'.
                     return Ok(index - 1);
@@ -723,20 +785,36 @@ impl MessagePattern {
             } // else: c is part of literal text
         }
         if nesting_level > 0 && !self.in_top_level_choice_message(nesting_level, parent_type) {
-            return Err(LuceneError::illegal_argument(format!("Unmatched '{{' braces in message {}", self.prefix())));
+            return Err(LuceneError::illegal_argument(format!(
+                "Unmatched '{{' braces in message {}",
+                self.prefix()
+            )));
         }
         self.add_limit_part(msg_start, PartType::MsgLimit, index, 0, nesting_level);
         Ok(index)
     }
 
-    fn parse_arg(&mut self, mut index: i32, arg_start_length: i32, nesting_level: i32) -> Result<i32> {
+    fn parse_arg(
+        &mut self,
+        mut index: i32,
+        arg_start_length: i32,
+        nesting_level: i32,
+    ) -> Result<i32> {
         let arg_start = self.parts.len() as i32;
         let mut arg_type = ArgType::None;
-        self.add_part(PartType::ArgStart, index, arg_start_length, arg_type.ordinal());
+        self.add_part(
+            PartType::ArgStart,
+            index,
+            arg_start_length,
+            arg_type.ordinal(),
+        );
         index = self.skip_white_space(index + arg_start_length);
         let name_index = index;
         if index == self.len() {
-            return Err(LuceneError::illegal_argument(format!("Unmatched '{{' braces in message {}", self.prefix())));
+            return Err(LuceneError::illegal_argument(format!(
+                "Unmatched '{{' braces in message {}",
+                self.prefix()
+            )));
         }
         // parse argument name or number
         index = self.skip_identifier(index);
@@ -744,30 +822,45 @@ impl MessagePattern {
         if number >= 0 {
             let length = index - name_index;
             if length > MAX_LENGTH || number > MAX_VALUE {
-                crate::jdk::index_out_of_bounds(Some(format!("Argument number too large: {}", self.prefix_at(name_index))));
+                crate::jdk::index_out_of_bounds(Some(format!(
+                    "Argument number too large: {}",
+                    self.prefix_at(name_index)
+                )));
             }
             self.has_arg_numbers = true;
             self.add_part(PartType::ArgNumber, name_index, length, number);
         } else if number == ARG_NAME_NOT_NUMBER {
             let length = index - name_index;
             if length > MAX_LENGTH {
-                crate::jdk::index_out_of_bounds(Some(format!("Argument name too long: {}", self.prefix_at(name_index))));
+                crate::jdk::index_out_of_bounds(Some(format!(
+                    "Argument name too long: {}",
+                    self.prefix_at(name_index)
+                )));
             }
             self.has_arg_names = true;
             self.add_part(PartType::ArgName, name_index, length, 0);
         } else {
             // number<-1 (ARG_NAME_NOT_VALID)
-            return Err(LuceneError::illegal_argument(format!("Bad argument syntax: {}", self.prefix_at(name_index))));
+            return Err(LuceneError::illegal_argument(format!(
+                "Bad argument syntax: {}",
+                self.prefix_at(name_index)
+            )));
         }
         index = self.skip_white_space(index);
         if index == self.len() {
-            return Err(LuceneError::illegal_argument(format!("Unmatched '{{' braces in message {}", self.prefix())));
+            return Err(LuceneError::illegal_argument(format!(
+                "Unmatched '{{' braces in message {}",
+                self.prefix()
+            )));
         }
         let mut c = self.char_at(index);
         if c == b'}' as u16 {
             // all done
         } else if c != b',' as u16 {
-            return Err(LuceneError::illegal_argument(format!("Bad argument syntax: {}", self.prefix_at(name_index))));
+            return Err(LuceneError::illegal_argument(format!(
+                "Bad argument syntax: {}",
+                self.prefix_at(name_index)
+            )));
         } else
         /* ',' */
         {
@@ -780,16 +873,25 @@ impl MessagePattern {
             let length = index - type_index;
             index = self.skip_white_space(index);
             if index == self.len() {
-                return Err(LuceneError::illegal_argument(format!("Unmatched '{{' braces in message {}", self.prefix())));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Unmatched '{{' braces in message {}",
+                    self.prefix()
+                )));
             }
             if length == 0 || {
                 c = self.char_at(index);
                 c != b',' as u16 && c != b'}' as u16
             } {
-                return Err(LuceneError::illegal_argument(format!("Bad argument syntax: {}", self.prefix_at(name_index))));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Bad argument syntax: {}",
+                    self.prefix_at(name_index)
+                )));
             }
             if length > MAX_LENGTH {
-                crate::jdk::index_out_of_bounds(Some(format!("Argument type name too long: {}", self.prefix_at(name_index))));
+                crate::jdk::index_out_of_bounds(Some(format!(
+                    "Argument type name too long: {}",
+                    self.prefix_at(name_index)
+                )));
             }
             arg_type = ArgType::Simple;
             if length == 6 {
@@ -801,7 +903,8 @@ impl MessagePattern {
                 } else if self.is_select(type_index) {
                     arg_type = ArgType::Select;
                 }
-            } else if length == 13 && self.is_select(type_index) && self.is_ordinal(type_index + 6) {
+            } else if length == 13 && self.is_select(type_index) && self.is_ordinal(type_index + 6)
+            {
                 arg_type = ArgType::SelectOrdinal;
             }
             // change the ARG_START type from NONE to argType
@@ -862,21 +965,30 @@ impl MessagePattern {
                     index -= 1;
                     let length = index - start;
                     if length > MAX_LENGTH {
-                        crate::jdk::index_out_of_bounds(Some(format!("Argument style text too long: {}", self.prefix_at(start))));
+                        crate::jdk::index_out_of_bounds(Some(format!(
+                            "Argument style text too long: {}",
+                            self.prefix_at(start)
+                        )));
                     }
                     self.add_part(PartType::ArgStyle, start, length, 0);
                     return Ok(index);
                 }
             } // c is part of literal text
         }
-        Err(LuceneError::illegal_argument(format!("Unmatched '{{' braces in message {}", self.prefix())))
+        Err(LuceneError::illegal_argument(format!(
+            "Unmatched '{{' braces in message {}",
+            self.prefix()
+        )))
     }
 
     fn parse_choice_style_at(&mut self, mut index: i32, nesting_level: i32) -> Result<i32> {
         let start = index;
         index = self.skip_white_space(index);
         if index == self.len() || self.char_at(index) == b'}' as u16 {
-            return Err(LuceneError::illegal_argument(format!("Missing choice argument pattern in {}", self.prefix())));
+            return Err(LuceneError::illegal_argument(format!(
+                "Missing choice argument pattern in {}",
+                self.prefix()
+            )));
         }
         loop {
             // The choice argument style contains |-separated (number, separator, message) triples.
@@ -885,16 +997,25 @@ impl MessagePattern {
             index = self.skip_double(index);
             let length = index - number_index;
             if length == 0 {
-                return Err(LuceneError::illegal_argument(format!("Bad choice pattern syntax: {}", self.prefix_at(start))));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Bad choice pattern syntax: {}",
+                    self.prefix_at(start)
+                )));
             }
             if length > MAX_LENGTH {
-                crate::jdk::index_out_of_bounds(Some(format!("Choice number too long: {}", self.prefix_at(number_index))));
+                crate::jdk::index_out_of_bounds(Some(format!(
+                    "Choice number too long: {}",
+                    self.prefix_at(number_index)
+                )));
             }
             self.parse_double(number_index, index, true)?; // adds ARG_INT or ARG_DOUBLE
-            // Parse the separator.
+                                                           // Parse the separator.
             index = self.skip_white_space(index);
             if index == self.len() {
-                return Err(LuceneError::illegal_argument(format!("Bad choice pattern syntax: {}", self.prefix_at(start))));
+                return Err(LuceneError::illegal_argument(format!(
+                    "Bad choice pattern syntax: {}",
+                    self.prefix_at(start)
+                )));
             }
             let c = self.char_at(index);
             if !(c == b'#' as u16 || c == b'<' as u16 || c == 0x2264) {
@@ -915,7 +1036,10 @@ impl MessagePattern {
             }
             if self.char_at(index) == b'}' as u16 {
                 if !self.in_message_format_pattern(nesting_level) {
-                    return Err(LuceneError::illegal_argument(format!("Bad choice pattern syntax: {}", self.prefix_at(start))));
+                    return Err(LuceneError::illegal_argument(format!(
+                        "Bad choice pattern syntax: {}",
+                        self.prefix_at(start)
+                    )));
                 }
                 return Ok(index);
             } // else the terminator is '|'
@@ -923,7 +1047,12 @@ impl MessagePattern {
         }
     }
 
-    fn parse_plural_or_select_style(&mut self, arg_type: ArgType, mut index: i32, nesting_level: i32) -> Result<i32> {
+    fn parse_plural_or_select_style(
+        &mut self,
+        arg_type: ArgType,
+        mut index: i32,
+        nesting_level: i32,
+    ) -> Result<i32> {
         let start = index;
         let mut is_empty = true;
         let mut has_other = false;
@@ -963,7 +1092,10 @@ impl MessagePattern {
                     )));
                 }
                 if length > MAX_LENGTH {
-                    crate::jdk::index_out_of_bounds(Some(format!("Argument selector too long: {}", self.prefix_at(selector_index))));
+                    crate::jdk::index_out_of_bounds(Some(format!(
+                        "Argument selector too long: {}",
+                        self.prefix_at(selector_index)
+                    )));
                 }
                 self.add_part(PartType::ArgSelector, selector_index, length, 0);
                 self.parse_double(selector_index + 1, index, false)?; // adds ARG_INT or ARG_DOUBLE
@@ -981,7 +1113,13 @@ impl MessagePattern {
                 if arg_type.has_plural_style()
                     && length == 6
                     && index < self.len()
-                    && region_matches(self.m(), selector_index, &crate::jdk::units("offset:"), 0, 7)
+                    && region_matches(
+                        self.m(),
+                        selector_index,
+                        &crate::jdk::units("offset:"),
+                        0,
+                        7,
+                    )
                 {
                     // plural offset, not a selector
                     if !is_empty {
@@ -1000,7 +1138,10 @@ impl MessagePattern {
                         )));
                     }
                     if (index - value_index) > MAX_LENGTH {
-                        crate::jdk::index_out_of_bounds(Some(format!("Plural offset value too long: {}", self.prefix_at(value_index))));
+                        crate::jdk::index_out_of_bounds(Some(format!(
+                            "Plural offset value too long: {}",
+                            self.prefix_at(value_index)
+                        )));
                     }
                     self.parse_double(value_index, index, false)?; // adds ARG_INT or ARG_DOUBLE
                     is_empty = false;
@@ -1008,10 +1149,19 @@ impl MessagePattern {
                 } else {
                     // normal selector word
                     if length > MAX_LENGTH {
-                        crate::jdk::index_out_of_bounds(Some(format!("Argument selector too long: {}", self.prefix_at(selector_index))));
+                        crate::jdk::index_out_of_bounds(Some(format!(
+                            "Argument selector too long: {}",
+                            self.prefix_at(selector_index)
+                        )));
                     }
                     self.add_part(PartType::ArgSelector, selector_index, length, 0);
-                    if region_matches(self.m(), selector_index, &crate::jdk::units("other"), 0, length) {
+                    if region_matches(
+                        self.m(),
+                        selector_index,
+                        &crate::jdk::units("other"),
+                        0,
+                        length,
+                    ) {
                         has_other = true;
                     }
                 }
@@ -1066,7 +1216,9 @@ impl MessagePattern {
                 if number >= i32::MAX / 10 {
                     bad_number = true; // overflow
                 }
-                number = number.wrapping_mul(10).wrapping_add((c - b'0' as u16) as i32);
+                number = number
+                    .wrapping_mul(10)
+                    .wrapping_add((c - b'0' as u16) as i32);
             } else {
                 return ARG_NAME_NOT_NUMBER;
             }
@@ -1112,7 +1264,15 @@ impl MessagePattern {
             if c == 0x221e {
                 // infinity
                 if allow_infinity && index == limit {
-                    self.add_arg_double_part(if is_negative != 0 { f64::NEG_INFINITY } else { f64::INFINITY }, start, limit - start);
+                    self.add_arg_double_part(
+                        if is_negative != 0 {
+                            f64::NEG_INFINITY
+                        } else {
+                            f64::INFINITY
+                        },
+                        start,
+                        limit - start,
+                    );
                     return Ok(());
                 } else {
                     break 'bad;
@@ -1125,7 +1285,12 @@ impl MessagePattern {
                     break; // not a small-enough integer
                 }
                 if index == limit {
-                    self.add_part(PartType::ArgInt, start, limit - start, if is_negative != 0 { -value } else { value });
+                    self.add_part(
+                        PartType::ArgInt,
+                        start,
+                        limit - start,
+                        if is_negative != 0 { -value } else { value },
+                    );
                     return Ok(());
                 }
                 c = self.char_at(index);
@@ -1224,14 +1389,23 @@ impl MessagePattern {
 
     /// `inTopLevelChoiceMessage(int nestingLevel, ArgType parentType)`.
     fn in_top_level_choice_message(&self, nesting_level: i32, parent_type: ArgType) -> bool {
-        nesting_level == 1 && parent_type == ArgType::Choice && self.parts[0].part_type != PartType::MsgStart
+        nesting_level == 1
+            && parent_type == ArgType::Choice
+            && self.parts[0].part_type != PartType::MsgStart
     }
 
     fn add_part(&mut self, part_type: PartType, index: i32, length: i32, value: i32) {
         self.parts.push(Part::new(part_type, index, length, value));
     }
 
-    fn add_limit_part(&mut self, start: i32, part_type: PartType, index: i32, length: i32, value: i32) {
+    fn add_limit_part(
+        &mut self,
+        start: i32,
+        part_type: PartType,
+        index: i32,
+        length: i32,
+        value: i32,
+    ) {
         let size = self.parts.len() as i32;
         self.parts[start as usize].limit_part_index = size;
         self.add_part(part_type, index, length, value);
@@ -1268,7 +1442,11 @@ impl MessagePattern {
 
 /// `String.regionMatches(int toffset, String other, int ooffset, int len)`.
 fn region_matches(s: &[u16], toffset: i32, other: &[u16], ooffset: i32, len: i32) -> bool {
-    if ooffset < 0 || toffset < 0 || toffset as i64 > s.len() as i64 - len as i64 || ooffset as i64 > other.len() as i64 - len as i64 {
+    if ooffset < 0
+        || toffset < 0
+        || toffset as i64 > s.len() as i64 - len as i64
+        || ooffset as i64 > other.len() as i64 - len as i64
+    {
         return false;
     }
     (0..len).all(|k| s[(toffset + k) as usize] == other[(ooffset + k) as usize])

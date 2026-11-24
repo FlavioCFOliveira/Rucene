@@ -81,7 +81,10 @@ impl CompactDecimalFormat {
     /// # Errors
     ///
     /// The errors of the locale data.
-    pub fn get_instance_locale(locale: &Locale, style: CompactStyle) -> Result<CompactDecimalFormat> {
+    pub fn get_instance_locale(
+        locale: &Locale,
+        style: CompactStyle,
+    ) -> Result<CompactDecimalFormat> {
         let uloc = ULocale::for_locale(Some(locale))?.unwrap_or_else(ULocale::root);
         Self::new(&uloc, style)
     }
@@ -89,7 +92,9 @@ impl CompactDecimalFormat {
     /// The package-private constructor `CompactDecimalFormat(ULocale,
     /// CompactStyle)`.
     pub(crate) fn new(locale: &ULocale, style: CompactStyle) -> Result<Self> {
-        Ok(CompactDecimalFormat(DecimalFormat::new_compact(locale, style)?))
+        Ok(CompactDecimalFormat(DecimalFormat::new_compact(
+            locale, style,
+        )?))
     }
 }
 
@@ -103,16 +108,36 @@ impl NumberFormat for CompactDecimalFormat {
     fn format_long_to(&self, n: i64, r: &mut Vec<u16>, p: &mut FieldPosition) -> Result<()> {
         self.0.format_long_to(n, r, p)
     }
-    fn format_big_integer_to(&self, n: &BigInteger, r: &mut Vec<u16>, p: &mut FieldPosition) -> Result<()> {
+    fn format_big_integer_to(
+        &self,
+        n: &BigInteger,
+        r: &mut Vec<u16>,
+        p: &mut FieldPosition,
+    ) -> Result<()> {
         self.0.format_big_integer_to(n, r, p)
     }
-    fn format_big_decimal_to(&self, n: &BigDecimal, r: &mut Vec<u16>, p: &mut FieldPosition) -> Result<()> {
+    fn format_big_decimal_to(
+        &self,
+        n: &BigDecimal,
+        r: &mut Vec<u16>,
+        p: &mut FieldPosition,
+    ) -> Result<()> {
         self.0.format_big_decimal_to(n, r, p)
     }
-    fn format_icu_big_decimal_to(&self, n: &IcuBigDecimal, r: &mut Vec<u16>, p: &mut FieldPosition) -> Result<()> {
+    fn format_icu_big_decimal_to(
+        &self,
+        n: &IcuBigDecimal,
+        r: &mut Vec<u16>,
+        p: &mut FieldPosition,
+    ) -> Result<()> {
         self.0.format_icu_big_decimal_to(n, r, p)
     }
-    fn format_currency_amount_to(&self, c: &CurrencyAmount, r: &mut Vec<u16>, p: &mut FieldPosition) -> Result<()> {
+    fn format_currency_amount_to(
+        &self,
+        c: &CurrencyAmount,
+        r: &mut Vec<u16>,
+        p: &mut FieldPosition,
+    ) -> Result<()> {
         self.0.format_currency_amount_to(c, r, p)
     }
     /// Parsing is not supported. Equivalent to `parse(String,
@@ -122,11 +147,19 @@ impl NumberFormat for CompactDecimalFormat {
     }
     /// Parsing is not supported. Equivalent to `parseCurrency(CharSequence,
     /// ParsePosition)`.
-    fn parse_currency(&self, text: &[u16], pos: &mut ParsePosition) -> Result<Option<CurrencyAmount>> {
+    fn parse_currency(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+    ) -> Result<Option<CurrencyAmount>> {
         self.0.parse_currency(text, pos)
     }
     fn clone_number_format(&self) -> Box<dyn NumberFormat> {
-        Box::new(CompactDecimalFormat(self.0.clone_decimal_format().unwrap_or_else(|e| panic!("{e}"))))
+        Box::new(CompactDecimalFormat(
+            self.0
+                .clone_decimal_format()
+                .unwrap_or_else(|e| panic!("{e}")),
+        ))
     }
     fn get_rounding_mode(&self) -> Result<i32> {
         self.0.get_rounding_mode()
@@ -191,23 +224,39 @@ impl NumberFormat for CompactDecimalFormat {
 }
 
 impl Format for CompactDecimalFormat {
-    fn format_object_to(&self, obj: &dyn Any, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_object_to(
+        &self,
+        obj: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         self.format_any_to(obj, to_append_to, pos)
     }
 
-    fn parse_object_at(&self, source: &[u16], pos: &mut ParsePosition) -> Result<Option<ParsedObject>> {
+    fn parse_object_at(
+        &self,
+        source: &[u16],
+        pos: &mut ParsePosition,
+    ) -> Result<Option<ParsedObject>> {
         Ok(NumberFormat::parse(self, source, pos)?.map(|n| Box::new(n) as ParsedObject))
     }
 
     fn clone_format(&self) -> Box<dyn Format> {
-        Box::new(CompactDecimalFormat(self.0.clone_decimal_format().unwrap_or_else(|e| panic!("{e}"))))
+        Box::new(CompactDecimalFormat(
+            self.0
+                .clone_decimal_format()
+                .unwrap_or_else(|e| panic!("{e}")),
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn format_to_character_iterator(&self, obj: &dyn Any) -> Result<Box<dyn AttributedCharacterIterator>> {
+    fn format_to_character_iterator(
+        &self,
+        obj: &dyn Any,
+    ) -> Result<Box<dyn AttributedCharacterIterator>> {
         self.0.format_to_character_iterator(obj)
     }
 }

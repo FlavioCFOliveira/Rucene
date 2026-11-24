@@ -34,7 +34,9 @@ impl<F, S> Pair<F, S> {
     pub fn of(first: Option<F>, second: Option<S>) -> Result<Self> {
         match (first, second) {
             (Some(first), Some(second)) => Ok(Self { first, second }),
-            _ => Err(LuceneError::illegal_argument("Pair.of requires non null values.")),
+            _ => Err(LuceneError::illegal_argument(
+                "Pair.of requires non null values.",
+            )),
         }
     }
 }
@@ -42,6 +44,9 @@ impl<F, S> Pair<F, S> {
 impl<F: JavaHashCode, S: JavaHashCode> JavaHashCode for Pair<F, S> {
     /// `hashCode()`: `first.hashCode() * 37 + second.hashCode()`.
     fn java_hash_code(&self) -> i32 {
-        self.first.java_hash_code().wrapping_mul(37).wrapping_add(self.second.java_hash_code())
+        self.first
+            .java_hash_code()
+            .wrapping_mul(37)
+            .wrapping_add(self.second.java_hash_code())
     }
 }

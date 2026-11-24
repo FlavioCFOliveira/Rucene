@@ -67,11 +67,11 @@ static LEGACY: LazyLock<HashMap<CaseInsensitiveKey, [&'static str; 2]>> = LazyLo
     let entries: [[&str; 2]; 26] = [
         //{"tag",         "preferred"},
         ["art-lojban", "jbo"],
-        ["cel-gaulish", "xtg"],  // fallback
+        ["cel-gaulish", "xtg"],       // fallback
         ["en-GB-oed", "en-GB-x-oed"], // fallback
         ["i-ami", "ami"],
         ["i-bnn", "bnn"],
-        ["i-default", "en-x-i-default"],   // fallback
+        ["i-default", "en-x-i-default"],    // fallback
         ["i-enochian", "und-x-i-enochian"], // fallback
         ["i-hak", "hak"],
         ["i-klingon", "tlh"],
@@ -133,7 +133,11 @@ impl LanguageTag {
             if dash == -1 {
                 break;
             }
-            gfmap = LEGACY.get(&CaseInsensitiveKey::new(&substring16(language_tag, 0, dash)));
+            gfmap = LEGACY.get(&CaseInsensitiveKey::new(&substring16(
+                language_tag,
+                0,
+                dash,
+            )));
         }
 
         let mut itr = if let Some(gfmap) = gfmap {
@@ -465,7 +469,12 @@ impl LanguageTag {
         // append ill-formed variant subtags to private use
         if let Some(privuse_var) = privuse_var {
             privateuse = Some(match privateuse {
-                None => format!("{}{}{}", Self::PRIVUSE_VARIANT_PREFIX, Self::SEP, privuse_var),
+                None => format!(
+                    "{}{}{}",
+                    Self::PRIVUSE_VARIANT_PREFIX,
+                    Self::SEP,
+                    privuse_var
+                ),
                 Some(p) => format!(
                     "{}{}{}{}{}",
                     p,

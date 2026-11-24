@@ -21,8 +21,9 @@ const D1: f64 = 1.0;
 static LANGUAGE_SPLITTER: LazyLock<JavaPattern> =
     LazyLock::new(|| JavaPattern::compile("\\s*,\\s*", 0).expect("valid pattern"));
 /// `weightSplitter`.
-static WEIGHT_SPLITTER: LazyLock<JavaPattern> =
-    LazyLock::new(|| JavaPattern::compile("\\s*(\\S*)\\s*;\\s*q\\s*=\\s*(\\S*)", 0).expect("valid pattern"));
+static WEIGHT_SPLITTER: LazyLock<JavaPattern> = LazyLock::new(|| {
+    JavaPattern::compile("\\s*(\\S*)\\s*;\\s*q\\s*=\\s*(\\S*)", 0).expect("valid pattern")
+});
 
 /// An immutable class that takes a list of locales and weights, sorts the
 /// locales by weight (stable for equal weights) and gives a list of the
@@ -51,7 +52,11 @@ fn java_double_compare(a: f64, b: f64) -> Ordering {
 
 /// `Double.hashCode(double)`.
 fn java_double_hash(d: f64) -> i32 {
-    let bits = if d.is_nan() { 0x7ff8000000000000u64 } else { d.to_bits() };
+    let bits = if d.is_nan() {
+        0x7ff8000000000000u64
+    } else {
+        d.to_bits()
+    };
     (bits ^ (bits >> 32)) as i32
 }
 
@@ -91,13 +96,19 @@ impl LocalePriorityList {
     /// `getWeight(ULocale locale)`: the weight, `None` for a locale not in
     /// the list.
     pub fn get_weight(&self, locale: &ULocale) -> Option<f64> {
-        self.languages_and_weights.iter().find(|(l, _)| l == locale).map(|(_, w)| *w)
+        self.languages_and_weights
+            .iter()
+            .find(|(l, _)| l == locale)
+            .map(|(_, w)| *w)
     }
 
     /// `getULocales()`: the locales, in order (an unmodifiable view of the
     /// key set).
     pub fn get_u_locales(&self) -> Vec<ULocale> {
-        self.languages_and_weights.iter().map(|(l, _)| l.clone()).collect()
+        self.languages_and_weights
+            .iter()
+            .map(|(l, _)| l.clone())
+            .collect()
     }
 
     /// `iterator()`: the locales, in order.
@@ -110,16 +121,17 @@ impl LocalePriorityList {
     pub fn java_equals(&self, that: &LocalePriorityList) -> bool {
         self.languages_and_weights.len() == that.languages_and_weights.len()
             && self.languages_and_weights.iter().all(|(l, w)| {
-                that.get_weight(l).is_some_and(|tw| java_double_compare(*w, tw) == Ordering::Equal)
+                that.get_weight(l)
+                    .is_some_and(|tw| java_double_compare(*w, tw) == Ordering::Equal)
             })
     }
 
     /// `hashCode()`: `AbstractMap.hashCode`, the sum of
     /// `key.hashCode() ^ value.hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        self.languages_and_weights
-            .iter()
-            .fold(0i32, |h, (l, w)| h.wrapping_add(l.hash_code() ^ java_double_hash(*w)))
+        self.languages_and_weights.iter().fold(0i32, |h, (l, w)| {
+            h.wrapping_add(l.hash_code() ^ java_double_hash(*w))
+        })
     }
 }
 
@@ -202,14 +214,19 @@ impl Builder {
             // Just return the same immutable list.
             return built.clone();
         }
-        let language_to_weight = self.language_to_weight.take().expect("set while built is null");
+        let language_to_weight = self
+            .language_to_weight
+            .take()
+            .expect("set while built is null");
         let temp: Vec<(ULocale, f64)>;
         if self.has_weights {
             // Walk through the input list, collecting the items with the same weights.
             // (TreeMap<Double, List<ULocale>>(myDescendingDouble): kept sorted by key.)
             let mut weight_to_languages: Vec<(f64, Vec<ULocale>)> = Vec::new();
             for (lang, weight) in &language_to_weight {
-                match weight_to_languages.binary_search_by(|(k, _)| my_descending_double(*k, *weight)) {
+                match weight_to_languages
+                    .binary_search_by(|(k, _)| my_descending_double(*k, *weight))
+                {
                     Ok(i) => weight_to_languages[i].1.push(lang.clone()),
                     Err(i) => weight_to_languages.insert(i, (*weight, vec![lang.clone()])),
                 }

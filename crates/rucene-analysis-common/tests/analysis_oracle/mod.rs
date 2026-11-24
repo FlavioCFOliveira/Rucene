@@ -763,7 +763,10 @@ impl Oracle {
         // The interfaces properties are reflected for, beyond the known ones.
         let mut reflected: Vec<(TypeId, String)> = Vec::new();
         src.reflect_with(
-            &mut |id: TypeId, _: &'static str, key: &str, _: &dyn std::fmt::Debug| {
+            &mut |id: TypeId,
+                  _: &'static str,
+                  key: &str,
+                  _: &dyn rucene::util::attribute::AttributeValue| {
                 if !known_attributes().iter().any(|(k, _)| *k == id) {
                     reflected.push((id, key.to_string()));
                 }

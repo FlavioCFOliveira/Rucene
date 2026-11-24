@@ -44,7 +44,12 @@ impl FormattedNumberRange {
         quantity2: Box<dyn DecimalQuantity>,
         identity_result: RangeIdentityResult,
     ) -> Self {
-        FormattedNumberRange { string, quantity1, quantity2, identity_result }
+        FormattedNumberRange {
+            string,
+            quantity1,
+            quantity2,
+            identity_result,
+        }
     }
 
     /// Export the first formatted number as a BigDecimal. Equivalent to
@@ -83,9 +88,13 @@ impl FormattedNumberRange {
     pub fn hash_code(&self) -> Result<i32> {
         // NumberStringBuilder imports equals and hashCode from CharSequence, which only uses chars.
         let chars = self.string.to_char_array();
-        let chars_hash = chars.iter().fold(1i32, |h, &c| h.wrapping_mul(31).wrapping_add(i32::from(c)));
+        let chars_hash = chars
+            .iter()
+            .fold(1i32, |h, &c| h.wrapping_mul(31).wrapping_add(i32::from(c)));
         let fields = self.string.to_field_array();
-        let fields_hash = fields.iter().fold(1i32, |h, f| h.wrapping_mul(31).wrapping_add(field_object_hash_code(f)));
+        let fields_hash = fields.iter().fold(1i32, |h, f| {
+            h.wrapping_mul(31).wrapping_add(field_object_hash_code(f))
+        });
         Ok(chars_hash
             ^ fields_hash
             ^ self.get_first_big_decimal()?.hash_code()
@@ -103,8 +112,12 @@ impl FormattedNumberRange {
         }
         // NumberStringBuilder imports equals and hashCode from CharSequence, which only uses chars.
         Ok(self.string.content_equals(&other.string)
-            && self.get_first_big_decimal()?.java_equals(&other.get_first_big_decimal()?)
-            && self.get_second_big_decimal()?.java_equals(&other.get_second_big_decimal()?))
+            && self
+                .get_first_big_decimal()?
+                .java_equals(&other.get_first_big_decimal()?)
+            && self
+                .get_second_big_decimal()?
+                .java_equals(&other.get_second_big_decimal()?))
     }
 
     /// Equivalent to `getFirstFixedDecimal()` (internal).
@@ -123,9 +136,11 @@ impl FormattedNumberRange {
 fn field_object_hash_code(f: &Option<FieldObject>) -> i32 {
     match f {
         None => 0,
-        Some(FieldObject::Field(field)) => {
-            java_identity_hash_code_stand_in(&format!("{}${}", field.java_class(), field.get_name()))
-        }
+        Some(FieldObject::Field(field)) => java_identity_hash_code_stand_in(&format!(
+            "{}${}",
+            field.java_class(),
+            field.get_name()
+        )),
         Some(FieldObject::Wrapper(w)) => java_identity_hash_code_stand_in(&format!("{w:?}")),
     }
 }

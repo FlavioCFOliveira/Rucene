@@ -9,9 +9,9 @@ use rucene::error::{LuceneError, Result};
 use rucene::util::java_collections::{java_identity_hash_code_stand_in, java_string_hash_code};
 
 use crate::jdk::math::{BigDecimal, MathContext, RoundingMode};
+use crate::number::compact_notation::CompactCustomData;
 use crate::r#impl::number::macro_props::enum_hash_code;
 use crate::r#impl::number::padder::PadPosition;
-use crate::number::compact_notation::CompactCustomData;
 use crate::text::compact_decimal_format::CompactStyle;
 use crate::text::currency_plural_info::CurrencyPluralInfo;
 use crate::text::plural_rules::PluralRules;
@@ -74,7 +74,10 @@ impl ParseMode {
 
     /// `hashCode()` (identity): see `java_identity_hash_code_stand_in`.
     pub fn hash_code(self) -> i32 {
-        enum_hash_code("com.ibm.icu.impl.number.DecimalFormatProperties$ParseMode", self.name())
+        enum_hash_code(
+            "com.ibm.icu.impl.number.DecimalFormatProperties$ParseMode",
+            self.name(),
+        )
     }
 }
 
@@ -142,10 +145,16 @@ impl PropertyValue {
         use PropertyValue as V;
         match self {
             V::CompactCustomData(m) => compact_custom_data_hash_code(m),
-            V::CompactStyle(s) => enum_hash_code("com.ibm.icu.text.CompactDecimalFormat$CompactStyle", s.name()),
+            V::CompactStyle(s) => enum_hash_code(
+                "com.ibm.icu.text.CompactDecimalFormat$CompactStyle",
+                s.name(),
+            ),
             V::Currency(c) => c.hash_code(),
             V::CurrencyPluralInfo(c) => c.hash_code(),
-            V::CurrencyUsage(u) => enum_hash_code("com.ibm.icu.util.Currency$CurrencyUsage", currency_usage_name(*u)),
+            V::CurrencyUsage(u) => enum_hash_code(
+                "com.ibm.icu.util.Currency$CurrencyUsage",
+                currency_usage_name(*u),
+            ),
             V::Boolean(b) => {
                 if *b {
                     1231
@@ -157,7 +166,10 @@ impl PropertyValue {
             V::MathContext(mc) => math_context_hash_code(mc),
             V::BigDecimal(b) => b.hash_code(),
             V::String(s) => string_hash_code(s),
-            V::PadPosition(p) => enum_hash_code("com.ibm.icu.impl.number.Padder$PadPosition", pad_position_name(*p)),
+            V::PadPosition(p) => enum_hash_code(
+                "com.ibm.icu.impl.number.Padder$PadPosition",
+                pad_position_name(*p),
+            ),
             V::ParseMode(m) => m.hash_code(),
             V::PluralRules(r) => r.hash_code(),
             V::RoundingMode(m) => enum_hash_code("java.math.RoundingMode", m.name()),
@@ -206,12 +218,14 @@ pub(crate) fn pad_position_name(p: PadPosition) -> &'static str {
 
 /// `String.hashCode()` over UTF-16 units.
 pub(crate) fn string_hash_code(s: &[u16]) -> i32 {
-    s.iter().fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
+    s.iter()
+        .fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
 }
 
 /// `MathContext.hashCode()`: `roundingMode.hashCode() << 24 ^ precision`.
 pub(crate) fn math_context_hash_code(mc: &MathContext) -> i32 {
-    (enum_hash_code("java.math.RoundingMode", mc.get_rounding_mode().name()) << 24) ^ mc.get_precision()
+    (enum_hash_code("java.math.RoundingMode", mc.get_rounding_mode().name()) << 24)
+        ^ mc.get_precision()
 }
 
 /// `AbstractMap.hashCode()` of a `Map<String, Map<String, String>>`.
@@ -433,48 +447,132 @@ impl DecimalFormatProperties {
     pub fn field_values(&self) -> [(&'static str, Option<PropertyValue>); 43] {
         use PropertyValue as V;
         [
-            ("compactCustomData", self.compact_custom_data.clone().map(V::CompactCustomData)),
+            (
+                "compactCustomData",
+                self.compact_custom_data.clone().map(V::CompactCustomData),
+            ),
             ("compactStyle", self.compact_style.map(V::CompactStyle)),
             ("currency", self.currency.clone().map(V::Currency)),
-            ("currencyPluralInfo", self.currency_plural_info.clone().map(V::CurrencyPluralInfo)),
+            (
+                "currencyPluralInfo",
+                self.currency_plural_info.clone().map(V::CurrencyPluralInfo),
+            ),
             ("currencyUsage", self.currency_usage.map(V::CurrencyUsage)),
-            ("decimalPatternMatchRequired", Some(V::Boolean(self.decimal_pattern_match_required))),
-            ("decimalSeparatorAlwaysShown", Some(V::Boolean(self.decimal_separator_always_shown))),
-            ("exponentSignAlwaysShown", Some(V::Boolean(self.exponent_sign_always_shown))),
-            ("currencyAsDecimal", Some(V::Boolean(self.currency_as_decimal))),
+            (
+                "decimalPatternMatchRequired",
+                Some(V::Boolean(self.decimal_pattern_match_required)),
+            ),
+            (
+                "decimalSeparatorAlwaysShown",
+                Some(V::Boolean(self.decimal_separator_always_shown)),
+            ),
+            (
+                "exponentSignAlwaysShown",
+                Some(V::Boolean(self.exponent_sign_always_shown)),
+            ),
+            (
+                "currencyAsDecimal",
+                Some(V::Boolean(self.currency_as_decimal)),
+            ),
             ("formatWidth", Some(V::Integer(self.format_width))),
             ("groupingSize", Some(V::Integer(self.grouping_size))),
             ("groupingUsed", Some(V::Boolean(self.grouping_used))),
-            ("magnitudeMultiplier", Some(V::Integer(self.magnitude_multiplier))),
+            (
+                "magnitudeMultiplier",
+                Some(V::Integer(self.magnitude_multiplier)),
+            ),
             ("mathContext", self.math_context.map(V::MathContext)),
-            ("maximumFractionDigits", Some(V::Integer(self.maximum_fraction_digits))),
-            ("maximumIntegerDigits", Some(V::Integer(self.maximum_integer_digits))),
-            ("maximumSignificantDigits", Some(V::Integer(self.maximum_significant_digits))),
-            ("minimumExponentDigits", Some(V::Integer(self.minimum_exponent_digits))),
-            ("minimumFractionDigits", Some(V::Integer(self.minimum_fraction_digits))),
-            ("minimumGroupingDigits", Some(V::Integer(self.minimum_grouping_digits))),
-            ("minimumIntegerDigits", Some(V::Integer(self.minimum_integer_digits))),
-            ("minimumSignificantDigits", Some(V::Integer(self.minimum_significant_digits))),
+            (
+                "maximumFractionDigits",
+                Some(V::Integer(self.maximum_fraction_digits)),
+            ),
+            (
+                "maximumIntegerDigits",
+                Some(V::Integer(self.maximum_integer_digits)),
+            ),
+            (
+                "maximumSignificantDigits",
+                Some(V::Integer(self.maximum_significant_digits)),
+            ),
+            (
+                "minimumExponentDigits",
+                Some(V::Integer(self.minimum_exponent_digits)),
+            ),
+            (
+                "minimumFractionDigits",
+                Some(V::Integer(self.minimum_fraction_digits)),
+            ),
+            (
+                "minimumGroupingDigits",
+                Some(V::Integer(self.minimum_grouping_digits)),
+            ),
+            (
+                "minimumIntegerDigits",
+                Some(V::Integer(self.minimum_integer_digits)),
+            ),
+            (
+                "minimumSignificantDigits",
+                Some(V::Integer(self.minimum_significant_digits)),
+            ),
             ("multiplier", self.multiplier.clone().map(V::BigDecimal)),
-            ("negativePrefix", self.negative_prefix.clone().map(V::String)),
-            ("negativePrefixPattern", self.negative_prefix_pattern.clone().map(V::String)),
-            ("negativeSuffix", self.negative_suffix.clone().map(V::String)),
-            ("negativeSuffixPattern", self.negative_suffix_pattern.clone().map(V::String)),
+            (
+                "negativePrefix",
+                self.negative_prefix.clone().map(V::String),
+            ),
+            (
+                "negativePrefixPattern",
+                self.negative_prefix_pattern.clone().map(V::String),
+            ),
+            (
+                "negativeSuffix",
+                self.negative_suffix.clone().map(V::String),
+            ),
+            (
+                "negativeSuffixPattern",
+                self.negative_suffix_pattern.clone().map(V::String),
+            ),
             ("padPosition", self.pad_position.map(V::PadPosition)),
             ("padString", self.pad_string.clone().map(V::String)),
-            ("parseCaseSensitive", Some(V::Boolean(self.parse_case_sensitive))),
-            ("parseIntegerOnly", Some(V::Boolean(self.parse_integer_only))),
+            (
+                "parseCaseSensitive",
+                Some(V::Boolean(self.parse_case_sensitive)),
+            ),
+            (
+                "parseIntegerOnly",
+                Some(V::Boolean(self.parse_integer_only)),
+            ),
             ("parseMode", self.parse_mode.map(V::ParseMode)),
             ("parseNoExponent", Some(V::Boolean(self.parse_no_exponent))),
-            ("parseToBigDecimal", Some(V::Boolean(self.parse_to_big_decimal))),
+            (
+                "parseToBigDecimal",
+                Some(V::Boolean(self.parse_to_big_decimal)),
+            ),
             ("pluralRules", self.plural_rules.clone().map(V::PluralRules)),
-            ("positivePrefix", self.positive_prefix.clone().map(V::String)),
-            ("positivePrefixPattern", self.positive_prefix_pattern.clone().map(V::String)),
-            ("positiveSuffix", self.positive_suffix.clone().map(V::String)),
-            ("positiveSuffixPattern", self.positive_suffix_pattern.clone().map(V::String)),
-            ("roundingIncrement", self.rounding_increment.clone().map(V::BigDecimal)),
+            (
+                "positivePrefix",
+                self.positive_prefix.clone().map(V::String),
+            ),
+            (
+                "positivePrefixPattern",
+                self.positive_prefix_pattern.clone().map(V::String),
+            ),
+            (
+                "positiveSuffix",
+                self.positive_suffix.clone().map(V::String),
+            ),
+            (
+                "positiveSuffixPattern",
+                self.positive_suffix_pattern.clone().map(V::String),
+            ),
+            (
+                "roundingIncrement",
+                self.rounding_increment.clone().map(V::BigDecimal),
+            ),
             ("roundingMode", self.rounding_mode.map(V::RoundingMode)),
-            ("secondaryGroupingSize", Some(V::Integer(self.secondary_grouping_size))),
+            (
+                "secondaryGroupingSize",
+                Some(V::Integer(self.secondary_grouping_size)),
+            ),
             ("signAlwaysShown", Some(V::Boolean(self.sign_always_shown))),
         ]
     }
@@ -565,11 +663,13 @@ impl DecimalFormatProperties {
     fn equals_impl(&self, other: &DecimalFormatProperties) -> bool {
         let mine = self.field_values();
         let theirs = other.field_values();
-        mine.iter().zip(theirs.iter()).all(|((_, a), (_, b))| match (a, b) {
-            (None, None) => true,
-            (Some(a), Some(b)) => a.java_equals(b),
-            _ => false,
-        })
+        mine.iter()
+            .zip(theirs.iter())
+            .all(|((_, a), (_, b))| match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.java_equals(b),
+                _ => false,
+            })
     }
 
     /// Equivalent to `hashCode()` (`_hashCode`): `_hashCodeHelper` per field
@@ -852,7 +952,10 @@ impl DecimalFormatProperties {
     /// The `AssertionError` Java throws when a value does not fit its field
     /// (`IllegalArgumentException`) or names a static field
     /// (`IllegalAccessException`).
-    pub fn read_object_impl(&mut self, entries: Vec<(String, Option<PropertyValue>)>) -> Result<()> {
+    pub fn read_object_impl(
+        &mut self,
+        entries: Vec<(String, Option<PropertyValue>)>,
+    ) -> Result<()> {
         self.clear();
         for (name, value) in entries {
             self.set_field(&name, value)?;
@@ -861,7 +964,10 @@ impl DecimalFormatProperties {
     }
 
     /// Equivalent to `setCompactCustomData(Map)`.
-    pub fn set_compact_custom_data(&mut self, compact_custom_data: Option<Arc<CompactCustomData>>) -> &mut Self {
+    pub fn set_compact_custom_data(
+        &mut self,
+        compact_custom_data: Option<Arc<CompactCustomData>>,
+    ) -> &mut Self {
         self.compact_custom_data = compact_custom_data;
         self
     }
@@ -880,7 +986,10 @@ impl DecimalFormatProperties {
 
     /// Equivalent to `setCurrencyPluralInfo(CurrencyPluralInfo)`: stores a
     /// clone.
-    pub fn set_currency_plural_info(&mut self, currency_plural_info: Option<&CurrencyPluralInfo>) -> &mut Self {
+    pub fn set_currency_plural_info(
+        &mut self,
+        currency_plural_info: Option<&CurrencyPluralInfo>,
+    ) -> &mut Self {
         self.currency_plural_info = currency_plural_info.map(|c| Arc::new(c.clone()));
         self
     }
@@ -923,9 +1032,30 @@ impl DecimalFormatProperties {
         "getCurrencyAsDecimal",
         "setCurrencyAsDecimal(boolean)"
     );
-    copy_accessors!(format_width, i32, get_format_width_copy, set_format_width, "getFormatWidth", "setFormatWidth(int)");
-    copy_accessors!(grouping_size, i32, get_grouping_size_copy, set_grouping_size, "getGroupingSize", "setGroupingSize(int)");
-    copy_accessors!(grouping_used, bool, get_grouping_used_copy, set_grouping_used, "getGroupingUsed", "setGroupingUsed(boolean)");
+    copy_accessors!(
+        format_width,
+        i32,
+        get_format_width_copy,
+        set_format_width,
+        "getFormatWidth",
+        "setFormatWidth(int)"
+    );
+    copy_accessors!(
+        grouping_size,
+        i32,
+        get_grouping_size_copy,
+        set_grouping_size,
+        "getGroupingSize",
+        "setGroupingSize(int)"
+    );
+    copy_accessors!(
+        grouping_used,
+        bool,
+        get_grouping_used_copy,
+        set_grouping_used,
+        "getGroupingUsed",
+        "setGroupingUsed(boolean)"
+    );
     copy_accessors!(
         magnitude_multiplier,
         i32,

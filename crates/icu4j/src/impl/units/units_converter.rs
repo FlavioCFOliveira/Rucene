@@ -65,12 +65,21 @@ impl UnitsConverter {
     ///
     /// `IllegalIcuArgumentException("input units must be convertible or
     /// reciprocal")`, and the errors of the rate computation.
-    pub fn new(source: &MeasureUnitImpl, target: &MeasureUnitImpl, conversion_rates: &ConversionRates) -> Result<Self> {
+    pub fn new(
+        source: &MeasureUnitImpl,
+        target: &MeasureUnitImpl,
+        conversion_rates: &ConversionRates,
+    ) -> Result<Self> {
         let convertibility = Self::extract_convertibility(source, target, conversion_rates)?;
         // TODO(icu-units#82): throw exception if conversion between
         // incompatible types was requested?
-        if convertibility != Convertibility::Convertible && convertibility != Convertibility::Reciprocal {
-            return Err(IllegalIcuArgumentException::with_message("input units must be convertible or reciprocal").error());
+        if convertibility != Convertibility::Convertible
+            && convertibility != Convertibility::Reciprocal
+        {
+            return Err(IllegalIcuArgumentException::with_message(
+                "input units must be convertible or reciprocal",
+            )
+            .error());
         }
 
         let special_source = conversion_rates.get_special_mapping_name(source);
@@ -81,26 +90,46 @@ impl UnitsConverter {
             let target_to_base = conversion_rates.get_factor_to_base(target)?;
 
             let conversion_rate = if convertibility == Convertibility::Convertible {
-                source_to_base.divide(&target_to_base)?.get_conversion_rate()?
+                source_to_base
+                    .divide(&target_to_base)?
+                    .get_conversion_rate()?
             } else {
                 debug_assert!(convertibility == Convertibility::Reciprocal);
-                source_to_base.multiply(&target_to_base)?.get_conversion_rate()?
+                source_to_base
+                    .multiply(&target_to_base)?
+                    .get_conversion_rate()?
             };
             let reciprocal = convertibility == Convertibility::Reciprocal;
 
             // calculate the offset
-            let offset = conversion_rates.get_offset(source, target, &source_to_base, &target_to_base, convertibility)?;
+            let offset = conversion_rates.get_offset(
+                source,
+                target,
+                &source_to_base,
+                &target_to_base,
+                convertibility,
+            )?;
             // We should see no offsets for reciprocal conversions - they
             // don't make sense:
             debug_assert!(convertibility != Convertibility::Reciprocal || offset.signum() == 0);
-            Ok(UnitsConverter { conversion_rate, reciprocal, offset, special_source, special_target })
+            Ok(UnitsConverter {
+                conversion_rate,
+                reciprocal,
+                offset,
+                special_source,
+                special_target,
+            })
         } else {
             let conversion_rate = if special_source.is_none() {
                 // non-special source, special target
-                conversion_rates.get_factor_to_base(source)?.get_conversion_rate()?
+                conversion_rates
+                    .get_factor_to_base(source)?
+                    .get_conversion_rate()?
             } else if special_target.is_none() {
                 // special source, non-special target
-                conversion_rates.get_factor_to_base(target)?.get_conversion_rate()?
+                conversion_rates
+                    .get_factor_to_base(target)?
+                    .get_conversion_rate()?
             } else {
                 BigDecimal::one()
             };
@@ -182,7 +211,9 @@ impl UnitsConverter {
             };
             return Ok(result);
         }
-        let mut result = input_value.multiply(&self.conversion_rate)?.add(&self.offset)?;
+        let mut result = input_value
+            .multiply(&self.conversion_rate)?
+            .add(&self.offset)?;
         if self.reciprocal {
             // We should see no offsets for reciprocal conversions - they
             // don't make sense:
@@ -247,7 +278,9 @@ impl UnitsConverter {
             }
             result = BigDecimal::one().divide_mc(&result, &DECIMAL128)?;
         }
-        result.subtract(&self.offset)?.divide_mc(&self.conversion_rate, &DECIMAL128)
+        result
+            .subtract(&self.offset)?
+            .divide_mc(&self.conversion_rate, &DECIMAL128)
     }
 
     /// Equivalent to `getConversionInfo()`.
@@ -263,14 +296,24 @@ impl UnitsConverter {
 impl fmt::Display for UnitsConverter {
     /// Equivalent to `toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "UnitsConverter [conversionRate={}, offset={}]", self.conversion_rate, self.offset)
+        write!(
+            f,
+            "UnitsConverter [conversionRate={}, offset={}]",
+            self.conversion_rate, self.offset
+        )
     }
 }
 
 /// `insertInMap(HashMap, ArrayList, int)`.
-fn insert_in_map(dimension_map: &mut HashMap<String, i32>, single_units: &[SingleUnitImpl], multiplier: i32) {
+fn insert_in_map(
+    dimension_map: &mut HashMap<String, i32>,
+    single_units: &[SingleUnitImpl],
+    multiplier: i32,
+) {
     for single_unit in single_units {
-        let entry = dimension_map.entry(single_unit.get_simple_unit_id().to_string()).or_insert(0);
+        let entry = dimension_map
+            .entry(single_unit.get_simple_unit_id().to_string())
+            .or_insert(0);
         *entry = entry.wrapping_add(single_unit.get_dimensionality().wrapping_mul(multiplier));
     }
 }
@@ -284,12 +327,12 @@ fn are_dimensions_zeroes(dimension_map: &HashMap<String, i32>) -> bool {
 /// Beaufort number.
 static MIN_METERS_PER_SEC_FOR_BEAUFORT: LazyLock<Vec<BigDecimal>> = LazyLock::new(|| {
     [
-        0.0, // 0 Calm
-        0.3, // 1 Light air
-        1.6, // 2 Light breeze
-        3.4, // 3 Gentle breeze
-        5.5, // 4 Moderate breeze
-        8.0, // 5 Fresh breeze
+        0.0,  // 0 Calm
+        0.3,  // 1 Light air
+        1.6,  // 2 Light breeze
+        3.4,  // 3 Gentle breeze
+        5.5,  // 4 Moderate breeze
+        8.0,  // 5 Fresh breeze
         10.8, // 6 Strong breeze
         13.9, // 7 Near gale
         17.2, // 8 Gale
@@ -310,21 +353,30 @@ static MIN_METERS_PER_SEC_FOR_BEAUFORT: LazyLock<Vec<BigDecimal>> = LazyLock::ne
 });
 
 /// `scaleToBase(BigDecimal, BigDecimal[])`.
-fn scale_to_base(scale_value: &BigDecimal, min_base_for_scale_values: &[BigDecimal]) -> Result<BigDecimal> {
+fn scale_to_base(
+    scale_value: &BigDecimal,
+    min_base_for_scale_values: &[BigDecimal],
+) -> Result<BigDecimal> {
     let point_five = BigDecimal::value_of_double(0.5)?;
     let scale_adjust = scale_value.abs().add(&point_five)?; // adjust up for later truncation
-    let scale_adjust_capped = scale_adjust.min(&BigDecimal::value_of(min_base_for_scale_values.len() as i64 - 2));
+    let scale_adjust_capped = scale_adjust.min(&BigDecimal::value_of(
+        min_base_for_scale_values.len() as i64 - 2,
+    ));
     let scale_index = scale_adjust_capped.int_value() as usize;
     // Return midpoint of range (the final range uses an
     // articial end to produce reasonable midpoint)
-    min_base_for_scale_values[scale_index].add(&min_base_for_scale_values[scale_index + 1])?.multiply(&point_five)
+    min_base_for_scale_values[scale_index]
+        .add(&min_base_for_scale_values[scale_index + 1])?
+        .multiply(&point_five)
 }
 
 /// `baseToScale(BigDecimal, BigDecimal[])`.
 fn base_to_scale(base_value: &BigDecimal, min_base_for_scale_values: &[BigDecimal]) -> BigDecimal {
     let target = base_value.abs();
     // Arrays.binarySearch over a sorted array with compareTo.
-    let mut scale_index = match min_base_for_scale_values.binary_search_by(|probe| probe.compare_to(&target).cmp(&0)) {
+    let mut scale_index = match min_base_for_scale_values
+        .binary_search_by(|probe| probe.compare_to(&target).cmp(&0))
+    {
         Ok(i) => i as i32,
         Err(insertion_point) => -(insertion_point as i32) - 1,
     };
@@ -414,7 +466,11 @@ fn bd(s: &str) -> BigDecimal {
 impl Factor {
     /// Equivalent to `Factor()`.
     pub fn new() -> Self {
-        Factor { factor_num: BigDecimal::value_of(1), factor_den: BigDecimal::value_of(1), exponents: [0; exp::COUNT] }
+        Factor {
+            factor_num: BigDecimal::value_of(1),
+            factor_den: BigDecimal::value_of(1),
+            exponents: [0; exp::COUNT],
+        }
     }
 
     /// Equivalent to `processFactor(String)`.
@@ -426,7 +482,10 @@ impl Factor {
         debug_assert!(!factor.is_empty());
 
         // Remove all spaces in the factor
-        let factor: String = factor.chars().filter(|c| !is_java_regex_whitespace(*c)).collect();
+        let factor: String = factor
+            .chars()
+            .filter(|c| !is_java_regex_whitespace(*c))
+            .collect();
 
         let fractions = java_split(&factor, '/');
         debug_assert!(fractions.len() == 1 || fractions.len() == 2);
@@ -475,17 +534,30 @@ impl Factor {
         result_collector.multiply_power(&bd("6.67408E-11"), self.exponents[exp::G])?;
         result_collector.multiply_power(&bd("0.00454609"), self.exponents[exp::GAL_IMP_TO_M3])?;
         result_collector.multiply_power(&bd("0.45359237"), self.exponents[exp::LB_TO_KG])?;
-        result_collector.multiply_power(&bd("180.1557"), self.exponents[exp::GLUCOSE_MOLAR_MASS])?;
-        result_collector.multiply_power(&bd("6.02214076E+23"), self.exponents[exp::ITEM_PER_MOLE])?;
+        result_collector
+            .multiply_power(&bd("180.1557"), self.exponents[exp::GLUCOSE_MOLAR_MASS])?;
+        result_collector
+            .multiply_power(&bd("6.02214076E+23"), self.exponents[exp::ITEM_PER_MOLE])?;
         result_collector.multiply_power(&bd("149597870700"), self.exponents[exp::METERS_PER_AU])?;
-        result_collector.multiply_power(&bd("31557600"), self.exponents[exp::SEC_PER_JULIAN_YEAR])?;
-        result_collector.multiply_power(&bd("299792458"), self.exponents[exp::SPEED_OF_LIGHT_METERS_PER_SECOND])?;
-        result_collector.multiply_power(&bd("0.001803906836964688204"), self.exponents[exp::SHO_TO_M3])?;
-        result_collector.multiply_power(&bd("3.305785123966942"), self.exponents[exp::TSUBO_TO_M2])?;
-        result_collector.multiply_power(&bd("0.033057851239669"), self.exponents[exp::SHAKU_TO_M])?;
+        result_collector
+            .multiply_power(&bd("31557600"), self.exponents[exp::SEC_PER_JULIAN_YEAR])?;
+        result_collector.multiply_power(
+            &bd("299792458"),
+            self.exponents[exp::SPEED_OF_LIGHT_METERS_PER_SECOND],
+        )?;
+        result_collector.multiply_power(
+            &bd("0.001803906836964688204"),
+            self.exponents[exp::SHO_TO_M3],
+        )?;
+        result_collector
+            .multiply_power(&bd("3.305785123966942"), self.exponents[exp::TSUBO_TO_M2])?;
+        result_collector
+            .multiply_power(&bd("0.033057851239669"), self.exponents[exp::SHAKU_TO_M])?;
         result_collector.multiply_power(&bd("1.66053878283E-27"), self.exponents[exp::AMU])?;
 
-        result_collector.factor_num.divide_mc(&result_collector.factor_den, &DECIMAL128)
+        result_collector
+            .factor_num
+            .divide_mc(&result_collector.factor_den, &DECIMAL128)
     }
 
     /// Multiplies the Factor by a value to the power of `power`. NOTE:
@@ -519,7 +591,8 @@ impl Factor {
 
         let base = unit_prefix.get_base();
         let power = unit_prefix.get_power();
-        let abs_factor = BigDecimal::value_of(base as i64).pow_mc(power.wrapping_abs(), &DECIMAL128)?;
+        let abs_factor =
+            BigDecimal::value_of(base as i64).pow_mc(power.wrapping_abs(), &DECIMAL128)?;
 
         if power < 0 {
             result.factor_den = self.factor_den.multiply(&abs_factor)?;
@@ -606,9 +679,16 @@ impl Factor {
         let entities = java_split(powered_entity, '^');
         debug_assert!(entities.len() == 1 || entities.len() == 2);
 
-        let power = if entities.len() == 2 { crate::jdk::parse_int(&units(&entities[1]), 10)? } else { 1 };
+        let power = if entities.len() == 2 {
+            crate::jdk::parse_int(&units(&entities[1]), 10)?
+        } else {
+            1
+        };
         // Java indexes entities[0], which throws for an empty split.
-        let entity = entities.first().map(String::as_str).unwrap_or_else(|| crate::jdk::array_index_out_of_bounds(0));
+        let entity = entities
+            .first()
+            .map(String::as_str)
+            .unwrap_or_else(|| crate::jdk::array_index_out_of_bounds(0));
         self.add_entity(entity, power)
     }
 
@@ -620,12 +700,16 @@ impl Factor {
             "ft3_to_m3" => self.exponents[exp::FT_TO_M] += 3 * power,
             "in3_to_m3" => {
                 self.exponents[exp::FT_TO_M] += 3 * power;
-                self.factor_den = self.factor_den.multiply(&BigDecimal::value_of_double(12f64.powi(3))?)?;
+                self.factor_den = self
+                    .factor_den
+                    .multiply(&BigDecimal::value_of_double(12f64.powi(3))?)?;
             }
             "gal_to_m3" => {
                 self.factor_num = self.factor_num.multiply(&BigDecimal::value_of(231))?;
                 self.exponents[exp::FT_TO_M] += 3 * power;
-                self.factor_den = self.factor_den.multiply(&BigDecimal::value_of(12 * 12 * 12))?;
+                self.factor_den = self
+                    .factor_den
+                    .multiply(&BigDecimal::value_of(12 * 12 * 12))?;
             }
             "gal_imp_to_m3" => self.exponents[exp::GAL_IMP_TO_M3] += power,
             "G" => self.exponents[exp::G] += power,
@@ -636,13 +720,16 @@ impl Factor {
             "meters_per_AU" => self.exponents[exp::METERS_PER_AU] += power,
             "PI" => self.exponents[exp::PI] += power,
             "sec_per_julian_year" => self.exponents[exp::SEC_PER_JULIAN_YEAR] += power,
-            "speed_of_light_meters_per_second" => self.exponents[exp::SPEED_OF_LIGHT_METERS_PER_SECOND] += power,
+            "speed_of_light_meters_per_second" => {
+                self.exponents[exp::SPEED_OF_LIGHT_METERS_PER_SECOND] += power
+            }
             "sho_to_m3" => self.exponents[exp::SHO_TO_M3] += power,
             "tsubo_to_m2" => self.exponents[exp::TSUBO_TO_M2] += power,
             "shaku_to_m" => self.exponents[exp::SHAKU_TO_M] += power,
             "AMU" => self.exponents[exp::AMU] += power,
             _ => {
-                let decimal_entity = BigDecimal::from_string(&units(entity))?.pow_mc(power, &DECIMAL128)?;
+                let decimal_entity =
+                    BigDecimal::from_string(&units(entity))?.pow_mc(power, &DECIMAL128)?;
                 self.factor_num = self.factor_num.multiply(&decimal_entity)?;
             }
         }

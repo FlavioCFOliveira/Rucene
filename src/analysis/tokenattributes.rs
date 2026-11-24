@@ -2396,7 +2396,7 @@ impl std::fmt::Display for CharTermAttributeImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::attribute::{AttributeSource, DefaultAttributeFactory};
+    use crate::util::attribute::{AttributeSource, AttributeValue, DefaultAttributeFactory};
 
     /// `CharTermAttributeImpl.charAt` checks with `Objects.checkIndex`
     /// (`CharTermAttributeImpl.java:104-107`). Measured against
@@ -2552,11 +2552,12 @@ mod tests {
         let mut t = CharTermAttributeImpl::new();
         t.append_string(Some("foobar"));
         let mut entries: Vec<(TypeId, &'static str, String, String)> = Vec::new();
-        t.reflect_with(
-            &mut |type_id: TypeId, name: &'static str, key: &str, value: &dyn Debug| {
-                entries.push((type_id, name, key.to_string(), format!("{:?}", value)));
-            },
-        );
+        t.reflect_with(&mut |type_id: TypeId,
+                             name: &'static str,
+                             key: &str,
+                             value: &dyn AttributeValue| {
+            entries.push((type_id, name, key.to_string(), format!("{:?}", value)));
+        });
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].2, "term");
         assert!(entries[0].3.contains("foobar"));
@@ -2649,7 +2650,7 @@ mod tests {
         t.reflect_with(&mut |_type_id: TypeId,
                              _name: &'static str,
                              key: &str,
-                             value: &dyn Debug| {
+                             value: &dyn AttributeValue| {
             entries.push((key.to_string(), format!("{:?}", value)));
         });
         assert_eq!(entries.len(), 2);
@@ -2813,7 +2814,7 @@ mod tests {
         source.reflect_with(&mut |_type_id: TypeId,
                                   name: &'static str,
                                   key: &str,
-                                  value: &dyn Debug| {
+                                  value: &dyn AttributeValue| {
             entries.push((name.to_string(), key.to_string(), format!("{:?}", value)));
         });
 

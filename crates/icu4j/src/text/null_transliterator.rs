@@ -7,7 +7,9 @@ use rucene::error::Result;
 
 use crate::jdk::units;
 use crate::text::replaceable::Replaceable;
-use crate::text::transliterator::{transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+};
 use crate::text::unicode_set::UnicodeSet;
 
 /// A transliterator that leaves text unchanged.
@@ -44,14 +46,24 @@ impl Transliterator for NullTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// incremental)`.
-    fn handle_transliterate(&self, _text: &dyn Replaceable, offsets: &mut Position, _incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        _text: &dyn Replaceable,
+        offsets: &mut Position,
+        _incremental: bool,
+    ) -> Result<()> {
         offsets.start = offsets.limit;
         Ok(())
     }
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, _input_filter: &UnicodeSet, _source_set: &mut UnicodeSet, _target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        _input_filter: &UnicodeSet,
+        _source_set: &mut UnicodeSet,
+        _target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         // do nothing
         Ok(())
     }

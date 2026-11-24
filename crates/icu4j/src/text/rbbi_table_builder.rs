@@ -12,8 +12,8 @@ use rucene::error::Result;
 use crate::r#impl::assert::Assert;
 use crate::r#impl::rbbi_data_wrapper::{RBBIDataWrapper, RBBIStateTable};
 use crate::text::rbbi_node::{
-    self, child, NodeId, RBBINodes, END_MARK, LEAF_CHAR, LOOK_AHEAD, OP_CAT, OP_OR, OP_PLUS, OP_QUESTION,
-    OP_STAR, SET_REF, TAG,
+    self, child, NodeId, RBBINodes, END_MARK, LEAF_CHAR, LOOK_AHEAD, OP_CAT, OP_OR, OP_PLUS,
+    OP_QUESTION, OP_STAR, SET_REF, TAG,
 };
 use crate::text::rbbi_rule_builder::{IntPair, RBBIRuleBuilder};
 
@@ -116,7 +116,11 @@ impl RBBITableBuilder {
         //
         let root = rb.nodes.flatten_variables(root, 0)?;
         rb.f_tree_roots[self.f_root_ix] = Some(root);
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("ftree")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("ftree"))
+        {
             println!("Parse tree after flattening variable references.");
             rb.nodes.print_tree(root, true);
         }
@@ -156,7 +160,11 @@ impl RBBITableBuilder {
         //      expression.
         //
         rb.nodes.flatten_sets(cn)?;
-        if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("stree")) {
+        if rb
+            .f_debug_env
+            .as_deref()
+            .is_some_and(|e| e.contains("stree"))
+        {
             println!("Parse tree after flattening Unicode Set references.");
             rb.nodes.print_tree(cn, true);
         }
@@ -240,7 +248,8 @@ impl RBBITableBuilder {
         //     part labeled "rest of tree"
         //
         let rest = child(rb.nodes[left].f_right_child);
-        let match_start_nodes: Vec<NodeId> = rb.nodes[rest].f_first_pos_set.iter().copied().collect();
+        let match_start_nodes: Vec<NodeId> =
+            rb.nodes[rest].f_first_pos_set.iter().copied().collect();
         for start_node in match_start_nodes {
             if rb.nodes[start_node].f_type != LEAF_CHAR {
                 continue;
@@ -265,6 +274,7 @@ impl RBBITableBuilder {
     ///
     /// `IllegalStateException` (`Assert.assrt`) for an internal
     /// inconsistency.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn build_state_table(&mut self, rb: &mut RBBIRuleBuilder) -> Result<()> {
         //
         // Add a dummy state 0 - the stop state.  Not from Aho.
@@ -276,7 +286,9 @@ impl RBBITableBuilder {
         //       where toot is the root of the syntax tree for (r)#;
         let mut initial_state = RBBIStateDescriptor::new(last_input_symbol);
         let root = self.root(rb);
-        initial_state.f_positions.extend(rb.nodes[root].f_first_pos_set.iter().copied());
+        initial_state
+            .f_positions
+            .extend(rb.nodes[root].f_first_pos_set.iter().copied());
         self.f_d_states.push(initial_state);
 
         // while there is an unmarked state T in Dstates do begin
@@ -303,7 +315,8 @@ impl RBBITableBuilder {
                 let mut u: Option<BTreeSet<NodeId>> = None;
                 for &p in &self.f_d_states[t].f_positions {
                     if rb.nodes[p].f_type == LEAF_CHAR && rb.nodes[p].f_val == a {
-                        u.get_or_insert_with(BTreeSet::new).extend(rb.nodes[p].f_follow_pos.iter().copied());
+                        u.get_or_insert_with(BTreeSet::new)
+                            .extend(rb.nodes[p].f_follow_pos.iter().copied());
                     }
                 }
 
@@ -399,7 +412,8 @@ impl RBBITableBuilder {
     /// marker as accepting.
     fn flag_accepting_states(&mut self, rb: &RBBIRuleBuilder) {
         let mut end_marker_nodes = Vec::new();
-        rb.nodes.find_nodes(self.root(rb), &mut end_marker_nodes, END_MARK);
+        rb.nodes
+            .find_nodes(self.root(rb), &mut end_marker_nodes, END_MARK);
 
         for &end_marker in &end_marker_nodes {
             let em_val = rb.nodes[end_marker].f_val;
@@ -433,11 +447,13 @@ impl RBBITableBuilder {
     /// node with its slot.
     fn flag_look_ahead_states(&mut self, rb: &RBBIRuleBuilder) {
         let mut look_ahead_nodes = Vec::new();
-        rb.nodes.find_nodes(self.root(rb), &mut look_ahead_nodes, LOOK_AHEAD);
+        rb.nodes
+            .find_nodes(self.root(rb), &mut look_ahead_nodes, LOOK_AHEAD);
         for &look_ahead_node in &look_ahead_nodes {
             for sd in self.f_d_states.iter_mut() {
                 if sd.f_positions.contains(&look_ahead_node) {
-                    let lookahead_slot = self.f_look_ahead_rule_map[rb.nodes[look_ahead_node].f_val as usize];
+                    let lookahead_slot =
+                        self.f_look_ahead_rule_map[rb.nodes[look_ahead_node].f_val as usize];
                     debug_assert!(sd.f_look_ahead == 0 || sd.f_look_ahead == lookahead_slot);
                     sd.f_look_ahead = lookahead_slot;
                 }
@@ -519,7 +535,12 @@ impl RBBITableBuilder {
     /// `findDuplCharClassFrom(IntPair categories)`: finds the next pair of
     /// character categories with identical columns, starting at
     /// `categories.first`; `false` when none.
-    pub(crate) fn find_dupl_char_class_from(&self, rb: &RBBIRuleBuilder, categories: &mut IntPair) -> bool {
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
+    pub(crate) fn find_dupl_char_class_from(
+        &self,
+        rb: &RBBIRuleBuilder,
+        categories: &mut IntPair,
+    ) -> bool {
         let num_states = self.f_d_states.len();
         let num_cols = rb.set_builder().get_num_char_categories();
 
@@ -640,6 +661,7 @@ impl RBBITableBuilder {
 
     /// `removeState(IntPair duplStates)`: removes `duplStates.second`,
     /// redirecting its transitions to `duplStates.first`.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn remove_state(&mut self, rb: &RBBIRuleBuilder, dupl_states: &IntPair) {
         let keep_state = dupl_states.first;
         let dupl_state = dupl_states.second;
@@ -729,14 +751,17 @@ impl RBBITableBuilder {
             return Ok(table);
         }
 
-        Assert::assrt(rb.set_builder().get_num_char_categories() < 0x7fff && self.f_d_states.len() < 0x7fff)?;
+        Assert::assrt(
+            rb.set_builder().get_num_char_categories() < 0x7fff && self.f_d_states.len() < 0x7fff,
+        )?;
         table.f_num_states = self.f_d_states.len() as i32;
         table.f_dict_categories_start = rb.set_builder().get_dict_categories_start();
-        table.f_look_ahead_results_size = if self.f_la_slots_in_use == RBBIDataWrapper::ACCEPTING_UNCONDITIONAL {
-            0
-        } else {
-            self.f_la_slots_in_use + 1
-        };
+        table.f_look_ahead_results_size =
+            if self.f_la_slots_in_use == RBBIDataWrapper::ACCEPTING_UNCONDITIONAL {
+                0
+            } else {
+                self.f_la_slots_in_use + 1
+            };
         let use_8_bits = table.f_num_states <= MAX_STATE_FOR_8BITS_TABLE;
 
         // Size of table size in shorts.
@@ -779,9 +804,12 @@ impl RBBITableBuilder {
             table.f_table[row + RBBIDataWrapper::TAGSIDX as usize] = sd.f_tags_idx as u16;
             for col in 0..num_char_categories as usize {
                 if use_8_bits {
-                    Assert::assrt(0 <= sd.f_dtran[col] && sd.f_dtran[col] <= MAX_STATE_FOR_8BITS_TABLE)?;
+                    Assert::assrt(
+                        0 <= sd.f_dtran[col] && sd.f_dtran[col] <= MAX_STATE_FOR_8BITS_TABLE,
+                    )?;
                 }
-                table.f_table[row + RBBIDataWrapper::NEXTSTATES as usize + col] = sd.f_dtran[col] as u16;
+                table.f_table[row + RBBIDataWrapper::NEXTSTATES as usize + col] =
+                    sd.f_dtran[col] as u16;
             }
         }
         Ok(table)
@@ -789,6 +817,7 @@ impl RBBITableBuilder {
 
     /// `buildSafeReverseTable()`: builds the safe reverse table from the
     /// forward table's safe character pairs.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub(crate) fn build_safe_reverse_table(&mut self, rb: &RBBIRuleBuilder) {
         // Find safe char class pairs.
 
@@ -939,13 +968,15 @@ impl RBBITableBuilder {
                 if use_8_bits {
                     Assert::assrt(row_array[col] as i32 <= MAX_STATE_FOR_8BITS_TABLE)?;
                 }
-                table.f_table[row + RBBIDataWrapper::NEXTSTATES as usize + col] = row_array[col] as u16;
+                table.f_table[row + RBBIDataWrapper::NEXTSTATES as usize + col] =
+                    row_array[col] as u16;
             }
         }
         Ok(table)
     }
 
     /// `printStates()`: debug.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub(crate) fn print_states(&self, rb: &RBBIRuleBuilder) {
         let ncat = rb.set_builder().get_num_char_categories();
         println!("state |           i n p u t     s y m b o l s ");
@@ -977,6 +1008,7 @@ impl RBBITableBuilder {
     }
 
     /// `printReverseTable()`: debug.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub(crate) fn print_reverse_table(&self) {
         println!("    Safe Reverse Table ");
         let Some(safe) = self.f_safe_table.as_ref() else {

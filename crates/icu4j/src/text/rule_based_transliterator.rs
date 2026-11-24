@@ -14,7 +14,9 @@ use crate::text::quantifier::Quantifier;
 use crate::text::replaceable::Replaceable;
 use crate::text::string_matcher::StringMatcher;
 use crate::text::transliteration_rule_set::TransliterationRuleSet;
-use crate::text::transliterator::{transliterator_boilerplate, Position, Transliterator, TransliteratorBase};
+use crate::text::transliterator::{
+    transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+};
 use crate::text::unicode_filter::UnicodeFilter;
 use crate::text::unicode_matcher::UnicodeMatcher;
 use crate::text::unicode_replacer::UnicodeReplacer;
@@ -40,7 +42,11 @@ impl RuleBasedTransliterator {
     ///
     /// The errors of `setFilter` (`addMatchSetTo` of a non-`UnicodeSet`
     /// filter).
-    pub(crate) fn new(id: Vec<u16>, data: Arc<Data>, filter: Option<&dyn UnicodeFilter>) -> Result<Self> {
+    pub(crate) fn new(
+        id: Vec<u16>,
+        data: Arc<Data>,
+        filter: Option<&dyn UnicodeFilter>,
+    ) -> Result<Self> {
         let base = TransliteratorBase::new(id, filter)?;
         let max = data.rule_set().get_maximum_context_length();
         base.set_maximum_context_length(max)?;
@@ -70,7 +76,12 @@ impl Transliterator for RuleBasedTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position index, boolean
     /// incremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, index: &mut Position, incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        index: &mut Position,
+        incremental: bool,
+    ) -> Result<()> {
         // We keep contextStart and contextLimit fixed the entire time,
         // relative to the text -- contextLimit may move numerically if
         // text is inserted or removed.  The start offset moves toward
@@ -100,7 +111,10 @@ impl Transliterator for RuleBasedTransliterator {
             loop_limit = 0x7FFFFFFF;
         }
 
-        while index.start < index.limit && loop_count <= loop_limit && rule_set.transliterate(text, index, incremental)? {
+        while index.start < index.limit
+            && loop_count <= loop_limit
+            && rule_set.transliterate(text, index, incremental)?
+        {
             loop_count += 1;
         }
         Ok(())
@@ -113,8 +127,15 @@ impl Transliterator for RuleBasedTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet filter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
-        self.data.rule_set().add_source_target_set(filter, source_set, target_set)
+    fn add_source_target_set(
+        &self,
+        filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
+        self.data
+            .rule_set()
+            .add_source_target_set(filter, source_set, target_set)
     }
 }
 
@@ -203,12 +224,18 @@ impl Variable {
 
     /// `variable instanceof UnicodeMatcher`.
     pub(crate) fn is_matcher(&self) -> bool {
-        matches!(self, Variable::Set(_) | Variable::StringMatcher(_) | Variable::Quantifier(_))
+        matches!(
+            self,
+            Variable::Set(_) | Variable::StringMatcher(_) | Variable::Quantifier(_)
+        )
     }
 
     /// `variable instanceof UnicodeReplacer`.
     pub(crate) fn is_replacer(&self) -> bool {
-        matches!(self, Variable::StringMatcher(_) | Variable::FunctionReplacer(_))
+        matches!(
+            self,
+            Variable::StringMatcher(_) | Variable::FunctionReplacer(_)
+        )
     }
 
     /// `variable == other`: the same object (`null == null`).
@@ -270,7 +297,9 @@ pub struct Data {
 
 impl std::fmt::Debug for Data {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Data").field("variables_base", &self.variables_base()).finish()
+        f.debug_struct("Data")
+            .field("variables_base", &self.variables_base())
+            .finish()
     }
 }
 
@@ -305,7 +334,9 @@ impl Data {
 
     /// `variableNames`, locked.
     pub(crate) fn variable_names(&self) -> MutexGuard<'_, HashMap<Vec<u16>, Vec<u16>>> {
-        self.variable_names.lock().unwrap_or_else(|e| e.into_inner())
+        self.variable_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// `variables = ...`: assigns the variables (once, after the parse).

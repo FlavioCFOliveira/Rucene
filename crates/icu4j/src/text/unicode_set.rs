@@ -10,9 +10,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use rucene::error::{LuceneError, Result};
 
-use crate::jdk::{
-    char_count, code_point_at, code_point_before, ParsePosition,
-};
+use crate::jdk::{char_count, code_point_at, code_point_before, ParsePosition};
 use crate::lang::char_sequences::CharSequences;
 use crate::lang::character_properties::CharacterProperties;
 use crate::lang::u_character::UCharacter;
@@ -43,7 +41,7 @@ use crate::util::version_info::VersionInfo;
 
 const LOW: i32 = 0x000000; // LOW <= all valid values. ZERO for codepoints
 const HIGH: i32 = 0x110000; // HIGH > all valid values. 10000 for code units.
-// 110000 for codepoints
+                            // 110000 for codepoints
 
 /// Enough for sets with few ranges.
 /// For example, White_Space has 10 ranges, list length 21.
@@ -93,7 +91,10 @@ pub static ALL_CODE_POINTS: LazyLock<UnicodeSet> = LazyLock::new(|| {
 static XSYMBOL_TABLE: RwLock<Option<Arc<dyn XSymbolTable>>> = RwLock::new(None);
 
 fn invalid_code_point(c: i32) -> LuceneError {
-    LuceneError::illegal_argument(format!("Invalid code point U+{}", Utility::hex_places(c as i64, 6)))
+    LuceneError::illegal_argument(format!(
+        "Invalid code point U+{}",
+        Utility::hex_places(c as i64, 6)
+    ))
 }
 
 fn check_cp(c: i32) -> Result<()> {
@@ -119,8 +120,8 @@ fn step(cp: i32) -> i32 {
 /// itself in Java; [`Clone`] copies it (frozen sets never change, so the
 /// copy behaves the same).
 pub struct UnicodeSet {
-    len: i32, // length used; list may be longer to minimize reallocs
-    list: Vec<i32>, // MUST be terminated with HIGH
+    len: i32,         // length used; list may be longer to minimize reallocs
+    list: Vec<i32>,   // MUST be terminated with HIGH
     buffer: Vec<i32>, // internal buffer, may be empty
     strings: BTreeSet<Vec<u16>>,
     /// The pattern representation of this set. This may not be the most
@@ -151,7 +152,11 @@ impl Clone for UnicodeSet {
 
 impl fmt::Debug for UnicodeSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "UnicodeSet({})", String::from_utf16_lossy(&self.to_pattern(true)))
+        write!(
+            f,
+            "UnicodeSet({})",
+            String::from_utf16_lossy(&self.to_pattern(true))
+        )
     }
 }
 
@@ -173,7 +178,11 @@ fn append_code_point(app: &mut Vec<u16>, c: i32) {
 }
 
 /// `_appendToPat(T buf, String s, boolean escapeUnprintable)`.
-fn append_to_pat_str<'b>(buf: &'b mut Vec<u16>, s: &[u16], escape_unprintable: bool) -> &'b mut Vec<u16> {
+fn append_to_pat_str<'b>(
+    buf: &'b mut Vec<u16>,
+    s: &[u16],
+    escape_unprintable: bool,
+) -> &'b mut Vec<u16> {
     let mut i = 0;
     while i < s.len() as i32 {
         let cp = code_point_at(s, i);
@@ -186,7 +195,11 @@ fn append_to_pat_str<'b>(buf: &'b mut Vec<u16>, s: &[u16], escape_unprintable: b
 /// `_appendToPat(T buf, int c, boolean escapeUnprintable)`: appends a code
 /// point, quoting it when it is special in a pattern.
 fn append_to_pat(buf: &mut Vec<u16>, c: i32, escape_unprintable: bool) -> &mut Vec<u16> {
-    if if escape_unprintable { Utility::is_unprintable(c) } else { Utility::should_always_be_escaped(c) } {
+    if if escape_unprintable {
+        Utility::is_unprintable(c)
+    } else {
+        Utility::should_always_be_escaped(c)
+    } {
         // Use hex escape notation (<backslash>uxxxx or <backslash>Uxxxxxxxx) for anything
         // unprintable
         return Utility::escape(buf, c);
@@ -209,7 +222,12 @@ fn append_to_pat(buf: &mut Vec<u16>, c: i32, escape_unprintable: bool) -> &mut V
 }
 
 /// `_appendToPat(T result, int start, int end, boolean escapeUnprintable)`.
-fn append_range_to_pat(result: &mut Vec<u16>, start: i32, end: i32, escape_unprintable: bool) -> &mut Vec<u16> {
+fn append_range_to_pat(
+    result: &mut Vec<u16>,
+    start: i32,
+    end: i32,
+    escape_unprintable: bool,
+) -> &mut Vec<u16> {
     append_to_pat(result, start, escape_unprintable);
     if start != end {
         if (start + 1) != end ||
@@ -251,12 +269,28 @@ impl UnicodeSet {
     pub fn new() -> Self {
         let mut list = vec![0i32; INITIAL_CAPACITY as usize];
         list[0] = HIGH;
-        Self { len: 1, list, buffer: Vec::new(), strings: BTreeSet::new(), pat: None, bmp_set: None, string_span: None }
+        Self {
+            len: 1,
+            list,
+            buffer: Vec::new(),
+            strings: BTreeSet::new(),
+            pat: None,
+            bmp_set: None,
+            string_span: None,
+        }
     }
 
     /// `UnicodeSet(UnicodeSet other)`: a thawed copy.
     pub fn from_set(other: &UnicodeSet) -> Self {
-        let mut s = Self { len: 0, list: Vec::new(), buffer: Vec::new(), strings: BTreeSet::new(), pat: None, bmp_set: None, string_span: None };
+        let mut s = Self {
+            len: 0,
+            list: Vec::new(),
+            buffer: Vec::new(),
+            strings: BTreeSet::new(),
+            pat: None,
+            bmp_set: None,
+            string_span: None,
+        };
         s.set_unchecked(other);
         s
     }
@@ -288,7 +322,9 @@ impl UnicodeSet {
     /// monotonically increasing.
     pub fn from_pairs(pairs: &[i32]) -> Result<Self> {
         if (pairs.len() & 1) != 0 {
-            return Err(LuceneError::illegal_argument("Must have even number of integers"));
+            return Err(LuceneError::illegal_argument(
+                "Must have even number of integers",
+            ));
         }
         let mut list = vec![0i32; pairs.len() + 1]; // don't allocate extra space, because it is likely that this is a fixed set.
         let len = list.len() as i32;
@@ -298,21 +334,33 @@ impl UnicodeSet {
             // start of pair
             let start = pairs[i];
             if last >= start {
-                return Err(LuceneError::illegal_argument("Must be monotonically increasing."));
+                return Err(LuceneError::illegal_argument(
+                    "Must be monotonically increasing.",
+                ));
             }
             list[i] = start;
             i += 1;
             // end of pair
             let limit = pairs[i].wrapping_add(1);
             if start >= limit {
-                return Err(LuceneError::illegal_argument("Must be monotonically increasing."));
+                return Err(LuceneError::illegal_argument(
+                    "Must be monotonically increasing.",
+                ));
             }
             list[i] = limit;
             last = limit;
             i += 1;
         }
         list[i] = HIGH; // terminate
-        Ok(Self { len, list, buffer: Vec::new(), strings: BTreeSet::new(), pat: None, bmp_set: None, string_span: None })
+        Ok(Self {
+            len,
+            list,
+            buffer: Vec::new(),
+            strings: BTreeSet::new(),
+            pat: None,
+            bmp_set: None,
+            string_span: None,
+        })
     }
 
     /// `UnicodeSet(String pattern)`: white space ignored.
@@ -333,7 +381,12 @@ impl UnicodeSet {
     /// As [`from_pattern`](Self::from_pattern).
     pub fn from_pattern_ignore_ws(pattern: &[u16], ignore_whitespace: bool) -> Result<Self> {
         let mut s = Self::new();
-        s.apply_pattern_full(pattern, None, None, if ignore_whitespace { IGNORE_SPACE } else { 0 })?;
+        s.apply_pattern_full(
+            pattern,
+            None,
+            None,
+            if ignore_whitespace { IGNORE_SPACE } else { 0 },
+        )?;
         Ok(s)
     }
 
@@ -353,7 +406,11 @@ impl UnicodeSet {
     /// # Errors
     ///
     /// As [`from_pattern`](Self::from_pattern).
-    pub fn from_pattern_pos(pattern: &[u16], pos: &mut ParsePosition, symbols: Option<&dyn SymbolTable>) -> Result<Self> {
+    pub fn from_pattern_pos(
+        pattern: &[u16],
+        pos: &mut ParsePosition,
+        symbols: Option<&dyn SymbolTable>,
+    ) -> Result<Self> {
         let mut s = Self::new();
         s.apply_pattern_full(pattern, Some(pos), symbols, IGNORE_SPACE)?;
         Ok(s)
@@ -423,9 +480,18 @@ impl UnicodeSet {
     /// # Errors
     ///
     /// As [`apply_pattern`](Self::apply_pattern).
-    pub fn apply_pattern_ignore_ws(&mut self, pattern: &[u16], ignore_whitespace: bool) -> Result<&mut Self> {
+    pub fn apply_pattern_ignore_ws(
+        &mut self,
+        pattern: &[u16],
+        ignore_whitespace: bool,
+    ) -> Result<&mut Self> {
         self.check_frozen()?;
-        self.apply_pattern_full(pattern, None, None, if ignore_whitespace { IGNORE_SPACE } else { 0 })
+        self.apply_pattern_full(
+            pattern,
+            None,
+            None,
+            if ignore_whitespace { IGNORE_SPACE } else { 0 },
+        )
     }
 
     /// `applyPattern(String pattern, int options)`.
@@ -458,7 +524,11 @@ impl UnicodeSet {
 
     /// `_toPattern(T result, boolean escapeUnprintable)` (private): appends
     /// the pattern to `result`.
-    fn to_pattern_into<'r>(&self, result: &'r mut Vec<u16>, escape_unprintable: bool) -> &'r mut Vec<u16> {
+    fn to_pattern_into<'r>(
+        &self,
+        result: &'r mut Vec<u16>,
+        escape_unprintable: bool,
+    ) -> &'r mut Vec<u16> {
         let Some(pat) = &self.pat else {
             return self.append_new_pattern(result, escape_unprintable, true);
         };
@@ -500,19 +570,33 @@ impl UnicodeSet {
 
     /// `_generatePattern(StringBuffer result, boolean escapeUnprintable)`
     /// (deprecated internal).
-    pub fn generate_pattern<'r>(&self, result: &'r mut Vec<u16>, escape_unprintable: bool) -> &'r mut Vec<u16> {
+    pub fn generate_pattern<'r>(
+        &self,
+        result: &'r mut Vec<u16>,
+        escape_unprintable: bool,
+    ) -> &'r mut Vec<u16> {
         self.generate_pattern_strings(result, escape_unprintable, true)
     }
 
     /// `_generatePattern(StringBuffer result, boolean escapeUnprintable,
     /// boolean includeStrings)` (deprecated internal).
-    pub fn generate_pattern_strings<'r>(&self, result: &'r mut Vec<u16>, escape_unprintable: bool, include_strings: bool) -> &'r mut Vec<u16> {
+    pub fn generate_pattern_strings<'r>(
+        &self,
+        result: &'r mut Vec<u16>,
+        escape_unprintable: bool,
+        include_strings: bool,
+    ) -> &'r mut Vec<u16> {
         self.append_new_pattern(result, escape_unprintable, include_strings)
     }
 
     // Implementation of public _generatePattern().
     // Allows other callers to use a StringBuilder while the existing API is stuck with StringBuffer.
-    fn append_new_pattern<'r>(&self, result: &'r mut Vec<u16>, escape_unprintable: bool, include_strings: bool) -> &'r mut Vec<u16> {
+    fn append_new_pattern<'r>(
+        &self,
+        result: &'r mut Vec<u16>,
+        escape_unprintable: bool,
+        include_strings: bool,
+    ) -> &'r mut Vec<u16> {
         result.push(b'[' as u16);
 
         let mut i = 0;
@@ -562,13 +646,23 @@ impl UnicodeSet {
                     start = self.list[i as usize];
                     start <= 0xdfff
                 } {
-                    append_range_to_pat(result, start, self.list[i as usize + 1] - 1, escape_unprintable);
+                    append_range_to_pat(
+                        result,
+                        start,
+                        self.list[i as usize + 1] - 1,
+                        escape_unprintable,
+                    );
                     i += 2;
                 }
                 // 3. Now write the postponed ranges.
                 let mut j = first_lead;
                 while j < first_after_lead {
-                    append_range_to_pat(result, self.list[j as usize], self.list[j as usize + 1] - 1, escape_unprintable);
+                    append_range_to_pat(
+                        result,
+                        self.list[j as usize],
+                        self.list[j as usize + 1] - 1,
+                        escape_unprintable,
+                    );
                     j += 2;
                 }
             }
@@ -606,6 +700,7 @@ impl UnicodeSet {
     }
 
     /// `matchRest(Replaceable text, int start, int limit, String s)`.
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn match_rest(text: &dyn Replaceable, start: i32, limit: i32, s: &[u16]) -> i32 {
         let max_len;
         let mut slen = s.len() as i32;
@@ -659,7 +754,9 @@ impl UnicodeSet {
                 }
                 // As in Java, the scan above only stops early by leaving the
                 // block, so `trial` is the last string here.
-                let Some(mut trial) = trial else { break 'strings };
+                let Some(mut trial) = trial else {
+                    break 'strings;
+                };
                 // now keep checking string until we get the longest one
                 loop {
                     let temp_len = Self::matches_at_sub(text, offset, trial);
@@ -784,7 +881,11 @@ impl UnicodeSet {
             // Odd list length: [..., lastStart, lastLimit, HIGH]
             if (self.len & 1) != 0 {
                 // If the list is empty, set lastLimit low enough to not be adjacent to 0.
-                let last_limit = if self.len == 1 { -2 } else { self.list[self.len as usize - 2] };
+                let last_limit = if self.len == 1 {
+                    -2
+                } else {
+                    self.list[self.len as usize - 2]
+                };
                 if last_limit <= start {
                     if last_limit == start {
                         // Extend the last range.
@@ -1020,6 +1121,7 @@ impl UnicodeSet {
     }
 
     /// `from(CharSequence s)`: a set holding `s`.
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn from_str(s: &[u16]) -> Self {
         let mut set = Self::new();
         set.add_str(s).expect("a new set is not frozen");
@@ -1240,14 +1342,14 @@ impl UnicodeSet {
     /// an infinite loop.  This method performs a binary search.
     fn find_code_point(&self, c: i32) -> i32 {
         /* Examples:
-                                           findCodePoint(c)
-           set              list[]         c=0 1 3 4 7 8
-           ===              ==============   ===========
-           []               [110000]         0 0 0 0 0 0
-           [\u0000-\u0003]  [0, 4, 110000]   1 1 1 2 2 2
-           [\u0004-\u0007]  [4, 8, 110000]   0 0 0 1 1 2
-           [:all:]          [0, 110000]      1 1 1 1 1 1
-         */
+                                          findCodePoint(c)
+          set              list[]         c=0 1 3 4 7 8
+          ===              ==============   ===========
+          []               [110000]         0 0 0 0 0 0
+          [\u0000-\u0003]  [0, 4, 110000]   1 1 1 2 2 2
+          [\u0004-\u0007]  [4, 8, 110000]   0 0 0 1 1 2
+          [:all:]          [0, 110000]      1 1 1 1 1 1
+        */
 
         // Return the smallest i such that c < list[i].  Assume
         // list[len - 1] == HIGH and that c is legal (0..HIGH-1).
@@ -1573,7 +1675,11 @@ impl UnicodeSet {
             if self.strings.is_empty() {
                 self.strings = c.strings.clone();
             } else {
-                SortedSetRelation::do_operation(&mut self.strings, SortedSetRelation::COMPLEMENTALL, &c.strings)?;
+                SortedSetRelation::do_operation(
+                    &mut self.strings,
+                    SortedSetRelation::COMPLEMENTALL,
+                    &c.strings,
+                )?;
             }
         }
         Ok(self)
@@ -1643,6 +1749,7 @@ impl UnicodeSet {
     }
 
     /// `hashCode()`.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub fn hash_code(&self) -> i32 {
         let mut result = self.len;
         for i in 0..self.len as usize {
@@ -1711,6 +1818,8 @@ impl UnicodeSet {
 
     /// Parse the pattern from the given RuleCharacterIterator.  The
     /// iterator is advanced over the parsed pattern.
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
+    #[allow(clippy::if_same_then_else)] // branches mirror the Java source
     fn apply_pattern_chars(
         &mut self,
         chars: &mut RuleCharacterIterator<'_>,
@@ -1849,7 +1958,13 @@ impl UnicodeSet {
                 match set_mode {
                     SETMODE1_UNICODESET => {
                         let nested = scratch.get_or_insert_with(UnicodeSet::new);
-                        nested.apply_pattern_chars(chars, symbols, &mut pat_buf, options, depth + 1)?;
+                        nested.apply_pattern_chars(
+                            chars,
+                            symbols,
+                            &mut pat_buf,
+                            options,
+                            depth + 1,
+                        )?;
                     }
                     SETMODE2_PROPERTYPAT => {
                         chars.skip_ignored(opts);
@@ -1859,7 +1974,10 @@ impl UnicodeSet {
                     SETMODE3_PREPARSED => {
                         // `nested` is the symbol table's set.
                         let m = preparsed.as_ref().expect("set with SETMODE3_PREPARSED");
-                        let nested = m.as_any().downcast_ref::<UnicodeSet>().expect("checked above");
+                        let nested = m
+                            .as_any()
+                            .downcast_ref::<UnicodeSet>()
+                            .expect("checked above");
                         nested.to_pattern_into(&mut pat_buf, false);
                     }
                     _ => {}
@@ -1868,7 +1986,10 @@ impl UnicodeSet {
                 use_pat = true;
 
                 let nested: &UnicodeSet = match &preparsed {
-                    Some(m) => m.as_any().downcast_ref::<UnicodeSet>().expect("checked above"),
+                    Some(m) => m
+                        .as_any()
+                        .downcast_ref::<UnicodeSet>()
+                        .expect("checked above"),
                     None => scratch.as_ref().expect("filled above"),
                 };
 
@@ -2703,7 +2824,9 @@ impl UnicodeSet {
             let inclusions = CharacterPropertiesImpl::get_inclusions_for_property(prop)?;
             self.apply_filter(&Filter::IntProperty(prop, value), &inclusions);
         } else {
-            return Err(LuceneError::illegal_argument(format!("unsupported property {prop}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "unsupported property {prop}"
+            )));
         }
         Ok(self)
     }
@@ -2713,7 +2836,11 @@ impl UnicodeSet {
     /// # Errors
     ///
     /// As [`apply_property_alias_symbols`](Self::apply_property_alias_symbols).
-    pub fn apply_property_alias(&mut self, property_alias: &[u16], value_alias: &[u16]) -> Result<&mut Self> {
+    pub fn apply_property_alias(
+        &mut self,
+        property_alias: &[u16],
+        value_alias: &[u16],
+    ) -> Result<&mut Self> {
         self.apply_property_alias_symbols(property_alias, value_alias, None)
     }
 
@@ -2743,7 +2870,10 @@ impl UnicodeSet {
             }
         }
 
-        let default_table = XSYMBOL_TABLE.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let default_table = XSYMBOL_TABLE
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if let Some(t) = default_table {
             if t.apply_property_alias(property_alias, value_alias, self)? {
                 return Ok(self);
@@ -2770,7 +2900,10 @@ impl UnicodeSet {
                             || p == UProperty::LEAD_CANONICAL_COMBINING_CLASS
                             || p == UProperty::TRAIL_CANONICAL_COMBINING_CLASS
                         {
-                            let x = crate::jdk::parse_int(&PatternProps::trim_white_space(value_alias), 10)?;
+                            let x = crate::jdk::parse_int(
+                                &PatternProps::trim_white_space(value_alias),
+                                10,
+                            )?;
                             // If the resultant set is empty then the numeric value
                             // was invalid.
                             //if (getRangeCount() == 0) {
@@ -2792,7 +2925,8 @@ impl UnicodeSet {
             } else {
                 match p {
                     UProperty::NUMERIC_VALUE => {
-                        let s = String::from_utf16_lossy(&PatternProps::trim_white_space(value_alias));
+                        let s =
+                            String::from_utf16_lossy(&PatternProps::trim_white_space(value_alias));
                         let value = crate::jdk::parse_double(&s)?;
                         let inclusions = CharacterPropertiesImpl::get_inclusions_for_property(p)?;
                         self.apply_filter(&Filter::NumericValue(value), &inclusions);
@@ -2813,13 +2947,16 @@ impl UnicodeSet {
                     }
                     UProperty::UNICODE_1_NAME => {
                         // ICU 49 deprecates the Unicode_1_Name property APIs.
-                        return Err(LuceneError::illegal_argument("Unicode_1_Name (na1) not supported"));
+                        return Err(LuceneError::illegal_argument(
+                            "Unicode_1_Name (na1) not supported",
+                        ));
                     }
                     UProperty::AGE => {
                         // Must munge name, since
                         // VersionInfo.getInstance() does not do
                         // 'loose' matching.
-                        let version = VersionInfo::get_instance_str(&Self::munge_char_name(value_alias))?;
+                        let version =
+                            VersionInfo::get_instance_str(&Self::munge_char_name(value_alias))?;
                         let inclusions = CharacterPropertiesImpl::get_inclusions_for_property(p)?;
                         self.apply_filter(&Filter::Version(version), &inclusions);
                         return Ok(self);
@@ -2914,7 +3051,10 @@ impl UnicodeSet {
     /// Return true if the given iterator appears to point at a
     /// property pattern.  Regardless of the result, return with the
     /// iterator unchanged.
-    fn resembles_property_pattern_chars(chars: &mut RuleCharacterIterator<'_>, mut iter_opts: i32) -> Result<bool> {
+    fn resembles_property_pattern_chars(
+        chars: &mut RuleCharacterIterator<'_>,
+        mut iter_opts: i32,
+    ) -> Result<bool> {
         let mut result = false;
         iter_opts &= !rci::PARSE_ESCAPES;
         let pos = chars.get_pos(None);
@@ -2933,7 +3073,12 @@ impl UnicodeSet {
 
     /// Parse the given property pattern at the given parse position.
     /// Returns false (Java's `null`) when no pattern is there.
-    fn apply_property_pattern(&mut self, pattern: &[u16], ppos: &mut ParsePosition, symbols: Option<&dyn SymbolTable>) -> Result<bool> {
+    fn apply_property_pattern(
+        &mut self,
+        pattern: &[u16],
+        ppos: &mut ParsePosition,
+        symbols: Option<&dyn SymbolTable>,
+    ) -> Result<bool> {
         let mut pos = ppos.get_index();
 
         // On entry, ppos should point to one of the following locations:
@@ -2955,7 +3100,9 @@ impl UnicodeSet {
                 pos += 1;
                 invert = true;
             }
-        } else if region_matches(pattern, pos, &ascii("\\p"), true) || region_matches(pattern, pos, &ascii("\\N"), false) {
+        } else if region_matches(pattern, pos, &ascii("\\p"), true)
+            || region_matches(pattern, pos, &ascii("\\N"), false)
+        {
             let c = pattern[pos as usize + 1];
             invert = c == b'P' as u16;
             is_name = c == b'N' as u16;
@@ -3214,7 +3361,11 @@ impl UnicodeSet {
             for str in &self.strings {
                 // TODO: call lower-level functions
                 fold_set.add_str(&UCharacter::to_lower_case_ulocale(&root, str))?;
-                fold_set.add_str(&UCharacter::to_title_case_ulocale(&root, str, Some(bi.as_mut()))?)?;
+                fold_set.add_str(&UCharacter::to_title_case_ulocale(
+                    &root,
+                    str,
+                    Some(bi.as_mut()),
+                )?)?;
                 fold_set.add_str(&UCharacter::to_upper_case_ulocale(&root, str))?;
                 fold_set.add_str(&UCharacter::fold_case_str_options(str, 0))?;
             }
@@ -3236,9 +3387,17 @@ impl UnicodeSet {
             // Optimize contains() and span() and similar functions.
             if self.has_strings() {
                 let strings: Vec<Vec<u16>> = self.strings.iter().cloned().collect();
-                self.string_span = Some(Box::new(UnicodeSetStringSpan::new(self, strings, usss::ALL)));
+                self.string_span = Some(Box::new(UnicodeSetStringSpan::new(
+                    self,
+                    strings,
+                    usss::ALL,
+                )));
             }
-            if self.string_span.as_ref().is_none_or(|s| !s.needs_string_span_utf16()) {
+            if self
+                .string_span
+                .as_ref()
+                .is_none_or(|s| !s.needs_string_span_utf16())
+            {
                 // Optimize for code point spans.
                 // There are no strings, or
                 // all strings are irrelevant for span() etc. because
@@ -3277,7 +3436,8 @@ impl UnicodeSet {
             } else {
                 usss::FWD_UTF16_CONTAINED
             };
-            let str_span = UnicodeSetStringSpan::new(self, self.strings.iter().cloned().collect(), which);
+            let str_span =
+                UnicodeSetStringSpan::new(self, self.strings.iter().cloned().collect(), which);
             if str_span.needs_string_span_utf16() {
                 return str_span.span(s, start, span_condition);
             }
@@ -3289,7 +3449,13 @@ impl UnicodeSet {
     /// `spanAndCount(CharSequence s, int start, SpanCondition spanCondition,
     /// OutputInt outCount)` (deprecated internal): as `span`, setting
     /// `out_count` to the number of code points and strings spanned.
-    pub fn span_and_count(&self, s: &[u16], mut start: i32, span_condition: SpanCondition, out_count: &mut OutputInt) -> i32 {
+    pub fn span_and_count(
+        &self,
+        s: &[u16],
+        mut start: i32,
+        span_condition: SpanCondition,
+        out_count: &mut OutputInt,
+    ) -> i32 {
         let end = s.len() as i32;
         if start < 0 {
             start = 0;
@@ -3309,14 +3475,21 @@ impl UnicodeSet {
                 usss::FWD_UTF16_CONTAINED
             };
             which |= usss::WITH_COUNT;
-            let str_span = UnicodeSetStringSpan::new(self, self.strings.iter().cloned().collect(), which);
+            let str_span =
+                UnicodeSetStringSpan::new(self, self.strings.iter().cloned().collect(), which);
             return str_span.span_and_count(s, start, span_condition, out_count);
         }
 
         self.span_code_points_and_count(s, start, span_condition, Some(out_count))
     }
 
-    fn span_code_points_and_count(&self, s: &[u16], start: i32, span_condition: SpanCondition, out_count: Option<&mut OutputInt>) -> i32 {
+    fn span_code_points_and_count(
+        &self,
+        s: &[u16],
+        start: i32,
+        span_condition: SpanCondition,
+        out_count: Option<&mut OutputInt>,
+    ) -> i32 {
         // Pin to 0/1 values.
         let span_contained = span_condition != SpanCondition::NotContained;
 
@@ -3367,7 +3540,8 @@ impl UnicodeSet {
             } else {
                 usss::BACK_UTF16_CONTAINED
             };
-            let str_span = UnicodeSetStringSpan::new(self, self.strings.iter().cloned().collect(), which);
+            let str_span =
+                UnicodeSetStringSpan::new(self, self.strings.iter().cloned().collect(), which);
             if str_span.needs_string_span_utf16() {
                 return str_span.span_back(s, from_index, span_condition);
             }
@@ -3400,7 +3574,9 @@ impl UnicodeSet {
     // internal function
     fn check_frozen(&self) -> Result<()> {
         if self.is_frozen() {
-            return Err(LuceneError::unsupported_operation("Attempt to modify frozen object"));
+            return Err(LuceneError::unsupported_operation(
+                "Attempt to modify frozen object",
+            ));
         }
         Ok(())
     }
@@ -3511,7 +3687,11 @@ impl UnicodeSet {
         if style != ComparisonStyle::Lexicographic {
             let diff = self.size() - o.size();
             if diff != 0 {
-                return if (diff < 0) == (style == ComparisonStyle::ShorterFirst) { -1 } else { 1 };
+                return if (diff < 0) == (style == ComparisonStyle::ShorterFirst) {
+                    -1
+                } else {
+                    1
+                };
             }
         }
         let mut i = 0usize;
@@ -3532,7 +3712,13 @@ impl UnicodeSet {
                     }
                     let item = o.strings.first().expect("has strings");
                     let compare_result = Self::compare_str_cp(item, self.list[i]);
-                    return if compare_result > 0 { -1 } else if compare_result < 0 { 1 } else { 0 }; // Reverse the order.
+                    return if compare_result > 0 {
+                        -1
+                    } else if compare_result < 0 {
+                        1
+                    } else {
+                        0
+                    }; // Reverse the order.
                 }
                 // otherwise return the result if even index, or the reversal if not
                 return if (i & 1) == 0 { result } else { -result };
@@ -3598,11 +3784,19 @@ impl UnicodeSet {
 
     /// `compare(Collection<T> collection1, Collection<T> collection2,
     /// ComparisonStyle style)`.
-    pub fn compare_collections<T: Ord>(collection1: &[T], collection2: &[T], style: ComparisonStyle) -> i32 {
+    pub fn compare_collections<T: Ord>(
+        collection1: &[T],
+        collection2: &[T],
+        style: ComparisonStyle,
+    ) -> i32 {
         if style != ComparisonStyle::Lexicographic {
             let diff = collection1.len() as i32 - collection2.len() as i32;
             if diff != 0 {
-                return if (diff < 0) == (style == ComparisonStyle::ShorterFirst) { -1 } else { 1 };
+                return if (diff < 0) == (style == ComparisonStyle::ShorterFirst) {
+                    -1
+                } else {
+                    1
+                };
             }
         }
         Self::compare_iters(collection1.iter(), collection2.iter())
@@ -3632,7 +3826,9 @@ impl UnicodeSet {
         while it.next_range() {
             if it.codepoint != 0
                 && it.codepoint_end != 0x10FFFF
-                && dont_care.contains_range(it.codepoint, it.codepoint_end).unwrap_or(false)
+                && dont_care
+                    .contains_range(it.codepoint, it.codepoint_end)
+                    .unwrap_or(false)
             {
                 self.add_range(it.codepoint, it.codepoint_end)?;
             }
@@ -3688,7 +3884,10 @@ impl UnicodeSet {
 
     /// `getDefaultXSymbolTable()` (internal).
     pub fn get_default_x_symbol_table() -> Option<Arc<dyn XSymbolTable>> {
-        XSYMBOL_TABLE.read().unwrap_or_else(|e| e.into_inner()).clone()
+        XSYMBOL_TABLE
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// `setDefaultXSymbolTable(XSymbolTable xSymbolTable)` (internal).
@@ -3795,9 +3994,13 @@ impl Filter {
         match self {
             Filter::NumericValue(value) => UCharacter::get_unicode_numeric_value(ch) == *value,
             Filter::GeneralCategoryMask(mask) => ((1 << UCharacter::get_type(ch)) & mask) != 0,
-            Filter::IntProperty(prop, value) => UCharacter::get_int_property_value(ch, *prop) == *value,
+            Filter::IntProperty(prop, value) => {
+                UCharacter::get_int_property_value(ch, *prop) == *value
+            }
             Filter::ScriptExtensions(script) => UScript::has_script(ch, *script),
-            Filter::IdentifierType(id_type) => UCharacterProperty::instance().has_id_type(ch, *id_type),
+            Filter::IdentifierType(id_type) => {
+                UCharacterProperty::instance().has_id_type(ch, *id_type)
+            }
             Filter::Version(version) => {
                 let v = UCharacter::get_age(ch).expect("inclusions hold code points");
                 // Reference comparison ok; VersionInfo caches and reuses
@@ -3824,7 +4027,12 @@ pub trait XSymbolTable: SymbolTable {
     /// # Errors
     ///
     /// The errors of the implementation.
-    fn apply_property_alias(&self, _property_name: &[u16], _property_value: &[u16], _result: &mut UnicodeSet) -> Result<bool> {
+    fn apply_property_alias(
+        &self,
+        _property_name: &[u16],
+        _property_value: &[u16],
+        _result: &mut UnicodeSet,
+    ) -> Result<bool> {
         Ok(false)
     }
 }
@@ -3960,7 +4168,11 @@ impl Iterator for UnicodeSetIterator2<'_> {
 
     fn next(&mut self) -> Option<Vec<u16>> {
         let Some(source_list) = self.source_list else {
-            return self.string_iterator.as_mut().and_then(|i| i.next()).cloned();
+            return self
+                .string_iterator
+                .as_mut()
+                .and_then(|i| i.next())
+                .cloned();
         };
         let codepoint = self.current;
         self.current += 1;
@@ -3981,7 +4193,10 @@ impl Iterator for UnicodeSetIterator2<'_> {
         }
         // But Java lacks a valueOfCodePoint method, so we have to work harder
         let offset = codepoint - 0x10000;
-        Some(vec![(((offset as u32) >> 10) + 0xD800) as u16, ((offset & 0x3ff) + 0xDC00) as u16])
+        Some(vec![
+            (((offset as u32) >> 10) + 0xD800) as u16,
+            ((offset & 0x3ff) + 0xDC00) as u16,
+        ])
     }
 }
 
@@ -4009,7 +4224,13 @@ impl<'a> CodePointIteratorInt<'a> {
         } else {
             range_start
         };
-        Self { list, last_range, current_range, range_start, range_limit }
+        Self {
+            list,
+            last_range,
+            current_range,
+            range_start,
+            range_limit,
+        }
     }
 
     /// `hasNext()`.
@@ -4050,7 +4271,10 @@ impl<'a> CodePointSpliterator<'a> {
     const CHARACTERISTICS: i32 = 0x40 | 0x10 | 0x1 | 0x100;
 
     fn new(unicode_set: &'a UnicodeSet) -> Self {
-        Self { unicode_set, cpi: CodePointIteratorInt::new(unicode_set) }
+        Self {
+            unicode_set,
+            cpi: CodePointIteratorInt::new(unicode_set),
+        }
     }
 
     /// `estimateSize()`.
@@ -4137,13 +4361,23 @@ impl<'a> IntoIterator for &'a UnicodeSet {
 impl UnicodeMatcher for UnicodeSet {
     /// `matches(Replaceable text, int[] offset, int limit, boolean
     /// incremental)`.
-    fn matches(&self, text: &dyn Replaceable, offset: &mut [i32], limit: i32, incremental: bool) -> Result<i32> {
+    fn matches(
+        &self,
+        text: &dyn Replaceable,
+        offset: &mut [i32],
+        limit: i32,
+        incremental: bool,
+    ) -> Result<i32> {
         if offset[0] == limit {
             // Strings, if any, have length != 0, so we don't worry
             // about them here.  If we ever allow zero-length strings
             // we much check for them here.
             if self.contains_valid(ETHER as i32) {
-                Ok(if incremental { U_PARTIAL_MATCH } else { U_MATCH })
+                Ok(if incremental {
+                    U_PARTIAL_MATCH
+                } else {
+                    U_MATCH
+                })
             } else {
                 Ok(U_MISMATCH)
             }
@@ -4188,7 +4422,11 @@ impl UnicodeMatcher for UnicodeSet {
                     let length = Self::match_rest(text, offset[0], limit, trial);
 
                     if incremental {
-                        let max_len = if forward { limit - offset[0] } else { offset[0] - limit };
+                        let max_len = if forward {
+                            limit - offset[0]
+                        } else {
+                            offset[0] - limit
+                        };
                         if length == max_len {
                             // We have successfully matched but only up to limit.
                             return Ok(U_PARTIAL_MATCH);
@@ -4212,7 +4450,11 @@ impl UnicodeMatcher for UnicodeSet {
                 // We've checked all strings without a partial match.
                 // If we have full matches, return the longest one.
                 if high_water_length != 0 {
-                    offset[0] += if forward { high_water_length } else { -high_water_length };
+                    offset[0] += if forward {
+                        high_water_length
+                    } else {
+                        -high_water_length
+                    };
                     return Ok(U_MATCH);
                 }
             }

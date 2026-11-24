@@ -47,7 +47,10 @@ impl NumberPropertyMapper {
     /// # Errors
     ///
     /// The errors of [`old_to_new`](Self::old_to_new).
-    pub fn create(properties: &DecimalFormatProperties, symbols: Arc<DecimalFormatSymbols>) -> Result<UnlocalizedNumberFormatter> {
+    pub fn create(
+        properties: &DecimalFormatProperties,
+        symbols: Arc<DecimalFormatSymbols>,
+    ) -> Result<UnlocalizedNumberFormatter> {
         let macros = Self::old_to_new(properties, symbols, None)?;
         Ok(NumberFormatter::with().macros(macros))
     }
@@ -75,7 +78,10 @@ impl NumberPropertyMapper {
     /// # Errors
     ///
     /// The errors of the pattern parsing and of the mapping.
-    pub fn create_from_pattern(pattern: &[u16], symbols: Arc<DecimalFormatSymbols>) -> Result<UnlocalizedNumberFormatter> {
+    pub fn create_from_pattern(
+        pattern: &[u16],
+        symbols: Arc<DecimalFormatSymbols>,
+    ) -> Result<UnlocalizedNumberFormatter> {
         let properties = PatternStringParser::parse_to_properties(Some(pattern))?;
         Self::create(&properties, symbols)
     }
@@ -121,7 +127,8 @@ impl NumberPropertyMapper {
         // AFFIXES //
         /////////////
 
-        let affix_provider: Arc<dyn AffixPatternProvider> = PropertiesAffixPatternProvider::for_properties(properties)?;
+        let affix_provider: Arc<dyn AffixPatternProvider> =
+            PropertiesAffixPatternProvider::for_properties(properties)?;
         macros.affix_provider = Some(affix_provider.clone());
 
         ///////////
@@ -169,9 +176,11 @@ impl NumberPropertyMapper {
                 min_frac = currency.get_default_fraction_digits_usage(currency_usage)?;
                 max_frac = currency.get_default_fraction_digits_usage(currency_usage)?;
             } else if min_frac == -1 {
-                min_frac = max_frac.min(currency.get_default_fraction_digits_usage(currency_usage)?);
+                min_frac =
+                    max_frac.min(currency.get_default_fraction_digits_usage(currency_usage)?);
             } else if max_frac == -1 {
-                max_frac = min_frac.max(currency.get_default_fraction_digits_usage(currency_usage)?);
+                max_frac =
+                    min_frac.max(currency.get_default_fraction_digits_usage(currency_usage)?);
             } else {
                 // No-op: user override for both minFrac and maxFrac
             }
@@ -180,7 +189,11 @@ impl NumberPropertyMapper {
         // For backwards compatibility, minimum overrides maximum if the two
         // conflict.
         if min_int == 0 && max_frac != 0 {
-            min_frac = if min_frac < 0 || (min_frac == 0 && max_int == 0) { 1 } else { min_frac };
+            min_frac = if min_frac < 0 || (min_frac == 0 && max_int == 0) {
+                1
+            } else {
+                min_frac
+            };
             max_frac = if max_frac < 0 {
                 -1
             } else if max_frac < min_frac {
@@ -189,7 +202,11 @@ impl NumberPropertyMapper {
                 max_frac
             };
             min_int = 0;
-            max_int = if !(0..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&max_int) { -1 } else { max_int };
+            max_int = if !(0..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&max_int) {
+                -1
+            } else {
+                max_int
+            };
         } else {
             // Force a digit before the decimal point.
             min_frac = if min_frac < 0 { 0 } else { min_frac };
@@ -200,7 +217,11 @@ impl NumberPropertyMapper {
             } else {
                 max_frac
             };
-            min_int = if min_int <= 0 || min_int > RoundingUtils::MAX_INT_FRAC_SIG { 1 } else { min_int };
+            min_int = if min_int <= 0 || min_int > RoundingUtils::MAX_INT_FRAC_SIG {
+                1
+            } else {
+                min_int
+            };
             max_int = if max_int < 0 {
                 -1
             } else if max_int < min_int {
@@ -213,7 +234,8 @@ impl NumberPropertyMapper {
         }
         let mut rounding: Option<Precision> = None;
         if explicit_currency_usage {
-            rounding = Some(Precision::construct_currency(currency_usage).with_currency(Some(&currency))?);
+            rounding =
+                Some(Precision::construct_currency(currency_usage).with_currency(Some(&currency))?);
         } else if let Some(inc) = rounding_increment.clone() {
             if PatternStringUtils::ignore_rounding_increment(&inc, max_frac) {
                 rounding = Some(Precision::construct_fraction(min_frac, max_frac).into_precision());
@@ -225,13 +247,7 @@ impl NumberPropertyMapper {
                 rounding = Some(Precision::construct_increment(&inc)?);
             }
         } else if explicit_min_max_sig {
-            min_sig = if min_sig < 1 {
-                1
-            } else if min_sig > RoundingUtils::MAX_INT_FRAC_SIG {
-                RoundingUtils::MAX_INT_FRAC_SIG
-            } else {
-                min_sig
-            };
+            min_sig = min_sig.clamp(1, RoundingUtils::MAX_INT_FRAC_SIG);
             max_sig = if max_sig < 0 {
                 RoundingUtils::MAX_INT_FRAC_SIG
             } else if max_sig < min_sig {
@@ -287,7 +303,11 @@ impl NumberPropertyMapper {
         // SIGN ALWAYS SHOWN //
         ///////////////////////
 
-        macros.sign = Some(if properties.get_sign_always_shown() { SignDisplay::Always } else { SignDisplay::Auto });
+        macros.sign = Some(if properties.get_sign_always_shown() {
+            SignDisplay::Always
+        } else {
+            SignDisplay::Auto
+        });
 
         /////////////////////////
         // SCIENTIFIC NOTATION //
@@ -303,12 +323,14 @@ impl NumberPropertyMapper {
                 // and is not in the spec. If maxInt is greater than 8, it is
                 // set to minInt, even if minInt is greater than 8.
                 max_int = min_int;
-                macros.integer_width = Some(IntegerWidth::zero_fill_to(min_int)?.truncate_at(max_int)?);
+                macros.integer_width =
+                    Some(IntegerWidth::zero_fill_to(min_int)?.truncate_at(max_int)?);
             } else if max_int > min_int && min_int > 1 {
                 // Bug #13289: if maxInt > minInt > 1, then minInt should be
                 // 1.
                 min_int = 1;
-                macros.integer_width = Some(IntegerWidth::zero_fill_to(min_int)?.truncate_at(max_int)?);
+                macros.integer_width =
+                    Some(IntegerWidth::zero_fill_to(min_int)?.truncate_at(max_int)?);
             }
             let engineering = if max_int < 0 { -1 } else { max_int };
             macros.notation = Some(
@@ -321,7 +343,11 @@ impl NumberPropertyMapper {
                     // Minimum exponent digits:
                     properties.get_minimum_exponent_digits(),
                     // Exponent sign always shown:
-                    if properties.get_exponent_sign_always_shown() { SignDisplay::Always } else { SignDisplay::Auto },
+                    if properties.get_exponent_sign_always_shown() {
+                        SignDisplay::Always
+                    } else {
+                        SignDisplay::Auto
+                    },
                 )
                 .into_notation(),
             );
@@ -329,7 +355,11 @@ impl NumberPropertyMapper {
             // mode.
             // TODO: Overriding here is a bit of a hack. Should this logic go
             // earlier?
-            if macros.precision.as_ref().is_some_and(|p| FractionPrecision::try_cast(p).is_some()) {
+            if macros
+                .precision
+                .as_ref()
+                .is_some_and(|p| FractionPrecision::try_cast(p).is_some())
+            {
                 // For the purposes of rounding, get the original min/max int
                 // and min/max frac.
                 let max_int_ = properties.get_maximum_integer_digits();
@@ -338,11 +368,14 @@ impl NumberPropertyMapper {
                 let max_frac_ = properties.get_maximum_fraction_digits();
                 if min_int_ == 0 && max_frac_ == 0 {
                     // Patterns like "#E0" and "##E0", which mean no rounding!
-                    macros.precision = Some(Precision::construct_infinite().with_mode(&math_context));
+                    macros.precision =
+                        Some(Precision::construct_infinite().with_mode(&math_context));
                 } else if min_int_ == 0 && min_frac_ == 0 {
                     // Patterns like "#.##E0" (no zeros in the mantissa),
                     // which mean round to maxFrac+1
-                    macros.precision = Some(Precision::construct_significant(1, max_frac_ + 1).with_mode(&math_context));
+                    macros.precision = Some(
+                        Precision::construct_significant(1, max_frac_ + 1).with_mode(&math_context),
+                    );
                 } else {
                     let max_sig_ = min_int_ + max_frac_;
                     // Bug #20058: if maxInt > minInt > 1, then minInt should
@@ -354,7 +387,10 @@ impl NumberPropertyMapper {
                     // To avoid regression, maxSig is not reset when minInt_
                     // set to 1.
                     // TODO: Reset maxSig_ = 1 + minFrac_ to follow the spec.
-                    macros.precision = Some(Precision::construct_significant(min_sig_, max_sig_).with_mode(&math_context));
+                    macros.precision = Some(
+                        Precision::construct_significant(min_sig_, max_sig_)
+                            .with_mode(&math_context),
+                    );
                 }
             }
         }
@@ -365,7 +401,8 @@ impl NumberPropertyMapper {
 
         if let Some(compact_style) = properties.get_compact_style() {
             if let Some(custom) = properties.get_compact_custom_data() {
-                macros.notation = Some(CompactNotation::with_custom_data(Some(custom)).into_notation());
+                macros.notation =
+                    Some(CompactNotation::with_custom_data(Some(custom)).into_notation());
             } else if compact_style == CompactStyle::Long {
                 macros.notation = Some(Notation::compact_long().into_notation());
             } else {
@@ -388,7 +425,11 @@ impl NumberPropertyMapper {
             exported_properties.set_math_context(Some(math_context));
             exported_properties.set_rounding_mode(Some(math_context.get_rounding_mode()));
             exported_properties.set_minimum_integer_digits(min_int);
-            exported_properties.set_maximum_integer_digits(if max_int == -1 { i32::MAX } else { max_int });
+            exported_properties.set_maximum_integer_digits(if max_int == -1 {
+                i32::MAX
+            } else {
+                max_int
+            });
 
             let rounding_ = match rounding.as_ref().and_then(CurrencyPrecision::try_cast) {
                 Some(cp) => Some(cp.with_currency(Some(&currency))?),

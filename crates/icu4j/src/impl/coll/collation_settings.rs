@@ -190,9 +190,12 @@ impl CollationSettings {
                 self.reorder_ranges = None;
             } else {
                 debug_assert!(
-                    table[((codes_and_ranges[first_split_byte_range_index as usize] as u32) >> 24) as usize] == 0
+                    table[((codes_and_ranges[first_split_byte_range_index as usize] as u32) >> 24)
+                        as usize]
+                        == 0
                 );
-                self.min_high_no_reorder = (codes_and_ranges[(ranges_limit - 1) as usize] as i64) & 0xffff0000;
+                self.min_high_no_reorder =
+                    (codes_and_ranges[(ranges_limit - 1) as usize] as i64) & 0xffff0000;
                 self.set_reorder_ranges(
                     codes_and_ranges,
                     first_split_byte_range_index,
@@ -230,7 +233,9 @@ impl CollationSettings {
         // Separators (at the low end) and trailing weights (at the high end)
         // are never reordered.
         debug_assert!(ranges_length >= 2);
-        debug_assert!((ranges[0] & 0xffff) == 0 && (ranges[(ranges_length - 1) as usize] & 0xffff) != 0);
+        debug_assert!(
+            (ranges[0] & 0xffff) == 0 && (ranges[(ranges_length - 1) as usize] & 0xffff) != 0
+        );
         self.min_high_no_reorder = (ranges[(ranges_length - 1) as usize] as i64) & 0xffff0000;
 
         // Write the lead byte permutation table.
@@ -269,7 +274,13 @@ impl CollationSettings {
             ranges_length -= first_split_byte_range_index;
         }
         let ranges = ranges.to_vec();
-        self.set_reorder_arrays(Some(codes), &ranges, ranges_start, ranges_length, Some(Arc::from(table)));
+        self.set_reorder_arrays(
+            Some(codes),
+            &ranges,
+            ranges_start,
+            ranges_length,
+            Some(Arc::from(table)),
+        );
         Ok(())
     }
 
@@ -331,7 +342,10 @@ impl CollationSettings {
 
     /// `reorder(long)`.
     pub fn reorder(&self, p: i64) -> i64 {
-        let table = self.reorder_table.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let table = self
+            .reorder_table
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         let b = table[((p as i32 as u32) >> 24) as usize];
         if b != 0 || p <= Collation::NO_CE_PRIMARY {
             (((b as i64) & 0xff) << 24) | (p & 0xffffff)
@@ -348,7 +362,10 @@ impl CollationSettings {
         // Round up p so that its lower 16 bits are >= any offset bits.
         // Then compare q directly with (limit, offset) pairs.
         let q = p | 0xffff;
-        let ranges = self.reorder_ranges.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let ranges = self
+            .reorder_ranges
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         let mut i = 0;
         let mut r;
         loop {
@@ -370,11 +387,17 @@ impl CollationSettings {
     pub fn set_strength(&mut self, value: i32) -> Result<()> {
         let no_strength = self.options & !Self::STRENGTH_MASK;
         match value {
-            collator::PRIMARY | collator::SECONDARY | collator::TERTIARY | collator::QUATERNARY | collator::IDENTICAL => {
+            collator::PRIMARY
+            | collator::SECONDARY
+            | collator::TERTIARY
+            | collator::QUATERNARY
+            | collator::IDENTICAL => {
                 self.options = no_strength | (value << Self::STRENGTH_SHIFT);
                 Ok(())
             }
-            _ => Err(LuceneError::illegal_argument(format!("illegal strength value {value}"))),
+            _ => Err(LuceneError::illegal_argument(format!(
+                "illegal strength value {value}"
+            ))),
         }
     }
 
@@ -415,7 +438,9 @@ impl CollationSettings {
 
     /// `setCaseFirst(int)`.
     pub fn set_case_first(&mut self, value: i32) {
-        debug_assert!(value == 0 || value == Self::CASE_FIRST || value == Self::CASE_FIRST_AND_UPPER_MASK);
+        debug_assert!(
+            value == 0 || value == Self::CASE_FIRST || value == Self::CASE_FIRST_AND_UPPER_MASK
+        );
         let no_case_first = self.options & !Self::CASE_FIRST_AND_UPPER_MASK;
         self.options = no_case_first | value;
     }
@@ -460,7 +485,10 @@ impl CollationSettings {
     pub fn set_max_variable(&mut self, value: i32, default_options: i32) -> Result<()> {
         let no_max = self.options & !Self::MAX_VARIABLE_MASK;
         match value {
-            Self::MAX_VAR_SPACE | Self::MAX_VAR_PUNCT | Self::MAX_VAR_SYMBOL | Self::MAX_VAR_CURRENCY => {
+            Self::MAX_VAR_SPACE
+            | Self::MAX_VAR_PUNCT
+            | Self::MAX_VAR_SYMBOL
+            | Self::MAX_VAR_CURRENCY => {
                 self.options = no_max | (value << Self::MAX_VARIABLE_SHIFT);
                 Ok(())
             }
@@ -468,7 +496,9 @@ impl CollationSettings {
                 self.options = no_max | (default_options & Self::MAX_VARIABLE_MASK);
                 Ok(())
             }
-            _ => Err(LuceneError::illegal_argument(format!("illegal maxVariable value {value}"))),
+            _ => Err(LuceneError::illegal_argument(format!(
+                "illegal maxVariable value {value}"
+            ))),
         }
     }
 
@@ -497,7 +527,8 @@ impl CollationSettings {
     pub fn sorts_tertiary_upper_case_first(options: i32) -> bool {
         // On tertiary level, consider case bits and sort uppercase first
         // if caseLevel is off and caseFirst==upperFirst.
-        (options & (Self::CASE_LEVEL | Self::CASE_FIRST_AND_UPPER_MASK)) == Self::CASE_FIRST_AND_UPPER_MASK
+        (options & (Self::CASE_LEVEL | Self::CASE_FIRST_AND_UPPER_MASK))
+            == Self::CASE_FIRST_AND_UPPER_MASK
     }
 
     /// `dontCheckFCD()`.

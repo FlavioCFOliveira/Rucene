@@ -77,7 +77,9 @@ impl<'a> UnicodeSetIterator<'a> {
     }
 
     fn next_string(&mut self) -> bool {
-        let Some(strings) = &self.strings else { return false };
+        let Some(strings) = &self.strings else {
+            return false;
+        };
         self.codepoint = IS_STRING;
         self.string = Some(strings[self.string_index].clone());
         self.string_index += 1;
@@ -88,6 +90,7 @@ impl<'a> UnicodeSetIterator<'a> {
     }
 
     /// `next()`: advances to the next code point or string.
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn next(&mut self) -> bool {
         if self.next_element <= self.end_element {
             self.codepoint = self.next_element;

@@ -57,7 +57,8 @@ const IX_TOP: i32 = 16;
 
 // definitions for 16-bit bidi/shaping properties word ----------------------
 
-/* CLASS_SHIFT=0, */ /* bidi class: 5 bits (4..0) */
+/* CLASS_SHIFT=0, */
+/* bidi class: 5 bits (4..0) */
 const JT_SHIFT: i32 = 5; /* joining type: 3 bits (7..5) */
 
 const BPT_SHIFT: i32 = 8; /* Bidi_Paired_Bracket_Type(bpt): 2 bits (9..8) */
@@ -114,14 +115,21 @@ impl UBiDiProps {
         Self::read_data(&mut bytes)
     }
 
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn read_data(bytes: &mut ByteBuffer) -> Result<Self> {
         // read the header
-        ICUBinary::read_header(bytes, FMT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
+        ICUBinary::read_header(
+            bytes,
+            FMT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
 
         // read indexes[]
         let count = bytes.get_int()?;
         if count < IX_TOP {
-            return Err(io_exception(format!("indexes[0] too small in {DATA_FILE_NAME}")));
+            return Err(io_exception(format!(
+                "indexes[0] too small in {DATA_FILE_NAME}"
+            )));
         }
         let mut indexes = vec![0i32; count as usize];
 
@@ -135,14 +143,20 @@ impl UBiDiProps {
         let expected_trie_length = indexes[IX_TRIE_SIZE];
         let trie_length = trie.get_serialized_length();
         if trie_length > expected_trie_length {
-            return Err(io_exception(format!("{DATA_FILE_NAME}: not enough bytes for the trie")));
+            return Err(io_exception(format!(
+                "{DATA_FILE_NAME}: not enough bytes for the trie"
+            )));
         }
         // skip padding after trie bytes
         ICUBinary::skip_bytes(bytes, expected_trie_length - trie_length)?;
 
         // read mirrors[]
         let count = indexes[IX_MIRROR_LENGTH];
-        let mirrors = if count > 0 { ICUBinary::get_ints(bytes, count, 0)? } else { Vec::new() };
+        let mirrors = if count > 0 {
+            ICUBinary::get_ints(bytes, count, 0)?
+        } else {
+            Vec::new()
+        };
 
         // read jgArray[]
         let count = indexes[IX_JG_LIMIT] - indexes[IX_JG_START];
@@ -156,7 +170,13 @@ impl UBiDiProps {
         bytes.get_bytes(&mut b)?;
         let jg_array2: Vec<i8> = b.into_iter().map(|x| x as i8).collect();
 
-        Ok(Self { indexes, mirrors, jg_array, jg_array2, trie })
+        Ok(Self {
+            indexes,
+            mirrors,
+            jg_array,
+            jg_array2,
+            trie,
+        })
     }
 
     /// `INSTANCE`.
@@ -175,6 +195,7 @@ impl UBiDiProps {
     /// # Errors
     ///
     /// The errors of [`UnicodeSet::add`] (a frozen set).
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     pub fn add_property_starts(&self, set: &mut UnicodeSet) -> Result<()> {
         /* add the start code point of each same-value range of the trie */
         let mut trie_iterator = self.trie.iterator();

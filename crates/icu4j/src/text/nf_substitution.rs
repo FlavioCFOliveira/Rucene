@@ -13,15 +13,17 @@ use crate::jdk::{units, ParsePosition};
 use crate::math::big_decimal::BigDecimal as IcuBigDecimal;
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
 use crate::r#impl::number::decimal_quantity_abstract_bcd::DecimalQuantityAbstractBcd;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 use crate::text::decimal_format::DecimalFormat;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 use crate::text::nf_rule::{self, checked_div, checked_rem, NFRule};
 use crate::text::nf_rule_set::BuildContext;
 use crate::text::number_format::NumberFormat;
 use crate::text::rule_based_number_format::{
-    ends_with, java_math_round, long_or_double, npe, number_int_value, number_long_value, sb_insert, substring,
-    substring_from, RuleGraph,
+    ends_with, java_math_round, long_or_double, npe, number_int_value, number_long_value,
+    sb_insert, substring, substring_from, RuleGraph,
 };
 
 /// `MAX_INT64_IN_DOUBLE` (private): the largest `long` a `double` holds
@@ -214,7 +216,13 @@ impl NFSubstitution {
     /// `IllegalArgumentException("No rule set named <name>")`;
     /// `NullPointerException` for a named rule set or a pattern when
     /// `rule_set` is `None`; the errors of the decimal format.
-    fn new(pos: i32, rule_set: Option<usize>, description: &[u16], kind: Kind, ctx: &BuildContext<'_>) -> Result<Self> {
+    fn new(
+        pos: i32,
+        rule_set: Option<usize>,
+        description: &[u16],
+        kind: Kind,
+        ctx: &BuildContext<'_>,
+    ) -> Result<Self> {
         // initialize the substitution's position in its parent rule
         let description_len = description.len();
 
@@ -222,13 +230,14 @@ impl NFSubstitution {
         // If it doesn't that's a syntax error.  Otherwise,
         // makeSubstitution() was the only thing that needed to know
         // about these characters, so strip them off
-        let description = if description_len >= 2 && description[0] == description[description_len - 1] {
-            &description[1..description_len - 1]
-        } else if description_len != 0 {
-            return Err(LuceneError::illegal_argument("Illegal substitution syntax"));
-        } else {
-            description
-        };
+        let description =
+            if description_len >= 2 && description[0] == description[description_len - 1] {
+                &description[1..description_len - 1]
+            } else if description_len != 0 {
+                return Err(LuceneError::illegal_argument("Illegal substitution syntax"));
+            } else {
+                description
+            };
 
         let (rule_set, number_format) = if description.is_empty() {
             // if the description was just two paired token characters
@@ -261,7 +270,12 @@ impl NFSubstitution {
             // and of the description is none of these things, it's a syntax error
             return Err(LuceneError::illegal_argument("Illegal substitution syntax"));
         };
-        Ok(NFSubstitution { pos, rule_set, number_format, kind })
+        Ok(NFSubstitution {
+            pos,
+            rule_set,
+            number_format,
+            kind,
+        })
     }
 
     /// Equivalent to `SameValueSubstitution(int pos, NFRuleSet ruleSet,
@@ -271,7 +285,12 @@ impl NFSubstitution {
     ///
     /// `IllegalArgumentException("== is not a legal token")`; the errors of
     /// the base constructor.
-    fn new_same_value(pos: i32, rule_set: Option<usize>, description: &[u16], ctx: &BuildContext<'_>) -> Result<Self> {
+    fn new_same_value(
+        pos: i32,
+        rule_set: Option<usize>,
+        description: &[u16],
+        ctx: &BuildContext<'_>,
+    ) -> Result<Self> {
         let s = Self::new(pos, rule_set, description, Kind::SameValue, ctx)?;
         if description == units("==").as_slice() {
             return Err(LuceneError::illegal_argument("== is not a legal token"));
@@ -359,9 +378,15 @@ impl NFSubstitution {
         // what's done with that value after it's obtained: >>> short-
         // circuits the rule-search process and goes straight to the
         // specified rule to format the substitution value
-        let rule_to_use =
-            if description == units(">>>").as_slice() { rule_predecessor.map(|r| (rule_set, r)) } else { None };
-        s.kind = Kind::Modulus { divisor, rule_to_use };
+        let rule_to_use = if description == units(">>>").as_slice() {
+            rule_predecessor.map(|r| (rule_set, r))
+        } else {
+            None
+        };
+        s.kind = Kind::Modulus {
+            divisor,
+            rule_to_use,
+        };
         Ok(s)
     }
 
@@ -382,7 +407,9 @@ impl NFSubstitution {
     ) -> Result<Self> {
         let mut s = Self::new(pos, rule_set, description, Kind::SameValue, ctx)?;
         let (by_digits, use_spaces);
-        if description == units(">>").as_slice() || description == units(">>>").as_slice() || rule_set == s.rule_set
+        if description == units(">>").as_slice()
+            || description == units(">>>").as_slice()
+            || rule_set == s.rule_set
         {
             by_digits = true;
             use_spaces = description != units(">>>").as_slice();
@@ -391,7 +418,10 @@ impl NFSubstitution {
             use_spaces = true;
             ctx.rule_sets[s.rule_set.ok_or_else(npe)?].make_into_fraction_rule_set();
         }
-        s.kind = Kind::FractionalPart { by_digits, use_spaces };
+        s.kind = Kind::FractionalPart {
+            by_digits,
+            use_spaces,
+        };
         Ok(s)
     }
 
@@ -409,13 +439,22 @@ impl NFSubstitution {
         description: &[u16],
         ctx: &BuildContext<'_>,
     ) -> Result<Self> {
-        let mut s = Self::new(pos, rule_set, &Self::fixdesc(description), Kind::SameValue, ctx)?;
+        let mut s = Self::new(
+            pos,
+            rule_set,
+            &Self::fixdesc(description),
+            Kind::SameValue,
+            ctx,
+        )?;
 
         // this substitution's behavior depends on the rule's base value
         // Rather than keeping a backpointer to the rule, we copy its
         // base value here
         let with_zeros = ends_with(description, &units("<<"));
-        s.kind = Kind::Numerator { denominator, with_zeros };
+        s.kind = Kind::Numerator {
+            denominator,
+            with_zeros,
+        };
         Ok(s)
     }
 
@@ -490,14 +529,21 @@ impl NFSubstitution {
             (Kind::Multiplier { divisor: a }, Kind::Multiplier { divisor: b }) => a == b,
             (Kind::Modulus { divisor: a, .. }, Kind::Modulus { divisor: b, .. }) => a == b,
             (
-                Kind::Numerator { denominator: d1, with_zeros: z1 },
-                Kind::Numerator { denominator: d2, with_zeros: z2 },
+                Kind::Numerator {
+                    denominator: d1,
+                    with_zeros: z1,
+                },
+                Kind::Numerator {
+                    denominator: d2,
+                    with_zeros: z2,
+                },
             ) => d1 == d2 && z1 == z2,
             _ => true,
         }
     }
 
     /// `hashCode()`: not designed (Java asserts and returns 42).
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) fn hash_code(&self) -> i32 {
         debug_assert!(false, "hashCode not designed");
         42
@@ -520,7 +566,8 @@ impl NFSubstitution {
         let mut result = vec![token];
         match self.rule_set {
             Some(rs) => result.extend_from_slice(g.rule_set(rs).get_name()),
-            None => result.extend_from_slice(&self.number_format.as_ref().ok_or_else(npe)?.to_pattern()?),
+            None => result
+                .extend_from_slice(&self.number_format.as_ref().ok_or_else(npe)?.to_pattern()?),
         }
         result.push(token);
         Ok(result)
@@ -549,7 +596,11 @@ impl NFSubstitution {
         owning_rule: &NFRule,
         g: &RuleGraph,
     ) -> Result<()> {
-        if let Kind::Modulus { rule_to_use: Some((rule_set, rule)), .. } = self.kind {
+        if let Kind::Modulus {
+            rule_to_use: Some((rule_set, rule)),
+            ..
+        } = self.kind
+        {
             // a >>> substitution goes straight to a particular rule to
             // format the substitution value
             let number_to_format = self.transform_long(number)?;
@@ -570,7 +621,13 @@ impl NFSubstitution {
             // rule set's format() method to format the result
             let number_to_format = self.transform_long(number)?;
 
-            g.rule_set(rule_set).format_long(number_to_format, to_insert_into, position + self.pos, recursion_count, g)
+            g.rule_set(rule_set).format_long(
+                number_to_format,
+                to_insert_into,
+                position + self.pos,
+                recursion_count,
+                g,
+            )
         } else {
             let number_format = self.number_format.as_ref().ok_or_else(npe)?;
             if number <= MAX_INT64_IN_DOUBLE {
@@ -578,7 +635,11 @@ impl NFSubstitution {
                 // then use that formatter's format() method
                 // to format the result
                 let number_to_format = self.transform_double(number as f64, owning_rule, g);
-                sb_insert(to_insert_into, position + self.pos, &number_format.format_f64(number_to_format)?);
+                sb_insert(
+                    to_insert_into,
+                    position + self.pos,
+                    &number_format.format_f64(number_to_format)?,
+                );
             } else {
                 // We have gone beyond double precision. Something has to give.
                 // We're favoring accuracy of the large number over potential rules
@@ -588,7 +649,11 @@ impl NFSubstitution {
                 // on the type of substitution this is, then just call its
                 // rule set's format() method to format the result
                 let number_to_format = self.transform_long(number)?;
-                sb_insert(to_insert_into, position + self.pos, &number_format.format_i64(number_to_format)?);
+                sb_insert(
+                    to_insert_into,
+                    position + self.pos,
+                    &number_format.format_i64(number_to_format)?,
+                );
             }
             Ok(())
         }
@@ -615,7 +680,10 @@ impl NFSubstitution {
         g: &RuleGraph,
     ) -> Result<()> {
         match self.kind {
-            Kind::Modulus { rule_to_use: Some((rule_set, rule)), .. } => {
+            Kind::Modulus {
+                rule_to_use: Some((rule_set, rule)),
+                ..
+            } => {
                 // a >>> substitution goes straight to a particular rule to
                 // format the substitution value
                 let number_to_format = self.transform_double(number, owning_rule, g);
@@ -627,7 +695,10 @@ impl NFSubstitution {
                     g,
                 )
             }
-            Kind::FractionalPart { by_digits: true, use_spaces } => {
+            Kind::FractionalPart {
+                by_digits: true,
+                use_spaces,
+            } => {
                 // if we're in "byDigits" mode, transform the value into an integer
                 // by moving the decimal point eight places to the right and
                 // pulling digits off the right one at a time, formatting each digit
@@ -648,11 +719,20 @@ impl NFSubstitution {
                     }
                     let digit = fq.get_digit(mag);
                     mag += 1;
-                    rule_set.format_long(i64::from(digit), to_insert_into, position + self.pos, recursion_count, g)?;
+                    rule_set.format_long(
+                        i64::from(digit),
+                        to_insert_into,
+                        position + self.pos,
+                        recursion_count,
+                        g,
+                    )?;
                 }
                 Ok(())
             }
-            Kind::Numerator { denominator, with_zeros } => {
+            Kind::Numerator {
+                denominator,
+                with_zeros,
+            } => {
                 // perform a transformation on the number being formatted that
                 // is dependent on the type of substitution this is
                 //String s = toInsertInto.toString();
@@ -670,7 +750,13 @@ impl NFSubstitution {
                                 break;
                             }
                             sb_insert(to_insert_into, position + self.pos, &[u16::from(b' ')]);
-                            g.rule_set(rule_set).format_long(0, to_insert_into, position + self.pos, recursion_count, g)?;
+                            g.rule_set(rule_set).format_long(
+                                0,
+                                to_insert_into,
+                                position + self.pos,
+                                recursion_count,
+                                g,
+                            )?;
                         }
                         position += to_insert_into.len() as i32 - len;
                     }
@@ -678,7 +764,13 @@ impl NFSubstitution {
 
                 // if the result is an integer, from here on out we work in integer
                 // space (saving time and memory and preserving accuracy)
-                self.format_transformed(number_to_format, to_insert_into, position, recursion_count, g)
+                self.format_transformed(
+                    number_to_format,
+                    to_insert_into,
+                    position,
+                    recursion_count,
+                    g,
+                )
             }
             _ => {
                 // perform a transformation on the number being formatted that
@@ -700,7 +792,13 @@ impl NFSubstitution {
 
                 // if the result is an integer, from here on out we work in integer
                 // space (saving time and memory and preserving accuracy)
-                self.format_transformed(number_to_format, to_insert_into, position, recursion_count, g)
+                self.format_transformed(
+                    number_to_format,
+                    to_insert_into,
+                    position,
+                    recursion_count,
+                    g,
+                )
             }
         }
     }
@@ -718,22 +816,32 @@ impl NFSubstitution {
         g: &RuleGraph,
     ) -> Result<()> {
         match self.rule_set {
-            Some(rule_set) if number_to_format == number_to_format.floor() => g.rule_set(rule_set).format_long(
-                number_to_format as i64,
+            Some(rule_set) if number_to_format == number_to_format.floor() => {
+                g.rule_set(rule_set).format_long(
+                    number_to_format as i64,
+                    to_insert_into,
+                    position + self.pos,
+                    recursion_count,
+                    g,
+                )
+            }
+            // if the result isn't an integer, then call either our rule set's
+            // format() method or our DecimalFormat's format() method to
+            // format the result
+            Some(rule_set) => g.rule_set(rule_set).format_double(
+                number_to_format,
                 to_insert_into,
                 position + self.pos,
                 recursion_count,
                 g,
             ),
-            // if the result isn't an integer, then call either our rule set's
-            // format() method or our DecimalFormat's format() method to
-            // format the result
-            Some(rule_set) => {
-                g.rule_set(rule_set).format_double(number_to_format, to_insert_into, position + self.pos, recursion_count, g)
-            }
             None => {
                 let number_format = self.number_format.as_ref().ok_or_else(npe)?;
-                sb_insert(to_insert_into, position + self.pos, &number_format.format_f64(number_to_format)?);
+                sb_insert(
+                    to_insert_into,
+                    position + self.pos,
+                    &number_format.format_f64(number_to_format)?,
+                );
                 Ok(())
             }
         }
@@ -830,7 +938,10 @@ impl NFSubstitution {
         g: &RuleGraph,
     ) -> Result<Option<JavaNumber>> {
         match self.kind {
-            Kind::Modulus { rule_to_use: Some((rule_set, rule)), .. } => {
+            Kind::Modulus {
+                rule_to_use: Some((rule_set, rule)),
+                ..
+            } => {
                 // but if it IS a >>> substitution, we have to do it here: we
                 // use the specific rule's doParse() method, and then we have to
                 // do some of the other work of NFRuleSet.parse()
@@ -851,7 +962,9 @@ impl NFSubstitution {
                     Ok(Some(temp_result))
                 }
             }
-            Kind::FractionalPart { by_digits: false, .. } => {
+            Kind::FractionalPart {
+                by_digits: false, ..
+            } => {
                 // if we're not in byDigits mode, we can just use the inherited
                 // doParse()
                 self.base_do_parse(
@@ -865,7 +978,9 @@ impl NFSubstitution {
                     g,
                 )
             }
-            Kind::FractionalPart { by_digits: true, .. } => {
+            Kind::FractionalPart {
+                by_digits: true, ..
+            } => {
                 // if we ARE in byDigits mode, parse the text one digit at a time
                 // using this substitution's owning rule set (we do this by setting
                 // upperBound to 10 when calling doParse() ) until we reach
@@ -887,7 +1002,9 @@ impl NFSubstitution {
                     )?);
                     if lenient_parse && work_pos.get_index() == 0 {
                         let decimal_format = g.owner().get_decimal_format()?;
-                        if let Some(n) = NumberFormat::parse(&*decimal_format, work_text, &mut work_pos)? {
+                        if let Some(n) =
+                            NumberFormat::parse(&*decimal_format, work_text, &mut work_pos)?
+                        {
                             digit = number_int_value(&n);
                         }
                     }
@@ -1094,7 +1211,9 @@ impl NFSubstitution {
         match self.kind {
             Kind::SameValue => new_rule_value,
             Kind::Multiplier { divisor } => new_rule_value * divisor as f64,
-            Kind::Modulus { divisor, .. } => (old_rule_value - (old_rule_value % divisor as f64)) + new_rule_value,
+            Kind::Modulus { divisor, .. } => {
+                (old_rule_value - (old_rule_value % divisor as f64)) + new_rule_value
+            }
             Kind::IntegralPart | Kind::FractionalPart { .. } => new_rule_value + old_rule_value,
             Kind::AbsoluteValue => -new_rule_value,
             Kind::Numerator { .. } => new_rule_value / old_rule_value,
@@ -1130,8 +1249,12 @@ impl NFSubstitution {
     fn token_char(&self) -> u16 {
         match self.kind {
             Kind::SameValue => u16::from(b'='),
-            Kind::Multiplier { .. } | Kind::IntegralPart | Kind::Numerator { .. } => u16::from(b'<'),
-            Kind::Modulus { .. } | Kind::FractionalPart { .. } | Kind::AbsoluteValue => u16::from(b'>'),
+            Kind::Multiplier { .. } | Kind::IntegralPart | Kind::Numerator { .. } => {
+                u16::from(b'<')
+            }
+            Kind::Modulus { .. } | Kind::FractionalPart { .. } | Kind::AbsoluteValue => {
+                u16::from(b'>')
+            }
         }
     }
 
@@ -1148,7 +1271,10 @@ impl NFSubstitution {
     /// # Errors
     ///
     /// The decimal format's.
-    pub(crate) fn set_decimal_format_symbols(&self, new_symbols: &DecimalFormatSymbols) -> Result<()> {
+    pub(crate) fn set_decimal_format_symbols(
+        &self,
+        new_symbols: &DecimalFormatSymbols,
+    ) -> Result<()> {
         if let Some(number_format) = &self.number_format {
             number_format.set_decimal_format_symbols(new_symbols)?;
         }

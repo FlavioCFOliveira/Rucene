@@ -14,8 +14,8 @@ use crate::number::fraction_precision::FractionPrecision;
 use crate::number::integer_width::{self, IntegerWidth};
 use crate::number::notation::Notation;
 use crate::number::number_formatter::{
-    DecimalSeparatorDisplay, GroupingStrategy, NumberFormatter, RoundingPriority, SignDisplay, TrailingZeroDisplay,
-    UnitWidth,
+    DecimalSeparatorDisplay, GroupingStrategy, NumberFormatter, RoundingPriority, SignDisplay,
+    TrailingZeroDisplay, UnitWidth,
 };
 use crate::number::number_formatter_settings::NumberFormatterSettings;
 use crate::number::precision::{Precision, PrecisionKind};
@@ -42,6 +42,7 @@ use crate::util::string_trie_builder::StringTrieBuilderOption;
 /// While parsing a skeleton, this enum records what type of option we
 /// expect to find next. Equivalent to `NumberSkeletonImpl.ParseState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // variant names mirror the Java constants
 enum ParseState {
     // Section 0: We expect whitespace or a stem, but not an option:
     StateNull,
@@ -326,8 +327,12 @@ impl StemToObject {
         match stem {
             StemEnum::StemPrecisionInteger => Ok(Precision::integer().into_precision()),
             StemEnum::StemPrecisionUnlimited => Ok(Precision::unlimited()),
-            StemEnum::StemPrecisionCurrencyStandard => Ok(Precision::currency(Some(CurrencyUsage::Standard))?.into_precision()),
-            StemEnum::StemPrecisionCurrencyCash => Ok(Precision::currency(Some(CurrencyUsage::Cash))?.into_precision()),
+            StemEnum::StemPrecisionCurrencyStandard => {
+                Ok(Precision::currency(Some(CurrencyUsage::Standard))?.into_precision())
+            }
+            StemEnum::StemPrecisionCurrencyCash => {
+                Ok(Precision::currency(Some(CurrencyUsage::Cash))?.into_precision())
+            }
             _ => panic!("java.lang.AssertionError"),
         }
     }
@@ -478,8 +483,11 @@ impl EnumToStemString {
 }
 
 /// `cache`: cache for parsed skeleton strings.
-static CACHE: LazyLock<SoftCache<Vec<u16>, UnlocalizedNumberFormatter, ()>> =
-    LazyLock::new(|| SoftCache::new(|skeleton_string: &Vec<u16>, _unused: ()| Ok(Some(NumberSkeletonImpl::create(skeleton_string)?))));
+static CACHE: LazyLock<SoftCache<Vec<u16>, UnlocalizedNumberFormatter, ()>> = LazyLock::new(|| {
+    SoftCache::new(|skeleton_string: &Vec<u16>, _unused: ()| {
+        Ok(Some(NumberSkeletonImpl::create(skeleton_string)?))
+    })
+});
 
 /// The parser and generator of number skeleton strings.
 ///
@@ -498,7 +506,9 @@ impl NumberSkeletonImpl {
     pub fn get_or_create(skeleton_string: &[u16]) -> Result<UnlocalizedNumberFormatter> {
         // TODO: This does not currently check the cache for the normalized
         // form of the skeleton.
-        Ok(CACHE.get_instance(skeleton_string.to_vec(), ())?.expect("the cache creates a formatter"))
+        Ok(CACHE
+            .get_instance(skeleton_string.to_vec(), ())?
+            .expect("the cache creates a formatter"))
     }
 
     /// Creates a NumberFormatter corresponding to the given skeleton string.
@@ -627,7 +637,11 @@ fn parse_skeleton(skeleton_string: &[u16]) -> Result<MacroProps> {
 /// Given that the current segment represents a stem, parse it and save the
 /// result. Equivalent to `parseStem(StringSegment, CharsTrie, MacroProps)`:
 /// the next state in the parser.
-fn parse_stem(segment: &StringSegment, stem_trie: &CharsTrie, macros: &mut MacroProps) -> Result<ParseState> {
+fn parse_stem(
+    segment: &StringSegment,
+    stem_trie: &CharsTrie,
+    macros: &mut MacroProps,
+) -> Result<ParseState> {
     // First check for "blueprint" stems, which start with a "signal char"
     match segment.char_at(0) {
         c if c == '.' as u16 => {
@@ -664,7 +678,8 @@ fn parse_stem(segment: &StringSegment, stem_trie: &CharsTrie, macros: &mut Macro
     use StemEnum::*;
     match stem {
         // Stems with meaning on their own, not requiring an option:
-        StemCompactShort | StemCompactLong | StemScientific | StemEngineering | StemNotationSimple => {
+        StemCompactShort | StemCompactLong | StemScientific | StemEngineering
+        | StemNotationSimple => {
             check_null(macros.notation.is_some(), segment)?;
             macros.notation = Some(StemToObject::notation(stem));
             match stem {
@@ -687,7 +702,10 @@ fn parse_stem(segment: &StringSegment, stem_trie: &CharsTrie, macros: &mut Macro
             Ok(ParseState::StateNull)
         }
 
-        StemPrecisionInteger | StemPrecisionUnlimited | StemPrecisionCurrencyStandard | StemPrecisionCurrencyCash => {
+        StemPrecisionInteger
+        | StemPrecisionUnlimited
+        | StemPrecisionCurrencyStandard
+        | StemPrecisionCurrencyCash => {
             check_null(macros.precision.is_some(), segment)?;
             macros.precision = Some(StemToObject::precision(stem)?);
             match stem {
@@ -723,7 +741,9 @@ fn parse_stem(segment: &StringSegment, stem_trie: &CharsTrie, macros: &mut Macro
 
         StemLatin => {
             check_null(macros.symbols.is_some(), segment)?;
-            macros.symbols = numbering_system::LATIN.clone().map(SymbolsObject::NumberingSystem);
+            macros.symbols = numbering_system::LATIN
+                .clone()
+                .map(SymbolsObject::NumberingSystem);
             Ok(ParseState::StateNull)
         }
 
@@ -771,7 +791,11 @@ fn parse_stem(segment: &StringSegment, stem_trie: &CharsTrie, macros: &mut Macro
         }
 
         StemPerMeasureUnit => {
-            if macros.unit.as_ref().is_some_and(|u| Currency::try_cast(u).is_some()) {
+            if macros
+                .unit
+                .as_ref()
+                .is_some_and(|u| Currency::try_cast(u).is_some())
+            {
                 return Err(syntax("Duplicated setting", segment));
             }
             check_null(macros.per_unit.is_some(), segment)?;
@@ -815,7 +839,11 @@ fn parse_stem(segment: &StringSegment, stem_trie: &CharsTrie, macros: &mut Macro
 /// Given that the current segment represents an option, parse it and save
 /// the result. Equivalent to `parseOption(ParseState, StringSegment,
 /// MacroProps)`: the next state in the parser.
-fn parse_option(stem: ParseState, segment: &StringSegment, macros: &mut MacroProps) -> Result<ParseState> {
+fn parse_option(
+    stem: ParseState,
+    segment: &StringSegment,
+    macros: &mut MacroProps,
+) -> Result<ParseState> {
     ///// Required options: /////
 
     match stem {
@@ -882,7 +910,9 @@ fn parse_option(stem: ParseState, segment: &StringSegment, macros: &mut MacroPro
     }
 
     // Trailing zeros option
-    if stem == ParseState::StatePrecision && BlueprintHelpers::parse_trailing_zero_option(segment, macros) {
+    if stem == ParseState::StatePrecision
+        && BlueprintHelpers::parse_trailing_zero_option(segment, macros)
+    {
         return Ok(ParseState::StateNull);
     }
 
@@ -936,18 +966,28 @@ fn generate_skeleton(macros: &MacroProps, sb: &mut Vec<u16>) -> Result<()> {
 
     // Unsupported options
     if macros.padder.is_some() {
-        return Err(LuceneError::unsupported_operation("Cannot generate number skeleton with custom padder"));
+        return Err(LuceneError::unsupported_operation(
+            "Cannot generate number skeleton with custom padder",
+        ));
     }
-    if macros.unit_display_case.as_deref().is_some_and(|c| !c.is_empty()) {
+    if macros
+        .unit_display_case
+        .as_deref()
+        .is_some_and(|c| !c.is_empty())
+    {
         return Err(LuceneError::unsupported_operation(
             "Cannot generate number skeleton with custom unit display case",
         ));
     }
     if macros.affix_provider.is_some() {
-        return Err(LuceneError::unsupported_operation("Cannot generate number skeleton with custom affix provider"));
+        return Err(LuceneError::unsupported_operation(
+            "Cannot generate number skeleton with custom affix provider",
+        ));
     }
     if macros.rules.is_some() {
-        return Err(LuceneError::unsupported_operation("Cannot generate number skeleton with custom plural rules"));
+        return Err(LuceneError::unsupported_operation(
+            "Cannot generate number skeleton with custom plural rules",
+        ));
     }
 
     // Remove the trailing space
@@ -964,7 +1004,10 @@ struct BlueprintHelpers;
 
 impl BlueprintHelpers {
     /// `parseExponentWidthOption(StringSegment, MacroProps)`.
-    fn parse_exponent_width_option(segment: &StringSegment, macros: &mut MacroProps) -> Result<bool> {
+    fn parse_exponent_width_option(
+        segment: &StringSegment,
+        macros: &mut MacroProps,
+    ) -> Result<bool> {
         if !is_wildcard_char(segment.char_at(0)) {
             return Ok(false);
         }
@@ -982,7 +1025,12 @@ impl BlueprintHelpers {
             return Ok(false);
         }
         // Use the public APIs to enforce bounds checking
-        let notation = ScientificNotation::cast(macros.notation.clone().expect("a scientific notation was parsed"));
+        let notation = ScientificNotation::cast(
+            macros
+                .notation
+                .clone()
+                .expect("a scientific notation was parsed"),
+        );
         macros.notation = Some(notation.with_min_exponent_digits(min_exp)?.into_notation());
         Ok(true)
     }
@@ -1004,11 +1052,18 @@ impl BlueprintHelpers {
         if result != TrieResult::IntermediateValue && result != TrieResult::FinalValue {
             return false;
         }
-        let sign = match StemToObject::sign_display(STEM_ENUM_VALUES[temp_stem_trie.get_value() as usize]) {
-            None => return false,
-            Some(s) => s,
-        };
-        let notation = ScientificNotation::cast(macros.notation.clone().expect("a scientific notation was parsed"));
+        let sign =
+            match StemToObject::sign_display(STEM_ENUM_VALUES[temp_stem_trie.get_value() as usize])
+            {
+                None => return false,
+                Some(s) => s,
+            };
+        let notation = ScientificNotation::cast(
+            macros
+                .notation
+                .clone()
+                .expect("a scientific notation was parsed"),
+        );
         macros.notation = Some(notation.with_exponent_sign_display(sign).into_notation());
         true
     }
@@ -1020,7 +1075,11 @@ impl BlueprintHelpers {
             Ok(c) => c,
             Err(e) if e.is_illegal_argument_exception() => {
                 // Not 3 ascii chars
-                return Err(new_skeleton_with_cause("Invalid currency", &segment.to_java_string(), e));
+                return Err(new_skeleton_with_cause(
+                    "Invalid currency",
+                    &segment.to_java_string(),
+                    e,
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -1057,7 +1116,10 @@ impl BlueprintHelpers {
     }
 
     /// `parseMeasurePerUnitOption(StringSegment, MacroProps)`.
-    fn parse_measure_per_unit_option(segment: &StringSegment, macros: &mut MacroProps) -> Result<()> {
+    fn parse_measure_per_unit_option(
+        segment: &StringSegment,
+        macros: &mut MacroProps,
+    ) -> Result<()> {
         // A little bit of a hack: save the current unit (numerator), call
         // the main measure unit parsing code, put back the numerator unit,
         // and put the new unit into per-unit.
@@ -1071,13 +1133,18 @@ impl BlueprintHelpers {
     /// Parses unit identifiers like "meter-per-second" and
     /// "foot-and-inch", as specified via a "unit/" concise skeleton.
     /// Equivalent to `parseIdentifierUnitOption(StringSegment, MacroProps)`.
-    fn parse_identifier_unit_option(segment: &StringSegment, macros: &mut MacroProps) -> Result<()> {
+    fn parse_identifier_unit_option(
+        segment: &StringSegment,
+        macros: &mut MacroProps,
+    ) -> Result<()> {
         match MeasureUnit::for_identifier(Some(&to_rust_string(&segment.as_string()))) {
             Ok(u) => {
                 macros.unit = u;
                 Ok(())
             }
-            Err(e) if e.is_illegal_argument_exception() => Err(syntax("Invalid unit stem", segment)),
+            Err(e) if e.is_illegal_argument_exception() => {
+                Err(syntax("Invalid unit stem", segment))
+            }
             Err(e) => Err(e),
         }
     }
@@ -1133,7 +1200,8 @@ impl BlueprintHelpers {
                 macros.precision = Some(Precision::min_fraction(min_frac)?.into_precision());
             }
         } else {
-            macros.precision = Some(Precision::min_max_fraction(min_frac, max_frac)?.into_precision());
+            macros.precision =
+                Some(Precision::min_max_fraction(min_frac, max_frac)?.into_precision());
         }
         Ok(())
     }
@@ -1223,8 +1291,16 @@ impl BlueprintHelpers {
                 min_digits += 1;
                 offset += 1;
             }
-            let base = if is_engineering { Notation::engineering() } else { Notation::scientific() };
-            Ok(Some(base.with_exponent_sign_display(sign_display).with_min_exponent_digits(min_digits)?.into_notation()))
+            let base = if is_engineering {
+                Notation::engineering()
+            } else {
+                Notation::scientific()
+            };
+            Ok(Some(
+                base.with_exponent_sign_display(sign_display)
+                    .with_min_exponent_digits(min_digits)?
+                    .into_notation(),
+            ))
         })()?;
         match parsed {
             Some(n) => {
@@ -1260,7 +1336,12 @@ impl BlueprintHelpers {
             return Ok(false);
         }
         let (mut offset, min_sig, max_sig) = parse_sig_digits(segment);
-        let old_rounder = FractionPrecision::cast(macros.precision.clone().expect("a fraction precision was parsed"));
+        let old_rounder = FractionPrecision::cast(
+            macros
+                .precision
+                .clone()
+                .expect("a fraction precision was parsed"),
+        );
         if offset < segment.length() {
             if max_sig == -1 {
                 return Err(syntax(
@@ -1281,9 +1362,13 @@ impl BlueprintHelpers {
             }
             if offset < segment.length() {
                 // Invalid digits option for fraction rounder
-                return Err(syntax("Invalid digits option for fraction rounder", segment));
+                return Err(syntax(
+                    "Invalid digits option for fraction rounder",
+                    segment,
+                ));
             }
-            macros.precision = Some(old_rounder.with_significant_digits(min_sig, max_sig, priority)?);
+            macros.precision =
+                Some(old_rounder.with_significant_digits(min_sig, max_sig, priority)?);
         } else if max_sig == -1 {
             // withMinDigits
             macros.precision = Some(old_rounder.with_min_digits(min_sig)?);
@@ -1291,7 +1376,10 @@ impl BlueprintHelpers {
             // withMaxDigits
             macros.precision = Some(old_rounder.with_max_digits(max_sig)?);
         } else {
-            return Err(syntax("Invalid digits option: Priority annotation required", segment));
+            return Err(syntax(
+                "Invalid digits option: Priority annotation required",
+                segment,
+            ));
         }
 
         Ok(true)
@@ -1300,8 +1388,12 @@ impl BlueprintHelpers {
     /// `parseTrailingZeroOption(StringSegment, MacroProps)`.
     fn parse_trailing_zero_option(segment: &StringSegment, macros: &mut MacroProps) -> bool {
         if segment.content_equals(Some(&units("w"))) {
-            let p = macros.precision.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: precision"));
-            macros.precision = Some(p.trailing_zero_display(Some(TrailingZeroDisplay::HideIfWhole)));
+            let p = macros
+                .precision
+                .as_ref()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException: precision"));
+            macros.precision =
+                Some(p.trailing_zero_display(Some(TrailingZeroDisplay::HideIfWhole)));
             return true;
         }
         false
@@ -1315,7 +1407,11 @@ impl BlueprintHelpers {
         let increment = match BigDecimal::from_string(&s) {
             Ok(b) => b,
             Err(e) if e.is_number_format_exception() => {
-                return Err(new_skeleton_with_cause("Invalid rounding increment", &segment.to_java_string(), e));
+                return Err(new_skeleton_with_cause(
+                    "Invalid rounding increment",
+                    &segment.to_java_string(),
+                    e,
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -1384,7 +1480,10 @@ impl BlueprintHelpers {
     }
 
     /// `parseNumberingSystemOption(StringSegment, MacroProps)`.
-    fn parse_numbering_system_option(segment: &StringSegment, macros: &mut MacroProps) -> Result<()> {
+    fn parse_numbering_system_option(
+        segment: &StringSegment,
+        macros: &mut MacroProps,
+    ) -> Result<()> {
         let ns_name = to_rust_string(&segment.sub_sequence(0, segment.length()));
         match NumberingSystem::get_instance_by_name(&ns_name)? {
             None => Err(syntax("Unknown numbering system", segment)),
@@ -1408,7 +1507,11 @@ impl BlueprintHelpers {
         let bd = match BigDecimal::from_string(&s) {
             Ok(b) => b,
             Err(e) if e.is_number_format_exception() => {
-                return Err(new_skeleton_with_cause("Invalid scale", &segment.to_java_string(), e));
+                return Err(new_skeleton_with_cause(
+                    "Invalid scale",
+                    &segment.to_java_string(),
+                    e,
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -1484,7 +1587,9 @@ impl GeneratorHelpers {
                 // Compact notation generated from custom data (not
                 // supported in skeleton) The other compact notations are
                 // literals
-                Err(LuceneError::unsupported_operation("Cannot generate number skeleton with custom compact data"))
+                Err(LuceneError::unsupported_operation(
+                    "Cannot generate number skeleton with custom compact data",
+                ))
             }
         } else if let Some(sci) = ScientificNotation::try_cast(notation) {
             let impl_ = sci.data();
@@ -1518,7 +1623,9 @@ impl GeneratorHelpers {
                     "Cannot generate number skeleton with currency unit and per-unit",
                 ));
             }
-            let u = unit.as_ref().ok_or_else(|| crate::jdk::null_pointer("unit"))?;
+            let u = unit
+                .as_ref()
+                .ok_or_else(|| crate::jdk::null_pointer("unit"))?;
             unit = Some(u.product(Some(&per_unit.reciprocal()?))?);
         }
 
@@ -1561,7 +1668,14 @@ impl GeneratorHelpers {
             PrecisionKind::Significant { min_sig, max_sig } => {
                 BlueprintHelpers::generate_digits_stem(*min_sig, *max_sig, sb);
             }
-            PrecisionKind::FracSig { min_frac, max_frac, min_sig, max_sig, priority, retain } => {
+            PrecisionKind::FracSig {
+                min_frac,
+                max_frac,
+                min_sig,
+                max_sig,
+                priority,
+                retain,
+            } => {
                 BlueprintHelpers::generate_fraction_stem(*min_frac, *max_frac, sb);
                 sb.push('/' as u16);
                 if *retain {
@@ -1630,14 +1744,17 @@ impl GeneratorHelpers {
                 EnumToStemString::grouping_strategy(*s, sb);
                 Ok(true)
             }
-            GroupingObject::Grouper(_) => {
-                Err(LuceneError::unsupported_operation("Cannot generate number skeleton with custom Grouper"))
-            }
+            GroupingObject::Grouper(_) => Err(LuceneError::unsupported_operation(
+                "Cannot generate number skeleton with custom Grouper",
+            )),
         }
     }
 
     fn integer_width(macros: &MacroProps, sb: &mut Vec<u16>) -> bool {
-        let iw = macros.integer_width.as_ref().expect("checked by the caller");
+        let iw = macros
+            .integer_width
+            .as_ref()
+            .expect("checked by the caller");
         if iw.ptr_eq(&integer_width::DEFAULT) {
             return false; // Default
         }

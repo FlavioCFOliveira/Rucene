@@ -3,10 +3,10 @@
 
 //! `com.ibm.icu.impl.coll.CollationFastLatin`.
 
+use crate::lang::u_script::UScript;
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_settings::CollationSettings;
-use crate::lang::u_script::UScript;
 use crate::text::collator::{self, ReorderCodes};
 
 /// Fast Latin string comparison for common Latin text.
@@ -50,9 +50,11 @@ impl CollationFastLatin {
     /// `CASE_AND_TERTIARY_MASK`.
     pub const CASE_AND_TERTIARY_MASK: i32 = Self::CASE_MASK | Self::TERTIARY_MASK;
     /// 0xfc00fc00
-    pub const TWO_SHORT_PRIMARIES_MASK: i32 = (Self::SHORT_PRIMARY_MASK << 16) | Self::SHORT_PRIMARY_MASK;
+    pub const TWO_SHORT_PRIMARIES_MASK: i32 =
+        (Self::SHORT_PRIMARY_MASK << 16) | Self::SHORT_PRIMARY_MASK;
     /// 0xfff8fff8
-    pub const TWO_LONG_PRIMARIES_MASK: i32 = (Self::LONG_PRIMARY_MASK << 16) | Self::LONG_PRIMARY_MASK;
+    pub const TWO_LONG_PRIMARIES_MASK: i32 =
+        (Self::LONG_PRIMARY_MASK << 16) | Self::LONG_PRIMARY_MASK;
     /// 0x3e003e0
     pub const TWO_SECONDARIES_MASK: i32 = (Self::SECONDARY_MASK << 16) | Self::SECONDARY_MASK;
     /// 0x180018
@@ -98,7 +100,8 @@ impl CollationFastLatin {
     /// 0x200020
     pub const TWO_SEC_OFFSETS: i32 = (Self::SEC_OFFSET << 16) | Self::SEC_OFFSET;
     /// `TWO_COMMON_SEC_PLUS_OFFSET`.
-    pub const TWO_COMMON_SEC_PLUS_OFFSET: i32 = (Self::COMMON_SEC_PLUS_OFFSET << 16) | Self::COMMON_SEC_PLUS_OFFSET;
+    pub const TWO_COMMON_SEC_PLUS_OFFSET: i32 =
+        (Self::COMMON_SEC_PLUS_OFFSET << 16) | Self::COMMON_SEC_PLUS_OFFSET;
     /// case bits include this offset
     pub const LOWER_CASE: i32 = 8;
     /// 0x80008
@@ -114,7 +117,8 @@ impl CollationFastLatin {
     /// `TWO_TER_OFFSETS`.
     pub const TWO_TER_OFFSETS: i32 = (Self::TER_OFFSET << 16) | Self::TER_OFFSET;
     /// `TWO_COMMON_TER_PLUS_OFFSET`.
-    pub const TWO_COMMON_TER_PLUS_OFFSET: i32 = (Self::COMMON_TER_PLUS_OFFSET << 16) | Self::COMMON_TER_PLUS_OFFSET;
+    pub const TWO_COMMON_TER_PLUS_OFFSET: i32 =
+        (Self::COMMON_TER_PLUS_OFFSET << 16) | Self::COMMON_TER_PLUS_OFFSET;
     /// `MERGE_WEIGHT`.
     pub const MERGE_WEIGHT: i32 = 3;
     /// end of string
@@ -147,7 +151,12 @@ impl CollationFastLatin {
     /// precomputed primary weights.
     ///
     /// Equivalent to `getOptions(CollationData, CollationSettings, char[])`.
-    pub fn get_options(data: &CollationData, settings: &CollationSettings, primaries: &mut [u16]) -> i32 {
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+    pub fn get_options(
+        data: &CollationData,
+        settings: &CollationSettings,
+        primaries: &mut [u16],
+    ) -> i32 {
         let Some(header) = data.fast_latin_table_header.as_deref() else {
             return -1;
         };
@@ -177,7 +186,9 @@ impl CollationFastLatin {
             let mut before_digit_start: i64 = 0;
             let mut digit_start: i64 = 0;
             let mut after_digit_start: i64 = 0;
-            for group in ReorderCodes::FIRST..ReorderCodes::FIRST + CollationData::MAX_NUM_SPECIAL_REORDER_CODES {
+            for group in ReorderCodes::FIRST
+                ..ReorderCodes::FIRST + CollationData::MAX_NUM_SPECIAL_REORDER_CODES
+            {
                 let mut start = data.get_first_primary_for_group(group);
                 start = settings.reorder(start);
                 if group == ReorderCodes::DIGIT {
@@ -189,7 +200,10 @@ impl CollationFastLatin {
                         return -1;
                     }
                     // In the future, there might be a special group between digits & Latin.
-                    if digit_start != 0 && after_digit_start == 0 && prev_start == before_digit_start {
+                    if digit_start != 0
+                        && after_digit_start == 0
+                        && prev_start == before_digit_start
+                    {
                         after_digit_start = start;
                     }
                     prev_start = start;
@@ -208,7 +222,10 @@ impl CollationFastLatin {
             }
         }
 
-        let table = data.fast_latin_table.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException")); // skip the header
+        let table = data
+            .fast_latin_table
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException")); // skip the header
         for c in 0..Self::LATIN_LIMIT as usize {
             let mut p = table[c] as i32;
             if p >= Self::MIN_SHORT {
@@ -232,7 +249,14 @@ impl CollationFastLatin {
     }
 
     /// `compareUTF16(char[], char[], int, CharSequence, CharSequence, int)`.
-    pub fn compare_utf16(table: &[u16], primaries: &[u16], mut options: i32, left: &[u16], right: &[u16], start_index: i32) -> i32 {
+    pub fn compare_utf16(
+        table: &[u16],
+        primaries: &[u16],
+        mut options: i32,
+        left: &[u16],
+        right: &[u16],
+        start_index: i32,
+    ) -> i32 {
         // This is a modified copy of CollationCompare.compareUpToQuaternary(),
         // optimized for common Latin text.
         // Keep them in sync!
@@ -316,7 +340,8 @@ impl CollationFastLatin {
                     right_pair &= Self::LONG_PRIMARY_MASK;
                     break;
                 } else {
-                    let mut pair_and_inc = Self::next_pair(table, c, right_pair, right, right_index);
+                    let mut pair_and_inc =
+                        Self::next_pair(table, c, right_pair, right, right_index);
                     if pair_and_inc < 0 {
                         right_index += 1;
                         pair_and_inc = !pair_and_inc;
@@ -340,7 +365,11 @@ impl CollationFastLatin {
             let right_primary = right_pair & 0xffff;
             if left_primary != right_primary {
                 // Return the primary difference.
-                return if left_primary < right_primary { Collation::LESS } else { Collation::GREATER };
+                return if left_primary < right_primary {
+                    Collation::LESS
+                } else {
+                    Collation::GREATER
+                };
             }
             if left_pair == Self::EOS {
                 break;
@@ -381,7 +410,8 @@ impl CollationFastLatin {
                         left_pair = Self::COMMON_SEC_PLUS_OFFSET;
                         break;
                     } else {
-                        let mut pair_and_inc = Self::next_pair(table, c, left_pair, left, left_index);
+                        let mut pair_and_inc =
+                            Self::next_pair(table, c, left_pair, left, left_index);
                         if pair_and_inc < 0 {
                             left_index += 1;
                             pair_and_inc = !pair_and_inc;
@@ -410,7 +440,8 @@ impl CollationFastLatin {
                         right_pair = Self::COMMON_SEC_PLUS_OFFSET;
                         break;
                     } else {
-                        let mut pair_and_inc = Self::next_pair(table, c, right_pair, right, right_index);
+                        let mut pair_and_inc =
+                            Self::next_pair(table, c, right_pair, right, right_index);
                         if pair_and_inc < 0 {
                             right_index += 1;
                             pair_and_inc = !pair_and_inc;
@@ -434,7 +465,11 @@ impl CollationFastLatin {
                         // and moving backwards between merge separators.
                         return Self::BAIL_OUT_RESULT;
                     }
-                    return if left_secondary < right_secondary { Collation::LESS } else { Collation::GREATER };
+                    return if left_secondary < right_secondary {
+                        Collation::LESS
+                    } else {
+                        Collation::GREATER
+                    };
                 }
                 if left_pair == Self::EOS {
                     break;
@@ -445,7 +480,8 @@ impl CollationFastLatin {
         }
 
         if (options & CollationSettings::CASE_LEVEL) != 0 {
-            let strength_is_primary = CollationSettings::get_strength_of(options) == collator::PRIMARY;
+            let strength_is_primary =
+                CollationSettings::get_strength_of(options) == collator::PRIMARY;
             left_index = start_index;
             right_index = start_index;
             left_pair = 0;
@@ -458,9 +494,14 @@ impl CollationFastLatin {
                     }
                     let c = left[left_index as usize] as i32;
                     left_index += 1;
-                    left_pair = if c <= Self::LATIN_MAX { t(c) } else { Self::lookup(table, c) };
+                    left_pair = if c <= Self::LATIN_MAX {
+                        t(c)
+                    } else {
+                        Self::lookup(table, c)
+                    };
                     if left_pair < Self::MIN_LONG {
-                        let mut pair_and_inc = Self::next_pair(table, c, left_pair, left, left_index);
+                        let mut pair_and_inc =
+                            Self::next_pair(table, c, left_pair, left, left_index);
                         if pair_and_inc < 0 {
                             left_index += 1;
                             pair_and_inc = !pair_and_inc;
@@ -476,9 +517,14 @@ impl CollationFastLatin {
                     }
                     let c = right[right_index as usize] as i32;
                     right_index += 1;
-                    right_pair = if c <= Self::LATIN_MAX { t(c) } else { Self::lookup(table, c) };
+                    right_pair = if c <= Self::LATIN_MAX {
+                        t(c)
+                    } else {
+                        Self::lookup(table, c)
+                    };
                     if right_pair < Self::MIN_LONG {
-                        let mut pair_and_inc = Self::next_pair(table, c, right_pair, right, right_index);
+                        let mut pair_and_inc =
+                            Self::next_pair(table, c, right_pair, right, right_index);
                         if pair_and_inc < 0 {
                             right_index += 1;
                             pair_and_inc = !pair_and_inc;
@@ -499,9 +545,17 @@ impl CollationFastLatin {
                 let right_case = right_pair & 0xffff;
                 if left_case != right_case {
                     if (options & CollationSettings::UPPER_FIRST) == 0 {
-                        return if left_case < right_case { Collation::LESS } else { Collation::GREATER };
+                        return if left_case < right_case {
+                            Collation::LESS
+                        } else {
+                            Collation::GREATER
+                        };
                     } else {
-                        return if left_case < right_case { Collation::GREATER } else { Collation::LESS };
+                        return if left_case < right_case {
+                            Collation::GREATER
+                        } else {
+                            Collation::LESS
+                        };
                     }
                 }
                 if left_pair == Self::EOS {
@@ -530,7 +584,11 @@ impl CollationFastLatin {
                 }
                 let c = left[left_index as usize] as i32;
                 left_index += 1;
-                left_pair = if c <= Self::LATIN_MAX { t(c) } else { Self::lookup(table, c) };
+                left_pair = if c <= Self::LATIN_MAX {
+                    t(c)
+                } else {
+                    Self::lookup(table, c)
+                };
                 if left_pair < Self::MIN_LONG {
                     let mut pair_and_inc = Self::next_pair(table, c, left_pair, left, left_index);
                     if pair_and_inc < 0 {
@@ -548,9 +606,14 @@ impl CollationFastLatin {
                 }
                 let c = right[right_index as usize] as i32;
                 right_index += 1;
-                right_pair = if c <= Self::LATIN_MAX { t(c) } else { Self::lookup(table, c) };
+                right_pair = if c <= Self::LATIN_MAX {
+                    t(c)
+                } else {
+                    Self::lookup(table, c)
+                };
                 if right_pair < Self::MIN_LONG {
-                    let mut pair_and_inc = Self::next_pair(table, c, right_pair, right, right_index);
+                    let mut pair_and_inc =
+                        Self::next_pair(table, c, right_pair, right, right_index);
                     if pair_and_inc < 0 {
                         right_index += 1;
                         pair_and_inc = !pair_and_inc;
@@ -581,7 +644,11 @@ impl CollationFastLatin {
                         right_tertiary ^= Self::CASE_MASK;
                     }
                 }
-                return if left_tertiary < right_tertiary { Collation::LESS } else { Collation::GREATER };
+                return if left_tertiary < right_tertiary {
+                    Collation::LESS
+                } else {
+                    Collation::GREATER
+                };
             }
             if left_pair == Self::EOS {
                 break;
@@ -605,7 +672,11 @@ impl CollationFastLatin {
                 }
                 let c = left[left_index as usize] as i32;
                 left_index += 1;
-                left_pair = if c <= Self::LATIN_MAX { t(c) } else { Self::lookup(table, c) };
+                left_pair = if c <= Self::LATIN_MAX {
+                    t(c)
+                } else {
+                    Self::lookup(table, c)
+                };
                 if left_pair < Self::MIN_LONG {
                     let mut pair_and_inc = Self::next_pair(table, c, left_pair, left, left_index);
                     if pair_and_inc < 0 {
@@ -623,9 +694,14 @@ impl CollationFastLatin {
                 }
                 let c = right[right_index as usize] as i32;
                 right_index += 1;
-                right_pair = if c <= Self::LATIN_MAX { t(c) } else { Self::lookup(table, c) };
+                right_pair = if c <= Self::LATIN_MAX {
+                    t(c)
+                } else {
+                    Self::lookup(table, c)
+                };
                 if right_pair < Self::MIN_LONG {
-                    let mut pair_and_inc = Self::next_pair(table, c, right_pair, right, right_index);
+                    let mut pair_and_inc =
+                        Self::next_pair(table, c, right_pair, right, right_index);
                     if pair_and_inc < 0 {
                         right_index += 1;
                         pair_and_inc = !pair_and_inc;
@@ -645,7 +721,11 @@ impl CollationFastLatin {
             let left_quaternary = left_pair & 0xffff;
             let right_quaternary = right_pair & 0xffff;
             if left_quaternary != right_quaternary {
-                return if left_quaternary < right_quaternary { Collation::LESS } else { Collation::GREATER };
+                return if left_quaternary < right_quaternary {
+                    Collation::LESS
+                } else {
+                    Collation::GREATER
+                };
             }
             if left_pair == Self::EOS {
                 break;
@@ -720,7 +800,11 @@ impl CollationFastLatin {
                 return Self::BAIL_OUT as i64;
             }
             let ce = t(index + 1);
-            let result: i64 = if length == 2 { ce as i64 } else { ((t(index + 2) as i64) << 16) | ce as i64 };
+            let result: i64 = if length == 2 {
+                ce as i64
+            } else {
+                ((t(index + 2) as i64) << 16) | ce as i64
+            };
             if inc {
                 !result
             } else {

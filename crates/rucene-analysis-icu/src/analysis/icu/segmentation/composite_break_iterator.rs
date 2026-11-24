@@ -79,9 +79,9 @@ impl CompositeBreakIterator {
     ///
     /// With Java's `NullPointerException` before the first `setText`.
     fn rbbi(&self) -> &BreakIteratorWrapper {
-        let index = self
-            .rbbi
-            .unwrap_or_else(|| rucene::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None));
+        let index = self.rbbi.unwrap_or_else(|| {
+            rucene::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None)
+        });
         self.word_breakers[index]
             .as_ref()
             .expect("INVARIANT: rbbi indexes a created break iterator")
@@ -89,9 +89,9 @@ impl CompositeBreakIterator {
 
     /// The current break iterator, mutably.
     fn rbbi_mut(&mut self) -> &mut BreakIteratorWrapper {
-        let index = self
-            .rbbi
-            .unwrap_or_else(|| rucene::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None));
+        let index = self.rbbi.unwrap_or_else(|| {
+            rucene::store::java_nio_file::throw_unchecked("java.lang.NullPointerException", None)
+        });
         self.word_breakers[index]
             .as_mut()
             .expect("INVARIANT: rbbi indexes a created break iterator")
@@ -110,7 +110,8 @@ impl CompositeBreakIterator {
             self.rbbi = Some(self.get_break_iterator(self.script_iterator.get_script_code()));
             let text = Arc::clone(&self.text);
             let start = self.script_iterator.get_script_start();
-            let length = self.script_iterator.get_script_limit() - self.script_iterator.get_script_start();
+            let length =
+                self.script_iterator.get_script_limit() - self.script_iterator.get_script_start();
             self.rbbi_mut().set_text(text, start, length);
             next = self.rbbi_mut().next();
         }
@@ -164,11 +165,13 @@ impl CompositeBreakIterator {
     /// Equivalent to `setText(char[], int, int)`.
     pub fn set_text(&mut self, text: Arc<[u16]>, start: i32, length: i32) {
         self.text = Arc::clone(&text);
-        self.script_iterator.set_text(Arc::clone(&text), start, length);
+        self.script_iterator
+            .set_text(Arc::clone(&text), start, length);
         if self.script_iterator.next() {
             self.rbbi = Some(self.get_break_iterator(self.script_iterator.get_script_code()));
             let start = self.script_iterator.get_script_start();
-            let length = self.script_iterator.get_script_limit() - self.script_iterator.get_script_start();
+            let length =
+                self.script_iterator.get_script_limit() - self.script_iterator.get_script_start();
             self.rbbi_mut().set_text(text, start, length);
         } else {
             self.rbbi = Some(self.get_break_iterator(UScript::COMMON));
@@ -182,8 +185,9 @@ impl CompositeBreakIterator {
     fn get_break_iterator(&mut self, script_code: i32) -> usize {
         let index = script_code as usize;
         if self.word_breakers[index].is_none() {
-            self.word_breakers[index] =
-                Some(BreakIteratorWrapper::new(self.config.get_break_iterator(script_code)));
+            self.word_breakers[index] = Some(BreakIteratorWrapper::new(
+                self.config.get_break_iterator(script_code),
+            ));
         }
         index
     }

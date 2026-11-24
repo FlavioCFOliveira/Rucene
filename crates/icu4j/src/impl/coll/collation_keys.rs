@@ -22,7 +22,10 @@ pub struct SortKeyByteSinkBase {
 impl SortKeyByteSinkBase {
     /// `SortKeyByteSink(byte[] dest)`.
     pub fn new(dest: Vec<i8>) -> Self {
-        Self { buffer: dest, appended: 0 }
+        Self {
+            buffer: dest,
+            appended: 0,
+        }
     }
 }
 
@@ -123,7 +126,10 @@ struct SortKeyLevel {
 
 impl SortKeyLevel {
     fn new() -> Self {
-        Self { buffer: vec![0; SORT_KEY_LEVEL_INITIAL_CAPACITY], len: 0 }
+        Self {
+            buffer: vec![0; SORT_KEY_LEVEL_INITIAL_CAPACITY],
+            len: 0,
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -150,7 +156,9 @@ impl SortKeyLevel {
         let b0 = ((w as u32) >> 8) as i8;
         let b1 = w as i8;
         let append_length = if b1 == 0 { 1 } else { 2 };
-        if (self.len + append_length) as usize <= self.buffer.len() || self.ensure_capacity(append_length) {
+        if (self.len + append_length) as usize <= self.buffer.len()
+            || self.ensure_capacity(append_length)
+        {
             self.buffer[self.len as usize] = b0;
             self.len += 1;
             if b1 != 0 {
@@ -173,7 +181,9 @@ impl SortKeyLevel {
         } else {
             4
         };
-        if (self.len + append_length) as usize <= self.buffer.len() || self.ensure_capacity(append_length) {
+        if (self.len + append_length) as usize <= self.buffer.len()
+            || self.ensure_capacity(append_length)
+        {
             self.buffer[self.len as usize] = bytes[0];
             self.len += 1;
             if bytes[1] != 0 {
@@ -196,7 +206,9 @@ impl SortKeyLevel {
         let b0 = ((w as u32) >> 8) as i8;
         let b1 = w as i8;
         let append_length = if b1 == 0 { 1 } else { 2 };
-        if (self.len + append_length) as usize <= self.buffer.len() || self.ensure_capacity(append_length) {
+        if (self.len + append_length) as usize <= self.buffer.len()
+            || self.ensure_capacity(append_length)
+        {
             if b1 == 0 {
                 self.buffer[self.len as usize] = b0;
                 self.len += 1;
@@ -239,7 +251,9 @@ fn get_sort_key_level(levels: i32, level: i32) -> Option<SortKeyLevel> {
 }
 
 fn lv(level: &mut Option<SortKeyLevel>) -> &mut SortKeyLevel {
-    level.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+    level
+        .as_mut()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
 }
 
 /// Java's `(int) p >>> 24` for a long p.
@@ -309,8 +323,7 @@ impl CollationKeys {
         6,    // UCOL_SECONDARY -> up to SECONDARY_LEVEL
         0x16, // UCOL_TERTIARY -> up to TERTIARY_LEVEL
         0x36, // UCOL_QUATERNARY -> up to QUATERNARY_LEVEL
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0x36, // UCOL_IDENTICAL -> up to QUATERNARY_LEVEL
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x36, // UCOL_IDENTICAL -> up to QUATERNARY_LEVEL
     ];
 
     /// Writes the sort key bytes for minLevel up to the iterator data's
@@ -476,7 +489,8 @@ impl CollationKeys {
                 if s == 0 {
                     // secondary ignorable
                 } else if s == Collation::COMMON_WEIGHT16
-                    && ((options & CollationSettings::BACKWARD_SECONDARY) == 0 || p != Collation::MERGE_SEPARATOR_PRIMARY)
+                    && ((options & CollationSettings::BACKWARD_SECONDARY) == 0
+                        || p != Collation::MERGE_SEPARATOR_PRIMARY)
                 {
                     // s is a common secondary weight, and
                     // backwards-secondary is off or the ce is not the merge separator.
@@ -524,7 +538,9 @@ impl CollationKeys {
                         // within segments separated by the merge separator (U+FFFE).
                         let mut last = secondaries.length() - 1;
                         while sec_segment_start < last {
-                            secondaries.buffer.swap(sec_segment_start as usize, last as usize);
+                            secondaries
+                                .buffer
+                                .swap(sec_segment_start as usize, last as usize);
                             sec_segment_start += 1;
                             last -= 1;
                         }
@@ -564,7 +580,9 @@ impl CollationKeys {
                             // If there are only common (=lowest) weights in the whole level,
                             // then we need not write anything.
                             // Level length differences are handled already on the next-higher level.
-                            if common_cases != 0 && (c > Collation::LEVEL_SEPARATOR_BYTE || !cases.is_empty()) {
+                            if common_cases != 0
+                                && (c > Collation::LEVEL_SEPARATOR_BYTE || !cases.is_empty())
+                            {
                                 common_cases -= 1;
                                 while common_cases >= Self::CASE_LOWER_FIRST_COMMON_MAX_COUNT {
                                     cases.append_byte(Self::CASE_LOWER_FIRST_COMMON_MIDDLE << 4);
@@ -579,7 +597,8 @@ impl CollationKeys {
                                 common_cases = 0;
                             }
                             if c > Collation::LEVEL_SEPARATOR_BYTE {
-                                c = (Self::CASE_LOWER_FIRST_COMMON_HIGH + ((c as u32) >> 6) as i32) << 4; // 14 or 15
+                                c = (Self::CASE_LOWER_FIRST_COMMON_HIGH + ((c as u32) >> 6) as i32)
+                                    << 4; // 14 or 15
                             }
                         } else {
                             // upperFirst: Compress common weights to nibbles 3..15, mixed=2,
@@ -592,11 +611,14 @@ impl CollationKeys {
                                     cases.append_byte(Self::CASE_UPPER_FIRST_COMMON_LOW << 4);
                                     common_cases -= Self::CASE_UPPER_FIRST_COMMON_MAX_COUNT;
                                 }
-                                cases.append_byte((Self::CASE_UPPER_FIRST_COMMON_LOW + common_cases) << 4);
+                                cases.append_byte(
+                                    (Self::CASE_UPPER_FIRST_COMMON_LOW + common_cases) << 4,
+                                );
                                 common_cases = 0;
                             }
                             if c > Collation::LEVEL_SEPARATOR_BYTE {
-                                c = (Self::CASE_UPPER_FIRST_COMMON_LOW - ((c as u32) >> 6) as i32) << 4; // 2 or 1
+                                c = (Self::CASE_UPPER_FIRST_COMMON_LOW - ((c as u32) >> 6) as i32)
+                                    << 4; // 2 or 1
                             }
                         }
                         // c is a separator byte 01,

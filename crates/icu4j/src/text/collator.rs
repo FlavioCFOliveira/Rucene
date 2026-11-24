@@ -139,7 +139,8 @@ pub trait Collator: Debug + Send + Sync + Any {
     /// Equivalent to `equals(Object)`.
     fn equals(&self, obj: &dyn Collator) -> bool {
         // Subclasses: Call this method and then add more specific checks.
-        std::ptr::addr_eq(self as *const Self, obj as *const dyn Collator) || self.as_any().type_id() == obj.as_any().type_id()
+        std::ptr::addr_eq(self as *const Self, obj as *const dyn Collator)
+            || self.as_any().type_id() == obj.as_any().type_id()
     }
 
     /// Generates a hash code for this Collator object.
@@ -261,7 +262,11 @@ pub trait Collator: Debug + Send + Sync + Any {
     /// user provided argument key.
     ///
     /// Equivalent to `getRawCollationKey(String, RawCollationKey)`.
-    fn get_raw_collation_key(&self, source: Option<&[u16]>, key: Option<RawCollationKey>) -> Option<RawCollationKey>;
+    fn get_raw_collation_key(
+        &self,
+        source: Option<&[u16]>,
+        key: Option<RawCollationKey>,
+    ) -> Option<RawCollationKey>;
 
     /// Sets the variable top to the top of the specified reordering group.
     ///
@@ -416,7 +421,8 @@ pub trait CollatorFactory: Send + Sync + Any {
     ///
     /// Whatever the factory throws.
     fn create_collator_locale(&self, loc: &Locale) -> Result<Option<Box<dyn Collator>>> {
-        let u = ULocale::for_locale(Some(loc))?.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let u = ULocale::for_locale(Some(loc))?
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         self.create_collator(&u)
     }
 
@@ -430,7 +436,11 @@ pub trait CollatorFactory: Send + Sync + Any {
     /// The errors of `getSupportedLocaleIDs()` and
     /// `ULocale.getDisplayName(ULocale)` (`UnsupportedOperationException`
     /// until `LocaleDisplayNames` is ported).
-    fn get_display_name(&self, object_locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+    fn get_display_name(
+        &self,
+        object_locale: &ULocale,
+        display_locale: &ULocale,
+    ) -> Result<Option<String>> {
         if self.visible() {
             let supported = self.get_supported_locale_ids()?;
             let name = object_locale.get_base_name();
@@ -516,7 +526,9 @@ fn get_yes_or_no(keyword: &str, s: &str) -> Result<bool> {
     if ascii_equal_ignore_case(s, "no") {
         return Ok(false);
     }
-    Err(LuceneError::illegal_argument(format!("illegal locale keyword=value: {keyword}={s}")))
+    Err(LuceneError::illegal_argument(format!(
+        "illegal locale keyword=value: {keyword}={s}"
+    )))
 }
 
 fn get_int_value(keyword: &str, s: &str, values: &[&str]) -> Result<i32> {
@@ -525,11 +537,18 @@ fn get_int_value(keyword: &str, s: &str, values: &[&str]) -> Result<i32> {
             return Ok(i as i32);
         }
     }
-    Err(LuceneError::illegal_argument(format!("illegal locale keyword=value: {keyword}={s}")))
+    Err(LuceneError::illegal_argument(format!(
+        "illegal locale keyword=value: {keyword}={s}"
+    )))
 }
 
 fn get_reorder_code(keyword: &str, s: &str) -> Result<i32> {
-    Ok(ReorderCodes::FIRST + get_int_value(keyword, s, &["space", "punct", "symbol", "currency", "digit"])?)
+    Ok(ReorderCodes::FIRST
+        + get_int_value(
+            keyword,
+            s,
+            &["space", "punct", "symbol", "currency", "digit"],
+        )?)
     // Not supporting "others" = UCOL_REORDER_CODE_OTHERS
     // as a synonym for Zzzz = USCRIPT_UNKNOWN for now:
     // Avoid introducing synonyms/aliases.
@@ -542,19 +561,36 @@ fn set_attributes_from_keywords(loc: &ULocale, coll: &mut dyn Collator) -> Resul
     // before any were supported in createInstance() (except for "collation").
     let mut value = loc.get_keyword_value("colHiraganaQuaternary");
     if value.is_some() {
-        return Err(LuceneError::unsupported_operation("locale keyword kh/colHiraganaQuaternary"));
+        return Err(LuceneError::unsupported_operation(
+            "locale keyword kh/colHiraganaQuaternary",
+        ));
     }
     value = loc.get_keyword_value("variableTop");
     if value.is_some() {
-        return Err(LuceneError::unsupported_operation("locale keyword vt/variableTop"));
+        return Err(LuceneError::unsupported_operation(
+            "locale keyword vt/variableTop",
+        ));
     }
     // Parse known collation keywords, ignore others.
     value = loc.get_keyword_value("colStrength");
     if let Some(value) = &value {
         // Note: Not supporting typo "quarternary" because it was never supported in locale IDs.
-        let strength =
-            get_int_value("colStrength", value, &["primary", "secondary", "tertiary", "quaternary", "identical"])?;
-        coll.set_strength(if strength <= QUATERNARY { strength } else { IDENTICAL })?;
+        let strength = get_int_value(
+            "colStrength",
+            value,
+            &[
+                "primary",
+                "secondary",
+                "tertiary",
+                "quaternary",
+                "identical",
+            ],
+        )?;
+        coll.set_strength(if strength <= QUATERNARY {
+            strength
+        } else {
+            IDENTICAL
+        })?;
     }
 
     if let Some(value) = loc.get_keyword_value("colBackwards") {
@@ -664,7 +700,9 @@ fn set_attributes_from_keywords(loc: &ULocale, coll: &mut dyn Collator) -> Resul
             script_name_start = limit + 1;
         }
         if codes_length == 0 {
-            return Err(LuceneError::illegal_argument("no script codes for colReorder locale keyword"));
+            return Err(LuceneError::illegal_argument(
+                "no script codes for colReorder locale keyword",
+            ));
         }
         coll.set_reorder_codes(Some(&codes[..codes_length]))?;
     }
@@ -822,7 +860,9 @@ pub fn get_keywords() -> Vec<String> {
 /// `IllegalArgumentException` for an invalid keyword.
 pub fn get_keyword_values(keyword: &str) -> Result<Vec<String>> {
     if keyword != KEYWORDS[0] {
-        return Err(LuceneError::illegal_argument(format!("Invalid keyword: {keyword}")));
+        return Err(LuceneError::illegal_argument(format!(
+            "Invalid keyword: {keyword}"
+        )));
     }
     ICUResourceBundle::get_keyword_values(BASE, RESOURCE)
 }
@@ -835,20 +875,30 @@ pub fn get_keyword_values(keyword: &str) -> Result<Vec<String>> {
 /// # Errors
 ///
 /// The errors of reading the collation bundles.
-pub fn get_keyword_values_for_locale(_key: &str, locale: &ULocale, _commonly_used: bool) -> Result<Vec<String>> {
+pub fn get_keyword_values_for_locale(
+    _key: &str,
+    locale: &ULocale,
+    _commonly_used: bool,
+) -> Result<Vec<String>> {
     // Note: The parameter commonlyUsed is not used.
     // The switch is in the method signature for consistency
     // with other locale services.
 
     // Read available collation values from collation bundles.
-    let bundle = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_COLLATION_BASE_NAME), Some(locale))?;
+    let bundle = UResourceBundle::get_bundle_instance_for(
+        Some(ICUData::ICU_COLLATION_BASE_NAME),
+        Some(locale),
+    )?;
     let bundle = match bundle {
         UResourceBundle::Icu(b) => b,
         UResourceBundle::Wrapper(_) => panic!(
             "java.lang.ClassCastException: class com.ibm.icu.impl.ResourceBundleWrapper cannot be cast to class com.ibm.icu.impl.ICUResourceBundle"
         ),
     };
-    let mut sink = KeywordsSink { values: VecDeque::new(), has_default: false };
+    let mut sink = KeywordsSink {
+        values: VecDeque::new(),
+        has_default: false,
+    };
     bundle.get_all_items_with_fallback("collations", &mut sink)?;
     Ok(sink.values.into_iter().collect())
 }
@@ -896,7 +946,11 @@ impl Sink for KeywordsSink {
 /// # Errors
 ///
 /// `MissingResourceException` and the errors of bundle loading.
-pub fn get_functional_equivalent(keyword: &str, loc_id: &ULocale, is_available: Option<&mut bool>) -> Result<ULocale> {
+pub fn get_functional_equivalent(
+    keyword: &str,
+    loc_id: &ULocale,
+    is_available: Option<&mut bool>,
+) -> Result<ULocale> {
     ICUResourceBundle::get_functional_equivalent(
         BASE,
         icu_data_class_loader(),
@@ -928,9 +982,14 @@ pub fn get_functional_equivalent2(keyword: &str, loc_id: &ULocale) -> Result<ULo
 /// # Errors
 ///
 /// The errors of the service (`ULocale.getDisplayName` is not ported yet).
-pub fn get_display_name_locale(object_locale: &Locale, display_locale: &Locale) -> Result<Option<String>> {
-    let ol = ULocale::for_locale(Some(object_locale))?.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
-    let dl = ULocale::for_locale(Some(display_locale))?.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+pub fn get_display_name_locale(
+    object_locale: &Locale,
+    display_locale: &Locale,
+) -> Result<Option<String>> {
+    let ol = ULocale::for_locale(Some(object_locale))?
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+    let dl = ULocale::for_locale(Some(display_locale))?
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
     get_shim().get_display_name(&ol, &dl)
 }
 
@@ -942,7 +1001,10 @@ pub fn get_display_name_locale(object_locale: &Locale, display_locale: &Locale) 
 /// # Errors
 ///
 /// The errors of the service.
-pub fn get_display_name(object_locale: &ULocale, display_locale: &ULocale) -> Result<Option<String>> {
+pub fn get_display_name(
+    object_locale: &ULocale,
+    display_locale: &ULocale,
+) -> Result<Option<String>> {
     get_shim().get_display_name(object_locale, display_locale)
 }
 
@@ -955,7 +1017,8 @@ pub fn get_display_name(object_locale: &ULocale, display_locale: &ULocale) -> Re
 ///
 /// The errors of the service.
 pub fn get_display_name_default_locale(object_locale: &Locale) -> Result<Option<String>> {
-    let ol = ULocale::for_locale(Some(object_locale))?.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+    let ol = ULocale::for_locale(Some(object_locale))?
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
     get_shim().get_display_name(&ol, &ULocale::get_default_category(Category::Display))
 }
 
@@ -968,7 +1031,10 @@ pub fn get_display_name_default_locale(object_locale: &Locale) -> Result<Option<
 ///
 /// The errors of the service.
 pub fn get_display_name_default(object_locale: &ULocale) -> Result<Option<String>> {
-    get_shim().get_display_name(object_locale, &ULocale::get_default_category(Category::Display))
+    get_shim().get_display_name(
+        object_locale,
+        &ULocale::get_default_category(Category::Display),
+    )
 }
 
 /// Retrieves all the reorder codes that are grouped with the given

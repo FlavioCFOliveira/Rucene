@@ -69,13 +69,19 @@ impl Measure {
 
     /// Returns a hashcode for this object. Equivalent to `hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        31i32.wrapping_mul(java_double_hash_code(self.number.double_value())).wrapping_add(self.unit.hash_code())
+        31i32
+            .wrapping_mul(java_double_hash_code(self.number.double_value()))
+            .wrapping_add(self.unit.hash_code())
     }
 
     /// Returns a string representation of this object. Equivalent to
     /// `toString()`.
     pub fn to_java_string(&self) -> String {
-        format!("{} {}", self.number.to_java_string(), self.unit.to_java_string())
+        format!(
+            "{} {}",
+            self.number.to_java_string(),
+            self.unit.to_java_string()
+        )
     }
 
     /// Returns the numeric value of this object. Equivalent to

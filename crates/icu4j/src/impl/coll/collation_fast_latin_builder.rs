@@ -120,7 +120,9 @@ impl CollationFastLatinBuilder {
     pub fn for_data(&mut self, data: &CollationData) -> Result<bool> {
         if !self.result.is_empty() {
             // This builder is not reusable.
-            return Err(LuceneError::illegal_state("attempt to reuse a CollationFastLatinBuilder"));
+            return Err(LuceneError::illegal_state(
+                "attempt to reuse a CollationFastLatinBuilder",
+            ));
         }
         if !self.load_groups(data) {
             return Ok(false);
@@ -173,7 +175,8 @@ impl CollationFastLatinBuilder {
         // The first few reordering groups should be special groups
         // (space, punct, ..., digit) followed by Latn, then Grek and other scripts.
         for i in 0..NUM_SPECIAL_GROUPS {
-            self.last_special_primaries[i as usize] = data.get_last_primary_for_group(ReorderCodes::FIRST + i);
+            self.last_special_primaries[i as usize] =
+                data.get_last_primary_for_group(ReorderCodes::FIRST + i);
             if self.last_special_primaries[i as usize] == 0 {
                 // missing data
                 return false;
@@ -274,7 +277,8 @@ impl CollationFastLatinBuilder {
             c += 1;
         }
         // Terminate the last contraction list.
-        self.contraction_ces.add_element(CollationFastLatin::CONTR_CHAR_MASK as i64);
+        self.contraction_ces
+            .add_element(CollationFastLatin::CONTR_CHAR_MASK as i64);
     }
 
     fn get_ces_from_ce32(&mut self, data: &CollationData, c: i32, mut ce32: i32) -> bool {
@@ -360,7 +364,11 @@ impl CollationFastLatinBuilder {
             // This is so that we can test the first primary and use the same mask for both,
             // and determine for both whether they are variable.
             let p1 = ((self.ce1 as u64) >> 32) as i64;
-            if if p1 == 0 { p0 < self.first_short_primary } else { !self.in_same_group(p0, p1) } {
+            if if p1 == 0 {
+                p0 < self.first_short_primary
+            } else {
+                !self.in_same_group(p0, p1)
+            } {
                 return false;
             }
             let lower32_1 = self.ce1 as i32;
@@ -388,8 +396,8 @@ impl CollationFastLatinBuilder {
     fn get_ces_from_contraction_ce32(&mut self, data: &CollationData, mut ce32: i32) -> bool {
         let trie_index = Collation::index_from_ce32(ce32);
         ce32 = data.get_ce32_from_contexts(trie_index); // Default if no suffix match.
-        // Since the original ce32 is not a prefix mapping,
-        // the default ce32 must not be another contraction.
+                                                        // Since the original ce32 is not a prefix mapping,
+                                                        // the default ce32 must not be another contraction.
         debug_assert!(!Collation::is_contraction_ce32(ce32));
         let contraction_index = self.contraction_ces.size();
         if self.get_ces_from_ce32(data, Collation::SENTINEL_CP, ce32) {
@@ -465,7 +473,10 @@ impl CollationFastLatinBuilder {
         ce &= !(Collation::CASE_MASK as i64); // blank out case bits
         let index = binary_search(self.unique_ces.get_buffer(), self.unique_ces.size(), ce);
         debug_assert!(index >= 0);
-        self.mini_ces.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))[index as usize] as i32
+        self.mini_ces
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))[index as usize]
+            as i32
     }
 
     #[allow(unused_assignments)] // Java's dead stores to prevSecondary/ter, kept as written
@@ -638,13 +649,16 @@ impl CollationFastLatinBuilder {
                 let cce1 = self.contraction_ces.element_ati(index + 2);
                 let mini_ce = self.encode_two_ces(cce0, cce1);
                 if mini_ce == CollationFastLatin::BAIL_OUT {
-                    self.result.push((x | (1 << CollationFastLatin::CONTR_LENGTH_SHIFT)) as u16);
+                    self.result
+                        .push((x | (1 << CollationFastLatin::CONTR_LENGTH_SHIFT)) as u16);
                 } else if ((mini_ce as u32) >> 16) == 0 {
                     // if ((unsigned)miniCE <= 0xffff)
-                    self.result.push((x | (2 << CollationFastLatin::CONTR_LENGTH_SHIFT)) as u16);
+                    self.result
+                        .push((x | (2 << CollationFastLatin::CONTR_LENGTH_SHIFT)) as u16);
                     self.result.push(mini_ce as u16);
                 } else {
-                    self.result.push((x | (3 << CollationFastLatin::CONTR_LENGTH_SHIFT)) as u16);
+                    self.result
+                        .push((x | (3 << CollationFastLatin::CONTR_LENGTH_SHIFT)) as u16);
                     self.result.push((mini_ce >> 16) as u16);
                     self.result.push(mini_ce as u16);
                 }
@@ -654,7 +668,8 @@ impl CollationFastLatinBuilder {
             // Note: There is a chance that this new contraction list is the same as a previous one,
             // and if so, then we could truncate the result and reuse the other list.
             // However, that seems unlikely.
-            self.result[self.header_length as usize + i] = (CollationFastLatin::CONTRACTION | contraction_index) as u16;
+            self.result[self.header_length as usize + i] =
+                (CollationFastLatin::CONTRACTION | contraction_index) as u16;
         }
         if self.result.len() > first_contraction_index {
             // Terminate the last contraction list.
@@ -699,13 +714,18 @@ impl CollationFastLatinBuilder {
             // Try to combine the two mini CEs into one.
             let sec1 = mini_ce1 & CollationFastLatin::SECONDARY_MASK;
             let ter1 = mini_ce1 & CollationFastLatin::TERTIARY_MASK;
-            if sec1 >= CollationFastLatin::MIN_SEC_HIGH && case1 == 0 && ter1 == CollationFastLatin::COMMON_TER {
+            if sec1 >= CollationFastLatin::MIN_SEC_HIGH
+                && case1 == 0
+                && ter1 == CollationFastLatin::COMMON_TER
+            {
                 // sec1>=sec_high implies pri1==0.
                 return (mini_ce & !CollationFastLatin::SECONDARY_MASK) | sec1;
             }
         }
 
-        if mini_ce1 <= CollationFastLatin::SECONDARY_MASK || CollationFastLatin::MIN_SHORT <= mini_ce1 {
+        if mini_ce1 <= CollationFastLatin::SECONDARY_MASK
+            || CollationFastLatin::MIN_SHORT <= mini_ce1
+        {
             // Secondary CE, or a CE with a short primary, copy the case bits.
             case1 = (case1 >> (14 - 3)) + CollationFastLatin::LOWER_CASE;
             mini_ce1 |= case1;

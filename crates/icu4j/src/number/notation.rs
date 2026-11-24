@@ -43,9 +43,11 @@ static SCIENTIFIC: LazyLock<ScientificNotation> =
 static ENGINEERING: LazyLock<ScientificNotation> =
     LazyLock::new(|| ScientificNotation::new(3, false, 1, SignDisplay::Auto));
 /// `COMPACT_SHORT`.
-static COMPACT_SHORT: LazyLock<CompactNotation> = LazyLock::new(|| CompactNotation::new(CompactStyle::Short));
+static COMPACT_SHORT: LazyLock<CompactNotation> =
+    LazyLock::new(|| CompactNotation::new(CompactStyle::Short));
 /// `COMPACT_LONG`.
-static COMPACT_LONG: LazyLock<CompactNotation> = LazyLock::new(|| CompactNotation::new(CompactStyle::Long));
+static COMPACT_LONG: LazyLock<CompactNotation> =
+    LazyLock::new(|| CompactNotation::new(CompactStyle::Long));
 /// `SIMPLE`.
 static SIMPLE: LazyLock<SimpleNotation> = LazyLock::new(SimpleNotation::new);
 

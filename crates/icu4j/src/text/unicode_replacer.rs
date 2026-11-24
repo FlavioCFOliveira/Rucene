@@ -22,7 +22,13 @@ pub trait UnicodeReplacer: Send + Sync {
     /// # Errors
     ///
     /// The errors of the replacement (a nested transliteration).
-    fn replace(&self, text: &dyn Replaceable, start: i32, limit: i32, cursor: &mut [i32]) -> Result<i32>;
+    fn replace(
+        &self,
+        text: &dyn Replaceable,
+        start: i32,
+        limit: i32,
+        cursor: &mut [i32],
+    ) -> Result<i32>;
 
     /// `toReplacerPattern(boolean escapeUnprintable)`: the replacer as rule
     /// source.

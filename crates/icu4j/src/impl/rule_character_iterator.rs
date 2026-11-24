@@ -52,11 +52,22 @@ impl<'a> RuleCharacterIterator<'a> {
     /// # Errors
     ///
     /// `IllegalArgumentException` when `pos` is past the end of `text`.
-    pub fn new(text: &'a [u16], sym: Option<&'a dyn SymbolTable>, pos: &'a mut ParsePosition) -> Result<Self> {
+    pub fn new(
+        text: &'a [u16],
+        sym: Option<&'a dyn SymbolTable>,
+        pos: &'a mut ParsePosition,
+    ) -> Result<Self> {
         if pos.get_index() > text.len() as i32 {
             return Err(illegal_argument_no_message());
         }
-        Ok(Self { text, pos, sym, buf: None, buf_pos: 0, is_escaped: false })
+        Ok(Self {
+            text,
+            pos,
+            sym,
+            buf: None,
+            buf_pos: 0,
+            is_escaped: false,
+        })
     }
 
     /// `atEnd()`.
@@ -107,7 +118,10 @@ impl<'a> RuleCharacterIterator<'a> {
             }
 
             if c == b'\\' as i32 && (options & PARSE_ESCAPES) != 0 {
-                let cp_and_length = Utility::unescape_and_length_at(self.get_current_buffer(), self.get_current_buffer_pos());
+                let cp_and_length = Utility::unescape_and_length_at(
+                    self.get_current_buffer(),
+                    self.get_current_buffer_pos(),
+                );
                 if cp_and_length < 0 {
                     return Err(LuceneError::illegal_argument("Invalid escape"));
                 }

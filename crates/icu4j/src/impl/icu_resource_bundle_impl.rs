@@ -70,7 +70,12 @@ impl ICUResourceBundle {
 
     /// `ICUResourceBundleImpl(ICUResourceBundleImpl container, String key,
     /// int resource)`: an item, sharing its container's bundle and parent.
-    fn new_item(container: &Arc<ICUResourceBundle>, key: &str, resource: i32, kind: ImplKind) -> Self {
+    fn new_item(
+        container: &Arc<ICUResourceBundle>,
+        key: &str,
+        resource: i32,
+        kind: ImplKind,
+    ) -> Self {
         Self {
             whole_bundle: container.whole_bundle.clone(),
             container: Some(container.clone()),
@@ -166,11 +171,19 @@ impl ICUResourceBundle {
             UResourceBundle::INT => ImplKind::Int,
             UResourceBundle::INT_VECTOR => ImplKind::IntVector,
             UResourceBundle::ARRAY | ICUResourceBundle::ARRAY16 => ImplKind::Array {
-                value: self.reader().get_array(resource).expect("an array resource has an array"),
+                value: self
+                    .reader()
+                    .get_array(resource)
+                    .expect("an array resource has an array"),
             },
-            UResourceBundle::TABLE | ICUResourceBundle::TABLE16 | ICUResourceBundle::TABLE32 => ImplKind::Table {
-                value: self.reader().get_table(resource).expect("a table resource has a table"),
-            },
+            UResourceBundle::TABLE | ICUResourceBundle::TABLE16 | ICUResourceBundle::TABLE32 => {
+                ImplKind::Table {
+                    value: self
+                        .reader()
+                        .get_table(resource)
+                        .expect("a table resource has a table"),
+                }
+            }
             _ => {
                 return Err(rucene::error::LuceneError::illegal_state(
                     "The resource type is unknown",
@@ -201,7 +214,10 @@ impl ICUResourceBundle {
     /// `UResourceTypeMismatchException` for another type.
     pub fn get_binary(&self) -> Result<ByteBuffer> {
         match self.kind {
-            ImplKind::Binary => self.reader().get_binary(self.resource).ok_or_else(|| type_mismatch("")),
+            ImplKind::Binary => self
+                .reader()
+                .get_binary(self.resource)
+                .ok_or_else(|| type_mismatch("")),
             _ => Err(type_mismatch("")),
         }
     }
@@ -298,7 +314,11 @@ impl ICUResourceBundle {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException` for an index out of range.
-    pub(crate) fn container_get_string(&self, index: i32, this: &UResourceBundle) -> Result<Vec<u16>> {
+    pub(crate) fn container_get_string(
+        &self,
+        index: i32,
+        this: &UResourceBundle,
+    ) -> Result<Vec<u16>> {
         let value = self.container_value().expect("a container has a value");
         let res = value.get_container_resource(self.reader(), index);
         if res == ICUResourceBundle::RES_BOGUS {
@@ -370,7 +390,9 @@ impl ICUResourceBundle {
     /// item.
     pub fn get_string_array(&self) -> Result<Vec<Vec<u16>>> {
         match self.kind {
-            ImplKind::Array { .. } => Ok(self.handle_get_string_array()?.expect("an array has strings")),
+            ImplKind::Array { .. } => Ok(self
+                .handle_get_string_array()?
+                .expect("an array has strings")),
             _ => Err(type_mismatch("")),
         }
     }
@@ -439,12 +461,14 @@ impl ICUResourceBundle {
         requested: &UResourceBundle,
     ) -> Result<Option<UResourceBundle>> {
         match &self.kind {
-            ImplKind::Array { .. } => Ok(Some(UResourceBundle::Icu(self.create_bundle_object_at(
-                index,
-                &index.to_string(),
-                aliases_visited,
-                requested,
-            )?))),
+            ImplKind::Array { .. } => {
+                Ok(Some(UResourceBundle::Icu(self.create_bundle_object_at(
+                    index,
+                    &index.to_string(),
+                    aliases_visited,
+                    requested,
+                )?)))
+            }
             ImplKind::Table { value } => {
                 let item_key = match value.get_key(self.reader(), index) {
                     Some(k) => k,
@@ -477,7 +501,11 @@ impl ICUResourceBundle {
                 let reader = self.reader();
                 let mut key_set = Vec::with_capacity(value.get_size() as usize);
                 for i in 0..value.get_size() {
-                    key_set.push(value.get_key(reader, i).expect("an index in range has a key"));
+                    key_set.push(
+                        value
+                            .get_key(reader, i)
+                            .expect("an index in range has a key"),
+                    );
                 }
                 crate::util::u_resource_bundle::tree_set(key_set)
             }
@@ -491,7 +519,11 @@ impl ICUResourceBundle {
     /// # Errors
     ///
     /// `MissingResourceException` when the key is found nowhere.
-    pub(crate) fn table_handle_get_object(&self, key: &str, this: &UResourceBundle) -> Result<ResourceObject> {
+    pub(crate) fn table_handle_get_object(
+        &self,
+        key: &str,
+        this: &UResourceBundle,
+    ) -> Result<ResourceObject> {
         // Fast path for common cases: Avoid creating UResourceBundles if possible.
         // It would be even better if we could override getString(key)/getStringArray(key),
         // so that we know the expected object type,

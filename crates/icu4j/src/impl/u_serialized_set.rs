@@ -21,7 +21,12 @@ pub struct USerializedSet {
 
 impl Default for USerializedSet {
     fn default() -> Self {
-        Self { array: Some(vec![0; 8]), array_offset: 0, bmp_length: 0, length: 0 }
+        Self {
+            array: Some(vec![0; 8]),
+            array_offset: 0,
+            bmp_length: 0,
+            length: 0,
+        }
     }
 }
 
@@ -145,7 +150,8 @@ impl USerializedSet {
                 range[0] = (at(offset + range_index) << 16) | at(offset + range_index + 1);
                 range_index += 2;
                 if range_index < supp_length {
-                    range[1] = ((at(offset + range_index) << 16) | at(offset + range_index + 1)) - 1;
+                    range[1] =
+                        ((at(offset + range_index) << 16) | at(offset + range_index + 1)) - 1;
                 } else {
                     range[1] = 0x10ffff;
                 }
@@ -179,7 +185,8 @@ impl USerializedSet {
             let low = c as u16;
             let mut i = self.bmp_length;
             while i < self.length
-                && (high > array[i as usize] || (high == array[i as usize] && low >= array[i as usize + 1]))
+                && (high > array[i as usize]
+                    || (high == array[i as usize] && low >= array[i as usize + 1]))
             {
                 i += 2;
             }

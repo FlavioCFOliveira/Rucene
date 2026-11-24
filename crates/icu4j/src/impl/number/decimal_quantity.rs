@@ -48,7 +48,11 @@ pub trait DecimalQuantity: IFixedDecimal + std::fmt::Debug + Send + Sync + 'stat
     ///
     /// The `ArithmeticException` of `RoundingMode.UNNECESSARY` when rounding
     /// is required.
-    fn round_to_increment(&mut self, rounding_increment: &BigDecimal, math_context: &MathContext) -> Result<()>;
+    fn round_to_increment(
+        &mut self,
+        rounding_increment: &BigDecimal,
+        math_context: &MathContext,
+    ) -> Result<()>;
 
     /// Rounds the number to the nearest multiple of 5 at the specified
     /// magnitude. Equivalent to `roundToNickel(int, MathContext)`.
@@ -56,7 +60,11 @@ pub trait DecimalQuantity: IFixedDecimal + std::fmt::Debug + Send + Sync + 'stat
     /// # Errors
     ///
     /// `ArithmeticException("Rounding is required on ...")`.
-    fn round_to_nickel(&mut self, rounding_magnitude: i32, math_context: &MathContext) -> Result<()>;
+    fn round_to_nickel(
+        &mut self,
+        rounding_magnitude: i32,
+        math_context: &MathContext,
+    ) -> Result<()>;
 
     /// Rounds the number to a specified magnitude (power of ten). Equivalent
     /// to `roundToMagnitude(int, MathContext)`.
@@ -64,7 +72,11 @@ pub trait DecimalQuantity: IFixedDecimal + std::fmt::Debug + Send + Sync + 'stat
     /// # Errors
     ///
     /// `ArithmeticException("Rounding is required on ...")`.
-    fn round_to_magnitude(&mut self, rounding_magnitude: i32, math_context: &MathContext) -> Result<()>;
+    fn round_to_magnitude(
+        &mut self,
+        rounding_magnitude: i32,
+        math_context: &MathContext,
+    ) -> Result<()>;
 
     /// Rounds the number to an infinite number of decimal points: converts a
     /// double-based value to its exact decimal form. Equivalent to

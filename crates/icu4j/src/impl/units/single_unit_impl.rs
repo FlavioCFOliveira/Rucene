@@ -29,7 +29,12 @@ pub struct SingleUnitImpl {
 
 impl Default for SingleUnitImpl {
     fn default() -> Self {
-        SingleUnitImpl { index: -1, simple_unit_id: String::new(), dimensionality: 1, unit_prefix: MeasurePrefix::One }
+        SingleUnitImpl {
+            index: -1,
+            simple_unit_id: String::new(),
+            dimensionality: 1,
+            unit_prefix: MeasurePrefix::One,
+        }
     }
 }
 
@@ -66,7 +71,10 @@ impl SingleUnitImpl {
         let mut result = String::new();
         let abs_power = self.get_dimensionality().wrapping_abs();
 
-        debug_assert!(abs_power > 0, "this function does not support the dimensionless single units");
+        debug_assert!(
+            abs_power > 0,
+            "this function does not support the dimensionless single units"
+        );
 
         if abs_power == 1 {
             // no-op
@@ -80,7 +88,9 @@ impl SingleUnitImpl {
             result.push('-');
         } else {
             // TODO: IllegalArgumentException might not be appropriate here
-            return Err(LuceneError::illegal_argument("Unit Identifier Syntax Error"));
+            return Err(LuceneError::illegal_argument(
+                "Unit Identifier Syntax Error",
+            ));
         }
 
         result.push_str(self.get_prefix().get_identifier());
@@ -129,10 +139,16 @@ impl SingleUnitImpl {
         let other_unit_base = other.unit_prefix.get_base();
         // unitPower is used to compare the prefixes without considering
         // the base.
-        let unit_power_comp =
-            if unit_base == 1024 { self.unit_prefix.get_power() * 3 } else { self.unit_prefix.get_power() };
-        let other_unit_power_comp =
-            if other_unit_base == 1024 { other.unit_prefix.get_power() * 3 } else { other.unit_prefix.get_power() };
+        let unit_power_comp = if unit_base == 1024 {
+            self.unit_prefix.get_power() * 3
+        } else {
+            self.unit_prefix.get_power()
+        };
+        let other_unit_power_comp = if other_unit_base == 1024 {
+            other.unit_prefix.get_power() * 3
+        } else {
+            other.unit_prefix.get_power()
+        };
 
         if unit_power_comp < other_unit_power_comp {
             return 1;

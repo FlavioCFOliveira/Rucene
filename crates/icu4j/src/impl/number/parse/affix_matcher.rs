@@ -25,7 +25,10 @@ use crate::r#impl::standard_plural::StandardPlural;
 use crate::r#impl::string_segment::StringSegment;
 
 /// `Objects.equals` of two optional affix pattern matchers.
-fn objects_equals(a: &Option<Arc<AffixPatternMatcher>>, b: &Option<Arc<AffixPatternMatcher>>) -> bool {
+fn objects_equals(
+    a: &Option<Arc<AffixPatternMatcher>>,
+    b: &Option<Arc<AffixPatternMatcher>>,
+) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => a.java_equals(b),
@@ -135,7 +138,8 @@ impl AffixMatcher {
         // Use initial capacity of 6, the highest possible number of AffixMatchers.
         let mut sb: Vec<u16> = Vec::new();
         let mut matchers: Vec<AffixMatcher> = Vec::with_capacity(6);
-        let include_unpaired = 0 != (parse_flags & ParsingUtils::PARSE_FLAG_INCLUDE_UNPAIRED_AFFIXES);
+        let include_unpaired =
+            0 != (parse_flags & ParsingUtils::PARSE_FLAG_INCLUDE_UNPAIRED_AFFIXES);
 
         let mut pos_prefix: Option<Arc<AffixPatternMatcher>> = None;
         let mut pos_suffix: Option<Arc<AffixPatternMatcher>> = None;
@@ -143,10 +147,14 @@ impl AffixMatcher {
         // Pre-process the affix strings to resolve LDML rules like sign display.
         for type_ in PatternSignType::VALUES {
             // Skip affixes in some cases
-            if type_ == PatternSignType::Pos && 0 != (parse_flags & ParsingUtils::PARSE_FLAG_PLUS_SIGN_ALLOWED) {
+            if type_ == PatternSignType::Pos
+                && 0 != (parse_flags & ParsingUtils::PARSE_FLAG_PLUS_SIGN_ALLOWED)
+            {
                 continue;
             }
-            if type_ == PatternSignType::PosSign && 0 == (parse_flags & ParsingUtils::PARSE_FLAG_PLUS_SIGN_ALLOWED) {
+            if type_ == PatternSignType::PosSign
+                && 0 == (parse_flags & ParsingUtils::PARSE_FLAG_PLUS_SIGN_ALLOWED)
+            {
                 continue;
             }
 
@@ -185,7 +193,11 @@ impl AffixMatcher {
             }
 
             // Flags for setting in the ParsedNumber; the token matchers may add more.
-            let flags = if type_ == PatternSignType::Neg { parsed_number::FLAG_NEGATIVE } else { 0 };
+            let flags = if type_ == PatternSignType::Neg {
+                parsed_number::FLAG_NEGATIVE
+            } else {
+                0
+            };
 
             // Note: it is indeed possible for posPrefix and posSuffix to both be null.
             // We still need to add that matcher for strict mode to work.
@@ -203,7 +215,11 @@ impl AffixMatcher {
 
         // Put the AffixMatchers in order, and then add them to the output.
         matchers.sort_by(Self::compare);
-        output.add_matchers(matchers.into_iter().map(|m| Arc::new(m) as Arc<dyn NumberParseMatcher>));
+        output.add_matchers(
+            matchers
+                .into_iter()
+                .map(|m| Arc::new(m) as Arc<dyn NumberParseMatcher>),
+        );
         Ok(())
     }
 
@@ -214,14 +230,21 @@ impl AffixMatcher {
         flags: i32,
     ) -> AffixMatcher {
         // TODO: Special handling for common cases like both strings empty.
-        AffixMatcher { prefix, suffix, flags }
+        AffixMatcher {
+            prefix,
+            suffix,
+            flags,
+        }
     }
 
     /// Helper method to return whether the given AffixPatternMatcher equals
     /// the given pattern string. Either both arguments must be null or the
     /// pattern string inside the AffixPatternMatcher must equal the given
     /// pattern string. Equivalent to `matched(AffixPatternMatcher, String)`.
-    pub(crate) fn matched(affix: Option<&AffixPatternMatcher>, pattern_string: Option<&[u16]>) -> bool {
+    pub(crate) fn matched(
+        affix: Option<&AffixPatternMatcher>,
+        pattern_string: Option<&[u16]>,
+    ) -> bool {
         match (affix, pattern_string) {
             (None, None) => true,
             (Some(a), Some(p)) => a.get_pattern() == p,
@@ -237,7 +260,9 @@ impl AffixMatcher {
 
     /// Equivalent to `equals(Object)`.
     pub fn java_equals(&self, other: &AffixMatcher) -> bool {
-        objects_equals(&self.prefix, &other.prefix) && objects_equals(&self.suffix, &other.suffix) && self.flags == other.flags
+        objects_equals(&self.prefix, &other.prefix)
+            && objects_equals(&self.suffix, &other.suffix)
+            && self.flags == other.flags
     }
 
     /// Equivalent to `hashCode()`.
@@ -270,7 +295,9 @@ impl NumberParseMatcher for AffixMatcher {
             // 1. We have already seen a suffix (result.suffix != null)
             // 2. The suffix in this AffixMatcher is empty (suffix == null)
             // 3. The matched prefix does not equal this AffixMatcher's prefix
-            if result.suffix.is_some() || !Self::matched(self.prefix.as_deref(), result.prefix.as_deref()) {
+            if result.suffix.is_some()
+                || !Self::matched(self.prefix.as_deref(), result.prefix.as_deref())
+            {
                 return Ok(false);
             }
             let Some(suffix) = self.suffix.as_ref() else {
@@ -318,9 +345,20 @@ impl NumberParseMatcher for AffixMatcher {
 
     fn to_java_string(&self) -> String {
         let is_negative = 0 != (self.flags & parsed_number::FLAG_NEGATIVE);
-        let p = self.prefix.as_ref().map_or_else(|| "null".to_string(), |m| m.to_java_string());
-        let s = self.suffix.as_ref().map_or_else(|| "null".to_string(), |m| m.to_java_string());
-        format!("<AffixMatcher{}{}#{}>", if is_negative { ":negative " } else { " " }, p, s)
+        let p = self
+            .prefix
+            .as_ref()
+            .map_or_else(|| "null".to_string(), |m| m.to_java_string());
+        let s = self
+            .suffix
+            .as_ref()
+            .map_or_else(|| "null".to_string(), |m| m.to_java_string());
+        format!(
+            "<AffixMatcher{}{}#{}>",
+            if is_negative { ":negative " } else { " " },
+            p,
+            s
+        )
     }
 
     fn as_any(&self) -> &dyn Any {

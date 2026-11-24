@@ -68,7 +68,6 @@ pub struct DecimalMatcher {
     digit_strings: Option<Vec<Vec<u16>>>,
 }
 
-
 impl DecimalMatcher {
     /// Equivalent to `getInstance(DecimalFormatSymbols, Grouper, int)`.
     ///
@@ -76,30 +75,50 @@ impl DecimalMatcher {
     ///
     /// The `IllegalArgumentException` of `UnicodeSet.add` (never for the
     /// first code point of a separator).
-    pub fn get_instance(symbols: &DecimalFormatSymbols, grouper: &Grouper, parse_flags: i32) -> Result<Arc<DecimalMatcher>> {
+    pub fn get_instance(
+        symbols: &DecimalFormatSymbols,
+        grouper: &Grouper,
+        parse_flags: i32,
+    ) -> Result<Arc<DecimalMatcher>> {
         // TODO: Cache popular instances?
         Ok(Arc::new(Self::new(symbols, grouper, parse_flags)?))
     }
 
     fn new(symbols: &DecimalFormatSymbols, grouper: &Grouper, parse_flags: i32) -> Result<Self> {
-        let (grouping_separator, decimal_separator) = if 0 != (parse_flags & ParsingUtils::PARSE_FLAG_MONETARY_SEPARATORS) {
-            (
-                symbols.get_monetary_grouping_separator_string().to_vec(),
-                symbols.get_monetary_decimal_separator_string().to_vec(),
-            )
-        } else {
-            (symbols.get_grouping_separator_string().to_vec(), symbols.get_decimal_separator_string().to_vec())
-        };
+        let (grouping_separator, decimal_separator) =
+            if 0 != (parse_flags & ParsingUtils::PARSE_FLAG_MONETARY_SEPARATORS) {
+                (
+                    symbols.get_monetary_grouping_separator_string().to_vec(),
+                    symbols.get_monetary_decimal_separator_string().to_vec(),
+                )
+            } else {
+                (
+                    symbols.get_grouping_separator_string().to_vec(),
+                    symbols.get_decimal_separator_string().to_vec(),
+                )
+            };
         let strict_separators = 0 != (parse_flags & ParsingUtils::PARSE_FLAG_STRICT_SEPARATORS);
-        let grouping_key = if strict_separators { Key::StrictAllSeparators } else { Key::AllSeparators };
+        let grouping_key = if strict_separators {
+            Key::StrictAllSeparators
+        } else {
+            Key::AllSeparators
+        };
 
         // Attempt to find separators in the static cache
 
         let grouping_uni_set = StaticUnicodeSets::get(grouping_key);
         let decimal_key = StaticUnicodeSets::choose_from2(
             &decimal_separator,
-            if strict_separators { Key::StrictComma } else { Key::Comma },
-            if strict_separators { Key::StrictPeriod } else { Key::Period },
+            if strict_separators {
+                Key::StrictComma
+            } else {
+                Key::Comma
+            },
+            if strict_separators {
+                Key::StrictPeriod
+            } else {
+                Key::Period
+            },
         );
         let decimal_uni_set = if let Some(decimal_key) = decimal_key {
             SetRef::Static(StaticUnicodeSets::get(decimal_key))
@@ -131,15 +150,17 @@ impl DecimalMatcher {
         };
 
         let cp_zero = symbols.get_code_point_zero();
-        let digit_strings = if cp_zero == -1 || !UCharacter::is_digit(cp_zero) || UCharacter::digit(cp_zero) != 0 {
-            // Uncommon case: okay to allocate.
-            Some(symbols.get_digit_strings_local().to_vec())
-        } else {
-            None
-        };
+        let digit_strings =
+            if cp_zero == -1 || !UCharacter::is_digit(cp_zero) || UCharacter::digit(cp_zero) != 0 {
+                // Uncommon case: okay to allocate.
+                Some(symbols.get_digit_strings_local().to_vec())
+            } else {
+                None
+            };
 
         Ok(DecimalMatcher {
-            require_grouping_match: 0 != (parse_flags & ParsingUtils::PARSE_FLAG_STRICT_GROUPING_SIZE),
+            require_grouping_match: 0
+                != (parse_flags & ParsingUtils::PARSE_FLAG_STRICT_GROUPING_SIZE),
             grouping_disabled: 0 != (parse_flags & ParsingUtils::PARSE_FLAG_GROUPING_DISABLED),
             integer_only: 0 != (parse_flags & ParsingUtils::PARSE_FLAG_INTEGER_ONLY),
             grouping1: i32::from(grouper.get_primary()),
@@ -165,7 +186,12 @@ impl DecimalMatcher {
     /// The errors of `UnicodeSet.contains` (never for code points of the
     /// input) and of `DecimalQuantity.adjustMagnitude` outside the exponent
     /// path (where an `ArithmeticException` is caught as an overflow).
-    pub fn match_exponent(&self, segment: &mut StringSegment, result: &mut ParsedNumber, exponent_sign: i32) -> Result<bool> {
+    pub fn match_exponent(
+        &self,
+        segment: &mut StringSegment,
+        result: &mut ParsedNumber,
+        exponent_sign: i32,
+    ) -> Result<bool> {
         if result.seen_number() && exponent_sign == 0 {
             // A number has already been consumed.
             return Ok(false);
@@ -296,7 +322,10 @@ impl DecimalMatcher {
             // 3) Attempt to match a decimal separator from the equivalence set.
             // if (we have not seen a decimal separator yet) { ... }
             // The !isGrouping is to confirm that we haven't yet matched the current character.
-            if !is_grouping && actual_decimal_string.is_none() && self.decimal_uni_set.get().contains(cp)? {
+            if !is_grouping
+                && actual_decimal_string.is_none()
+                && self.decimal_uni_set.get().contains(cp)?
+            {
                 is_decimal = true;
                 actual_decimal_string = UCharacter::to_string_cp(cp);
             }
@@ -326,8 +355,10 @@ impl DecimalMatcher {
             }
 
             // Validate intermediate grouping sizes.
-            let prev_valid_secondary = self.validate_group(prev_group_sep_type, prev_group_count, false);
-            let curr_valid_primary = self.validate_group(curr_group_sep_type, curr_group_count, true);
+            let prev_valid_secondary =
+                self.validate_group(prev_group_sep_type, prev_group_count, false);
+            let curr_valid_primary =
+                self.validate_group(curr_group_sep_type, curr_group_count, true);
             if !prev_valid_secondary || (is_decimal && !curr_valid_primary) {
                 // Invalid grouping sizes.
                 if is_grouping && curr_group_count == 0 {
@@ -338,7 +369,10 @@ impl DecimalMatcher {
                     digits_consumed = None;
                 }
                 break;
-            } else if self.require_grouping_match && curr_group_count == 0 && curr_group_sep_type == 1 {
+            } else if self.require_grouping_match
+                && curr_group_count == 0
+                && curr_group_sep_type == 1
+            {
                 break;
             } else {
                 // Grouping sizes OK so far.
@@ -361,7 +395,9 @@ impl DecimalMatcher {
             curr_group_sep_type = if is_grouping { 1 } else { 2 };
             curr_group_count = 0;
             if is_grouping {
-                let len = actual_grouping_string.as_ref().map_or(0, |s| s.len() as i32);
+                let len = actual_grouping_string
+                    .as_ref()
+                    .map_or(0, |s| s.len() as i32);
                 segment.adjust_offset(len);
             } else {
                 let len = actual_decimal_string.as_ref().map_or(0, |s| s.len() as i32);
@@ -384,8 +420,10 @@ impl DecimalMatcher {
         }
 
         // Validate final grouping sizes.
-        let mut prev_valid_secondary = self.validate_group(prev_group_sep_type, prev_group_count, false);
-        let mut curr_valid_primary = self.validate_group(curr_group_sep_type, curr_group_count, true);
+        let mut prev_valid_secondary =
+            self.validate_group(prev_group_sep_type, prev_group_count, false);
+        let mut curr_valid_primary =
+            self.validate_group(curr_group_sep_type, curr_group_count, true);
         if !self.require_grouping_match {
             // The cases we need to handle here are lone digits.
             // Examples: "1,1" "1,1," "1,1,1" "1,1,1," ",1" (all parse as 1)
@@ -442,7 +480,10 @@ impl DecimalMatcher {
                         .unwrap_or_else(|| panic!("java.lang.NullPointerException: quantity"));
                     // `adjustMagnitude` throws only ArithmeticException, which
                     // Java catches here.
-                    if quantity.adjust_magnitude(exponent_sign * exponent_int).is_err() {
+                    if quantity
+                        .adjust_magnitude(exponent_sign * exponent_int)
+                        .is_err()
+                    {
                         overflow = true;
                     }
                 } else {
@@ -522,7 +563,9 @@ impl NumberParseMatcher for DecimalMatcher {
                 return segment.starts_with_set(lead_set);
             }
         }
-        if segment.starts_with_set(self.separator_set.get()) || UCharacter::is_digit(segment.get_code_point()) {
+        if segment.starts_with_set(self.separator_set.get())
+            || UCharacter::is_digit(segment.get_code_point())
+        {
             return true;
         }
         let Some(digit_strings) = self.digit_strings.as_ref() else {

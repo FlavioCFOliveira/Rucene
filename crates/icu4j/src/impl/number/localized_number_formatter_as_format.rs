@@ -14,7 +14,9 @@ use crate::number::number_formatter::NumberFormatter;
 use crate::number::number_formatter_settings::NumberFormatterSettings;
 use crate::r#impl::formatted_string_builder::FormattedStringBuilder;
 use crate::r#impl::formatted_value_string_builder_impl::FormattedValueStringBuilderImpl;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 use crate::text::formatted_value::FormattedValue;
 use crate::util::u_locale::ULocale;
 
@@ -68,7 +70,10 @@ impl LocalizedNumberFormatterAsFormat {
     ///
     /// The `UnsupportedOperationException` of `toSkeleton`.
     pub fn write_replace(&self) -> Result<Proxy> {
-        let locale = self.locale.as_ref().ok_or_else(|| crate::jdk::null_pointer("locale"))?;
+        let locale = self
+            .locale
+            .as_ref()
+            .ok_or_else(|| crate::jdk::null_pointer("locale"))?;
         Ok(Proxy {
             language_tag: Some(locale.to_language_tag()),
             skeleton: Some(crate::jdk::to_rust_string(&self.formatter.to_skeleton()?)),
@@ -80,7 +85,12 @@ impl Format for LocalizedNumberFormatterAsFormat {
     /// Formats a Number using the wrapped LocalizedNumberFormatter. The
     /// provided `to_append_to` is appended to, and the `pos` is updated
     /// with the first field position.
-    fn format_object_to(&self, obj: &dyn Any, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_object_to(
+        &self,
+        obj: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         let number = match obj.downcast_ref::<JavaNumber>() {
             Some(n) => n,
             None => return Err(crate::jdk::illegal_argument_no_message()),
@@ -101,8 +111,14 @@ impl Format for LocalizedNumberFormatterAsFormat {
     }
 
     /// Not supported: throws `UnsupportedOperationException`.
-    fn parse_object_at(&self, _source: &[u16], _pos: &mut ParsePosition) -> Result<Option<ParsedObject>> {
-        Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"))
+    fn parse_object_at(
+        &self,
+        _source: &[u16],
+        _pos: &mut ParsePosition,
+    ) -> Result<Option<ParsedObject>> {
+        Err(crate::jdk::unchecked_no_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
     fn clone_format(&self) -> Box<dyn Format> {
@@ -116,12 +132,17 @@ impl Format for LocalizedNumberFormatterAsFormat {
     /// Formats a Number using the wrapped LocalizedNumberFormatter. The
     /// returned AttributedCharacterIterator contains the full field position
     /// information.
-    fn format_to_character_iterator(&self, obj: &dyn Any) -> Result<Box<dyn AttributedCharacterIterator>> {
+    fn format_to_character_iterator(
+        &self,
+        obj: &dyn Any,
+    ) -> Result<Box<dyn AttributedCharacterIterator>> {
         let number = match obj.downcast_ref::<JavaNumber>() {
             Some(n) => n,
             None => return Err(crate::jdk::illegal_argument_no_message()),
         };
-        self.formatter.format_number(number)?.to_character_iterator()
+        self.formatter
+            .format_number(number)?
+            .to_character_iterator()
     }
 }
 
@@ -180,8 +201,14 @@ impl Proxy {
     ///
     /// The errors of the skeleton parsing and of `ULocale.forLanguageTag`.
     pub fn read_resolve(&self) -> Result<LocalizedNumberFormatterAsFormat> {
-        let skeleton = self.skeleton.as_deref().ok_or_else(|| crate::jdk::null_pointer("skeleton"))?;
-        let language_tag = self.language_tag.as_deref().ok_or_else(|| crate::jdk::null_pointer("languageTag"))?;
+        let skeleton = self
+            .skeleton
+            .as_deref()
+            .ok_or_else(|| crate::jdk::null_pointer("skeleton"))?;
+        let language_tag = self
+            .language_tag
+            .as_deref()
+            .ok_or_else(|| crate::jdk::null_pointer("languageTag"))?;
         Ok(NumberFormatter::for_skeleton(&crate::jdk::units(skeleton))?
             .locale(&ULocale::for_language_tag(language_tag)?)
             .to_format())
@@ -208,7 +235,12 @@ fn write_utf(out: &mut DataOutputStream<'_>, s: Option<&str>) -> Result<()> {
     if bytes.len() > 65535 {
         return Err(LuceneError::unchecked(
             "java.io.UTFDataFormatException",
-            format!("encoded string ({}...{}) too long: {} bytes", truncate8(s, true), truncate8(s, false), bytes.len()),
+            format!(
+                "encoded string ({}...{}) too long: {} bytes",
+                truncate8(s, true),
+                truncate8(s, false),
+                bytes.len()
+            ),
         ));
     }
     out.write_short(bytes.len() as i32)?;
@@ -222,14 +254,21 @@ fn write_utf(out: &mut DataOutputStream<'_>, s: Option<&str>) -> Result<()> {
 /// too-long message.
 fn truncate8(s: &str, head: bool) -> String {
     let u: Vec<u16> = s.encode_utf16().collect();
-    let part = if head { &u[..u.len().min(8)] } else { &u[u.len().saturating_sub(8)..] };
+    let part = if head {
+        &u[..u.len().min(8)]
+    } else {
+        &u[u.len().saturating_sub(8)..]
+    };
     String::from_utf16_lossy(part)
 }
 
 fn read_u8(input: &mut dyn InputStream) -> Result<i32> {
     let b = input.read_byte().map_err(LuceneError::from)?;
     if b < 0 {
-        return Err(LuceneError::unchecked_with_message("java.io.EOFException", None));
+        return Err(LuceneError::unchecked_with_message(
+            "java.io.EOFException",
+            None,
+        ));
     }
     Ok(b)
 }
@@ -244,7 +283,10 @@ fn read_utf(input: &mut dyn InputStream) -> Result<String> {
     let mut chars: Vec<u16> = Vec::with_capacity(utflen);
     let mut count = 0;
     let malformed = |at: usize| {
-        LuceneError::unchecked("java.io.UTFDataFormatException", format!("malformed input around byte {at}"))
+        LuceneError::unchecked(
+            "java.io.UTFDataFormatException",
+            format!("malformed input around byte {at}"),
+        )
     };
     while count < utflen {
         let c = bytes[count] as u32;

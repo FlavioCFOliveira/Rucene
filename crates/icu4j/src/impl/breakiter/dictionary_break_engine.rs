@@ -67,8 +67,13 @@ impl PossibleWord {
         if start != self.offset {
             self.offset = start;
             let limit = self.lengths.len() as i32;
-            self.prefix =
-                dict.matches_no_values(f_iter, range_end - start, &mut self.lengths, &mut self.count, limit);
+            self.prefix = dict.matches_no_values(
+                f_iter,
+                range_end - start,
+                &mut self.lengths,
+                &mut self.count,
+                limit,
+            );
             // Dictionary leaves text after longest prefix, not longest word. Back up.
             if self.count[0] <= 0 {
                 set_index(f_iter, start);
@@ -244,7 +249,9 @@ impl Default for DictionaryBreakEngineBase {
 impl DictionaryBreakEngineBase {
     /// `DictionaryBreakEngine()`: `fSet = new UnicodeSet()`.
     pub fn new() -> Self {
-        Self { f_set: UnicodeSet::new() }
+        Self {
+            f_set: UnicodeSet::new(),
+        }
     }
 
     /// `setCharacters(UnicodeSet set)`: an unfrozen, compacted copy of `set`.
@@ -332,8 +339,13 @@ pub fn dictionary_find_breaks<E: DictionaryBreakEngine + ?Sized>(
     let range_end = current;
 
     // if (break type is not one we handle) return 0;
-    let result =
-        engine.divide_up_dictionary_range(text, range_start, range_end, found_breaks, is_phrase_breaking);
+    let result = engine.divide_up_dictionary_range(
+        text,
+        range_start,
+        range_end,
+        found_breaks,
+        is_phrase_breaking,
+    );
     set_index(text, current);
 
     result

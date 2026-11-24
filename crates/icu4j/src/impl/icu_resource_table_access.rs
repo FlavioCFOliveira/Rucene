@@ -36,7 +36,13 @@ impl ICUResourceTableAccess {
     ) -> Result<Option<String>> {
         let bundle = UResourceBundle::get_bundle_instance(Some(path), &locale.get_base_name())?;
         let bundle = bundle.as_icu()?.clone();
-        Ok(Self::get_table_string_of(bundle, table_name, None, item_name, default_value))
+        Ok(Self::get_table_string_of(
+            bundle,
+            table_name,
+            None,
+            item_name,
+            default_value,
+        ))
     }
 
     /// `getTableString(ICUResourceBundle bundle, String tableName, String
@@ -62,7 +68,9 @@ impl ICUResourceTableAccess {
                     stable = table.find_with_fallback(sub)?;
                 }
                 if let Some(stable) = stable {
-                    result = stable.find_string_with_fallback(item)?.map(|s| String::from_utf16_lossy(&s));
+                    result = stable
+                        .find_string_with_fallback(item)?
+                        .map(|s| String::from_utf16_lossy(&s));
                     if result.is_some() {
                         break; // possible real exception
                     }

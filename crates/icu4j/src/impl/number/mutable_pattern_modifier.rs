@@ -71,22 +71,29 @@ struct State {
 
 impl State {
     fn pattern_info(&self) -> &Arc<dyn AffixPatternProvider> {
-        self.pattern_info.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: patternInfo"))
+        self.pattern_info
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: patternInfo"))
     }
 
     fn symbols(&self) -> &Arc<DecimalFormatSymbols> {
-        self.symbols.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: symbols"))
+        self.symbols
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: symbols"))
     }
 
     fn currency(&self) -> &Currency {
-        self.currency.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: currency"))
+        self.currency
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: currency"))
     }
 
     /// `needsPlurals()`.
     fn needs_plurals(&self) -> Result<bool> {
         // Plural forms are only needed if the pattern contains the
         // currency-triple pattern ("¤¤¤").
-        self.pattern_info().contains_symbol_type(affix_utils::TYPE_CURRENCY_TRIPLE)
+        self.pattern_info()
+            .contains_symbol_type(affix_utils::TYPE_CURRENCY_TRIPLE)
     }
 
     /// `setNumberProperties(Signum, StandardPlural)`.
@@ -101,8 +108,10 @@ impl State {
     fn prepare_affix(&mut self, is_prefix: bool) -> Result<()> {
         let mut current_affix = self.current_affix.take().unwrap_or_default();
         let sign_type = PatternStringUtils::resolve_sign_display(
-            self.sign_display.unwrap_or_else(|| panic!("java.lang.NullPointerException: signDisplay")),
-            self.signum.unwrap_or_else(|| panic!("java.lang.NullPointerException: signum")),
+            self.sign_display
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException: signDisplay")),
+            self.signum
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException: signum")),
         );
         let r = PatternStringUtils::pattern_info_to_string_builder(
             self.pattern_info().as_ref(),
@@ -148,9 +157,17 @@ impl State {
         self.insert_suffix(b, 0)?;
         let has_body = self.pattern_info().has_body();
         if self.pattern_info().has_currency_sign() {
-            Ok(Arc::new(CurrencySpacingEnabledModifier::new(a, b, !has_body, is_strong, self.symbols())?))
+            Ok(Arc::new(CurrencySpacingEnabledModifier::new(
+                a,
+                b,
+                !has_body,
+                is_strong,
+                self.symbols(),
+            )?))
         } else {
-            Ok(Arc::new(ConstantMultiFieldModifier::new(a, b, !has_body, is_strong)))
+            Ok(Arc::new(ConstantMultiFieldModifier::new(
+                a, b, !has_body, is_strong,
+            )))
         }
     }
 
@@ -169,8 +186,12 @@ impl State {
                     Some(UnitWidth::Variant) => currency::VARIANT_SYMBOL_NAME,
                     _ => panic!("java.lang.AssertionError"),
                 };
-                let name = self.currency().get_name(&self.symbols().get_u_locale(), selector, None)?;
-                Ok(units(&name.unwrap_or_else(|| panic!("java.lang.NullPointerException"))))
+                let name =
+                    self.currency()
+                        .get_name(&self.symbols().get_u_locale(), selector, None)?;
+                Ok(units(&name.unwrap_or_else(|| {
+                    panic!("java.lang.NullPointerException")
+                })))
             }
         }
     }
@@ -184,7 +205,9 @@ impl SymbolProvider for State {
         Ok(match type_ {
             affix_utils::TYPE_MINUS_SIGN => symbols.get_minus_sign_string().to_vec(),
             affix_utils::TYPE_PLUS_SIGN => symbols.get_plus_sign_string().to_vec(),
-            affix_utils::TYPE_APPROXIMATELY_SIGN => symbols.get_approximately_sign_string().to_vec(),
+            affix_utils::TYPE_APPROXIMATELY_SIGN => {
+                symbols.get_approximately_sign_string().to_vec()
+            }
             affix_utils::TYPE_PERCENT => symbols.get_percent_string().to_vec(),
             affix_utils::TYPE_PERMILLE => symbols.get_per_mill_string().to_vec(),
             affix_utils::TYPE_CURRENCY_SINGLE => self.get_currency_symbol_for_unit_width()?,
@@ -195,7 +218,9 @@ impl SymbolProvider for State {
                 // LongNameHandler. This code path is used by DecimalFormat
                 // via CurrencyPluralInfo.
                 debug_assert!(self.plural.is_some());
-                let plural = self.plural.unwrap_or_else(|| panic!("java.lang.NullPointerException: plural"));
+                let plural = self
+                    .plural
+                    .unwrap_or_else(|| panic!("java.lang.NullPointerException: plural"));
                 let name = self.currency().get_name_plural(
                     &symbols.get_u_locale(),
                     currency::PLURAL_LONG_NAME,
@@ -206,7 +231,11 @@ impl SymbolProvider for State {
             }
             affix_utils::TYPE_CURRENCY_QUAD => units("\u{FFFD}"),
             affix_utils::TYPE_CURRENCY_QUINT => {
-                let name = self.currency().get_name(&symbols.get_u_locale(), currency::NARROW_SYMBOL_NAME, None)?;
+                let name = self.currency().get_name(
+                    &symbols.get_u_locale(),
+                    currency::NARROW_SYMBOL_NAME,
+                    None,
+                )?;
                 units(&name.unwrap_or_else(|| panic!("java.lang.NullPointerException")))
             }
             _ => panic!("java.lang.AssertionError"),
@@ -270,7 +299,11 @@ impl MutablePatternModifier {
     /// obtained from `PatternStringParser.parseToPatternInfo`, but any
     /// implementation of `AffixPatternProvider` is accepted. Equivalent to
     /// `setPatternInfo(AffixPatternProvider, NumberFormat.Field)`.
-    pub fn set_pattern_info(&self, pattern_info: Arc<dyn AffixPatternProvider>, field: Option<FieldRef>) {
+    pub fn set_pattern_info(
+        &self,
+        pattern_info: Arc<dyn AffixPatternProvider>,
+        field: Option<FieldRef>,
+    ) {
         let mut s = self.lock();
         s.pattern_info = Some(pattern_info);
         s.field = field;
@@ -279,7 +312,12 @@ impl MutablePatternModifier {
     /// Sets attributes that imply changes to the literal interpretation of
     /// the pattern string affixes. Equivalent to
     /// `setPatternAttributes(SignDisplay, boolean, boolean)`.
-    pub fn set_pattern_attributes(&self, sign_display: SignDisplay, per_mille: bool, approximately: bool) {
+    pub fn set_pattern_attributes(
+        &self,
+        sign_display: SignDisplay,
+        per_mille: bool,
+        approximately: bool,
+    ) {
         let mut s = self.lock();
         s.sign_display = Some(sign_display);
         s.per_mille_replaces_percent = per_mille;
@@ -338,13 +376,29 @@ impl MutablePatternModifier {
             let mut pm = AdoptingModifierStore::new();
             for plural in StandardPlural::VALUES {
                 s.set_number_properties(Signum::Pos, Some(plural));
-                pm.set_modifier(Signum::Pos, plural, Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?));
+                pm.set_modifier(
+                    Signum::Pos,
+                    plural,
+                    Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?),
+                );
                 s.set_number_properties(Signum::PosZero, Some(plural));
-                pm.set_modifier(Signum::PosZero, plural, Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?));
+                pm.set_modifier(
+                    Signum::PosZero,
+                    plural,
+                    Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?),
+                );
                 s.set_number_properties(Signum::NegZero, Some(plural));
-                pm.set_modifier(Signum::NegZero, plural, Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?));
+                pm.set_modifier(
+                    Signum::NegZero,
+                    plural,
+                    Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?),
+                );
                 s.set_number_properties(Signum::Neg, Some(plural));
-                pm.set_modifier(Signum::Neg, plural, Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?));
+                pm.set_modifier(
+                    Signum::Neg,
+                    plural,
+                    Some(s.create_constant_modifier(&mut a, &mut b, self.is_strong)?),
+                );
             }
             pm.freeze();
             Ok(ImmutablePatternModifier::new(pm, s.rules.clone()))
@@ -358,16 +412,26 @@ impl MutablePatternModifier {
             let neg_zero = s.create_constant_modifier(&mut a, &mut b, self.is_strong)?;
             s.set_number_properties(Signum::Neg, None);
             let negative = s.create_constant_modifier(&mut a, &mut b, self.is_strong)?;
-            let pm = AdoptingModifierStore::with_signs(Some(positive), Some(pos_zero), Some(neg_zero), Some(negative));
+            let pm = AdoptingModifierStore::with_signs(
+                Some(positive),
+                Some(pos_zero),
+                Some(neg_zero),
+                Some(negative),
+            );
             Ok(ImmutablePatternModifier::new(pm, None))
         }
     }
 
     /// Equivalent to `addToChain(MicroPropsGenerator)`: links the parent and
     /// answers this object.
-    pub fn add_to_chain(&self, parent: Arc<dyn MicroPropsGenerator>) -> Arc<dyn MicroPropsGenerator> {
+    pub fn add_to_chain(
+        &self,
+        parent: Arc<dyn MicroPropsGenerator>,
+    ) -> Arc<dyn MicroPropsGenerator> {
         self.lock().parent = Some(parent);
-        self.self_ref.upgrade().expect("the modifier is alive while it is used")
+        self.self_ref
+            .upgrade()
+            .expect("the modifier is alive while it is used")
     }
 
     /// Equivalent to `getSymbol(int)` (the `SymbolProvider` method).
@@ -391,7 +455,11 @@ impl MutablePatternModifier {
 
 impl MicroPropsGenerator for MutablePatternModifier {
     fn process_quantity(&self, fq: &mut dyn DecimalQuantity) -> Result<MicroProps> {
-        let parent = self.lock().parent.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
+        let parent = self
+            .lock()
+            .parent
+            .clone()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
         let mut micros = parent.process_quantity(fq)?;
         if let Some(rounder) = &micros.rounder {
             rounder.apply(fq)?;
@@ -402,20 +470,32 @@ impl MicroPropsGenerator for MutablePatternModifier {
         {
             let mut s = self.lock();
             if s.needs_plurals()? {
-                let plural_form = RoundingUtils::get_plural_safe(micros.rounder.as_ref(), s.rules.as_deref(), fq)?;
+                let plural_form = RoundingUtils::get_plural_safe(
+                    micros.rounder.as_ref(),
+                    s.rules.as_deref(),
+                    fq,
+                )?;
                 s.set_number_properties(fq.signum(), Some(plural_form));
             } else {
                 s.set_number_properties(fq.signum(), None);
             }
         }
-        let this: Arc<dyn Modifier> = self.self_ref.upgrade().expect("the modifier is alive while it runs");
+        let this: Arc<dyn Modifier> = self
+            .self_ref
+            .upgrade()
+            .expect("the modifier is alive while it runs");
         micros.mod_middle = Some(this);
         Ok(micros)
     }
 }
 
 impl Modifier for MutablePatternModifier {
-    fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32> {
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        left_index: i32,
+        right_index: i32,
+    ) -> Result<i32> {
         let mut s = self.lock();
         let prefix_len = s.insert_prefix(output, left_index)?;
         let suffix_len = s.insert_suffix(output, right_index + prefix_len)?;
@@ -423,7 +503,14 @@ impl Modifier for MutablePatternModifier {
         // overwrite the value.
         let mut overwrite_len = 0;
         if !s.pattern_info().has_body() {
-            overwrite_len = output.splice(left_index + prefix_len, right_index + prefix_len, &[], 0, 0, None);
+            overwrite_len = output.splice(
+                left_index + prefix_len,
+                right_index + prefix_len,
+                &[],
+                0,
+                0,
+                None,
+            );
         }
         CurrencySpacingEnabledModifier::apply_currency_spacing(
             output,
@@ -499,12 +586,19 @@ pub struct ImmutablePatternModifier {
 impl ImmutablePatternModifier {
     /// `ImmutablePatternModifier(AdoptingModifierStore, PluralRules)`.
     fn new(pm: AdoptingModifierStore, rules: Option<Arc<PluralRules>>) -> Self {
-        ImmutablePatternModifier { pm, rules, parent: None }
+        ImmutablePatternModifier {
+            pm,
+            rules,
+            parent: None,
+        }
     }
 
     /// Equivalent to `addToChain(MicroPropsGenerator)`: links the parent and
     /// answers this object.
-    pub fn add_to_chain(mut self, parent: Arc<dyn MicroPropsGenerator>) -> Arc<dyn MicroPropsGenerator> {
+    pub fn add_to_chain(
+        mut self,
+        parent: Arc<dyn MicroPropsGenerator>,
+    ) -> Arc<dyn MicroPropsGenerator> {
         self.parent = Some(parent);
         Arc::new(self)
     }
@@ -514,13 +608,18 @@ impl ImmutablePatternModifier {
     /// # Errors
     ///
     /// The `ArithmeticException` of the plural rounding.
-    pub fn apply_to_micros(&self, micros: &mut MicroProps, quantity: &dyn DecimalQuantity) -> Result<()> {
+    pub fn apply_to_micros(
+        &self,
+        micros: &mut MicroProps,
+        quantity: &dyn DecimalQuantity,
+    ) -> Result<()> {
         match &self.rules {
             None => {
                 micros.mod_middle = self.pm.get_modifier_without_plural(quantity.signum());
             }
             Some(rules) => {
-                let plural_form = RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(rules), quantity)?;
+                let plural_form =
+                    RoundingUtils::get_plural_safe(micros.rounder.as_ref(), Some(rules), quantity)?;
                 micros.mod_middle = self.pm.get_modifier(quantity.signum(), plural_form);
             }
         }
@@ -530,7 +629,10 @@ impl ImmutablePatternModifier {
 
 impl MicroPropsGenerator for ImmutablePatternModifier {
     fn process_quantity(&self, quantity: &mut dyn DecimalQuantity) -> Result<MicroProps> {
-        let parent = self.parent.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
+        let parent = self
+            .parent
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: parent"));
         let mut micros = parent.process_quantity(quantity)?;
         if let Some(rounder) = &micros.rounder {
             rounder.apply(quantity)?;

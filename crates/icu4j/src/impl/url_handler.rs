@@ -209,7 +209,13 @@ impl URLHandler {
                 .unwrap_or_default();
             if f.is_dir() {
                 if recurse {
-                    Self::process(v, recurse, strip, &format!("{path}{name}/"), &Self::list_files(f));
+                    Self::process(
+                        v,
+                        recurse,
+                        strip,
+                        &format!("{path}{name}/"),
+                        &Self::list_files(f),
+                    );
                 }
             } else if strip {
                 v.visit(&name);

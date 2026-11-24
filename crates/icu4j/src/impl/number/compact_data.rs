@@ -96,7 +96,8 @@ impl CompactData {
         compact_type: CompactType,
     ) -> Result<()> {
         debug_assert!(self.is_empty);
-        let rb = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
+        let rb =
+            UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
         let rb = rb.as_icu()?.clone();
 
         let ns_is_latn = ns_name == "latn";
@@ -108,15 +109,29 @@ impl CompactData {
         rb.get_all_items_with_fallback_no_fail(&resource_key, &mut CompactDataSink { data: self })?;
         if self.is_empty && !ns_is_latn {
             get_resource_bundle_key("latn", compact_style, compact_type, &mut resource_key);
-            rb.get_all_items_with_fallback_no_fail(&resource_key, &mut CompactDataSink { data: self })?;
+            rb.get_all_items_with_fallback_no_fail(
+                &resource_key,
+                &mut CompactDataSink { data: self },
+            )?;
         }
         if self.is_empty && !compact_is_short {
-            get_resource_bundle_key(ns_name, CompactStyle::Short, compact_type, &mut resource_key);
-            rb.get_all_items_with_fallback_no_fail(&resource_key, &mut CompactDataSink { data: self })?;
+            get_resource_bundle_key(
+                ns_name,
+                CompactStyle::Short,
+                compact_type,
+                &mut resource_key,
+            );
+            rb.get_all_items_with_fallback_no_fail(
+                &resource_key,
+                &mut CompactDataSink { data: self },
+            )?;
         }
         if self.is_empty && !ns_is_latn && !compact_is_short {
             get_resource_bundle_key("latn", CompactStyle::Short, compact_type, &mut resource_key);
-            rb.get_all_items_with_fallback_no_fail(&resource_key, &mut CompactDataSink { data: self })?;
+            rb.get_all_items_with_fallback_no_fail(
+                &resource_key,
+                &mut CompactDataSink { data: self },
+            )?;
         }
 
         // The last fallback should be guaranteed to return data.
@@ -138,16 +153,21 @@ impl CompactData {
     ///
     /// `NullPointerException` for `None`; the `IllegalArgumentException` of
     /// `StandardPlural.fromString` for an unknown plural keyword.
-    pub fn populate_custom(&mut self, powers_to_plurals_to_patterns: Option<&CompactCustomData>) -> Result<()> {
+    pub fn populate_custom(
+        &mut self,
+        powers_to_plurals_to_patterns: Option<&CompactCustomData>,
+    ) -> Result<()> {
         debug_assert!(self.is_empty);
-        let map = powers_to_plurals_to_patterns.ok_or_else(|| crate::jdk::null_pointer("compactCustomData"))?;
+        let map = powers_to_plurals_to_patterns
+            .ok_or_else(|| crate::jdk::null_pointer("compactCustomData"))?;
         for (key, plurals) in map.iter() {
             let magnitude = (key.encode_utf16().count() as i32 - 1) as i8;
             for (plural_string, pattern) in plurals.iter() {
                 let plural = StandardPlural::from_string(plural_string)?;
                 let pattern_string = units(pattern);
                 let num_zeros = count_zeros(&pattern_string);
-                self.patterns[get_index(magnitude as i32, plural)] = Some(PatternSlot::Pattern(pattern_string));
+                self.patterns[get_index(magnitude as i32, plural)] =
+                    Some(PatternSlot::Pattern(pattern_string));
                 if num_zeros > 0 {
                     // Save the multiplier only if there is at least one
                     // zero.
@@ -164,7 +184,12 @@ impl CompactData {
 
     /// Equivalent to `getPattern(int, PluralRules, DecimalQuantity)`: the
     /// pattern for the magnitude, `None` for Java's `null`.
-    pub fn get_pattern(&self, magnitude: i32, rules: &PluralRules, dq: &dyn DecimalQuantity) -> Option<Vec<u16>> {
+    pub fn get_pattern(
+        &self,
+        magnitude: i32,
+        rules: &PluralRules,
+        dq: &dyn DecimalQuantity,
+    ) -> Option<Vec<u16>> {
         if magnitude < 0 {
             return None;
         }
@@ -227,12 +252,25 @@ impl MultiplierProducer for CompactData {
 }
 
 /// `getResourceBundleKey(String, CompactStyle, CompactType, StringBuilder)`.
-fn get_resource_bundle_key(ns_name: &str, compact_style: CompactStyle, compact_type: CompactType, sb: &mut String) {
+fn get_resource_bundle_key(
+    ns_name: &str,
+    compact_style: CompactStyle,
+    compact_type: CompactType,
+    sb: &mut String,
+) {
     sb.clear();
     sb.push_str("NumberElements/");
     sb.push_str(ns_name);
-    sb.push_str(if compact_style == CompactStyle::Short { "/patternsShort" } else { "/patternsLong" });
-    sb.push_str(if compact_type == CompactType::Decimal { "/decimalFormat" } else { "/currencyFormat" });
+    sb.push_str(if compact_style == CompactStyle::Short {
+        "/patternsShort"
+    } else {
+        "/patternsLong"
+    });
+    sb.push_str(if compact_type == CompactType::Decimal {
+        "/decimalFormat"
+    } else {
+        "/currencyFormat"
+    });
 }
 
 /// `getIndex(int, StandardPlural)`.

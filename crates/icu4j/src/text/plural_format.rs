@@ -135,7 +135,13 @@ impl PluralFormat {
     ///
     /// The errors of the plural rules and of the number format.
     pub fn new() -> Result<Self> {
-        Self::create(None, PluralType::Cardinal, ULocale::get_default_category(Category::Format), None, None)
+        Self::create(
+            None,
+            PluralType::Cardinal,
+            ULocale::get_default_category(Category::Format),
+            None,
+            None,
+        )
     }
 
     /// Creates a new cardinal-number `PluralFormat` for a given locale.
@@ -165,7 +171,13 @@ impl PluralFormat {
     ///
     /// The errors of the number format.
     pub fn with_rules(rules: Arc<PluralRules>) -> Result<Self> {
-        Self::create(Some(rules), PluralType::Cardinal, ULocale::get_default_category(Category::Format), None, None)
+        Self::create(
+            Some(rules),
+            PluralType::Cardinal,
+            ULocale::get_default_category(Category::Format),
+            None,
+            None,
+        )
     }
 
     /// Equivalent to `PluralFormat(ULocale ulocale, PluralRules rules)`.
@@ -174,7 +186,13 @@ impl PluralFormat {
     ///
     /// As [`with_rules`](Self::with_rules).
     pub fn for_ulocale_rules(ulocale: &ULocale, rules: Arc<PluralRules>) -> Result<Self> {
-        Self::create(Some(rules), PluralType::Cardinal, ulocale.clone(), None, None)
+        Self::create(
+            Some(rules),
+            PluralType::Cardinal,
+            ulocale.clone(),
+            None,
+            None,
+        )
     }
 
     /// Equivalent to `PluralFormat(Locale locale, PluralRules rules)`.
@@ -214,7 +232,13 @@ impl PluralFormat {
     /// As [`new`](Self::new); the `IllegalArgumentException` of an invalid
     /// pattern.
     pub fn from_pattern(pattern: &[u16]) -> Result<Self> {
-        Self::create(None, PluralType::Cardinal, ULocale::get_default_category(Category::Format), None, Some(pattern))
+        Self::create(
+            None,
+            PluralType::Cardinal,
+            ULocale::get_default_category(Category::Format),
+            None,
+            Some(pattern),
+        )
     }
 
     /// Equivalent to `PluralFormat(ULocale ulocale, String pattern)`.
@@ -223,7 +247,13 @@ impl PluralFormat {
     ///
     /// As [`from_pattern`](Self::from_pattern).
     pub fn for_ulocale_pattern(ulocale: &ULocale, pattern: &[u16]) -> Result<Self> {
-        Self::create(None, PluralType::Cardinal, ulocale.clone(), None, Some(pattern))
+        Self::create(
+            None,
+            PluralType::Cardinal,
+            ulocale.clone(),
+            None,
+            Some(pattern),
+        )
     }
 
     /// Equivalent to `PluralFormat(PluralRules rules, String pattern)`.
@@ -247,8 +277,18 @@ impl PluralFormat {
     /// # Errors
     ///
     /// As [`from_pattern`](Self::from_pattern).
-    pub fn for_ulocale_rules_pattern(ulocale: &ULocale, rules: Arc<PluralRules>, pattern: &[u16]) -> Result<Self> {
-        Self::create(Some(rules), PluralType::Cardinal, ulocale.clone(), None, Some(pattern))
+    pub fn for_ulocale_rules_pattern(
+        ulocale: &ULocale,
+        rules: Arc<PluralRules>,
+        pattern: &[u16],
+    ) -> Result<Self> {
+        Self::create(
+            Some(rules),
+            PluralType::Cardinal,
+            ulocale.clone(),
+            None,
+            Some(pattern),
+        )
     }
 
     /// Equivalent to `PluralFormat(ULocale ulocale, PluralType type, String
@@ -257,7 +297,11 @@ impl PluralFormat {
     /// # Errors
     ///
     /// As [`from_pattern`](Self::from_pattern).
-    pub fn for_ulocale_type_pattern(ulocale: &ULocale, plural_type: PluralType, pattern: &[u16]) -> Result<Self> {
+    pub fn for_ulocale_type_pattern(
+        ulocale: &ULocale,
+        plural_type: PluralType,
+        pattern: &[u16],
+    ) -> Result<Self> {
         Self::create(None, plural_type, ulocale.clone(), None, Some(pattern))
     }
 
@@ -275,7 +319,13 @@ impl PluralFormat {
         pattern: &[u16],
         number_format: Option<Arc<dyn NumberFormat>>,
     ) -> Result<Self> {
-        Self::create(None, plural_type, ulocale.clone(), number_format, Some(pattern))
+        Self::create(
+            None,
+            plural_type,
+            ulocale.clone(),
+            number_format,
+            Some(pattern),
+        )
     }
 
     /// Initializes the `PluralRules` object. Postcondition: `ulocale` is
@@ -299,7 +349,9 @@ impl PluralFormat {
         self.ulocale = Some(locale);
         self.reset_pattern()?;
         self.number_format = Some(match number_format {
-            None => Arc::from(number_format::get_instance_ulocale(self.ulocale.as_ref().expect("set above"))?),
+            None => Arc::from(number_format::get_instance_ulocale(
+                self.ulocale.as_ref().expect("set above"),
+            )?),
             Some(nf) => nf,
         });
         Ok(())
@@ -326,7 +378,10 @@ impl PluralFormat {
     /// then reset).
     pub fn apply_pattern(&mut self, pattern: &[u16]) -> Result<()> {
         self.pattern = Some(pattern.to_vec());
-        let msg_pattern = self.msg_pattern.get_or_insert_with(|| Arc::new(Mutex::new(MessagePattern::new()))).clone();
+        let msg_pattern = self
+            .msg_pattern
+            .get_or_insert_with(|| Arc::new(Mutex::new(MessagePattern::new())))
+            .clone();
         let parsed = {
             let mut m = lock(&msg_pattern);
             match m.parse_plural_style(pattern) {
@@ -440,7 +495,10 @@ impl PluralFormat {
                         keyword = Some(k);
                     }
                     if !have_keyword_match
-                        && pattern.part_substring_matches(&part, &units(keyword.as_deref().expect("set above")))
+                        && pattern.part_substring_matches(
+                            &part,
+                            &units(keyword.as_deref().expect("set above")),
+                        )
                     {
                         // keyword matches
                         msg_start = part_index;
@@ -500,7 +558,8 @@ impl PluralFormat {
             };
             number_string = FormattedValue::to_java_string(&result);
             let dec: &dyn IFixedDecimal = result.get_fixed_decimal();
-            part_index = Self::find_sub_message(&msg_pattern, 0, &plural_rules_wrapper, dec, number);
+            part_index =
+                Self::find_sub_message(&msg_pattern, 0, &plural_rules_wrapper, dec, number);
         } else {
             if self.offset == 0.0 {
                 number_string = format_number_object(number_format.as_ref(), number_object)?;
@@ -508,7 +567,13 @@ impl PluralFormat {
                 number_string = number_format.format_f64(number_minus_offset)?;
             }
             let dec = FixedDecimal::from_double(number_minus_offset);
-            part_index = Self::find_sub_message(&msg_pattern, 0, &plural_rules_wrapper, &dec as &dyn IFixedDecimal, number);
+            part_index = Self::find_sub_message(
+                &msg_pattern,
+                0,
+                &plural_rules_wrapper,
+                &dec as &dyn IFixedDecimal,
+                number,
+            );
         }
         let pattern = self.pattern.as_deref().ok_or_else(npe)?;
         // Replace syntactic # signs in the top level of this sub-message
@@ -556,7 +621,11 @@ impl PluralFormat {
     /// # Errors
     ///
     /// Always `UnsupportedOperationException`.
-    pub fn parse(&self, _text: &[u16], _parse_position: &mut ParsePosition) -> Result<Option<JavaNumber>> {
+    pub fn parse(
+        &self,
+        _text: &[u16],
+        _parse_position: &mut ParsePosition,
+    ) -> Result<Option<JavaNumber>> {
         // You get number ranges from this. You can't get an exact number.
         Err(unsupported_operation())
     }
@@ -587,7 +656,10 @@ impl PluralFormat {
             pos.set_end_index(-1);
             return None;
         }
-        let pattern = self.pattern.as_deref().unwrap_or_else(|| panic!("{}", npe()));
+        let pattern = self
+            .pattern
+            .as_deref()
+            .unwrap_or_else(|| panic!("{}", npe()));
         let mut part_index = 0;
         let mut curr_match_index;
         let count = msg_pattern.count_parts();
@@ -643,16 +715,22 @@ impl PluralFormat {
             }
             if curr_match_index >= 0
                 && curr_match_index >= matched_index
-                && matched_word.as_ref().is_none_or(|w| curr_arg.len() > w.len())
+                && matched_word
+                    .as_ref()
+                    .is_none_or(|w| curr_arg.len() > w.len())
             {
                 matched_index = curr_match_index;
                 matched_word = Some(curr_arg.to_vec());
-                keyword = Some(substring(pattern, part_start.get_limit(), part_limit.get_index()).to_vec());
+                keyword = Some(
+                    substring(pattern, part_start.get_limit(), part_limit.get_index()).to_vec(),
+                );
             }
         }
         if let Some(keyword) = keyword {
             pos.set_begin_index(matched_index);
-            pos.set_end_index(matched_index + matched_word.expect("set with the keyword").len() as i32);
+            pos.set_end_index(
+                matched_index + matched_word.expect("set with the keyword").len() as i32,
+            );
             return Some(keyword);
         }
 
@@ -728,9 +806,9 @@ impl PluralFormat {
         let parsed_values = self.parsed_values.as_ref().ok_or_else(npe)?;
         // AbstractMap.hashCode(): the sum of the entries' hash codes
         // (key.hashCode() ^ value.hashCode()).
-        let map_hash = parsed_values
-            .iter()
-            .fold(0i32, |h, (k, v)| h.wrapping_add(java_string_hash(k) ^ java_string_hash(v)));
+        let map_hash = parsed_values.iter().fold(0i32, |h, (k, v)| {
+            h.wrapping_add(java_string_hash(k) ^ java_string_hash(v))
+        });
         Ok(rules ^ map_hash)
     }
 
@@ -742,9 +820,19 @@ impl PluralFormat {
     /// The errors of the number format's `toString()`.
     pub fn to_java_string(&self) -> Result<Vec<u16>> {
         let mut buf = units("locale=");
-        buf.extend_from_slice(&units(&self.ulocale.as_ref().map_or_else(|| "null".to_string(), |l| l.to_string())));
+        buf.extend_from_slice(&units(
+            &self
+                .ulocale
+                .as_ref()
+                .map_or_else(|| "null".to_string(), |l| l.to_string()),
+        ));
         buf.extend_from_slice(&units(", rules='"));
-        buf.extend_from_slice(&units(&self.plural_rules.as_ref().map_or_else(|| "null".to_string(), |r| r.to_string())));
+        buf.extend_from_slice(&units(
+            &self
+                .plural_rules
+                .as_ref()
+                .map_or_else(|| "null".to_string(), |r| r.to_string()),
+        ));
         buf.extend_from_slice(&units("'"));
         buf.extend_from_slice(&units(", pattern='"));
         match &self.pattern {
@@ -791,7 +879,8 @@ fn unsupported_operation() -> LuceneError {
 
 /// `String.hashCode()` of a Rust string (over its UTF-16 units).
 fn java_string_hash(s: &str) -> i32 {
-    s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
+    s.encode_utf16()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
 }
 
 /// `numberFormat.format(Object)` of a boxed number: Java's
@@ -820,7 +909,11 @@ fn number_format_to_java_string(number_format: &dyn NumberFormat) -> Result<Vec<
     if let Some(rbnf) = any.downcast_ref::<RuleBasedNumberFormat>() {
         return rbnf.to_java_string();
     }
-    Ok(units(&format!("{}@{:x}", std::any::type_name_of_val(any), number_format.hash_code())))
+    Ok(units(&format!(
+        "{}@{:x}",
+        std::any::type_name_of_val(any),
+        number_format.hash_code()
+    )))
 }
 
 /// The `java.lang.Number` a formatted object stands for, `None` when it is
@@ -841,7 +934,8 @@ fn as_java_number(obj: &dyn Any) -> Option<JavaNumber> {
     } else if let Some(b) = obj.downcast_ref::<BigDecimal>() {
         Some(JavaNumber::BigDecimal(b.clone()))
     } else {
-        obj.downcast_ref::<IcuBigDecimal>().map(|b| JavaNumber::IcuBigDecimal(b.clone()))
+        obj.downcast_ref::<IcuBigDecimal>()
+            .map(|b| JavaNumber::IcuBigDecimal(b.clone()))
     }
 }
 
@@ -868,20 +962,33 @@ impl Format for PluralFormat {
     ///
     /// `IllegalArgumentException("'<number>' is not a Number")`; the errors
     /// of the number format.
-    fn format_object_to(&self, number: &dyn Any, to_append_to: &mut Vec<u16>, _pos: &mut FieldPosition) -> Result<()> {
+    fn format_object_to(
+        &self,
+        number: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        _pos: &mut FieldPosition,
+    ) -> Result<()> {
         let number_object = match as_java_number(number) {
             Some(n) => n,
             None => {
-                return Err(LuceneError::illegal_argument(format!("'{}' is not a Number", object_to_string(number))));
+                return Err(LuceneError::illegal_argument(format!(
+                    "'{}' is not a Number",
+                    object_to_string(number)
+                )));
             }
         };
-        to_append_to.extend_from_slice(&self.format_number(&number_object, number_object.double_value())?);
+        to_append_to
+            .extend_from_slice(&self.format_number(&number_object, number_object.double_value())?);
         Ok(())
     }
 
     /// This method is not yet supported by `PluralFormat`. Equivalent to
     /// `parseObject(String source, ParsePosition pos)`.
-    fn parse_object_at(&self, _source: &[u16], _pos: &mut ParsePosition) -> Result<Option<ParsedObject>> {
+    fn parse_object_at(
+        &self,
+        _source: &[u16],
+        _pos: &mut ParsePosition,
+    ) -> Result<Option<ParsedObject>> {
         Err(unsupported_operation())
     }
 

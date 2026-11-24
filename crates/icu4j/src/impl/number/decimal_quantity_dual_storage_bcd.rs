@@ -69,9 +69,18 @@ impl JavaNumber {
             (JavaNumber::BigInteger(a), JavaNumber::BigInteger(b)) => a.java_equals(b),
             (JavaNumber::BigDecimal(a), JavaNumber::BigDecimal(b)) => a.java_equals(b),
             (JavaNumber::IcuBigDecimal(a), JavaNumber::IcuBigDecimal(b)) => a.java_equals(b),
-            (JavaNumber::Other { class_name: c1, string: s1, .. }, JavaNumber::Other { class_name: c2, string: s2, .. }) => {
-                c1 == c2 && s1 == s2
-            }
+            (
+                JavaNumber::Other {
+                    class_name: c1,
+                    string: s1,
+                    ..
+                },
+                JavaNumber::Other {
+                    class_name: c2,
+                    string: s2,
+                    ..
+                },
+            ) => c1 == c2 && s1 == s2,
             _ => false,
         }
     }
@@ -107,12 +116,20 @@ impl JavaNumber {
 
 /// `Float.floatToIntBits` (canonical NaN).
 fn float_bits(f: f32) -> u32 {
-    if f.is_nan() { 0x7fc00000 } else { f.to_bits() }
+    if f.is_nan() {
+        0x7fc00000
+    } else {
+        f.to_bits()
+    }
 }
 
 /// `Double.doubleToLongBits` (canonical NaN).
 fn double_bits(d: f64) -> u64 {
-    if d.is_nan() { 0x7ff8000000000000 } else { d.to_bits() }
+    if d.is_nan() {
+        0x7ff8000000000000
+    } else {
+        d.to_bits()
+    }
 }
 
 /// A `DecimalQuantity` with internal storage as a 64-bit BCD, with fallback
@@ -141,7 +158,12 @@ impl Default for DecimalQuantity_DualStorageBCD {
 
 impl DecimalQuantity_DualStorageBCD {
     fn empty() -> Self {
-        Self { base: AbstractBcdFields::default(), bcd_bytes: None, bcd_long: 0, using_bytes: false }
+        Self {
+            base: AbstractBcdFields::default(),
+            bcd_bytes: None,
+            bcd_long: 0,
+            using_bytes: false,
+        }
     }
 
     /// Equivalent to `DecimalQuantity_DualStorageBCD()`.
@@ -260,7 +282,9 @@ impl DecimalQuantity_DualStorageBCD {
             Ok(dq)
         } else {
             let num_frac_digit = Self::get_visible_fraction_count(num);
-            let mut dq = DecimalQuantity_DualStorageBCD::from_big_decimal(&BigDecimal::from_string(&units(num))?)?;
+            let mut dq = DecimalQuantity_DualStorageBCD::from_big_decimal(
+                &BigDecimal::from_string(&units(num))?,
+            )?;
             dq.set_min_fraction(num_frac_digit);
             Ok(dq)
         }
@@ -286,7 +310,11 @@ impl DecimalQuantity_DualStorageBCD {
         if capacity == 0 {
             return;
         }
-        let old_capacity = if self.using_bytes { self.bytes().len() as i32 } else { 0 };
+        let old_capacity = if self.using_bytes {
+            self.bytes().len() as i32
+        } else {
+            0
+        };
         if !self.using_bytes {
             self.bcd_bytes = Some(vec![0; capacity as usize]);
         } else if old_capacity < capacity {
@@ -325,12 +353,16 @@ impl DecimalQuantity_DualStorageBCD {
 
     /// The byte array (Java dereferences `bcdBytes` where it is non-null).
     fn bytes(&self) -> &[i8] {
-        self.bcd_bytes.as_deref().expect("java.lang.NullPointerException: bcdBytes")
+        self.bcd_bytes
+            .as_deref()
+            .expect("java.lang.NullPointerException: bcdBytes")
     }
 
     /// The byte array, mutably.
     fn bytes_mut(&mut self) -> &mut [i8] {
-        self.bcd_bytes.as_deref_mut().expect("java.lang.NullPointerException: bcdBytes")
+        self.bcd_bytes
+            .as_deref_mut()
+            .expect("java.lang.NullPointerException: bcdBytes")
     }
 
     /// Checks whether the bytes are valid; `None` when healthy, else the
@@ -544,7 +576,9 @@ impl DecimalQuantityAbstractBcd for DecimalQuantity_DualStorageBCD {
                 i -= 1;
             }
         } else {
-            self.bcd_long &= 1i64.wrapping_shl(((precision - num_digits) * 4) as u32).wrapping_sub(1);
+            self.bcd_long &= 1i64
+                .wrapping_shl(((precision - num_digits) * 4) as u32)
+                .wrapping_sub(1);
         }
         self.base.precision -= num_digits;
     }
@@ -639,16 +673,20 @@ impl DecimalQuantityAbstractBcd for DecimalQuantity_DualStorageBCD {
             let mut temp_long: i64 = 0;
             let mut shift = self.base.precision - 1;
             while shift >= 0 {
-                temp_long = temp_long.wrapping_mul(10).wrapping_add(self.get_digit_pos(shift) as i64);
+                temp_long = temp_long
+                    .wrapping_mul(10)
+                    .wrapping_add(self.get_digit_pos(shift) as i64);
                 shift -= 1;
             }
             let mut result = BigDecimal::value_of(temp_long);
             // Test that the new scale fits inside the BigDecimal
-            let new_scale = result.scale() as i64 + self.base.scale as i64 + self.base.exponent as i64;
+            let new_scale =
+                result.scale() as i64 + self.base.scale as i64 + self.base.exponent as i64;
             if new_scale <= i32::MIN as i64 {
                 result = BigDecimal::zero();
             } else {
-                result = result.scale_by_power_of_ten(self.base.scale.wrapping_add(self.base.exponent))?;
+                result = result
+                    .scale_by_power_of_ten(self.base.scale.wrapping_add(self.base.exponent))?;
             }
             if (self.base.flags & NEGATIVE_FLAG) != 0 {
                 result = result.negate();
@@ -701,12 +739,15 @@ impl DecimalQuantityAbstractBcd for DecimalQuantity_DualStorageBCD {
     }
 
     fn copy_bcd_from(&mut self, other: &dyn DecimalQuantity) {
-        let other = other.as_any().downcast_ref::<DecimalQuantity_DualStorageBCD>().unwrap_or_else(|| {
-            panic!(
-                "java.lang.ClassCastException: class cannot be cast to class \
+        let other = other
+            .as_any()
+            .downcast_ref::<DecimalQuantity_DualStorageBCD>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "java.lang.ClassCastException: class cannot be cast to class \
                  com.ibm.icu.impl.number.DecimalQuantity_DualStorageBCD"
-            )
-        });
+                )
+            });
         self.set_bcd_to_zero();
         if other.using_bytes {
             self.ensure_capacity(other.base.precision);
@@ -724,7 +765,11 @@ impl DecimalQuantityAbstractBcd for DecimalQuantity_DualStorageBCD {
             self.base.l_req_pos,
             self.base.r_req_pos,
             if self.using_bytes { "bytes" } else { "long" },
-            if (self.base.flags & NEGATIVE_FLAG) != 0 { "-" } else { "" },
+            if (self.base.flags & NEGATIVE_FLAG) != 0 {
+                "-"
+            } else {
+                ""
+            },
             self.to_number_string()
         )
     }

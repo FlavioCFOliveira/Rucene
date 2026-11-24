@@ -44,7 +44,12 @@ impl StringRange {
     /// The `moreCompact` branch groups the strings by length in Java's
     /// `Relation.of(new TreeMap<Integer, Set<Ranges>>(), TreeSet.class)`;
     /// here that multimap is the equivalent `BTreeMap<i32, BTreeSet<Ranges>>`.
-    pub fn compact(source: &[Vec<u16>], adder: &mut dyn Adder, shorter_pairs: bool, more_compact: bool) {
+    pub fn compact(
+        source: &[Vec<u16>],
+        adder: &mut dyn Adder,
+        shorter_pairs: bool,
+        more_compact: bool,
+    ) {
         if !more_compact {
             let mut start: Option<&[u16]> = None;
             let mut end: Option<&[u16]> = None;
@@ -53,9 +58,14 @@ impl StringRange {
             for s in source {
                 if let Some(st) = start {
                     // We have something queued up
-                    if s.len() >= prefix_len && st.len() >= prefix_len && s[..prefix_len] == st[..prefix_len] {
+                    if s.len() >= prefix_len
+                        && st.len() >= prefix_len
+                        && s[..prefix_len] == st[..prefix_len]
+                    {
                         let current_cp = code_point_at(s, prefix_len as i32);
-                        if current_cp == 1 + last_cp && s.len() == prefix_len + char_count(current_cp) as usize {
+                        if current_cp == 1 + last_cp
+                            && s.len() == prefix_len + char_count(current_cp) as usize
+                        {
                             end = Some(s);
                             last_cp = current_cp;
                             continue;
@@ -80,7 +90,10 @@ impl StringRange {
             let mut length_to_arrays: BTreeMap<i32, BTreeSet<Ranges>> = BTreeMap::new();
             for s in source {
                 let item = Ranges::new(s);
-                length_to_arrays.entry(item.size()).or_default().insert(item);
+                length_to_arrays
+                    .entry(item.size())
+                    .or_default()
+                    .insert(item);
             }
             // then compact items of each length and emit compacted sets
             for (key, value) in length_to_arrays {
@@ -125,7 +138,12 @@ impl StringRange {
     /// # Errors
     ///
     /// `ICUException` with ICU's messages for an invalid range.
-    pub fn expand(start: Option<&[u16]>, end: Option<&[u16]>, require_same_length: bool, output: &mut BTreeSet<Vec<u16>>) -> Result<()> {
+    pub fn expand(
+        start: Option<&[u16]>,
+        end: Option<&[u16]>,
+        require_same_length: bool,
+        output: &mut BTreeSet<Vec<u16>>,
+    ) -> Result<()> {
         let (Some(start), Some(end)) = (start, end) else {
             return Err(ICUException::with_message("Range must have 2 valid strings").error());
         };
@@ -136,7 +154,9 @@ impl StringRange {
         if require_same_length && start_offset != 0 {
             return Err(ICUException::with_message("Range must have equal-length strings").error());
         } else if start_offset < 0 {
-            return Err(ICUException::with_message("Range must have start-length ≥ end-length").error());
+            return Err(
+                ICUException::with_message("Range must have start-length ≥ end-length").error(),
+            );
         } else if end_cps.is_empty() {
             return Err(ICUException::with_message("Range must have end-length > 0").error());
         }
@@ -148,11 +168,20 @@ impl StringRange {
         Self::add(0, start_offset, &start_cps, &end_cps, &mut builder, output)
     }
 
-    fn add(end_index: i32, start_offset: i32, starts: &[i32], ends: &[i32], builder: &mut Vec<u16>, output: &mut BTreeSet<Vec<u16>>) -> Result<()> {
+    fn add(
+        end_index: i32,
+        start_offset: i32,
+        starts: &[i32],
+        ends: &[i32],
+        builder: &mut Vec<u16>,
+        output: &mut BTreeSet<Vec<u16>>,
+    ) -> Result<()> {
         let start = starts[(end_index + start_offset) as usize];
         let end = ends[end_index as usize];
         if start > end {
-            return Err(ICUException::with_message("Range must have xᵢ ≤ yᵢ for each index i").error());
+            return Err(
+                ICUException::with_message("Range must have xᵢ ≤ yᵢ for each index i").error(),
+            );
         }
         let last = end_index == ends.len() as i32 - 1;
         let start_len = builder.len();
@@ -201,6 +230,7 @@ impl Range {
 
     /// `toString()`.
     #[allow(dead_code)]
+    #[allow(clippy::wrong_self_convention)] // Java method name and receiver
     fn to_units(&self) -> Vec<u16> {
         let mut result = Vec::new();
         let _ = append_code_point(&mut result, self.min);
@@ -221,7 +251,9 @@ struct Ranges {
 impl Ranges {
     fn new(s: &[u16]) -> Self {
         let array = CharSequences::code_points(s);
-        Self { ranges: array.iter().map(|&c| Range { min: c, max: c }).collect() }
+        Self {
+            ranges: array.iter().map(|&c| Range { min: c, max: c }).collect(),
+        }
     }
 
     fn merge(&mut self, pivot: i32, other: &Ranges) -> bool {

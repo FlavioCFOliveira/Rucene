@@ -37,10 +37,11 @@ pub struct NumberingSystem {
 /// `NumberingSystem.LATIN`: the default numbering system (`latn`), Java's
 /// `lookupInstanceByName("latn")`, `None` for its `null` when the data
 /// lacks it.
-pub static LATIN: LazyLock<Option<Arc<NumberingSystem>>> = LazyLock::new(|| match lookup_instance_by_name("latn") {
-    Ok(ns) => ns,
-    Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
-});
+pub static LATIN: LazyLock<Option<Arc<NumberingSystem>>> =
+    LazyLock::new(|| match lookup_instance_by_name("latn") {
+        Ok(ns) => ns,
+        Err(e) => panic!("java.lang.ExceptionInInitializerError: {e}"),
+    });
 
 /// `NumberingSystem.LocaleLookupData`.
 #[derive(Debug, Clone)]
@@ -51,7 +52,11 @@ struct LocaleLookupData {
 
 /// `cachedLocaleData`.
 static CACHED_LOCALE_DATA: LazyLock<SoftCache<String, Arc<NumberingSystem>, LocaleLookupData>> =
-    LazyLock::new(|| SoftCache::new(|_key: &String, data: LocaleLookupData| Ok(Some(lookup_instance_by_locale(&data)?))));
+    LazyLock::new(|| {
+        SoftCache::new(|_key: &String, data: LocaleLookupData| {
+            Ok(Some(lookup_instance_by_locale(&data)?))
+        })
+    });
 
 /// `cachedStringData`: the `createInstance` of Java answers `null` for an
 /// unknown name, which `SoftCache` returns without caching it.
@@ -68,7 +73,10 @@ fn code_point_count(s: &[u16]) -> i32 {
     let mut n = 0;
     let mut i = 0;
     while i < s.len() {
-        if crate::jdk::is_high_surrogate(s[i]) && i + 1 < s.len() && crate::jdk::is_low_surrogate(s[i + 1]) {
+        if crate::jdk::is_high_surrogate(s[i])
+            && i + 1 < s.len()
+            && crate::jdk::is_low_surrogate(s[i + 1])
+        {
             i += 2;
         } else {
             i += 1;
@@ -81,7 +89,12 @@ fn code_point_count(s: &[u16]) -> i32 {
 impl NumberingSystem {
     /// `new NumberingSystem()`: radix 10, numeric, `0123456789`, `latn`.
     pub fn new() -> Self {
-        Self { radix: 10, algorithmic: false, desc: units("0123456789"), name: Some("latn".to_string()) }
+        Self {
+            radix: 10,
+            algorithmic: false,
+            desc: units("0123456789"),
+            name: Some("latn".to_string()),
+        }
     }
 
     /// `getInstance(int radix_in, boolean isAlgorithmic_in, String
@@ -90,7 +103,11 @@ impl NumberingSystem {
     /// # Errors
     ///
     /// As [`get_instance_named`](Self::get_instance_named).
-    pub fn get_instance_with(radix_in: i32, is_algorithmic_in: bool, desc_in: &[u16]) -> Result<NumberingSystem> {
+    pub fn get_instance_with(
+        radix_in: i32,
+        is_algorithmic_in: bool,
+        desc_in: &[u16],
+    ) -> Result<NumberingSystem> {
         Self::get_instance_named(None, radix_in, is_algorithmic_in, desc_in)
     }
 
@@ -103,12 +120,23 @@ impl NumberingSystem {
     /// for a radix below 2; `IllegalArgumentException("Invalid digit
     /// string for numbering system")` for a numeric system whose
     /// description is not `radix` code points or not 10 code points.
-    fn get_instance_named(name_in: Option<&str>, radix_in: i32, is_algorithmic_in: bool, desc_in: &[u16]) -> Result<NumberingSystem> {
+    fn get_instance_named(
+        name_in: Option<&str>,
+        radix_in: i32,
+        is_algorithmic_in: bool,
+        desc_in: &[u16],
+    ) -> Result<NumberingSystem> {
         if radix_in < 2 {
-            return Err(LuceneError::illegal_argument("Invalid radix for numbering system"));
+            return Err(LuceneError::illegal_argument(
+                "Invalid radix for numbering system",
+            ));
         }
-        if !is_algorithmic_in && (code_point_count(desc_in) != radix_in || !Self::is_valid_digit_string(desc_in)) {
-            return Err(LuceneError::illegal_argument("Invalid digit string for numbering system"));
+        if !is_algorithmic_in
+            && (code_point_count(desc_in) != radix_in || !Self::is_valid_digit_string(desc_in))
+        {
+            return Err(LuceneError::illegal_argument(
+                "Invalid digit string for numbering system",
+            ));
         }
         let mut ns = NumberingSystem::new();
         ns.radix = radix_in;
@@ -174,10 +202,15 @@ impl NumberingSystem {
         // to real numbering system names; can we get those from supplemental data?
         // Then look up those mappings for the locale and resolve the keyword.
         let key = format!("{base_name}@numbers={numbers_keyword}");
-        let locale_lookup_data = LocaleLookupData { locale: locale.clone(), numbers_keyword };
+        let locale_lookup_data = LocaleLookupData {
+            locale: locale.clone(),
+            numbers_keyword,
+        };
         CACHED_LOCALE_DATA
             .get_instance(key, locale_lookup_data)?
-            .ok_or_else(|| LuceneError::null_pointer_with_message("NumberingSystem cache returned null"))
+            .ok_or_else(|| {
+                LuceneError::null_pointer_with_message("NumberingSystem cache returned null")
+            })
     }
 
     /// `getInstance()`: the numbering system of the default `FORMAT`
@@ -207,7 +240,8 @@ impl NumberingSystem {
     ///
     /// `MissingResourceException` when the data is missing.
     pub fn get_available_names() -> Result<Vec<String>> {
-        let numbering_systems_info = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "numberingSystems")?;
+        let numbering_systems_info =
+            UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "numberingSystems")?;
         let ns_current = numbering_systems_info.get("numberingSystems")?;
         let mut output = Vec::new();
         let mut it = ns_current.get_iterator();
@@ -249,7 +283,9 @@ impl NumberingSystem {
 }
 
 /// `lookupInstanceByLocale(LocaleLookupData localeLookupData)`.
-fn lookup_instance_by_locale(locale_lookup_data: &LocaleLookupData) -> Result<Arc<NumberingSystem>> {
+fn lookup_instance_by_locale(
+    locale_lookup_data: &LocaleLookupData,
+) -> Result<Arc<NumberingSystem>> {
     let locale = &locale_lookup_data.locale;
     let rb = match UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale)) {
         Ok(UResourceBundle::Icu(b)) => match b.get_with_fallback("NumberElements") {
@@ -297,7 +333,8 @@ fn lookup_instance_by_locale(locale_lookup_data: &LocaleLookupData) -> Result<Ar
 /// data has no such system.
 fn lookup_instance_by_name(name: &str) -> Result<Option<Arc<NumberingSystem>>> {
     let read = || -> Result<(i32, bool, Vec<u16>)> {
-        let numbering_systems_info = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "numberingSystems")?;
+        let numbering_systems_info =
+            UResourceBundle::get_bundle_instance(Some(ICUData::ICU_BASE_NAME), "numberingSystems")?;
         let ns_current = numbering_systems_info.get("numberingSystems")?;
         let ns_top = ns_current.get(name)?;
         let description = ns_top.get_string_by_key("desc")?;
@@ -312,5 +349,10 @@ fn lookup_instance_by_name(name: &str) -> Result<Option<Arc<NumberingSystem>>> {
         Err(e) if is_missing_resource(&e) => return Ok(None),
         Err(e) => return Err(e),
     };
-    Ok(Some(Arc::new(NumberingSystem::get_instance_named(Some(name), radix, is_algorithmic, &description)?)))
+    Ok(Some(Arc::new(NumberingSystem::get_instance_named(
+        Some(name),
+        radix,
+        is_algorithmic,
+        &description,
+    )?)))
 }

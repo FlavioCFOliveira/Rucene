@@ -8,6 +8,7 @@ use std::sync::{Arc, LazyLock};
 use rucene::error::{LuceneError, Result};
 
 use crate::jdk::{char_count, code_point_at, code_point_before, offset_by_code_points, units};
+use crate::lang::u_script::UScript;
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_data_builder::{CEModifier, CollationDataBuilder};
@@ -15,7 +16,9 @@ use crate::r#impl::coll::collation_fast_latin::CollationFastLatin;
 use crate::r#impl::coll::collation_iterator::CollationIterator;
 use crate::r#impl::coll::collation_loader::CollationLoader;
 use crate::r#impl::coll::collation_root_elements::CollationRootElements;
-use crate::r#impl::coll::collation_rule_parser::{CollationRuleParser, Importer, Position, Sink, POSITION_VALUES, POS_BASE, POS_LEAD};
+use crate::r#impl::coll::collation_rule_parser::{
+    CollationRuleParser, Importer, Position, Sink, POSITION_VALUES, POS_BASE, POS_LEAD,
+};
 use crate::r#impl::coll::collation_tailoring::CollationTailoring;
 use crate::r#impl::coll::collation_weights::CollationWeights;
 use crate::r#impl::coll::u_vector32::UVector32;
@@ -23,7 +26,6 @@ use crate::r#impl::coll::u_vector64::UVector64;
 use crate::r#impl::coll::utf16_collation_iterator::UTF16CollationIterator;
 use crate::r#impl::norm2_all_modes::{Norm2AllModes, Normalizer2WithImpl};
 use crate::r#impl::normalizer2_impl::{Hangul, Normalizer2Impl};
-use crate::lang::u_script::UScript;
 use crate::text::canonical_iterator::CanonicalIterator;
 use crate::text::collator;
 use crate::text::normalizer2::{self, Normalizer2};
@@ -144,7 +146,9 @@ fn temp_ce_from_index_and_strength(index: i32, strength: i32) -> i64 {
 
 fn index_from_temp_ce(mut temp_ce: i64) -> i32 {
     temp_ce = temp_ce.wrapping_sub(0x4040000006002000);
-    ((temp_ce >> 43) as i32 & 0xfe000) | ((temp_ce >> 42) as i32 & 0x1fc0) | ((temp_ce >> 24) as i32 & 0x3f)
+    ((temp_ce >> 43) as i32 & 0xfe000)
+        | ((temp_ce >> 42) as i32 & 0x1fc0)
+        | ((temp_ce >> 24) as i32 & 0x3f)
 }
 
 fn strength_from_temp_ce(temp_ce: i64) -> i32 {
@@ -203,7 +207,12 @@ fn same_ces(ces1: &[i64], ces1_length: i32, ces2: &[i64], ces2_length: i32) -> b
     true
 }
 
-fn equal_sub_sequences(left: &[u16], mut left_start: i32, right: &[u16], mut right_start: i32) -> bool {
+fn equal_sub_sequences(
+    left: &[u16],
+    mut left_start: i32,
+    right: &[u16],
+    mut right_start: i32,
+) -> bool {
     // C++ UnicodeString::compare(leftStart, 0x7fffffff, right, rightStart, 0x7fffffff) == 0
     let left_length = left.len() as i32;
     if (left_length - left_start) != (right.len() as i32 - right_start) {
@@ -304,7 +313,10 @@ impl CollationBuilder {
         let nfc_impl = Norm2AllModes::get_nfc_instance()?.impl_.clone();
         let base_data = b.data().clone();
         let root_elements = CollationRootElements::new(
-            base_data.root_elements.clone().unwrap_or_else(|| panic!("java.lang.NullPointerException")),
+            base_data
+                .root_elements
+                .clone()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
         );
         let mut data_builder = CollationDataBuilder::new()?;
         nfc_impl.ensure_canon_iter_data()?;
@@ -328,7 +340,9 @@ impl CollationBuilder {
     }
 
     fn db(&mut self) -> &mut CollationDataBuilder {
-        self.data_builder.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.data_builder
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `parseAndBuild(String)`.
@@ -340,7 +354,9 @@ impl CollationBuilder {
     pub fn parse_and_build(&mut self, rule_string: &[u16]) -> Result<CollationTailoring> {
         if self.base_data.root_elements.is_none() {
             // C++ U_MISSING_RESOURCE_ERROR
-            return Err(LuceneError::unsupported_operation("missing root elements data, tailoring not supported"));
+            return Err(LuceneError::unsupported_operation(
+                "missing root elements data, tailoring not supported",
+            ));
         }
         let mut tailoring = CollationTailoring::new(Some(&self.base.settings));
         let mut parser = CollationRuleParser::new(self.base_data.clone())?;
@@ -366,7 +382,8 @@ impl CollationBuilder {
             self.optimize_set.add_range(0xc0, 0xff)?;
             // Hangul is decomposed on the fly during collation,
             // and the tailoring data is always built with HANGUL_TAG specials.
-            self.optimize_set.remove_range(Hangul::HANGUL_BASE, Hangul::HANGUL_END)?;
+            self.optimize_set
+                .remove_range(Hangul::HANGUL_BASE, Hangul::HANGUL_END)?;
             let optimize_set = self.optimize_set.clone();
             self.db().optimize(&optimize_set)?;
             let mut owned_data = tailoring.new_owned_data()?;
@@ -384,7 +401,8 @@ impl CollationBuilder {
             let data = tailoring.data().clone();
             let owned_settings = tailoring.settings.copy_on_write();
             let mut primaries = std::mem::take(&mut owned_settings.fast_latin_primaries);
-            owned_settings.fast_latin_options = CollationFastLatin::get_options(&data, owned_settings, &mut primaries);
+            owned_settings.fast_latin_options =
+                CollationFastLatin::get_options(&data, owned_settings, &mut primaries);
             owned_settings.fast_latin_primaries = primaries;
         }
         tailoring.set_rules(rule_string.to_vec());
@@ -485,7 +503,9 @@ impl CollationBuilder {
                     if strength == collator::SECONDARY {
                         if is_tailored_node(node) {
                             if node_has_before3(node) {
-                                index = next_index_from_node(self.nodes.element_ati(next_index_from_node(node)));
+                                index = next_index_from_node(
+                                    self.nodes.element_ati(next_index_from_node(node)),
+                                );
                                 debug_assert!(is_tailored_node(self.nodes.element_ati(index)));
                             }
                             return Ok(temp_ce_from_index_and_strength(index, collator::SECONDARY));
@@ -506,33 +526,41 @@ impl CollationBuilder {
                 is_boundary = true; // FractionalUCA.txt: FDD1 00A0, SPACE first primary
             }
             Position::LastVariable => {
-                ce = self.root_elements.last_ce_with_primary_before(self.variable_top + 1);
+                ce = self
+                    .root_elements
+                    .last_ce_with_primary_before(self.variable_top + 1);
             }
             Position::FirstRegular => {
-                ce = self.root_elements.first_ce_with_primary_at_least(self.variable_top + 1);
+                ce = self
+                    .root_elements
+                    .first_ce_with_primary_at_least(self.variable_top + 1);
                 is_boundary = true; // FractionalUCA.txt: FDD1 263A, SYMBOL first primary
             }
             Position::LastRegular => {
                 // Use the Hani-first-primary rather than the actual last "regular" CE before it,
                 // for backward compatibility with behavior before the introduction of
                 // script-first-primary CEs in the root collator.
-                ce = self
-                    .root_elements
-                    .first_ce_with_primary_at_least(self.base_data.get_first_primary_for_group(UScript::HAN));
+                ce = self.root_elements.first_ce_with_primary_at_least(
+                    self.base_data.get_first_primary_for_group(UScript::HAN),
+                );
             }
             Position::FirstImplicit => {
                 ce = self.base_data.get_single_ce(0x4e00)?;
             }
             Position::LastImplicit => {
                 // We do not support tailoring to an unassigned-implicit CE.
-                return Err(LuceneError::unsupported_operation("reset to [last implicit] not supported"));
+                return Err(LuceneError::unsupported_operation(
+                    "reset to [last implicit] not supported",
+                ));
             }
             Position::FirstTrailing => {
                 ce = Collation::make_ce(Collation::FIRST_TRAILING_PRIMARY);
                 is_boundary = true; // trailing first primary (there is no mapping for it)
             }
             Position::LastTrailing => {
-                return Err(LuceneError::illegal_argument("LDML forbids tailoring to U+FFFF"));
+                return Err(LuceneError::illegal_argument(
+                    "LDML forbids tailoring to U+FFFF",
+                ));
             }
         }
 
@@ -558,7 +586,9 @@ impl CollationBuilder {
                     let mut p = ushr32(ce);
                     let p_index = self.root_elements.find_primary(p);
                     let is_compressible = self.base_data.is_compressible_primary(p);
-                    p = self.root_elements.get_primary_after(p, p_index, is_compressible);
+                    p = self
+                        .root_elements
+                        .get_primary_after(p, p_index, is_compressible);
                     ce = Collation::make_ce(p);
                     index = self.find_or_insert_node_for_root_ce(ce, collator::PRIMARY);
                     node = self.nodes.element_ati(index);
@@ -567,11 +597,13 @@ impl CollationBuilder {
             if node_has_any_before(node) {
                 // Get the first node that was tailored before this one at a weaker strength.
                 if node_has_before2(node) {
-                    index = next_index_from_node(self.nodes.element_ati(next_index_from_node(node)));
+                    index =
+                        next_index_from_node(self.nodes.element_ati(next_index_from_node(node)));
                     node = self.nodes.element_ati(index);
                 }
                 if node_has_before3(node) {
-                    index = next_index_from_node(self.nodes.element_ati(next_index_from_node(node)));
+                    index =
+                        next_index_from_node(self.nodes.element_ati(next_index_from_node(node)));
                 }
                 debug_assert!(is_tailored_node(self.nodes.element_ati(index)));
                 ce = temp_ce_from_index_and_strength(index, strength);
@@ -602,6 +634,7 @@ impl CollationBuilder {
         Ok(ce)
     }
 
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn find_or_insert_node_for_ces(&mut self, strength: i32) -> Result<i32> {
         debug_assert!((collator::PRIMARY..=collator::QUATERNARY).contains(&strength));
 
@@ -651,16 +684,29 @@ impl CollationBuilder {
         let mut index = self.find_or_insert_node_for_primary(ushr32(ce));
         if strength >= collator::SECONDARY {
             let lower32 = ce as i32;
-            index = self.find_or_insert_weak_node(index, ((lower32 as u32) >> 16) as i32, collator::SECONDARY);
+            index = self.find_or_insert_weak_node(
+                index,
+                ((lower32 as u32) >> 16) as i32,
+                collator::SECONDARY,
+            );
             if strength >= collator::TERTIARY {
-                index = self.find_or_insert_weak_node(index, lower32 & Collation::ONLY_TERTIARY_MASK, collator::TERTIARY);
+                index = self.find_or_insert_weak_node(
+                    index,
+                    lower32 & Collation::ONLY_TERTIARY_MASK,
+                    collator::TERTIARY,
+                );
             }
         }
         index
     }
 
     /// Like Java Collections.binarySearch(List, String, Comparator).
-    fn binary_search_for_root_primary_node(root_primary_indexes: &[i32], length: i32, nodes: &[i64], p: i64) -> i32 {
+    fn binary_search_for_root_primary_node(
+        root_primary_indexes: &[i32],
+        length: i32,
+        nodes: &[i64],
+        p: i64,
+    ) -> i32 {
         if length == 0 {
             return !0;
         }
@@ -700,7 +746,8 @@ impl CollationBuilder {
             // Start a new list of nodes with this primary.
             let index = self.nodes.size();
             self.nodes.add_element(node_from_weight32(p));
-            self.root_primary_indexes.insert_element_at(index, !root_index);
+            self.root_primary_indexes
+                .insert_element_at(index, !root_index);
             index
         }
     }
@@ -719,17 +766,23 @@ impl CollationBuilder {
         let mut node = self.nodes.element_ati(index);
         debug_assert!(strength_from_node(node) < level); // parent node is stronger
         if weight16 != 0 && weight16 < Collation::COMMON_WEIGHT16 {
-            let has_this_level_before = if level == collator::SECONDARY { HAS_BEFORE2 } else { HAS_BEFORE3 };
+            let has_this_level_before = if level == collator::SECONDARY {
+                HAS_BEFORE2
+            } else {
+                HAS_BEFORE3
+            };
             if (node & has_this_level_before as i64) == 0 {
                 // The parent node has an implied level-common weight.
-                let mut common_node = node_from_weight16(Collation::COMMON_WEIGHT16) | node_from_strength(level);
+                let mut common_node =
+                    node_from_weight16(Collation::COMMON_WEIGHT16) | node_from_strength(level);
                 if level == collator::SECONDARY {
                     // Move the HAS_BEFORE3 flag from the parent node
                     // to the new secondary common node.
                     common_node |= node & HAS_BEFORE3 as i64;
                     node &= !(HAS_BEFORE3 as i64);
                 }
-                self.nodes.set_element_at(node | has_this_level_before as i64, index);
+                self.nodes
+                    .set_element_at(node | has_this_level_before as i64, index);
                 // Insert below-common-weight node.
                 let next_index = next_index_from_node(node);
                 node = node_from_weight16(weight16) | node_from_strength(level);
@@ -818,11 +871,13 @@ impl CollationBuilder {
         self.nodes.add_element(node);
         // nodes[index].nextIndex = newIndex
         node = self.nodes.element_ati(index);
-        self.nodes.set_element_at(change_node_next_index(node, new_index), index);
+        self.nodes
+            .set_element_at(change_node_next_index(node, new_index), index);
         // nodes[nextIndex].previousIndex = newIndex
         if next_index != 0 {
             node = self.nodes.element_ati(next_index);
-            self.nodes.set_element_at(change_node_previous_index(node, new_index), next_index);
+            self.nodes
+                .set_element_at(change_node_previous_index(node, new_index), next_index);
         }
         new_index
     }
@@ -836,7 +891,11 @@ impl CollationBuilder {
             // The current node is no stronger.
             return index;
         }
-        if if strength == collator::SECONDARY { !node_has_before2(node) } else { !node_has_before3(node) } {
+        if if strength == collator::SECONDARY {
+            !node_has_before2(node)
+        } else {
+            !node_has_before3(node)
+        } {
             // The current node implies the strength-common weight.
             return index;
         }
@@ -863,6 +922,7 @@ impl CollationBuilder {
         index
     }
 
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn set_case_bits(&mut self, nfd_string: &[u16]) -> Result<()> {
         let mut num_tailored_primaries = 0;
         for i in 0..self.ces_length as usize {
@@ -878,9 +938,12 @@ impl CollationBuilder {
         let mut cases: i64 = 0;
         if num_tailored_primaries > 0 {
             let s = nfd_string;
-            let mut base_ces = UTF16CollationIterator::with_text(self.base_data.clone(), false, s, 0);
+            let mut base_ces =
+                UTF16CollationIterator::with_text(self.base_data.clone(), false, s, 0);
             let base_ces_length = base_ces.fetch_ces() - 1;
-            debug_assert!(base_ces_length >= 0 && base_ces.base().get_ce(base_ces_length) == Collation::NO_CE);
+            debug_assert!(
+                base_ces_length >= 0 && base_ces.base().get_ce(base_ces_length) == Collation::NO_CE
+            );
 
             let mut last_case = 0;
             let mut num_base_primaries = 0;
@@ -993,7 +1056,9 @@ impl CollationBuilder {
                     let l = loop_count;
                     loop_count += 1;
                     if l > K_CLOSURE_LOOP_LIMIT {
-                        return Err(ICUInputTooLongException::with_message("Too many closure").error());
+                        return Err(
+                            ICUInputTooLongException::with_message("Too many closure").error()
+                        );
                     }
                     ce32 = self.add_if_different(&prefix, &str, new_ces, new_ces_length, ce32)?;
                 }
@@ -1026,7 +1091,10 @@ impl CollationBuilder {
         // Note: Normalizer2Impl does not currently return start sets for NFC_QC=Maybe characters.
         // We might find some more equivalent mappings here if it did.
         let mut composites = UnicodeSet::new();
-        if !self.nfc_impl.get_canon_start_set(last_starter, &mut composites)? {
+        if !self
+            .nfc_impl
+            .get_canon_start_set(last_starter, &mut composites)?
+        {
             return Ok(());
         }
 
@@ -1037,7 +1105,10 @@ impl CollationBuilder {
         while iter.next() {
             debug_assert!(iter.codepoint != IS_STRING);
             let composite = iter.codepoint;
-            let decomp = self.nfd.get_decomposition(composite)?.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let decomp = self
+                .nfd
+                .get_decomposition(composite)?
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             if !self.merge_composite_into_string(
                 nfd_string,
                 index_after_last_starter,
@@ -1048,7 +1119,9 @@ impl CollationBuilder {
             )? {
                 continue;
             }
-            let new_ces_length = self.db().get_ces_prefix(nfd_prefix, &new_nfd_string, &mut new_ces, 0)?;
+            let new_ces_length =
+                self.db()
+                    .get_ces_prefix(nfd_prefix, &new_nfd_string, &mut new_ces, 0)?;
             if new_ces_length > Collation::MAX_EXPANSION_LENGTH {
                 // Ignore mappings that we cannot store.
                 continue;
@@ -1068,7 +1141,13 @@ impl CollationBuilder {
             // We do not need an explicit mapping for the NFD strings.
             // It is fine if the NFD input collates like this via a sequence of mappings.
             // It also saves a little bit of space, and may reduce the set of characters with contractions.
-            let ce32 = self.add_if_different(nfd_prefix, &new_string, &new_ces, new_ces_length, Collation::UNASSIGNED_CE32)?;
+            let ce32 = self.add_if_different(
+                nfd_prefix,
+                &new_string,
+                &new_ces,
+                new_ces_length,
+                Collation::UNASSIGNED_CE32,
+            )?;
             if ce32 != Collation::UNASSIGNED_CE32 {
                 // was different, was added
                 self.add_only_closure(nfd_prefix, &new_nfd_string, &new_ces, new_ces_length, ce32)?;
@@ -1086,14 +1165,21 @@ impl CollationBuilder {
         new_nfd_string: &mut Vec<u16>,
         new_string: &mut Vec<u16>,
     ) -> Result<bool> {
-        debug_assert!(code_point_before(nfd_string, index_after_last_starter) == code_point_at(decomp, 0));
+        debug_assert!(
+            code_point_before(nfd_string, index_after_last_starter) == code_point_at(decomp, 0)
+        );
         let last_starter_length = offset_by_code_points(decomp, 0, 1);
         if last_starter_length == decomp.len() as i32 {
             // Singleton decompositions should be found by addWithClosure()
             // and the CanonicalIterator, so we can ignore them here.
             return Ok(false);
         }
-        if equal_sub_sequences(nfd_string, index_after_last_starter, decomp, last_starter_length) {
+        if equal_sub_sequences(
+            nfd_string,
+            index_after_last_starter,
+            decomp,
+            last_starter_length,
+        ) {
             // same strings, nothing new to be found here
             return Ok(false);
         }
@@ -1104,7 +1190,9 @@ impl CollationBuilder {
         new_nfd_string.clear();
         new_nfd_string.extend_from_slice(&nfd_string[..index_after_last_starter as usize]);
         new_string.clear();
-        new_string.extend_from_slice(&nfd_string[..(index_after_last_starter - last_starter_length) as usize]);
+        new_string.extend_from_slice(
+            &nfd_string[..(index_after_last_starter - last_starter_length) as usize],
+        );
         crate::jdk::append_code_point(new_string, composite)?;
 
         // The following is related to discontiguous contraction matching,
@@ -1196,8 +1284,10 @@ impl CollationBuilder {
         let mut iter = UnicodeSetIterator::new(&COMPOSITES);
         while iter.next() {
             debug_assert!(iter.codepoint != IS_STRING);
-            let nfd_string =
-                self.nfd.get_decomposition(iter.codepoint)?.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let nfd_string = self
+                .nfd
+                .get_decomposition(iter.codepoint)?
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             let mut ces = self.ces;
             self.ces_length = self.db().get_ces(&nfd_string, &mut ces, 0)?;
             self.ces = ces;
@@ -1210,12 +1300,25 @@ impl CollationBuilder {
             let composite = iter.get_string()?;
             let ces = self.ces;
             let ces_length = self.ces_length;
-            self.add_if_different(&prefix, &composite, &ces, ces_length, Collation::UNASSIGNED_CE32)?;
+            self.add_if_different(
+                &prefix,
+                &composite,
+                &ces,
+                ces_length,
+                Collation::UNASSIGNED_CE32,
+            )?;
         }
         Ok(())
     }
 
-    fn add_if_different(&mut self, prefix: &[u16], str: &[u16], new_ces: &[i64], new_ces_length: i32, mut ce32: i32) -> Result<i32> {
+    fn add_if_different(
+        &mut self,
+        prefix: &[u16],
+        str: &[u16],
+        new_ces: &[i64],
+        new_ces_length: i32,
+        mut ce32: i32,
+    ) -> Result<i32> {
         let mut old_ces = [0i64; Collation::MAX_EXPANSION_LENGTH as usize];
         let old_ces_length = self.db().get_ces_prefix(prefix, str, &mut old_ces, 0)?;
         if !same_ces(new_ces, new_ces_length, &old_ces, old_ces_length) {
@@ -1240,7 +1343,11 @@ impl CollationBuilder {
             let mut i = self.root_primary_indexes.element_ati(rpi);
             let mut node = self.nodes.element_ati(i);
             let mut p = weight32_from_node(node);
-            let mut s = if p == 0 { 0 } else { Collation::COMMON_WEIGHT16 };
+            let mut s = if p == 0 {
+                0
+            } else {
+                Collation::COMMON_WEIGHT16
+            };
             let mut t = s;
             let mut q = 0;
             let mut p_is_tailored = false;
@@ -1249,7 +1356,11 @@ impl CollationBuilder {
             if DEBUG {
                 println!("\nprimary     {:x}", align_weight_right(p as i32));
             }
-            let p_index = if p == 0 { 0 } else { self.root_elements.find_primary(p) };
+            let p_index = if p == 0 {
+                0
+            } else {
+                self.root_elements.find_primary(p)
+            };
             let mut next_index = next_index_from_node(node);
             while next_index != 0 {
                 i = next_index;
@@ -1260,7 +1371,9 @@ impl CollationBuilder {
                     debug_assert!(is_tailored_node(node));
                     if q == 3 {
                         // C++ U_BUFFER_OVERFLOW_ERROR
-                        return Err(LuceneError::unsupported_operation("quaternary tailoring gap too small"));
+                        return Err(LuceneError::unsupported_operation(
+                            "quaternary tailoring gap too small",
+                        ));
                     }
                     q += 1;
                 } else {
@@ -1268,12 +1381,17 @@ impl CollationBuilder {
                         if is_tailored_node(node) {
                             if !t_is_tailored {
                                 // First tailored tertiary node for [p, s].
-                                let t_count = count_tailored_nodes(self.nodes.get_buffer(), next_index, collator::TERTIARY) + 1;
+                                let t_count = count_tailored_nodes(
+                                    self.nodes.get_buffer(),
+                                    next_index,
+                                    collator::TERTIARY,
+                                ) + 1;
                                 let t_limit;
                                 if t == 0 {
                                     // Gap at the beginning of the tertiary CE range.
                                     t = self.root_elements.get_tertiary_boundary() - 0x100;
-                                    t_limit = self.root_elements.get_first_tertiary_ce() as i32 & Collation::ONLY_TERTIARY_MASK;
+                                    t_limit = self.root_elements.get_first_tertiary_ce() as i32
+                                        & Collation::ONLY_TERTIARY_MASK;
                                 } else if !p_is_tailored && !s_is_tailored {
                                     // p and s are root weights.
                                     t_limit = self.root_elements.get_tertiary_after(p_index, s, t);
@@ -1284,11 +1402,16 @@ impl CollationBuilder {
                                     debug_assert!(t == Collation::COMMON_WEIGHT16);
                                     t_limit = self.root_elements.get_tertiary_boundary();
                                 }
-                                debug_assert!(t_limit == 0x4000 || (t_limit & !Collation::ONLY_TERTIARY_MASK) == 0);
+                                debug_assert!(
+                                    t_limit == 0x4000
+                                        || (t_limit & !Collation::ONLY_TERTIARY_MASK) == 0
+                                );
                                 tertiaries.init_for_tertiary();
                                 if !tertiaries.alloc_weights(t as i64, t_limit as i64, t_count) {
                                     // C++ U_BUFFER_OVERFLOW_ERROR
-                                    return Err(LuceneError::unsupported_operation("tertiary tailoring gap too small"));
+                                    return Err(LuceneError::unsupported_operation(
+                                        "tertiary tailoring gap too small",
+                                    ));
                                 }
                                 t_is_tailored = true;
                             }
@@ -1303,16 +1426,22 @@ impl CollationBuilder {
                             if is_tailored_node(node) {
                                 if !s_is_tailored {
                                     // First tailored secondary node for p.
-                                    let s_count =
-                                        count_tailored_nodes(self.nodes.get_buffer(), next_index, collator::SECONDARY) + 1;
+                                    let s_count = count_tailored_nodes(
+                                        self.nodes.get_buffer(),
+                                        next_index,
+                                        collator::SECONDARY,
+                                    ) + 1;
                                     let s_limit;
                                     if s == 0 {
                                         // Gap at the beginning of the secondary CE range.
                                         s = self.root_elements.get_secondary_boundary() - 0x100;
-                                        s_limit = (self.root_elements.get_first_secondary_ce() >> 16) as i32;
+                                        s_limit = (self.root_elements.get_first_secondary_ce()
+                                            >> 16)
+                                            as i32;
                                     } else if !p_is_tailored {
                                         // p is a root primary.
-                                        s_limit = self.root_elements.get_secondary_after(p_index, s);
+                                        s_limit =
+                                            self.root_elements.get_secondary_after(p_index, s);
                                     } else if s == Collation::BEFORE_WEIGHT16 {
                                         s_limit = Collation::COMMON_WEIGHT16;
                                     } else {
@@ -1326,9 +1455,12 @@ impl CollationBuilder {
                                         s = self.root_elements.get_last_common_secondary();
                                     }
                                     secondaries.init_for_secondary();
-                                    if !secondaries.alloc_weights(s as i64, s_limit as i64, s_count) {
+                                    if !secondaries.alloc_weights(s as i64, s_limit as i64, s_count)
+                                    {
                                         // C++ U_BUFFER_OVERFLOW_ERROR
-                                        return Err(LuceneError::unsupported_operation("secondary tailoring gap too small"));
+                                        return Err(LuceneError::unsupported_operation(
+                                            "secondary tailoring gap too small",
+                                        ));
                                     }
                                     s_is_tailored = true;
                                 }
@@ -1342,13 +1474,23 @@ impl CollationBuilder {
                             debug_assert!(is_tailored_node(node));
                             if !p_is_tailored {
                                 // First tailored primary node in this list.
-                                let p_count = count_tailored_nodes(self.nodes.get_buffer(), next_index, collator::PRIMARY) + 1;
+                                let p_count = count_tailored_nodes(
+                                    self.nodes.get_buffer(),
+                                    next_index,
+                                    collator::PRIMARY,
+                                ) + 1;
                                 let is_compressible = self.base_data.is_compressible_primary(p);
-                                let p_limit = self.root_elements.get_primary_after(p, p_index, is_compressible);
+                                let p_limit = self.root_elements.get_primary_after(
+                                    p,
+                                    p_index,
+                                    is_compressible,
+                                );
                                 primaries.init_for_primary(is_compressible);
                                 if !primaries.alloc_weights(p, p_limit, p_count) {
                                     // C++ U_BUFFER_OVERFLOW_ERROR  // TODO: introduce a more specific UErrorCode?
-                                    return Err(LuceneError::unsupported_operation("primary tailoring gap too small"));
+                                    return Err(LuceneError::unsupported_operation(
+                                        "primary tailoring gap too small",
+                                    ));
                                 }
                                 p_is_tailored = true;
                             }
@@ -1357,7 +1499,11 @@ impl CollationBuilder {
                             s = Collation::COMMON_WEIGHT16;
                             s_is_tailored = false;
                         }
-                        t = if s == 0 { 0 } else { Collation::COMMON_WEIGHT16 };
+                        t = if s == 0 {
+                            0
+                        } else {
+                            Collation::COMMON_WEIGHT16
+                        };
                         t_is_tailored = false;
                     }
                     q = 0;
@@ -1377,8 +1523,13 @@ impl CollationBuilder {
     fn finalize_ces(&mut self) -> Result<()> {
         let mut new_builder = CollationDataBuilder::new()?;
         new_builder.init_for_tailoring(Some(self.base_data.clone()))?;
-        let mut finalizer = CEFinalizer { final_ces: self.nodes.get_buffer().to_vec() };
-        let old = self.data_builder.take().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let mut finalizer = CEFinalizer {
+            final_ces: self.nodes.get_buffer().to_vec(),
+        };
+        let old = self
+            .data_builder
+            .take()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         new_builder.copy_from(&old, &mut finalizer)?;
         self.data_builder = Some(new_builder);
         Ok(())
@@ -1428,7 +1579,9 @@ impl Sink for CollationBuilder {
             // root primary node (has no previous index)
             let mut p = weight32_from_node(node);
             if p == 0 {
-                return Err(LuceneError::unsupported_operation("reset primary-before ignorable not possible"));
+                return Err(LuceneError::unsupported_operation(
+                    "reset primary-before ignorable not possible",
+                ));
             }
             if p <= self.root_elements.get_first_primary() {
                 // There is no primary gap between ignorables and the space-first-primary.
@@ -1438,9 +1591,13 @@ impl Sink for CollationBuilder {
             }
             if p == Collation::FIRST_TRAILING_PRIMARY {
                 // We do not support tailoring to an unassigned-implicit CE.
-                return Err(LuceneError::unsupported_operation("reset primary-before [first trailing] not supported"));
+                return Err(LuceneError::unsupported_operation(
+                    "reset primary-before [first trailing] not supported",
+                ));
             }
-            p = self.root_elements.get_primary_before(p, self.base_data.is_compressible_primary(p));
+            p = self
+                .root_elements
+                .get_primary_before(p, self.base_data.is_compressible_primary(p));
             index = self.find_or_insert_node_for_primary(p);
             // Go to the last node in this list:
             // Tailor after the last node between adjacent root nodes.
@@ -1465,11 +1622,13 @@ impl Sink for CollationBuilder {
                 // Found a same-strength node with an explicit weight.
                 let mut weight16 = weight16_from_node(node);
                 if weight16 == 0 {
-                    return Err(LuceneError::unsupported_operation(if strength == collator::SECONDARY {
-                        "reset secondary-before secondary ignorable not possible"
-                    } else {
-                        "reset tertiary-before completely ignorable not possible"
-                    }));
+                    return Err(LuceneError::unsupported_operation(
+                        if strength == collator::SECONDARY {
+                            "reset secondary-before secondary ignorable not possible"
+                        } else {
+                            "reset tertiary-before completely ignorable not possible"
+                        },
+                    ));
                 }
                 debug_assert!(weight16 > Collation::BEFORE_WEIGHT16);
                 // Reset to just before this node.
@@ -1484,7 +1643,9 @@ impl Sink for CollationBuilder {
                     node = self.nodes.element_ati(i);
                     let previous_strength = strength_from_node(node);
                     if previous_strength < strength {
-                        debug_assert!(weight16 >= Collation::COMMON_WEIGHT16 || i == previous_index);
+                        debug_assert!(
+                            weight16 >= Collation::COMMON_WEIGHT16 || i == previous_index
+                        );
                         // Either the reset element has an above-common weight and
                         // the parent node provides the implied common weight,
                         // or the reset element has a weight<=common in the node
@@ -1521,8 +1682,18 @@ impl Sink for CollationBuilder {
         Ok(())
     }
 
-    fn add_relation(&mut self, strength: i32, prefix: &[u16], str: &[u16], extension: &[u16]) -> Result<()> {
-        let nfd_prefix: Vec<u16> = if prefix.is_empty() { Vec::new() } else { self.nfd.normalize_str(prefix)? };
+    fn add_relation(
+        &mut self,
+        strength: i32,
+        prefix: &[u16],
+        str: &[u16],
+        extension: &[u16],
+    ) -> Result<()> {
+        let nfd_prefix: Vec<u16> = if prefix.is_empty() {
+            Vec::new()
+        } else {
+            self.nfd.normalize_str(prefix)?
+        };
         let nfd_string = self.nfd.normalize_str(str)?;
 
         // The runtime code decomposes Hangul syllables on the fly,
@@ -1539,7 +1710,9 @@ impl Sink for CollationBuilder {
                 ));
             }
             c = nfd_string[nfd_length - 1] as i32;
-            if Hangul::is_jamo_l(c) || (Hangul::is_jamo_v(c) && Hangul::is_jamo_l(nfd_string[nfd_length - 2] as i32)) {
+            if Hangul::is_jamo_l(c)
+                || (Hangul::is_jamo_v(c) && Hangul::is_jamo_l(nfd_string[nfd_length - 2] as i32))
+            {
                 // A contraction ending with Jamo L or L+V would require
                 // generating Hangul syllables in addTailComposites() (588 for a Jamo L),
                 // or decomposing a following Hangul syllable on the fly, during contraction matching.
@@ -1562,7 +1735,9 @@ impl Sink for CollationBuilder {
             let ce = self.ces[(self.ces_length - 1) as usize];
             if strength == collator::PRIMARY && !is_temp_ce(ce) && ushr32(ce) == 0 {
                 // There is no primary gap between ignorables and the space-first-primary.
-                return Err(LuceneError::unsupported_operation("tailoring primary after ignorables not supported"));
+                return Err(LuceneError::unsupported_operation(
+                    "tailoring primary after ignorables not supported",
+                ));
             }
             if strength == collator::QUATERNARY && ce == 0 {
                 // The CE data structure does not support non-zero quaternary weights
@@ -1579,7 +1754,8 @@ impl Sink for CollationBuilder {
             if strength < temp_strength {
                 temp_strength = strength;
             }
-            self.ces[(self.ces_length - 1) as usize] = temp_ce_from_index_and_strength(index, temp_strength);
+            self.ces[(self.ces_length - 1) as usize] =
+                temp_ce_from_index_and_strength(index, temp_strength);
         }
 
         self.set_case_bits(&nfd_string)?;
@@ -1600,7 +1776,10 @@ impl Sink for CollationBuilder {
         let mut ce32 = Collation::UNASSIGNED_CE32;
         let ces = self.ces;
         let ces_length = self.ces_length;
-        if (nfd_prefix[..] != prefix[..] || nfd_string[..] != str[..]) && !self.ignore_prefix(prefix)? && !self.ignore_string(str)? {
+        if (nfd_prefix[..] != prefix[..] || nfd_string[..] != str[..])
+            && !self.ignore_prefix(prefix)?
+            && !self.ignore_string(str)?
+        {
             // Map from the original input to the CEs.
             // We do this in case the canonical closure is incomplete,
             // so that it is possible to explicitly provide the missing mappings.

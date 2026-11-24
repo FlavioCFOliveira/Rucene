@@ -11,14 +11,16 @@ use rucene::error::Result;
 use rucene::util::java_collections::{JavaHashCode, JavaObjectHashMap};
 
 use crate::jdk::{to_rust_string, units};
+use crate::lang::u_script::UScript;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::locale_utility::LocaleUtility;
-use crate::lang::u_script::UScript;
 use crate::text::any_transliterator::AnyTransliterator;
 use crate::text::compound_transliterator::CompoundTransliterator;
 use crate::text::null_transliterator::NullTransliterator;
 use crate::text::rule_based_transliterator::{Data, RuleBasedTransliterator};
-use crate::text::transliterator::{self, Factory, Transliterator, TransliteratorClass, FORWARD, REVERSE};
+use crate::text::transliterator::{
+    self, Factory, Transliterator, TransliteratorClass, FORWARD, REVERSE,
+};
 use crate::text::transliterator_id_parser::{equals_ignore_case, TransliteratorIDParser};
 use crate::text::transliterator_parser::TransliteratorParser;
 use crate::text::unicode_set::UnicodeSet;
@@ -88,14 +90,14 @@ fn lock_entry(wrapper: &EntryWrapper) -> MutexGuard<'_, Entry> {
 /// flags `spec_is_top` and `next_is_script_name` record which object each
 /// field holds.
 struct Spec {
-    top: Vec<u16>,               // top spec
-    spec: Option<Vec<u16>>,      // current spec
-    spec_is_top: bool,           // spec is the object top
-    next_spec: Option<Vec<u16>>, // next spec
-    next_is_script_name: bool,   // nextSpec is the object scriptName
+    top: Vec<u16>,                 // top spec
+    spec: Option<Vec<u16>>,        // current spec
+    spec_is_top: bool,             // spec is the object top
+    next_spec: Option<Vec<u16>>,   // next spec
+    next_is_script_name: bool,     // nextSpec is the object scriptName
     script_name: Option<Vec<u16>>, // script name equivalent of top, if != top
-    is_spec_locale: bool,        // true if spec is a locale
-    is_next_locale: bool,        // true if nextSpec is a locale
+    is_spec_locale: bool,          // true if spec is a locale
+    is_next_locale: bool,          // true if nextSpec is a locale
     res: Option<UResourceBundle>,
 }
 
@@ -126,7 +128,11 @@ impl Spec {
                 let name = units(&name);
                 // If the script name is the same as top then it's
                 // redundant
-                this.script_name = if equals_ignore_case(&name, &this.top) { None } else { Some(name) };
+                this.script_name = if equals_ignore_case(&name, &this.top) {
+                    None
+                } else {
+                    Some(name)
+                };
             }
 
             // Canonicalize top
@@ -135,7 +141,10 @@ impl Spec {
             // If 'top' is not a script name, try a locale lookup
             if script == UScript::INVALID_CODE {
                 let toploc = LocaleUtility::get_locale_from_name(&top);
-                let res = UResourceBundle::get_bundle_instance_locale(Some(ICUData::ICU_TRANSLIT_BASE_NAME), Some(&toploc))?;
+                let res = UResourceBundle::get_bundle_instance_locale(
+                    Some(ICUData::ICU_TRANSLIT_BASE_NAME),
+                    Some(&toploc),
+                )?;
                 // Make sure we got the bundle we wanted; otherwise, don't use it
                 if LocaleUtility::is_fallback_of(&res.get_u_locale()?.to_string(), &top) {
                     this.is_spec_locale = true;
@@ -192,7 +201,8 @@ impl Spec {
             }
         } else {
             // Fallback to the script, which may be null
-            let same = self.next_is_script_name || (self.next_spec.is_none() && self.script_name.is_none());
+            let same = self.next_is_script_name
+                || (self.next_spec.is_none() && self.script_name.is_none());
             if !same {
                 self.next_spec = self.script_name.clone();
                 self.next_is_script_name = true;
@@ -287,12 +297,19 @@ impl CompoundRBTEntry {
             }
             if i < self.data_vector.len() {
                 let data = self.data_vector[i].clone();
-                transliterators.push(Arc::new(RuleBasedTransliterator::new(units(&format!("%Pass{pass_number}")), data, None)?));
+                transliterators.push(Arc::new(RuleBasedTransliterator::new(
+                    units(&format!("%Pass{pass_number}")),
+                    data,
+                    None,
+                )?));
                 pass_number += 1;
             }
         }
 
-        let t: Arc<dyn Transliterator> = Arc::new(CompoundTransliterator::with_anonymous_rbts(transliterators, pass_number - 1)?);
+        let t: Arc<dyn Transliterator> = Arc::new(CompoundTransliterator::with_anonymous_rbts(
+            transliterators,
+            pass_number - 1,
+        )?);
         t.set_id(self.id.clone());
         if let Some(compound_filter) = &self.compound_filter {
             t.set_filter(Some(compound_filter))?;
@@ -320,14 +337,20 @@ pub(crate) struct TransliteratorRegistry {
     /// owned by this object. We use a Vector instead of a Hashtable
     /// because we want the variants to be ordered (in the order they were
     /// registered).
-    spec_dag: Mutex<JavaObjectHashMap<CaseInsensitiveString, JavaObjectHashMap<CaseInsensitiveString, Vec<CaseInsensitiveString>>>>,
+    spec_dag: Mutex<
+        JavaObjectHashMap<
+            CaseInsensitiveString,
+            JavaObjectHashMap<CaseInsensitiveString, Vec<CaseInsensitiveString>>,
+        >,
+    >,
     /// Vector of public full IDs (a `LinkedHashSet`).
     available_ids: Mutex<(Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)>,
 }
 
 impl fmt::Debug for TransliteratorRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TransliteratorRegistry").finish_non_exhaustive()
+        f.debug_struct("TransliteratorRegistry")
+            .finish_non_exhaustive()
     }
 }
 
@@ -348,11 +371,19 @@ impl TransliteratorRegistry {
     #[allow(clippy::type_complexity)]
     fn spec_dag(
         &self,
-    ) -> MutexGuard<'_, JavaObjectHashMap<CaseInsensitiveString, JavaObjectHashMap<CaseInsensitiveString, Vec<CaseInsensitiveString>>>> {
+    ) -> MutexGuard<
+        '_,
+        JavaObjectHashMap<
+            CaseInsensitiveString,
+            JavaObjectHashMap<CaseInsensitiveString, Vec<CaseInsensitiveString>>,
+        >,
+    > {
         self.spec_dag.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn available_ids(&self) -> MutexGuard<'_, (Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)> {
+    fn available_ids(
+        &self,
+    ) -> MutexGuard<'_, (Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)> {
         self.available_ids.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -365,7 +396,11 @@ impl TransliteratorRegistry {
     /// # Errors
     ///
     /// The errors of the lookup and of the instantiation (rule parsing).
-    pub fn get(&self, id: &[u16], alias_return: &mut Vec<u16>) -> Result<Option<Arc<dyn Transliterator>>> {
+    pub fn get(
+        &self,
+        id: &[u16],
+        alias_return: &mut Vec<u16>,
+    ) -> Result<Option<Arc<dyn Transliterator>>> {
         match self.find(id)? {
             None => Ok(None),
             Some(entry) => self.instantiate_entry(id, &entry, alias_return),
@@ -378,7 +413,12 @@ impl TransliteratorRegistry {
     /// # Errors
     ///
     /// The errors of [`TransliteratorIDParser::id_to_stv`] callers (none).
-    pub fn put_class(&self, id: &[u16], transliterator_subclass: TransliteratorClass, visible: bool) -> Result<()> {
+    pub fn put_class(
+        &self,
+        id: &[u16],
+        transliterator_subclass: TransliteratorClass,
+        visible: bool,
+    ) -> Result<()> {
         self.register_entry_id(id, Entry::Class(transliterator_subclass), visible)
     }
 
@@ -400,7 +440,13 @@ impl TransliteratorRegistry {
     /// # Errors
     ///
     /// As [`put_class`](Self::put_class).
-    pub fn put_resource(&self, id: &[u16], resource_name: Vec<u16>, dir: i32, visible: bool) -> Result<()> {
+    pub fn put_resource(
+        &self,
+        id: &[u16],
+        resource_name: Vec<u16>,
+        dir: i32,
+        visible: bool,
+    ) -> Result<()> {
         self.register_entry_id(
             id,
             Entry::Resource(ResourceEntry {
@@ -431,7 +477,12 @@ impl TransliteratorRegistry {
     /// # Errors
     ///
     /// As [`put_class`](Self::put_class).
-    pub fn put_transliterator(&self, id: &[u16], trans: Arc<dyn Transliterator>, visible: bool) -> Result<()> {
+    pub fn put_transliterator(
+        &self,
+        id: &[u16],
+        trans: Arc<dyn Transliterator>,
+        visible: bool,
+    ) -> Result<()> {
         self.register_entry_id(id, Entry::Transliterator(trans), visible)
     }
 
@@ -459,13 +510,20 @@ impl TransliteratorRegistry {
     /// `getAvailableIDs()`: the visible IDs, in registration order
     /// (Java returns an `Enumeration` over them).
     pub fn get_available_ids(&self) -> Vec<Vec<u16>> {
-        self.available_ids().0.iter().map(|c| c.get_string().to_vec()).collect()
+        self.available_ids()
+            .0
+            .iter()
+            .map(|c| c.get_string().to_vec())
+            .collect()
     }
 
     /// `getAvailableSources()`: the sources of the visible IDs, in Java's
     /// `HashMap` iteration order.
     pub fn get_available_sources(&self) -> Vec<Vec<u16>> {
-        self.spec_dag().keys().map(|c| c.get_string().to_vec()).collect()
+        self.spec_dag()
+            .keys()
+            .map(|c| c.get_string().to_vec())
+            .collect()
     }
 
     /// `getAvailableTargets(String source)`: the targets of the given
@@ -501,8 +559,19 @@ impl TransliteratorRegistry {
     /// `registerEntry(String source, String target, String variant, Object
     /// entry, boolean visible)`: convenience method. Calls 6-arg
     /// `registerEntry()`.
-    fn register_entry_stv(&self, source: &[u16], target: &[u16], variant: &[u16], entry: EntryWrapper, visible: bool) {
-        let s = if source.is_empty() { units(ANY) } else { source.to_vec() };
+    fn register_entry_stv(
+        &self,
+        source: &[u16],
+        target: &[u16],
+        variant: &[u16],
+        entry: EntryWrapper,
+        visible: bool,
+    ) {
+        let s = if source.is_empty() {
+            units(ANY)
+        } else {
+            source.to_vec()
+        };
         let id = TransliteratorIDParser::stv_to_id(source, target, Some(variant));
         self.register_entry_full(&id, &s, target, variant, entry, visible);
     }
@@ -513,14 +582,29 @@ impl TransliteratorRegistry {
         let stv = TransliteratorIDParser::id_to_stv(id);
         // Only need to do this if ID.indexOf('-') < 0
         let id = TransliteratorIDParser::stv_to_id(&stv.0, &stv.1, Some(&stv.2));
-        self.register_entry_full(&id, &stv.0, &stv.1, &stv.2, Arc::new(Mutex::new(entry)), visible);
+        self.register_entry_full(
+            &id,
+            &stv.0,
+            &stv.1,
+            &stv.2,
+            Arc::new(Mutex::new(entry)),
+            visible,
+        );
         Ok(())
     }
 
     /// `registerEntry(String ID, String source, String target, String
     /// variant, Object entry, boolean visible)`: register an entry object
     /// (adopted) with the given ID, source, target, and variant strings.
-    fn register_entry_full(&self, id: &[u16], source: &[u16], target: &[u16], variant: &[u16], entry: EntryWrapper, visible: bool) {
+    fn register_entry_full(
+        &self,
+        id: &[u16],
+        source: &[u16],
+        target: &[u16],
+        variant: &[u16],
+        entry: EntryWrapper,
+        visible: bool,
+    ) {
         let ci_id = CaseInsensitiveString::new(id.to_vec());
 
         // Store the entry within an array so it can be modified later
@@ -601,9 +685,20 @@ impl TransliteratorRegistry {
     /// `findInDynamicStore(Spec src, Spec trg, String variant)`: attempt to
     /// find a source-target/variant in the dynamic registry store. Return
     /// `None` on failure.
-    fn find_in_dynamic_store(&self, src: &Spec, trg: &Spec, variant: &[u16]) -> Option<EntryWrapper> {
-        let id = TransliteratorIDParser::stv_to_id(src.get().unwrap_or(&units("null")), trg.get().unwrap_or(&units("null")), Some(variant));
-        self.registry_map().get(&CaseInsensitiveString::new(id)).cloned()
+    fn find_in_dynamic_store(
+        &self,
+        src: &Spec,
+        trg: &Spec,
+        variant: &[u16],
+    ) -> Option<EntryWrapper> {
+        let id = TransliteratorIDParser::stv_to_id(
+            src.get().unwrap_or(&units("null")),
+            trg.get().unwrap_or(&units("null")),
+            Some(variant),
+        );
+        self.registry_map()
+            .get(&CaseInsensitiveString::new(id))
+            .cloned()
     }
 
     /// `findInStaticStore(Spec src, Spec trg, String variant)`: attempt to
@@ -614,7 +709,12 @@ impl TransliteratorRegistry {
     /// store, and return a pointer to it, but do not make it public --
     /// just because someone requested something, we do not expand the
     /// available ID list (or spec DAG).
-    fn find_in_static_store(&self, src: &Spec, trg: &Spec, variant: &[u16]) -> Result<Option<EntryWrapper>> {
+    fn find_in_static_store(
+        &self,
+        src: &Spec,
+        trg: &Spec,
+        variant: &[u16],
+    ) -> Result<Option<EntryWrapper>> {
         let mut entry = None;
         if src.is_locale() {
             entry = self.find_in_bundle(src, trg, variant, FORWARD)?;
@@ -643,7 +743,13 @@ impl TransliteratorRegistry {
     /// upper-case mapping: the JDK's `String` case mapping is not in the
     /// workspace, and both apply the full Unicode mapping without
     /// English-specific rules.
-    fn find_in_bundle(&self, spec_to_open: &Spec, spec_to_find: &Spec, variant: &[u16], direction: i32) -> Result<Option<EntryWrapper>> {
+    fn find_in_bundle(
+        &self,
+        spec_to_open: &Spec,
+        spec_to_find: &Spec,
+        variant: &[u16],
+        direction: i32,
+    ) -> Result<Option<EntryWrapper>> {
         // assert(specToOpen.isLocale());
         let Some(res) = spec_to_open.get_bundle()? else {
             // This means that the bundle's locale does not match
@@ -658,12 +764,18 @@ impl TransliteratorRegistry {
             // Transliterate_xxx.  This precedence order is arbitrary
             // but must be consistent and documented.
             if pass == 0 {
-                tag.push_str(if direction == FORWARD { "TransliterateTo" } else { "TransliterateFrom" });
+                tag.push_str(if direction == FORWARD {
+                    "TransliterateTo"
+                } else {
+                    "TransliterateFrom"
+                });
             } else {
                 tag.push_str("Transliterate");
             }
             let find = spec_to_find.get().expect("the spec to find is not null");
-            tag.push_str(&to_rust_string(&crate::lang::u_character::UCharacter::to_upper_case_ulocale(&ENGLISH, find)));
+            tag.push_str(&to_rust_string(
+                &crate::lang::u_character::UCharacter::to_upper_case_ulocale(&ENGLISH, find),
+            ));
 
             // The Transliterate*_xxx resource is an array of
             // strings of the format { <v0>, <r0>, ... }.  Each
@@ -736,7 +848,12 @@ impl TransliteratorRegistry {
     /// Here * matches the first variant listed.
     ///
     /// Caller does NOT own returned object. Return `None` on failure.
-    fn find_stv(&self, source: &[u16], target: &[u16], variant: &[u16]) -> Result<Option<EntryWrapper>> {
+    fn find_stv(
+        &self,
+        source: &[u16],
+        target: &[u16],
+        variant: &[u16],
+    ) -> Result<Option<EntryWrapper>> {
         let mut src = Spec::new(source)?;
         let mut trg = Spec::new(target)?;
 
@@ -794,7 +911,12 @@ impl TransliteratorRegistry {
     ///
     /// The entry object is assumed to reside in the dynamic store. It may
     /// be modified.
-    fn instantiate_entry(&self, id: &[u16], entry_wrapper: &EntryWrapper, alias_return: &mut Vec<u16>) -> Result<Option<Arc<dyn Transliterator>>> {
+    fn instantiate_entry(
+        &self,
+        id: &[u16],
+        entry_wrapper: &EntryWrapper,
+        alias_return: &mut Vec<u16>,
+    ) -> Result<Option<Arc<dyn Transliterator>>> {
         // We actually modify the entry object in some cases.  If it
         // is a string, we may partially parse it and turn it into a
         // more processed precursor.  This makes the next
@@ -807,7 +929,11 @@ impl TransliteratorRegistry {
             let entry = lock_entry(entry_wrapper).clone();
             let (resource, direction) = match entry {
                 Entry::Data(data) => {
-                    return Ok(Some(Arc::new(RuleBasedTransliterator::new(id.to_vec(), data, None)?)));
+                    return Ok(Some(Arc::new(RuleBasedTransliterator::new(
+                        id.to_vec(),
+                        data,
+                        None,
+                    )?)));
                 }
                 Entry::Class(class) => return Ok(Some(class())),
                 Entry::Alias(alias) => {
@@ -819,7 +945,8 @@ impl TransliteratorRegistry {
                 Entry::Transliterator(t) => {
                     if let Some(temp) = t.as_any().downcast_ref::<AnyTransliterator>() {
                         return Ok(Some(temp.safe_clone()?));
-                    } else if let Some(temp) = t.as_any().downcast_ref::<RuleBasedTransliterator>() {
+                    } else if let Some(temp) = t.as_any().downcast_ref::<RuleBasedTransliterator>()
+                    {
                         return Ok(Some(temp.safe_clone()?));
                     } else if let Some(temp) = t.as_any().downcast_ref::<CompoundTransliterator>() {
                         return Ok(Some(temp.safe_clone()?));

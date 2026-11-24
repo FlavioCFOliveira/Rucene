@@ -8,7 +8,8 @@ use rucene_queryparser::jdk::locale::Locale;
 
 use crate::lang::u_character::UCharacter;
 use crate::r#impl::case_map_impl::{
-    CaseMapImpl, OMIT_UNCHANGED_TEXT, TITLECASE_ADJUST_TO_CASED, TITLECASE_SENTENCES, TITLECASE_WHOLE_STRING,
+    CaseMapImpl, OMIT_UNCHANGED_TEXT, TITLECASE_ADJUST_TO_CASED, TITLECASE_SENTENCES,
+    TITLECASE_WHOLE_STRING,
 };
 use crate::r#impl::u_case_props::UCaseProps;
 use crate::text::break_iterator::BreakIterator;
@@ -72,7 +73,9 @@ pub struct Lower {
 }
 
 impl Lower {
-    const DEFAULT: Lower = Lower { internal_options: 0 };
+    const DEFAULT: Lower = Lower {
+        internal_options: 0,
+    };
     const OMIT_UNCHANGED: Lower = Lower {
         internal_options: OMIT_UNCHANGED_TEXT,
     };
@@ -100,7 +103,13 @@ impl Lower {
         dest: &'d mut Vec<u16>,
         edits: Option<&mut Edits>,
     ) -> Result<&'d mut Vec<u16>> {
-        CaseMapImpl::to_lower(get_case_locale(locale), self.internal_options, src, dest, edits)
+        CaseMapImpl::to_lower(
+            get_case_locale(locale),
+            self.internal_options,
+            src,
+            dest,
+            edits,
+        )
     }
 }
 
@@ -123,7 +132,9 @@ pub struct Upper {
 }
 
 impl Upper {
-    const DEFAULT: Upper = Upper { internal_options: 0 };
+    const DEFAULT: Upper = Upper {
+        internal_options: 0,
+    };
     const OMIT_UNCHANGED: Upper = Upper {
         internal_options: OMIT_UNCHANGED_TEXT,
     };
@@ -149,7 +160,13 @@ impl Upper {
         dest: &'d mut Vec<u16>,
         edits: Option<&mut Edits>,
     ) -> Result<&'d mut Vec<u16>> {
-        CaseMapImpl::to_upper(get_case_locale(locale), self.internal_options, src, dest, edits)
+        CaseMapImpl::to_upper(
+            get_case_locale(locale),
+            self.internal_options,
+            src,
+            dest,
+            edits,
+        )
     }
 }
 
@@ -172,7 +189,9 @@ pub struct Title {
 }
 
 impl Title {
-    const DEFAULT: Title = Title { internal_options: 0 };
+    const DEFAULT: Title = Title {
+        internal_options: 0,
+    };
     const OMIT_UNCHANGED: Title = Title {
         internal_options: OMIT_UNCHANGED_TEXT,
     };
@@ -184,7 +203,10 @@ impl Title {
     /// `IllegalArgumentException("multiple titlecasing iterator options")`.
     pub fn whole_string(&self) -> Result<Title> {
         Ok(Title {
-            internal_options: CaseMapImpl::add_title_iterator_option(self.internal_options, TITLECASE_WHOLE_STRING)?,
+            internal_options: CaseMapImpl::add_title_iterator_option(
+                self.internal_options,
+                TITLECASE_WHOLE_STRING,
+            )?,
         })
     }
 
@@ -195,7 +217,10 @@ impl Title {
     /// `IllegalArgumentException("multiple titlecasing iterator options")`.
     pub fn sentences(&self) -> Result<Title> {
         Ok(Title {
-            internal_options: CaseMapImpl::add_title_iterator_option(self.internal_options, TITLECASE_SENTENCES)?,
+            internal_options: CaseMapImpl::add_title_iterator_option(
+                self.internal_options,
+                TITLECASE_SENTENCES,
+            )?,
         })
     }
 
@@ -230,7 +255,10 @@ impl Title {
     /// options")`.
     pub fn adjust_to_cased(&self) -> Result<Title> {
         Ok(Title {
-            internal_options: CaseMapImpl::add_title_adjustment_option(self.internal_options, TITLECASE_ADJUST_TO_CASED)?,
+            internal_options: CaseMapImpl::add_title_adjustment_option(
+                self.internal_options,
+                TITLECASE_ADJUST_TO_CASED,
+            )?,
         })
     }
 
@@ -264,7 +292,8 @@ impl Title {
                         &default
                     }
                 };
-                let mut it = CaseMapImpl::get_title_break_iterator_locale(l, self.internal_options, None)?;
+                let mut it =
+                    CaseMapImpl::get_title_break_iterator_locale(l, self.internal_options, None)?;
                 it.set_text_string(src);
                 run(it.as_mut())
             }
@@ -279,7 +308,12 @@ impl Title {
     ///
     /// `IllegalArgumentException` for an iterator option together with an
     /// explicit iterator; the errors of the case mapping.
-    pub fn apply(&self, locale: Option<&Locale>, iter: Option<&mut dyn BreakIterator>, src: &[u16]) -> Result<Vec<u16>> {
+    pub fn apply(
+        &self,
+        locale: Option<&Locale>,
+        iter: Option<&mut dyn BreakIterator>,
+        src: &[u16],
+    ) -> Result<Vec<u16>> {
         let default;
         let case_locale_arg = if iter.is_none() && locale.is_none() {
             default = Locale::get_default();
@@ -316,7 +350,14 @@ impl Title {
         };
         let options = self.internal_options;
         self.with_title_iterator(case_locale_arg, iter, src, |it| {
-            CaseMapImpl::to_title(get_case_locale(case_locale_arg), options, it, src, dest, edits)
+            CaseMapImpl::to_title(
+                get_case_locale(case_locale_arg),
+                options,
+                it,
+                src,
+                dest,
+                edits,
+            )
         })
     }
 }
@@ -345,7 +386,9 @@ pub struct Fold {
 }
 
 impl Fold {
-    const DEFAULT: Fold = Fold { internal_options: 0 };
+    const DEFAULT: Fold = Fold {
+        internal_options: 0,
+    };
     const TURKIC: Fold = Fold {
         internal_options: UCharacter::FOLD_CASE_EXCLUDE_SPECIAL_I,
     };
@@ -379,7 +422,12 @@ impl Fold {
     /// # Errors
     ///
     /// The errors of the case mapping.
-    pub fn apply_to<'d>(&self, src: &[u16], dest: &'d mut Vec<u16>, edits: Option<&mut Edits>) -> Result<&'d mut Vec<u16>> {
+    pub fn apply_to<'d>(
+        &self,
+        src: &[u16],
+        dest: &'d mut Vec<u16>,
+        edits: Option<&mut Edits>,
+    ) -> Result<&'d mut Vec<u16>> {
         CaseMapImpl::fold(self.internal_options, src, dest, edits)
     }
 }

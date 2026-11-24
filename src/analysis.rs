@@ -2613,7 +2613,10 @@ mod tests {
 
         let mut entries: Vec<(String, String)> = Vec::new();
         tokenizer.reflect_with(
-            &mut |_type_id: TypeId, _name: &'static str, key: &str, value: &dyn std::fmt::Debug| {
+            &mut |_type_id: TypeId,
+                  _name: &'static str,
+                  key: &str,
+                  value: &dyn crate::util::attribute::AttributeValue| {
                 entries.push((key.to_string(), format!("{:?}", value)));
             },
         );

@@ -5,9 +5,11 @@
 
 use rucene::error::Result;
 
-use crate::r#impl::number::parse::parsed_number::ParsedNumber;
-use crate::r#impl::number::parse::validation_matcher::{impl_validation_matcher, ValidationMatcher};
 use crate::number::scale::Scale;
+use crate::r#impl::number::parse::parsed_number::ParsedNumber;
+use crate::r#impl::number::parse::validation_matcher::{
+    impl_validation_matcher, ValidationMatcher,
+};
 
 /// Wraps a `Scale` for use in the number parsing pipeline.
 ///
@@ -33,4 +35,7 @@ impl ValidationMatcher for MultiplierParseHandler {
     }
 }
 
-impl_validation_matcher!(MultiplierParseHandler, |m| format!("<MultiplierHandler com.ibm.icu.number.Scale@{:x}>", m.multiplier.hash_code()));
+impl_validation_matcher!(MultiplierParseHandler, |m| format!(
+    "<MultiplierHandler com.ibm.icu.number.Scale@{:x}>",
+    m.multiplier.hash_code()
+));

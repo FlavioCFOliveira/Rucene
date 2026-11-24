@@ -47,7 +47,11 @@ impl SeriesMatcher {
     /// # Errors
     ///
     /// The errors of the matchers in the series.
-    pub fn series_match(&self, segment: &mut StringSegment, result: &mut ParsedNumber) -> Result<bool> {
+    pub fn series_match(
+        &self,
+        segment: &mut StringSegment,
+        result: &mut ParsedNumber,
+    ) -> Result<bool> {
         debug_assert!(self.frozen);
         let Some(matchers) = self.matchers.as_ref() else {
             return Ok(false);
@@ -79,7 +83,10 @@ impl SeriesMatcher {
                 i += 1;
                 // Small hack: if there is another matcher coming, do not accept trailing weak chars.
                 // Needed for proper handling of currency spacing.
-                if i < matchers.len() && segment.get_offset() != result.char_end && result.char_end > matcher_offset {
+                if i < matchers.len()
+                    && segment.get_offset() != result.char_end
+                    && result.char_end > matcher_offset
+                {
                     segment.set_offset(result.char_end);
                 }
             } else if is_flexible {

@@ -29,7 +29,13 @@ pub trait UnicodeMatcher: Send + Sync + Any {
     /// `matches(Replaceable text, int[] offset, int limit, boolean
     /// incremental)`: `U_MISMATCH`, `U_PARTIAL_MATCH` or `U_MATCH`,
     /// advancing `offset[0]` past a match.
-    fn matches(&self, text: &dyn Replaceable, offset: &mut [i32], limit: i32, incremental: bool) -> Result<i32>;
+    fn matches(
+        &self,
+        text: &dyn Replaceable,
+        offset: &mut [i32],
+        limit: i32,
+        incremental: bool,
+    ) -> Result<i32>;
 
     /// `toPattern(boolean escapeUnprintable)`.
     fn to_pattern(&self, escape_unprintable: bool) -> Vec<u16>;

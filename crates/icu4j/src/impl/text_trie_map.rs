@@ -81,7 +81,13 @@ pub struct CharIterator<'a> {
 
 impl<'a> CharIterator<'a> {
     fn new(text: &'a [u16], offset: i32, ignore_case: bool) -> Self {
-        Self { ignore_case, text, next_idx: offset, start_idx: offset, remaining_char: None }
+        Self {
+            ignore_case,
+            text,
+            next_idx: offset,
+            start_idx: offset,
+            remaining_char: None,
+        }
     }
 
     /// `hasNext()`.
@@ -138,7 +144,9 @@ impl<'a> CharIterator<'a> {
     /// second half of a folded supplementary code point is pending.
     pub fn processed_length(&self) -> Result<i32> {
         if self.remaining_char.is_some() {
-            return Err(LuceneError::illegal_state("In the middle of surrogate pair"));
+            return Err(LuceneError::illegal_state(
+                "In the middle of surrogate pair",
+            ));
         }
         Ok(self.next_idx - self.start_idx)
     }
@@ -156,7 +164,11 @@ struct Node<V> {
 
 impl<V> Node<V> {
     fn root() -> Self {
-        Self { text: Vec::new(), values: None, children: None }
+        Self {
+            text: Vec::new(),
+            values: None,
+            children: None,
+        }
     }
 
     fn char_count(&self) -> i32 {
@@ -173,7 +185,11 @@ impl<V> Node<V> {
         self.add(&buf, 0, value);
     }
 
-    fn find_match(&self, chitr: &mut CharIterator<'_>, output: &mut Option<&mut Output>) -> Option<&Node<V>> {
+    fn find_match(
+        &self,
+        chitr: &mut CharIterator<'_>,
+        output: &mut Option<&mut Output>,
+    ) -> Option<&Node<V>> {
         let children = self.children.as_ref()?;
         if !chitr.has_next() {
             if let Some(o) = output.as_deref_mut() {
@@ -224,7 +240,11 @@ impl<V> Node<V> {
             return;
         }
         let Some(children) = self.children.as_mut() else {
-            self.children = Some(vec![Node { text: text[offset..].to_vec(), values: Some(vec![value]), children: None }]);
+            self.children = Some(vec![Node {
+                text: text[offset..].to_vec(),
+                values: Some(vec![value]),
+                children: None,
+            }]);
             return;
         };
         // walk children
@@ -248,10 +268,21 @@ impl<V> Node<V> {
             }
         }
         // add a new child to this node
-        children.insert(insert_at, Node { text: text[offset..].to_vec(), values: Some(vec![value]), children: None });
+        children.insert(
+            insert_at,
+            Node {
+                text: text[offset..].to_vec(),
+                values: Some(vec![value]),
+                children: None,
+            },
+        );
     }
 
-    fn match_following(&self, chitr: &mut CharIterator<'_>, output: &mut Option<&mut Output>) -> bool {
+    fn match_following(
+        &self,
+        chitr: &mut CharIterator<'_>,
+        output: &mut Option<&mut Output>,
+    ) -> bool {
         let mut matched = true;
         let mut idx = 1;
         while idx < self.text.len() {
@@ -288,7 +319,11 @@ impl<V> Node<V> {
     fn split(&mut self, offset: usize) {
         let child_text = self.text[offset..].to_vec();
         self.text.truncate(offset);
-        let child = Node { text: child_text, values: self.values.take(), children: self.children.take() };
+        let child = Node {
+            text: child_text,
+            values: self.values.take(),
+            children: self.children.take(),
+        };
         self.children = Some(vec![child]);
     }
 }
@@ -296,13 +331,19 @@ impl<V> Node<V> {
 impl<V> TextTrieMap<V> {
     /// `new TextTrieMap(boolean ignoreCase)`.
     pub fn new(ignore_case: bool) -> Self {
-        Self { root: Mutex::new(Node::root()), ignore_case }
+        Self {
+            root: Mutex::new(Node::root()),
+            ignore_case,
+        }
     }
 
     /// `put(CharSequence text, V val)`: adds `val` under `text`.
     pub fn put(&self, text: &[u16], val: V) -> &Self {
         let mut chitr = CharIterator::new(text, 0, self.ignore_case);
-        self.root.lock().unwrap_or_else(|e| e.into_inner()).add_from_iter(&mut chitr, val);
+        self.root
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_from_iter(&mut chitr, val);
         self
     }
 
@@ -323,11 +364,22 @@ impl<V> TextTrieMap<V> {
     ///
     /// `IllegalStateException("In the middle of surrogate pair")` when a
     /// key ends inside a folded supplementary code point.
-    pub fn find_from(&self, text: &[u16], offset: i32, handler: &mut dyn ResultHandler<V>) -> Result<()> {
+    pub fn find_from(
+        &self,
+        text: &[u16],
+        offset: i32,
+        handler: &mut dyn ResultHandler<V>,
+    ) -> Result<()> {
         self.find_internal(text, offset, handler, None)
     }
 
-    fn find_internal(&self, text: &[u16], offset: i32, handler: &mut dyn ResultHandler<V>, mut output: Option<&mut Output>) -> Result<()> {
+    fn find_internal(
+        &self,
+        text: &[u16],
+        offset: i32,
+        handler: &mut dyn ResultHandler<V>,
+        mut output: Option<&mut Output>,
+    ) -> Result<()> {
         let mut chitr = CharIterator::new(text, offset, self.ignore_case);
         let root = self.root.lock().unwrap_or_else(|e| e.into_inner());
         let mut node: &Node<V> = &root;
@@ -351,7 +403,10 @@ impl<V> TextTrieMap<V> {
     ///
     /// `UnsupportedOperationException` when `output` is frozen.
     pub fn put_lead_code_points(&self, output: &mut UnicodeSet) -> Result<()> {
-        self.root.lock().unwrap_or_else(|e| e.into_inner()).put_lead_code_points(output)
+        self.root
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put_lead_code_points(output)
     }
 }
 
@@ -374,8 +429,16 @@ impl<V: Clone> TextTrieMap<V> {
     /// # Errors
     ///
     /// As [`find_from`](Self::find_from).
-    pub fn get_from(&self, text: &[u16], start: i32, mut output: Option<&mut Output>) -> Result<Option<Vec<V>>> {
-        let mut handler = LongestMatchHandler { matches: None, length: 0 };
+    pub fn get_from(
+        &self,
+        text: &[u16],
+        start: i32,
+        mut output: Option<&mut Output>,
+    ) -> Result<Option<Vec<V>>> {
+        let mut handler = LongestMatchHandler {
+            matches: None,
+            length: 0,
+        };
         self.find_internal(text, start, &mut handler, output.as_deref_mut())?;
         if let Some(o) = output {
             o.match_length = handler.length;

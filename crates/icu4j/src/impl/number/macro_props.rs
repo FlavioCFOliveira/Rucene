@@ -5,12 +5,16 @@
 
 use std::sync::Arc;
 
-use rucene::util::java_collections::{java_boolean_hash_code, java_identity_hash_code_stand_in, java_string_hash_code};
+use rucene::util::java_collections::{
+    java_boolean_hash_code, java_identity_hash_code_stand_in, java_string_hash_code,
+};
 
 use crate::jdk::math::RoundingMode;
 use crate::number::integer_width::IntegerWidth;
 use crate::number::notation::Notation;
-use crate::number::number_formatter::{DecimalSeparatorDisplay, GroupingStrategy, SignDisplay, UnitWidth};
+use crate::number::number_formatter::{
+    DecimalSeparatorDisplay, GroupingStrategy, SignDisplay, UnitWidth,
+};
 use crate::number::precision::Precision;
 use crate::number::scale::Scale;
 use crate::r#impl::number::affix_pattern_provider::AffixPatternProvider;
@@ -67,7 +71,9 @@ impl SymbolsObject {
     fn java_equals(&self, other: &SymbolsObject) -> bool {
         match (self, other) {
             (SymbolsObject::Symbols(a), SymbolsObject::Symbols(b)) => a.java_equals(b),
-            (SymbolsObject::NumberingSystem(a), SymbolsObject::NumberingSystem(b)) => Arc::ptr_eq(a, b),
+            (SymbolsObject::NumberingSystem(a), SymbolsObject::NumberingSystem(b)) => {
+                Arc::ptr_eq(a, b)
+            }
             _ => false,
         }
     }
@@ -76,7 +82,9 @@ impl SymbolsObject {
     fn hash_code(&self) -> i32 {
         match self {
             SymbolsObject::Symbols(s) => s.hash_code(),
-            SymbolsObject::NumberingSystem(_) => java_identity_hash_code_stand_in("com.ibm.icu.text.NumberingSystem"),
+            SymbolsObject::NumberingSystem(_) => {
+                java_identity_hash_code_stand_in("com.ibm.icu.text.NumberingSystem")
+            }
         }
     }
 }
@@ -222,20 +230,25 @@ impl MacroProps {
             self.unit.as_ref().map_or(0, MeasureUnit::hash_code),
             self.per_unit.as_ref().map_or(0, MeasureUnit::hash_code),
             self.precision.as_ref().map_or(0, Precision::hash_code),
-            self.rounding_mode.map_or(0, |r| enum_hash_code("java.math.RoundingMode", r.name())),
+            self.rounding_mode
+                .map_or(0, |r| enum_hash_code("java.math.RoundingMode", r.name())),
             self.grouping.as_ref().map_or(0, GroupingObject::hash_code),
             self.padder.as_ref().map_or(0, Padder::hash_code),
-            self.integer_width.as_ref().map_or(0, IntegerWidth::hash_code),
+            self.integer_width
+                .as_ref()
+                .map_or(0, IntegerWidth::hash_code),
             self.symbols.as_ref().map_or(0, SymbolsObject::hash_code),
             self.unit_width.map_or(0, UnitWidth::hash_code),
-            self.unit_display_case.as_deref().map_or(0, java_string_hash_code),
+            self.unit_display_case
+                .as_deref()
+                .map_or(0, java_string_hash_code),
             self.sign.map_or(0, SignDisplay::hash_code),
             self.approximately.map_or(0, java_boolean_hash_code),
             self.decimal.map_or(0, DecimalSeparatorDisplay::hash_code),
             // The providers do not override hashCode (identity).
-            self.affix_provider
-                .as_ref()
-                .map_or(0, |_| java_identity_hash_code_stand_in("com.ibm.icu.impl.number.AffixPatternProvider")),
+            self.affix_provider.as_ref().map_or(0, |_| {
+                java_identity_hash_code_stand_in("com.ibm.icu.impl.number.AffixPatternProvider")
+            }),
             self.scale.as_ref().map_or(0, Scale::hash_code),
             self.usage.as_deref().map_or(0, java_string_hash_code),
             self.rules.as_ref().map_or(0, |r| r.hash_code()),
@@ -260,7 +273,11 @@ impl MacroProps {
             && self.rounding_mode == other.rounding_mode
             && eq_opt(&self.grouping, &other.grouping, GroupingObject::java_equals)
             && eq_opt(&self.padder, &other.padder, Padder::ptr_eq)
-            && eq_opt(&self.integer_width, &other.integer_width, IntegerWidth::ptr_eq)
+            && eq_opt(
+                &self.integer_width,
+                &other.integer_width,
+                IntegerWidth::ptr_eq,
+            )
             && eq_opt(&self.symbols, &other.symbols, SymbolsObject::java_equals)
             && self.unit_width == other.unit_width
             && self.unit_display_case == other.unit_display_case

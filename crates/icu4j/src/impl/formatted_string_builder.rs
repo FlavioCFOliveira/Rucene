@@ -9,9 +9,9 @@ use std::sync::{Arc, LazyLock};
 
 use rucene::error::{LuceneError, Result};
 
+use crate::jdk::text::same_field;
 use crate::jdk::text::{same_attribute, FieldRef};
 use crate::jdk::{index_out_of_bounds, to_rust_string};
-use crate::jdk::text::same_field;
 use crate::text::number_format::field as nf_field;
 
 /// An object that wraps a field: `unwrap` gives the field the wrapped
@@ -281,10 +281,18 @@ impl FormattedStringBuilder {
     ///
     /// With `Character.toChars`'s `IllegalArgumentException` text for an
     /// invalid code point (an unchecked exception ICU never catches).
-    pub fn insert_code_point(&mut self, index: i32, code_point: i32, field: Option<FieldObject>) -> i32 {
+    pub fn insert_code_point(
+        &mut self,
+        index: i32,
+        code_point: i32,
+        field: Option<FieldObject>,
+    ) -> i32 {
         let count = if code_point >= 0x10000 { 2 } else { 1 };
         if !(0..=0x10ffff).contains(&code_point) {
-            panic!("java.lang.IllegalArgumentException: Not a valid Unicode code point: 0x{:X}", code_point);
+            panic!(
+                "java.lang.IllegalArgumentException: Not a valid Unicode code point: 0x{:X}",
+                code_point
+            );
         }
         let position = self.prepare_for_insert(index, count) as usize;
         if count == 2 {
@@ -326,7 +334,14 @@ impl FormattedStringBuilder {
     /// string, reading from the CharSequence from start (inclusive) to end
     /// (exclusive). Equivalent to `insert(int, CharSequence, int, int,
     /// Object)`.
-    pub fn insert_range(&mut self, index: i32, sequence: &[u16], start: i32, end: i32, field: Option<FieldObject>) -> i32 {
+    pub fn insert_range(
+        &mut self,
+        index: i32,
+        sequence: &[u16],
+        start: i32,
+        end: i32,
+        field: Option<FieldObject>,
+    ) -> i32 {
         let count = end - start;
         let position = self.prepare_for_insert(index, count);
         for i in 0..count {
@@ -378,7 +393,12 @@ impl FormattedStringBuilder {
     /// in the string, and associates them with the fields in the specified
     /// field array, which must have the same length as chars. Equivalent to
     /// `insert(int, char[], Object[])`.
-    pub fn insert_chars(&mut self, index: i32, chars: &[u16], fields: Option<&[Option<FieldObject>]>) -> i32 {
+    pub fn insert_chars(
+        &mut self,
+        index: i32,
+        chars: &[u16],
+        fields: Option<&[Option<FieldObject>]>,
+    ) -> i32 {
         debug_assert!(fields.is_none() || chars.len() == fields.map_or(0, |f| f.len()));
         let count = chars.len() as i32;
         if count == 0 {
@@ -459,9 +479,21 @@ impl FormattedStringBuilder {
             let mut new_fields: Vec<Option<FieldObject>> = vec![None; new_capacity as usize];
 
             arraycopy(&self.chars, old_zero, &mut new_chars, new_zero, index);
-            arraycopy(&self.chars, old_zero + index, &mut new_chars, new_zero + index + count, length - index);
+            arraycopy(
+                &self.chars,
+                old_zero + index,
+                &mut new_chars,
+                new_zero + index + count,
+                length - index,
+            );
             arraycopy(&self.fields, old_zero, &mut new_fields, new_zero, index);
-            arraycopy(&self.fields, old_zero + index, &mut new_fields, new_zero + index + count, length - index);
+            arraycopy(
+                &self.fields,
+                old_zero + index,
+                &mut new_fields,
+                new_zero + index + count,
+                length - index,
+            );
 
             self.chars = new_chars;
             self.fields = new_fields;
@@ -473,9 +505,19 @@ impl FormattedStringBuilder {
             // C++ note: memmove is required because src and dest might be the
             // same.
             arraycopy_within(&mut self.chars, old_zero, new_zero, length);
-            arraycopy_within(&mut self.chars, new_zero + index, new_zero + index + count, length - index);
+            arraycopy_within(
+                &mut self.chars,
+                new_zero + index,
+                new_zero + index + count,
+                length - index,
+            );
             arraycopy_within(&mut self.fields, old_zero, new_zero, length);
-            arraycopy_within(&mut self.fields, new_zero + index, new_zero + index + count, length - index);
+            arraycopy_within(
+                &mut self.fields,
+                new_zero + index,
+                new_zero + index + count,
+                length - index,
+            );
 
             self.zero = new_zero;
             self.length += count;
@@ -631,7 +673,10 @@ impl FormattedStringBuilder {
             if self.char_at(i) != other.char_at(i) {
                 return false;
             }
-            if !same_field(Self::unwrap_field(self.field_at(i)), Self::unwrap_field(other.field_at(i))) {
+            if !same_field(
+                Self::unwrap_field(self.field_at(i)),
+                Self::unwrap_field(other.field_at(i)),
+            ) {
                 return false;
             }
         }
@@ -645,7 +690,9 @@ impl FormattedStringBuilder {
     /// Always: `UnsupportedOperationException("Don't call #hashCode() or
     /// #equals() on a mutable.")`.
     pub fn hash_code(&self) -> Result<i32> {
-        Err(LuceneError::unsupported_operation("Don't call #hashCode() or #equals() on a mutable."))
+        Err(LuceneError::unsupported_operation(
+            "Don't call #hashCode() or #equals() on a mutable.",
+        ))
     }
 
     /// Equivalent to `equals(Object)`.
@@ -655,7 +702,9 @@ impl FormattedStringBuilder {
     /// Always: `UnsupportedOperationException("Don't call #hashCode() or
     /// #equals() on a mutable.")`.
     pub fn equals(&self, _other: &FormattedStringBuilder) -> Result<bool> {
-        Err(LuceneError::unsupported_operation("Don't call #hashCode() or #equals() on a mutable."))
+        Err(LuceneError::unsupported_operation(
+            "Don't call #hashCode() or #equals() on a mutable.",
+        ))
     }
 }
 

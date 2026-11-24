@@ -45,7 +45,11 @@ impl Quantifier {
     /// `IllegalArgumentException` (no message) for a negative count or a
     /// minimum above the maximum. Java's `null` matcher check is the
     /// non-optional parameter type.
-    pub fn new(the_matcher: Arc<dyn UnicodeMatcher>, the_min_count: i32, the_max_count: i32) -> Result<Self> {
+    pub fn new(
+        the_matcher: Arc<dyn UnicodeMatcher>,
+        the_min_count: i32,
+        the_max_count: i32,
+    ) -> Result<Self> {
         if the_min_count < 0 || the_max_count < 0 || the_min_count > the_max_count {
             return Err(illegal_argument_no_message());
         }
@@ -60,7 +64,13 @@ impl Quantifier {
 impl UnicodeMatcher for Quantifier {
     /// `matches(Replaceable text, int[] offset, int limit, boolean
     /// incremental)`.
-    fn matches(&self, text: &dyn Replaceable, offset: &mut [i32], limit: i32, incremental: bool) -> Result<i32> {
+    fn matches(
+        &self,
+        text: &dyn Replaceable,
+        offset: &mut [i32],
+        limit: i32,
+        incremental: bool,
+    ) -> Result<i32> {
         let start = offset[0];
         let mut count = 0;
         while count < self.max_count {

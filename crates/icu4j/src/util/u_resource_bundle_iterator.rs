@@ -39,6 +39,7 @@ impl UResourceBundleIterator {
     ///
     /// `NoSuchElementException` past the end; the errors of
     /// `UResourceBundle.get(int)`.
+    #[allow(clippy::should_implement_trait)] // Java method name
     pub fn next(&mut self) -> Result<UResourceBundle> {
         if self.index < self.size {
             let i = self.index;

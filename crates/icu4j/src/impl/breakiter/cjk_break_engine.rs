@@ -12,8 +12,9 @@ use rucene_analysis_common::jdk::character_iterator::{CharacterIterator, StringC
 
 use crate::jdk::{char_count, code_point_at, offset_by_code_points, units};
 use crate::r#impl::assert::Assert;
-use crate::r#impl::breakiter::dictionary_break_engine::{uset_contains, 
-    dictionary_find_breaks, dictionary_handles, DequeI, DictionaryBreakEngine, DictionaryBreakEngineBase,
+use crate::r#impl::breakiter::dictionary_break_engine::{
+    dictionary_find_breaks, dictionary_handles, uset_contains, DequeI, DictionaryBreakEngine,
+    DictionaryBreakEngineBase,
 };
 use crate::r#impl::breakiter::dictionary_data::DictionaryData;
 use crate::r#impl::breakiter::dictionary_matcher::DictionaryMatcher;
@@ -38,8 +39,11 @@ const KINT32MAX: i32 = i32::MAX;
 
 /// `Boolean.parseBoolean(ICUConfig.get("com.ibm.icu.impl.breakiter.useMLPhraseBreaking", "false"))`.
 fn use_ml_phrase_breaking() -> bool {
-    ICUConfig::get_or("com.ibm.icu.impl.breakiter.useMLPhraseBreaking", Some("false"))
-        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    ICUConfig::get_or(
+        "com.ibm.icu.impl.breakiter.useMLPhraseBreaking",
+        Some("false"),
+    )
+    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
 
 /// The dictionary-based engine for Chinese, Japanese and Korean.
@@ -72,7 +76,8 @@ impl CjkBreakEngine {
             UnicodeSet::from_pattern(&units("[[:Nd:][:Pi:][:Ps:][:Alphabetic:]]"))?;
         f_digit_or_open_punctuation_or_alphabet_set.freeze();
 
-        let mut f_close_punctuation_set = UnicodeSet::from_pattern(&units("[[:Pc:][:Pd:][:Pe:][:Pf:][:Po:]]"))?;
+        let mut f_close_punctuation_set =
+            UnicodeSet::from_pattern(&units("[[:Pc:][:Pd:][:Pe:][:Pf:][:Po:]]"))?;
         f_close_punctuation_set.freeze();
         let f_skip_set = HashSet::new();
 
@@ -168,13 +173,19 @@ impl CjkBreakEngine {
 
     /// `isKatakana(int value)`.
     fn is_katakana(value: i32) -> bool {
-        ((0x30A1..=0x30FE).contains(&value) && value != 0x30FB) || (0xFF66..=0xFF9F).contains(&value)
+        ((0x30A1..=0x30FE).contains(&value) && value != 0x30FB)
+            || (0xFF66..=0xFF9F).contains(&value)
     }
 
     /// `getPatternFromText(CharacterIterator text, StringBuffer sb, int
     /// start, int length)`: refills `sb` with `length` units of `text` from
     /// `start` and returns them.
-    fn get_pattern_from_text(text: &mut dyn CharacterIterator, sb: &mut Vec<u16>, start: i32, length: i32) -> Vec<u16> {
+    fn get_pattern_from_text(
+        text: &mut dyn CharacterIterator,
+        sb: &mut Vec<u16>,
+        start: i32,
+        length: i32,
+    ) -> Vec<u16> {
         sb.clear();
         if length > 0 {
             set_index(text, start);
@@ -212,7 +223,14 @@ impl LanguageBreakEngine for CjkBreakEngine {
         found_breaks: &mut DequeI,
         is_phrase_breaking: bool,
     ) -> i32 {
-        dictionary_find_breaks(self, text, start_pos, end_pos, found_breaks, is_phrase_breaking)
+        dictionary_find_breaks(
+            self,
+            text,
+            start_pos,
+            end_pos,
+            found_breaks,
+            is_phrase_breaking,
+        )
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -256,9 +274,11 @@ impl DictionaryBreakEngine for CjkBreakEngine {
             in_text.next();
         }
         let prenormstr = s.clone();
-        let is_normalized = Normalizer::quick_check_str_mode(&prenormstr, Normalizer::NFKC).unwrap_or_else(|e| panic!("{e}"))
+        let is_normalized = Normalizer::quick_check_str_mode(&prenormstr, Normalizer::NFKC)
+            .unwrap_or_else(|e| panic!("{e}"))
             == Normalizer::YES
-            || Normalizer::is_normalized_str(&prenormstr, Normalizer::NFKC, 0).unwrap_or_else(|e| panic!("{e}"));
+            || Normalizer::is_normalized_str(&prenormstr, Normalizer::NFKC, 0)
+                .unwrap_or_else(|e| panic!("{e}"));
         let mut text: StringCharacterIterator;
         let mut num_code_pts: i32 = 0;
         if is_normalized {
@@ -272,10 +292,12 @@ impl DictionaryBreakEngine for CjkBreakEngine {
                 char_positions[num_code_pts as usize] = index;
             }
         } else {
-            let norm_str = Normalizer::normalize_str_mode(&prenormstr, Normalizer::NFKC).unwrap_or_else(|e| panic!("{e}"));
+            let norm_str = Normalizer::normalize_str_mode(&prenormstr, Normalizer::NFKC)
+                .unwrap_or_else(|e| panic!("{e}"));
             text = StringCharacterIterator::new(norm_str.clone());
             char_positions = vec![0i32; norm_str.len() + 1];
-            let mut normalizer = Normalizer::new_string(&prenormstr, Normalizer::NFKC, 0).unwrap_or_else(|e| panic!("{e}"));
+            let mut normalizer = Normalizer::new_string(&prenormstr, Normalizer::NFKC, 0)
+                .unwrap_or_else(|e| panic!("{e}"));
             let mut index = 0;
             char_positions[0] = 0;
             while index < normalizer.end_index() {
@@ -392,7 +414,8 @@ impl DictionaryBreakEngine for CjkBreakEngine {
                     }
 
                     if (j - i) < K_MAX_KATAKANA_GROUP_LENGTH {
-                        let new_snlp = best_snlp[i as usize].wrapping_add(Self::get_katakana_cost(j - i));
+                        let new_snlp =
+                            best_snlp[i as usize].wrapping_add(Self::get_katakana_cost(j - i));
                         if new_snlp < best_snlp[j as usize] {
                             best_snlp[j as usize] = new_snlp;
                             prev[j as usize] = i;
@@ -426,7 +449,8 @@ impl DictionaryBreakEngine for CjkBreakEngine {
                 // characters don't occur.
                 set_index(&mut text, code_unit_idx);
                 if !self.f_skip_set.contains(&pattern)
-                    && (!Self::is_katakana(current32(&mut text)) || !Self::is_katakana(previous32(&mut text)))
+                    && (!Self::is_katakana(current32(&mut text))
+                        || !Self::is_katakana(previous32(&mut text)))
                 {
                     t_boundary[num_breaks] = i;
                     num_breaks += 1;
@@ -481,7 +505,9 @@ impl DictionaryBreakEngine for CjkBreakEngine {
             if is_phrase_breaking {
                 set_index(in_text, end_pos);
                 let current = current32(in_text);
-                if current != DONE32 && !uset_contains(&self.f_digit_or_open_punctuation_or_alphabet_set, current) {
+                if current != DONE32
+                    && !uset_contains(&self.f_digit_or_open_punctuation_or_alphabet_set, current)
+                {
                     found_breaks.pop();
                     corrected_num_breaks -= 1;
                 }

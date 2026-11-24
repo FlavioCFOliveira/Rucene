@@ -7,12 +7,15 @@ use std::sync::{Arc, LazyLock};
 
 use crate::jdk::units;
 use crate::r#impl::number::parse::parsed_number::{self, ParsedNumber};
-use crate::r#impl::number::parse::symbol_matcher::{impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl};
+use crate::r#impl::number::parse::symbol_matcher::{
+    impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl,
+};
 use crate::r#impl::string_segment::StringSegment;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 use crate::text::unicode_set::EMPTY;
 
-static DEFAULT: LazyLock<Arc<NanMatcher>> = LazyLock::new(|| Arc::new(NanMatcher::new(&units("NaN"))));
+static DEFAULT: LazyLock<Arc<NanMatcher>> =
+    LazyLock::new(|| Arc::new(NanMatcher::new(&units("NaN"))));
 
 /// Equivalent to `com.ibm.icu.impl.number.parse.NanMatcher`.
 #[derive(Debug)]
@@ -32,7 +35,9 @@ impl NanMatcher {
     }
 
     fn new(symbol_string: &[u16]) -> Self {
-        NanMatcher { base: SymbolMatcher::new(symbol_string, &EMPTY) }
+        NanMatcher {
+            base: SymbolMatcher::new(symbol_string, &EMPTY),
+        }
     }
 }
 

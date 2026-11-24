@@ -52,12 +52,17 @@ impl RangeMacroProps {
             self.identity_fallback.map_or(0, |i| i.hash_code()),
             self.loc.as_ref().map_or(0, |l| l.hash_code()),
         ];
-        hashes.iter().fold(1i32, |h, &e| h.wrapping_mul(31).wrapping_add(e))
+        hashes
+            .iter()
+            .fold(1i32, |h, &e| h.wrapping_mul(31).wrapping_add(e))
     }
 
     /// Equivalent to `equals(Object)`.
     pub fn java_equals(&self, other: &RangeMacroProps) -> bool {
-        fn formatter_eq(a: &Option<UnlocalizedNumberFormatter>, b: &Option<UnlocalizedNumberFormatter>) -> bool {
+        fn formatter_eq(
+            a: &Option<UnlocalizedNumberFormatter>,
+            b: &Option<UnlocalizedNumberFormatter>,
+        ) -> bool {
             match (a, b) {
                 (None, None) => true,
                 (Some(a), Some(b)) => a.java_equals(b),

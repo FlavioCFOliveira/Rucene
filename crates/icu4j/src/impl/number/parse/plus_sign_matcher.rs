@@ -6,13 +6,17 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::r#impl::number::parse::parsed_number::ParsedNumber;
-use crate::r#impl::number::parse::symbol_matcher::{impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl};
+use crate::r#impl::number::parse::symbol_matcher::{
+    impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl,
+};
 use crate::r#impl::static_unicode_sets::Key;
 use crate::r#impl::string_segment::StringSegment;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 
-static DEFAULT: LazyLock<Arc<PlusSignMatcher>> = LazyLock::new(|| Arc::new(PlusSignMatcher::default_matcher(false)));
-static DEFAULT_ALLOW_TRAILING: LazyLock<Arc<PlusSignMatcher>> = LazyLock::new(|| Arc::new(PlusSignMatcher::default_matcher(true)));
+static DEFAULT: LazyLock<Arc<PlusSignMatcher>> =
+    LazyLock::new(|| Arc::new(PlusSignMatcher::default_matcher(false)));
+static DEFAULT_ALLOW_TRAILING: LazyLock<Arc<PlusSignMatcher>> =
+    LazyLock::new(|| Arc::new(PlusSignMatcher::default_matcher(true)));
 
 /// Equivalent to `com.ibm.icu.impl.number.parse.PlusSignMatcher`.
 #[derive(Debug)]
@@ -23,7 +27,10 @@ pub struct PlusSignMatcher {
 
 impl PlusSignMatcher {
     /// Equivalent to `getInstance(DecimalFormatSymbols, boolean)`.
-    pub fn get_instance(symbols: &DecimalFormatSymbols, allow_trailing: bool) -> Arc<PlusSignMatcher> {
+    pub fn get_instance(
+        symbols: &DecimalFormatSymbols,
+        allow_trailing: bool,
+    ) -> Arc<PlusSignMatcher> {
         let symbol_string = symbols.get_plus_sign_string();
         if DEFAULT.base.uni_set.contains_str(symbol_string) {
             if allow_trailing {
@@ -32,12 +39,18 @@ impl PlusSignMatcher {
                 DEFAULT.clone()
             }
         } else {
-            Arc::new(PlusSignMatcher { base: SymbolMatcher::new(symbol_string, DEFAULT.base.uni_set), allow_trailing })
+            Arc::new(PlusSignMatcher {
+                base: SymbolMatcher::new(symbol_string, DEFAULT.base.uni_set),
+                allow_trailing,
+            })
         }
     }
 
     fn default_matcher(allow_trailing: bool) -> Self {
-        PlusSignMatcher { base: SymbolMatcher::from_key(Key::PlusSign), allow_trailing }
+        PlusSignMatcher {
+            base: SymbolMatcher::from_key(Key::PlusSign),
+            allow_trailing,
+        }
     }
 }
 

@@ -17,7 +17,9 @@ use crate::r#impl::coll::collation_compare::CollationCompare;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_fast_latin::CollationFastLatin;
 use crate::r#impl::coll::collation_iterator::CollationIterator;
-use crate::r#impl::coll::collation_keys::{CollationKeys, SortKeyByteSink, SortKeyByteSinkBase, SIMPLE_LEVEL_FALLBACK};
+use crate::r#impl::coll::collation_keys::{
+    CollationKeys, SortKeyByteSink, SortKeyByteSinkBase, SIMPLE_LEVEL_FALLBACK,
+};
 use crate::r#impl::coll::collation_loader::CollationLoader;
 use crate::r#impl::coll::collation_root::CollationRoot;
 use crate::r#impl::coll::collation_settings::CollationSettings;
@@ -51,7 +53,10 @@ struct CollationKeyByteSink<'k> {
 impl<'k> CollationKeyByteSink<'k> {
     fn new(key: &'k mut RawCollationKey) -> Self {
         let bytes = key.bytes.take().unwrap_or_default();
-        Self { base: SortKeyByteSinkBase::new(bytes), key_: key }
+        Self {
+            base: SortKeyByteSinkBase::new(bytes),
+            key_: key,
+        }
     }
 
     /// Java's `buffer_` and `key_.bytes` alias one array; here the sink owns
@@ -173,7 +178,8 @@ impl NFDIterator {
             str.clear();
             str.extend_from_slice(&seq[start as usize..span_limit as usize]);
             {
-                let mut buffer = ReorderingBuffer::new(nfc_impl, &mut str, seq.len() as i32 - start);
+                let mut buffer =
+                    ReorderingBuffer::new(nfc_impl, &mut str, seq.len() as i32 - start);
                 nfc_impl.make_fcd(seq, span_limit, seq.len() as i32, Some(&mut buffer));
             }
             self.s.clear();
@@ -184,7 +190,11 @@ impl NFDIterator {
     }
 }
 
-fn compare_nfd_iter(nfc_impl: &Normalizer2Impl, left: &mut NFDIterator, right: &mut NFDIterator) -> i32 {
+fn compare_nfd_iter(
+    nfc_impl: &Normalizer2Impl,
+    left: &mut NFDIterator,
+    right: &mut NFDIterator,
+) -> i32 {
     loop {
         // Fetch the next FCD code point from each string.
         let mut left_cp = left.next_code_point();
@@ -292,7 +302,9 @@ impl RuleBasedCollator {
     /// invalid rules; the exceptions of building the tailoring.
     pub fn new(rules: Option<&[u16]>) -> Result<Self> {
         let Some(rules) = rules else {
-            return Err(LuceneError::illegal_argument("Collation rules can not be null"));
+            return Err(LuceneError::illegal_argument(
+                "Collation rules can not be null",
+            ));
         };
         let t = Self::internal_build_tailoring(rules)?;
         let mut c = Self::adopt_tailoring(t);
@@ -344,14 +356,16 @@ impl RuleBasedCollator {
     }
 
     fn ro(&self) -> &CollationSettings {
-        self.settings.read_only().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.settings
+            .read_only()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn init_max_expansions(&self) {
         // synchronized(tailoring): set once.
-        self.tailoring
-            .max_expansions
-            .get_or_init(|| CollationElementIterator::compute_max_expansions(&self.tailoring.data().clone()));
+        self.tailoring.max_expansions.get_or_init(|| {
+            CollationElementIterator::compute_max_expansions(&self.tailoring.data().clone())
+        });
     }
 
     /// Return a CollationElementIterator for the given String.
@@ -367,7 +381,10 @@ impl RuleBasedCollator {
     /// will be created for use.
     ///
     /// Equivalent to `getCollationElementIterator(CharacterIterator)`.
-    pub fn get_collation_element_iterator_ci(&self, source: &dyn CharacterIterator) -> CollationElementIterator<'_> {
+    pub fn get_collation_element_iterator_ci(
+        &self,
+        source: &dyn CharacterIterator,
+    ) -> CollationElementIterator<'_> {
         self.init_max_expansions();
         let newsource = source.clone_box();
         CollationElementIterator::from_character_iterator(newsource, self)
@@ -378,7 +395,10 @@ impl RuleBasedCollator {
     /// will be created for use.
     ///
     /// Equivalent to `getCollationElementIterator(UCharacterIterator)`.
-    pub fn get_collation_element_iterator_uci(&self, source: &dyn UCharacterIterator) -> CollationElementIterator<'_> {
+    pub fn get_collation_element_iterator_uci(
+        &self,
+        source: &dyn UCharacterIterator,
+    ) -> CollationElementIterator<'_> {
         self.init_max_expansions();
         CollationElementIterator::from_u_character_iterator(source, self)
     }
@@ -411,7 +431,10 @@ impl RuleBasedCollator {
     }
 
     fn get_default_settings(&self) -> &Arc<CollationSettings> {
-        self.tailoring.settings.read_only_arc().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.tailoring
+            .settings
+            .read_only_arc()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `settings.readOnly() == defaultSettings` (identity).
@@ -453,8 +476,11 @@ impl RuleBasedCollator {
         if upperfirst == self.is_upper_case_first() {
             return Ok(());
         }
-        self.get_owned_settings()
-            .set_case_first(if upperfirst { CollationSettings::CASE_FIRST_AND_UPPER_MASK } else { 0 });
+        self.get_owned_settings().set_case_first(if upperfirst {
+            CollationSettings::CASE_FIRST_AND_UPPER_MASK
+        } else {
+            0
+        });
         self.set_fast_latin_options();
         Ok(())
     }
@@ -472,7 +498,11 @@ impl RuleBasedCollator {
         if lowerfirst == self.is_lower_case_first() {
             return Ok(());
         }
-        self.get_owned_settings().set_case_first(if lowerfirst { CollationSettings::CASE_FIRST } else { 0 });
+        self.get_owned_settings().set_case_first(if lowerfirst {
+            CollationSettings::CASE_FIRST
+        } else {
+            0
+        });
         self.set_fast_latin_options();
         Ok(())
     }
@@ -584,7 +614,8 @@ impl RuleBasedCollator {
         if flag == self.is_french_collation() {
             return Ok(());
         }
-        self.get_owned_settings().set_flag(CollationSettings::BACKWARD_SECONDARY, flag);
+        self.get_owned_settings()
+            .set_flag(CollationSettings::BACKWARD_SECONDARY, flag);
         self.set_fast_latin_options();
         Ok(())
     }
@@ -602,7 +633,8 @@ impl RuleBasedCollator {
         if shifted == self.is_alternate_handling_shifted() {
             return Ok(());
         }
-        self.get_owned_settings().set_alternate_handling_shifted(shifted);
+        self.get_owned_settings()
+            .set_alternate_handling_shifted(shifted);
         self.set_fast_latin_options();
         Ok(())
     }
@@ -620,7 +652,8 @@ impl RuleBasedCollator {
         if flag == self.is_case_level() {
             return Ok(());
         }
-        self.get_owned_settings().set_flag(CollationSettings::CASE_LEVEL, flag);
+        self.get_owned_settings()
+            .set_flag(CollationSettings::CASE_LEVEL, flag);
         self.set_fast_latin_options();
         Ok(())
     }
@@ -663,7 +696,8 @@ impl RuleBasedCollator {
         if flag == self.get_numeric_collation() {
             return Ok(());
         }
-        self.get_owned_settings().set_flag(CollationSettings::NUMERIC, flag);
+        self.get_owned_settings()
+            .set_flag(CollationSettings::NUMERIC, flag);
         self.set_fast_latin_options();
         Ok(())
     }
@@ -672,7 +706,8 @@ impl RuleBasedCollator {
         let data = self.data.clone();
         let owned_settings = self.get_owned_settings();
         let mut primaries = std::mem::take(&mut owned_settings.fast_latin_primaries);
-        owned_settings.fast_latin_options = CollationFastLatin::get_options(&data, owned_settings, &mut primaries);
+        owned_settings.fast_latin_options =
+            CollationFastLatin::get_options(&data, owned_settings, &mut primaries);
         owned_settings.fast_latin_primaries = primaries;
     }
 
@@ -725,7 +760,8 @@ impl RuleBasedCollator {
         if let Some(e) = expansions.as_mut() {
             e.clear()?;
         }
-        ContractionsAndExpansions::new(contractions, expansions, None, add_prefixes).for_data(&self.data)
+        ContractionsAndExpansions::new(contractions, expansions, None, add_prefixes)
+            .for_data(&self.data)
     }
 
     /// Adds the contractions that start with character c to the set.
@@ -738,14 +774,22 @@ impl RuleBasedCollator {
     }
 
     fn lock_buffer(&self) -> std::sync::MutexGuard<'_, Option<Box<CollationBuffer>>> {
-        let mut guard = self.collation_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .collation_buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             *guard = Some(Box::new(CollationBuffer::new(&self.data)));
         }
         guard
     }
 
-    fn get_raw_collation_key_with(&self, source: &[u16], key: Option<RawCollationKey>, buffer: &mut CollationBuffer) -> RawCollationKey {
+    fn get_raw_collation_key_with(
+        &self,
+        source: &[u16],
+        key: Option<RawCollationKey>,
+        buffer: &mut CollationBuffer,
+    ) -> RawCollationKey {
         let mut key = match key {
             None => RawCollationKey::with_capacity(Self::simple_key_length_estimate(source)),
             Some(mut k) => {
@@ -769,7 +813,12 @@ impl RuleBasedCollator {
         2 * source.len() as i32 + 10
     }
 
-    fn write_sort_key(&self, s: &[u16], sink: &mut CollationKeyByteSink<'_>, buffer: &mut CollationBuffer) {
+    fn write_sort_key(
+        &self,
+        s: &[u16],
+        sink: &mut CollationKeyByteSink<'_>,
+        buffer: &mut CollationBuffer,
+    ) {
         let ro = self.ro();
         let numeric = ro.is_numeric();
         let compressible = self.data.compressible_bytes.clone();
@@ -818,7 +867,13 @@ impl RuleBasedCollator {
         if nfd_qc_yes_limit < s.len() as i32 {
             let dest_length_estimate = s.len() as i32 - nfd_qc_yes_limit;
             let mut nfd: Vec<u16> = Vec::new();
-            self.data.nfc_impl.decompose_range_into(s, nfd_qc_yes_limit, s.len() as i32, &mut nfd, dest_length_estimate);
+            self.data.nfc_impl.decompose_range_into(
+                s,
+                nfd_qc_yes_limit,
+                s.len() as i32,
+                &mut nfd,
+                dest_length_estimate,
+            );
             BOCSU::write_identical_level_run(prev, &nfd, 0, nfd.len() as i32, &mut sink.key_.0);
         }
         // Sync the key with the buffer again which got bytes appended and may have been reallocated.
@@ -924,15 +979,21 @@ impl RuleBasedCollator {
         let numeric = ro_settings.is_numeric();
         if equal_prefix_length > 0
             && ((equal_prefix_length != left.len() as i32
-                && self.data.is_unsafe_backward(left[equal_prefix_length as usize] as i32, numeric))
+                && self
+                    .data
+                    .is_unsafe_backward(left[equal_prefix_length as usize] as i32, numeric))
                 || (equal_prefix_length != right.len() as i32
-                    && self.data.is_unsafe_backward(right[equal_prefix_length as usize] as i32, numeric)))
+                    && self
+                        .data
+                        .is_unsafe_backward(right[equal_prefix_length as usize] as i32, numeric)))
         {
             // Identical prefix: Back up to the start of a contraction or reordering sequence.
             loop {
                 equal_prefix_length -= 1;
                 if !(equal_prefix_length > 0
-                    && self.data.is_unsafe_backward(left[equal_prefix_length as usize] as i32, numeric))
+                    && self
+                        .data
+                        .is_unsafe_backward(left[equal_prefix_length as usize] as i32, numeric))
                 {
                     break;
                 }
@@ -954,7 +1015,11 @@ impl RuleBasedCollator {
             && (equal_prefix_length == right.len() as i32
                 || right[equal_prefix_length as usize] as i32 <= CollationFastLatin::LATIN_MAX)
         {
-            let table = self.data.fast_latin_table.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+            let table = self
+                .data
+                .fast_latin_table
+                .as_deref()
+                .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
             result = CollationFastLatin::compare_utf16(
                 table,
                 &ro_settings.fast_latin_primaries,
@@ -971,16 +1036,24 @@ impl RuleBasedCollator {
             let mut guard = self.lock_buffer();
             let buffer = guard.as_mut().expect("created");
             if ro_settings.dont_check_fcd() {
-                buffer.left_utf16_coll_iter.set_text(numeric, left, equal_prefix_length);
-                buffer.right_utf16_coll_iter.set_text(numeric, right, equal_prefix_length);
+                buffer
+                    .left_utf16_coll_iter
+                    .set_text(numeric, left, equal_prefix_length);
+                buffer
+                    .right_utf16_coll_iter
+                    .set_text(numeric, right, equal_prefix_length);
                 result = CollationCompare::compare_up_to_quaternary(
                     &mut buffer.left_utf16_coll_iter,
                     &mut buffer.right_utf16_coll_iter,
                     ro_settings,
                 );
             } else {
-                buffer.left_fcd_utf16_iter.set_text(numeric, left, equal_prefix_length);
-                buffer.right_fcd_utf16_iter.set_text(numeric, right, equal_prefix_length);
+                buffer
+                    .left_fcd_utf16_iter
+                    .set_text(numeric, left, equal_prefix_length);
+                buffer
+                    .right_fcd_utf16_iter
+                    .set_text(numeric, right, equal_prefix_length);
                 result = CollationCompare::compare_up_to_quaternary(
                     &mut buffer.left_fcd_utf16_iter,
                     &mut buffer.right_fcd_utf16_iter,
@@ -997,13 +1070,29 @@ impl RuleBasedCollator {
         // Compare identical level.
         let nfc_impl = &self.data.nfc_impl;
         if ro_settings.dont_check_fcd() {
-            buffer.left_utf16_nfd_iter.set_text(left, equal_prefix_length);
-            buffer.right_utf16_nfd_iter.set_text(right, equal_prefix_length);
-            compare_nfd_iter(nfc_impl, &mut buffer.left_utf16_nfd_iter, &mut buffer.right_utf16_nfd_iter)
+            buffer
+                .left_utf16_nfd_iter
+                .set_text(left, equal_prefix_length);
+            buffer
+                .right_utf16_nfd_iter
+                .set_text(right, equal_prefix_length);
+            compare_nfd_iter(
+                nfc_impl,
+                &mut buffer.left_utf16_nfd_iter,
+                &mut buffer.right_utf16_nfd_iter,
+            )
         } else {
-            buffer.left_fcd_utf16_nfd_iter.set_text_fcd(nfc_impl, left, equal_prefix_length);
-            buffer.right_fcd_utf16_nfd_iter.set_text_fcd(nfc_impl, right, equal_prefix_length);
-            compare_nfd_iter(nfc_impl, &mut buffer.left_fcd_utf16_nfd_iter, &mut buffer.right_fcd_utf16_nfd_iter)
+            buffer
+                .left_fcd_utf16_nfd_iter
+                .set_text_fcd(nfc_impl, left, equal_prefix_length);
+            buffer
+                .right_fcd_utf16_nfd_iter
+                .set_text_fcd(nfc_impl, right, equal_prefix_length);
+            compare_nfd_iter(
+                nfc_impl,
+                &mut buffer.left_fcd_utf16_nfd_iter,
+                &mut buffer.right_fcd_utf16_nfd_iter,
+            )
         }
     }
 
@@ -1082,7 +1171,7 @@ impl RuleBasedCollator {
         if self.data.base.is_none() {
             return Ok(h);
         } // root collator
-        // Do not rely on the rule string, see comments in operator==().
+          // Do not rely on the rule string, see comments in operator==().
         let set = self.get_tailored_set()?;
         let mut iter = UnicodeSetIterator::new(&set);
         while iter.next() && iter.codepoint != IS_STRING {
@@ -1159,7 +1248,8 @@ impl Collator for RuleBasedCollator {
         if flag == self.ro().get_flag(CollationSettings::CHECK_FCD) {
             return Ok(());
         }
-        self.get_owned_settings().set_flag(CollationSettings::CHECK_FCD, flag);
+        self.get_owned_settings()
+            .set_flag(CollationSettings::CHECK_FCD, flag);
         self.set_fast_latin_options();
         Ok(())
     }
@@ -1180,7 +1270,8 @@ impl Collator for RuleBasedCollator {
         if length == 1 && order.expect("length 1")[0] == ReorderCodes::DEFAULT {
             if !self.settings_is_default() {
                 let default_settings = self.get_default_settings().clone();
-                self.get_owned_settings().copy_reordering_from(&default_settings);
+                self.get_owned_settings()
+                    .copy_reordering_from(&default_settings);
                 self.set_fast_latin_options();
             }
             return Ok(());
@@ -1235,7 +1326,11 @@ impl Collator for RuleBasedCollator {
         Some(key)
     }
 
-    fn get_raw_collation_key(&self, source: Option<&[u16]>, key: Option<RawCollationKey>) -> Option<RawCollationKey> {
+    fn get_raw_collation_key(
+        &self,
+        source: Option<&[u16]>,
+        key: Option<RawCollationKey>,
+    ) -> Option<RawCollationKey> {
         let source = source?;
         let mut guard = self.lock_buffer();
         let buffer = guard.as_mut().expect("created");
@@ -1249,7 +1344,9 @@ impl Collator for RuleBasedCollator {
         } else if (ReorderCodes::FIRST..=ReorderCodes::CURRENCY).contains(&group) {
             group - ReorderCodes::FIRST
         } else {
-            return Err(LuceneError::illegal_argument(format!("illegal max variable group {group}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "illegal max variable group {group}"
+            )));
         };
         let old_value = self.ro().get_max_variable();
         if value == old_value {
@@ -1276,6 +1373,7 @@ impl Collator for RuleBasedCollator {
         ReorderCodes::FIRST + self.ro().get_max_variable()
     }
 
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn set_variable_top_str(&mut self, var_top: Option<&[u16]>) -> Result<i32> {
         self.check_not_frozen()?;
         let var_top = match var_top {
@@ -1294,7 +1392,8 @@ impl Collator for RuleBasedCollator {
             ce1 = ci.next_ce();
             ce2 = ci.next_ce();
         } else {
-            let mut ci = FCDUTF16CollationIterator::with_text(self.data.clone(), numeric, var_top, 0);
+            let mut ci =
+                FCDUTF16CollationIterator::with_text(self.data.clone(), numeric, var_top, 0);
             ce1 = ci.next_ce();
             ce2 = ci.next_ce();
         }
@@ -1350,7 +1449,10 @@ impl Collator for RuleBasedCollator {
     fn freeze(&mut self) -> Result<()> {
         if !self.is_frozen() {
             self.frozen = true;
-            let mut guard = self.collation_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .collation_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {
                 *guard = Some(Box::new(CollationBuffer::new(&self.data)));
             }

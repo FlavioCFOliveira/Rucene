@@ -15,15 +15,15 @@ use std::sync::{Arc, Mutex};
 use rucene::error::Result;
 use rucene::util::java_collections::JavaHashMap;
 
+use crate::jdk::to_rust_string;
 use crate::r#impl::currency_data::{
-    CurrencyDisplayInfo, CurrencyDisplayInfoProvider, CurrencyFormatInfo, CurrencySpacingInfo, SpacingPattern,
-    SpacingType,
+    CurrencyDisplayInfo, CurrencyDisplayInfoProvider, CurrencyFormatInfo, CurrencySpacingInfo,
+    SpacingPattern, SpacingType,
 };
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_resource_bundle::{ICUResourceBundle, OpenType};
 use crate::r#impl::standard_plural::StandardPlural;
 use crate::r#impl::u_resource::{Key, Sink, Value};
-use crate::jdk::to_rust_string;
 use crate::text::currency_display_names::CurrencyDisplayNames;
 use crate::util::icu_exception::ICUException;
 use crate::util::u_locale::ULocale;
@@ -46,13 +46,21 @@ impl ICUCurrencyDisplayInfoProvider {
 }
 
 impl CurrencyDisplayInfoProvider for ICUCurrencyDisplayInfoProvider {
-    fn get_instance(&self, locale: Option<&ULocale>, with_fallback: bool) -> Result<Option<Arc<dyn CurrencyDisplayInfo>>> {
+    fn get_instance(
+        &self,
+        locale: Option<&ULocale>,
+        with_fallback: bool,
+    ) -> Result<Option<Arc<dyn CurrencyDisplayInfo>>> {
         // Make sure the locale is non-null (this can happen during deserialization):
         let locale = match locale {
             Some(l) => l.clone(),
             None => ULocale::root(),
         };
-        let cached = self.currency_display_info_cache.lock().expect("cache lock").clone();
+        let cached = self
+            .currency_display_info_cache
+            .lock()
+            .expect("cache lock")
+            .clone();
         let instance = match cached {
             Some(i) if i.locale == locale && i.fallback == with_fallback => i,
             _ => {
@@ -74,7 +82,8 @@ impl CurrencyDisplayInfoProvider for ICUCurrencyDisplayInfoProvider {
                     }
                 };
                 let instance = Arc::new(ICUCurrencyDisplayInfo::new(locale, rb, with_fallback));
-                *self.currency_display_info_cache.lock().expect("cache lock") = Some(instance.clone());
+                *self.currency_display_info_cache.lock().expect("cache lock") =
+                    Some(instance.clone());
                 instance
             }
         };
@@ -128,6 +137,7 @@ struct ParsingData {
 /// options; the `SoftReference` to the parsing data is never cleared (as
 /// the crate's other soft caches, allowed by the `SoftReference` contract).
 #[derive(Debug)]
+#[allow(clippy::type_complexity)] // type mirrors the Java signature
 pub struct ICUCurrencyDisplayInfo {
     locale: ULocale,
     fallback: bool,
@@ -157,18 +167,25 @@ impl ICUCurrencyDisplayInfo {
         }
     }
 
-    /////////////////////////////////////////////
-    /// END PUBLIC API -- START DATA FRONTEND ///
-    /////////////////////////////////////////////
+    // ==========================================
+    // END PUBLIC API -- START DATA FRONTEND
+    // ==========================================
 
     fn fetch_formatting_data(&self, iso_code: &str) -> Result<Arc<FormattingData>> {
-        let cached = self.formatting_data_cache.lock().expect("cache lock").clone();
+        let cached = self
+            .formatting_data_cache
+            .lock()
+            .expect("cache lock")
+            .clone();
         match cached {
             Some(r) if r.iso_code == iso_code => Ok(r),
             _ => {
                 let mut sink = CurrencySink::new(!self.fallback, EntrypointTable::Currencies);
                 sink.formatting_data = Some(FormattingData::new(iso_code));
-                self.rb.get_all_items_with_fallback_no_fail(&format!("Currencies/{iso_code}"), &mut sink)?;
+                self.rb.get_all_items_with_fallback_no_fail(
+                    &format!("Currencies/{iso_code}"),
+                    &mut sink,
+                )?;
                 let result = Arc::new(sink.formatting_data.take().expect("set above"));
                 *self.formatting_data_cache.lock().expect("cache lock") = Some(result.clone());
                 Ok(result)
@@ -177,7 +194,11 @@ impl ICUCurrencyDisplayInfo {
     }
 
     fn fetch_variant_symbol(&self, iso_code: &str, variant: &str) -> Result<Arc<VariantSymbol>> {
-        let cached = self.variant_symbol_cache.lock().expect("cache lock").clone();
+        let cached = self
+            .variant_symbol_cache
+            .lock()
+            .expect("cache lock")
+            .clone();
         match cached {
             Some(r) if r.iso_code == iso_code && r.variant == variant => Ok(r),
             _ => {
@@ -187,8 +208,10 @@ impl ICUCurrencyDisplayInfo {
                     variant: variant.to_string(),
                     symbol: None,
                 });
-                self.rb
-                    .get_all_items_with_fallback_no_fail(&format!("Currencies%{variant}/{iso_code}"), &mut sink)?;
+                self.rb.get_all_items_with_fallback_no_fail(
+                    &format!("Currencies%{variant}/{iso_code}"),
+                    &mut sink,
+                )?;
                 let result = Arc::new(sink.variant_symbol.take().expect("set above"));
                 *self.variant_symbol_cache.lock().expect("cache lock") = Some(result.clone());
                 Ok(result)
@@ -205,7 +228,10 @@ impl ICUCurrencyDisplayInfo {
                 result[0] = Some(iso_code.to_string());
                 let mut sink = CurrencySink::new(!self.fallback, EntrypointTable::CurrencyPlurals);
                 sink.plurals_data = Some(result);
-                self.rb.get_all_items_with_fallback_no_fail(&format!("CurrencyPlurals/{iso_code}"), &mut sink)?;
+                self.rb.get_all_items_with_fallback_no_fail(
+                    &format!("CurrencyPlurals/{iso_code}"),
+                    &mut sink,
+                )?;
                 let result = Arc::new(sink.plurals_data.take().expect("set above"));
                 *self.plurals_data_cache.lock().expect("cache lock") = Some(result.clone());
                 Ok(result)
@@ -213,7 +239,10 @@ impl ICUCurrencyDisplayInfo {
         }
     }
 
-    fn fetch_parsing_data(&self) -> Result<Arc<(Arc<JavaHashMap<String>>, Arc<JavaHashMap<String>>)>> {
+    #[allow(clippy::type_complexity)] // type mirrors the Java signature
+    fn fetch_parsing_data(
+        &self,
+    ) -> Result<Arc<(Arc<JavaHashMap<String>>, Arc<JavaHashMap<String>>)>> {
         let cached = self.parsing_data_cache.lock().expect("cache lock").clone();
         match cached {
             Some(r) => Ok(r),
@@ -222,7 +251,10 @@ impl ICUCurrencyDisplayInfo {
                 sink.parsing_data = Some(ParsingData::default());
                 self.rb.get_all_items_with_fallback("", &mut sink)?;
                 let pd = sink.parsing_data.take().expect("set above");
-                let result = Arc::new((Arc::new(pd.symbol_to_iso_code), Arc::new(pd.name_to_iso_code)));
+                let result = Arc::new((
+                    Arc::new(pd.symbol_to_iso_code),
+                    Arc::new(pd.name_to_iso_code),
+                ));
                 *self.parsing_data_cache.lock().expect("cache lock") = Some(result.clone());
                 Ok(result)
             }
@@ -236,7 +268,8 @@ impl ICUCurrencyDisplayInfo {
             None => {
                 let mut sink = CurrencySink::new(false, EntrypointTable::CurrencyUnitPatterns);
                 sink.unit_patterns = Some(JavaHashMap::new());
-                self.rb.get_all_items_with_fallback("CurrencyUnitPatterns", &mut sink)?;
+                self.rb
+                    .get_all_items_with_fallback("CurrencyUnitPatterns", &mut sink)?;
                 let result = Arc::new(sink.unit_patterns.take().expect("set above"));
                 *self.unit_patterns_cache.lock().expect("cache lock") = Some(result.clone());
                 Ok(result)
@@ -251,7 +284,8 @@ impl ICUCurrencyDisplayInfo {
             None => {
                 let mut sink = CurrencySink::new(!self.fallback, EntrypointTable::CurrencySpacing);
                 sink.spacing_info = Some(CurrencySpacingInfo::new());
-                self.rb.get_all_items_with_fallback("currencySpacing", &mut sink)?;
+                self.rb
+                    .get_all_items_with_fallback("currencySpacing", &mut sink)?;
                 let result = Arc::new(sink.spacing_info.take().expect("set above"));
                 *self.spacing_info_cache.lock().expect("cache lock") = Some(result.clone());
                 Ok(result)
@@ -260,9 +294,9 @@ impl ICUCurrencyDisplayInfo {
     }
 }
 
-////////////////////////
-/// START PUBLIC API ///
-////////////////////////
+// =====================
+// START PUBLIC API
+// =====================
 
 impl CurrencyDisplayNames for ICUCurrencyDisplayInfo {
     fn get_u_locale(&self) -> ULocale {
@@ -373,16 +407,17 @@ impl CurrencyDisplayInfo for ICUCurrencyDisplayInfo {
         let spacing_info = self.fetch_spacing_info()?;
 
         // Fall back to DEFAULT
-        if (!spacing_info.has_before_currency || !spacing_info.has_after_currency) && self.fallback {
+        if (!spacing_info.has_before_currency || !spacing_info.has_after_currency) && self.fallback
+        {
             return Ok(Some(CurrencySpacingInfo::default_info()));
         }
         Ok(Some(spacing_info))
     }
 }
 
-////////////////////////////////////////////
-/// END DATA FRONTEND -- START DATA SINK ///
-////////////////////////////////////////////
+// =========================================
+// END DATA FRONTEND -- START DATA SINK
+// =========================================
 
 /// `CurrencySink.EntrypointTable`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,11 +517,17 @@ impl CurrencySink {
             }
             let array = value.get_array()?;
 
-            parsing_data.symbol_to_iso_code.insert(iso_code.clone(), iso_code.clone()); // Add the ISO code itself as a symbol
+            parsing_data
+                .symbol_to_iso_code
+                .insert(iso_code.clone(), iso_code.clone()); // Add the ISO code itself as a symbol
             array.get_value(0, &mut *value);
-            parsing_data.symbol_to_iso_code.insert(string_of(value)?, iso_code.clone());
+            parsing_data
+                .symbol_to_iso_code
+                .insert(string_of(value)?, iso_code.clone());
             array.get_value(1, &mut *value);
-            parsing_data.name_to_iso_code.insert(string_of(value)?, iso_code);
+            parsing_data
+                .name_to_iso_code
+                .insert(string_of(value)?, iso_code);
             i += 1;
         }
         Ok(())
@@ -497,9 +538,10 @@ impl CurrencySink {
 
         let iso_code = key.as_string();
         if value.get_type() != UResourceBundle::ARRAY {
-            return Err(
-                ICUException::with_message(format!("Unexpected data type in Currencies table for {iso_code}")).error()
-            );
+            return Err(ICUException::with_message(format!(
+                "Unexpected data type in Currencies table for {iso_code}"
+            ))
+            .error());
         }
         let array = value.get_array()?;
 
@@ -540,7 +582,11 @@ impl CurrencySink {
      *      ...
      *  }
      */
-    fn consume_currencies_variant_entry(&mut self, _key: &mut Key, value: &mut dyn Value) -> Result<()> {
+    fn consume_currencies_variant_entry(
+        &mut self,
+        _key: &mut Key,
+        value: &mut dyn Value,
+    ) -> Result<()> {
         let variant_symbol = self.variant_symbol.as_mut().expect("variant run");
 
         // No extra structure to traverse.
@@ -555,14 +601,20 @@ impl CurrencySink {
      *      TRY{"TL"}
      *  }
      */
-    fn consume_currencies_variant_table(&mut self, key: &mut Key, value: &mut dyn Value) -> Result<()> {
+    fn consume_currencies_variant_table(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn Value,
+    ) -> Result<()> {
         // Note: This data is used for parsing but not formatting.
         let parsing_data = self.parsing_data.as_mut().expect("parsing run");
         let table = value.get_table()?;
         let mut i = 0;
         while table.get_key_and_value(i, key, &mut *value) {
             let iso_code = key.as_string();
-            parsing_data.symbol_to_iso_code.insert(string_of(value)?, iso_code);
+            parsing_data
+                .symbol_to_iso_code
+                .insert(string_of(value)?, iso_code);
             i += 1;
         }
         Ok(())
@@ -577,7 +629,11 @@ impl CurrencySink {
      *      ...
      *  }
      */
-    fn consume_currency_plurals_table(&mut self, key: &mut Key, value: &mut dyn Value) -> Result<()> {
+    fn consume_currency_plurals_table(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn Value,
+    ) -> Result<()> {
         // The full CurrencyPlurals table is consumed for parsing only.
         let parsing_data = self.parsing_data.as_mut().expect("parsing run");
         let table = value.get_table()?;
@@ -596,7 +652,9 @@ impl CurrencySink {
                     .error());
                 }
 
-                parsing_data.name_to_iso_code.insert(string_of(value)?, iso_code.clone());
+                parsing_data
+                    .name_to_iso_code
+                    .insert(string_of(value)?, iso_code.clone());
                 j += 1;
             }
             i += 1;
@@ -604,7 +662,11 @@ impl CurrencySink {
         Ok(())
     }
 
-    fn consume_currency_plurals_entry(&mut self, key: &mut Key, value: &mut dyn Value) -> Result<()> {
+    fn consume_currency_plurals_entry(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn Value,
+    ) -> Result<()> {
         let plurals_data = self.plurals_data.as_mut().expect("plurals run");
         let plurals_table = value.get_table()?;
         let mut j = 0;
@@ -643,7 +705,12 @@ impl CurrencySink {
      *      }
      *  }
      */
-    fn consume_currency_spacing_table(&mut self, key: &mut Key, value: &mut dyn Value) -> Result<()> {
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+    fn consume_currency_spacing_table(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn Value,
+    ) -> Result<()> {
         let spacing_info = self.spacing_info.as_mut().expect("spacing run");
         let spacing_types_table = value.get_table()?;
         let mut i = 0;
@@ -689,7 +756,11 @@ impl CurrencySink {
      *      ...
      *  }
      */
-    fn consume_currency_unit_patterns_table(&mut self, key: &mut Key, value: &mut dyn Value) -> Result<()> {
+    fn consume_currency_unit_patterns_table(
+        &mut self,
+        key: &mut Key,
+        value: &mut dyn Value,
+    ) -> Result<()> {
         let unit_patterns = self.unit_patterns.as_mut().expect("unit patterns run");
         let table = value.get_table()?;
         let mut i = 0;
@@ -717,7 +788,9 @@ impl Sink for CurrencySink {
             EntrypointTable::CurrencyPlurals => self.consume_currency_plurals_entry(key, value),
             EntrypointTable::CurrencyVariant => self.consume_currencies_variant_entry(key, value),
             EntrypointTable::CurrencySpacing => self.consume_currency_spacing_table(key, value),
-            EntrypointTable::CurrencyUnitPatterns => self.consume_currency_unit_patterns_table(key, value),
+            EntrypointTable::CurrencyUnitPatterns => {
+                self.consume_currency_unit_patterns_table(key, value)
+            }
         }
     }
 }

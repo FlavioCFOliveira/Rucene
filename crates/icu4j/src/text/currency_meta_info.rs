@@ -26,12 +26,18 @@ static IMPL: LazyLock<(Arc<dyn CurrencyMetaInfo>, bool)> = LazyLock::new(|| {
     // directly (no reflection; precedent "forName tables").
     match ICUCurrencyMetaInfo::new() {
         Ok(temp) => (Arc::new(temp) as Arc<dyn CurrencyMetaInfo>, true),
-        Err(_) => (Arc::new(BaseCurrencyMetaInfo) as Arc<dyn CurrencyMetaInfo>, false),
+        Err(_) => (
+            Arc::new(BaseCurrencyMetaInfo) as Arc<dyn CurrencyMetaInfo>,
+            false,
+        ),
     }
 });
 
 /// `defaultDigits` (protected): 2 fraction digits, no rounding increment.
-pub const DEFAULT_DIGITS: CurrencyDigits = CurrencyDigits { fraction_digits: 2, rounding_increment: 0 };
+pub const DEFAULT_DIGITS: CurrencyDigits = CurrencyDigits {
+    fraction_digits: 2,
+    rounding_increment: 0,
+};
 
 /// Provides information about currencies that is not specific to a locale.
 ///
@@ -77,7 +83,11 @@ pub trait CurrencyMetaInfo: fmt::Debug + Send + Sync {
 
     /// Returns the CurrencyDigits for the currency code with Context Usage.
     /// Equivalent to `currencyDigits(String, CurrencyUsage)`.
-    fn currency_digits_usage(&self, _iso_code: &str, _currency_usage: CurrencyUsage) -> Result<CurrencyDigits> {
+    fn currency_digits_usage(
+        &self,
+        _iso_code: &str,
+        _currency_usage: CurrencyUsage,
+    ) -> Result<CurrencyDigits> {
         Ok(DEFAULT_DIGITS)
     }
 }
@@ -130,12 +140,29 @@ pub struct CurrencyFilter {
 }
 
 /// `CurrencyFilter.ALL`.
-const ALL: CurrencyFilter =
-    CurrencyFilter { region: None, currency: None, from: i64::MIN, to: i64::MAX, tender_only: false };
+const ALL: CurrencyFilter = CurrencyFilter {
+    region: None,
+    currency: None,
+    from: i64::MIN,
+    to: i64::MAX,
+    tender_only: false,
+};
 
 impl CurrencyFilter {
-    fn new(region: Option<String>, currency: Option<String>, from: i64, to: i64, tender_only: bool) -> Self {
-        Self { region, currency, from, to, tender_only }
+    fn new(
+        region: Option<String>,
+        currency: Option<String>,
+        from: i64,
+        to: i64,
+        tender_only: bool,
+    ) -> Self {
+        Self {
+            region,
+            currency,
+            from,
+            to,
+            tender_only,
+        }
     }
 
     /// Returns a filter that accepts all currency data. Equivalent to
@@ -198,19 +225,37 @@ impl CurrencyFilter {
     /// Returns a copy of this filter, with the specified region. Equivalent
     /// to `withRegion(String)`.
     pub fn with_region(&self, region: Option<&str>) -> CurrencyFilter {
-        CurrencyFilter::new(region.map(str::to_string), self.currency.clone(), self.from, self.to, self.tender_only)
+        CurrencyFilter::new(
+            region.map(str::to_string),
+            self.currency.clone(),
+            self.from,
+            self.to,
+            self.tender_only,
+        )
     }
 
     /// Returns a copy of this filter, with the specified currency.
     /// Equivalent to `withCurrency(String)`.
     pub fn with_currency(&self, currency: Option<&str>) -> CurrencyFilter {
-        CurrencyFilter::new(self.region.clone(), currency.map(str::to_string), self.from, self.to, self.tender_only)
+        CurrencyFilter::new(
+            self.region.clone(),
+            currency.map(str::to_string),
+            self.from,
+            self.to,
+            self.tender_only,
+        )
     }
 
     /// Returns a copy of this filter, with from and to set to the given
     /// date. Equivalent to `withDate(Date)`.
     pub fn with_date(&self, date: &Date) -> CurrencyFilter {
-        CurrencyFilter::new(self.region.clone(), self.currency.clone(), date.get_time(), date.get_time(), self.tender_only)
+        CurrencyFilter::new(
+            self.region.clone(),
+            self.currency.clone(),
+            date.get_time(),
+            date.get_time(),
+            self.tender_only,
+        )
     }
 
     /// Returns a copy of this filter, with from and to set to the given
@@ -218,27 +263,51 @@ impl CurrencyFilter {
     pub fn with_date_range(&self, from: Option<&Date>, to: Option<&Date>) -> CurrencyFilter {
         let from_long = from.map_or(i64::MIN, Date::get_time);
         let to_long = to.map_or(i64::MAX, Date::get_time);
-        CurrencyFilter::new(self.region.clone(), self.currency.clone(), from_long, to_long, self.tender_only)
+        CurrencyFilter::new(
+            self.region.clone(),
+            self.currency.clone(),
+            from_long,
+            to_long,
+            self.tender_only,
+        )
     }
 
     /// Returns a copy of this filter that accepts all currencies in use on
     /// the given date. Equivalent to `withDate(long)`.
     pub fn with_date_millis(&self, date: i64) -> CurrencyFilter {
-        CurrencyFilter::new(self.region.clone(), self.currency.clone(), date, date, self.tender_only)
+        CurrencyFilter::new(
+            self.region.clone(),
+            self.currency.clone(),
+            date,
+            date,
+            self.tender_only,
+        )
     }
 
     /// Returns a copy of this filter that accepts all currencies that were
     /// in use at some point between the given dates. Equivalent to
     /// `withDateRange(long, long)`.
     pub fn with_date_range_millis(&self, from: i64, to: i64) -> CurrencyFilter {
-        CurrencyFilter::new(self.region.clone(), self.currency.clone(), from, to, self.tender_only)
+        CurrencyFilter::new(
+            self.region.clone(),
+            self.currency.clone(),
+            from,
+            to,
+            self.tender_only,
+        )
     }
 
     /// Returns a copy of this filter that filters for currencies that were
     /// either once used, are used, or will be used as tender. Equivalent to
     /// `withTender()`.
     pub fn with_tender(&self) -> CurrencyFilter {
-        CurrencyFilter::new(self.region.clone(), self.currency.clone(), self.from, self.to, true)
+        CurrencyFilter::new(
+            self.region.clone(),
+            self.currency.clone(),
+            self.from,
+            self.to,
+            true,
+        )
     }
 
     /// Equivalent to `hashCode()`.
@@ -251,10 +320,16 @@ impl CurrencyFilter {
             hc = hc.wrapping_mul(31).wrapping_add(string_hash(currency));
         }
         hc = hc.wrapping_mul(31).wrapping_add(self.from as i32);
-        hc = hc.wrapping_mul(31).wrapping_add(((self.from as u64) >> 32) as i32);
+        hc = hc
+            .wrapping_mul(31)
+            .wrapping_add(((self.from as u64) >> 32) as i32);
         hc = hc.wrapping_mul(31).wrapping_add(self.to as i32);
-        hc = hc.wrapping_mul(31).wrapping_add(((self.to as u64) >> 32) as i32);
-        hc = hc.wrapping_mul(31).wrapping_add(if self.tender_only { 1 } else { 0 });
+        hc = hc
+            .wrapping_mul(31)
+            .wrapping_add(((self.to as u64) >> 32) as i32);
+        hc = hc
+            .wrapping_mul(31)
+            .wrapping_add(if self.tender_only { 1 } else { 0 });
         hc
     }
 }
@@ -269,7 +344,10 @@ impl fmt::Display for CurrencyFilter {
                 ("currency", self.currency.clone().map(DebugField::Str)),
                 ("from", Some(DebugField::Long(self.from))),
                 ("to", Some(DebugField::Long(self.to))),
-                ("tenderOnly", Some(DebugField::Str(self.tender_only.to_string()))),
+                (
+                    "tenderOnly",
+                    Some(DebugField::Str(self.tender_only.to_string())),
+                ),
             ],
         ))
     }
@@ -289,7 +367,10 @@ impl CurrencyDigits {
     /// Constructor for CurrencyDigits. Equivalent to `CurrencyDigits(int,
     /// int)`.
     pub fn new(fraction_digits: i32, rounding_increment: i32) -> Self {
-        Self { fraction_digits, rounding_increment }
+        Self {
+            fraction_digits,
+            rounding_increment,
+        }
     }
 }
 
@@ -299,8 +380,14 @@ impl fmt::Display for CurrencyDigits {
         f.write_str(&debug_string(
             "CurrencyDigits",
             &[
-                ("fractionDigits", Some(DebugField::Str(self.fraction_digits.to_string()))),
-                ("roundingIncrement", Some(DebugField::Str(self.rounding_increment.to_string()))),
+                (
+                    "fractionDigits",
+                    Some(DebugField::Str(self.fraction_digits.to_string())),
+                ),
+                (
+                    "roundingIncrement",
+                    Some(DebugField::Str(self.rounding_increment.to_string())),
+                ),
             ],
         ))
     }
@@ -329,14 +416,34 @@ pub struct CurrencyInfo {
 impl CurrencyInfo {
     /// Equivalent to `CurrencyInfo(String, String, long, long, int)`
     /// (deprecated): a tender currency.
-    pub fn new(region: Option<String>, code: Option<String>, from: i64, to: i64, priority: i32) -> Self {
+    pub fn new(
+        region: Option<String>,
+        code: Option<String>,
+        from: i64,
+        to: i64,
+        priority: i32,
+    ) -> Self {
         Self::with_tender(region, code, from, to, priority, true)
     }
 
     /// Constructs a currency info. Equivalent to `CurrencyInfo(String,
     /// String, long, long, int, boolean)` (internal).
-    pub fn with_tender(region: Option<String>, code: Option<String>, from: i64, to: i64, priority: i32, tender: bool) -> Self {
-        Self { region, code, from, to, priority, tender }
+    pub fn with_tender(
+        region: Option<String>,
+        code: Option<String>,
+        from: i64,
+        to: i64,
+        priority: i32,
+        tender: bool,
+    ) -> Self {
+        Self {
+            region,
+            code,
+            from,
+            to,
+            priority,
+            tender,
+        }
     }
 
     /// Determine whether or not this currency was once used, is used, or
@@ -405,5 +512,6 @@ fn debug_string(simple_name: &str, fields: &[(&str, Option<DebugField>)]) -> Str
 
 /// `String.hashCode()`.
 fn string_hash(s: &str) -> i32 {
-    s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+    s.encode_utf16()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
 }

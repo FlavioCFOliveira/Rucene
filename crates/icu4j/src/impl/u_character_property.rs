@@ -9,7 +9,9 @@ use std::sync::LazyLock;
 use rucene::error::{LuceneError, Result};
 
 use crate::jdk::{char_count, code_point_at};
-use crate::lang::u_character::{HangulSyllableType, IdentifierStatus, IdentifierType, NumericType, UCharacter};
+use crate::lang::u_character::{
+    HangulSyllableType, IdentifierStatus, IdentifierType, NumericType, UCharacter,
+};
 use crate::lang::u_character_enums::ECharacterCategory;
 use crate::lang::u_property::UProperty;
 use crate::lang::u_script::UScript;
@@ -76,7 +78,10 @@ pub struct UCharacterProperty {
 /// panic.
 static INSTANCE: LazyLock<UCharacterProperty> = LazyLock::new(|| match UCharacterProperty::new() {
     Ok(p) => p,
-    Err(e) => panic!("java.lang.ExceptionInInitializerError: {}", missing_resource(e.to_string(), "", "")),
+    Err(e) => panic!(
+        "java.lang.ExceptionInInitializerError: {}",
+        missing_resource(e.to_string(), "", "")
+    ),
 });
 
 // public data members -----------------------------------------------
@@ -150,6 +155,7 @@ pub const SCRIPT_X_WITH_COMMON: i32 = 0x400;
 pub const MAX_SCRIPT: i32 = 0x3ff;
 
 /// `MY_MASK` (package-private).
+#[allow(dead_code)] // Java member with no caller in the closure
 pub(crate) const MY_MASK: i32 = TYPE_MASK
     & ((1 << ECharacterCategory::UPPERCASE_LETTER)
         | (1 << ECharacterCategory::LOWERCASE_LETTER)
@@ -168,19 +174,44 @@ const GC_Z_MASK: i32 = GC_ZS_MASK | GC_ZL_MASK | GC_ZP_MASK;
 
 // ID_Compat_Math_Continue
 static ID_COMPAT_MATH_CONTINUE: [i32; 10] = [
-    0x00B2, 0x00B3 + 1, 0x00B9, 0x00B9 + 1, 0x2070, 0x2070 + 1, 0x2074, 0x207E + 1, 0x2080, 0x208E + 1,
+    0x00B2,
+    0x00B3 + 1,
+    0x00B9,
+    0x00B9 + 1,
+    0x2070,
+    0x2070 + 1,
+    0x2074,
+    0x207E + 1,
+    0x2080,
+    0x208E + 1,
 ];
 
 // ID_Compat_Math_Start
 static ID_COMPAT_MATH_START: [i32; 13] = [
-    0x2202, 0x2207, 0x221E, 0x1D6C1, 0x1D6DB, 0x1D6FB, 0x1D715, 0x1D735, 0x1D74F, 0x1D76F, 0x1D789, 0x1D7A9, 0x1D7C3,
+    0x2202, 0x2207, 0x221E, 0x1D6C1, 0x1D6DB, 0x1D6FB, 0x1D715, 0x1D735, 0x1D74F, 0x1D76F, 0x1D789,
+    0x1D7A9, 0x1D7C3,
 ];
 
 // Modifier_Combining_Mark
 static MODIFIER_COMBINING_MARK: [i32; 18] = [
-    0x0654, 0x0655 + 1, 0x0658, 0x0658 + 1, // U+0658 was missing from Unicode 16 MCM.txt
-    0x06DC, 0x06DC + 1, 0x06E3, 0x06E3 + 1, 0x06E7, 0x06E8 + 1, 0x08CA, 0x08CB + 1, 0x08CD, 0x08CF + 1, 0x08D3,
-    0x08D3 + 1, 0x08F3, 0x08F3 + 1,
+    0x0654,
+    0x0655 + 1,
+    0x0658,
+    0x0658 + 1, // U+0658 was missing from Unicode 16 MCM.txt
+    0x06DC,
+    0x06DC + 1,
+    0x06E3,
+    0x06E3 + 1,
+    0x06E7,
+    0x06E8 + 1,
+    0x08CA,
+    0x08CB + 1,
+    0x08CD,
+    0x08CF + 1,
+    0x08D3,
+    0x08D3 + 1,
+    0x08F3,
+    0x08F3 + 1,
 ];
 
 /// Checks whether `c` is graphic in the POSIX sense (`isgraphPOSIX`).
@@ -236,11 +267,19 @@ struct BinaryProperty {
 
 impl BinaryProperty {
     const fn vec(column: i32, mask: i32) -> Self {
-        Self { column, mask, kind: BinKind::Vector }
+        Self {
+            column,
+            mask,
+            kind: BinKind::Vector,
+        }
     }
 
     const fn src(source: i32, kind: BinKind) -> Self {
-        Self { column: source, mask: 0, kind }
+        Self {
+            column: source,
+            mask: 0,
+            kind,
+        }
     }
 
     fn get_source(&self) -> i32 {
@@ -264,9 +303,11 @@ impl BinaryProperty {
             }
             BinKind::JoinControl => UBiDiProps::instance().is_join_control(c),
             BinKind::Case(which) => UCaseProps::instance().has_binary_property(c, which),
-            BinKind::NormInert(which) => Norm2AllModes::get_n2_with_impl(which - UProperty::NFD_INERT)
-                .expect(NORM_DATA)
-                .is_inert(c),
+            BinKind::NormInert(which) => {
+                Norm2AllModes::get_n2_with_impl(which - UProperty::NFD_INERT)
+                    .expect(NORM_DATA)
+                    .is_inert(c)
+            }
             BinKind::SegmentStarter => Norm2AllModes::get_nfc_instance()
                 .expect(NORM_DATA)
                 .impl_
@@ -287,7 +328,8 @@ impl BinaryProperty {
             BinKind::PosixPrint => {
                 // Checks whether ch is printable in the POSIX sense: graph||space
                 /* \p{space}\p{gc=Control} == \p{gc=Z}\p{Control} */
-                (UCharacter::get_type(c) == ECharacterCategory::SPACE_SEPARATOR as i32) || isgraph_posix(c)
+                (UCharacter::get_type(c) == ECharacterCategory::SPACE_SEPARATOR as i32)
+                    || isgraph_posix(c)
             }
             BinKind::PosixXdigit => {
                 /* check ASCII and Fullwidth ASCII a-fA-F */
@@ -299,7 +341,10 @@ impl BinaryProperty {
                 UCharacter::get_type(c) == ECharacterCategory::DECIMAL_DIGIT_NUMBER as i32
             }
             BinKind::ChangesWhenCasefolded => {
-                let nfd = Norm2AllModes::get_nfc_instance().expect(NORM_DATA).impl_.get_decomposition(c);
+                let nfd = Norm2AllModes::get_nfc_instance()
+                    .expect(NORM_DATA)
+                    .impl_
+                    .get_decomposition(c);
                 let mut c = c;
                 if let Some(nfd) = &nfd {
                     /* c has a decomposition */
@@ -324,7 +369,9 @@ impl BinaryProperty {
                 }
             }
             BinKind::ChangesWhenNfkcCasefolded => {
-                let kcf = &Norm2AllModes::get_nfkc_cf_instance().expect(NORM_DATA).impl_;
+                let kcf = &Norm2AllModes::get_nfkc_cf_instance()
+                    .expect(NORM_DATA)
+                    .impl_;
                 let src = UTF16::value_of(c).expect("a valid code point");
                 let mut dest = Vec::new();
                 // Small destCapacity for NFKC_CaseFold.
@@ -418,11 +465,21 @@ struct IntProperty {
 
 impl IntProperty {
     const fn vec(column: i32, mask: i32, shift: i32) -> Self {
-        Self { column, mask, shift, kind: IntKind::Vector }
+        Self {
+            column,
+            mask,
+            shift,
+            kind: IntKind::Vector,
+        }
     }
 
     const fn src(source: i32, kind: IntKind) -> Self {
-        Self { column: source, mask: 0, shift: 0, kind }
+        Self {
+            column: source,
+            mask: 0,
+            shift: 0,
+            kind,
+        }
     }
 
     fn get_source(&self) -> i32 {
@@ -436,7 +493,9 @@ impl IntProperty {
     fn get_value(&self, upc: &UCharacterProperty, c: i32) -> i32 {
         match self.kind {
             // systematic, directly stored properties
-            IntKind::Vector => ((upc.get_additional(c, self.column) & self.mask) as u32 >> self.shift) as i32,
+            IntKind::Vector => {
+                ((upc.get_additional(c, self.column) & self.mask) as u32 >> self.shift) as i32
+            }
             IntKind::BidiClass => UBiDiProps::instance().get_class(c),
             IntKind::Block => {
                 // We store Block values indexed by the code point shifted right 4 bits
@@ -449,7 +508,9 @@ impl IntProperty {
                 }
                 upc.m_block_trie.get(c4)
             }
-            IntKind::CanonicalCombiningClass => normalizer2::get_nfd_instance().expect(NORM_DATA).get_combining_class(c),
+            IntKind::CanonicalCombiningClass => normalizer2::get_nfd_instance()
+                .expect(NORM_DATA)
+                .get_combining_class(c),
             IntKind::GeneralCategory => upc.get_type(c),
             IntKind::JoiningGroup => UBiDiProps::instance().get_joining_group(c),
             IntKind::JoiningType => UBiDiProps::instance().get_joining_type(c),
@@ -468,15 +529,38 @@ impl IntProperty {
                     HangulSyllableType::NOT_APPLICABLE
                 }
             }
-            IntKind::NormQuickCheck(which, _) => Norm2AllModes::get_n2_with_impl(which - UProperty::NFD_QUICK_CHECK)
-                .expect(NORM_DATA)
-                .get_quick_check(c),
-            IntKind::LeadCanonicalCombiningClass => Norm2AllModes::get_nfc_instance().expect(NORM_DATA).impl_.get_fcd16(c) >> 8,
-            IntKind::TrailCanonicalCombiningClass => Norm2AllModes::get_nfc_instance().expect(NORM_DATA).impl_.get_fcd16(c) & 0xff,
+            IntKind::NormQuickCheck(which, _) => {
+                Norm2AllModes::get_n2_with_impl(which - UProperty::NFD_QUICK_CHECK)
+                    .expect(NORM_DATA)
+                    .get_quick_check(c)
+            }
+            IntKind::LeadCanonicalCombiningClass => {
+                Norm2AllModes::get_nfc_instance()
+                    .expect(NORM_DATA)
+                    .impl_
+                    .get_fcd16(c)
+                    >> 8
+            }
+            IntKind::TrailCanonicalCombiningClass => {
+                Norm2AllModes::get_nfc_instance()
+                    .expect(NORM_DATA)
+                    .impl_
+                    .get_fcd16(c)
+                    & 0xff
+            }
             IntKind::BidiPairedBracketType => UBiDiProps::instance().get_paired_bracket_type(c),
-            IntKind::Inpc => LayoutProps::instance().inpc_trie.as_ref().map_or(0, |t| t.get(c)),
-            IntKind::Insc => LayoutProps::instance().insc_trie.as_ref().map_or(0, |t| t.get(c)),
-            IntKind::Vo => LayoutProps::instance().vo_trie.as_ref().map_or(0, |t| t.get(c)),
+            IntKind::Inpc => LayoutProps::instance()
+                .inpc_trie
+                .as_ref()
+                .map_or(0, |t| t.get(c)),
+            IntKind::Insc => LayoutProps::instance()
+                .insc_trie
+                .as_ref()
+                .map_or(0, |t| t.get(c)),
+            IntKind::Vo => LayoutProps::instance()
+                .vo_trie
+                .as_ref()
+                .map_or(0, |t| t.get(c)),
             IntKind::IdentifierStatus => {
                 let value = ((upc.get_additional(c, 2) as u32) >> ID_TYPE_SHIFT) as i32;
                 if value >= ID_TYPE_ALLOWED_MIN {
@@ -490,11 +574,14 @@ impl IntProperty {
 
     fn get_max_value(&self, upc: &UCharacterProperty, which: i32) -> i32 {
         match self.kind {
-            IntKind::BidiClass | IntKind::JoiningGroup | IntKind::JoiningType | IntKind::BidiPairedBracketType => {
-                UBiDiProps::instance().get_max_value(which)
-            }
+            IntKind::BidiClass
+            | IntKind::JoiningGroup
+            | IntKind::JoiningType
+            | IntKind::BidiPairedBracketType => UBiDiProps::instance().get_max_value(which),
             IntKind::Block => upc.m_max_values_other & MAX_BLOCK,
-            IntKind::CanonicalCombiningClass | IntKind::LeadCanonicalCombiningClass | IntKind::TrailCanonicalCombiningClass => 0xff,
+            IntKind::CanonicalCombiningClass
+            | IntKind::LeadCanonicalCombiningClass
+            | IntKind::TrailCanonicalCombiningClass => 0xff,
             IntKind::GeneralCategory => ECharacterCategory::CHAR_CATEGORY_COUNT as i32 - 1,
             IntKind::NumericType => NumericType::COUNT - 1,
             IntKind::Script => upc.get_max_values(0) & MAX_SCRIPT,
@@ -504,7 +591,9 @@ impl IntProperty {
             IntKind::Insc => LayoutProps::instance().max_insc_value,
             IntKind::Vo => LayoutProps::instance().max_vo_value,
             IntKind::IdentifierStatus => IdentifierStatus::Allowed.ordinal(),
-            IntKind::Vector => ((upc.get_max_values(self.column) & self.mask) as u32 >> self.shift) as i32,
+            IntKind::Vector => {
+                ((upc.get_max_values(self.column) & self.mask) as u32 >> self.shift) as i32
+            }
         }
     }
 }
@@ -814,16 +903,24 @@ impl UCharacterProperty {
         let int_props = Self::int_props();
         // consistency check
         if bin_props.len() as i32 != UProperty::BINARY_LIMIT {
-            return Err(ICUException::with_message("binProps.length!=UProperty.BINARY_LIMIT").error());
+            return Err(
+                ICUException::with_message("binProps.length!=UProperty.BINARY_LIMIT").error(),
+            );
         }
         if int_props.len() as i32 != (UProperty::INT_LIMIT - UProperty::INT_START) {
-            return Err(ICUException::with_message("intProps.length!=(UProperty.INT_LIMIT-UProperty.INT_START)").error());
+            return Err(ICUException::with_message(
+                "intProps.length!=(UProperty.INT_LIMIT-UProperty.INT_START)",
+            )
+            .error());
         }
 
         // jar access
         let mut bytes = ICUBinary::get_required_data(DATA_FILE_NAME)?;
-        let m_unicode_version =
-            ICUBinary::read_header_and_data_version(&mut bytes, DATA_FORMAT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
+        let m_unicode_version = ICUBinary::read_header_and_data_version(
+            &mut bytes,
+            DATA_FORMAT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
         // Read or skip the 16 indexes.
         let property_offset = bytes.get_int()?;
         /* exceptionOffset = */
@@ -864,7 +961,9 @@ impl UCharacterProperty {
             expected_trie_length = (additional_vectors_offset - additional_offset) * 4;
             trie_length = t.get_serialized_length();
             if trie_length > expected_trie_length {
-                return Err(io_exception("uprops.icu: not enough bytes for additional-properties trie"));
+                return Err(io_exception(
+                    "uprops.icu: not enough bytes for additional-properties trie",
+                ));
             }
             // skip padding after trie bytes
             ICUBinary::skip_bytes(&mut bytes, expected_trie_length - trie_length)?;
@@ -877,7 +976,11 @@ impl UCharacterProperty {
 
         // Script_Extensions
         let num_chars = (block_trie_offset - script_extensions_offset) * 2;
-        let m_script_extensions = if num_chars > 0 { ICUBinary::get_chars(&mut bytes, num_chars, 0)? } else { Vec::new() };
+        let m_script_extensions = if num_chars > 0 {
+            ICUBinary::get_chars(&mut bytes, num_chars, 0)?
+        } else {
+            Vec::new()
+        };
 
         // Read the blockTrie.
         let part_length = (reserved_offset8 - block_trie_offset) * 4;
@@ -885,7 +988,10 @@ impl UCharacterProperty {
         let m_block_trie = CodePointTrie::from_binary(None, Some(ValueWidth::Bits16), &mut bytes)?;
         trie_length = bytes.position() - trie_position;
         if trie_length > part_length {
-            return Err(ICUUncheckedIOException::with_message("uprops.icu: not enough bytes for blockTrie").error());
+            return Err(ICUUncheckedIOException::with_message(
+                "uprops.icu: not enough bytes for blockTrie",
+            )
+            .error());
         }
         ICUBinary::skip_bytes(&mut bytes, part_length - trie_length)?; // skip padding after trie bytes
 
@@ -997,8 +1103,14 @@ impl UCharacterProperty {
             B::src(SRC_EMOJI, K::Emoji(UProperty::RGI_EMOJI_ZWJ_SEQUENCE)),
             B::src(SRC_EMOJI, K::Emoji(UProperty::RGI_EMOJI)),
             B::src(SRC_IDSU, K::IdsUnaryOperator),
-            B::src(SRC_ID_COMPAT_MATH, K::MathCompat(UProperty::ID_COMPAT_MATH_START)),
-            B::src(SRC_ID_COMPAT_MATH, K::MathCompat(UProperty::ID_COMPAT_MATH_CONTINUE)),
+            B::src(
+                SRC_ID_COMPAT_MATH,
+                K::MathCompat(UProperty::ID_COMPAT_MATH_START),
+            ),
+            B::src(
+                SRC_ID_COMPAT_MATH,
+                K::MathCompat(UProperty::ID_COMPAT_MATH_CONTINUE),
+            ),
             B::src(SRC_MCM, K::Mcm),
         ]
     }
@@ -1055,7 +1167,10 @@ impl UCharacterProperty {
         if column >= self.m_additional_columns_count {
             return 0;
         }
-        let trie = self.m_additional_trie.as_ref().expect("column count > 0 means the trie exists");
+        let trie = self
+            .m_additional_trie
+            .as_ref()
+            .expect("column count > 0 means the trie exists");
         self.m_additional_vectors[(trie.get(codepoint) + column) as usize]
     }
 
@@ -1063,7 +1178,8 @@ impl UCharacterProperty {
     /// first designated).
     pub fn get_age(&self, codepoint: i32) -> VersionInfo {
         let version = ((self.get_additional(codepoint, 0) as u32) >> AGE_SHIFT) as i32;
-        VersionInfo::get_instance4(version >> 2, version & 3, 0, 0).expect("major/minor nibbles are valid")
+        VersionInfo::get_instance4(version >> 2, version & 3, 0, 0)
+            .expect("major/minor nibbles are valid")
     }
 
     /// `hasBinaryProperty(int c, int which)`.
@@ -1085,7 +1201,11 @@ impl UCharacterProperty {
     pub fn get_int_property_value(&self, c: i32, which: i32) -> i32 {
         if which < UProperty::INT_START {
             if (UProperty::BINARY_START..UProperty::BINARY_LIMIT).contains(&which) {
-                return if self.bin_props[which as usize].contains(self, c) { 1 } else { 0 };
+                return if self.bin_props[which as usize].contains(self, c) {
+                    1
+                } else {
+                    0
+                };
             }
         } else if which < UProperty::INT_LIMIT {
             return self.int_props[(which - UProperty::INT_START) as usize].get_value(self, c);
@@ -1102,7 +1222,8 @@ impl UCharacterProperty {
                 return 1; // maximum true for all binary properties
             }
         } else if which < UProperty::INT_LIMIT {
-            return self.int_props[(which - UProperty::INT_START) as usize].get_max_value(self, which);
+            return self.int_props[(which - UProperty::INT_START) as usize]
+                .get_max_value(self, which);
         }
         -1 // undefined
     }
@@ -1159,7 +1280,12 @@ impl UCharacterProperty {
     /// `getEuropeanDigit(int ch)`: the digit value of a Latin letter
     /// (ASCII or fullwidth, `A`/`a` = 10), -1 otherwise.
     pub fn get_european_digit(ch: i32) -> i32 {
-        if (ch > 0x7a && ch < 0xff21) || ch < 0x41 || (ch > 0x5a && ch < 0x61) || ch > 0xff5a || (ch > 0xff3a && ch < 0xff41) {
+        if (ch > 0x7a && ch < 0xff21)
+            || ch < 0x41
+            || (ch > 0x5a && ch < 0x61)
+            || ch > 0xff5a
+            || (ch > 0xff3a && ch < 0xff41)
+        {
             return -1;
         }
         if ch <= 0x7a {
@@ -1368,8 +1494,8 @@ impl UCharacterProperty {
         // TODO remove when UCharacter.getHanNumericValue() is changed to just return
         // Unicode numeric values
         for c in [
-            0x3007, 0x3008, 0x4e00, 0x4e01, 0x4e8c, 0x4e8d, 0x4e09, 0x4e0a, 0x56db, 0x56dc, 0x4e94, 0x4e95, 0x516d, 0x516e,
-            0x4e03, 0x4e04, 0x516b, 0x516c, 0x4e5d, 0x4e5e,
+            0x3007, 0x3008, 0x4e00, 0x4e01, 0x4e8c, 0x4e8d, 0x4e09, 0x4e0a, 0x56db, 0x56dc, 0x4e94,
+            0x4e95, 0x516d, 0x516e, 0x4e03, 0x4e04, 0x516b, 0x516c, 0x4e5d, 0x4e5e,
         ] {
             set.add(c)?;
         }
@@ -1413,7 +1539,10 @@ impl UCharacterProperty {
         /* add the start code point of each same-value range of the properties vectors trie */
         if self.m_additional_columns_count > 0 {
             /* if m_additionalColumnsCount_==0 then the properties vectors trie may not be there at all */
-            let trie = self.m_additional_trie.as_ref().expect("column count > 0 means the trie exists");
+            let trie = self
+                .m_additional_trie
+                .as_ref()
+                .expect("column count > 0 means the trie exists");
             let mut trie_iterator = trie.iterator();
             while trie_iterator.has_next() {
                 let range = trie_iterator.next().expect("has_next");
@@ -1497,7 +1626,12 @@ impl UCharacterProperty {
         self.has_id_type(c, ty.ordinal())
     }
 
-    fn maybe_add_type(value: i32, bit: i32, t: IdentifierType, types: &mut BTreeSet<IdentifierType>) {
+    fn maybe_add_type(
+        value: i32,
+        bit: i32,
+        t: IdentifierType,
+        types: &mut BTreeSet<IdentifierType>,
+    ) {
         if (value & bit) != 0 {
             types.insert(t);
         }
@@ -1523,7 +1657,9 @@ impl UCharacterProperty {
                 ID_TYPE_INCLUSION => IdentifierType::Inclusion,
                 ID_TYPE_RECOMMENDED => IdentifierType::Recommended,
                 _ => {
-                    return Err(LuceneError::illegal_state(format!("unknown IdentifierType data value 0x{value:02x}")));
+                    return Err(LuceneError::illegal_state(format!(
+                        "unknown IdentifierType data value 0x{value:02x}"
+                    )));
                 }
             };
             types.insert(t);
@@ -1534,8 +1670,18 @@ impl UCharacterProperty {
             Self::maybe_add_type(value, ID_TYPE_EXCLUSION, IdentifierType::Exclusion, types);
             Self::maybe_add_type(value, ID_TYPE_OBSOLETE, IdentifierType::Obsolete, types);
             Self::maybe_add_type(value, ID_TYPE_TECHNICAL, IdentifierType::Technical, types);
-            Self::maybe_add_type(value, ID_TYPE_UNCOMMON_USE, IdentifierType::UncommonUse, types);
-            Self::maybe_add_type(value, ID_TYPE_LIMITED_USE, IdentifierType::LimitedUse, types);
+            Self::maybe_add_type(
+                value,
+                ID_TYPE_UNCOMMON_USE,
+                IdentifierType::UncommonUse,
+                types,
+            );
+            Self::maybe_add_type(
+                value,
+                ID_TYPE_LIMITED_USE,
+                IdentifierType::LimitedUse,
+                types,
+            );
             Ok(types.len() as i32)
         }
     }
@@ -1587,6 +1733,7 @@ impl LayoutProps {
         &LAYOUT_INSTANCE
     }
 
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn new() -> Result<Self> {
         let mut bytes = ICUBinary::get_required_data("ulayout.icu")?;
         let r: Result<Self> = (|| {
@@ -1598,7 +1745,10 @@ impl LayoutProps {
             let start_pos = bytes.position();
             let indexes_length = bytes.get_int()?; // inIndexes[IX_INDEXES_LENGTH]
             if indexes_length < 12 {
-                return Err(ICUUncheckedIOException::with_message("Text layout properties data: not enough indexes").error());
+                return Err(ICUUncheckedIOException::with_message(
+                    "Text layout properties data: not enough indexes",
+                )
+                .error());
             }
             let mut in_indexes = vec![0i32; indexes_length as usize];
             in_indexes[0] = indexes_length;
@@ -1648,7 +1798,13 @@ impl LayoutProps {
             })
         })();
         // Java wraps an IOException into ICUUncheckedIOException.
-        r.map_err(|e| if e.is_io_exception() { ICUUncheckedIOException::with_cause(e).error() } else { e })
+        r.map_err(|e| {
+            if e.is_io_exception() {
+                ICUUncheckedIOException::with_cause(e).error()
+            } else {
+                e
+            }
+        })
     }
 
     fn add_property_starts(&self, src: i32, set: &mut UnicodeSet) -> Result<()> {
@@ -1656,7 +1812,11 @@ impl LayoutProps {
             SRC_INPC => &self.inpc_trie,
             SRC_INSC => &self.insc_trie,
             SRC_VO => &self.vo_trie,
-            _ => return Err(crate::jdk::unchecked_no_message("java.lang.IllegalStateException")),
+            _ => {
+                return Err(crate::jdk::unchecked_no_message(
+                    "java.lang.IllegalStateException",
+                ))
+            }
         };
 
         let Some(trie) = trie else {

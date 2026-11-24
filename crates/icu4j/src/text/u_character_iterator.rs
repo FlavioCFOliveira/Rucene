@@ -14,8 +14,8 @@ use crate::r#impl::replaceable_u_character_iterator::ReplaceableUCharacterIterat
 use crate::r#impl::u_char_array_iterator::UCharArrayIterator;
 use crate::r#impl::u_character_iterator_wrapper::UCharacterIteratorWrapper;
 use crate::text::replaceable::Replaceable;
-pub use crate::text::u_forward_character_iterator::DONE;
 use crate::text::u_forward_character_iterator::UForwardCharacterIterator;
+pub use crate::text::u_forward_character_iterator::DONE;
 use crate::text::utf16::UTF16;
 
 /// Abstract class that defines an API for iteration on text objects: a
@@ -236,6 +236,8 @@ pub fn get_instance_string_buffer(source: Arc<Mutex<Vec<u16>>>) -> Box<dyn UChar
 }
 
 /// `getInstance(CharacterIterator source)`.
-pub fn get_instance_character_iterator(source: Box<dyn CharacterIterator>) -> Box<dyn UCharacterIterator> {
+pub fn get_instance_character_iterator(
+    source: Box<dyn CharacterIterator>,
+) -> Box<dyn UCharacterIterator> {
     Box::new(CharacterIteratorWrapper::new(source))
 }

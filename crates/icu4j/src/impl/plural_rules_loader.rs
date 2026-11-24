@@ -55,11 +55,17 @@ pub struct PluralRulesLoader {
 impl PluralRulesLoader {
     /// Access through singleton.
     fn new() -> Self {
-        Self { plural_rules_cache: Mutex::new(HashMap::new()), maps: Mutex::new(None) }
+        Self {
+            plural_rules_cache: Mutex::new(HashMap::new()),
+            maps: Mutex::new(None),
+        }
     }
 
     /// Returns the lazily-constructed map: `getLocaleIdToRulesIdMap(PluralType)`.
-    fn get_locale_id_to_rules_id_map(&self, plural_type: PluralType) -> Result<(Arc<RulesIdMaps>, PluralType)> {
+    fn get_locale_id_to_rules_id_map(
+        &self,
+        plural_type: PluralType,
+    ) -> Result<(Arc<RulesIdMaps>, PluralType)> {
         Ok((self.check_build_rules_id_maps()?, plural_type))
     }
 
@@ -99,9 +105,12 @@ impl PluralRulesLoader {
             let b = localeb.get_at(i)?;
             let id = b.get_key().unwrap_or_default();
             let value = to_rust_string(&b.get_string()?);
-            maps.locale_id_to_cardinal_rules_id.insert(id.clone(), value.clone());
+            maps.locale_id_to_cardinal_rules_id
+                .insert(id.clone(), value.clone());
 
-            if let std::collections::hash_map::Entry::Vacant(e) = maps.rules_id_to_equivalent_u_locale.entry(value) {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                maps.rules_id_to_equivalent_u_locale.entry(value)
+            {
                 e.insert(ULocale::new(&id)?);
             }
         }
@@ -124,7 +133,11 @@ impl PluralRulesLoader {
     /// # Errors
     ///
     /// The errors of locale canonicalization and of the plural data.
-    pub fn get_rules_id_for_locale(&self, locale: &ULocale, plural_type: PluralType) -> Result<Option<String>> {
+    pub fn get_rules_id_for_locale(
+        &self,
+        locale: &ULocale,
+        plural_type: PluralType,
+    ) -> Result<Option<String>> {
         let (maps, plural_type) = self.get_locale_id_to_rules_id_map(plural_type)?;
         let id_map = match plural_type {
             PluralType::Cardinal => &maps.locale_id_to_cardinal_rules_id,
@@ -154,7 +167,11 @@ impl PluralRulesLoader {
     ///
     /// The errors of locale canonicalization and of the plural-ranges data
     /// (Java's `getSetForLocale` sits outside the `try`).
-    pub fn get_or_create_rules_for_locale(&self, locale: &ULocale, plural_type: PluralType) -> Result<Option<Arc<PluralRules>>> {
+    pub fn get_or_create_rules_for_locale(
+        &self,
+        locale: &ULocale,
+        plural_type: PluralType,
+    ) -> Result<Option<Arc<PluralRules>>> {
         let rules_id = match self.get_rules_id_for_locale(locale, plural_type)? {
             Some(r) if !crate::r#impl::locale_id_parser::java_trim(&r).is_empty() => r,
             _ => return Ok(None),
@@ -165,7 +182,10 @@ impl PluralRulesLoader {
         // build the rules.
         let mut rules: Option<Arc<PluralRules>> = None;
         let cached = {
-            let cache = self.plural_rules_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = self
+                .plural_rules_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cache.get(&cache_key).cloned()
         };
         match cached {
@@ -179,7 +199,10 @@ impl PluralRulesLoader {
                     Err(e) if MissingResourceException::of(&e).is_some() => {}
                     Err(e) => return Err(e),
                 }
-                let mut cache = self.plural_rules_cache.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cache = self
+                    .plural_rules_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(r) = cache.get(&cache_key) {
                     // an identical PluralRules object was created in the
                     // meantime
@@ -220,12 +243,14 @@ impl PluralRulesLoader {
     ///
     /// `MissingResourceException`.
     pub fn get_plural_bundle() -> Result<UResourceBundle> {
-        Ok(UResourceBundle::Icu(ICUResourceBundle::get_bundle_instance(
-            Some(ICUData::ICU_BASE_NAME),
-            "plurals",
-            icu_data_class_loader(),
-            true,
-        )?))
+        Ok(UResourceBundle::Icu(
+            ICUResourceBundle::get_bundle_instance(
+                Some(ICUData::ICU_BASE_NAME),
+                "plurals",
+                icu_data_class_loader(),
+                true,
+            )?,
+        ))
     }
 }
 
@@ -242,7 +267,8 @@ impl Factory for PluralRulesLoader {
     fn get_available_u_locales(&self) -> Result<Vec<ULocale>> {
         let (maps, _) = self.get_locale_id_to_rules_id_map(PluralType::Cardinal)?;
         // LinkedHashSet<ULocale>: insertion order, ULocale.equals.
-        let mut locales: Vec<ULocale> = Vec::with_capacity(maps.locale_id_to_cardinal_rules_id.len());
+        let mut locales: Vec<ULocale> =
+            Vec::with_capacity(maps.locale_id_to_cardinal_rules_id.len());
         for key in maps.locale_id_to_cardinal_rules_id.keys() {
             let l = ULocale::create_canonical(key)?;
             if !locales.contains(&l) {
@@ -253,7 +279,11 @@ impl Factory for PluralRulesLoader {
     }
 
     /// Returns the functionally equivalent locale.
-    fn get_functional_equivalent(&self, locale: &ULocale, is_available: Option<&mut [bool]>) -> Result<ULocale> {
+    fn get_functional_equivalent(
+        &self,
+        locale: &ULocale,
+        is_available: Option<&mut [bool]>,
+    ) -> Result<ULocale> {
         if let Some(is_available) = is_available {
             if !is_available.is_empty() {
                 let locale_id = ULocale::canonicalize(&locale.get_base_name())?;

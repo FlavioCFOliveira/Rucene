@@ -15,9 +15,9 @@ use std::sync::{Arc, LazyLock};
 use rucene::error::Result;
 use rucene_queryparser::jdk::locale::Locale;
 
+use crate::lang::u_script::UScript;
 use crate::r#impl::icu_config::ICUConfig;
 use crate::r#impl::locale_display_names_impl::LocaleDisplayNamesImpl;
-use crate::lang::u_script::UScript;
 use crate::text::display_context::{DisplayContext, Type};
 use crate::util::u_locale::ULocale;
 
@@ -202,7 +202,10 @@ static HAS_FACTORIES: LazyLock<bool> = LazyLock::new(|| {
 /// `LocaleDisplayNamesImpl` instance, or the last-resort implementation
 /// when the factory throws (Java's `InvocationTargetException` branch) or
 /// does not exist.
-pub fn get_instance_dialect(locale: &ULocale, dialect_handling: DialectHandling) -> Arc<dyn LocaleDisplayNames> {
+pub fn get_instance_dialect(
+    locale: &ULocale,
+    dialect_handling: DialectHandling,
+) -> Arc<dyn LocaleDisplayNames> {
     let mut result: Option<Arc<dyn LocaleDisplayNames>> = None;
     if *HAS_FACTORIES {
         if let Ok(r) = LocaleDisplayNamesImpl::get_instance_dialect(locale, dialect_handling) {
@@ -212,12 +215,18 @@ pub fn get_instance_dialect(locale: &ULocale, dialect_handling: DialectHandling)
     }
     match result {
         Some(r) => r,
-        None => Arc::new(LastResortLocaleDisplayNames::new_dialect(locale, dialect_handling)),
+        None => Arc::new(LastResortLocaleDisplayNames::new_dialect(
+            locale,
+            dialect_handling,
+        )),
     }
 }
 
 /// `getInstance(ULocale locale, DisplayContext... contexts)`.
-pub fn get_instance_contexts(locale: &ULocale, contexts: &[DisplayContext]) -> Arc<dyn LocaleDisplayNames> {
+pub fn get_instance_contexts(
+    locale: &ULocale,
+    contexts: &[DisplayContext],
+) -> Arc<dyn LocaleDisplayNames> {
     let mut result: Option<Arc<dyn LocaleDisplayNames>> = None;
     if *HAS_FACTORIES {
         if let Ok(r) = LocaleDisplayNamesImpl::get_instance_contexts(locale, contexts) {
@@ -236,7 +245,10 @@ pub fn get_instance_contexts(locale: &ULocale, contexts: &[DisplayContext]) -> A
 /// # Errors
 ///
 /// The errors of `ULocale.forLocale`.
-pub fn get_instance_locale_contexts(locale: &Locale, contexts: &[DisplayContext]) -> Result<Arc<dyn LocaleDisplayNames>> {
+pub fn get_instance_locale_contexts(
+    locale: &Locale,
+    contexts: &[DisplayContext],
+) -> Result<Arc<dyn LocaleDisplayNames>> {
     let u = ULocale::for_locale(Some(locale))?.expect("non-null locale");
     Ok(get_instance_contexts(&u, contexts))
 }
@@ -262,7 +274,12 @@ pub struct UiListItem {
 impl UiListItem {
     /// `new UiListItem(ULocale minimized, ULocale modified, String
     /// nameInDisplayLocale, String nameInSelf)`.
-    pub fn new(minimized: ULocale, modified: ULocale, name_in_display_locale: String, name_in_self: String) -> Self {
+    pub fn new(
+        minimized: ULocale,
+        modified: ULocale,
+        name_in_display_locale: String,
+        name_in_self: String,
+    ) -> Self {
         Self {
             minimized,
             modified,
@@ -273,7 +290,8 @@ impl UiListItem {
 
     /// `hashCode()`: `modified.hashCode() ^ nameInDisplayLocale.hashCode()`.
     pub fn hash_code(&self) -> i32 {
-        self.modified.hash_code() ^ rucene::util::java_collections::java_string_hash_code(&self.name_in_display_locale)
+        self.modified.hash_code()
+            ^ rucene::util::java_collections::java_string_hash_code(&self.name_in_display_locale)
     }
 
     /// `getComparator(Comparator<Object> comparator, boolean inSelf)`: a
@@ -325,7 +343,10 @@ impl fmt::Display for UiListItem {
 
 /// Sorts `items` with a Java comparator (`Collections.sort`, a stable
 /// merge sort).
-pub(crate) fn sort_ui_list(items: &mut [UiListItem], comparator: &dyn Fn(&UiListItem, &UiListItem) -> i32) {
+pub(crate) fn sort_ui_list(
+    items: &mut [UiListItem],
+    comparator: &dyn Fn(&UiListItem, &UiListItem) -> i32,
+) {
     items.sort_by(|a, b| comparator(a, b).cmp(&0));
 }
 
@@ -369,7 +390,9 @@ impl LocaleDisplayNames for LastResortLocaleDisplayNames {
     fn get_dialect_handling(&self) -> DialectHandling {
         let mut result = DialectHandling::StandardNames;
         for context in &self.contexts {
-            if context.r#type() == Type::DialectHandling && context.value() == DisplayContext::DialectNames.ordinal() {
+            if context.r#type() == Type::DialectHandling
+                && context.value() == DisplayContext::DialectNames.ordinal()
+            {
                 result = DialectHandling::DialectNames;
                 break;
             }

@@ -14,7 +14,8 @@ use crate::text::replaceable::Replaceable;
 use crate::text::replaceable_context_iterator::ReplaceableContextIterator;
 use crate::text::source_target_utility::{FnTransform, SourceTargetUtility};
 use crate::text::transliterator::{
-    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position, Transliterator, TransliteratorBase,
+    factory, register_factory_in, register_special_inverse, transliterator_boilerplate, Position,
+    Transliterator, TransliteratorBase,
 };
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unicode_set::UnicodeSet;
@@ -52,7 +53,11 @@ impl CaseFoldTransliterator {
         register_factory_in(
             registry,
             &units(Self::ID),
-            factory(|_id| Ok(Some(Arc::new(CaseFoldTransliterator::new()) as Arc<dyn Transliterator>))),
+            factory(|_id| {
+                Ok(Some(
+                    Arc::new(CaseFoldTransliterator::new()) as Arc<dyn Transliterator>
+                ))
+            }),
         )?;
 
         register_special_inverse(&units("CaseFold"), &units("Upper"), false);
@@ -73,7 +78,12 @@ impl Transliterator for CaseFoldTransliterator {
 
     /// `handleTransliterate(Replaceable text, Position offsets, boolean
     /// isIncremental)`.
-    fn handle_transliterate(&self, text: &dyn Replaceable, offsets: &mut Position, is_incremental: bool) -> Result<()> {
+    fn handle_transliterate(
+        &self,
+        text: &dyn Replaceable,
+        offsets: &mut Position,
+        is_incremental: bool,
+    ) -> Result<()> {
         // (csp is never null: UCaseProps.INSTANCE)
         if offsets.start >= offsets.limit {
             return Ok(());
@@ -131,13 +141,22 @@ impl Transliterator for CaseFoldTransliterator {
 
     /// `addSourceTargetSet(UnicodeSet inputFilter, UnicodeSet sourceSet,
     /// UnicodeSet targetSet)`.
-    fn add_source_target_set(&self, input_filter: &UnicodeSet, source_set: &mut UnicodeSet, target_set: &mut UnicodeSet) -> Result<()> {
+    fn add_source_target_set(
+        &self,
+        input_filter: &UnicodeSet,
+        source_set: &mut UnicodeSet,
+        target_set: &mut UnicodeSet,
+    ) -> Result<()> {
         let utility = {
-            let mut guard = SOURCE_TARGET_UTILITY.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = SOURCE_TARGET_UTILITY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             match &*guard {
                 Some(u) => u.clone(),
                 None => {
-                    let u = Arc::new(SourceTargetUtility::new(Box::new(FnTransform(|source: &[u16]| Ok(UCharacter::fold_case_str(source, true)))))?);
+                    let u = Arc::new(SourceTargetUtility::new(Box::new(FnTransform(
+                        |source: &[u16]| Ok(UCharacter::fold_case_str(source, true)),
+                    )))?);
                     *guard = Some(u.clone());
                     u
                 }

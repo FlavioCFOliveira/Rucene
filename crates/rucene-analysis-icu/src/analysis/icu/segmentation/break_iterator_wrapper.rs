@@ -139,7 +139,8 @@ impl BreakIteratorWrapper {
                 // an emoji presentation selector or keycap follows.
                 let trailer = begin + if codepoint >= 0x10000 { 2 } else { 1 };
                 trailer < end
-                    && (self.text[trailer as usize] == 0xFE0F || self.text[trailer as usize] == 0x20E3)
+                    && (self.text[trailer as usize] == 0xFE0F
+                        || self.text[trailer as usize] == 0x20E3)
             } else {
                 true
             }
@@ -153,7 +154,8 @@ impl BreakIteratorWrapper {
         self.text = Arc::clone(&text);
         self.start = start;
         self.text_iterator.set_text(text, start, length);
-        self.rbbi.set_text(Some(Box::new(self.text_iterator.clone())));
+        self.rbbi
+            .set_text(Some(Box::new(self.text_iterator.clone())));
         self.status = WORD_NONE;
     }
 }

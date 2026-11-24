@@ -222,11 +222,15 @@ impl StringTrieBuilder {
     pub fn add_impl(b: &mut dyn StringTrieBuilderSpi, s: &[u16], value: i32) -> Result<()> {
         if b.base().state != State::Adding {
             // Cannot add elements after building.
-            return Err(LuceneError::illegal_state("Cannot add (string, value) pairs after build()."));
+            return Err(LuceneError::illegal_state(
+                "Cannot add (string, value) pairs after build().",
+            ));
         }
         if s.len() > 0xffff {
             // Too long: Limited by iterator internals, and by builder recursion depth.
-            crate::jdk::index_out_of_bounds(Some("The maximum string length is 0xffff.".to_string()));
+            crate::jdk::index_out_of_bounds(Some(
+                "The maximum string length is 0xffff.".to_string(),
+            ));
         }
         let root = match b.base().root {
             None => b.base_mut().create_suffix_node(s, 0, value),
@@ -245,11 +249,16 @@ impl StringTrieBuilder {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException("No (string, value) pairs were added.")`.
-    pub fn build_impl(b: &mut dyn StringTrieBuilderSpi, build_option: StringTrieBuilderOption) -> Result<()> {
+    pub fn build_impl(
+        b: &mut dyn StringTrieBuilderSpi,
+        build_option: StringTrieBuilderOption,
+    ) -> Result<()> {
         match b.base().state {
             State::Adding => {
                 if b.base().root.is_none() {
-                    crate::jdk::index_out_of_bounds(Some("No (string, value) pairs were added.".to_string()));
+                    crate::jdk::index_out_of_bounds(Some(
+                        "No (string, value) pairs were added.".to_string(),
+                    ));
                 }
                 if build_option == StringTrieBuilderOption::Fast {
                     b.base_mut().state = State::BuildingFast;
@@ -268,7 +277,9 @@ impl StringTrieBuilder {
             }
             State::BuildingFast | State::BuildingSmall => {
                 // Building must have failed.
-                return Err(LuceneError::illegal_state("Builder failed and must be clear()ed."));
+                return Err(LuceneError::illegal_state(
+                    "Builder failed and must be clear()ed.",
+                ));
             }
             State::Built => return Ok(()), // Nothing more to do.
         }
@@ -381,15 +392,19 @@ fn node_hash_code(b: &StringTrieBuilder, id: NodeId) -> i32 {
             }
             hash
         }
-        NodeKind::IntermediateValue { next } => (0x222222i32.wrapping_mul(37).wrapping_add(n.value))
-            .wrapping_mul(37)
-            .wrapping_add(node_hash_code(b, *next)),
+        NodeKind::IntermediateValue { next } => {
+            (0x222222i32.wrapping_mul(37).wrapping_add(n.value))
+                .wrapping_mul(37)
+                .wrapping_add(node_hash_code(b, *next))
+        }
         NodeKind::LinearMatch { hash, .. } => *hash,
         NodeKind::ListBranch { hash, .. } => *hash,
         NodeKind::SplitBranch { hash, .. } => *hash,
-        NodeKind::BranchHead { length, next } => (0x666666i32.wrapping_mul(37).wrapping_add(*length))
-            .wrapping_mul(37)
-            .wrapping_add(node_hash_code(b, *next)),
+        NodeKind::BranchHead { length, next } => {
+            (0x666666i32.wrapping_mul(37).wrapping_add(*length))
+                .wrapping_mul(37)
+                .wrapping_add(node_hash_code(b, *next))
+        }
     }
 }
 
@@ -404,11 +419,11 @@ fn node_equals(b: &StringTrieBuilder, this: NodeId, other: NodeId) -> bool {
         return false;
     }
     // ValueNode.equals
-    let value_equal = |t: &Node, o: &Node| t.has_value == o.has_value && (!t.has_value || t.value == o.value);
+    let value_equal =
+        |t: &Node, o: &Node| t.has_value == o.has_value && (!t.has_value || t.value == o.value);
     match (&t.kind, &o.kind) {
-        (NodeKind::Value, NodeKind::Value) | (NodeKind::DynamicBranch { .. }, NodeKind::DynamicBranch { .. }) => {
-            value_equal(t, o)
-        }
+        (NodeKind::Value, NodeKind::Value)
+        | (NodeKind::DynamicBranch { .. }, NodeKind::DynamicBranch { .. }) => value_equal(t, o),
         (NodeKind::IntermediateValue { next: tn }, NodeKind::IntermediateValue { next: on }) => {
             value_equal(t, o) && tn == on
         }
@@ -479,9 +494,16 @@ fn node_equals(b: &StringTrieBuilder, this: NodeId, other: NodeId) -> bool {
                 ..
             },
         ) => tu == ou && tl == ol && tg == og,
-        (NodeKind::BranchHead { length: tl, next: tn }, NodeKind::BranchHead { length: ol, next: on }) => {
-            value_equal(t, o) && tl == ol && tn == on
-        }
+        (
+            NodeKind::BranchHead {
+                length: tl,
+                next: tn,
+            },
+            NodeKind::BranchHead {
+                length: ol,
+                next: on,
+            },
+        ) => value_equal(t, o) && tl == ol && tn == on,
         _ => false,
     }
 }
@@ -496,7 +518,13 @@ fn set_value(b: &mut StringTrieBuilder, id: NodeId, v: i32) {
 
 /// `add(StringTrieBuilder builder, CharSequence s, int start, int sValue)`
 /// of a node, per its class's override: the node that replaces it.
-fn node_add(b: &mut dyn StringTrieBuilderSpi, id: NodeId, s: &[u16], start: i32, s_value: i32) -> Result<NodeId> {
+fn node_add(
+    b: &mut dyn StringTrieBuilderSpi,
+    id: NodeId,
+    s: &[u16],
+    start: i32,
+    s_value: i32,
+) -> Result<NodeId> {
     let kind = b.base().node(id).kind.clone();
     match kind {
         NodeKind::Value => {
@@ -543,13 +571,17 @@ fn node_add(b: &mut dyn StringTrieBuilderSpi, id: NodeId, s: &[u16], start: i32,
             match existing {
                 Some(child) => {
                     let new_child = node_add(b, child, s, start, s_value)?;
-                    if let NodeKind::DynamicBranch { equal, .. } = &mut b.base_mut().node_mut(id).kind {
+                    if let NodeKind::DynamicBranch { equal, .. } =
+                        &mut b.base_mut().node_mut(id).kind
+                    {
                         equal[i as usize] = new_child;
                     }
                 }
                 None => {
                     let suffix = b.base_mut().create_suffix_node(s, start, s_value);
-                    if let NodeKind::DynamicBranch { chars, equal } = &mut b.base_mut().node_mut(id).kind {
+                    if let NodeKind::DynamicBranch { chars, equal } =
+                        &mut b.base_mut().node_mut(id).kind
+                    {
                         chars.insert(i as usize, c);
                         equal.insert(i as usize, suffix);
                     }
@@ -711,6 +743,7 @@ fn dynamic_branch_find(b: &StringTrieBuilder, id: NodeId, c: u16) -> i32 {
 
 /// `register(StringTrieBuilder builder)` of a node, per its class's
 /// override.
+#[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
 fn node_register(b: &mut dyn StringTrieBuilderSpi, id: NodeId) -> NodeId {
     let kind = b.base().node(id).kind.clone();
     match kind {
@@ -737,7 +770,10 @@ fn node_register(b: &mut dyn StringTrieBuilderSpi, id: NodeId) -> NodeId {
                 linear_match_set_hash_code(base, suffix_node);
                 next = base.register_node(suffix_node);
             }
-            if let NodeKind::LinearMatch { length: l, next: n, .. } = &mut b.base_mut().node_mut(id).kind {
+            if let NodeKind::LinearMatch {
+                length: l, next: n, ..
+            } = &mut b.base_mut().node_mut(id).kind
+            {
                 *l = length;
                 *n = next;
             }
@@ -793,7 +829,12 @@ fn node_register(b: &mut dyn StringTrieBuilderSpi, id: NodeId) -> NodeId {
 
 /// `DynamicBranchNode.register(StringTrieBuilder builder, int start, int
 /// limit)` (private).
-fn dynamic_branch_register_range(b: &mut dyn StringTrieBuilderSpi, id: NodeId, mut start: i32, limit: i32) -> NodeId {
+fn dynamic_branch_register_range(
+    b: &mut dyn StringTrieBuilderSpi,
+    id: NodeId,
+    mut start: i32,
+    limit: i32,
+) -> NodeId {
     let (chars, equal) = match &b.base().node(id).kind {
         NodeKind::DynamicBranch { chars, equal } => (chars.clone(), equal.clone()),
         _ => unreachable!("the node is a DynamicBranchNode"),
@@ -806,9 +847,11 @@ fn dynamic_branch_register_range(b: &mut dyn StringTrieBuilderSpi, id: NodeId, m
         let greater_or_equal = dynamic_branch_register_range(b, id, middle, limit);
         let base = b.base_mut();
         let middle_unit = chars[middle as usize];
-        let hash = ((0x555555i32.wrapping_mul(37).wrapping_add(middle_unit as i32))
+        let hash = ((0x555555i32
             .wrapping_mul(37)
-            .wrapping_add(node_hash_code(base, less_than)))
+            .wrapping_add(middle_unit as i32))
+        .wrapping_mul(37)
+        .wrapping_add(node_hash_code(base, less_than)))
         .wrapping_mul(37)
         .wrapping_add(node_hash_code(base, greater_or_equal));
         let split = base.alloc(Node::new(NodeKind::SplitBranch {
@@ -863,7 +906,9 @@ fn list_branch_add_value(b: &mut StringTrieBuilder, id: NodeId, c: i32, value: i
         equal[l] = None;
         values[l] = value;
         *length += 1;
-        *hash = (hash.wrapping_mul(37).wrapping_add(c)).wrapping_mul(37).wrapping_add(value);
+        *hash = (hash.wrapping_mul(37).wrapping_add(c))
+            .wrapping_mul(37)
+            .wrapping_add(value);
     }
 }
 
@@ -884,7 +929,9 @@ fn list_branch_add_node(b: &mut StringTrieBuilder, id: NodeId, c: i32, node: Nod
         equal[l] = Some(node);
         values[l] = 0;
         *length += 1;
-        *hash = (hash.wrapping_mul(37).wrapping_add(c)).wrapping_mul(37).wrapping_add(node_hash);
+        *hash = (hash.wrapping_mul(37).wrapping_add(c))
+            .wrapping_mul(37)
+            .wrapping_add(node_hash);
     }
 }
 
@@ -907,7 +954,9 @@ fn linear_match_set_hash_code(b: &mut StringTrieBuilder, id: NodeId) {
         h = h.wrapping_mul(37).wrapping_add(n.value);
     }
     for i in string_offset..string_offset + length {
-        h = h.wrapping_mul(37).wrapping_add(b.strings[i as usize] as i32);
+        h = h
+            .wrapping_mul(37)
+            .wrapping_add(b.strings[i as usize] as i32);
     }
     if let NodeKind::LinearMatch { hash, .. } = &mut b.node_mut(id).kind {
         *hash = h;
@@ -920,7 +969,9 @@ fn node_mark_right_edges_first(b: &mut StringTrieBuilder, id: NodeId, mut edge_n
     let kind = b.node(id).kind.clone();
     let offset = b.node(id).offset;
     match kind {
-        NodeKind::IntermediateValue { next } | NodeKind::LinearMatch { next, .. } | NodeKind::BranchHead { next, .. } => {
+        NodeKind::IntermediateValue { next }
+        | NodeKind::LinearMatch { next, .. }
+        | NodeKind::BranchHead { next, .. } => {
             if offset == 0 {
                 edge_number = node_mark_right_edges_first(b, next, edge_number);
                 b.node_mut(id).offset = edge_number;
@@ -929,7 +980,10 @@ fn node_mark_right_edges_first(b: &mut StringTrieBuilder, id: NodeId, mut edge_n
         }
         NodeKind::ListBranch { equal, length, .. } => {
             if offset == 0 {
-                if let NodeKind::ListBranch { first_edge_number, .. } = &mut b.node_mut(id).kind {
+                if let NodeKind::ListBranch {
+                    first_edge_number, ..
+                } = &mut b.node_mut(id).kind
+                {
                     *first_edge_number = edge_number;
                 }
                 let mut step = 0;
@@ -955,7 +1009,10 @@ fn node_mark_right_edges_first(b: &mut StringTrieBuilder, id: NodeId, mut edge_n
             ..
         } => {
             if offset == 0 {
-                if let NodeKind::SplitBranch { first_edge_number, .. } = &mut b.node_mut(id).kind {
+                if let NodeKind::SplitBranch {
+                    first_edge_number, ..
+                } = &mut b.node_mut(id).kind
+                {
                     *first_edge_number = edge_number;
                 }
                 edge_number = node_mark_right_edges_first(b, greater_or_equal, edge_number);
@@ -977,7 +1034,12 @@ fn node_mark_right_edges_first(b: &mut StringTrieBuilder, id: NodeId, mut edge_n
 /// `writeUnlessInsideRightEdge(int firstRight, int lastRight,
 /// StringTrieBuilder builder)` (final): writes the node unless it is part
 /// of the right edge of the branch being written.
-fn node_write_unless_inside_right_edge(b: &mut dyn StringTrieBuilderSpi, id: NodeId, first_right: i32, last_right: i32) {
+fn node_write_unless_inside_right_edge(
+    b: &mut dyn StringTrieBuilderSpi,
+    id: NodeId,
+    first_right: i32,
+    last_right: i32,
+) {
     // Note: Edge numbers are negative, lastRight<=firstRight.
     // If offset>0 then this node and its sub-nodes have been written already
     // and we need not write them again.
@@ -990,6 +1052,7 @@ fn node_write_unless_inside_right_edge(b: &mut dyn StringTrieBuilderSpi, id: Nod
 }
 
 /// `write(StringTrieBuilder builder)` of a node, per its class's override.
+#[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
 fn node_write(b: &mut dyn StringTrieBuilderSpi, id: NodeId) {
     let node = b.base().node(id).clone();
     match node.kind {

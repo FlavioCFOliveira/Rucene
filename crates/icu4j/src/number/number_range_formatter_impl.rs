@@ -14,7 +14,9 @@ use crate::number::localized_number_formatter::LocalizedNumberFormatter;
 use crate::number::number_formatter::NumberFormatter;
 use crate::number::number_formatter_impl::{write_affixes, write_number, NumberFormatterImpl};
 use crate::number::number_formatter_settings::NumberFormatterSettings;
-use crate::number::number_range_formatter::{span_field, RangeCollapse, RangeIdentityFallback, RangeIdentityResult};
+use crate::number::number_range_formatter::{
+    span_field, RangeCollapse, RangeIdentityFallback, RangeIdentityResult,
+};
 use crate::r#impl::formatted_string_builder::FormattedStringBuilder;
 use crate::r#impl::formatted_value_string_builder_impl::FormattedValueStringBuilderImpl;
 use crate::r#impl::icu_data::ICUData;
@@ -76,8 +78,12 @@ impl NumberRangeDataSink<'_> {
 
     fn fill_in_defaults(&mut self) -> Result<()> {
         if !self.has_range_data() {
-            self.range_pattern =
-                Some(SimpleFormatterImpl::compile_to_string_min_max_arguments(&units("{0}–{1}"), self.sb, 2, 2)?);
+            self.range_pattern = Some(SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                &units("{0}–{1}"),
+                self.sb,
+                2,
+                2,
+            )?);
         }
         Ok(())
     }
@@ -90,7 +96,10 @@ impl Sink for NumberRangeDataSink<'_> {
         while misc_table.get_key_and_value(i, key, value) {
             if key.content_equals("range") && !self.has_range_data() {
                 let pattern = value.get_string()?;
-                self.range_pattern = Some(SimpleFormatterImpl::compile_to_string_min_max_arguments(&pattern, self.sb, 2, 2)?);
+                self.range_pattern =
+                    Some(SimpleFormatterImpl::compile_to_string_min_max_arguments(
+                        &pattern, self.sb, 2, 2,
+                    )?);
             }
             i += 1;
         }
@@ -102,13 +111,17 @@ impl Sink for NumberRangeDataSink<'_> {
 /// compiled range pattern.
 fn get_number_range_data(locale: &ULocale, ns_name: &str) -> Result<Vec<u16>> {
     let mut sb_units: Vec<u16> = Vec::new();
-    let resource = UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
+    let resource =
+        UResourceBundle::get_bundle_instance_for(Some(ICUData::ICU_BASE_NAME), Some(locale))?;
     let resource = resource.as_icu()?.clone();
     let mut key = String::new();
     key.push_str("NumberElements/");
     key.push_str(ns_name);
     key.push_str("/miscPatterns");
-    let mut sink = NumberRangeDataSink { range_pattern: None, sb: &mut sb_units };
+    let mut sink = NumberRangeDataSink {
+        range_pattern: None,
+        sb: &mut sb_units,
+    };
     match resource.get_all_items_with_fallback(&key, &mut sink) {
         Ok(()) => {}
         Err(e) if is_missing_resource(&e) => {
@@ -129,7 +142,8 @@ fn get_number_range_data(locale: &ULocale, ns_name: &str) -> Result<Vec<u16>> {
 
 /// A modifier of the micros, dereferenced as Java does without a check.
 fn modifier(m: &Option<Arc<dyn Modifier>>) -> &Arc<dyn Modifier> {
-    m.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: modifier"))
+    m.as_ref()
+        .unwrap_or_else(|| panic!("java.lang.NullPointerException: modifier"))
 }
 
 impl NumberRangeFormatterImpl {
@@ -154,11 +168,18 @@ impl NumberRangeFormatterImpl {
         let formatter_impl2 = NumberFormatterImpl::new(&formatter2.resolve())?;
         let f_same_formatters = macros.same_formatters != 0;
         let f_collapse = macros.collapse.unwrap_or(RangeCollapse::Auto);
-        let f_identity_fallback = macros.identity_fallback.unwrap_or(RangeIdentityFallback::Approximately);
+        let f_identity_fallback = macros
+            .identity_fallback
+            .unwrap_or(RangeIdentityFallback::Approximately);
 
         let ns_name = formatter_impl1.get_raw_micro_props().ns_name;
         let ns_name = match ns_name {
-            Some(n) if f_same_formatters || Some(&n) == formatter_impl2.get_raw_micro_props().ns_name.as_ref() => n,
+            Some(n)
+                if f_same_formatters
+                    || Some(&n) == formatter_impl2.get_raw_micro_props().ns_name.as_ref() =>
+            {
+                n
+            }
             _ => {
                 return Err(rucene::error::LuceneError::illegal_argument(
                     "Both formatters must have same numbering system",
@@ -172,8 +193,13 @@ impl NumberRangeFormatterImpl {
             && (f_identity_fallback == RangeIdentityFallback::Approximately
                 || f_identity_fallback == RangeIdentityFallback::ApproximatelyOrSingleValue)
         {
-            let approximately_macros = MacroProps { approximately: Some(true), ..MacroProps::default() };
-            Some(NumberFormatterImpl::new(&formatter1.macros(approximately_macros).resolve())?)
+            let approximately_macros = MacroProps {
+                approximately: Some(true),
+                ..MacroProps::default()
+            };
+            Some(NumberFormatterImpl::new(
+                &formatter1.macros(approximately_macros).resolve(),
+            )?)
         } else {
             None
         };
@@ -217,12 +243,26 @@ impl NumberRangeFormatterImpl {
         // TODO: Write this as MicroProps operator==() ?
         // TODO: Avoid the redundancy of these equality operations with the
         // ones in formatRange?
-        if !modifier(&micros1.mod_inner).semantically_equivalent(modifier(&micros2.mod_inner).as_ref())
-            || !modifier(&micros1.mod_middle).semantically_equivalent(modifier(&micros2.mod_middle).as_ref())
-            || !modifier(&micros1.mod_outer).semantically_equivalent(modifier(&micros2.mod_outer).as_ref())
+        if !modifier(&micros1.mod_inner)
+            .semantically_equivalent(modifier(&micros2.mod_inner).as_ref())
+            || !modifier(&micros1.mod_middle)
+                .semantically_equivalent(modifier(&micros2.mod_middle).as_ref())
+            || !modifier(&micros1.mod_outer)
+                .semantically_equivalent(modifier(&micros2.mod_outer).as_ref())
         {
-            self.format_range(quantity1.as_mut(), quantity2.as_mut(), &mut string, &micros1, &micros2)?;
-            return Ok(FormattedNumberRange::new(string, quantity1, quantity2, RangeIdentityResult::NotEqual));
+            self.format_range(
+                quantity1.as_mut(),
+                quantity2.as_mut(),
+                &mut string,
+                &micros1,
+                &micros2,
+            )?;
+            return Ok(FormattedNumberRange::new(
+                string,
+                quantity1,
+                quantity2,
+                RangeIdentityResult::NotEqual,
+            ));
         }
 
         // Check for identity
@@ -239,22 +279,45 @@ impl NumberRangeFormatterImpl {
             // RANGE, NOT_EQUAL | RANGE, EQUAL_AFTER_ROUNDING | RANGE, EQUAL_BEFORE_ROUNDING
             // | APPROXIMATELY, NOT_EQUAL | APPROXIMATE_OR_SINGLE_VALUE, NOT_EQUAL | SINGLE_VALUE, NOT_EQUAL
             0x23 | 0x13 | 0x03 | 0x22 | 0x21 | 0x20 => {
-                self.format_range(quantity1.as_mut(), quantity2.as_mut(), &mut string, &micros1, &micros2)?;
+                self.format_range(
+                    quantity1.as_mut(),
+                    quantity2.as_mut(),
+                    &mut string,
+                    &micros1,
+                    &micros2,
+                )?;
             }
             // APPROXIMATELY, EQUAL_AFTER_ROUNDING | APPROXIMATELY, EQUAL_BEFORE_ROUNDING
             // | APPROXIMATE_OR_SINGLE_VALUE, EQUAL_AFTER_ROUNDING
             0x12 | 0x02 | 0x11 => {
-                self.format_approximately(quantity1.as_mut(), quantity2.as_mut(), &mut string, &micros1, &micros2)?;
+                self.format_approximately(
+                    quantity1.as_mut(),
+                    quantity2.as_mut(),
+                    &mut string,
+                    &micros1,
+                    &micros2,
+                )?;
             }
             // APPROXIMATE_OR_SINGLE_VALUE, EQUAL_BEFORE_ROUNDING | SINGLE_VALUE, EQUAL_AFTER_ROUNDING
             // | SINGLE_VALUE, EQUAL_BEFORE_ROUNDING
             0x01 | 0x10 | 0x00 => {
-                self.format_single_value(quantity1.as_mut(), quantity2.as_mut(), &mut string, &micros1, &micros2)?;
+                self.format_single_value(
+                    quantity1.as_mut(),
+                    quantity2.as_mut(),
+                    &mut string,
+                    &micros1,
+                    &micros2,
+                )?;
             }
             _ => debug_assert!(false),
         }
 
-        Ok(FormattedNumberRange::new(string, quantity1, quantity2, identity_result))
+        Ok(FormattedNumberRange::new(
+            string,
+            quantity1,
+            quantity2,
+            identity_result,
+        ))
     }
 
     fn format_single_value(
@@ -285,10 +348,9 @@ impl NumberRangeFormatterImpl {
         if self.f_same_formatters {
             // Re-format using the approximately formatter:
             quantity1.reset_exponent()?;
-            let approximately = self
-                .f_approximately_formatter
-                .as_ref()
-                .unwrap_or_else(|| panic!("java.lang.NullPointerException: fApproximatelyFormatter"));
+            let approximately = self.f_approximately_formatter.as_ref().unwrap_or_else(|| {
+                panic!("java.lang.NullPointerException: fApproximatelyFormatter")
+            });
             let micros_appx = approximately.pre_process(quantity1)?;
             let mut length = write_number(&micros_appx, quantity1, string, 0);
             // HEURISTIC: Desired modifier order: inner, middle, approximately, outer.
@@ -317,7 +379,8 @@ impl NumberRangeFormatterImpl {
         match self.f_collapse {
             RangeCollapse::All | RangeCollapse::Auto | RangeCollapse::Unit => 'block: {
                 // OUTER MODIFIER
-                collapse_outer = modifier(&micros1.mod_outer).semantically_equivalent(modifier(&micros2.mod_outer).as_ref());
+                collapse_outer = modifier(&micros1.mod_outer)
+                    .semantically_equivalent(modifier(&micros2.mod_outer).as_ref());
                 if !collapse_outer {
                     // Never collapse inner mods if outer mods are not collapsable
                     collapse_middle = false;
@@ -326,8 +389,8 @@ impl NumberRangeFormatterImpl {
                 }
 
                 // MIDDLE MODIFIER
-                collapse_middle =
-                    modifier(&micros1.mod_middle).semantically_equivalent(modifier(&micros2.mod_middle).as_ref());
+                collapse_middle = modifier(&micros1.mod_middle)
+                    .semantically_equivalent(modifier(&micros2.mod_middle).as_ref());
                 if !collapse_middle {
                     // Never collapse inner mods if outer mods are not collapsable
                     collapse_inner = false;
@@ -342,7 +405,9 @@ impl NumberRangeFormatterImpl {
                     // Only collapse if the modifier is a unit.
                     // TODO: Make a better way to check for a unit?
                     // TODO: Handle case where the modifier has both notation and unit (compact currency)?
-                    if !mm.contains_field(&nf_field::CURRENCY as FieldRef) && !mm.contains_field(&nf_field::PERCENT as FieldRef) {
+                    if !mm.contains_field(&nf_field::CURRENCY as FieldRef)
+                        && !mm.contains_field(&nf_field::PERCENT as FieldRef)
+                    {
                         collapse_middle = false;
                     }
                 } else if self.f_collapse == RangeCollapse::Auto {
@@ -358,7 +423,8 @@ impl NumberRangeFormatterImpl {
                 }
 
                 // INNER MODIFIER
-                collapse_inner = modifier(&micros1.mod_inner).semantically_equivalent(modifier(&micros2.mod_inner).as_ref());
+                collapse_inner = modifier(&micros1.mod_inner)
+                    .semantically_equivalent(modifier(&micros2.mod_inner).as_ref());
 
                 // All done checking for collapsibility.
             }
@@ -379,9 +445,12 @@ impl NumberRangeFormatterImpl {
         // TODO: add API to control this?
         // TODO: Use a data-driven heuristic to determine this.
         {
-            let repeat_inner = !collapse_inner && modifier(&micros1.mod_inner).get_code_point_count()? > 0;
-            let repeat_middle = !collapse_middle && modifier(&micros1.mod_middle).get_code_point_count()? > 0;
-            let repeat_outer = !collapse_outer && modifier(&micros1.mod_outer).get_code_point_count()? > 0;
+            let repeat_inner =
+                !collapse_inner && modifier(&micros1.mod_inner).get_code_point_count()? > 0;
+            let repeat_middle =
+                !collapse_middle && modifier(&micros1.mod_middle).get_code_point_count()? > 0;
+            let repeat_outer =
+                !collapse_outer && modifier(&micros1.mod_outer).get_code_point_count()? > 0;
             if repeat_inner || repeat_middle || repeat_outer {
                 // Add spacing if there is not already spacing
                 if !PatternProps::is_white_space(i32::from(string.char_at(h.index1()))) {
@@ -403,7 +472,10 @@ impl NumberRangeFormatterImpl {
 
         if collapse_inner {
             // Note: this is actually a mix of prefix and suffix, but adding to infix length works
-            let m = self.resolve_modifier_plurals(modifier(&micros1.mod_inner), modifier(&micros2.mod_inner));
+            let m = self.resolve_modifier_plurals(
+                modifier(&micros1.mod_inner),
+                modifier(&micros2.mod_inner),
+            );
             h.length_suffix += m.apply(string, h.index0(), h.index4())?;
             h.length_prefix += m.get_prefix_length()?;
             h.length_suffix -= m.get_prefix_length()?;
@@ -414,7 +486,10 @@ impl NumberRangeFormatterImpl {
 
         if collapse_middle {
             // Note: this is actually a mix of prefix and suffix, but adding to infix length works
-            let m = self.resolve_modifier_plurals(modifier(&micros1.mod_middle), modifier(&micros2.mod_middle));
+            let m = self.resolve_modifier_plurals(
+                modifier(&micros1.mod_middle),
+                modifier(&micros2.mod_middle),
+            );
             h.length_suffix += m.apply(string, h.index0(), h.index4())?;
             h.length_prefix += m.get_prefix_length()?;
             h.length_suffix -= m.get_prefix_length()?;
@@ -425,7 +500,10 @@ impl NumberRangeFormatterImpl {
 
         if collapse_outer {
             // Note: this is actually a mix of prefix and suffix, but adding to infix length works
-            let m = self.resolve_modifier_plurals(modifier(&micros1.mod_outer), modifier(&micros2.mod_outer));
+            let m = self.resolve_modifier_plurals(
+                modifier(&micros1.mod_outer),
+                modifier(&micros2.mod_outer),
+            );
             h.length_suffix += m.apply(string, h.index0(), h.index4())?;
             h.length_prefix += m.get_prefix_length()?;
             h.length_suffix -= m.get_prefix_length()?;
@@ -453,7 +531,11 @@ impl NumberRangeFormatterImpl {
     }
 
     /// Equivalent to `resolveModifierPlurals(Modifier, Modifier)`.
-    fn resolve_modifier_plurals(&self, first: &Arc<dyn Modifier>, second: &Arc<dyn Modifier>) -> Arc<dyn Modifier> {
+    fn resolve_modifier_plurals(
+        &self,
+        first: &Arc<dyn Modifier>,
+        second: &Arc<dyn Modifier>,
+    ) -> Arc<dyn Modifier> {
         let Some(first_parameters) = first.get_parameters() else {
             // No plural form; return a fallback (e.g., the first)
             return first.clone();
@@ -472,7 +554,10 @@ impl NumberRangeFormatterImpl {
 
         // Get and return the new Modifier
         let obj = first_parameters.obj.as_ref().unwrap_or_else(|| npe());
-        let m = obj.get_modifier(first_parameters.signum.unwrap_or_else(|| npe()), result_plural);
+        let m = obj.get_modifier(
+            first_parameters.signum.unwrap_or_else(|| npe()),
+            result_plural,
+        );
         debug_assert!(m.is_some());
         m.unwrap_or_else(|| npe())
     }

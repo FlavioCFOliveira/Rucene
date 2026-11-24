@@ -16,7 +16,8 @@ use crate::r#impl::u_case_props::UCaseProps;
 use crate::r#impl::u_character_property::{self as ucp, UCharacterProperty};
 use crate::text::unicode_set::UnicodeSet;
 
-const NUM_INCLUSIONS: usize = (ucp::SRC_COUNT + UProperty::INT_LIMIT - UProperty::INT_START) as usize;
+const NUM_INCLUSIONS: usize =
+    (ucp::SRC_COUNT + UProperty::INT_LIMIT - UProperty::INT_START) as usize;
 
 /// A set of UnicodeSet objects, one per property source and int property;
 /// `null` until computed (Java's `synchronized` static methods guard it).
@@ -45,29 +46,46 @@ impl CharacterPropertiesImpl {
         }
     }
 
-    fn get_inclusions_for_source(inclusions: &mut [Option<Arc<UnicodeSet>>], src: i32) -> Result<Arc<UnicodeSet>> {
+    fn get_inclusions_for_source(
+        inclusions: &mut [Option<Arc<UnicodeSet>>],
+        src: i32,
+    ) -> Result<Arc<UnicodeSet>> {
         if inclusions[src as usize].is_none() {
             let mut incl = UnicodeSet::new();
             match src {
                 ucp::SRC_CHAR => {
                     UCharacterProperty::instance().add_property_starts(&mut incl)?;
                 }
-                ucp::SRC_PROPSVEC => UCharacterProperty::instance().upropsvec_add_property_starts(&mut incl)?,
+                ucp::SRC_PROPSVEC => {
+                    UCharacterProperty::instance().upropsvec_add_property_starts(&mut incl)?
+                }
                 ucp::SRC_CHAR_AND_PROPSVEC => {
                     UCharacterProperty::instance().add_property_starts(&mut incl)?;
                     UCharacterProperty::instance().upropsvec_add_property_starts(&mut incl)?;
                 }
                 ucp::SRC_CASE_AND_NORM => {
-                    Norm2AllModes::get_nfc_instance()?.impl_.add_property_starts(&mut incl)?;
+                    Norm2AllModes::get_nfc_instance()?
+                        .impl_
+                        .add_property_starts(&mut incl)?;
                     UCaseProps::instance().add_property_starts(&mut incl)?;
                 }
-                ucp::SRC_NFC => Norm2AllModes::get_nfc_instance()?.impl_.add_property_starts(&mut incl)?,
-                ucp::SRC_NFKC => Norm2AllModes::get_nfkc_instance()?.impl_.add_property_starts(&mut incl)?,
-                ucp::SRC_NFKC_CF => Norm2AllModes::get_nfkc_cf_instance()?.impl_.add_property_starts(&mut incl)?,
-                ucp::SRC_NFC_CANON_ITER => Norm2AllModes::get_nfc_instance()?.impl_.add_canon_iter_property_starts(&mut incl)?,
+                ucp::SRC_NFC => Norm2AllModes::get_nfc_instance()?
+                    .impl_
+                    .add_property_starts(&mut incl)?,
+                ucp::SRC_NFKC => Norm2AllModes::get_nfkc_instance()?
+                    .impl_
+                    .add_property_starts(&mut incl)?,
+                ucp::SRC_NFKC_CF => Norm2AllModes::get_nfkc_cf_instance()?
+                    .impl_
+                    .add_property_starts(&mut incl)?,
+                ucp::SRC_NFC_CANON_ITER => Norm2AllModes::get_nfc_instance()?
+                    .impl_
+                    .add_canon_iter_property_starts(&mut incl)?,
                 ucp::SRC_CASE => UCaseProps::instance().add_property_starts(&mut incl)?,
                 ucp::SRC_BIDI => UBiDiProps::instance().add_property_starts(&mut incl)?,
-                ucp::SRC_INPC | ucp::SRC_INSC | ucp::SRC_VO => UCharacterProperty::ulayout_add_property_starts(src, &mut incl)?,
+                ucp::SRC_INPC | ucp::SRC_INSC | ucp::SRC_VO => {
+                    UCharacterProperty::ulayout_add_property_starts(src, &mut incl)?
+                }
                 ucp::SRC_EMOJI => {
                     EmojiProps::instance().add_property_starts(&mut incl)?;
                 }
@@ -76,11 +94,17 @@ impl CharacterPropertiesImpl {
                     incl.add(0x2FFE)?;
                     incl.add(0x2FFF + 1)?;
                 }
-                ucp::SRC_ID_COMPAT_MATH => UCharacterProperty::math_compat_add_property_starts(&mut incl)?,
+                ucp::SRC_ID_COMPAT_MATH => {
+                    UCharacterProperty::math_compat_add_property_starts(&mut incl)?
+                }
                 ucp::SRC_MCM => UCharacterProperty::mcm_add_property_starts(&mut incl)?,
-                ucp::SRC_BLOCK => UCharacterProperty::instance().ublock_add_property_starts(&mut incl)?,
+                ucp::SRC_BLOCK => {
+                    UCharacterProperty::instance().ublock_add_property_starts(&mut incl)?
+                }
                 _ => {
-                    return Err(LuceneError::illegal_state(format!("getInclusions(unknown src {src})")));
+                    return Err(LuceneError::illegal_state(format!(
+                        "getInclusions(unknown src {src})"
+                    )));
                 }
             }
             // We do not freeze() the set because we only iterate over it,
@@ -92,7 +116,10 @@ impl CharacterPropertiesImpl {
         Ok(inclusions[src as usize].clone().expect("set above"))
     }
 
-    fn get_int_prop_inclusions(inclusions: &mut [Option<Arc<UnicodeSet>>], prop: i32) -> Result<Arc<UnicodeSet>> {
+    fn get_int_prop_inclusions(
+        inclusions: &mut [Option<Arc<UnicodeSet>>],
+        prop: i32,
+    ) -> Result<Arc<UnicodeSet>> {
         debug_assert!((UProperty::INT_START..UProperty::INT_LIMIT).contains(&prop));
         let incl_index = (ucp::SRC_COUNT + prop - UProperty::INT_START) as usize;
         if let Some(i) = &inclusions[incl_index] {

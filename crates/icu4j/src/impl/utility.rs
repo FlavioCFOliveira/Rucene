@@ -51,9 +51,22 @@ const ESCAPE: u16 = 0xA5A5;
 pub(crate) const ESCAPE_BYTE: i8 = 0xA5_u8 as i8;
 /// `HEX_DIGIT` (package-private).
 pub(crate) const HEX_DIGIT: [u16; 16] = [
-    b'0' as u16, b'1' as u16, b'2' as u16, b'3' as u16, b'4' as u16, b'5' as u16, b'6' as u16,
-    b'7' as u16, b'8' as u16, b'9' as u16, b'A' as u16, b'B' as u16, b'C' as u16, b'D' as u16,
-    b'E' as u16, b'F' as u16,
+    b'0' as u16,
+    b'1' as u16,
+    b'2' as u16,
+    b'3' as u16,
+    b'4' as u16,
+    b'5' as u16,
+    b'6' as u16,
+    b'7' as u16,
+    b'8' as u16,
+    b'9' as u16,
+    b'A' as u16,
+    b'B' as u16,
+    b'C' as u16,
+    b'D' as u16,
+    b'E' as u16,
+    b'F' as u16,
 ];
 /// `UNESCAPE_MAP`: the C-style escapes, sorted by letter.
 const UNESCAPE_MAP: [u16; 16] = [
@@ -61,24 +74,60 @@ const UNESCAPE_MAP: [u16; 16] = [
     /*'   0x27, 0x27 */
     /*?   0x3F, 0x3F */
     /*\   0x5C, 0x5C */
-    /*a*/ 0x61, 0x07, /*b*/ 0x62, 0x08, /*e*/ 0x65, 0x1b, /*f*/ 0x66, 0x0c, /*n*/ 0x6E,
-    0x0a, /*r*/ 0x72, 0x0d, /*t*/ 0x74, 0x09, /*v*/ 0x76, 0x0b,
+    /*a*/
+    0x61, 0x07, /*b*/ 0x62, 0x08, /*e*/ 0x65, 0x1b, /*f*/ 0x66, 0x0c,
+    /*n*/ 0x6E, 0x0a, /*r*/ 0x72, 0x0d, /*t*/ 0x74, 0x09, /*v*/ 0x76, 0x0b,
 ];
 /// `DIGITS` (package-private): the digits of radixes up to 36.
 pub(crate) const DIGITS: [u16; 36] = [
-    b'0' as u16, b'1' as u16, b'2' as u16, b'3' as u16, b'4' as u16, b'5' as u16, b'6' as u16,
-    b'7' as u16, b'8' as u16, b'9' as u16, b'A' as u16, b'B' as u16, b'C' as u16, b'D' as u16,
-    b'E' as u16, b'F' as u16, b'G' as u16, b'H' as u16, b'I' as u16, b'J' as u16, b'K' as u16,
-    b'L' as u16, b'M' as u16, b'N' as u16, b'O' as u16, b'P' as u16, b'Q' as u16, b'R' as u16,
-    b'S' as u16, b'T' as u16, b'U' as u16, b'V' as u16, b'W' as u16, b'X' as u16, b'Y' as u16,
+    b'0' as u16,
+    b'1' as u16,
+    b'2' as u16,
+    b'3' as u16,
+    b'4' as u16,
+    b'5' as u16,
+    b'6' as u16,
+    b'7' as u16,
+    b'8' as u16,
+    b'9' as u16,
+    b'A' as u16,
+    b'B' as u16,
+    b'C' as u16,
+    b'D' as u16,
+    b'E' as u16,
+    b'F' as u16,
+    b'G' as u16,
+    b'H' as u16,
+    b'I' as u16,
+    b'J' as u16,
+    b'K' as u16,
+    b'L' as u16,
+    b'M' as u16,
+    b'N' as u16,
+    b'O' as u16,
+    b'P' as u16,
+    b'Q' as u16,
+    b'R' as u16,
+    b'S' as u16,
+    b'T' as u16,
+    b'U' as u16,
+    b'V' as u16,
+    b'W' as u16,
+    b'X' as u16,
+    b'Y' as u16,
     b'Z' as u16,
 ];
 
 /// `LINE_SEPARATOR`: `System.getProperty("line.separator")`, the
 /// platform's line separator when the property is not set.
 pub static LINE_SEPARATOR: LazyLock<String> = LazyLock::new(|| {
-    rucene::util::system_property("line.separator")
-        .unwrap_or_else(|| if cfg!(windows) { "\r\n".into() } else { "\n".into() })
+    rucene::util::system_property("line.separator").unwrap_or_else(|| {
+        if cfg!(windows) {
+            "\r\n".into()
+        } else {
+            "\n".into()
+        }
+    })
 });
 
 /// Miscellaneous ICU utilities: array comparison, run-length string
@@ -99,14 +148,18 @@ impl Utility {
     /// `arrayEquals(Object[] source, Object target)`: whether `target` is an
     /// `Object[]` of the same length and equal elements; a `null` source
     /// equals only a `null` target.
-    pub fn array_equals_objects(source: Option<&[JavaObject<'_>]>, target: &JavaObject<'_>) -> bool {
+    pub fn array_equals_objects(
+        source: Option<&[JavaObject<'_>]>,
+        target: &JavaObject<'_>,
+    ) -> bool {
         let Some(source) = source else {
             return matches!(target, JavaObject::Null);
         };
         let JavaObject::Objects(targ) = target else {
             return false;
         };
-        source.len() == targ.len() && Self::array_region_matches_objects(source, 0, targ, 0, source.len() as i32)
+        source.len() == targ.len()
+            && Self::array_region_matches_objects(source, 0, targ, 0, source.len() as i32)
     }
 
     /// `arrayEquals(int[] source, Object target)`.
@@ -117,7 +170,8 @@ impl Utility {
         let JavaObject::Ints(targ) = target else {
             return false;
         };
-        source.len() == targ.len() && Self::array_region_matches(source, 0, targ, 0, source.len() as i32)
+        source.len() == targ.len()
+            && Self::array_region_matches(source, 0, targ, 0, source.len() as i32)
     }
 
     /// `arrayEquals(double[] source, Object target)`.
@@ -128,7 +182,8 @@ impl Utility {
         let JavaObject::Doubles(targ) = target else {
             return false;
         };
-        source.len() == targ.len() && Self::array_region_matches(source, 0, targ, 0, source.len() as i32)
+        source.len() == targ.len()
+            && Self::array_region_matches(source, 0, targ, 0, source.len() as i32)
     }
 
     /// `arrayEquals(byte[] source, Object target)`.
@@ -139,7 +194,8 @@ impl Utility {
         let JavaObject::Bytes(targ) = target else {
             return false;
         };
-        source.len() == targ.len() && Self::array_region_matches(source, 0, targ, 0, source.len() as i32)
+        source.len() == targ.len()
+            && Self::array_region_matches(source, 0, targ, 0, source.len() as i32)
     }
 
     /// `arrayEquals(Object source, Object target)`: the array overload for
@@ -209,14 +265,20 @@ impl Utility {
     pub fn same_objects<T: ?Sized>(a: Option<&T>, b: Option<&T>) -> bool {
         match (a, b) {
             (None, None) => true,
-            (Some(a), Some(b)) => std::ptr::eq(a as *const T as *const u8, b as *const T as *const u8),
+            (Some(a), Some(b)) => {
+                std::ptr::eq(a as *const T as *const u8, b as *const T as *const u8)
+            }
             _ => false,
         }
     }
 
     /// `checkCompare(T a, T b)`: `null` sorts first, else `a.compareTo(b)`
     /// (given as `compare_to`).
-    pub fn check_compare<T: ?Sized>(a: Option<&T>, b: Option<&T>, compare_to: impl Fn(&T, &T) -> i32) -> i32 {
+    pub fn check_compare<T: ?Sized>(
+        a: Option<&T>,
+        b: Option<&T>,
+        compare_to: impl Fn(&T, &T) -> i32,
+    ) -> i32 {
         match (a, b) {
             (None, None) => 0,
             (None, Some(_)) => -1,
@@ -470,7 +532,9 @@ impl Utility {
         }
 
         if ai as i32 != length || i != max_i {
-            return Err(LuceneError::illegal_state("Bad run-length encoded int array"));
+            return Err(LuceneError::illegal_state(
+                "Bad run-length encoded int array",
+            ));
         }
 
         Ok(array)
@@ -517,7 +581,9 @@ impl Utility {
         }
 
         if ai as i32 != length {
-            return Err(LuceneError::illegal_state("Bad run-length encoded short array"));
+            return Err(LuceneError::illegal_state(
+                "Bad run-length encoded short array",
+            ));
         }
 
         Ok(array)
@@ -559,7 +625,9 @@ impl Utility {
         }
 
         if ai as i32 != length {
-            return Err(LuceneError::illegal_state("Bad run-length encoded short array"));
+            return Err(LuceneError::illegal_state(
+                "Bad run-length encoded short array",
+            ));
         }
 
         Ok(array)
@@ -640,11 +708,15 @@ impl Utility {
         }
 
         if node != 0 {
-            return Err(LuceneError::illegal_state("Bad run-length encoded byte array"));
+            return Err(LuceneError::illegal_state(
+                "Bad run-length encoded byte array",
+            ));
         }
 
         if i != s.len() {
-            return Err(LuceneError::illegal_state("Excess data in RLE byte array string"));
+            return Err(LuceneError::illegal_state(
+                "Excess data in RLE byte array string",
+            ));
         }
 
         Ok(array)
@@ -851,7 +923,11 @@ impl Utility {
         if min_dig != 0 {
             while offset < length && n < max_dig {
                 c = s[offset as usize] as i32;
-                dig = if bits_per_digit == 3 { Self::digit8(c) } else { Self::digit16(c) };
+                dig = if bits_per_digit == 3 {
+                    Self::digit8(c)
+                } else {
+                    Self::digit16(c)
+                };
                 if dig < 0 {
                     break;
                 }
@@ -904,7 +980,11 @@ impl Utility {
         let mut i = 0;
         while i < UNESCAPE_MAP.len() {
             if c == UNESCAPE_MAP[i] as i32 {
-                return Self::code_point_and_length_range(UNESCAPE_MAP[i + 1] as i32, start, offset);
+                return Self::code_point_and_length_range(
+                    UNESCAPE_MAP[i + 1] as i32,
+                    start,
+                    offset,
+                );
             } else if c < UNESCAPE_MAP[i] as i32 {
                 break;
             }
@@ -914,7 +994,11 @@ impl Utility {
         // Map \cX to control-X: X & 0x1F
         if c == b'c' as i32 && offset < length {
             c = code_point_at(s, offset);
-            return Self::code_point_and_length_range(c & 0x1F, start, offset + crate::jdk::char_count(c));
+            return Self::code_point_and_length_range(
+                c & 0x1F,
+                start,
+                offset + crate::jdk::char_count(c),
+            );
         }
 
         // If no special forms are recognized, then consider
@@ -1203,7 +1287,12 @@ impl Utility {
     /// `parsePattern(String pat, Replaceable text, int index, int limit)`:
     /// matches `pat` (where `~` is optional white space) against `text`
     /// from `index`; the index after the match, or -1.
-    pub fn parse_pattern_replaceable(pat: &[u16], text: &dyn Replaceable, mut index: i32, limit: i32) -> i32 {
+    pub fn parse_pattern_replaceable(
+        pat: &[u16],
+        text: &dyn Replaceable,
+        mut index: i32,
+        limit: i32,
+    ) -> i32 {
         let mut ipat = 0i32;
 
         // empty pattern matches immediately
@@ -1278,9 +1367,16 @@ impl Utility {
     ///
     /// `ArrayIndexOutOfBoundsException` for `i32::MIN`, whose negation
     /// overflows, as in Java.
-    pub fn append_number(result: &mut Vec<u16>, n: i32, radix: i32, min_digits: i32) -> Result<&mut Vec<u16>> {
+    pub fn append_number(
+        result: &mut Vec<u16>,
+        n: i32,
+        radix: i32,
+        min_digits: i32,
+    ) -> Result<&mut Vec<u16>> {
         if !(2..=36).contains(&radix) {
-            return Err(LuceneError::illegal_argument(format!("Illegal radix {radix}")));
+            return Err(LuceneError::illegal_argument(format!(
+                "Illegal radix {radix}"
+            )));
         }
 
         let mut abs = n;
@@ -1399,7 +1495,10 @@ impl Utility {
 
                 // If the first thing in the quoteBuf is APOSTROPHE
                 // (doubled) then pull it out.
-                while quote_buf.len() >= 2 && quote_buf[0] == APOSTROPHE && quote_buf[1] == APOSTROPHE {
+                while quote_buf.len() >= 2
+                    && quote_buf[0] == APOSTROPHE
+                    && quote_buf[1] == APOSTROPHE
+                {
                     rule.push(BACKSLASH);
                     rule.push(APOSTROPHE);
                     quote_buf.drain(0..2);
@@ -1568,8 +1667,8 @@ impl Utility {
         result
     }
 
-    /// `splitString(String src, String target)`: `src.split("\\Q" + target
-    /// + "\\E")`, a split on the literal `target` with `String.split`'s
+    /// `splitString(String src, String target)`:
+    /// `src.split("\\Q" + target + "\\E")`, a split on the literal `target` with `String.split`'s
     /// rules (no leading empty piece for a zero-width match at the start,
     /// trailing empty pieces dropped, the whole input when nothing matches).
     pub fn split_string(src: &[u16], target: &[u16]) -> Vec<Vec<u16>> {
@@ -1634,7 +1733,11 @@ impl Utility {
     /// `IllegalArgumentException("code point too short: <part>")`;
     /// `NumberFormatException` for a part that is not hexadecimal;
     /// `IllegalArgumentException` from `appendCodePoint`.
-    pub fn from_hex_pattern(string: &[u16], min_length: i32, separator: &JavaPattern) -> Result<Vec<u16>> {
+    pub fn from_hex_pattern(
+        string: &[u16],
+        min_length: i32,
+        separator: &JavaPattern,
+    ) -> Result<Vec<u16>> {
         let mut buffer = Vec::new();
         let parts = separator.split(string, 0);
         for part in parts {
@@ -1727,7 +1830,13 @@ impl Utility {
     /// # Panics
     ///
     /// `ArrayIndexOutOfBoundsException` when `parsed_ints` is too short.
-    pub fn parse_pattern(rule: &[u16], mut pos: i32, limit: i32, pattern: &[u16], parsed_ints: &mut [i32]) -> i32 {
+    pub fn parse_pattern(
+        rule: &[u16],
+        mut pos: i32,
+        limit: i32,
+        pattern: &[u16],
+        parsed_ints: &mut [i32],
+    ) -> i32 {
         // TODO Update this to handle surrogates
         let mut p = [0i32; 1];
         let mut int_count = 0usize; // number of integers parsed
@@ -1787,8 +1896,14 @@ impl Utility {
             && (p as usize) + 2 <= rule.len()
             && rule[p as usize] == ox[0]
             && (rule[p as usize + 1] == ox[1]
-                || rucene_analysis_common::jdk::character::to_upper_case_unit(rule[p as usize + 1]) == b'X' as u16
-                || rucene_analysis_common::jdk::character::to_lower_case_unit(rucene_analysis_common::jdk::character::to_upper_case_unit(rule[p as usize + 1])) == b'x' as u16);
+                || rucene_analysis_common::jdk::character::to_upper_case_unit(
+                    rule[p as usize + 1],
+                ) == b'X' as u16
+                || rucene_analysis_common::jdk::character::to_lower_case_unit(
+                    rucene_analysis_common::jdk::character::to_upper_case_unit(
+                        rule[p as usize + 1],
+                    ),
+                ) == b'x' as u16);
         if matches_ox {
             p += 2;
             radix = 16;
@@ -1799,7 +1914,8 @@ impl Utility {
         }
 
         while p < limit {
-            let d = crate::lang::u_character::UCharacter::digit_radix(rule[p as usize] as i32, radix);
+            let d =
+                crate::lang::u_character::UCharacter::digit_radix(rule[p as usize] as i32, radix);
             p += 1;
             if d < 0 {
                 p -= 1;
@@ -1833,7 +1949,8 @@ impl Utility {
             let ch = crate::jdk::code_point_at(str, p);
             if buf.is_empty() {
                 if crate::lang::u_character::UCharacter::is_unicode_identifier_start(ch) {
-                    crate::jdk::append_code_point(&mut buf, ch).expect("a code point read from text");
+                    crate::jdk::append_code_point(&mut buf, ch)
+                        .expect("a code point read from text");
                 } else {
                     return None;
                 }
@@ -1892,7 +2009,13 @@ impl Utility {
         quote_buf: &mut Vec<u16>,
     ) -> Result<()> {
         if let Some(matcher) = matcher {
-            Self::append_to_rule_str(rule, &matcher.to_pattern(escape_unprintable), true, escape_unprintable, quote_buf)?;
+            Self::append_to_rule_str(
+                rule,
+                &matcher.to_pattern(escape_unprintable),
+                true,
+                escape_unprintable,
+                quote_buf,
+            )?;
         }
         Ok(())
     }

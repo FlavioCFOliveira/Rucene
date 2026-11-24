@@ -22,6 +22,7 @@ use crate::util::u_resource_bundle::UResourceBundle;
 /// `MlBreakEngine.java`.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // variant names mirror the Java constants
 enum ModelIndex {
     /// `kUWStart(0)`.
     kUWStart,
@@ -106,7 +107,8 @@ impl MlBreakEngine {
         // "-1".
         let index_size = code_point_length + 4;
         let mut index_list = vec![0i32; index_size as usize];
-        let mut num_code_units = self.init_index_list(in_string, &mut index_list, code_point_length);
+        let mut num_code_units =
+            self.init_index_list(in_string, &mut index_list, code_point_length);
 
         // Add a break for the start.
         boundary.insert(0, 0);
@@ -136,7 +138,9 @@ impl MlBreakEngine {
             // E.g.［携帯電話］正しい選択 -> ［携帯▁電話］▁正しい▁選択 -> breakpoint between ］ and 正
             set_index(in_text, pos);
             if pos > previous
-                && (pos != start_pos || (pos > 0 && uset_contains(&self.f_close_punctuation_set, previous32(in_text))))
+                && (pos != start_pos
+                    || (pos > 0
+                        && uset_contains(&self.f_close_punctuation_set, previous32(in_text))))
             {
                 found_breaks.push(pos);
                 corrected_num_breaks += 1;
@@ -152,7 +156,9 @@ impl MlBreakEngine {
             // E.g. しかもロゴがＵｎｉｃｏｄｅ！ -> しかも▁ロゴが▁Ｕｎｉｃｏｄｅ！-> breakpoint between が and Ｕ
             set_index(in_text, end_pos);
             let current = current32(in_text);
-            if current != DONE32 && !uset_contains(&self.f_digit_or_open_punctuation_or_alphabet_set, current) {
+            if current != DONE32
+                && !uset_contains(&self.f_digit_or_open_punctuation_or_alphabet_set, current)
+            {
                 found_breaks.pop();
                 corrected_num_breaks -= 1;
             }
@@ -201,7 +207,12 @@ impl MlBreakEngine {
                 } else {
                     num_code_units
                 };
-                score = score.wrapping_add(feature(ModelIndex::kUWStart, i as usize, index_list[start], end));
+                score = score.wrapping_add(feature(
+                    ModelIndex::kUWStart,
+                    i as usize,
+                    index_list[start],
+                    end,
+                ));
             }
         }
         for i in 0..3 {
@@ -213,19 +224,30 @@ impl MlBreakEngine {
                 } else {
                     num_code_units
                 };
-                score = score.wrapping_add(feature(ModelIndex::kBWStart, i as usize, index_list[start], end));
+                score = score.wrapping_add(feature(
+                    ModelIndex::kBWStart,
+                    i as usize,
+                    index_list[start],
+                    end,
+                ));
             }
         }
         for i in 0..4 {
             // TW1 ~ TW4
             let start = (start_idx + i) as usize;
-            if index_list[start] != -1 && index_list[start + 1] != -1 && index_list[start + 2] != -1 {
+            if index_list[start] != -1 && index_list[start + 1] != -1 && index_list[start + 2] != -1
+            {
                 let end = if index_list[start + 3] != -1 {
                     index_list[start + 3]
                 } else {
                     num_code_units
                 };
-                score = score.wrapping_add(feature(ModelIndex::kTWStart, i as usize, index_list[start], end));
+                score = score.wrapping_add(feature(
+                    ModelIndex::kTWStart,
+                    i as usize,
+                    index_list[start],
+                    end,
+                ));
             }
         }
         if score > 0 {
@@ -236,7 +258,12 @@ impl MlBreakEngine {
     /// `initIndexList(CharacterIterator inString, int[] indexList, int
     /// codePointLength)`: the code-unit offsets of the first four code
     /// points; returns the code units they span.
-    fn init_index_list(&self, in_string: &mut dyn CharacterIterator, index_list: &mut [i32], code_point_length: i32) -> i32 {
+    fn init_index_list(
+        &self,
+        in_string: &mut dyn CharacterIterator,
+        index_list: &mut [i32],
+        code_point_length: i32,
+    ) -> i32 {
         let mut index = 0;
         set_index(in_string, index);
         index_list.fill(-1);
@@ -286,7 +313,13 @@ impl MlBreakEngine {
 
     /// `initKeyValue(UResourceBundle rb, String keyName, String valueName,
     /// HashMap<String, Integer> map)`: `map` is `fModel.get(model)`.
-    fn init_key_value(&mut self, rb: &UResourceBundle, key_name: &str, value_name: &str, model: usize) -> Result<()> {
+    fn init_key_value(
+        &mut self,
+        rb: &UResourceBundle,
+        key_name: &str,
+        value_name: &str,
+        model: usize,
+    ) -> Result<()> {
         let mut idx = 0usize;
         let key_bundle = rb.get(key_name)?;
         let value_bundle = rb.get(value_name)?;

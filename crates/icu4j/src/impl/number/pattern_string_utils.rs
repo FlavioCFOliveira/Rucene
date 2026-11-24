@@ -7,6 +7,7 @@ use rucene::error::{LuceneError, Result};
 
 use crate::jdk::math::BigDecimal;
 use crate::jdk::units;
+use crate::number::number_formatter::SignDisplay;
 use crate::r#impl::number::affix_pattern_provider::{
     AffixPatternProvider, Flags, FLAG_NEG_PREFIX, FLAG_NEG_SUFFIX, FLAG_POS_PREFIX, FLAG_POS_SUFFIX,
 };
@@ -15,7 +16,6 @@ use crate::r#impl::number::modifier::Signum;
 use crate::r#impl::number::padder::{PadPosition, FALLBACK_PADDING_STRING};
 use crate::r#impl::number::properties_affix_pattern_provider::PropertiesAffixPatternProvider;
 use crate::r#impl::standard_plural::StandardPlural;
-use crate::number::number_formatter::SignDisplay;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 
 /// Equivalent to `PatternStringUtils.PatternSignType`.
@@ -31,7 +31,11 @@ pub enum PatternSignType {
 
 impl PatternSignType {
     /// `VALUES`.
-    pub const VALUES: [PatternSignType; 3] = [PatternSignType::Pos, PatternSignType::PosSign, PatternSignType::Neg];
+    pub const VALUES: [PatternSignType; 3] = [
+        PatternSignType::Pos,
+        PatternSignType::PosSign,
+        PatternSignType::Neg,
+    ];
 }
 
 /// Assorted utilities relating to decimal formatting pattern strings.
@@ -121,13 +125,16 @@ impl PatternStringUtils {
             while (digits_string.len() as i32) < max_sig {
                 digits_string.push(u16::from(b'#'));
             }
-        } else if let Some(rounding_interval) =
-            rounding_interval.as_ref().filter(|r| !Self::ignore_rounding_increment(r, max_frac))
+        } else if let Some(rounding_interval) = rounding_interval
+            .as_ref()
+            .filter(|r| !Self::ignore_rounding_increment(r, max_frac))
         {
             // Rounding Interval.
             digits_string_scale = -rounding_interval.scale();
             // TODO: Check for DoS here?
-            let str = rounding_interval.scale_by_power_of_ten(rounding_interval.scale())?.to_plain_string();
+            let str = rounding_interval
+                .scale_by_power_of_ten(rounding_interval.scale())?
+                .to_plain_string();
             let str = units(&str);
             if str[0] == u16::from(b'-') {
                 // TODO: Unsupported operation exception or fail silently?
@@ -146,8 +153,16 @@ impl PatternStringUtils {
 
         // Write the digits to the string builder
         let mut m0 = grouping_length.max(digits_string.len() as i32 + digits_string_scale);
-        m0 = if max_int != dos_max { max_int.max(m0) - 1 } else { m0 - 1 };
-        let m_n = if max_frac != dos_max { (-max_frac).min(digits_string_scale) } else { digits_string_scale };
+        m0 = if max_int != dos_max {
+            max_int.max(m0) - 1
+        } else {
+            m0 - 1
+        };
+        let m_n = if max_frac != dos_max {
+            (-max_frac).min(digits_string_scale)
+        } else {
+            digits_string_scale
+        };
         let mut magnitude = m0;
         while magnitude >= m_n {
             let di = digits_string.len() as i32 + digits_string_scale - magnitude - 1;
@@ -169,7 +184,10 @@ impl PatternStringUtils {
                 if magnitude > 0 && magnitude == grouping1 {
                     sb.push(u16::from(b','));
                 }
-                if magnitude > grouping1 && grouping2 > 0 && (magnitude - grouping1) % grouping2 == 0 {
+                if magnitude > grouping1
+                    && grouping2 > 0
+                    && (magnitude - grouping1) % grouping2 == 0
+                {
                     sb.push(u16::from(b','));
                 }
             }
@@ -210,7 +228,8 @@ impl PatternStringUtils {
                     before_suffix_pos += added_length + 1;
                 }
                 PadPosition::AfterPrefix => {
-                    added_length = Self::escape_padding_string(padding_string, &mut sb, after_prefix_pos);
+                    added_length =
+                        Self::escape_padding_string(padding_string, &mut sb, after_prefix_pos);
                     sb.insert(after_prefix_pos, u16::from(b'*'));
                     after_prefix_pos += added_length + 1;
                     before_suffix_pos += added_length + 1;
@@ -244,7 +263,11 @@ impl PatternStringUtils {
 
     /// `escapePaddingString(CharSequence, StringBuilder, int)`: the number
     /// of units inserted.
-    fn escape_padding_string(input: Option<&[u16]>, output: &mut Vec<u16>, start_index: usize) -> usize {
+    fn escape_padding_string(
+        input: Option<&[u16]>,
+        output: &mut Vec<u16>,
+        start_index: usize,
+    ) -> usize {
         let fallback = units(FALLBACK_PADDING_STRING);
         let input: &[u16] = match input {
             Some(i) if !i.is_empty() => i,
@@ -253,7 +276,10 @@ impl PatternStringUtils {
         let start_length = output.len();
         if input.len() == 1 {
             if input == [u16::from(b'\'')] {
-                output.splice(start_index..start_index, [u16::from(b'\''), u16::from(b'\'')]);
+                output.splice(
+                    start_index..start_index,
+                    [u16::from(b'\''), u16::from(b'\'')],
+                );
             } else {
                 output.splice(start_index..start_index, input.iter().copied());
             }
@@ -263,7 +289,10 @@ impl PatternStringUtils {
             for &ch in input {
                 // it's okay to deal in chars here because the quote mark is the only interesting thing.
                 if ch == u16::from(b'\'') {
-                    output.splice(start_index + offset..start_index + offset, [u16::from(b'\''), u16::from(b'\'')]);
+                    output.splice(
+                        start_index + offset..start_index + offset,
+                        [u16::from(b'\''), u16::from(b'\'')],
+                    );
                     offset += 2;
                 } else {
                     output.insert(start_index + offset, ch);
@@ -422,7 +451,9 @@ impl PatternStringUtils {
             state = 0;
         }
         if state != 0 {
-            return Err(LuceneError::illegal_argument("Malformed localized pattern: unterminated quote"));
+            return Err(LuceneError::illegal_argument(
+                "Malformed localized pattern: unterminated quote",
+            ));
         }
         Ok(Some(result))
     }
@@ -447,13 +478,14 @@ impl PatternStringUtils {
         per_mille_replaces_percent: bool,
         output: &mut Vec<u16>,
     ) -> Result<()> {
-        let plus_replaces_minus_sign =
-            pattern_sign_type == PatternSignType::PosSign && !pattern_info.positive_has_plus_sign()?;
+        let plus_replaces_minus_sign = pattern_sign_type == PatternSignType::PosSign
+            && !pattern_info.positive_has_plus_sign()?;
 
         // Should we use the affix from the pattern string, or will we need to synthesize one?
         let use_negative_affix_pattern = pattern_info.has_negative_subpattern()
             && (pattern_sign_type == PatternSignType::Neg
-                || (pattern_info.negative_has_minus_sign()? && (plus_replaces_minus_sign || approximately)));
+                || (pattern_info.negative_has_minus_sign()?
+                    && (plus_replaces_minus_sign || approximately)));
 
         // Resolve the flags for the affix pattern.
         let mut flags = 0;

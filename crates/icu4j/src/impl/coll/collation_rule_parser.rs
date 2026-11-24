@@ -9,14 +9,16 @@ use rucene::error::{LuceneError, LuceneErrorKind, Result};
 use rucene::util::extra::ParseException;
 use rucene_queryparser::jdk::string::equals_ignore_case;
 
-use crate::jdk::{char_count, code_point_at, is_high_surrogate, is_low_surrogate, to_rust_string, units};
+use crate::jdk::{
+    char_count, code_point_at, is_high_surrogate, is_low_surrogate, to_rust_string, units,
+};
+use crate::lang::u_character::UCharacter;
+use crate::lang::u_property::UProperty;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_settings::CollationSettings;
 use crate::r#impl::illegal_icu_argument_exception::IllegalIcuArgumentException;
 use crate::r#impl::norm2_all_modes::Normalizer2WithImpl;
 use crate::r#impl::pattern_props::PatternProps;
-use crate::lang::u_character::UCharacter;
-use crate::lang::u_property::UProperty;
 use crate::text::collator::{self, ReorderCodes};
 use crate::text::normalizer2;
 use crate::text::unicode_set::UnicodeSet;
@@ -99,7 +101,13 @@ pub trait Sink {
     /// Adds a reset. strength=UCOL_IDENTICAL for &str. strength=UCOL_PRIMARY/UCOL_SECONDARY/UCOL_TERTIARY for &[before n]str where n=1/2/3.
     fn add_reset(&mut self, strength: i32, str: &[u16]) -> Result<()>;
     /// Adds a relation with strength and prefix | str / extension.
-    fn add_relation(&mut self, strength: i32, prefix: &[u16], str: &[u16], extension: &[u16]) -> Result<()>;
+    fn add_relation(
+        &mut self,
+        strength: i32,
+        prefix: &[u16],
+        str: &[u16],
+        extension: &[u16],
+    ) -> Result<()>;
     /// `suppressContractions(UnicodeSet)`.
     fn suppress_contractions(&mut self, _set: &UnicodeSet) -> Result<()> {
         Ok(())
@@ -156,8 +164,13 @@ fn java_get_message(e: &LuceneError) -> String {
         LuceneErrorKind::IllegalArgument { message, .. }
         | LuceneErrorKind::IllegalState { message, .. }
         | LuceneErrorKind::UnsupportedOperation { message, .. } => message.clone(),
-        LuceneErrorKind::Unchecked { message, .. } => message.clone().unwrap_or_else(|| "null".to_string()),
-        LuceneErrorKind::Throwable(t) => t.get_message().map(str::to_string).unwrap_or_else(|| "null".to_string()),
+        LuceneErrorKind::Unchecked { message, .. } => {
+            message.clone().unwrap_or_else(|| "null".to_string())
+        }
+        LuceneErrorKind::Throwable(t) => t
+            .get_message()
+            .map(str::to_string)
+            .unwrap_or_else(|| "null".to_string()),
         _ => e.to_string(),
     }
 }
@@ -186,7 +199,9 @@ pub struct CollationRuleParser {
 
 impl std::fmt::Debug for CollationRuleParser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CollationRuleParser").field("rule_index", &self.rule_index).finish_non_exhaustive()
+        f.debug_struct("CollationRuleParser")
+            .field("rule_index", &self.rule_index)
+            .finish_non_exhaustive()
     }
 }
 
@@ -195,7 +210,8 @@ fn is_surrogate(c: i32) -> bool {
 }
 
 fn is_syntax_char(c: i32) -> bool {
-    (0x21..=0x7e).contains(&c) && (c <= 0x2f || (0x3a..=0x40).contains(&c) || (0x5b..=0x60).contains(&c) || (0x7b <= c))
+    (0x21..=0x7e).contains(&c)
+        && (c <= 0x2f || (0x3a..=0x40).contains(&c) || (0x5b..=0x60).contains(&c) || (0x7b <= c))
 }
 
 fn get_on_off_value(s: &str) -> i32 {
@@ -237,8 +253,16 @@ impl CollationRuleParser {
     /// # Errors
     ///
     /// `ParseException` for invalid rules.
-    pub fn parse(&mut self, rule_string: &[u16], out_settings: &mut CollationSettings, sink: &mut dyn Sink) -> Result<()> {
-        let mut cx = Cx { settings: out_settings, sink };
+    pub fn parse(
+        &mut self,
+        rule_string: &[u16],
+        out_settings: &mut CollationSettings,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
+        let mut cx = Cx {
+            settings: out_settings,
+            sink,
+        };
         self.parse_rules(rule_string, &mut cx)
     }
 
@@ -268,7 +292,8 @@ impl CollationRuleParser {
                 }
                 0x40 => {
                     // '@' is equivalent to [backwards 2]
-                    cx.settings.set_flag(CollationSettings::BACKWARD_SECONDARY, true);
+                    cx.settings
+                        .set_flag(CollationSettings::BACKWARD_SECONDARY, true);
                     self.rule_index += 1;
                 }
                 0x21 => {
@@ -304,10 +329,13 @@ impl CollationRuleParser {
                 // reset-before rule chain
                 if is_first_relation {
                     if strength != reset_strength {
-                        return Err(self.set_parse_error("reset-before strength differs from its first relation"));
+                        return Err(self.set_parse_error(
+                            "reset-before strength differs from its first relation",
+                        ));
                     }
                 } else if strength < reset_strength {
-                    return Err(self.set_parse_error("reset-before strength followed by a stronger relation"));
+                    return Err(self
+                        .set_parse_error("reset-before strength followed by a stronger relation"));
                 }
             }
             let i = self.rule_index + (result >> OFFSET_SHIFT); // skip over the relation operator
@@ -464,7 +492,9 @@ impl CollationRuleParser {
                 let prefix0 = code_point_at(&prefix, 0);
                 let c = code_point_at(&raw, 0);
                 if !self.nfc.has_boundary_before(prefix0) || !self.nfc.has_boundary_before(c) {
-                    return Err(self.set_parse_error("in 'prefix|str', prefix and str must each start with an NFC boundary"));
+                    return Err(self.set_parse_error(
+                        "in 'prefix|str', prefix and str must each start with an NFC boundary",
+                    ));
                 }
             }
             if let Err(e) = cx.sink.add_relation(strength, &prefix, &raw, &extension) {
@@ -477,7 +507,12 @@ impl CollationRuleParser {
         Ok(())
     }
 
-    fn parse_starred_characters(&mut self, strength: i32, mut i: i32, cx: &mut Cx<'_>) -> Result<()> {
+    fn parse_starred_characters(
+        &mut self,
+        strength: i32,
+        mut i: i32,
+        cx: &mut Cx<'_>,
+    ) -> Result<()> {
         let empty: [u16; 0] = [];
         let mut raw = std::mem::take(&mut self.raw_builder);
         let result = (|| -> Result<i32> {
@@ -491,7 +526,9 @@ impl CollationRuleParser {
                 while j < raw.len() as i32 {
                     let c = code_point_at(&raw, j);
                     if !self.nfd.is_inert(c) {
-                        return Err(self.set_parse_error("starred-relation string is not all NFD-inert"));
+                        return Err(
+                            self.set_parse_error("starred-relation string is not all NFD-inert")
+                        );
                     }
                     let s = UTF16::value_of(c)?;
                     if let Err(e) = cx.sink.add_relation(strength, &empty, &s, &empty) {
@@ -505,15 +542,21 @@ impl CollationRuleParser {
                     break;
                 }
                 if prev < 0 {
-                    return Err(self.set_parse_error("range without start in starred-relation string"));
+                    return Err(
+                        self.set_parse_error("range without start in starred-relation string")
+                    );
                 }
                 i = self.parse_string(i + 1, &mut raw)?;
                 if raw.is_empty() {
-                    return Err(self.set_parse_error("range without end in starred-relation string"));
+                    return Err(
+                        self.set_parse_error("range without end in starred-relation string")
+                    );
                 }
                 let c = code_point_at(&raw, 0);
                 if c < prev {
-                    return Err(self.set_parse_error("range start greater than end in starred-relation string"));
+                    return Err(self.set_parse_error(
+                        "range start greater than end in starred-relation string",
+                    ));
                 }
                 // range prev-c
                 loop {
@@ -522,13 +565,19 @@ impl CollationRuleParser {
                         break;
                     }
                     if !self.nfd.is_inert(prev) {
-                        return Err(self.set_parse_error("starred-relation string range is not all NFD-inert"));
+                        return Err(self.set_parse_error(
+                            "starred-relation string range is not all NFD-inert",
+                        ));
                     }
                     if is_surrogate(prev) {
-                        return Err(self.set_parse_error("starred-relation string range contains a surrogate"));
+                        return Err(self.set_parse_error(
+                            "starred-relation string range contains a surrogate",
+                        ));
                     }
                     if (0xfffd..=0xffff).contains(&prev) {
-                        return Err(self.set_parse_error("starred-relation string range contains U+FFFD, U+FFFE or U+FFFF"));
+                        return Err(self.set_parse_error(
+                            "starred-relation string range contains U+FFFD, U+FFFE or U+FFFF",
+                        ));
                     }
                     let s = UTF16::value_of(prev)?;
                     if let Err(e) = cx.sink.add_relation(strength, &empty, &s, &empty) {
@@ -570,7 +619,9 @@ impl CollationRuleParser {
                     // Quote literal text until the next single apostrophe.
                     loop {
                         if i == self.len() {
-                            return Err(self.set_parse_error("quoted literal text missing terminating apostrophe"));
+                            return Err(self.set_parse_error(
+                                "quoted literal text missing terminating apostrophe",
+                            ));
                         }
                         c = self.char_at(i);
                         i += 1;
@@ -588,7 +639,9 @@ impl CollationRuleParser {
                 } else if c == 0x5c {
                     // backslash
                     if i == self.len() {
-                        return Err(self.set_parse_error("backslash escape at the end of the rule string"));
+                        return Err(
+                            self.set_parse_error("backslash escape at the end of the rule string")
+                        );
                     }
                     let cp = code_point_at(&self.rules, i);
                     crate::jdk::append_code_point(raw, cp)?;
@@ -667,7 +720,8 @@ impl CollationRuleParser {
                 return Ok(());
             }
             if raw_u == units("backwards 2") {
-                cx.settings.set_flag(CollationSettings::BACKWARD_SECONDARY, true);
+                cx.settings
+                    .set_flag(CollationSettings::BACKWARD_SECONDARY, true);
                 self.rule_index = j;
                 return Ok(());
             }
@@ -721,7 +775,9 @@ impl CollationRuleParser {
                 }
                 if value != UCOL_DEFAULT {
                     cx.settings.set_max_variable(value, 0)?;
-                    cx.settings.variable_top = self.base_data.get_last_primary_for_group(ReorderCodes::FIRST + value);
+                    cx.settings.variable_top = self
+                        .base_data
+                        .get_last_primary_for_group(ReorderCodes::FIRST + value);
                     debug_assert!(cx.settings.variable_top != 0);
                     self.rule_index = j;
                     return Ok(());
@@ -743,14 +799,16 @@ impl CollationRuleParser {
             } else if raw == "caseLevel" {
                 let value = get_on_off_value(&v);
                 if value != UCOL_DEFAULT {
-                    cx.settings.set_flag(CollationSettings::CASE_LEVEL, value > 0);
+                    cx.settings
+                        .set_flag(CollationSettings::CASE_LEVEL, value > 0);
                     self.rule_index = j;
                     return Ok(());
                 }
             } else if raw == "normalization" {
                 let value = get_on_off_value(&v);
                 if value != UCOL_DEFAULT {
-                    cx.settings.set_flag(CollationSettings::CHECK_FCD, value > 0);
+                    cx.settings
+                        .set_flag(CollationSettings::CHECK_FCD, value > 0);
                     self.rule_index = j;
                     return Ok(());
                 }
@@ -778,7 +836,10 @@ impl CollationRuleParser {
                     b.build()
                 })() {
                     Ok(l) => l,
-                    Err(e) => return Err(self.set_parse_error_with("expected language tag in [import langTag]", e)),
+                    Err(e) => {
+                        return Err(self
+                            .set_parse_error_with("expected language tag in [import langTag]", e))
+                    }
                 };
                 // localeID minus all keywords
                 let base_id = locale_id.get_base_name();
@@ -791,13 +852,19 @@ impl CollationRuleParser {
                             .get_rules(&base_id, collation_type.as_deref().unwrap_or("standard"))
                         {
                             Ok(r) => r,
-                            Err(e) => return Err(self.set_parse_error_with("[import langTag] failed", e)),
+                            Err(e) => {
+                                return Err(self.set_parse_error_with("[import langTag] failed", e))
+                            }
                         };
                         let outer_rules = std::mem::take(&mut self.rules);
                         let outer_rule_index = self.rule_index;
                         if let Err(e) = self.parse_rules(&imported_rules, cx) {
                             self.rule_index = outer_rule_index; // Restore the original index for error reporting.
-                            let err = self.set_parse_error_with_rules("parsing imported rules failed", e, &outer_rules);
+                            let err = self.set_parse_error_with_rules(
+                                "parsing imported rules failed",
+                                e,
+                                &outer_rules,
+                            );
                             self.rules = outer_rules;
                             return Err(err);
                         }
@@ -855,7 +922,8 @@ impl CollationRuleParser {
         if reorder_codes.is_empty() {
             cx.settings.reset_reordering();
         } else {
-            cx.settings.set_reordering(&self.base_data, &reorder_codes)?;
+            cx.settings
+                .set_reordering(&self.base_data, &reorder_codes)?;
         }
         Ok(())
     }
@@ -912,11 +980,16 @@ impl CollationRuleParser {
         }
         let pattern = self.rules[i as usize..j as usize].to_vec();
         if let Err(e) = set.apply_pattern(&pattern) {
-            return Err(self.set_parse_error(&format!("not a valid UnicodeSet pattern: {}", java_get_message(&e))));
+            return Err(self.set_parse_error(&format!(
+                "not a valid UnicodeSet pattern: {}",
+                java_get_message(&e)
+            )));
         }
         j = self.skip_white_space(j);
         if j == self.len() || self.char_at(j) != 0x5d {
-            return Err(self.set_parse_error("missing option-terminating ']' after UnicodeSet pattern"));
+            return Err(
+                self.set_parse_error("missing option-terminating ']' after UnicodeSet pattern")
+            );
         }
         j += 1;
         Ok(j)
@@ -982,7 +1055,12 @@ impl CollationRuleParser {
     /// `setParseError(String, Exception)` with `rules` restored to the
     /// outer rules first (Java restores the field after the call; the
     /// context is computed from the imported rules still in the field).
-    fn set_parse_error_with_rules(&self, reason: &str, e: LuceneError, _outer_rules: &[u16]) -> LuceneError {
+    fn set_parse_error_with_rules(
+        &self,
+        reason: &str,
+        e: LuceneError,
+        _outer_rules: &[u16],
+    ) -> LuceneError {
         self.set_parse_error_with(reason, e)
     }
 
@@ -1018,7 +1096,7 @@ impl CollationRuleParser {
         msg.extend_from_slice(&self.rules[start as usize..self.rule_index as usize]);
 
         msg.push(0x21); // '!'
-        // starting from ruleIndex
+                        // starting from ruleIndex
         let mut length = self.len() - self.rule_index;
         if length >= U_PARSE_CONTEXT_LEN {
             length = U_PARSE_CONTEXT_LEN - 1;
@@ -1026,7 +1104,9 @@ impl CollationRuleParser {
                 length -= 1;
             }
         }
-        msg.extend_from_slice(&self.rules[self.rule_index as usize..(self.rule_index + length) as usize]);
+        msg.extend_from_slice(
+            &self.rules[self.rule_index as usize..(self.rule_index + length) as usize],
+        );
         msg.push(0x22); // '"'
         String::from_utf16_lossy(&msg)
     }

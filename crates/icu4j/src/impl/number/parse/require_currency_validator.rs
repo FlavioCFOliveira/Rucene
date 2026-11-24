@@ -6,7 +6,9 @@
 use rucene::error::Result;
 
 use crate::r#impl::number::parse::parsed_number::{self, ParsedNumber};
-use crate::r#impl::number::parse::validation_matcher::{impl_validation_matcher, ValidationMatcher};
+use crate::r#impl::number::parse::validation_matcher::{
+    impl_validation_matcher, ValidationMatcher,
+};
 
 /// Equivalent to `com.ibm.icu.impl.number.parse.RequireCurrencyValidator`.
 #[derive(Debug, Default)]
@@ -21,4 +23,5 @@ impl ValidationMatcher for RequireCurrencyValidator {
     }
 }
 
-impl_validation_matcher!(RequireCurrencyValidator, |_| "<RequireCurrency>".to_string());
+impl_validation_matcher!(RequireCurrencyValidator, |_| "<RequireCurrency>"
+    .to_string());

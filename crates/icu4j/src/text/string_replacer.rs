@@ -59,7 +59,11 @@ impl std::fmt::Debug for StringReplacer {
 impl StringReplacer {
     /// `StringReplacer(String theOutput, int theCursorPos, Data theData)`:
     /// a replacer with a cursor position.
-    pub(crate) fn new_with_cursor(the_output: Vec<u16>, the_cursor_pos: i32, the_data: &Arc<Data>) -> Self {
+    pub(crate) fn new_with_cursor(
+        the_output: Vec<u16>,
+        the_cursor_pos: i32,
+        the_data: &Arc<Data>,
+    ) -> Self {
         Self {
             output: the_output,
             cursor_pos: the_cursor_pos,
@@ -82,13 +86,21 @@ impl StringReplacer {
     }
 
     fn data(&self) -> Arc<Data> {
-        self.data.upgrade().expect("RuleBasedTransliterator.Data released while its StringReplacer is in use")
+        self.data
+            .upgrade()
+            .expect("RuleBasedTransliterator.Data released while its StringReplacer is in use")
     }
 }
 
 impl UnicodeReplacer for StringReplacer {
     /// `replace(Replaceable text, int start, int limit, int[] cursor)`.
-    fn replace(&self, text: &dyn Replaceable, start: i32, limit: i32, cursor: &mut [i32]) -> Result<i32> {
+    fn replace(
+        &self,
+        text: &dyn Replaceable,
+        start: i32,
+        limit: i32,
+        cursor: &mut [i32],
+    ) -> Result<i32> {
         let out_len;
         let mut new_start = 0;
 
@@ -139,11 +151,11 @@ impl UnicodeReplacer for StringReplacer {
                 if o_output == self.cursor_pos {
                     // Record the position of the cursor
                     new_start = buf.len() as i32 + dest_limit - dest_start; // relative to start
-                    // the buf.length() was inserted for bug 5789
-                    // the problem is that if we are accumulating into a buffer (when r == null below)
-                    // then the actual length of the text at that point needs to add the buf length.
-                    // there was an alternative suggested in #5789, but that looks like it won't work
-                    // if we have accumulated some stuff in the dest part AND have a non-zero buffer.
+                                                                            // the buf.length() was inserted for bug 5789
+                                                                            // the problem is that if we are accumulating into a buffer (when r == null below)
+                                                                            // then the actual length of the text at that point needs to add the buf length.
+                                                                            // there was an alternative suggested in #5789, but that looks like it won't work
+                                                                            // if we have accumulated some stuff in the dest part AND have a non-zero buffer.
                 }
                 let c = UTF16::char_at(&self.output, o_output);
 
@@ -248,7 +260,13 @@ impl UnicodeReplacer for StringReplacer {
                 cursor += 1;
                 c < 0
             } {
-                Utility::append_to_rule(&mut rule, b'@' as i32, true, escape_unprintable, &mut quote_buf)?;
+                Utility::append_to_rule(
+                    &mut rule,
+                    b'@' as i32,
+                    true,
+                    escape_unprintable,
+                    &mut quote_buf,
+                )?;
             }
             // Fall through and append '|' below
         }
@@ -256,19 +274,37 @@ impl UnicodeReplacer for StringReplacer {
         let data = self.data();
         for i in 0..self.output.len() as i32 {
             if self.has_cursor && i == cursor {
-                Utility::append_to_rule(&mut rule, b'|' as i32, true, escape_unprintable, &mut quote_buf)?;
+                Utility::append_to_rule(
+                    &mut rule,
+                    b'|' as i32,
+                    true,
+                    escape_unprintable,
+                    &mut quote_buf,
+                )?;
             }
             let c = self.output[i as usize]; // Ok to use 16-bits here
 
             match data.lookup_replacer(c as i32) {
                 None => {
-                    Utility::append_to_rule(&mut rule, c as i32, false, escape_unprintable, &mut quote_buf)?;
+                    Utility::append_to_rule(
+                        &mut rule,
+                        c as i32,
+                        false,
+                        escape_unprintable,
+                        &mut quote_buf,
+                    )?;
                 }
                 Some(r) => {
                     let mut buf = vec![b' ' as u16];
                     buf.extend_from_slice(&r.to_replacer_pattern(escape_unprintable)?);
                     buf.push(b' ' as u16);
-                    Utility::append_to_rule_str(&mut rule, &buf, true, escape_unprintable, &mut quote_buf)?;
+                    Utility::append_to_rule_str(
+                        &mut rule,
+                        &buf,
+                        true,
+                        escape_unprintable,
+                        &mut quote_buf,
+                    )?;
                 }
             }
         }
@@ -283,9 +319,21 @@ impl UnicodeReplacer for StringReplacer {
                 cursor -= 1;
                 c > 0
             } {
-                Utility::append_to_rule(&mut rule, b'@' as i32, true, escape_unprintable, &mut quote_buf)?;
+                Utility::append_to_rule(
+                    &mut rule,
+                    b'@' as i32,
+                    true,
+                    escape_unprintable,
+                    &mut quote_buf,
+                )?;
             }
-            Utility::append_to_rule(&mut rule, b'|' as i32, true, escape_unprintable, &mut quote_buf)?;
+            Utility::append_to_rule(
+                &mut rule,
+                b'|' as i32,
+                true,
+                escape_unprintable,
+                &mut quote_buf,
+            )?;
         }
         // Flush quoteBuf out to result
         Utility::append_to_rule(&mut rule, -1, true, escape_unprintable, &mut quote_buf)?;

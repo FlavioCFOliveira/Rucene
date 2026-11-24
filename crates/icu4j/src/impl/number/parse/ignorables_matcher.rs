@@ -7,15 +7,23 @@ use std::sync::{Arc, LazyLock};
 
 use crate::r#impl::number::parse::parsed_number::ParsedNumber;
 use crate::r#impl::number::parse::parsing_utils::ParsingUtils;
-use crate::r#impl::number::parse::symbol_matcher::{impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl};
+use crate::r#impl::number::parse::symbol_matcher::{
+    impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl,
+};
 use crate::r#impl::static_unicode_sets::{Key, StaticUnicodeSets};
 use crate::r#impl::string_segment::StringSegment;
 use crate::text::unicode_set::UnicodeSet;
 
-static DEFAULT: LazyLock<Arc<IgnorablesMatcher>> =
-    LazyLock::new(|| Arc::new(IgnorablesMatcher::new(StaticUnicodeSets::get(Key::DefaultIgnorables))));
-static STRICT: LazyLock<Arc<IgnorablesMatcher>> =
-    LazyLock::new(|| Arc::new(IgnorablesMatcher::new(StaticUnicodeSets::get(Key::StrictIgnorables))));
+static DEFAULT: LazyLock<Arc<IgnorablesMatcher>> = LazyLock::new(|| {
+    Arc::new(IgnorablesMatcher::new(StaticUnicodeSets::get(
+        Key::DefaultIgnorables,
+    )))
+});
+static STRICT: LazyLock<Arc<IgnorablesMatcher>> = LazyLock::new(|| {
+    Arc::new(IgnorablesMatcher::new(StaticUnicodeSets::get(
+        Key::StrictIgnorables,
+    )))
+});
 static JAVA_COMPATIBILITY: LazyLock<Arc<IgnorablesMatcher>> =
     LazyLock::new(|| Arc::new(IgnorablesMatcher::new(StaticUnicodeSets::get(Key::Empty))));
 
@@ -40,7 +48,9 @@ impl IgnorablesMatcher {
     }
 
     fn new(ignorables: &'static UnicodeSet) -> Self {
-        IgnorablesMatcher { base: SymbolMatcher::new(&[], ignorables) }
+        IgnorablesMatcher {
+            base: SymbolMatcher::new(&[], ignorables),
+        }
     }
 
     /// Equivalent to `getSet()`.

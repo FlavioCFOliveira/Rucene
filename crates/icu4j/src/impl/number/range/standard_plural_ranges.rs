@@ -34,7 +34,8 @@ static LANGUAGE_TO_SET: Mutex<Option<Arc<HashMap<String, String>>>> = Mutex::new
 
 /// `StandardPluralRanges.DEFAULT`: the empty instance (every range
 /// resolves to `OTHER`).
-pub static DEFAULT: LazyLock<Arc<StandardPluralRanges>> = LazyLock::new(|| Arc::new(StandardPluralRanges::default()));
+pub static DEFAULT: LazyLock<Arc<StandardPluralRanges>> =
+    LazyLock::new(|| Arc::new(StandardPluralRanges::default()));
 
 /// `StandardPluralRanges.PluralRangeSetsDataSink`.
 struct PluralRangeSetsDataSink<'a> {
@@ -47,7 +48,9 @@ impl Sink for PluralRangeSetsDataSink<'_> {
         let mut i = 0;
         while table.get_key_and_value(i, key, value) {
             let k = key.to_java_string();
-            debug_assert!(ULocale::new(&k).map(|l| l.get_language() == k).unwrap_or(false));
+            debug_assert!(ULocale::new(&k)
+                .map(|l| l.get_language() == k)
+                .unwrap_or(false));
             self.output.insert(k, value.to_java_string());
             i += 1;
         }
@@ -68,7 +71,9 @@ impl Sink for PluralRangesDataSink<'_> {
         while entries_array.get_value(i, value) {
             let plural_forms_array = value.get_array()?;
             if plural_forms_array.get_size() != 3 {
-                return Err(type_mismatch("Expected 3 elements in pluralRanges.txt array"));
+                return Err(type_mismatch(
+                    "Expected 3 elements in pluralRanges.txt array",
+                ));
             }
             plural_forms_array.get_value(0, value);
             let first = StandardPlural::from_string(&to_rust_string(&value.get_string()?))?;
@@ -94,7 +99,10 @@ fn plural_ranges_bundle() -> Result<Arc<ICUResourceBundle>> {
 
 /// `getLanguageToSet()`.
 fn get_language_to_set() -> Result<Arc<HashMap<String, String>>> {
-    let candidate = LANGUAGE_TO_SET.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let candidate = LANGUAGE_TO_SET
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let candidate = match candidate {
         Some(c) => c,
         None => {
@@ -159,7 +167,12 @@ impl StandardPluralRanges {
         Ok(get_language_to_set()?.get(&locale.get_language()).cloned())
     }
 
-    fn add_plural_range(&mut self, first: StandardPlural, second: StandardPlural, result: StandardPlural) {
+    fn add_plural_range(
+        &mut self,
+        first: StandardPlural,
+        second: StandardPlural,
+        result: StandardPlural,
+    ) {
         let n = (3 * self.num_triples) as usize;
         self.flat_triples[n] = first;
         self.flat_triples[n + 1] = second;

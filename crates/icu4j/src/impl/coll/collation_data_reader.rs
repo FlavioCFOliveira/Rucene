@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use rucene::error::Result;
 
+use crate::jdk::ByteBuffer;
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
 use crate::r#impl::coll::collation_fast_latin::CollationFastLatin;
@@ -16,7 +17,6 @@ use crate::r#impl::coll::collation_tailoring::CollationTailoring;
 use crate::r#impl::icu_binary::ICUBinary;
 use crate::r#impl::trie2_32::Trie2_32;
 use crate::r#impl::u_serialized_set::USerializedSet;
-use crate::jdk::ByteBuffer;
 use crate::text::collator::ReorderCodes;
 use crate::text::unicode_set::UnicodeSet;
 use crate::util::icu_exception::ICUException;
@@ -88,12 +88,21 @@ impl CollationDataReader {
     ///
     /// `ICUException` for invalid data, `IOException` of the header and
     /// buffer reads.
-    pub fn read(base: Option<&CollationTailoring>, in_bytes: &mut ByteBuffer, tailoring: &mut CollationTailoring) -> Result<()> {
-        tailoring.version =
-            ICUBinary::read_header(in_bytes, DATA_FORMAT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
+    pub fn read(
+        base: Option<&CollationTailoring>,
+        in_bytes: &mut ByteBuffer,
+        tailoring: &mut CollationTailoring,
+    ) -> Result<()> {
+        tailoring.version = ICUBinary::read_header(
+            in_bytes,
+            DATA_FORMAT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
         if let Some(base) = base {
             if base.get_uca_version() != tailoring.get_uca_version() {
-                return Err(icu("Tailoring UCA version differs from base data UCA version"));
+                return Err(icu(
+                    "Tailoring UCA version differs from base data UCA version",
+                ));
             }
         }
 
@@ -162,7 +171,10 @@ impl CollationDataReader {
             // Range limits are stored in the upper 16 bits, and are never 0.
             let mut reorder_ranges_length = 0;
             while reorder_ranges_length < reorder_codes_length
-                && (reorder_codes[(reorder_codes_length - reorder_ranges_length - 1) as usize] as u32 & 0xffff0000) != 0
+                && (reorder_codes[(reorder_codes_length - reorder_ranges_length - 1) as usize]
+                    as u32
+                    & 0xffff0000)
+                    != 0
             {
                 reorder_ranges_length += 1;
             }
@@ -197,7 +209,9 @@ impl CollationDataReader {
 
         if let Some(base_data) = &base_data {
             if base_data.numeric_primary != ((in_indexes[Self::IX_OPTIONS] as i64) & 0xff000000) {
-                return Err(icu("Tailoring numeric primary weight differs from base data"));
+                return Err(icu(
+                    "Tailoring numeric primary weight differs from base data",
+                ));
             }
         }
         let mut data: Option<CollationData> = None; // Remains null if there are no mappings.
@@ -299,11 +313,15 @@ impl CollationDataReader {
             for e in root_elements.iter_mut() {
                 *e = (in_bytes.get_int()? as i64) & 0xffffffff; // unsigned int -> long
             }
-            let common_sec_ter = root_elements[CollationRootElements::IX_COMMON_SEC_AND_TER_CE as usize];
+            let common_sec_ter =
+                root_elements[CollationRootElements::IX_COMMON_SEC_AND_TER_CE as usize];
             if common_sec_ter != Collation::COMMON_SEC_AND_TER_CE as i64 {
-                return Err(icu("Common sec/ter weights in base data differ from the hardcoded value"));
+                return Err(icu(
+                    "Common sec/ter weights in base data differ from the hardcoded value",
+                ));
             }
-            let sec_ter_boundaries = root_elements[CollationRootElements::IX_SEC_TER_BOUNDARIES as usize];
+            let sec_ter_boundaries =
+                root_elements[CollationRootElements::IX_SEC_TER_BOUNDARIES as usize];
             if ((sec_ter_boundaries as u64) >> 24) < CollationKeys::SEC_COMMON_HIGH as u64 {
                 // [fixed last secondary common byte] is too low,
                 // and secondary weights would collide with compressed common secondaries.
@@ -389,7 +407,8 @@ impl CollationDataReader {
             // Nothing to do.
         } else if let Some(base_data) = &base_data {
             // No tailoring-specific data: Alias the root collator's set.
-            data.as_mut().expect("checked").unsafe_backward_set = base_data.unsafe_backward_set.clone();
+            data.as_mut().expect("checked").unsafe_backward_set =
+                base_data.unsafe_backward_set.clone();
         } else {
             return Err(icu("Missing unsafe-backward-set"));
         }
@@ -415,10 +434,16 @@ impl CollationDataReader {
                     }
                     d.fast_latin_table_header = Some(Arc::from(header));
                     let table_length = length / 2 - header_length;
-                    d.fast_latin_table = Some(Arc::from(ICUBinary::get_chars(in_bytes, table_length, length & 1)?));
+                    d.fast_latin_table = Some(Arc::from(ICUBinary::get_chars(
+                        in_bytes,
+                        table_length,
+                        length & 1,
+                    )?));
                     length = 0;
                     if (header0 >> 8) as i32 != CollationFastLatin::VERSION {
-                        return Err(icu("Fast-Latin table version differs from version in data header"));
+                        return Err(icu(
+                            "Fast-Latin table version differs from version in data header",
+                        ));
                     }
                 } else if let Some(base_data) = &base_data {
                     d.fast_latin_table = base_data.fast_latin_table.clone();
@@ -453,14 +478,19 @@ impl CollationDataReader {
             if script_starts_length <= 2 {
                 return Err(icu("Script order data too short"));
             }
-            let scripts_index: Vec<u16> = (0..d.num_scripts + 16).map(|_| next_char(in_bytes)).collect();
-            let script_starts: Vec<u16> = (0..script_starts_length).map(|_| next_char(in_bytes)).collect();
+            let scripts_index: Vec<u16> = (0..d.num_scripts + 16)
+                .map(|_| next_char(in_bytes))
+                .collect();
+            let script_starts: Vec<u16> = (0..script_starts_length)
+                .map(|_| next_char(in_bytes))
+                .collect();
             d.scripts_index = Arc::from(scripts_index);
             d.script_starts = Arc::from(script_starts);
             let ss = &d.script_starts;
             if !(ss[0] == 0
                 && ss[1] as i32 == ((Collation::MERGE_SEPARATOR_BYTE + 1) << 8)
-                && ss[(script_starts_length - 1) as usize] as i32 == (Collation::TRAIL_WEIGHT_BYTE << 8))
+                && ss[(script_starts_length - 1) as usize] as i32
+                    == (Collation::TRAIL_WEIGHT_BYTE << 8))
             {
                 return Err(icu("Script order data not valid"));
             }
@@ -479,7 +509,9 @@ impl CollationDataReader {
         length = in_indexes[index + 1] - offset;
         if length >= 256 {
             let Some(d) = data.as_mut() else {
-                return Err(icu("Data for compressible primary lead bytes but no mappings"));
+                return Err(icu(
+                    "Data for compressible primary lead bytes but no mappings",
+                ));
             };
             let mut compressible_bytes = vec![false; 256];
             for b in compressible_bytes.iter_mut() {
@@ -490,7 +522,8 @@ impl CollationDataReader {
         } else if data.is_none() {
             // Nothing to do.
         } else if let Some(base_data) = &base_data {
-            data.as_mut().expect("checked").compressible_bytes = base_data.compressible_bytes.clone();
+            data.as_mut().expect("checked").compressible_bytes =
+                base_data.compressible_bytes.clone();
         } else {
             return Err(icu("Missing data for compressible primary lead bytes"));
         }
@@ -508,7 +541,8 @@ impl CollationDataReader {
         let ts = tailoring.settings();
         let options = in_indexes[Self::IX_OPTIONS] & 0xffff;
         let mut fast_latin_primaries = vec![0u16; CollationFastLatin::LATIN_LIMIT as usize];
-        let fast_latin_options = CollationFastLatin::get_options(tailoring.data(), ts, &mut fast_latin_primaries);
+        let fast_latin_options =
+            CollationFastLatin::get_options(tailoring.data(), ts, &mut fast_latin_primaries);
         if options == ts.options
             && ts.variable_top != 0
             && reorder_codes[..] == ts.reorder_codes[..]
@@ -522,17 +556,24 @@ impl CollationDataReader {
         let settings = tailoring.settings.copy_on_write();
         settings.options = options;
         // Set variableTop from options and scripts data.
-        settings.variable_top = data.get_last_primary_for_group(ReorderCodes::FIRST + settings.get_max_variable());
+        settings.variable_top =
+            data.get_last_primary_for_group(ReorderCodes::FIRST + settings.get_max_variable());
         if settings.variable_top == 0 {
             return Err(icu("The maxVariable could not be mapped to a variableTop"));
         }
 
         if reorder_codes_length != 0 {
-            settings.alias_reordering(base_data.as_deref(), &reorder_codes, reorder_codes_length, reorder_table)?;
+            settings.alias_reordering(
+                base_data.as_deref(),
+                &reorder_codes,
+                reorder_codes_length,
+                reorder_table,
+            )?;
         }
 
         let mut primaries = std::mem::take(&mut settings.fast_latin_primaries);
-        settings.fast_latin_options = CollationFastLatin::get_options(&data, settings, &mut primaries);
+        settings.fast_latin_options =
+            CollationFastLatin::get_options(&data, settings, &mut primaries);
         settings.fast_latin_primaries = primaries;
         Ok(())
     }

@@ -28,14 +28,19 @@ pub struct FunctionReplacer {
 
 impl std::fmt::Debug for FunctionReplacer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FunctionReplacer").field("translit", &self.translit).finish()
+        f.debug_struct("FunctionReplacer")
+            .field("translit", &self.translit)
+            .finish()
     }
 }
 
 impl FunctionReplacer {
     /// `FunctionReplacer(Transliterator theTranslit, UnicodeReplacer
     /// theReplacer)`.
-    pub(crate) fn new(the_translit: Arc<dyn Transliterator>, the_replacer: Box<dyn UnicodeReplacer>) -> Self {
+    pub(crate) fn new(
+        the_translit: Arc<dyn Transliterator>,
+        the_replacer: Box<dyn UnicodeReplacer>,
+    ) -> Self {
         Self {
             translit: the_translit,
             replacer: the_replacer,
@@ -45,7 +50,13 @@ impl FunctionReplacer {
 
 impl UnicodeReplacer for FunctionReplacer {
     /// `replace(Replaceable text, int start, int limit, int[] cursor)`.
-    fn replace(&self, text: &dyn Replaceable, start: i32, limit: i32, cursor: &mut [i32]) -> Result<i32> {
+    fn replace(
+        &self,
+        text: &dyn Replaceable,
+        start: i32,
+        limit: i32,
+        cursor: &mut [i32],
+    ) -> Result<i32> {
         // First delegate to subordinate replacer
         let len = self.replacer.replace(text, start, limit, cursor)?;
         let limit = start + len;

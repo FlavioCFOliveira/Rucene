@@ -14,7 +14,8 @@ use crate::r#impl::formatted_string_builder::{is_field, FormattedStringBuilder};
 use crate::r#impl::number::constant_multi_field_modifier::ConstantMultiFieldModifier;
 use crate::r#impl::number::modifier::{Modifier, Parameters};
 use crate::text::decimal_format_symbols::{
-    DecimalFormatSymbols, CURRENCY_SPC_CURRENCY_MATCH, CURRENCY_SPC_INSERT, CURRENCY_SPC_SURROUNDING_MATCH,
+    DecimalFormatSymbols, CURRENCY_SPC_CURRENCY_MATCH, CURRENCY_SPC_INSERT,
+    CURRENCY_SPC_SURROUNDING_MATCH,
 };
 use crate::text::number_format::field as nf_field;
 use crate::text::unicode_set::UnicodeSet;
@@ -29,7 +30,8 @@ static UNISET_DIGIT: LazyLock<Arc<UnicodeSet>> = LazyLock::new(|| frozen("[:digi
 static UNISET_NOTSZ: LazyLock<Arc<UnicodeSet>> = LazyLock::new(|| frozen("[[:^S:]&[:^Z:]]"));
 
 fn frozen(pattern: &str) -> Arc<UnicodeSet> {
-    let mut s = UnicodeSet::from_pattern(&units(pattern)).expect("the CLDR default spacing sets are valid");
+    let mut s =
+        UnicodeSet::from_pattern(&units(pattern)).expect("the CLDR default spacing sets are valid");
     s.freeze();
     Arc::new(s)
 }
@@ -79,32 +81,48 @@ impl CurrencySpacingEnabledModifier {
 
         // Check for currency spacing. Do not build the UnicodeSets unless
         // there is a currency code point at a boundary.
-        let (after_prefix_unicode_set, after_prefix_insert) =
-            if prefix.length() > 0 && is_field(prefix.field_at(prefix.length() - 1), &nf_field::CURRENCY as FieldRef) {
-                let prefix_cp = prefix.get_last_code_point();
-                let prefix_unicode_set = Self::get_unicode_set(symbols, IN_CURRENCY, PREFIX)?;
-                if prefix_unicode_set.contains(prefix_cp)? {
-                    // freeze(): the sets this answers are frozen.
-                    (Some(Self::get_unicode_set(symbols, IN_NUMBER, PREFIX)?), Some(Self::get_insert_string(symbols, PREFIX)?))
-                } else {
-                    (None, None)
-                }
+        let (after_prefix_unicode_set, after_prefix_insert) = if prefix.length() > 0
+            && is_field(
+                prefix.field_at(prefix.length() - 1),
+                &nf_field::CURRENCY as FieldRef,
+            ) {
+            let prefix_cp = prefix.get_last_code_point();
+            let prefix_unicode_set = Self::get_unicode_set(symbols, IN_CURRENCY, PREFIX)?;
+            if prefix_unicode_set.contains(prefix_cp)? {
+                // freeze(): the sets this answers are frozen.
+                (
+                    Some(Self::get_unicode_set(symbols, IN_NUMBER, PREFIX)?),
+                    Some(Self::get_insert_string(symbols, PREFIX)?),
+                )
             } else {
                 (None, None)
-            };
-        let (before_suffix_unicode_set, before_suffix_insert) =
-            if suffix.length() > 0 && is_field(suffix.field_at(0), &nf_field::CURRENCY as FieldRef) {
-                let suffix_cp = suffix.get_first_code_point();
-                let suffix_unicode_set = Self::get_unicode_set(symbols, IN_CURRENCY, SUFFIX)?;
-                if suffix_unicode_set.contains(suffix_cp)? {
-                    (Some(Self::get_unicode_set(symbols, IN_NUMBER, SUFFIX)?), Some(Self::get_insert_string(symbols, SUFFIX)?))
-                } else {
-                    (None, None)
-                }
+            }
+        } else {
+            (None, None)
+        };
+        let (before_suffix_unicode_set, before_suffix_insert) = if suffix.length() > 0
+            && is_field(suffix.field_at(0), &nf_field::CURRENCY as FieldRef)
+        {
+            let suffix_cp = suffix.get_first_code_point();
+            let suffix_unicode_set = Self::get_unicode_set(symbols, IN_CURRENCY, SUFFIX)?;
+            if suffix_unicode_set.contains(suffix_cp)? {
+                (
+                    Some(Self::get_unicode_set(symbols, IN_NUMBER, SUFFIX)?),
+                    Some(Self::get_insert_string(symbols, SUFFIX)?),
+                )
             } else {
                 (None, None)
-            };
-        Ok(Self { base, after_prefix_unicode_set, after_prefix_insert, before_suffix_unicode_set, before_suffix_insert })
+            }
+        } else {
+            (None, None)
+        };
+        Ok(Self {
+            base,
+            after_prefix_unicode_set,
+            after_prefix_insert,
+            before_suffix_unicode_set,
+            before_suffix_insert,
+        })
     }
 
     /// The `ConstantMultiFieldModifier` this modifier extends.
@@ -132,10 +150,16 @@ impl CurrencySpacingEnabledModifier {
         let has_suffix = suffix_len > 0;
         let has_number = suffix_start - prefix_start - prefix_len > 0; // could be empty string
         if has_prefix && has_number {
-            length += Self::apply_currency_spacing_affix(output, prefix_start + prefix_len, PREFIX, symbols)?;
+            length += Self::apply_currency_spacing_affix(
+                output,
+                prefix_start + prefix_len,
+                PREFIX,
+                symbols,
+            )?;
         }
         if has_suffix && has_number {
-            length += Self::apply_currency_spacing_affix(output, suffix_start + length, SUFFIX, symbols)?;
+            length +=
+                Self::apply_currency_spacing_affix(output, suffix_start + length, SUFFIX, symbols)?;
         }
         Ok(length)
     }
@@ -154,16 +178,28 @@ impl CurrencySpacingEnabledModifier {
         // This works even if the last code point in the prefix is 2 code
         // units because the field value gets populated to both indices in
         // the field array.
-        let affix_field = if affix == PREFIX { output.field_at(index - 1) } else { output.field_at(index) };
+        let affix_field = if affix == PREFIX {
+            output.field_at(index - 1)
+        } else {
+            output.field_at(index)
+        };
         if !is_field(affix_field, &nf_field::CURRENCY as FieldRef) {
             return Ok(0);
         }
-        let affix_cp = if affix == PREFIX { output.code_point_before(index) } else { output.code_point_at(index) };
+        let affix_cp = if affix == PREFIX {
+            output.code_point_before(index)
+        } else {
+            output.code_point_at(index)
+        };
         let affix_uniset = Self::get_unicode_set(symbols, IN_CURRENCY, affix)?;
         if !affix_uniset.contains(affix_cp)? {
             return Ok(0);
         }
-        let number_cp = if affix == PREFIX { output.code_point_at(index) } else { output.code_point_before(index) };
+        let number_cp = if affix == PREFIX {
+            output.code_point_at(index)
+        } else {
+            output.code_point_before(index)
+        };
         let number_uniset = Self::get_unicode_set(symbols, IN_NUMBER, affix)?;
         if !number_uniset.contains(number_cp)? {
             return Ok(0);
@@ -180,10 +216,18 @@ impl CurrencySpacingEnabledModifier {
     }
 
     /// `getUnicodeSet(DecimalFormatSymbols, short, byte)`.
-    fn get_unicode_set(symbols: &DecimalFormatSymbols, position: i16, affix: i8) -> Result<Arc<UnicodeSet>> {
+    fn get_unicode_set(
+        symbols: &DecimalFormatSymbols,
+        position: i16,
+        affix: i8,
+    ) -> Result<Arc<UnicodeSet>> {
         let pattern = symbols
             .get_pattern_for_currency_spacing(
-                if position == IN_CURRENCY { CURRENCY_SPC_CURRENCY_MATCH } else { CURRENCY_SPC_SURROUNDING_MATCH },
+                if position == IN_CURRENCY {
+                    CURRENCY_SPC_CURRENCY_MATCH
+                } else {
+                    CURRENCY_SPC_SURROUNDING_MATCH
+                },
                 affix == SUFFIX,
             )?
             .unwrap_or_else(|| panic!("java.lang.NullPointerException: currency spacing pattern"));
@@ -209,12 +253,20 @@ impl CurrencySpacingEnabledModifier {
 
 impl Modifier for CurrencySpacingEnabledModifier {
     /// Safe code path.
-    fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32> {
+    fn apply(
+        &self,
+        output: &mut FormattedStringBuilder,
+        left_index: i32,
+        right_index: i32,
+    ) -> Result<i32> {
         // Currency spacing logic
         let mut length = 0;
         if right_index - left_index > 0 {
             if let Some(set) = &self.after_prefix_unicode_set {
-                if set.contains(output.code_point_at(left_index)).unwrap_or(false) {
+                if set
+                    .contains(output.code_point_at(left_index))
+                    .unwrap_or(false)
+                {
                     // TODO: Should we use the CURRENCY field here?
                     let insert = self.after_prefix_insert.as_deref().unwrap_or(&[]);
                     length += output.insert(left_index, insert, None);
@@ -223,7 +275,10 @@ impl Modifier for CurrencySpacingEnabledModifier {
         }
         if right_index - left_index > 0 {
             if let Some(set) = &self.before_suffix_unicode_set {
-                if set.contains(output.code_point_before(right_index)).unwrap_or(false) {
+                if set
+                    .contains(output.code_point_before(right_index))
+                    .unwrap_or(false)
+                {
                     // TODO: Should we use the CURRENCY field here?
                     let insert = self.before_suffix_insert.as_deref().unwrap_or(&[]);
                     length += output.insert(right_index + length, insert, None);

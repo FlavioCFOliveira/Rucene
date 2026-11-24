@@ -278,7 +278,8 @@ pub struct MeasureUnitData {
 pub struct MeasureUnit(pub(crate) Arc<MeasureUnitData>);
 
 /// `cache`: type to (subtype to unit), Java `HashMap` iteration order.
-static CACHE: LazyLock<Mutex<JavaHashMap<JavaHashMap<MeasureUnit>>>> = LazyLock::new(|| Mutex::new(JavaHashMap::new()));
+static CACHE: LazyLock<Mutex<JavaHashMap<JavaHashMap<MeasureUnit>>>> =
+    LazyLock::new(|| Mutex::new(JavaHashMap::new()));
 
 /// `cacheIsPopulated`.
 static CACHE_IS_POPULATED: Mutex<bool> = Mutex::new(false);
@@ -292,8 +293,10 @@ static ASCII: LazyLock<UnicodeSet> = LazyLock::new(|| {
 
 /// `ASCII_HYPHEN_DIGITS`.
 static ASCII_HYPHEN_DIGITS: LazyLock<UnicodeSet> = LazyLock::new(|| {
-    let mut s = UnicodeSet::from_pairs(&['-' as i32, '-' as i32, '0' as i32, '9' as i32, 'a' as i32, 'z' as i32])
-        .expect("valid ranges");
+    let mut s = UnicodeSet::from_pairs(&[
+        '-' as i32, '-' as i32, '0' as i32, '9' as i32, 'a' as i32, 'z' as i32,
+    ])
+    .expect("valid ranges");
     s.freeze();
     s
 });
@@ -382,18 +385,32 @@ impl MeasureUnit {
     /// The unit object behind a static constant (the constants name valid
     /// type/subtype pairs).
     pub(crate) fn constant(type_: &str, sub_type: &str) -> MeasureUnit {
-        MeasureUnit::internal_get_instance(type_, sub_type).expect("MeasureUnit constants name valid units")
+        MeasureUnit::internal_get_instance(type_, sub_type)
+            .expect("MeasureUnit constants name valid units")
     }
 
     /// Equivalent to the protected `MeasureUnit(String type, String
     /// subType)`.
     pub(crate) fn new(type_: &str, sub_type: &str) -> MeasureUnit {
-        Self::with_class(Some(type_.to_string()), Some(sub_type.to_string()), UnitClass::MeasureUnit)
+        Self::with_class(
+            Some(type_.to_string()),
+            Some(sub_type.to_string()),
+            UnitClass::MeasureUnit,
+        )
     }
 
     /// A unit of the given runtime class (the subclass constructors).
-    pub(crate) fn with_class(type_: Option<String>, sub_type: Option<String>, class: UnitClass) -> MeasureUnit {
-        MeasureUnit(Arc::new(MeasureUnitData { type_, sub_type, measure_unit_impl: None, class }))
+    pub(crate) fn with_class(
+        type_: Option<String>,
+        sub_type: Option<String>,
+        class: UnitClass,
+    ) -> MeasureUnit {
+        MeasureUnit(Arc::new(MeasureUnitData {
+            type_,
+            sub_type,
+            measure_unit_impl: None,
+            class,
+        }))
     }
 
     /// The runtime class of this unit.
@@ -512,10 +529,14 @@ impl MeasureUnit {
     /// applied to COMPOUND & SINGLE units")`.
     pub fn with_constant_denominator(&self, denominator: i64) -> Result<MeasureUnit> {
         if denominator < 0 {
-            return Err(LuceneError::illegal_argument("Denominator cannot be negative"));
+            return Err(LuceneError::illegal_argument(
+                "Denominator cannot be negative",
+            ));
         }
 
-        if self.get_complexity()? != Complexity::Compound && self.get_complexity()? != Complexity::Single {
+        if self.get_complexity()? != Complexity::Compound
+            && self.get_complexity()? != Complexity::Single
+        {
             return Err(LuceneError::unsupported_operation(
                 "Constant denominator can only be applied to COMPOUND & SINGLE units",
             ));
@@ -524,11 +545,13 @@ impl MeasureUnit {
         let mut measure_unit_impl = self.get_copy_of_measure_unit_impl()?;
         measure_unit_impl.set_constant_denominator(denominator);
 
-        measure_unit_impl.set_complexity(if denominator == 0 && measure_unit_impl.get_single_units().len() < 2 {
-            Complexity::Single
-        } else {
-            Complexity::Compound
-        });
+        measure_unit_impl.set_complexity(
+            if denominator == 0 && measure_unit_impl.get_single_units().len() < 2 {
+                Complexity::Single
+            } else {
+                Complexity::Compound
+            },
+        );
 
         measure_unit_impl.build()
     }
@@ -541,7 +564,9 @@ impl MeasureUnit {
     /// `UnsupportedOperationException("Constant denominator is only supported
     /// for COMPOUND & SINGLE units")`.
     pub fn get_constant_denominator(&self) -> Result<i64> {
-        if self.get_complexity()? != Complexity::Compound && self.get_complexity()? != Complexity::Single {
+        if self.get_complexity()? != Complexity::Compound
+            && self.get_complexity()? != Complexity::Single
+        {
             return Err(LuceneError::unsupported_operation(
                 "Constant denominator is only supported for COMPOUND & SINGLE units",
             ));
@@ -611,8 +636,12 @@ impl MeasureUnit {
         };
 
         let other_impl_ref = other.get_maybe_reference_of_measure_unit_impl()?;
-        if impl_copy.get_complexity() == Complexity::Mixed || other_impl_ref.get_complexity() == Complexity::Mixed {
-            return Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"));
+        if impl_copy.get_complexity() == Complexity::Mixed
+            || other_impl_ref.get_complexity() == Complexity::Mixed
+        {
+            return Err(crate::jdk::unchecked_no_message(
+                "java.lang.UnsupportedOperationException",
+            ));
         }
 
         for single_unit in other_impl_ref.get_single_units() {
@@ -635,7 +664,8 @@ impl MeasureUnit {
 
         // Because either one of the constant denominators is zero, we can
         // use the maximum of them.
-        impl_copy.set_constant_denominator(this_constant_denominator.max(other_constant_denominator));
+        impl_copy
+            .set_constant_denominator(this_constant_denominator.max(other_constant_denominator));
 
         impl_copy.build()
     }
@@ -664,14 +694,25 @@ impl MeasureUnit {
     /// Java's `NullPointerException` for a unit without type or subtype
     /// (one built from a `MeasureUnitImpl`).
     pub fn hash_code(&self) -> i32 {
-        let type_ = self.0.type_.as_deref().expect("java.lang.NullPointerException: type");
-        let sub_type = self.0.sub_type.as_deref().expect("java.lang.NullPointerException: subType");
+        let type_ = self
+            .0
+            .type_
+            .as_deref()
+            .expect("java.lang.NullPointerException: type");
+        let sub_type = self
+            .0
+            .sub_type
+            .as_deref()
+            .expect("java.lang.NullPointerException: subType");
         let base = 31i32
             .wrapping_mul(Utility::char_sequence_hash_code(&units(type_)))
             .wrapping_add(Utility::char_sequence_hash_code(&units(sub_type)));
         match &self.0.class {
-            UnitClass::Currency { custom: Some(c), .. } => {
-                base ^ Utility::char_sequence_hash_code(&c.symbol1) ^ Utility::char_sequence_hash_code(&c.symbol2)
+            UnitClass::Currency {
+                custom: Some(c), ..
+            } => {
+                base ^ Utility::char_sequence_hash_code(&c.symbol1)
+                    ^ Utility::char_sequence_hash_code(&c.symbol2)
             }
             _ => base,
         }
@@ -688,12 +729,16 @@ impl MeasureUnit {
     pub fn java_equals(&self, rhs: &MeasureUnit) -> bool {
         let base = self.ptr_eq(rhs) || self.get_identifier() == rhs.get_identifier();
         match &self.0.class {
-            UnitClass::Currency { custom: Some(c), .. } => {
+            UnitClass::Currency {
+                custom: Some(c), ..
+            } => {
                 if !base {
                     return false;
                 }
                 match &rhs.0.class {
-                    UnitClass::Currency { custom: Some(o), .. } => o.symbol1 == c.symbol1 && o.symbol2 == c.symbol2,
+                    UnitClass::Currency {
+                        custom: Some(o), ..
+                    } => o.symbol1 == c.symbol1 && o.symbol2 == c.symbol2,
                     _ => panic!(
                         "java.lang.ClassCastException: class {} cannot be cast to class \
                          com.ibm.icu.impl.number.CustomSymbolCurrency",
@@ -710,7 +755,9 @@ impl MeasureUnit {
         match &self.0.class {
             UnitClass::MeasureUnit => "com.ibm.icu.util.MeasureUnit",
             UnitClass::Currency { custom: None, .. } => "com.ibm.icu.util.Currency",
-            UnitClass::Currency { custom: Some(_), .. } => "com.ibm.icu.impl.number.CustomSymbolCurrency",
+            UnitClass::Currency {
+                custom: Some(_), ..
+            } => "com.ibm.icu.impl.number.CustomSymbolCurrency",
             UnitClass::TimeUnit { .. } => "com.ibm.icu.util.TimeUnit",
         }
     }
@@ -719,7 +766,11 @@ impl MeasureUnit {
     /// subtype).
     pub fn to_java_string(&self) -> String {
         if let UnitClass::Currency { .. } = self.0.class {
-            return self.0.sub_type.clone().unwrap_or_else(|| "null".to_string());
+            return self
+                .0
+                .sub_type
+                .clone()
+                .unwrap_or_else(|| "null".to_string());
         }
         let result = match &self.0.measure_unit_impl {
             None => Some(format!(
@@ -793,9 +844,12 @@ impl MeasureUnit {
     /// `IllegalArgumentException("The type or subType are invalid.")`.
     pub fn internal_get_instance(type_: &str, sub_type: &str) -> Result<MeasureUnit> {
         if "currency" != type_
-            && (!ASCII.contains_all_str(&units(type_)) || !ASCII_HYPHEN_DIGITS.contains_all_str(&units(sub_type)))
+            && (!ASCII.contains_all_str(&units(type_))
+                || !ASCII_HYPHEN_DIGITS.contains_all_str(&units(sub_type)))
         {
-            return Err(LuceneError::illegal_argument("The type or subType are invalid."));
+            return Err(LuceneError::illegal_argument(
+                "The type or subType are invalid.",
+            ));
         }
         let factory: &dyn Factory = if "currency" == type_ {
             &CurrencyFactory
@@ -845,7 +899,8 @@ impl MeasureUnit {
         // Load the unit types.  Use English, since we know that that is a
         // superset.
         let rb1 = UResourceBundle::get_bundle_instance(Some(ICUData::ICU_UNIT_BASE_NAME), "en")?;
-        rb1.as_icu()?.get_all_items_with_fallback("units", &mut MeasureUnitSink)?;
+        rb1.as_icu()?
+            .get_all_items_with_fallback("units", &mut MeasureUnitSink)?;
 
         // Load the currencies
         let rb2 = UResourceBundle::get_bundle_instance_loader(
@@ -853,7 +908,8 @@ impl MeasureUnit {
             "currencyNumericCodes",
             icu_data_class_loader(),
         )?;
-        rb2.as_icu()?.get_all_items_with_fallback("codeMap", &mut CurrencyNumericCodeSink)?;
+        rb2.as_icu()?
+            .get_all_items_with_fallback("codeMap", &mut CurrencyNumericCodeSink)?;
         Ok(())
     }
 
@@ -911,9 +967,13 @@ impl MeasureUnit {
 
     /// `getMaybeReferenceOfMeasureUnitImpl()`: the impl itself or a freshly
     /// parsed one.
-    fn get_maybe_reference_of_measure_unit_impl(&self) -> Result<std::borrow::Cow<'_, MeasureUnitImpl>> {
+    fn get_maybe_reference_of_measure_unit_impl(
+        &self,
+    ) -> Result<std::borrow::Cow<'_, MeasureUnitImpl>> {
         match &self.0.measure_unit_impl {
-            None => Ok(std::borrow::Cow::Owned(MeasureUnitImpl::for_identifier(&self.get_identifier())?)),
+            None => Ok(std::borrow::Cow::Owned(MeasureUnitImpl::for_identifier(
+                &self.get_identifier(),
+            )?)),
             Some(i) => Ok(std::borrow::Cow::Borrowed(i)),
         }
     }
@@ -982,7 +1042,9 @@ impl MeasureUnitProxy {
         let extra = ((read_u8(input)? << 8) | read_u8(input)?) as i16 as i32;
         if extra > 0 {
             let mut extra_bytes = vec![0u8; extra as usize];
-            input.read(&mut extra_bytes, 0, extra as usize).map_err(LuceneError::from)?;
+            input
+                .read(&mut extra_bytes, 0, extra as usize)
+                .map_err(LuceneError::from)?;
         }
         Ok(())
     }
@@ -996,7 +1058,9 @@ impl MeasureUnitProxy {
     pub fn read_resolve(&self) -> Result<MeasureUnit> {
         match (&self.type_, &self.sub_type) {
             (Some(t), Some(s)) => MeasureUnit::internal_get_instance(t, s),
-            _ => Err(crate::jdk::null_pointer("Type and subType must be non-null")),
+            _ => Err(crate::jdk::null_pointer(
+                "Type and subType must be non-null",
+            )),
         }
     }
 }
@@ -1021,7 +1085,12 @@ fn write_utf(out: &mut DataOutputStream<'_>, s: Option<&str>) -> Result<()> {
     if bytes.len() > 65535 {
         return Err(LuceneError::unchecked(
             "java.io.UTFDataFormatException",
-            format!("encoded string ({}...{}) too long: {} bytes", truncate8(s, true), truncate8(s, false), bytes.len()),
+            format!(
+                "encoded string ({}...{}) too long: {} bytes",
+                truncate8(s, true),
+                truncate8(s, false),
+                bytes.len()
+            ),
         ));
     }
     out.write_short(bytes.len() as i32)?;
@@ -1035,14 +1104,21 @@ fn write_utf(out: &mut DataOutputStream<'_>, s: Option<&str>) -> Result<()> {
 /// too-long message.
 fn truncate8(s: &str, head: bool) -> String {
     let u: Vec<u16> = s.encode_utf16().collect();
-    let part = if head { &u[..u.len().min(8)] } else { &u[u.len().saturating_sub(8)..] };
+    let part = if head {
+        &u[..u.len().min(8)]
+    } else {
+        &u[u.len().saturating_sub(8)..]
+    };
     String::from_utf16_lossy(part)
 }
 
 fn read_u8(input: &mut dyn InputStream) -> Result<i32> {
     let b = input.read_byte().map_err(LuceneError::from)?;
     if b < 0 {
-        return Err(LuceneError::unchecked_with_message("java.io.EOFException", None));
+        return Err(LuceneError::unchecked_with_message(
+            "java.io.EOFException",
+            None,
+        ));
     }
     Ok(b)
 }
@@ -1057,7 +1133,10 @@ fn read_utf(input: &mut dyn InputStream) -> Result<String> {
     let mut chars: Vec<u16> = Vec::with_capacity(utflen);
     let mut count = 0;
     let malformed = |at: usize| {
-        LuceneError::unchecked("java.io.UTFDataFormatException", format!("malformed input around byte {at}"))
+        LuceneError::unchecked(
+            "java.io.UTFDataFormatException",
+            format!("malformed input around byte {at}"),
+        )
     };
     while count < utflen {
         let c = bytes[count] as u32;
@@ -1106,25 +1185,32 @@ fn read_utf(input: &mut dyn InputStream) -> Result<String> {
 // MeasureUnit constants" comment is auto generated code").
 
 /// Constant for unit of acceleration: g-force
-pub static G_FORCE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("acceleration", "g-force"));
+pub static G_FORCE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("acceleration", "g-force"));
 
 /// Constant for unit of acceleration: meter-per-square-second
-pub static METER_PER_SECOND_SQUARED: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("acceleration", "meter-per-square-second"));
+pub static METER_PER_SECOND_SQUARED: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("acceleration", "meter-per-square-second"));
 
 /// Constant for unit of angle: arc-minute
-pub static ARC_MINUTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("angle", "arc-minute"));
+pub static ARC_MINUTE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("angle", "arc-minute"));
 
 /// Constant for unit of angle: arc-second
-pub static ARC_SECOND: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("angle", "arc-second"));
+pub static ARC_SECOND: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("angle", "arc-second"));
 
 /// Constant for unit of angle: degree
-pub static DEGREE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("angle", "degree"));
+pub static DEGREE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("angle", "degree"));
 
 /// Constant for unit of angle: radian
-pub static RADIAN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("angle", "radian"));
+pub static RADIAN: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("angle", "radian"));
 
 /// Constant for unit of angle: revolution
-pub static REVOLUTION_ANGLE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("angle", "revolution"));
+pub static REVOLUTION_ANGLE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("angle", "revolution"));
 
 /// Constant for unit of area: acre
 pub static ACRE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "acre"));
@@ -1133,73 +1219,96 @@ pub static ACRE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant(
 pub static DUNAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "dunam"));
 
 /// Constant for unit of area: hectare
-pub static HECTARE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "hectare"));
+pub static HECTARE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "hectare"));
 
 /// Constant for unit of area: square-centimeter
-pub static SQUARE_CENTIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-centimeter"));
+pub static SQUARE_CENTIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-centimeter"));
 
 /// Constant for unit of area: square-foot
-pub static SQUARE_FOOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-foot"));
+pub static SQUARE_FOOT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-foot"));
 
 /// Constant for unit of area: square-inch
-pub static SQUARE_INCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-inch"));
+pub static SQUARE_INCH: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-inch"));
 
 /// Constant for unit of area: square-kilometer
-pub static SQUARE_KILOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-kilometer"));
+pub static SQUARE_KILOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-kilometer"));
 
 /// Constant for unit of area: square-meter
-pub static SQUARE_METER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-meter"));
+pub static SQUARE_METER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-meter"));
 
 /// Constant for unit of area: square-mile
-pub static SQUARE_MILE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-mile"));
+pub static SQUARE_MILE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-mile"));
 
 /// Constant for unit of area: square-yard
-pub static SQUARE_YARD: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("area", "square-yard"));
+pub static SQUARE_YARD: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("area", "square-yard"));
 
 /// Constant for unit of concentr: item
-pub static ITEM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "item"));
+pub static ITEM: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "item"));
 
 /// Constant for unit of concentr: karat
-pub static KARAT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "karat"));
+pub static KARAT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "karat"));
 
 /// Constant for unit of concentr: milligram-ofglucose-per-deciliter
-pub static MILLIGRAM_OFGLUCOSE_PER_DECILITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "milligram-ofglucose-per-deciliter"));
+pub static MILLIGRAM_OFGLUCOSE_PER_DECILITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "milligram-ofglucose-per-deciliter"));
 
 /// Constant for unit of concentr: milligram-per-deciliter
-pub static MILLIGRAM_PER_DECILITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "milligram-per-deciliter"));
+pub static MILLIGRAM_PER_DECILITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "milligram-per-deciliter"));
 
 /// Constant for unit of concentr: millimole-per-liter
-pub static MILLIMOLE_PER_LITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "millimole-per-liter"));
+pub static MILLIMOLE_PER_LITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "millimole-per-liter"));
 
 /// Constant for unit of concentr: mole
-pub static MOLE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "mole"));
+pub static MOLE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "mole"));
 
 /// Constant for unit of concentr: percent
-pub static PERCENT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "percent"));
+pub static PERCENT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "percent"));
 
 /// Constant for unit of concentr: permille
-pub static PERMILLE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "permille"));
+pub static PERMILLE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "permille"));
 
 /// Constant for unit of concentr: permillion
-pub static PART_PER_MILLION: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "permillion"));
+pub static PART_PER_MILLION: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "permillion"));
 
 /// Constant for unit of concentr: permyriad
-pub static PERMYRIAD: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "permyriad"));
+pub static PERMYRIAD: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "permyriad"));
 
 /// Constant for unit of concentr: portion-per-1e9
-pub static PORTION_PER_1E9: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("concentr", "portion-per-1e9"));
+pub static PORTION_PER_1E9: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("concentr", "portion-per-1e9"));
 
 /// Constant for unit of consumption: liter-per-100-kilometer
-pub static LITER_PER_100KILOMETERS: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("consumption", "liter-per-100-kilometer"));
+pub static LITER_PER_100KILOMETERS: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("consumption", "liter-per-100-kilometer"));
 
 /// Constant for unit of consumption: liter-per-kilometer
-pub static LITER_PER_KILOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("consumption", "liter-per-kilometer"));
+pub static LITER_PER_KILOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("consumption", "liter-per-kilometer"));
 
 /// Constant for unit of consumption: mile-per-gallon
-pub static MILE_PER_GALLON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("consumption", "mile-per-gallon"));
+pub static MILE_PER_GALLON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("consumption", "mile-per-gallon"));
 
 /// Constant for unit of consumption: mile-per-gallon-imperial
-pub static MILE_PER_GALLON_IMPERIAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("consumption", "mile-per-gallon-imperial"));
+pub static MILE_PER_GALLON_IMPERIAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("consumption", "mile-per-gallon-imperial"));
 
 /// Constant for unit of digital: bit
 pub static BIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "bit"));
@@ -1208,52 +1317,66 @@ pub static BIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("
 pub static BYTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "byte"));
 
 /// Constant for unit of digital: gigabit
-pub static GIGABIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "gigabit"));
+pub static GIGABIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "gigabit"));
 
 /// Constant for unit of digital: gigabyte
-pub static GIGABYTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "gigabyte"));
+pub static GIGABYTE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "gigabyte"));
 
 /// Constant for unit of digital: kilobit
-pub static KILOBIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "kilobit"));
+pub static KILOBIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "kilobit"));
 
 /// Constant for unit of digital: kilobyte
-pub static KILOBYTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "kilobyte"));
+pub static KILOBYTE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "kilobyte"));
 
 /// Constant for unit of digital: megabit
-pub static MEGABIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "megabit"));
+pub static MEGABIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "megabit"));
 
 /// Constant for unit of digital: megabyte
-pub static MEGABYTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "megabyte"));
+pub static MEGABYTE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "megabyte"));
 
 /// Constant for unit of digital: petabyte
-pub static PETABYTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "petabyte"));
+pub static PETABYTE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "petabyte"));
 
 /// Constant for unit of digital: terabit
-pub static TERABIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "terabit"));
+pub static TERABIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "terabit"));
 
 /// Constant for unit of digital: terabyte
-pub static TERABYTE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("digital", "terabyte"));
+pub static TERABYTE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("digital", "terabyte"));
 
 /// Constant for unit of duration: century
-pub static CENTURY: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "century"));
+pub static CENTURY: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "century"));
 
 /// Constant for unit of duration: day
 pub static DAY: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "day"));
 
 /// Constant for unit of duration: day-person
-pub static DAY_PERSON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "day-person"));
+pub static DAY_PERSON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "day-person"));
 
 /// Constant for unit of duration: decade
-pub static DECADE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "decade"));
+pub static DECADE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "decade"));
 
 /// Constant for unit of duration: hour
 pub static HOUR: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "hour"));
 
 /// Constant for unit of duration: microsecond
-pub static MICROSECOND: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "microsecond"));
+pub static MICROSECOND: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "microsecond"));
 
 /// Constant for unit of duration: millisecond
-pub static MILLISECOND: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "millisecond"));
+pub static MILLISECOND: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "millisecond"));
 
 /// Constant for unit of duration: minute
 pub static MINUTE: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "minute"));
@@ -1262,16 +1385,20 @@ pub static MINUTE: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("dur
 pub static MONTH: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "month"));
 
 /// Constant for unit of duration: month-person
-pub static MONTH_PERSON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "month-person"));
+pub static MONTH_PERSON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "month-person"));
 
 /// Constant for unit of duration: nanosecond
-pub static NANOSECOND: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "nanosecond"));
+pub static NANOSECOND: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "nanosecond"));
 
 /// Constant for unit of duration: night
-pub static NIGHT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "night"));
+pub static NIGHT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "night"));
 
 /// Constant for unit of duration: quarter
-pub static QUARTER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "quarter"));
+pub static QUARTER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "quarter"));
 
 /// Constant for unit of duration: second
 pub static SECOND: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "second"));
@@ -1280,166 +1407,212 @@ pub static SECOND: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("dur
 pub static WEEK: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "week"));
 
 /// Constant for unit of duration: week-person
-pub static WEEK_PERSON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "week-person"));
+pub static WEEK_PERSON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "week-person"));
 
 /// Constant for unit of duration: year
 pub static YEAR: LazyLock<TimeUnit> = LazyLock::new(|| TimeUnit::constant("duration", "year"));
 
 /// Constant for unit of duration: year-person
-pub static YEAR_PERSON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("duration", "year-person"));
+pub static YEAR_PERSON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("duration", "year-person"));
 
 /// Constant for unit of electric: ampere
-pub static AMPERE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("electric", "ampere"));
+pub static AMPERE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("electric", "ampere"));
 
 /// Constant for unit of electric: milliampere
-pub static MILLIAMPERE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("electric", "milliampere"));
+pub static MILLIAMPERE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("electric", "milliampere"));
 
 /// Constant for unit of electric: ohm
 pub static OHM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("electric", "ohm"));
 
 /// Constant for unit of electric: volt
-pub static VOLT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("electric", "volt"));
+pub static VOLT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("electric", "volt"));
 
 /// Constant for unit of energy: british-thermal-unit
-pub static BRITISH_THERMAL_UNIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "british-thermal-unit"));
+pub static BRITISH_THERMAL_UNIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "british-thermal-unit"));
 
 /// Constant for unit of energy: calorie
-pub static CALORIE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "calorie"));
+pub static CALORIE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "calorie"));
 
 /// Constant for unit of energy: electronvolt
-pub static ELECTRONVOLT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "electronvolt"));
+pub static ELECTRONVOLT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "electronvolt"));
 
 /// Constant for unit of energy: foodcalorie
-pub static FOODCALORIE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "foodcalorie"));
+pub static FOODCALORIE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "foodcalorie"));
 
 /// Constant for unit of energy: joule
-pub static JOULE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "joule"));
+pub static JOULE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "joule"));
 
 /// Constant for unit of energy: kilocalorie
-pub static KILOCALORIE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "kilocalorie"));
+pub static KILOCALORIE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "kilocalorie"));
 
 /// Constant for unit of energy: kilojoule
-pub static KILOJOULE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "kilojoule"));
+pub static KILOJOULE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "kilojoule"));
 
 /// Constant for unit of energy: kilowatt-hour
-pub static KILOWATT_HOUR: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "kilowatt-hour"));
+pub static KILOWATT_HOUR: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "kilowatt-hour"));
 
 /// Constant for unit of energy: therm-us
-pub static THERM_US: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("energy", "therm-us"));
+pub static THERM_US: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("energy", "therm-us"));
 
 /// Constant for unit of force: kilowatt-hour-per-100-kilometer
-pub static KILOWATT_HOUR_PER_100_KILOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("force", "kilowatt-hour-per-100-kilometer"));
+pub static KILOWATT_HOUR_PER_100_KILOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("force", "kilowatt-hour-per-100-kilometer"));
 
 /// Constant for unit of force: newton
-pub static NEWTON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("force", "newton"));
+pub static NEWTON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("force", "newton"));
 
 /// Constant for unit of force: pound-force
-pub static POUND_FORCE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("force", "pound-force"));
+pub static POUND_FORCE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("force", "pound-force"));
 
 /// Constant for unit of frequency: gigahertz
-pub static GIGAHERTZ: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("frequency", "gigahertz"));
+pub static GIGAHERTZ: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("frequency", "gigahertz"));
 
 /// Constant for unit of frequency: hertz
-pub static HERTZ: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("frequency", "hertz"));
+pub static HERTZ: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("frequency", "hertz"));
 
 /// Constant for unit of frequency: kilohertz
-pub static KILOHERTZ: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("frequency", "kilohertz"));
+pub static KILOHERTZ: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("frequency", "kilohertz"));
 
 /// Constant for unit of frequency: megahertz
-pub static MEGAHERTZ: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("frequency", "megahertz"));
+pub static MEGAHERTZ: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("frequency", "megahertz"));
 
 /// Constant for unit of graphics: dot
 pub static DOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "dot"));
 
 /// Constant for unit of graphics: dot-per-centimeter
-pub static DOT_PER_CENTIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "dot-per-centimeter"));
+pub static DOT_PER_CENTIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("graphics", "dot-per-centimeter"));
 
 /// Constant for unit of graphics: dot-per-inch
-pub static DOT_PER_INCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "dot-per-inch"));
+pub static DOT_PER_INCH: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("graphics", "dot-per-inch"));
 
 /// Constant for unit of graphics: em
 pub static EM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "em"));
 
 /// Constant for unit of graphics: megapixel
-pub static MEGAPIXEL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "megapixel"));
+pub static MEGAPIXEL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("graphics", "megapixel"));
 
 /// Constant for unit of graphics: pixel
-pub static PIXEL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "pixel"));
+pub static PIXEL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("graphics", "pixel"));
 
 /// Constant for unit of graphics: pixel-per-centimeter
-pub static PIXEL_PER_CENTIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "pixel-per-centimeter"));
+pub static PIXEL_PER_CENTIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("graphics", "pixel-per-centimeter"));
 
 /// Constant for unit of graphics: pixel-per-inch
-pub static PIXEL_PER_INCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("graphics", "pixel-per-inch"));
+pub static PIXEL_PER_INCH: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("graphics", "pixel-per-inch"));
 
 /// Constant for unit of length: astronomical-unit
-pub static ASTRONOMICAL_UNIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "astronomical-unit"));
+pub static ASTRONOMICAL_UNIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "astronomical-unit"));
 
 /// Constant for unit of length: centimeter
-pub static CENTIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "centimeter"));
+pub static CENTIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "centimeter"));
 
 /// Constant for unit of length: decimeter
-pub static DECIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "decimeter"));
+pub static DECIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "decimeter"));
 
 /// Constant for unit of length: earth-radius
-pub static EARTH_RADIUS: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "earth-radius"));
+pub static EARTH_RADIUS: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "earth-radius"));
 
 /// Constant for unit of length: fathom
-pub static FATHOM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "fathom"));
+pub static FATHOM: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "fathom"));
 
 /// Constant for unit of length: foot
 pub static FOOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "foot"));
 
 /// Constant for unit of length: furlong
-pub static FURLONG: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "furlong"));
+pub static FURLONG: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "furlong"));
 
 /// Constant for unit of length: inch
 pub static INCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "inch"));
 
 /// Constant for unit of length: kilometer
-pub static KILOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "kilometer"));
+pub static KILOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "kilometer"));
 
 /// Constant for unit of length: light-year
-pub static LIGHT_YEAR: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "light-year"));
+pub static LIGHT_YEAR: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "light-year"));
 
 /// Constant for unit of length: meter
-pub static METER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "meter"));
+pub static METER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "meter"));
 
 /// Constant for unit of length: micrometer
-pub static MICROMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "micrometer"));
+pub static MICROMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "micrometer"));
 
 /// Constant for unit of length: mile
 pub static MILE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "mile"));
 
 /// Constant for unit of length: mile-scandinavian
-pub static MILE_SCANDINAVIAN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "mile-scandinavian"));
+pub static MILE_SCANDINAVIAN: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "mile-scandinavian"));
 
 /// Constant for unit of length: millimeter
-pub static MILLIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "millimeter"));
+pub static MILLIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "millimeter"));
 
 /// Constant for unit of length: nanometer
-pub static NANOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "nanometer"));
+pub static NANOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "nanometer"));
 
 /// Constant for unit of length: nautical-mile
-pub static NAUTICAL_MILE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "nautical-mile"));
+pub static NAUTICAL_MILE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "nautical-mile"));
 
 /// Constant for unit of length: parsec
-pub static PARSEC: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "parsec"));
+pub static PARSEC: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "parsec"));
 
 /// Constant for unit of length: picometer
-pub static PICOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "picometer"));
+pub static PICOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "picometer"));
 
 /// Constant for unit of length: point
-pub static POINT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "point"));
+pub static POINT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "point"));
 
 /// Constant for unit of length: solar-radius
-pub static SOLAR_RADIUS: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "solar-radius"));
+pub static SOLAR_RADIUS: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("length", "solar-radius"));
 
 /// Constant for unit of length: yard
 pub static YARD: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("length", "yard"));
 
 /// Constant for unit of light: candela
-pub static CANDELA: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("light", "candela"));
+pub static CANDELA: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("light", "candela"));
 
 /// Constant for unit of light: lumen
 pub static LUMEN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("light", "lumen"));
@@ -1448,16 +1621,19 @@ pub static LUMEN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant
 pub static LUX: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("light", "lux"));
 
 /// Constant for unit of light: solar-luminosity
-pub static SOLAR_LUMINOSITY: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("light", "solar-luminosity"));
+pub static SOLAR_LUMINOSITY: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("light", "solar-luminosity"));
 
 /// Constant for unit of mass: carat
 pub static CARAT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "carat"));
 
 /// Constant for unit of mass: dalton
-pub static DALTON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "dalton"));
+pub static DALTON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "dalton"));
 
 /// Constant for unit of mass: earth-mass
-pub static EARTH_MASS: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "earth-mass"));
+pub static EARTH_MASS: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "earth-mass"));
 
 /// Constant for unit of mass: grain
 pub static GRAIN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "grain"));
@@ -1466,28 +1642,34 @@ pub static GRAIN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant
 pub static GRAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "gram"));
 
 /// Constant for unit of mass: kilogram
-pub static KILOGRAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "kilogram"));
+pub static KILOGRAM: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "kilogram"));
 
 /// Constant for unit of mass: metric-ton (renamed to tonne in CLDR 42 / ICU 72).
-pub static METRIC_TON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "tonne"));
+pub static METRIC_TON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "tonne"));
 
 /// Constant for unit of mass: microgram
-pub static MICROGRAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "microgram"));
+pub static MICROGRAM: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "microgram"));
 
 /// Constant for unit of mass: milligram
-pub static MILLIGRAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "milligram"));
+pub static MILLIGRAM: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "milligram"));
 
 /// Constant for unit of mass: ounce
 pub static OUNCE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "ounce"));
 
 /// Constant for unit of mass: ounce-troy
-pub static OUNCE_TROY: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "ounce-troy"));
+pub static OUNCE_TROY: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "ounce-troy"));
 
 /// Constant for unit of mass: pound
 pub static POUND: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "pound"));
 
 /// Constant for unit of mass: solar-mass
-pub static SOLAR_MASS: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "solar-mass"));
+pub static SOLAR_MASS: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("mass", "solar-mass"));
 
 /// Constant for unit of mass: stone
 pub static STONE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "stone"));
@@ -1499,139 +1681,180 @@ pub static TON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("
 pub static TONNE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("mass", "tonne"));
 
 /// Constant for unit of power: gigawatt
-pub static GIGAWATT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("power", "gigawatt"));
+pub static GIGAWATT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("power", "gigawatt"));
 
 /// Constant for unit of power: horsepower
-pub static HORSEPOWER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("power", "horsepower"));
+pub static HORSEPOWER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("power", "horsepower"));
 
 /// Constant for unit of power: kilowatt
-pub static KILOWATT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("power", "kilowatt"));
+pub static KILOWATT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("power", "kilowatt"));
 
 /// Constant for unit of power: megawatt
-pub static MEGAWATT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("power", "megawatt"));
+pub static MEGAWATT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("power", "megawatt"));
 
 /// Constant for unit of power: milliwatt
-pub static MILLIWATT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("power", "milliwatt"));
+pub static MILLIWATT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("power", "milliwatt"));
 
 /// Constant for unit of power: watt
 pub static WATT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("power", "watt"));
 
 /// Constant for unit of pressure: atmosphere
-pub static ATMOSPHERE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "atmosphere"));
+pub static ATMOSPHERE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "atmosphere"));
 
 /// Constant for unit of pressure: bar
 pub static BAR: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "bar"));
 
 /// Constant for unit of pressure: gasoline-energy-density
-pub static GASOLINE_ENERGY_DENSITY: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "gasoline-energy-density"));
+pub static GASOLINE_ENERGY_DENSITY: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "gasoline-energy-density"));
 
 /// Constant for unit of pressure: hectopascal
-pub static HECTOPASCAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "hectopascal"));
+pub static HECTOPASCAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "hectopascal"));
 
 /// Constant for unit of pressure: inch-ofhg
-pub static INCH_HG: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "inch-ofhg"));
+pub static INCH_HG: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "inch-ofhg"));
 
 /// Constant for unit of pressure: kilopascal
-pub static KILOPASCAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "kilopascal"));
+pub static KILOPASCAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "kilopascal"));
 
 /// Constant for unit of pressure: megapascal
-pub static MEGAPASCAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "megapascal"));
+pub static MEGAPASCAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "megapascal"));
 
 /// Constant for unit of pressure: millibar
-pub static MILLIBAR: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "millibar"));
+pub static MILLIBAR: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "millibar"));
 
 /// Constant for unit of pressure: millimeter-ofhg
-pub static MILLIMETER_OF_MERCURY: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "millimeter-ofhg"));
+pub static MILLIMETER_OF_MERCURY: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "millimeter-ofhg"));
 
 /// Constant for unit of pressure: pascal
-pub static PASCAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "pascal"));
+pub static PASCAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "pascal"));
 
 /// Constant for unit of pressure: pound-force-per-square-inch
-pub static POUND_PER_SQUARE_INCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("pressure", "pound-force-per-square-inch"));
+pub static POUND_PER_SQUARE_INCH: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("pressure", "pound-force-per-square-inch"));
 
 /// Constant for unit of speed: beaufort
-pub static BEAUFORT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("speed", "beaufort"));
+pub static BEAUFORT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("speed", "beaufort"));
 
 /// Constant for unit of speed: kilometer-per-hour
-pub static KILOMETER_PER_HOUR: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("speed", "kilometer-per-hour"));
+pub static KILOMETER_PER_HOUR: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("speed", "kilometer-per-hour"));
 
 /// Constant for unit of speed: knot
 pub static KNOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("speed", "knot"));
 
 /// Constant for unit of speed: light-speed
-pub static LIGHT_SPEED: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("speed", "light-speed"));
+pub static LIGHT_SPEED: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("speed", "light-speed"));
 
 /// Constant for unit of speed: meter-per-second
-pub static METER_PER_SECOND: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("speed", "meter-per-second"));
+pub static METER_PER_SECOND: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("speed", "meter-per-second"));
 
 /// Constant for unit of speed: mile-per-hour
-pub static MILE_PER_HOUR: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("speed", "mile-per-hour"));
+pub static MILE_PER_HOUR: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("speed", "mile-per-hour"));
 
 /// Constant for unit of temperature: celsius
-pub static CELSIUS: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("temperature", "celsius"));
+pub static CELSIUS: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("temperature", "celsius"));
 
 /// Constant for unit of temperature: fahrenheit
-pub static FAHRENHEIT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("temperature", "fahrenheit"));
+pub static FAHRENHEIT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("temperature", "fahrenheit"));
 
 /// Constant for unit of temperature: generic
-pub static GENERIC_TEMPERATURE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("temperature", "generic"));
+pub static GENERIC_TEMPERATURE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("temperature", "generic"));
 
 /// Constant for unit of temperature: kelvin
-pub static KELVIN: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("temperature", "kelvin"));
+pub static KELVIN: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("temperature", "kelvin"));
 
 /// Constant for unit of torque: newton-meter
-pub static NEWTON_METER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("torque", "newton-meter"));
+pub static NEWTON_METER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("torque", "newton-meter"));
 
 /// Constant for unit of torque: pound-force-foot
-pub static POUND_FOOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("torque", "pound-force-foot"));
+pub static POUND_FOOT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("torque", "pound-force-foot"));
 
 /// Constant for unit of volume: acre-foot
-pub static ACRE_FOOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "acre-foot"));
+pub static ACRE_FOOT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "acre-foot"));
 
 /// Constant for unit of volume: barrel
-pub static BARREL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "barrel"));
+pub static BARREL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "barrel"));
 
 /// Constant for unit of volume: bushel
-pub static BUSHEL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "bushel"));
+pub static BUSHEL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "bushel"));
 
 /// Constant for unit of volume: centiliter
-pub static CENTILITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "centiliter"));
+pub static CENTILITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "centiliter"));
 
 /// Constant for unit of volume: cubic-centimeter
-pub static CUBIC_CENTIMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-centimeter"));
+pub static CUBIC_CENTIMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-centimeter"));
 
 /// Constant for unit of volume: cubic-foot
-pub static CUBIC_FOOT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-foot"));
+pub static CUBIC_FOOT: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-foot"));
 
 /// Constant for unit of volume: cubic-inch
-pub static CUBIC_INCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-inch"));
+pub static CUBIC_INCH: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-inch"));
 
 /// Constant for unit of volume: cubic-kilometer
-pub static CUBIC_KILOMETER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-kilometer"));
+pub static CUBIC_KILOMETER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-kilometer"));
 
 /// Constant for unit of volume: cubic-meter
-pub static CUBIC_METER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-meter"));
+pub static CUBIC_METER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-meter"));
 
 /// Constant for unit of volume: cubic-mile
-pub static CUBIC_MILE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-mile"));
+pub static CUBIC_MILE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-mile"));
 
 /// Constant for unit of volume: cubic-yard
-pub static CUBIC_YARD: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cubic-yard"));
+pub static CUBIC_YARD: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cubic-yard"));
 
 /// Constant for unit of volume: cup
 pub static CUP: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cup"));
 
 /// Constant for unit of volume: cup-metric
-pub static CUP_METRIC: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "cup-metric"));
+pub static CUP_METRIC: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "cup-metric"));
 
 /// Constant for unit of volume: deciliter
-pub static DECILITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "deciliter"));
+pub static DECILITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "deciliter"));
 
 /// Constant for unit of volume: dessert-spoon
-pub static DESSERT_SPOON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "dessert-spoon"));
+pub static DESSERT_SPOON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "dessert-spoon"));
 
 /// Constant for unit of volume: dessert-spoon-imperial
-pub static DESSERT_SPOON_IMPERIAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "dessert-spoon-imperial"));
+pub static DESSERT_SPOON_IMPERIAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "dessert-spoon-imperial"));
 
 /// Constant for unit of volume: dram
 pub static DRAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "dram"));
@@ -1640,51 +1863,66 @@ pub static DRAM: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant(
 pub static DROP: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "drop"));
 
 /// Constant for unit of volume: fluid-ounce
-pub static FLUID_OUNCE: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "fluid-ounce"));
+pub static FLUID_OUNCE: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "fluid-ounce"));
 
 /// Constant for unit of volume: fluid-ounce-imperial
-pub static FLUID_OUNCE_IMPERIAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "fluid-ounce-imperial"));
+pub static FLUID_OUNCE_IMPERIAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "fluid-ounce-imperial"));
 
 /// Constant for unit of volume: gallon
-pub static GALLON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "gallon"));
+pub static GALLON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "gallon"));
 
 /// Constant for unit of volume: gallon-imperial
-pub static GALLON_IMPERIAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "gallon-imperial"));
+pub static GALLON_IMPERIAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "gallon-imperial"));
 
 /// Constant for unit of volume: hectoliter
-pub static HECTOLITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "hectoliter"));
+pub static HECTOLITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "hectoliter"));
 
 /// Constant for unit of volume: jigger
-pub static JIGGER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "jigger"));
+pub static JIGGER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "jigger"));
 
 /// Constant for unit of volume: liter
-pub static LITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "liter"));
+pub static LITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "liter"));
 
 /// Constant for unit of volume: megaliter
-pub static MEGALITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "megaliter"));
+pub static MEGALITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "megaliter"));
 
 /// Constant for unit of volume: milliliter
-pub static MILLILITER: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "milliliter"));
+pub static MILLILITER: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "milliliter"));
 
 /// Constant for unit of volume: pinch
-pub static PINCH: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "pinch"));
+pub static PINCH: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "pinch"));
 
 /// Constant for unit of volume: pint
 pub static PINT: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "pint"));
 
 /// Constant for unit of volume: pint-metric
-pub static PINT_METRIC: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "pint-metric"));
+pub static PINT_METRIC: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "pint-metric"));
 
 /// Constant for unit of volume: quart
-pub static QUART: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "quart"));
+pub static QUART: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "quart"));
 
 /// Constant for unit of volume: quart-imperial
-pub static QUART_IMPERIAL: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "quart-imperial"));
+pub static QUART_IMPERIAL: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "quart-imperial"));
 
 /// Constant for unit of volume: tablespoon
-pub static TABLESPOON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "tablespoon"));
+pub static TABLESPOON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "tablespoon"));
 
 /// Constant for unit of volume: teaspoon
-pub static TEASPOON: LazyLock<MeasureUnit> = LazyLock::new(|| MeasureUnit::constant("volume", "teaspoon"));
+pub static TEASPOON: LazyLock<MeasureUnit> =
+    LazyLock::new(|| MeasureUnit::constant("volume", "teaspoon"));
 
 // End generated MeasureUnit constants

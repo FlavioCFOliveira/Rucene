@@ -69,7 +69,12 @@ impl CollationKey {
     }
 
     fn with_length(source: Option<Vec<u16>>, key: Vec<i8>, length: i32) -> Self {
-        Self { m_key_: key, m_source_: source, m_hash_code_: AtomicI32::new(0), m_length_: AtomicI32::new(length) }
+        Self {
+            m_key_: key,
+            m_source_: source,
+            m_hash_code_: AtomicI32::new(0),
+            m_length_: AtomicI32::new(length),
+        }
     }
 
     /// Private Constructor: for internal use only.
@@ -81,7 +86,9 @@ impl CollationKey {
     /// Java's `NullPointerException` when the key has no bytes.
     pub fn from_raw(source: Option<Vec<u16>>, key: &mut RawCollationKey) -> Self {
         let length = key.size - 1;
-        let m_key_ = key.release_bytes().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let m_key_ = key
+            .release_bytes()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         debug_assert!(m_key_[length as usize] == 0);
         Self::with_length(source, m_key_, length)
     }
@@ -153,7 +160,9 @@ impl CollationKey {
             let mut key: Vec<u16> = Vec::with_capacity(self.m_key_.len() >> 1);
             let mut i = 0;
             while self.m_key_[i] != 0 && self.m_key_[i + 1] != 0 {
-                key.push((((self.m_key_[i] as i32) << 8) | (0xff & self.m_key_[i + 1] as i32)) as u16);
+                key.push(
+                    (((self.m_key_[i] as i32) << 8) | (0xff & self.m_key_[i + 1] as i32)) as u16,
+                );
                 i += 2;
             }
             if self.m_key_[i] != 0 {
@@ -192,7 +201,10 @@ impl CollationKey {
                 if b as i32 == Collation::LEVEL_SEPARATOR_BYTE {
                     keystrength += 1;
                     no_of_levels -= 1;
-                    if no_of_levels == collator::PRIMARY || offset == len || key[offset as usize] == 0 {
+                    if no_of_levels == collator::PRIMARY
+                        || offset == len
+                        || key[offset as usize] == 0
+                    {
                         offset -= 1;
                         break;
                     }
@@ -252,7 +264,9 @@ impl CollationKey {
         let source = match source {
             Some(s) if s.get_length() != 0 => s,
             _ => {
-                return Err(LuceneError::illegal_argument("CollationKey argument can not be null or of 0 length"));
+                return Err(LuceneError::illegal_argument(
+                    "CollationKey argument can not be null or of 0 length",
+                ));
             }
         };
 

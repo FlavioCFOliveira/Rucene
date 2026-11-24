@@ -26,8 +26,7 @@ use icu4j::lang::u_character::UCharacter;
 use icu4j::lang::u_property::UProperty;
 use icu4j::text::rule_based_break_iterator::RuleBasedBreakIterator;
 use rucene::analysis::factories::{
-    AbstractAnalysisFactory, AnalysisFactoryClass, FactoryTokenizer, SPINameField,
-    TokenizerFactory,
+    AbstractAnalysisFactory, AnalysisFactoryClass, FactoryTokenizer, SPINameField, TokenizerFactory,
 };
 use rucene::analysis::{Tokenizer, TokenizerLogic};
 use rucene::error::{LuceneError, LuceneErrorKind, Result};
@@ -257,7 +256,8 @@ impl ResourceLoaderAware for ICUTokenizerFactory {
             )));
         } else {
             let size = 1 + UCharacter::get_int_property_max_value(UProperty::SCRIPT);
-            let mut breakers: Vec<Option<RuleBasedBreakIterator>> = (0..size).map(|_| None).collect();
+            let mut breakers: Vec<Option<RuleBasedBreakIterator>> =
+                (0..size).map(|_| None).collect();
             for entry in self.tailored.iter() {
                 let code = entry.key;
                 let resource_path = entry.value;

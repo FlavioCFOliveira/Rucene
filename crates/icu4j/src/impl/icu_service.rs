@@ -165,7 +165,11 @@ impl Factory for SimpleFactory {
         Ok(())
     }
 
-    fn get_display_name(&self, identifier: &str, _locale: Option<&ULocale>) -> Result<Option<String>> {
+    fn get_display_name(
+        &self,
+        identifier: &str,
+        _locale: Option<&ULocale>,
+    ) -> Result<Option<String>> {
         Ok(if self.visible && self.id == identifier {
             Some(identifier.to_string())
         } else {
@@ -217,7 +221,11 @@ pub trait ServiceOverrides: Send + Sync {
     }
 
     /// `reInitializeFactories()`: clears the factories by default.
-    fn re_initialize_factories(&self, _service: &ICUService, factories: &mut Vec<Arc<dyn Factory>>) {
+    fn re_initialize_factories(
+        &self,
+        _service: &ICUService,
+        factories: &mut Vec<Arc<dyn Factory>>,
+    ) {
         factories.clear();
     }
 }
@@ -253,6 +261,7 @@ pub type DisplayNameComparator = Arc<dyn Fn(&str, &str) -> std::cmp::Ordering + 
 /// and `reInitializeFactories`; here they give a [`ServiceOverrides`].
 /// The factory list, which Java guards with `factoryLock`, also sits under
 /// a mutex, released while factories run.
+#[allow(clippy::type_complexity)] // type mirrors the Java signature
 pub struct ICUService {
     name: String,
     factory_lock: ICURWLock,
@@ -294,7 +303,10 @@ impl ICUService {
     }
 
     fn factories_snapshot(&self) -> Vec<Arc<dyn Factory>> {
-        self.factories.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.factories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// `get(String descriptor)`.
@@ -313,8 +325,13 @@ impl ICUService {
     ///
     /// `NullPointerException("descriptor must not be null")`; whatever the
     /// factories throw.
-    pub fn get_actual(&self, descriptor: Option<&str>, actual_return: Option<&mut String>) -> Result<Option<ServiceObject>> {
-        let descriptor = descriptor.ok_or_else(|| LuceneError::null_pointer_with_message("descriptor must not be null"))?;
+    pub fn get_actual(
+        &self,
+        descriptor: Option<&str>,
+        actual_return: Option<&mut String>,
+    ) -> Result<Option<ServiceObject>> {
+        let descriptor = descriptor
+            .ok_or_else(|| LuceneError::null_pointer_with_message("descriptor must not be null"))?;
         let key = self.create_key(Some(descriptor))?;
         self.get_key(key, actual_return, None)
     }
@@ -327,6 +344,7 @@ impl ICUService {
     ///
     /// `IllegalStateException` for an unregistered `factory`; whatever the
     /// factories throw.
+    #[allow(clippy::type_complexity)] // type mirrors the Java signature
     pub fn get_key(
         &self,
         key: Option<Box<dyn Key>>,
@@ -335,14 +353,18 @@ impl ICUService {
     ) -> Result<Option<ServiceObject>> {
         let factories = self.factories_snapshot();
         if factories.is_empty() {
-            return self.overrides.handle_default(self, key.as_deref(), actual_return);
+            return self
+                .overrides
+                .handle_default(self, key.as_deref(), actual_return);
         }
 
         if *DEBUG {
             println!(
                 "Service: {} key: {}",
                 self.name,
-                key.as_ref().and_then(|k| k.canonical_id()).unwrap_or_else(|| "null".into())
+                key.as_ref()
+                    .and_then(|k| k.canonical_id())
+                    .unwrap_or_else(|| "null".into())
             );
         }
 
@@ -467,7 +489,9 @@ impl ICUService {
             if *DEBUG {
                 println!("not found in service: {}", self.name);
             }
-            return self.overrides.handle_default(self, Some(key.as_ref()), actual_return);
+            return self
+                .overrides
+                .handle_default(self, Some(key.as_ref()), actual_return);
         }
 
         self.overrides.handle_default(self, None, actual_return)
@@ -491,7 +515,10 @@ impl ICUService {
     pub fn get_visible_ids_matching(&self, match_id: Option<&str>) -> Result<HashSet<String>> {
         let result: HashSet<String> = self.get_visible_id_map()?.keys().cloned().collect();
         match self.create_key(match_id)? {
-            Some(fallback_key) => Ok(result.into_iter().filter(|id| fallback_key.is_fallback_of(id)).collect()),
+            Some(fallback_key) => Ok(result
+                .into_iter()
+                .filter(|id| fallback_key.is_fallback_of(id))
+                .collect()),
             None => Ok(result),
         }
     }
@@ -529,13 +556,19 @@ impl ICUService {
     /// # Errors
     ///
     /// Whatever the factories throw.
-    pub fn get_display_name_in(&self, id: &str, locale: Option<&ULocale>) -> Result<Option<String>> {
+    pub fn get_display_name_in(
+        &self,
+        id: &str,
+        locale: Option<&ULocale>,
+    ) -> Result<Option<String>> {
         let m = self.get_visible_id_map()?;
         if let Some(f) = m.get(id) {
             return f.get_display_name(id, locale);
         }
 
-        let mut key = self.create_key(Some(id))?.ok_or_else(LuceneError::null_pointer)?;
+        let mut key = self
+            .create_key(Some(id))?
+            .ok_or_else(LuceneError::null_pointer)?;
         while key.fallback() {
             if let Some(f) = key.current_id().and_then(|c| m.get(&c)) {
                 return f.get_display_name(id, locale);
@@ -626,7 +659,11 @@ impl ICUService {
     ///
     /// As [`get_display_names`](Self::get_display_names).
     pub fn get_display_names_default(&self) -> Result<Vec<(String, String)>> {
-        self.get_display_names(&ULocale::get_default_category(Category::Display), None, None)
+        self.get_display_names(
+            &ULocale::get_default_category(Category::Display),
+            None,
+            None,
+        )
     }
 
     /// `factories()` (final): a snapshot of the factories.
@@ -643,13 +680,22 @@ impl ICUService {
     ///
     /// The errors of `createKey`; `NullPointerException` when it returns
     /// `null`.
-    pub fn register_object(&self, obj: ServiceObject, id: &str, visible: bool) -> Result<Arc<dyn Factory>> {
+    pub fn register_object(
+        &self,
+        obj: ServiceObject,
+        id: &str,
+        visible: bool,
+    ) -> Result<Arc<dyn Factory>> {
         let canonical_id = self
             .create_key(Some(id))?
             .ok_or_else(LuceneError::null_pointer)?
             .canonical_id()
             .unwrap_or_else(|| "null".to_string());
-        self.register_factory(Arc::new(SimpleFactory::with_visible(obj, &canonical_id, visible)))
+        self.register_factory(Arc::new(SimpleFactory::with_visible(
+            obj,
+            &canonical_id,
+            visible,
+        )))
     }
 
     /// `registerFactory(Factory factory)` (final): adds the factory first.
@@ -659,7 +705,10 @@ impl ICUService {
     /// None in practice.
     pub fn register_factory(&self, factory: Arc<dyn Factory>) -> Result<Arc<dyn Factory>> {
         self.factory_lock.acquire_write();
-        self.factories.lock().unwrap_or_else(|e| e.into_inner()).insert(0, factory.clone());
+        self.factories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(0, factory.clone());
         self.clear_caches();
         self.factory_lock.release_write();
         self.notify_changed();
@@ -672,10 +721,12 @@ impl ICUService {
         self.factory_lock.acquire_write();
         {
             let mut f = self.factories.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(i) = f
-                .iter()
-                .position(|x| std::ptr::eq(Arc::as_ptr(x) as *const (), Arc::as_ptr(factory) as *const ()))
-            {
+            if let Some(i) = f.iter().position(|x| {
+                std::ptr::eq(
+                    Arc::as_ptr(x) as *const (),
+                    Arc::as_ptr(factory) as *const (),
+                )
+            }) {
                 f.remove(i);
                 result = true;
             }
@@ -704,12 +755,20 @@ impl ICUService {
 
     /// `isDefault()`.
     pub fn is_default(&self) -> bool {
-        self.factories.lock().unwrap_or_else(|e| e.into_inner()).len() == self.default_size.load(Ordering::SeqCst)
+        self.factories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+            == self.default_size.load(Ordering::SeqCst)
     }
 
     /// `markDefault()` (protected).
     pub fn mark_default(&self) {
-        let n = self.factories.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let n = self
+            .factories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         self.default_size.store(n, Ordering::SeqCst);
     }
 
@@ -756,11 +815,12 @@ impl ICUService {
     /// `serviceChanged(this)`.
     pub fn notify_changed(&self) {
         let w = self.self_ref.clone();
-        self.notifier.notify_changed(Arc::new(move |l: &Arc<dyn ServiceListener>| {
-            if let Some(s) = w.upgrade() {
-                l.service_changed(&s);
-            }
-        }));
+        self.notifier
+            .notify_changed(Arc::new(move |l: &Arc<dyn ServiceListener>| {
+                if let Some(s) = w.upgrade() {
+                    l.service_changed(&s);
+                }
+            }));
     }
 
     /// `stats()`.

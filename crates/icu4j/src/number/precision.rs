@@ -31,13 +31,28 @@ pub(crate) enum PrecisionKind {
     /// `Precision.SignificantRounderImpl`.
     Significant { min_sig: i32, max_sig: i32 },
     /// `Precision.FracSigRounderImpl`.
-    FracSig { min_frac: i32, max_frac: i32, min_sig: i32, max_sig: i32, priority: RoundingPriority, retain: bool },
+    FracSig {
+        min_frac: i32,
+        max_frac: i32,
+        min_sig: i32,
+        max_sig: i32,
+        priority: RoundingPriority,
+        retain: bool,
+    },
     /// `Precision.IncrementRounderImpl`.
     Increment { increment: BigDecimal },
     /// `Precision.IncrementOneRounderImpl` (extends `IncrementRounderImpl`).
-    IncrementOne { increment: BigDecimal, min_frac: i32, max_frac: i32 },
+    IncrementOne {
+        increment: BigDecimal,
+        min_frac: i32,
+        max_frac: i32,
+    },
     /// `Precision.IncrementFiveRounderImpl` (extends `IncrementRounderImpl`).
-    IncrementFive { increment: BigDecimal, min_frac: i32, max_frac: i32 },
+    IncrementFive {
+        increment: BigDecimal,
+        min_frac: i32,
+        max_frac: i32,
+    },
     /// `Precision.CurrencyRounderImpl` (a `CurrencyPrecision`).
     Currency { usage: CurrencyUsage },
 }
@@ -49,11 +64,17 @@ impl PrecisionKind {
             PrecisionKind::Bogus => "com.ibm.icu.number.Precision$BogusRounder",
             PrecisionKind::Infinite => "com.ibm.icu.number.Precision$InfiniteRounderImpl",
             PrecisionKind::Fraction { .. } => "com.ibm.icu.number.Precision$FractionRounderImpl",
-            PrecisionKind::Significant { .. } => "com.ibm.icu.number.Precision$SignificantRounderImpl",
+            PrecisionKind::Significant { .. } => {
+                "com.ibm.icu.number.Precision$SignificantRounderImpl"
+            }
             PrecisionKind::FracSig { .. } => "com.ibm.icu.number.Precision$FracSigRounderImpl",
             PrecisionKind::Increment { .. } => "com.ibm.icu.number.Precision$IncrementRounderImpl",
-            PrecisionKind::IncrementOne { .. } => "com.ibm.icu.number.Precision$IncrementOneRounderImpl",
-            PrecisionKind::IncrementFive { .. } => "com.ibm.icu.number.Precision$IncrementFiveRounderImpl",
+            PrecisionKind::IncrementOne { .. } => {
+                "com.ibm.icu.number.Precision$IncrementOneRounderImpl"
+            }
+            PrecisionKind::IncrementFive { .. } => {
+                "com.ibm.icu.number.Precision$IncrementFiveRounderImpl"
+            }
             PrecisionKind::Currency { .. } => "com.ibm.icu.number.Precision$CurrencyRounderImpl",
         }
     }
@@ -132,27 +153,53 @@ pub(crate) struct PrecisionData {
 pub struct Precision(pub(crate) Arc<PrecisionData>);
 
 /// `BOGUS_PRECISION`.
-pub static BOGUS_PRECISION: LazyLock<Precision> = LazyLock::new(|| Precision::construct(PrecisionKind::Bogus));
+pub static BOGUS_PRECISION: LazyLock<Precision> =
+    LazyLock::new(|| Precision::construct(PrecisionKind::Bogus));
 /// `NONE`.
-pub(crate) static NONE: LazyLock<Precision> = LazyLock::new(|| Precision::construct(PrecisionKind::Infinite));
+pub(crate) static NONE: LazyLock<Precision> =
+    LazyLock::new(|| Precision::construct(PrecisionKind::Infinite));
 /// `FIXED_FRAC_0`.
-pub(crate) static FIXED_FRAC_0: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Fraction { min_frac: 0, max_frac: 0 }));
+pub(crate) static FIXED_FRAC_0: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Fraction {
+        min_frac: 0,
+        max_frac: 0,
+    })
+});
 /// `FIXED_FRAC_2`.
-pub(crate) static FIXED_FRAC_2: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Fraction { min_frac: 2, max_frac: 2 }));
+pub(crate) static FIXED_FRAC_2: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Fraction {
+        min_frac: 2,
+        max_frac: 2,
+    })
+});
 /// `DEFAULT_MAX_FRAC_6`.
-pub(crate) static DEFAULT_MAX_FRAC_6: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Fraction { min_frac: 0, max_frac: 6 }));
+pub(crate) static DEFAULT_MAX_FRAC_6: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Fraction {
+        min_frac: 0,
+        max_frac: 6,
+    })
+});
 /// `FIXED_SIG_2`.
-pub(crate) static FIXED_SIG_2: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Significant { min_sig: 2, max_sig: 2 }));
+pub(crate) static FIXED_SIG_2: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Significant {
+        min_sig: 2,
+        max_sig: 2,
+    })
+});
 /// `FIXED_SIG_3`.
-pub(crate) static FIXED_SIG_3: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Significant { min_sig: 3, max_sig: 3 }));
+pub(crate) static FIXED_SIG_3: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Significant {
+        min_sig: 3,
+        max_sig: 3,
+    })
+});
 /// `RANGE_SIG_2_3`.
-pub(crate) static RANGE_SIG_2_3: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Significant { min_sig: 2, max_sig: 3 }));
+pub(crate) static RANGE_SIG_2_3: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Significant {
+        min_sig: 2,
+        max_sig: 3,
+    })
+});
 /// `COMPACT_STRATEGY`.
 pub(crate) static COMPACT_STRATEGY: LazyLock<Precision> = LazyLock::new(|| {
     Precision::construct(PrecisionKind::FracSig {
@@ -167,23 +214,39 @@ pub(crate) static COMPACT_STRATEGY: LazyLock<Precision> = LazyLock::new(|| {
 /// `NICKEL`.
 pub(crate) static NICKEL: LazyLock<Precision> = LazyLock::new(|| {
     let increment = BigDecimal::from_string(&units("0.05")).expect("valid decimal literal");
-    Precision::construct(PrecisionKind::IncrementFive { increment, min_frac: 2, max_frac: 2 })
+    Precision::construct(PrecisionKind::IncrementFive {
+        increment,
+        min_frac: 2,
+        max_frac: 2,
+    })
 });
 /// `MONETARY_STANDARD`.
-pub(crate) static MONETARY_STANDARD: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Currency { usage: CurrencyUsage::Standard }));
+pub(crate) static MONETARY_STANDARD: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Currency {
+        usage: CurrencyUsage::Standard,
+    })
+});
 /// `MONETARY_CASH`.
-pub(crate) static MONETARY_CASH: LazyLock<Precision> =
-    LazyLock::new(|| Precision::construct(PrecisionKind::Currency { usage: CurrencyUsage::Cash }));
+pub(crate) static MONETARY_CASH: LazyLock<Precision> = LazyLock::new(|| {
+    Precision::construct(PrecisionKind::Currency {
+        usage: CurrencyUsage::Cash,
+    })
+});
 
 /// The message of the fraction-length range checks.
 fn fraction_length_message() -> String {
-    format!("Fraction length must be between 0 and {} (inclusive)", RoundingUtils::MAX_INT_FRAC_SIG)
+    format!(
+        "Fraction length must be between 0 and {} (inclusive)",
+        RoundingUtils::MAX_INT_FRAC_SIG
+    )
 }
 
 /// The message of the significant-digits range checks.
 pub(crate) fn significant_digits_message() -> String {
-    format!("Significant digits must be between 1 and {} (inclusive)", RoundingUtils::MAX_INT_FRAC_SIG)
+    format!(
+        "Significant digits must be between 1 and {} (inclusive)",
+        RoundingUtils::MAX_INT_FRAC_SIG
+    )
 }
 
 impl Precision {
@@ -250,7 +313,10 @@ impl Precision {
     /// `IllegalArgumentException` when the argument is outside `0..=999`.
     pub fn fixed_fraction(min_max_fraction_places: i32) -> Result<FractionPrecision> {
         if (0..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&min_max_fraction_places) {
-            Ok(Self::construct_fraction(min_max_fraction_places, min_max_fraction_places))
+            Ok(Self::construct_fraction(
+                min_max_fraction_places,
+                min_max_fraction_places,
+            ))
         } else {
             Err(LuceneError::illegal_argument(fraction_length_message()))
         }
@@ -291,12 +357,18 @@ impl Precision {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an invalid range.
-    pub fn min_max_fraction(min_fraction_places: i32, max_fraction_places: i32) -> Result<FractionPrecision> {
+    pub fn min_max_fraction(
+        min_fraction_places: i32,
+        max_fraction_places: i32,
+    ) -> Result<FractionPrecision> {
         if min_fraction_places >= 0
             && max_fraction_places <= RoundingUtils::MAX_INT_FRAC_SIG
             && min_fraction_places <= max_fraction_places
         {
-            Ok(Self::construct_fraction(min_fraction_places, max_fraction_places))
+            Ok(Self::construct_fraction(
+                min_fraction_places,
+                max_fraction_places,
+            ))
         } else {
             Err(LuceneError::illegal_argument(fraction_length_message()))
         }
@@ -311,7 +383,10 @@ impl Precision {
     /// `IllegalArgumentException` when the argument is outside `1..=999`.
     pub fn fixed_significant_digits(min_max_significant_digits: i32) -> Result<Precision> {
         if (1..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&min_max_significant_digits) {
-            Ok(Self::construct_significant(min_max_significant_digits, min_max_significant_digits))
+            Ok(Self::construct_significant(
+                min_max_significant_digits,
+                min_max_significant_digits,
+            ))
         } else {
             Err(LuceneError::illegal_argument(significant_digits_message()))
         }
@@ -352,12 +427,18 @@ impl Precision {
     /// # Errors
     ///
     /// `IllegalArgumentException` for an invalid range.
-    pub fn min_max_significant_digits(min_significant_digits: i32, max_significant_digits: i32) -> Result<Precision> {
+    pub fn min_max_significant_digits(
+        min_significant_digits: i32,
+        max_significant_digits: i32,
+    ) -> Result<Precision> {
         if min_significant_digits >= 1
             && max_significant_digits <= RoundingUtils::MAX_INT_FRAC_SIG
             && min_significant_digits <= max_significant_digits
         {
-            Ok(Self::construct_significant(min_significant_digits, max_significant_digits))
+            Ok(Self::construct_significant(
+                min_significant_digits,
+                max_significant_digits,
+            ))
         } else {
             Err(LuceneError::illegal_argument(significant_digits_message()))
         }
@@ -374,7 +455,9 @@ impl Precision {
     pub fn increment(rounding_increment: Option<&BigDecimal>) -> Result<Precision> {
         match rounding_increment {
             Some(inc) if inc.compare_to(&BigDecimal::zero()) > 0 => Self::construct_increment(inc),
-            _ => Err(LuceneError::illegal_argument("Rounding increment must be positive and non-null")),
+            _ => Err(LuceneError::illegal_argument(
+                "Rounding increment must be positive and non-null",
+            )),
         }
     }
 
@@ -388,14 +471,19 @@ impl Precision {
     pub fn currency(currency_usage: Option<CurrencyUsage>) -> Result<CurrencyPrecision> {
         match currency_usage {
             Some(usage) => Ok(Self::construct_currency(usage)),
-            None => Err(LuceneError::illegal_argument("CurrencyUsage must be non-null")),
+            None => Err(LuceneError::illegal_argument(
+                "CurrencyUsage must be non-null",
+            )),
         }
     }
 
     /// Configure how trailing zeros are displayed on numbers. Equivalent to
     /// `trailingZeroDisplay(TrailingZeroDisplay)` (`None` for Java's
     /// `null`).
-    pub fn trailing_zero_display(&self, trailing_zero_display: Option<TrailingZeroDisplay>) -> Precision {
+    pub fn trailing_zero_display(
+        &self,
+        trailing_zero_display: Option<TrailingZeroDisplay>,
+    ) -> Precision {
         let result = self.create_copy_data();
         result.trailing_zero_display.set(trailing_zero_display);
         Precision(Arc::new(result))
@@ -436,14 +524,19 @@ impl Precision {
     pub fn apply(&self, value: &mut dyn DecimalQuantity) -> Result<()> {
         let mc = &self.0.math_context;
         match &self.0.kind {
-            PrecisionKind::Bogus => panic!("java.lang.AssertionError: BogusRounder must not be applied"),
+            PrecisionKind::Bogus => {
+                panic!("java.lang.AssertionError: BogusRounder must not be applied")
+            }
             PrecisionKind::Infinite => {
                 value.round_to_infinity();
                 self.set_resolved_min_fraction(value, 0);
             }
             PrecisionKind::Fraction { min_frac, max_frac } => {
                 value.round_to_magnitude(get_rounding_magnitude_fraction(*max_frac), mc)?;
-                self.set_resolved_min_fraction(value, 0.max(-get_display_magnitude_fraction(*min_frac)));
+                self.set_resolved_min_fraction(
+                    value,
+                    0.max(-get_display_magnitude_fraction(*min_frac)),
+                );
             }
             PrecisionKind::Significant { min_sig, max_sig } => {
                 let mag = get_rounding_magnitude_significant(value, *max_sig)?;
@@ -455,7 +548,14 @@ impl Precision {
                     value.set_min_integer(1);
                 }
             }
-            PrecisionKind::FracSig { min_frac, max_frac, min_sig, max_sig, priority, retain } => {
+            PrecisionKind::FracSig {
+                min_frac,
+                max_frac,
+                min_sig,
+                max_sig,
+                priority,
+                retain,
+            } => {
                 let rounding_mag1 = get_rounding_magnitude_fraction(*max_frac);
                 let mut rounding_mag2 = get_rounding_magnitude_significant(value, *max_sig)?;
                 let rounding_mag = if *priority == RoundingPriority::Relaxed {
@@ -466,7 +566,10 @@ impl Precision {
                 if !value.is_zeroish() {
                     let upper_mag = value.get_magnitude()?;
                     value.round_to_magnitude(rounding_mag, mc)?;
-                    if !value.is_zeroish() && value.get_magnitude()? != upper_mag && rounding_mag1 == rounding_mag2 {
+                    if !value.is_zeroish()
+                        && value.get_magnitude()? != upper_mag
+                        && rounding_mag1 == rounding_mag2
+                    {
                         // roundingMag2 needs to be the magnitude after rounding
                         rounding_mag2 += 1;
                     }
@@ -497,11 +600,15 @@ impl Precision {
                 value.round_to_increment(increment, mc)?;
                 self.set_resolved_min_fraction(value, 0.max(increment.scale()));
             }
-            PrecisionKind::IncrementOne { min_frac, max_frac, .. } => {
+            PrecisionKind::IncrementOne {
+                min_frac, max_frac, ..
+            } => {
                 value.round_to_magnitude(-max_frac, mc)?;
                 self.set_resolved_min_fraction(value, *min_frac);
             }
-            PrecisionKind::IncrementFive { min_frac, max_frac, .. } => {
+            PrecisionKind::IncrementFive {
+                min_frac, max_frac, ..
+            } => {
                 value.round_to_nickel(-max_frac, mc)?;
                 self.set_resolved_min_fraction(value, *min_frac);
             }
@@ -513,7 +620,11 @@ impl Precision {
     /// `SignificantRounderImpl.apply(DecimalQuantity quantity, int minInt)`:
     /// version of apply that obeys minInt constraints. Used for scientific
     /// notation compatibility mode.
-    pub(crate) fn apply_significant_min_int(&self, quantity: &mut dyn DecimalQuantity, min_int: i32) {
+    pub(crate) fn apply_significant_min_int(
+        &self,
+        quantity: &mut dyn DecimalQuantity,
+        min_int: i32,
+    ) {
         debug_assert!(quantity.is_zeroish());
         if let PrecisionKind::Significant { min_sig, .. } = &self.0.kind {
             self.set_resolved_min_fraction(quantity, min_sig - min_int);
@@ -574,7 +685,14 @@ impl Precision {
         {
             COMPACT_STRATEGY.clone()
         } else {
-            Precision::construct(PrecisionKind::FracSig { min_frac, max_frac, min_sig, max_sig, priority, retain })
+            Precision::construct(PrecisionKind::FracSig {
+                min_frac,
+                max_frac,
+                min_sig,
+                max_sig,
+                priority,
+                retain,
+            })
         };
         return_value.with_mode(base.math_context())
     }
@@ -586,7 +704,10 @@ impl Precision {
     /// The arithmetic errors of `stripTrailingZeros`.
     pub(crate) fn construct_increment(increment: &BigDecimal) -> Result<Precision> {
         // NOTE: .equals() is what we want, not .compareTo()
-        if let PrecisionKind::IncrementFive { increment: nickel, .. } = NICKEL.kind() {
+        if let PrecisionKind::IncrementFive {
+            increment: nickel, ..
+        } = NICKEL.kind()
+        {
             if increment.java_equals(nickel) {
                 return Ok(NICKEL.clone());
             }
@@ -611,7 +732,9 @@ impl Precision {
                 }));
             }
         }
-        Ok(Precision::construct(PrecisionKind::Increment { increment: increment.clone() }))
+        Ok(Precision::construct(PrecisionKind::Increment {
+            increment: increment.clone(),
+        }))
     }
 
     /// `constructCurrency(CurrencyUsage)`.
@@ -627,7 +750,10 @@ impl Precision {
     /// # Errors
     ///
     /// The arithmetic errors of the increment analysis.
-    pub(crate) fn construct_from_currency(base: &CurrencyPrecision, currency: &Currency) -> Result<Precision> {
+    pub(crate) fn construct_from_currency(
+        base: &CurrencyPrecision,
+        currency: &Currency,
+    ) -> Result<Precision> {
         let usage = match base.kind() {
             PrecisionKind::Currency { usage } => *usage,
             _ => panic!("java.lang.AssertionError"),
@@ -705,7 +831,11 @@ impl Precision {
     }
 
     /// `setResolvedMinFraction(DecimalQuantity, int)`.
-    fn set_resolved_min_fraction(&self, value: &mut dyn DecimalQuantity, resolved_min_fraction: i32) {
+    fn set_resolved_min_fraction(
+        &self,
+        value: &mut dyn DecimalQuantity,
+        resolved_min_fraction: i32,
+    ) {
         let tzd = self.0.trailing_zero_display.get();
         if tzd.is_none()
             || tzd == Some(TrailingZeroDisplay::Auto)
@@ -724,7 +854,10 @@ impl Precision {
     /// When this object is not a `BogusRounder` (Java's
     /// `ClassCastException` at the cast that precedes the call).
     pub fn bogus_into(&self, precision: &Precision) -> Precision {
-        assert!(matches!(self.0.kind, PrecisionKind::Bogus), "java.lang.ClassCastException");
+        assert!(
+            matches!(self.0.kind, PrecisionKind::Bogus),
+            "java.lang.ClassCastException"
+        );
         Precision(Arc::new(PrecisionData {
             math_context: self.0.math_context,
             trailing_zero_display: self.0.trailing_zero_display.clone(),
@@ -752,7 +885,11 @@ fn get_rounding_magnitude_significant(value: &dyn DecimalQuantity, max_sig: i32)
     if max_sig == -1 {
         return Ok(i32::MIN);
     }
-    let magnitude = if value.is_zeroish() { 0 } else { value.get_magnitude()? };
+    let magnitude = if value.is_zeroish() {
+        0
+    } else {
+        value.get_magnitude()?
+    };
     Ok(magnitude - max_sig + 1)
 }
 
@@ -766,6 +903,10 @@ fn get_display_magnitude_fraction(min_frac: i32) -> i32 {
 
 /// `getDisplayMagnitudeSignificant(DecimalQuantity, int)`.
 fn get_display_magnitude_significant(value: &dyn DecimalQuantity, min_sig: i32) -> Result<i32> {
-    let magnitude = if value.is_zeroish() { 0 } else { value.get_magnitude()? };
+    let magnitude = if value.is_zeroish() {
+        0
+    } else {
+        value.get_magnitude()?
+    };
     Ok(magnitude - min_sig + 1)
 }

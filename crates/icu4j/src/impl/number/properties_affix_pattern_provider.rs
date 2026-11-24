@@ -34,10 +34,14 @@ impl PropertiesAffixPatternProvider {
     ///
     /// The `IllegalArgumentException` of a malformed affix pattern, and the
     /// errors of `CurrencyPluralInfoAffixProvider`.
-    pub fn for_properties(properties: &DecimalFormatProperties) -> Result<Arc<dyn AffixPatternProvider>> {
+    pub fn for_properties(
+        properties: &DecimalFormatProperties,
+    ) -> Result<Arc<dyn AffixPatternProvider>> {
         match properties.get_currency_plural_info() {
             None => Ok(Arc::new(PropertiesAffixPatternProvider::new(properties)?)),
-            Some(cpi) => Ok(Arc::new(CurrencyPluralInfoAffixProvider::new(&cpi, properties)?)),
+            Some(cpi) => Ok(Arc::new(CurrencyPluralInfoAffixProvider::new(
+                &cpi, properties,
+            )?)),
         }
     }
 
@@ -186,8 +190,10 @@ impl AffixPatternProvider for PropertiesAffixPatternProvider {
     }
 
     fn positive_has_plus_sign(&self) -> Result<bool> {
-        Ok(AffixUtils::contains_type(Some(&self.pos_prefix), TYPE_PLUS_SIGN)?
-            || AffixUtils::contains_type(Some(&self.pos_suffix), TYPE_PLUS_SIGN)?)
+        Ok(
+            AffixUtils::contains_type(Some(&self.pos_prefix), TYPE_PLUS_SIGN)?
+                || AffixUtils::contains_type(Some(&self.pos_suffix), TYPE_PLUS_SIGN)?,
+        )
     }
 
     /// Equivalent to `hasNegativeSubpattern()`; the suffix comparison is the
@@ -201,8 +207,10 @@ impl AffixPatternProvider for PropertiesAffixPatternProvider {
     }
 
     fn negative_has_minus_sign(&self) -> Result<bool> {
-        Ok(AffixUtils::contains_type(Some(&self.neg_prefix), TYPE_MINUS_SIGN)?
-            || AffixUtils::contains_type(Some(&self.neg_suffix), TYPE_MINUS_SIGN)?)
+        Ok(
+            AffixUtils::contains_type(Some(&self.neg_prefix), TYPE_MINUS_SIGN)?
+                || AffixUtils::contains_type(Some(&self.neg_suffix), TYPE_MINUS_SIGN)?,
+        )
     }
 
     fn has_currency_sign(&self) -> bool {

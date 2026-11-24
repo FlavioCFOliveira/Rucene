@@ -69,7 +69,10 @@ impl RBBISymbolTable {
 
     /// The error `lookup` recorded, taken.
     pub(crate) fn take_pending_error(&self) -> Option<LuceneError> {
-        self.pending_error.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.pending_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// `lookupNode(String key)`: the `varRef` node of a variable, if
@@ -85,7 +88,10 @@ impl RBBISymbolTable {
         if self.f_hash_table.contains_key(key) {
             return false;
         }
-        let e = RBBISymbolTableEntry { key: key.to_vec(), val };
+        let e = RBBISymbolTableEntry {
+            key: key.to_vec(),
+            val,
+        };
         self.f_hash_table.insert(e.key.clone(), e);
         true
     }
@@ -101,7 +107,10 @@ impl RBBISymbolTable {
         for s in &syms {
             print!("  {}  ", String::from_utf16_lossy(&s.key));
             print!("  RBBINode@{}  ", nodes[s.val].f_serial_num);
-            print!("{}", text_string(&nodes[child(nodes[s.val].f_left_child)].f_text));
+            print!(
+                "{}",
+                text_string(&nodes[child(nodes[s.val].f_left_child)].f_text)
+            );
             println!();
         }
 
@@ -158,7 +167,11 @@ impl SymbolTable for RBBISymbolTableView<'_> {
             //   1. The variable is not a set at all, but a string.
             //   2. The variable is a complex expression.
             //   Java's scanner throws U_BRK_MALFORMED_SET here; the port records it.
-            let mut pending = self.table.pending_error.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .table
+                .pending_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if pending.is_none() {
                 *pending = Some(self.malformed_set_error.duplicate());
             }
@@ -185,13 +198,19 @@ impl SymbolTable for RBBISymbolTableView<'_> {
 
     /// `parseReference(String text, ParsePosition pos, int limit)`: the
     /// identifier at `pos` (empty when there is none), moving `pos` past it.
-    fn parse_reference(&self, text: &[u16], pos: &mut ParsePosition, limit: i32) -> Result<Option<Vec<u16>>> {
+    fn parse_reference(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+        limit: i32,
+    ) -> Result<Option<Vec<u16>>> {
         let start = pos.get_index();
         let mut i = start;
         let result: Vec<u16> = Vec::new();
         while i < limit {
             let c = UTF16::char_at(text, i);
-            if (i == start && !UCharacter::is_unicode_identifier_start(c)) || !UCharacter::is_unicode_identifier_part(c)
+            if (i == start && !UCharacter::is_unicode_identifier_start(c))
+                || !UCharacter::is_unicode_identifier_part(c)
             {
                 break;
             }
@@ -205,4 +224,3 @@ impl SymbolTable for RBBISymbolTableView<'_> {
         Ok(Some(text[start as usize..i as usize].to_vec()))
     }
 }
-

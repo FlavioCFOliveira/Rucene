@@ -82,7 +82,11 @@ impl ICUTransformFilterFactory {
             false,
         )?
         .expect("INVARIANT: the argument has a default value");
-        let dir = if "forward" == direction { FORWARD } else { REVERSE };
+        let dir = if "forward" == direction {
+            FORWARD
+        } else {
+            REVERSE
+        };
         let id_units: Vec<u16> = id.encode_utf16().collect();
         let transliterator = transliterator::get_instance_dir(&id_units, dir)?;
         check_unknown_parameters(args)?;

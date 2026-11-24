@@ -17,7 +17,9 @@ use crate::r#impl::icu_resource_bundle_reader::ICUResourceBundleReader;
 use crate::r#impl::resource_bundle_wrapper::ResourceBundleWrapper;
 use crate::util::u_locale::ULocale;
 use crate::util::u_resource_bundle_iterator::UResourceBundleIterator;
-use crate::util::u_resource_type_mismatch_exception::{type_mismatch, UResourceTypeMismatchException};
+use crate::util::u_resource_type_mismatch_exception::{
+    type_mismatch, UResourceTypeMismatchException,
+};
 use crate::util::version_info::VersionInfo;
 
 /// What `ResourceBundle.getObject` returns for an ICU bundle: a string, a
@@ -59,10 +61,15 @@ enum RootType {
 }
 
 /// `ROOT_CACHE`.
-static ROOT_CACHE: LazyLock<Mutex<HashMap<String, RootType>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static ROOT_CACHE: LazyLock<Mutex<HashMap<String, RootType>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// `new MissingResourceException(s, className, key)` as the error.
-pub(crate) fn missing_resource(s: impl Into<String>, class_name: impl Into<String>, key: impl Into<String>) -> LuceneError {
+pub(crate) fn missing_resource(
+    s: impl Into<String>,
+    class_name: impl Into<String>,
+    key: impl Into<String>,
+) -> LuceneError {
     MissingResourceException::new(s, class_name, key).error()
 }
 
@@ -111,7 +118,10 @@ impl UResourceBundle {
     /// # Errors
     ///
     /// `MissingResourceException` when no bundle is found.
-    pub fn get_bundle_instance(base_name: Option<&str>, locale_name: &str) -> Result<UResourceBundle> {
+    pub fn get_bundle_instance(
+        base_name: Option<&str>,
+        locale_name: &str,
+    ) -> Result<UResourceBundle> {
         Self::get_bundle_instance_full(
             base_name,
             locale_name,
@@ -194,8 +204,15 @@ impl UResourceBundle {
     /// # Errors
     ///
     /// `MissingResourceException` when no bundle is found.
-    pub fn get_bundle_instance_locale(base_name: Option<&str>, locale: Option<&Locale>) -> Result<UResourceBundle> {
-        Self::get_bundle_instance_locale_loader(base_name, locale, icu_resource_bundle::icu_data_class_loader())
+    pub fn get_bundle_instance_locale(
+        base_name: Option<&str>,
+        locale: Option<&Locale>,
+    ) -> Result<UResourceBundle> {
+        Self::get_bundle_instance_locale_loader(
+            base_name,
+            locale,
+            icu_resource_bundle::icu_data_class_loader(),
+        )
     }
 
     /// `getBundleInstance(String baseName, ULocale locale)`.
@@ -203,8 +220,15 @@ impl UResourceBundle {
     /// # Errors
     ///
     /// `MissingResourceException` when no bundle is found.
-    pub fn get_bundle_instance_for(base_name: Option<&str>, locale: Option<&ULocale>) -> Result<UResourceBundle> {
-        Self::get_bundle_instance_for_loader(base_name, locale, icu_resource_bundle::icu_data_class_loader())
+    pub fn get_bundle_instance_for(
+        base_name: Option<&str>,
+        locale: Option<&ULocale>,
+    ) -> Result<UResourceBundle> {
+        Self::get_bundle_instance_for_loader(
+            base_name,
+            locale,
+            icu_resource_bundle::icu_data_class_loader(),
+        )
     }
 
     /// `getBundleInstance(String baseName, Locale locale, ClassLoader
@@ -305,10 +329,20 @@ impl UResourceBundle {
             return Ok(r);
         }
         let root_locale = if !base_name.contains('.') { "root" } else { "" };
-        let root_type = match ICUResourceBundle::get_bundle_instance(Some(base_name), root_locale, root, true) {
+        let root_type = match ICUResourceBundle::get_bundle_instance(
+            Some(base_name),
+            root_locale,
+            root,
+            true,
+        ) {
             Ok(_) => RootType::Icu,
             Err(ex) if is_missing_resource(&ex) => {
-                match ResourceBundleWrapper::get_bundle_instance(base_name, root_locale, Some(root), true) {
+                match ResourceBundleWrapper::get_bundle_instance(
+                    base_name,
+                    root_locale,
+                    Some(root),
+                    true,
+                ) {
                     Ok(_) => RootType::Java,
                     //throw away the exception
                     Err(e) if is_missing_resource(&e) => RootType::Missing,
@@ -346,20 +380,29 @@ impl UResourceBundle {
         let base_name = base_name.ok_or_else(LuceneError::null_pointer)?;
         let root_type = Self::get_root_type(base_name, root)?;
         match root_type {
-            RootType::Icu => Ok(UResourceBundle::Icu(ICUResourceBundle::get_bundle_instance(
-                Some(base_name),
-                locale_name,
-                root,
-                disable_fallback,
-            )?)),
-            RootType::Java => Ok(UResourceBundle::Wrapper(ResourceBundleWrapper::get_bundle_instance(
-                base_name,
-                locale_name,
-                Some(root),
-                disable_fallback,
-            )?)),
+            RootType::Icu => Ok(UResourceBundle::Icu(
+                ICUResourceBundle::get_bundle_instance(
+                    Some(base_name),
+                    locale_name,
+                    root,
+                    disable_fallback,
+                )?,
+            )),
+            RootType::Java => Ok(UResourceBundle::Wrapper(
+                ResourceBundleWrapper::get_bundle_instance(
+                    base_name,
+                    locale_name,
+                    Some(root),
+                    disable_fallback,
+                )?,
+            )),
             RootType::Missing => {
-                match ICUResourceBundle::get_bundle_instance(Some(base_name), locale_name, root, disable_fallback) {
+                match ICUResourceBundle::get_bundle_instance(
+                    Some(base_name),
+                    locale_name,
+                    root,
+                    disable_fallback,
+                ) {
                     Ok(b) => {
                         Self::set_root_type(base_name, RootType::Icu);
                         Ok(UResourceBundle::Icu(b))
@@ -483,7 +526,10 @@ impl UResourceBundle {
         match self.find_top_level(a_key)? {
             Some(obj) => Ok(obj),
             None => {
-                let full_name = ICUResourceBundleReader::get_full_name(Some(&self.get_base_name()), &self.get_locale_id());
+                let full_name = ICUResourceBundleReader::get_full_name(
+                    Some(&self.get_base_name()),
+                    &self.get_locale_id(),
+                );
                 Err(missing_resource(
                     format!("Can't find resource for bundle {full_name}, key {a_key}"),
                     self.java_class_name(),
@@ -779,7 +825,11 @@ impl UResourceBundle {
     /// `handleGetObjectImpl(String aKey, UResourceBundle requested)`
     /// (private): to facilitate XPath style aliases the requested bundle is
     /// passed down the lookup.
-    fn handle_get_object_impl(&self, a_key: &str, requested: &UResourceBundle) -> Result<ResourceObject> {
+    fn handle_get_object_impl(
+        &self,
+        a_key: &str,
+        requested: &UResourceBundle,
+    ) -> Result<ResourceObject> {
         let mut obj = self.resolve_object(a_key, requested)?;
         if obj.is_none() {
             if let Some(parent_bundle) = self.get_parent() {
@@ -801,7 +851,11 @@ impl UResourceBundle {
 
     /// `resolveObject(String aKey, UResourceBundle requested)` (private):
     /// a string, a string array or the bundle, `None` when not found.
-    fn resolve_object(&self, a_key: &str, requested: &UResourceBundle) -> Result<Option<ResourceObject>> {
+    fn resolve_object(
+        &self,
+        a_key: &str,
+        requested: &UResourceBundle,
+    ) -> Result<Option<ResourceObject>> {
         if self.get_type() == Self::STRING {
             return Ok(Some(ResourceObject::String(self.get_string()?)));
         }
@@ -814,7 +868,9 @@ impl UResourceBundle {
                 match obj.handle_get_string_array() {
                     Ok(Some(a)) => return Ok(Some(ResourceObject::StringArray(a))),
                     Ok(None) => return Ok(None),
-                    Err(ex) if is_type_mismatch(&ex) => return Ok(Some(ResourceObject::Bundle(obj))),
+                    Err(ex) if is_type_mismatch(&ex) => {
+                        return Ok(Some(ResourceObject::Bundle(obj)))
+                    }
                     Err(ex) => return Err(ex),
                 }
             }

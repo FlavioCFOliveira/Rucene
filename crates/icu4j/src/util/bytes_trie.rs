@@ -78,11 +78,13 @@ pub const K_MIN_TWO_BYTE_VALUE_LEAD: i32 = K_MIN_ONE_BYTE_VALUE_LEAD + K_MAX_ONE
 /// `kMaxTwoByteValue` (package-private).
 pub const K_MAX_TWO_BYTE_VALUE: i32 = 0x1aff;
 /// `kMinThreeByteValueLead` (package-private).
-pub const K_MIN_THREE_BYTE_VALUE_LEAD: i32 = K_MIN_TWO_BYTE_VALUE_LEAD + (K_MAX_TWO_BYTE_VALUE >> 8) + 1;
+pub const K_MIN_THREE_BYTE_VALUE_LEAD: i32 =
+    K_MIN_TWO_BYTE_VALUE_LEAD + (K_MAX_TWO_BYTE_VALUE >> 8) + 1;
 /// `kFourByteValueLead` (package-private).
 pub const K_FOUR_BYTE_VALUE_LEAD: i32 = 0x7e;
 /// `kMaxThreeByteValue` (package-private).
-pub const K_MAX_THREE_BYTE_VALUE: i32 = ((K_FOUR_BYTE_VALUE_LEAD - K_MIN_THREE_BYTE_VALUE_LEAD) << 16) - 1;
+pub const K_MAX_THREE_BYTE_VALUE: i32 =
+    ((K_FOUR_BYTE_VALUE_LEAD - K_MIN_THREE_BYTE_VALUE_LEAD) << 16) - 1;
 /// `kFiveByteValueLead` (package-private).
 pub const K_FIVE_BYTE_VALUE_LEAD: i32 = 0x7f;
 /// `kMaxOneByteDelta` (package-private).
@@ -96,9 +98,11 @@ pub const K_FOUR_BYTE_DELTA_LEAD: i32 = 0xfe;
 /// `kFiveByteDeltaLead` (package-private).
 pub const K_FIVE_BYTE_DELTA_LEAD: i32 = 0xff;
 /// `kMaxTwoByteDelta` (package-private).
-pub const K_MAX_TWO_BYTE_DELTA: i32 = ((K_MIN_THREE_BYTE_DELTA_LEAD - K_MIN_TWO_BYTE_DELTA_LEAD) << 8) - 1;
+pub const K_MAX_TWO_BYTE_DELTA: i32 =
+    ((K_MIN_THREE_BYTE_DELTA_LEAD - K_MIN_TWO_BYTE_DELTA_LEAD) << 8) - 1;
 /// `kMaxThreeByteDelta` (package-private).
-pub const K_MAX_THREE_BYTE_DELTA: i32 = ((K_FOUR_BYTE_DELTA_LEAD - K_MIN_THREE_BYTE_DELTA_LEAD) << 16) - 1;
+pub const K_MAX_THREE_BYTE_DELTA: i32 =
+    ((K_FOUR_BYTE_DELTA_LEAD - K_MIN_THREE_BYTE_DELTA_LEAD) << 16) - 1;
 
 /// Light-weight, non-const reader class for a `BytesTrie`: a trie of byte
 /// sequences mapped to `int` values, traversed one byte at a time.
@@ -192,7 +196,12 @@ impl BytesTrie {
     /// `IllegalArgumentException("incompatible trie state")` when the state
     /// was saved from another trie or root.
     pub fn reset_to_state(&mut self, state: &State) -> JResult<&mut Self> {
-        if state.bytes.as_ref().is_some_and(|b| Arc::ptr_eq(b, &self.bytes)) && self.root == state.root {
+        if state
+            .bytes
+            .as_ref()
+            .is_some_and(|b| Arc::ptr_eq(b, &self.bytes))
+            && self.root == state.root
+        {
             self.pos = state.pos;
             self.remaining_match_length = state.remaining_match_length;
         } else {
@@ -422,7 +431,12 @@ impl BytesTrie {
     /// `iterator(int maxStringLength)`: as [`iterator`](Self::iterator),
     /// the sequences truncated to `max_string_length` bytes (0: no limit).
     pub fn iterator_max(&self, max_string_length: i32) -> Iterator {
-        Iterator::new(self.bytes.clone(), self.pos, self.remaining_match_length, max_string_length)
+        Iterator::new(
+            self.bytes.clone(),
+            self.pos,
+            self.remaining_match_length,
+            max_string_length,
+        )
     }
 
     /// `iterator(byte[] trieBytes, int offset, int maxStringLength)`: the
@@ -437,6 +451,7 @@ impl BytesTrie {
     }
 
     /// `branchNext(int pos, int length, int inByte)` (private).
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
     fn branch_next(&mut self, mut pos: i32, mut length: i32, in_byte: i32) -> Result {
         // Branch according to the current byte.
         if length == 0 {
@@ -482,7 +497,9 @@ impl BytesTrie {
                         delta = ((node - K_MIN_TWO_BYTE_VALUE_LEAD) << 8) | self.b(pos);
                         pos += 1;
                     } else if node < K_FOUR_BYTE_VALUE_LEAD {
-                        delta = ((node - K_MIN_THREE_BYTE_VALUE_LEAD) << 16) | (self.b(pos) << 8) | self.b(pos + 1);
+                        delta = ((node - K_MIN_THREE_BYTE_VALUE_LEAD) << 16)
+                            | (self.b(pos) << 8)
+                            | self.b(pos + 1);
                         pos += 2;
                     } else if node == K_FOUR_BYTE_VALUE_LEAD {
                         delta = (self.b(pos) << 16) | (self.b(pos + 1) << 8) | self.b(pos + 2);
@@ -589,11 +606,16 @@ fn read_value(bytes: &[i8], pos: i32, lead_byte: i32) -> i32 {
     } else if lead_byte < K_MIN_THREE_BYTE_VALUE_LEAD {
         ((lead_byte - K_MIN_TWO_BYTE_VALUE_LEAD) << 8) | ub(bytes, pos)
     } else if lead_byte < K_FOUR_BYTE_VALUE_LEAD {
-        ((lead_byte - K_MIN_THREE_BYTE_VALUE_LEAD) << 16) | (ub(bytes, pos) << 8) | ub(bytes, pos + 1)
+        ((lead_byte - K_MIN_THREE_BYTE_VALUE_LEAD) << 16)
+            | (ub(bytes, pos) << 8)
+            | ub(bytes, pos + 1)
     } else if lead_byte == K_FOUR_BYTE_VALUE_LEAD {
         (ub(bytes, pos) << 16) | (ub(bytes, pos + 1) << 8) | ub(bytes, pos + 2)
     } else {
-        ((bytes[pos as usize] as i32) << 24) | (ub(bytes, pos + 1) << 16) | (ub(bytes, pos + 2) << 8) | ub(bytes, pos + 3)
+        ((bytes[pos as usize] as i32) << 24)
+            | (ub(bytes, pos + 1) << 16)
+            | (ub(bytes, pos + 2) << 8)
+            | ub(bytes, pos + 3)
     }
 }
 
@@ -629,13 +651,18 @@ fn jump_by_delta(bytes: &[i8], mut pos: i32) -> i32 {
         delta = ((delta - K_MIN_TWO_BYTE_DELTA_LEAD) << 8) | ub(bytes, pos);
         pos += 1;
     } else if delta < K_FOUR_BYTE_DELTA_LEAD {
-        delta = ((delta - K_MIN_THREE_BYTE_DELTA_LEAD) << 16) | (ub(bytes, pos) << 8) | ub(bytes, pos + 1);
+        delta = ((delta - K_MIN_THREE_BYTE_DELTA_LEAD) << 16)
+            | (ub(bytes, pos) << 8)
+            | ub(bytes, pos + 1);
         pos += 2;
     } else if delta == K_FOUR_BYTE_DELTA_LEAD {
         delta = (ub(bytes, pos) << 16) | (ub(bytes, pos + 1) << 8) | ub(bytes, pos + 2);
         pos += 3;
     } else {
-        delta = ((bytes[pos as usize] as i32) << 24) | (ub(bytes, pos + 1) << 16) | (ub(bytes, pos + 2) << 8) | ub(bytes, pos + 3);
+        delta = ((bytes[pos as usize] as i32) << 24)
+            | (ub(bytes, pos + 1) << 16)
+            | (ub(bytes, pos + 2) << 8)
+            | ub(bytes, pos + 3);
         pos += 4;
     }
     pos.wrapping_add(delta)
@@ -661,10 +688,20 @@ fn skip_delta(bytes: &[i8], mut pos: i32) -> i32 {
 /// uniqueValue)` (private): recursively finds a unique value (or whether
 /// there is not a unique one) from a branch; on success, the position after
 /// the branch is in bits 63..33.
-fn find_unique_value_from_branch(bytes: &[i8], mut pos: i32, mut length: i32, mut unique_value: i64) -> i64 {
+fn find_unique_value_from_branch(
+    bytes: &[i8],
+    mut pos: i32,
+    mut length: i32,
+    mut unique_value: i64,
+) -> i64 {
     while length > K_MAX_BRANCH_LINEAR_SUB_NODE_LENGTH {
         pos += 1; // ignore the comparison byte
-        unique_value = find_unique_value_from_branch(bytes, jump_by_delta(bytes, pos), length >> 1, unique_value);
+        unique_value = find_unique_value_from_branch(
+            bytes,
+            jump_by_delta(bytes, pos),
+            length >> 1,
+            unique_value,
+        );
         if unique_value == 0 {
             return 0;
         }
@@ -673,7 +710,7 @@ fn find_unique_value_from_branch(bytes: &[i8], mut pos: i32, mut length: i32, mu
     }
     loop {
         pos += 1; // ignore a comparison byte
-        // handle its value
+                  // handle its value
         let node = ub(bytes, pos);
         pos += 1;
         let is_final = (node & K_VALUE_IS_FINAL) != 0;
@@ -814,7 +851,11 @@ impl Entry {
     /// `bytesAsByteBuffer()`: a read-only buffer over the sequence (position
     /// 0, limit the length, capacity the buffer's).
     pub fn bytes_as_byte_buffer(&self) -> ByteBuffer {
-        ByteBuffer::wrap_range(self.bytes.iter().map(|&b| b as u8).collect(), 0, self.length)
+        ByteBuffer::wrap_range(
+            self.bytes.iter().map(|&b| b as u8).collect(),
+            0,
+            self.length,
+        )
     }
 
     /// `ensureCapacity(int len)` (private).
@@ -874,7 +915,12 @@ pub struct Iterator {
 impl Iterator {
     /// `Iterator(byte[] trieBytes, int offset, int remainingMatchLength, int
     /// maxStringLength)` (private).
-    fn new(trie_bytes: Arc<[i8]>, offset: i32, remaining_match_length: i32, max_string_length: i32) -> Self {
+    fn new(
+        trie_bytes: Arc<[i8]>,
+        offset: i32,
+        remaining_match_length: i32,
+        max_string_length: i32,
+    ) -> Self {
         let mut it = Self {
             bytes: trie_bytes,
             pos: offset,
@@ -882,7 +928,11 @@ impl Iterator {
             remaining_match_length,
             initial_remaining_match_length: remaining_match_length,
             max_length: max_string_length,
-            entry: Entry::new(if max_string_length != 0 { max_string_length } else { 32 }),
+            entry: Entry::new(if max_string_length != 0 {
+                max_string_length
+            } else {
+                32
+            }),
             stack: Vec::new(),
         };
         let mut length = it.remaining_match_length; // Actual remaining match length minus 1.
@@ -926,7 +976,9 @@ impl Iterator {
     ///
     /// Always `UnsupportedOperationException`.
     pub fn remove(&mut self) -> JResult<()> {
-        Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"))
+        Err(crate::jdk::unchecked_no_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
     /// `next()` itself: the next entry, `None` where Java throws
@@ -1009,9 +1061,10 @@ impl Iterator {
     fn branch_next(&mut self, mut pos: i32, mut length: i32) -> i32 {
         while length > K_MAX_BRANCH_LINEAR_SUB_NODE_LENGTH {
             pos += 1; // ignore the comparison byte
-            // Push state for the greater-or-equal edge.
+                      // Push state for the greater-or-equal edge.
             let low = ((length - (length >> 1)) << 16) | self.entry.length;
-            self.stack.push(((skip_delta(&self.bytes, pos) as i64) << 32) | (low as i64));
+            self.stack
+                .push(((skip_delta(&self.bytes, pos) as i64) << 32) | (low as i64));
             // Follow the less-than edge.
             length >>= 1;
             pos = jump_by_delta(&self.bytes, pos);

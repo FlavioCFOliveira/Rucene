@@ -115,9 +115,15 @@ impl StaticUnicodeSets {
     /// `chooseCurrency(String str)`: the currency-sign key whose set
     /// contains `str`, or `None`.
     pub fn choose_currency(str: &[u16]) -> Option<Key> {
-        [Key::DollarSign, Key::PoundSign, Key::RupeeSign, Key::YenSign, Key::WonSign]
-            .into_iter()
-            .find(|k| Self::get(*k).contains_str(str))
+        [
+            Key::DollarSign,
+            Key::PoundSign,
+            Key::RupeeSign,
+            Key::YenSign,
+            Key::WonSign,
+        ]
+        .into_iter()
+        .find(|k| Self::get(*k).contains_str(str))
     }
 }
 
@@ -143,7 +149,11 @@ fn frozen(pattern: &str) -> Result<UnicodeSet> {
 }
 
 /// `saveSet(Key key, String unicodeSetPattern)`.
-fn save_set(map: &mut HashMap<Key, UnicodeSet>, key: Key, unicode_set_pattern: &[u16]) -> Result<()> {
+fn save_set(
+    map: &mut HashMap<Key, UnicodeSet>,
+    key: Key,
+    unicode_set_pattern: &[u16],
+) -> Result<()> {
     debug_assert!(!map.contains_key(&key));
     let mut s = UnicodeSet::from_pattern(unicode_set_pattern)?;
     s.freeze();
@@ -177,9 +187,17 @@ impl Sink for ParseDataSink<'_> {
                         // There is both lenient and strict data for comma/period,
                         // but not for any of the other symbols.
                         let target = if has(b'.' as u16) {
-                            if is_lenient { Key::Period } else { Key::StrictPeriod }
+                            if is_lenient {
+                                Key::Period
+                            } else {
+                                Key::StrictPeriod
+                            }
                         } else if has(b',' as u16) {
-                            if is_lenient { Key::Comma } else { Key::StrictComma }
+                            if is_lenient {
+                                Key::Comma
+                            } else {
+                                Key::StrictComma
+                            }
                         } else if has(b'+' as u16) {
                             Key::PlusSign
                         } else if has(b'-' as u16) {
@@ -224,7 +242,10 @@ fn init() -> Result<HashMap<Key, UnicodeSet>> {
     unicode_sets.insert(Key::Empty, frozen("[]")?);
     // These sets were decided after discussion with icu-design@. See tickets #13084 and #13309.
     // Zs+TAB is "horizontal whitespace" according to UTS #18 (blank property).
-    unicode_sets.insert(Key::DefaultIgnorables, frozen(r"[[:Zs:][\u0009][:Bidi_Control:][:Variation_Selector:]]")?);
+    unicode_sets.insert(
+        Key::DefaultIgnorables,
+        frozen(r"[[:Zs:][\u0009][:Bidi_Control:][:Variation_Selector:]]")?,
+    );
     unicode_sets.insert(Key::StrictIgnorables, frozen("[[:Bidi_Control:]]")?);
 
     // CLDR provides data for comma, period, minus sign, and plus sign.
@@ -234,7 +255,12 @@ fn init() -> Result<HashMap<Key, UnicodeSet>> {
             "java.lang.ClassCastException: class com.ibm.icu.impl.ResourceBundleWrapper cannot be cast to class com.ibm.icu.impl.ICUResourceBundle"
         ),
     };
-    rb.get_all_items_with_fallback("parse", &mut ParseDataSink { unicode_sets: &mut unicode_sets })?;
+    rb.get_all_items_with_fallback(
+        "parse",
+        &mut ParseDataSink {
+            unicode_sets: &mut unicode_sets,
+        },
+    )?;
 
     // NOTE: It is OK for these assertions to fail if there was a no-data build.
     debug_assert!(unicode_sets.contains_key(&Key::Comma));
@@ -248,9 +274,19 @@ fn init() -> Result<HashMap<Key, UnicodeSet>> {
     other_grouping.add_all(&apostrophe)?;
     other_grouping.freeze();
     unicode_sets.insert(Key::OtherGroupingSeparators, other_grouping);
-    let all = compute_union(&unicode_sets, &[Key::Comma, Key::Period, Key::OtherGroupingSeparators])?;
+    let all = compute_union(
+        &unicode_sets,
+        &[Key::Comma, Key::Period, Key::OtherGroupingSeparators],
+    )?;
     unicode_sets.insert(Key::AllSeparators, all);
-    let strict_all = compute_union(&unicode_sets, &[Key::StrictComma, Key::StrictPeriod, Key::OtherGroupingSeparators])?;
+    let strict_all = compute_union(
+        &unicode_sets,
+        &[
+            Key::StrictComma,
+            Key::StrictPeriod,
+            Key::OtherGroupingSeparators,
+        ],
+    )?;
     unicode_sets.insert(Key::StrictAllSeparators, strict_all);
 
     debug_assert!(unicode_sets.contains_key(&Key::MinusSign));

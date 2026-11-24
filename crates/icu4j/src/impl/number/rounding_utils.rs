@@ -23,7 +23,8 @@ static MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED: LazyLock<Vec<MathContext>> = Laz
         .map(|i| {
             MathContext::with_rounding_mode(
                 0,
-                RoundingMode::value_of(i).expect("every ordinal below values().length is a rounding mode"),
+                RoundingMode::value_of(i)
+                    .expect("every ordinal below values().length is a rounding mode"),
             )
             .expect("precision 0 is valid")
         })
@@ -146,7 +147,10 @@ impl RoundingUtils {
         }
 
         // Rounding mode UNNECESSARY
-        Err(arithmetic(&format!("Rounding is required on {}", reference())))
+        Err(arithmetic(&format!(
+            "Rounding is required on {}",
+            reference()
+        )))
     }
 
     /// Whether the given rounding mode's rounding boundary is at the midpoint
@@ -166,7 +170,9 @@ impl RoundingUtils {
         match properties.get_math_context() {
             Some(math_context) => *math_context,
             None => {
-                let rounding_mode = properties.get_rounding_mode().unwrap_or(RoundingMode::HalfEven);
+                let rounding_mode = properties
+                    .get_rounding_mode()
+                    .unwrap_or(RoundingMode::HalfEven);
                 MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[rounding_mode.ordinal() as usize]
             }
         }
@@ -178,7 +184,9 @@ impl RoundingUtils {
         match properties.get_math_context() {
             Some(math_context) => *math_context,
             None => {
-                let rounding_mode = properties.get_rounding_mode().unwrap_or(RoundingMode::HalfEven);
+                let rounding_mode = properties
+                    .get_rounding_mode()
+                    .unwrap_or(RoundingMode::HalfEven);
                 MATH_CONTEXT_BY_ROUNDING_MODE_34_DIGITS[rounding_mode.ordinal() as usize]
             }
         }
@@ -199,9 +207,14 @@ impl RoundingUtils {
     pub fn scale_from_properties(properties: &DecimalFormatProperties) -> Result<Option<Scale>> {
         let mc = Self::get_math_context_or_34_digits(properties);
         if properties.get_magnitude_multiplier() != 0 {
-            Ok(Some(Scale::power_of_ten(properties.get_magnitude_multiplier()).with_math_context(&mc)?))
+            Ok(Some(
+                Scale::power_of_ten(properties.get_magnitude_multiplier())
+                    .with_math_context(&mc)?,
+            ))
         } else if let Some(multiplier) = properties.get_multiplier() {
-            Ok(Some(Scale::by_big_decimal(multiplier)?.with_math_context(&mc)?))
+            Ok(Some(
+                Scale::by_big_decimal(multiplier)?.with_math_context(&mc)?,
+            ))
         } else {
             Ok(None)
         }

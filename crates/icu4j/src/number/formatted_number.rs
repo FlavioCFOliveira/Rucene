@@ -47,7 +47,12 @@ impl FormattedNumber {
         output_unit: Option<MeasureUnit>,
         gender: Option<String>,
     ) -> Self {
-        FormattedNumber { string: nsb, fq, output_unit, gender }
+        FormattedNumber {
+            string: nsb,
+            fq,
+            output_unit,
+            gender,
+        }
     }
 
     /// Export the formatted number as a BigDecimal. This endpoint is useful

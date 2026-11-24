@@ -24,7 +24,8 @@ use crate::r#impl::icu_data::ICUData;
 #[derive(Debug)]
 pub struct CollationRoot;
 
-static ROOT: LazyLock<std::result::Result<Arc<CollationTailoring>, Arc<LuceneError>>> = LazyLock::new(load);
+static ROOT: LazyLock<std::result::Result<Arc<CollationTailoring>, Arc<LuceneError>>> =
+    LazyLock::new(load);
 
 /// Corresponds to C++ load() function.
 fn load() -> std::result::Result<Arc<CollationTailoring>, Arc<LuceneError>> {
@@ -80,6 +81,10 @@ impl CollationRoot {
     /// The exception of loading the root data.
     pub fn get_settings() -> Result<Arc<CollationSettings>> {
         let root = Self::get_root()?;
-        Ok(root.settings.read_only_arc().unwrap_or_else(|| panic!("java.lang.NullPointerException")).clone())
+        Ok(root
+            .settings
+            .read_only_arc()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+            .clone())
     }
 }

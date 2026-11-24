@@ -3,7 +3,9 @@
 
 //! `com.ibm.icu.impl.StringSegment`.
 
-use crate::jdk::{char_count, code_point_at, is_high_surrogate, is_low_surrogate, to_code_point, to_rust_string};
+use crate::jdk::{
+    char_count, code_point_at, is_high_surrogate, is_low_surrogate, to_code_point, to_rust_string,
+};
 use crate::lang::u_character::UCharacter;
 use crate::r#impl::utility::Utility;
 use crate::text::unicode_set::UnicodeSet;
@@ -40,7 +42,12 @@ fn seq_code_point_at(seq: &[u16], base: i32, len: i32, index: i32) -> i32 {
 impl StringSegment {
     /// `new StringSegment(String str, boolean foldCase)`.
     pub fn new(str: &[u16], fold_case: bool) -> Self {
-        Self { str: str.to_vec(), start: 0, end: str.len() as i32, fold_case }
+        Self {
+            str: str.to_vec(),
+            start: 0,
+            end: str.len() as i32,
+            fold_case,
+        }
     }
 
     /// `getOffset()`.
@@ -194,7 +201,10 @@ impl StringSegment {
     /// `contentEquals(CharSequence other)`: whether the segment's units
     /// equal `other`'s.
     pub fn content_equals(&self, other: Option<&[u16]>) -> bool {
-        Utility::char_sequence_equals(Some(&self.str[self.start as usize..self.end as usize]), other)
+        Utility::char_sequence_equals(
+            Some(&self.str[self.start as usize..self.end as usize]),
+            other,
+        )
     }
 
     /// `asString()`: the segment's units.

@@ -16,12 +16,14 @@ use crate::r#impl::assert::Assert;
 use crate::r#impl::icu_binary::ICUBinary;
 use crate::r#impl::icu_data::ICUData;
 use crate::r#impl::icu_locale_service::{
-    locale_key_factory_display_name, ICULocaleService, ICULocaleServiceSubclass, ICUResourceBundleFactory,
-    LocaleKeyFactory,
+    locale_key_factory_display_name, ICULocaleService, ICULocaleServiceSubclass,
+    ICUResourceBundleFactory, LocaleKeyFactory,
 };
 use crate::r#impl::icu_resource_bundle::{ICUResourceBundle, OpenType};
 use crate::r#impl::icu_service::{Factory, ICUService, Key, ServiceObject, VisibleIDMap};
-use crate::text::break_iterator::{BreakIterator, BreakIteratorServiceShim, KIND_LINE, KIND_SENTENCE};
+use crate::text::break_iterator::{
+    BreakIterator, BreakIteratorServiceShim, KIND_LINE, KIND_SENTENCE,
+};
 use crate::text::filtered_break_iterator_builder;
 use crate::text::rule_based_break_iterator::RuleBasedBreakIterator;
 use crate::util::u_locale::ULocale;
@@ -74,7 +76,12 @@ impl LocaleKeyFactory for RBBreakIteratorFactory {
 
     /// `handleCreate(ULocale loc, int kind, ICUService srvc)`:
     /// `createBreakInstance(loc, kind)`.
-    fn handle_create(&self, loc: &ULocale, kind: i32, _service: &ICUService) -> Result<Option<ServiceObject>> {
+    fn handle_create(
+        &self,
+        loc: &ULocale,
+        kind: i32,
+        _service: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
         let iter = create_break_instance(loc, kind)?;
         let obj: ServiceObject = Arc::new(Mutex::new(iter));
         Ok(Some(obj))
@@ -89,8 +96,10 @@ impl Factory for RBBreakIteratorFactory {
     /// `ICUResourceBundleFactory.updateVisibleIDs`: the bundle's available
     /// locale names.
     fn update_visible_ids(self: Arc<Self>, result: &mut VisibleIDMap) -> Result<()> {
-        let visible_ids =
-            ICUResourceBundle::get_available_locale_name_set_of(&self.base.bundle_name, self.base.loader())?; // only visible ids
+        let visible_ids = ICUResourceBundle::get_available_locale_name_set_of(
+            &self.base.bundle_name,
+            self.base.loader(),
+        )?; // only visible ids
         for id in visible_ids.iter() {
             let me: Arc<dyn Factory> = self.clone();
             result.insert(id.clone(), me);
@@ -135,7 +144,12 @@ impl BreakIteratorFactory {
 }
 
 impl BreakIteratorServiceShim for BreakIteratorFactory {
-    fn register_instance(&self, mut iter: Box<dyn BreakIterator>, locale: &ULocale, kind: i32) -> Result<Arc<dyn Factory>> {
+    fn register_instance(
+        &self,
+        mut iter: Box<dyn BreakIterator>,
+        locale: &ULocale,
+        kind: i32,
+    ) -> Result<Arc<dyn Factory>> {
         iter.set_text(Some(Box::new(StringCharacterIterator::new(Vec::new()))));
         let obj: ServiceObject = Arc::new(Mutex::new(iter));
         self.service.register_object_locale(obj, locale, kind, true)
@@ -162,11 +176,13 @@ impl BreakIteratorServiceShim for BreakIteratorFactory {
             return create_break_instance(locale, kind);
         }
         let mut actual_loc: Option<ULocale> = None;
-        let obj = self.service.get_locale_kind(Some(locale), kind, Some(&mut actual_loc))?;
+        let obj = self
+            .service
+            .get_locale_kind(Some(locale), kind, Some(&mut actual_loc))?;
         let obj = obj.ok_or_else(LuceneError::null_pointer)?;
-        let shared = obj
-            .downcast_ref::<ServiceBreakIterator>()
-            .ok_or_else(|| LuceneError::unchecked("java.lang.ClassCastException", "not a BreakIterator"))?;
+        let shared = obj.downcast_ref::<ServiceBreakIterator>().ok_or_else(|| {
+            LuceneError::unchecked("java.lang.ClassCastException", "not a BreakIterator")
+        })?;
         let mut iter = shared.lock().unwrap_or_else(|e| e.into_inner()).clone_box();
         iter.set_locale(actual_loc.clone(), actual_loc)?;
         Ok(iter)
@@ -229,7 +245,10 @@ fn create_break_instance(locale: &ULocale, kind: i32) -> Result<Box<dyn BreakIte
     // Create a normal RuleBasedBreakIterator.
     //
     let is_phrase_breaking = to_rust_string(&brkfname).contains("phrase");
-    let mut iter = match RuleBasedBreakIterator::get_instance_from_compiled_rules_phrase(bytes, is_phrase_breaking) {
+    let mut iter = match RuleBasedBreakIterator::get_instance_from_compiled_rules_phrase(
+        bytes,
+        is_phrase_breaking,
+    ) {
         Ok(iter) => iter,
         Err(e) if e.is_io_exception() => {
             // Shouldn't be possible to get here.

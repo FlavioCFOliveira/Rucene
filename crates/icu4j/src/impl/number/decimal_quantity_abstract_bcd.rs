@@ -28,8 +28,8 @@ pub const NAN_FLAG: i8 = 4;
 
 /// `DOUBLE_MULTIPLIERS`: the powers of ten `1e0..=1e21`.
 const DOUBLE_MULTIPLIERS: [f64; 22] = [
-    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
-    1e19, 1e20, 1e21,
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21,
 ];
 
 /// `INT64_BCD`: the digits of `Long.MIN_VALUE`, most significant first.
@@ -323,7 +323,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
             debug_assert!(dstr.find('.') == Some(1));
             let digits = format!("{}{}", &dstr[0..1], &dstr[2..exp_pos]);
             self.set_to_long_internal(parse_long_digits(&digits));
-            let exp: i32 = dstr[exp_pos + 1..].parse().expect("Double.toString renders a decimal exponent");
+            let exp: i32 = dstr[exp_pos + 1..]
+                .parse()
+                .expect("Double.toString renders a decimal exponent");
             self.fields_mut().scale += exp - (exp_pos as i32 - 1) + 1;
         } else if b[0] == b'0' {
             // Case 2: Fraction-only number.
@@ -340,7 +342,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
             // no need to adjust scale
         } else {
             // Case 4: Number with both a fraction and an integer.
-            let decimal_pos = dstr.find('.').expect("Double.toString renders a decimal point");
+            let decimal_pos = dstr
+                .find('.')
+                .expect("Double.toString renders a decimal point");
             let digits = format!("{}{}", &dstr[0..decimal_pos], &dstr[decimal_pos + 1..]);
             self.set_to_long_internal(parse_long_digits(&digits));
             self.fields_mut().scale += decimal_pos as i32 - dstr.len() as i32 + 1;
@@ -378,7 +382,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
         // NOTE: Java has only signed longs, so we check result <= 1e17
         // instead of 1e18
         while magnitude >= lower_magnitude && (result as f64) <= 1e17 {
-            result = result.wrapping_mul(10).wrapping_add(self.get_digit_pos(magnitude - f.scale) as i64);
+            result = result
+                .wrapping_mul(10)
+                .wrapping_add(self.get_digit_pos(magnitude - f.scale) as i64);
             magnitude -= 1;
         }
         // Remove trailing zeros; this can happen during integer overflow
@@ -441,7 +447,12 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
     /// # Errors
     ///
     /// `ArithmeticException("Rounding is required on ...")`.
-    fn round_to_magnitude_nickel(&mut self, magnitude: i32, math_context: &MathContext, nickel: bool) -> Result<()> {
+    fn round_to_magnitude_nickel(
+        &mut self,
+        magnitude: i32,
+        math_context: &MathContext,
+        nickel: bool,
+    ) -> Result<()> {
         // The position in the BCD at which rounding will be performed;
         // digits to the right of position will be rounded away.
         let mut position = safe_subtract(magnitude, self.fields().scale);
@@ -457,7 +468,10 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
         let mut trailing_digit = self.get_digit_pos(position);
 
         let is_approximate = self.fields().is_approximate;
-        if position <= 0 && !is_approximate && (!nickel || trailing_digit == 0 || trailing_digit == 5) {
+        if position <= 0
+            && !is_approximate
+            && (!nickel || trailing_digit == 0 || trailing_digit == 5)
+        {
             // All digits are to the left of the rounding magnitude.
         } else if precision == 0 {
             // No rounding for zero.
@@ -521,7 +535,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
                         }
                         p -= 1;
                     }
-                } else if leading_digit == 4 && (!nickel || trailing_digit == 2 || trailing_digit == 7) {
+                } else if leading_digit == 4
+                    && (!nickel || trailing_digit == 2 || trailing_digit == 7)
+                {
                     section = RoundingUtils::SECTION_MIDPOINT;
                     while p >= min_p {
                         if self.get_digit_pos(p) != 9 {
@@ -530,7 +546,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
                         }
                         p -= 1;
                     }
-                } else if leading_digit == 5 && (!nickel || trailing_digit == 2 || trailing_digit == 7) {
+                } else if leading_digit == 5
+                    && (!nickel || trailing_digit == 2 || trailing_digit == 7)
+                {
                     section = RoundingUtils::SECTION_MIDPOINT;
                     while p >= min_p {
                         if self.get_digit_pos(p) != 0 {
@@ -539,7 +557,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
                         }
                         p -= 1;
                     }
-                } else if leading_digit == 9 && (!nickel || trailing_digit == 4 || trailing_digit == 9) {
+                } else if leading_digit == 9
+                    && (!nickel || trailing_digit == 4 || trailing_digit == 9)
+                {
                     section = SECTION_UPPER_EDGE;
                     while p >= min_p {
                         if self.get_digit_pos(p) != 9 {
@@ -571,7 +591,8 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
                     section = RoundingUtils::SECTION_UPPER;
                 }
 
-                let rounds_at_midpoint = RoundingUtils::rounds_at_midpoint(math_context.get_rounding_mode().ordinal());
+                let rounds_at_midpoint =
+                    RoundingUtils::rounds_at_midpoint(math_context.get_rounding_mode().ordinal());
                 if safe_subtract(position, 1) < precision - 14
                     || (rounds_at_midpoint && section == RoundingUtils::SECTION_MIDPOINT)
                     || (!rounds_at_midpoint && section < 0)
@@ -580,7 +601,8 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
                     // representation of the double, because the zone of
                     // uncertainty is along the rounding boundary.
                     self.convert_to_accurate_double();
-                    return self.round_to_magnitude_nickel(magnitude, math_context, nickel); // start over
+                    return self.round_to_magnitude_nickel(magnitude, math_context, nickel);
+                    // start over
                 }
 
                 // Turn off the approximate double flag, since the value is now
@@ -874,7 +896,9 @@ fn java_math_round(a: f64) -> i64 {
 /// `Long.parseLong(String)` of the digit strings `convertToAccurateDouble`
 /// builds from `Double.toString` (at most 17 digits, always valid).
 fn parse_long_digits(digits: &str) -> i64 {
-    digits.parse().expect("Double.toString renders at most 17 decimal digits")
+    digits
+        .parse()
+        .expect("Double.toString renders at most 17 decimal digits")
 }
 
 impl<T: DecimalQuantityAbstractBcd> IFixedDecimal for T {
@@ -969,7 +993,11 @@ impl<T: DecimalQuantityAbstractBcd> DecimalQuantity for T {
         }
     }
 
-    fn round_to_increment(&mut self, rounding_increment: &BigDecimal, math_context: &MathContext) -> Result<()> {
+    fn round_to_increment(
+        &mut self,
+        rounding_increment: &BigDecimal,
+        math_context: &MathContext,
+    ) -> Result<()> {
         // Do not call this method with an increment having only a 1 or a 5
         // digit! Use a more efficient call to either roundToMagnitude() or
         // roundToNickel(). Note: The check, which is somewhat expensive, is
@@ -1090,12 +1118,17 @@ impl<T: DecimalQuantityAbstractBcd> DecimalQuantity for T {
         if IFixedDecimal::is_nan(self) {
             return f64::NAN;
         } else if IFixedDecimal::is_infinite(self) {
-            return if DecimalQuantity::is_negative(self) { f64::NEG_INFINITY } else { f64::INFINITY };
+            return if DecimalQuantity::is_negative(self) {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            };
         }
 
         // Double.parseDouble is correctly rounded, as Rust's f64 parsing is.
         let sb = self.to_scientific_string();
-        sb.parse::<f64>().expect("toScientificString renders a valid double literal")
+        sb.parse::<f64>()
+            .expect("toScientificString renders a valid double literal")
     }
 
     fn to_big_decimal(&mut self) -> Result<BigDecimal> {
@@ -1115,7 +1148,11 @@ impl<T: DecimalQuantityAbstractBcd> DecimalQuantity for T {
         debug_assert!(truncate_if_overflow || self.fits_in_long());
         let f = *self.fields();
         let mut result: i64 = 0;
-        let mut upper_magnitude = f.exponent.wrapping_add(f.scale).wrapping_add(f.precision).wrapping_sub(1);
+        let mut upper_magnitude = f
+            .exponent
+            .wrapping_add(f.scale)
+            .wrapping_add(f.precision)
+            .wrapping_sub(1);
         if truncate_if_overflow {
             upper_magnitude = upper_magnitude.min(17);
         }
@@ -1179,7 +1216,11 @@ impl<T: DecimalQuantityAbstractBcd> DecimalQuantity for T {
 
         let f = self.fields();
         let magnitude = f.scale + f.precision;
-        let result = if f.l_req_pos > magnitude { f.l_req_pos } else { magnitude };
+        let result = if f.l_req_pos > magnitude {
+            f.l_req_pos
+        } else {
+            magnitude
+        };
         result - 1
     }
 
@@ -1255,7 +1296,10 @@ impl<T: DecimalQuantityAbstractBcd> DecimalQuantity for T {
     }
 
     fn equals(&self, other: &dyn DecimalQuantity) -> bool {
-        if std::ptr::eq(self as *const T as *const (), other.as_any() as *const dyn Any as *const ()) {
+        if std::ptr::eq(
+            self as *const T as *const (),
+            other.as_any() as *const dyn Any as *const (),
+        ) {
             return true;
         }
         let other = match other.as_any().downcast_ref::<T>() {

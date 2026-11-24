@@ -7,7 +7,10 @@ use std::sync::{Mutex, OnceLock};
 
 use rucene::error::Result;
 
-use crate::jdk::{char_count, code_point_at, code_point_before, is_high_surrogate, is_low_surrogate, offset_by_code_points, to_code_point, ByteBuffer};
+use crate::jdk::{
+    char_count, code_point_at, code_point_before, is_high_surrogate, is_low_surrogate,
+    offset_by_code_points, to_code_point, ByteBuffer,
+};
 use crate::r#impl::icu_binary::ICUBinary;
 use crate::text::unicode_set::UnicodeSet;
 use crate::text::utf16::UTF16;
@@ -101,7 +104,9 @@ impl Hangul {
     /// `isJamo(int c)`.
     pub fn is_jamo(c: i32) -> bool {
         (Self::JAMO_L_BASE..=Self::JAMO_T_END).contains(&c)
-            && (c <= Self::JAMO_L_END || (Self::JAMO_V_BASE..=Self::JAMO_V_END).contains(&c) || Self::JAMO_T_BASE < c)
+            && (c <= Self::JAMO_L_END
+                || (Self::JAMO_V_BASE..=Self::JAMO_V_END).contains(&c)
+                || Self::JAMO_T_BASE < c)
     }
 
     /// `decompose(int c, Appendable buffer)`: decomposes c, which must be a
@@ -179,7 +184,14 @@ impl<'a> ReorderingBuffer<'a> {
     /// destCapacity)`.
     pub fn new(ni: &'a Normalizer2Impl, dest: &'a mut Vec<u16>, dest_capacity: i32) -> Self {
         dest.reserve((dest_capacity.max(0) as usize).saturating_sub(dest.len()));
-        let mut b = Self { impl_: ni, str: dest, reorder_start: 0, last_cc: 0, code_point_start: 0, code_point_limit: 0 };
+        let mut b = Self {
+            impl_: ni,
+            str: dest,
+            reorder_start: 0,
+            last_cc: 0,
+            code_point_start: 0,
+            code_point_limit: 0,
+        };
         if b.str.is_empty() {
             b.last_cc = 0;
         } else {
@@ -232,7 +244,15 @@ impl<'a> ReorderingBuffer<'a> {
 
     /// `append(CharSequence s, int start, int limit, boolean isNFD, int
     /// leadCC, int trailCC)`.
-    pub fn append_cc(&mut self, s: &[u16], mut start: i32, limit: i32, is_nfd: bool, mut lead_cc: i32, trail_cc: i32) {
+    pub fn append_cc(
+        &mut self,
+        s: &[u16],
+        mut start: i32,
+        limit: i32,
+        is_nfd: bool,
+        mut lead_cc: i32,
+        trail_cc: i32,
+    ) {
         if start == limit {
             return;
         }
@@ -242,7 +262,8 @@ impl<'a> ReorderingBuffer<'a> {
             } else if lead_cc <= 1 {
                 self.reorder_start = self.str.len() as i32 + 1; // Ok if not a code point boundary.
             }
-            self.str.extend_from_slice(&s[start as usize..limit as usize]);
+            self.str
+                .extend_from_slice(&s[start as usize..limit as usize]);
             self.last_cc = trail_cc;
         } else {
             let mut c = code_point_at(s, start);
@@ -253,7 +274,8 @@ impl<'a> ReorderingBuffer<'a> {
                 start += char_count(c);
                 if start < limit {
                     if is_nfd {
-                        lead_cc = Normalizer2Impl::get_cc_from_yes_or_maybe_yes(self.impl_.get_norm16(c));
+                        lead_cc =
+                            Normalizer2Impl::get_cc_from_yes_or_maybe_yes(self.impl_.get_norm16(c));
                     } else {
                         lead_cc = self.impl_.get_cc(self.impl_.get_norm16(c));
                     }
@@ -286,7 +308,8 @@ impl<'a> ReorderingBuffer<'a> {
     /// combining class.
     pub fn append_range(&mut self, s: &[u16], start: i32, limit: i32) -> &mut Self {
         if start != limit {
-            self.str.extend_from_slice(&s[start as usize..limit as usize]);
+            self.str
+                .extend_from_slice(&s[start as usize..limit as usize]);
             self.last_cc = 0;
             self.reorder_start = self.str.len() as i32;
         }
@@ -302,7 +325,8 @@ impl<'a> ReorderingBuffer<'a> {
 
     /// `flushAndAppendZeroCC(CharSequence s, int start, int limit)`.
     pub fn flush_and_append_zero_cc(&mut self, s: &[u16], start: i32, limit: i32) -> &mut Self {
-        self.str.extend_from_slice(&s[start as usize..limit as usize]);
+        self.str
+            .extend_from_slice(&s[start as usize..limit as usize]);
         self.reorder_start = self.str.len() as i32;
         self.last_cc = 0;
         self
@@ -555,7 +579,9 @@ impl Normalizer2Impl {
     }
 
     fn trie(&self) -> &Fast {
-        self.norm_trie.as_ref().expect("java.lang.NullPointerException: normTrie is loaded")
+        self.norm_trie
+            .as_ref()
+            .expect("java.lang.NullPointerException: normTrie is loaded")
     }
 
     fn ed(&self, i: i32) -> i32 {
@@ -577,12 +603,19 @@ impl Normalizer2Impl {
         }
     }
 
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn load_inner(&mut self, bytes: &mut ByteBuffer) -> Result<()> {
-        self.data_version =
-            Some(ICUBinary::read_header_and_data_version(bytes, DATA_FORMAT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?);
+        self.data_version = Some(ICUBinary::read_header_and_data_version(
+            bytes,
+            DATA_FORMAT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?);
         let indexes_length = bytes.get_int()? / 4; // inIndexes[IX_NORM_TRIE_OFFSET]/4
         if indexes_length <= Self::IX_MIN_LCCC_CP as i32 {
-            return Err(ICUUncheckedIOException::with_message("Normalizer2 data: not enough indexes").error());
+            return Err(ICUUncheckedIOException::with_message(
+                "Normalizer2 data: not enough indexes",
+            )
+            .error());
         }
         let mut in_indexes = vec![0i32; indexes_length as usize];
         in_indexes[0] = indexes_length * 4;
@@ -614,7 +647,10 @@ impl Normalizer2Impl {
         self.norm_trie = Some(Fast::from_binary(Some(ValueWidth::Bits16), bytes)?);
         let trie_length = bytes.position() - trie_position;
         if trie_length > (next_offset - offset) {
-            return Err(ICUUncheckedIOException::with_message("Normalizer2 data: not enough bytes for normTrie").error());
+            return Err(ICUUncheckedIOException::with_message(
+                "Normalizer2 data: not enough bytes for normTrie",
+            )
+            .error());
         }
         ICUBinary::skip_bytes(bytes, (next_offset - offset) - trie_length)?; // skip padding after trie bytes
 
@@ -652,7 +688,13 @@ impl Normalizer2Impl {
     pub fn add_lccc_chars(&self, set: &mut UnicodeSet) -> Result<()> {
         let mut start = 0;
         let mut range = Range::new();
-        while self.trie().get_range_with_option(start, RangeOption::FixedLeadSurrogates, Self::INERT, None, &mut range) {
+        while self.trie().get_range_with_option(
+            start,
+            RangeOption::FixedLeadSurrogates,
+            Self::INERT,
+            None,
+            &mut range,
+        ) {
             let end = range.get_end();
             let norm16 = range.get_value();
             if norm16 > Self::MIN_NORMAL_MAYBE_YES && norm16 != Self::JAMO_VT {
@@ -677,11 +719,20 @@ impl Normalizer2Impl {
         // Add the start code point of each same-value range of the trie.
         let mut start = 0;
         let mut range = Range::new();
-        while self.trie().get_range_with_option(start, RangeOption::FixedLeadSurrogates, Self::INERT, None, &mut range) {
+        while self.trie().get_range_with_option(
+            start,
+            RangeOption::FixedLeadSurrogates,
+            Self::INERT,
+            None,
+            &mut range,
+        ) {
             let end = range.get_end();
             let value = range.get_value();
             set.add(start)?;
-            if start != end && self.is_algorithmic_no_no(value) && (value & Self::DELTA_TCCC_MASK) > Self::DELTA_TCCC_1 {
+            if start != end
+                && self.is_algorithmic_no_no(value)
+                && (value & Self::DELTA_TCCC_MASK) > Self::DELTA_TCCC_1
+            {
                 // Range of code points with same-norm16-value algorithmic decompositions.
                 // They might have different non-zero FCD16 values.
                 let mut prev_fcd16 = self.get_fcd16(start);
@@ -725,7 +776,10 @@ impl Normalizer2Impl {
         let mut start = 0;
         let mut range = Range::new();
         let segment_starter_mapper = |value: i32| value & CANON_NOT_SEGMENT_STARTER;
-        while canon.canon_iter_data.get_range(start, Some(&segment_starter_mapper), &mut range) {
+        while canon
+            .canon_iter_data
+            .get_range(start, Some(&segment_starter_mapper), &mut range)
+        {
             set.add(start)?;
             start = range.get_end() + 1;
         }
@@ -733,7 +787,9 @@ impl Normalizer2Impl {
     }
 
     fn canon_data(&self) -> &CanonIterData {
-        self.canon.get().expect("java.lang.NullPointerException: canonIterData is built")
+        self.canon
+            .get()
+            .expect("java.lang.NullPointerException: canonIterData is built")
     }
 
     /// `ensureCanonIterData()` (synchronized): builds the canonical
@@ -752,7 +808,13 @@ impl Normalizer2Impl {
             let mut canon_start_sets: Vec<UnicodeSet> = Vec::new();
             let mut start = 0;
             let mut range = Range::new();
-            while self.trie().get_range_with_option(start, RangeOption::FixedLeadSurrogates, Self::INERT, None, &mut range) {
+            while self.trie().get_range_with_option(
+                start,
+                RangeOption::FixedLeadSurrogates,
+                Self::INERT,
+                None,
+                &mut range,
+            ) {
                 let end = range.get_end();
                 let norm16 = range.get_value();
                 if Self::is_inert(norm16)
@@ -788,7 +850,9 @@ impl Normalizer2Impl {
                             c2 = self.map_algorithmic(c2, norm16_2);
                             norm16_2 = self.get_raw_norm16(c2);
                             // No compatibility mappings for the CanonicalIterator.
-                            debug_assert!(!(self.is_hangul_lv(norm16_2) || self.is_hangul_lvt(norm16_2)));
+                            debug_assert!(
+                                !(self.is_hangul_lv(norm16_2) || self.is_hangul_lvt(norm16_2))
+                            );
                         }
                         if norm16_2 > self.min_yes_no {
                             // c decomposes, get everything from the variable-length extra data
@@ -796,16 +860,23 @@ impl Normalizer2Impl {
                             let first_unit = self.ed(mapping);
                             let length = first_unit & Self::MAPPING_LENGTH_MASK;
                             if (first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) != 0
-                                && c == c2 && (self.ed(mapping - 1) & 0xff) != 0 {
-                                    new_value |= CANON_NOT_SEGMENT_STARTER; // original c has cc!=0
-                                }
+                                && c == c2
+                                && (self.ed(mapping - 1) & 0xff) != 0
+                            {
+                                new_value |= CANON_NOT_SEGMENT_STARTER; // original c has cc!=0
+                            }
                             // Skip empty mappings (no characters in the decomposition).
                             if length != 0 {
                                 mapping += 1; // skip over the firstUnit
-                                // add c to first code point's start set
+                                              // add c to first code point's start set
                                 let limit = mapping + length;
                                 c2 = code_point_at(&self.extra_data, mapping);
-                                Self::add_to_start_set(&mut mutable_trie, &mut canon_start_sets, c, c2)?;
+                                Self::add_to_start_set(
+                                    &mut mutable_trie,
+                                    &mut canon_start_sets,
+                                    c,
+                                    c2,
+                                )?;
                                 // Set CANON_NOT_SEGMENT_STARTER for each remaining code point of a
                                 // one-way mapping. A 2-way mapping is possible here after
                                 // intermediate algorithmic mapping.
@@ -818,14 +889,20 @@ impl Normalizer2Impl {
                                         c2 = code_point_at(&self.extra_data, mapping);
                                         let c2_value = mutable_trie.get(c2);
                                         if (c2_value & CANON_NOT_SEGMENT_STARTER) == 0 {
-                                            mutable_trie.set(c2, c2_value | CANON_NOT_SEGMENT_STARTER)?;
+                                            mutable_trie
+                                                .set(c2, c2_value | CANON_NOT_SEGMENT_STARTER)?;
                                         }
                                     }
                                 }
                             }
                         } else {
                             // c decomposed to c2 algorithmically; c has cc==0
-                            Self::add_to_start_set(&mut mutable_trie, &mut canon_start_sets, c, c2)?;
+                            Self::add_to_start_set(
+                                &mut mutable_trie,
+                                &mut canon_start_sets,
+                                c,
+                                c2,
+                            )?;
                         }
                     }
                     if new_value != old_value {
@@ -834,8 +911,12 @@ impl Normalizer2Impl {
                 }
                 start = end + 1;
             }
-            let canon_iter_data = mutable_trie.build_immutable(Some(Type::Small), Some(ValueWidth::Bits32))?;
-            let _ = self.canon.set(CanonIterData { canon_iter_data, canon_start_sets });
+            let canon_iter_data =
+                mutable_trie.build_immutable(Some(Type::Small), Some(ValueWidth::Bits32))?;
+            let _ = self.canon.set(CanonIterData {
+                canon_iter_data,
+                canon_start_sets,
+            });
         }
         Ok(self)
     }
@@ -909,6 +990,7 @@ impl Normalizer2Impl {
     }
 
     /// `getFCD16(int c)`: the FCD data for code point c.
+    #[allow(clippy::if_same_then_else)] // branches mirror the Java source
     pub fn get_fcd16(&self, c: i32) -> i32 {
         if c < self.min_decomp_no_cp {
             return 0;
@@ -977,11 +1059,15 @@ impl Normalizer2Impl {
         let mapping = self.get_data_for_maybe(norm16);
         let first_unit = self.ed(mapping);
         // maybeNo has lccc = 0
-        debug_assert!((first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) == 0 || (self.ed(mapping - 1) & 0xff00) == 0);
+        debug_assert!(
+            (first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) == 0
+                || (self.ed(mapping - 1) & 0xff00) == 0
+        );
         first_unit >> 8 // tccc
     }
 
     /// `getDecomposition(int c)`: the decomposition, `None` when none.
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     pub fn get_decomposition(&self, mut c: i32) -> Option<Vec<u16>> {
         let mut norm16 = 0;
         if c < self.min_decomp_no_cp || {
@@ -1020,6 +1106,7 @@ impl Normalizer2Impl {
 
     /// `getRawDecomposition(int c)`: the raw decomposition, `None` when
     /// none.
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     pub fn get_raw_decomposition(&self, c: i32) -> Option<Vec<u16>> {
         let mut norm16 = 0;
         if c < self.min_decomp_no_cp || {
@@ -1034,7 +1121,9 @@ impl Normalizer2Impl {
             Hangul::get_raw_decomposition(c, &mut buffer);
             return Some(buffer);
         } else if self.is_decomp_no_algorithmic(norm16) {
-            return Some(UTF16::value_of(self.map_algorithmic(c, norm16)).expect("a valid code point"));
+            return Some(
+                UTF16::value_of(self.map_algorithmic(c, norm16)).expect("a valid code point"),
+            );
         }
         // c decomposes, get everything from the variable-length extra data
         let mut mapping = self.get_data(norm16);
@@ -1046,13 +1135,18 @@ impl Normalizer2Impl {
             let raw_mapping = mapping - ((first_unit >> 7) & 1) - 1;
             let rm0 = self.extra_data[raw_mapping as usize];
             if rm0 as i32 <= Self::MAPPING_LENGTH_MASK {
-                Some(self.extra_data[(raw_mapping - rm0 as i32) as usize..raw_mapping as usize].to_vec())
+                Some(
+                    self.extra_data[(raw_mapping - rm0 as i32) as usize..raw_mapping as usize]
+                        .to_vec(),
+                )
             } else {
                 // Copy the normal mapping and replace its first two code units with rm0.
                 let mut buffer: Vec<u16> = Vec::with_capacity((m_length - 1).max(0) as usize);
                 buffer.push(rm0);
                 mapping += 1 + 2; // skip over the firstUnit and the first two mapping code units
-                buffer.extend_from_slice(&self.extra_data[mapping as usize..(mapping + m_length - 2) as usize]);
+                buffer.extend_from_slice(
+                    &self.extra_data[mapping as usize..(mapping + m_length - 2) as usize],
+                );
                 Some(buffer)
             }
         } else {
@@ -1097,7 +1191,8 @@ impl Normalizer2Impl {
         if (canon_value & CANON_HAS_COMPOSITIONS) != 0 {
             let norm16 = self.get_raw_norm16(c);
             if norm16 == Self::JAMO_L {
-                let syllable = Hangul::HANGUL_BASE + (c - Hangul::JAMO_L_BASE) * Hangul::JAMO_VT_COUNT;
+                let syllable =
+                    Hangul::HANGUL_BASE + (c - Hangul::JAMO_L_BASE) * Hangul::JAMO_VT_COUNT;
                 set.add_range(syllable, syllable + Hangul::JAMO_VT_COUNT - 1)?;
             } else {
                 self.add_composites(self.get_compositions_list(norm16), set)?;
@@ -1115,7 +1210,14 @@ impl Normalizer2Impl {
     /// `decompose(CharSequence s, int src, int limit, StringBuilder dest,
     /// int destLengthEstimate)`: decomposes s[src, limit[ and writes the
     /// result to dest.
-    pub fn decompose_range_into(&self, s: &[u16], src: i32, limit: i32, dest: &mut Vec<u16>, mut dest_length_estimate: i32) {
+    pub fn decompose_range_into(
+        &self,
+        s: &[u16],
+        src: i32,
+        limit: i32,
+        dest: &mut Vec<u16>,
+        mut dest_length_estimate: i32,
+    ) {
         if dest_length_estimate < 0 {
             dest_length_estimate = limit - src;
         }
@@ -1130,7 +1232,13 @@ impl Normalizer2Impl {
     /// `decompose(CharSequence s, int src, int limit, ReorderingBuffer
     /// buffer)`: normalizes into `buffer`, or (without one) returns the
     /// end of the normalized prefix.
-    pub fn decompose(&self, s: &[u16], mut src: i32, limit: i32, mut buffer: Option<&mut ReorderingBuffer<'_>>) -> i32 {
+    pub fn decompose(
+        &self,
+        s: &[u16],
+        mut src: i32,
+        limit: i32,
+        mut buffer: Option<&mut ReorderingBuffer<'_>>,
+    ) -> i32 {
         let min_no_cp = self.min_decomp_no_cp;
 
         let mut prev_src;
@@ -1204,7 +1312,13 @@ impl Normalizer2Impl {
 
     /// `decomposeAndAppend(CharSequence s, boolean doDecompose,
     /// ReorderingBuffer buffer)`.
-    pub fn decompose_and_append(&self, s: &[u16], do_decompose: bool, buffer: &mut ReorderingBuffer<'_>) {
+    #[allow(clippy::needless_late_init)] // declare-then-assign mirrors the Java source
+    pub fn decompose_and_append(
+        &self,
+        s: &[u16],
+        do_decompose: bool,
+        buffer: &mut ReorderingBuffer<'_>,
+    ) {
         let limit = s.len() as i32;
         if limit == 0 {
             return;
@@ -1240,7 +1354,16 @@ impl Normalizer2Impl {
     // !doCompose: isNormalized (buffer must be empty and initialized)
     /// `compose(CharSequence s, int src, int limit, boolean onlyContiguous,
     /// boolean doCompose, ReorderingBuffer buffer)`.
-    pub fn compose(&self, s: &[u16], mut src: i32, limit: i32, only_contiguous: bool, do_compose: bool, buffer: &mut ReorderingBuffer<'_>) -> bool {
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
+    pub fn compose(
+        &self,
+        s: &[u16],
+        mut src: i32,
+        limit: i32,
+        only_contiguous: bool,
+        do_compose: bool,
+        buffer: &mut ReorderingBuffer<'_>,
+    ) -> bool {
         let mut prev_boundary = src;
         let min_no_maybe_cp = self.min_comp_no_maybe_cp;
 
@@ -1299,7 +1422,9 @@ impl Normalizer2Impl {
                 if self.is_decomp_no_algorithmic(norm16) {
                     // Maps to a single isCompYesAndZeroCC character
                     // which also implies hasCompBoundaryBefore.
-                    if self.norm16_has_comp_boundary_after(norm16, only_contiguous) || self.has_comp_boundary_before_at(s, src, limit) {
+                    if self.norm16_has_comp_boundary_after(norm16, only_contiguous)
+                        || self.has_comp_boundary_before_at(s, src, limit)
+                    {
                         if prev_boundary != prev_src {
                             buffer.append_range(s, prev_boundary, prev_src);
                         }
@@ -1309,7 +1434,9 @@ impl Normalizer2Impl {
                     }
                 } else if norm16 < self.min_no_no_comp_boundary_before {
                     // The mapping is comp-normalized which also implies hasCompBoundaryBefore.
-                    if self.norm16_has_comp_boundary_after(norm16, only_contiguous) || self.has_comp_boundary_before_at(s, src, limit) {
+                    if self.norm16_has_comp_boundary_after(norm16, only_contiguous)
+                        || self.has_comp_boundary_before_at(s, src, limit)
+                    {
                         if prev_boundary != prev_src {
                             buffer.append_range(s, prev_boundary, prev_src);
                         }
@@ -1324,7 +1451,14 @@ impl Normalizer2Impl {
                     // The current character maps to nothing.
                     // Simply omit it from the output if there is a boundary before _or_ after it.
                     // The character itself implies no boundaries.
-                    if self.has_comp_boundary_before_at(s, src, limit) || self.has_comp_boundary_after_range(s, prev_boundary, prev_src, only_contiguous) {
+                    if self.has_comp_boundary_before_at(s, src, limit)
+                        || self.has_comp_boundary_after_range(
+                            s,
+                            prev_boundary,
+                            prev_src,
+                            only_contiguous,
+                        )
+                    {
                         if prev_boundary != prev_src {
                             buffer.append_range(s, prev_boundary, prev_src);
                         }
@@ -1346,10 +1480,12 @@ impl Normalizer2Impl {
                         }
                         let t;
                         let tt;
-                        if src != limit && {
-                            tt = s[src as usize] as i32 - Hangul::JAMO_T_BASE;
-                            0 < tt
-                        } && tt < Hangul::JAMO_T_COUNT
+                        if src != limit
+                            && {
+                                tt = s[src as usize] as i32 - Hangul::JAMO_T_BASE;
+                                0 < tt
+                            }
+                            && tt < Hangul::JAMO_T_COUNT
                         {
                             // The next character is a Jamo T.
                             t = tt;
@@ -1361,7 +1497,10 @@ impl Normalizer2Impl {
                             t = -1;
                         }
                         if t >= 0 {
-                            let syllable = Hangul::HANGUL_BASE + (l as i32 * Hangul::JAMO_V_COUNT + (c - Hangul::JAMO_V_BASE)) * Hangul::JAMO_T_COUNT + t;
+                            let syllable = Hangul::HANGUL_BASE
+                                + (l as i32 * Hangul::JAMO_V_COUNT + (c - Hangul::JAMO_V_BASE))
+                                    * Hangul::JAMO_T_COUNT
+                                + t;
                             prev_src -= 1; // Replace the Jamo L as well.
                             if prev_boundary != prev_src {
                                 buffer.append_range(s, prev_boundary, prev_src);
@@ -1401,7 +1540,8 @@ impl Normalizer2Impl {
                 // Check for canonical order, copy unchanged if ok and
                 // if followed by a character with a boundary-before.
                 let mut cc = Self::get_cc_from_normal_yes_or_maybe(norm16); // cc!=0
-                if only_contiguous /* FCC */ && self.get_previous_trail_cc(s, prev_boundary, prev_src) > cc {
+                if only_contiguous /* FCC */ && self.get_previous_trail_cc(s, prev_boundary, prev_src) > cc
+                {
                     // Fails FCD test, need to decompose and contiguously recompose.
                     if !do_compose {
                         return false;
@@ -1461,9 +1601,23 @@ impl Normalizer2Impl {
             }
             let recompose_start_index = buffer.length();
             // We know there is not a boundary here.
-            self.decompose_short(s, prev_src, src, false /* !stopAtCompBoundary */, only_contiguous, buffer);
+            self.decompose_short(
+                s,
+                prev_src,
+                src,
+                false, /* !stopAtCompBoundary */
+                only_contiguous,
+                buffer,
+            );
             // Decompose until the next boundary.
-            src = self.decompose_short(s, src, limit, true /* stopAtCompBoundary */, only_contiguous, buffer);
+            src = self.decompose_short(
+                s,
+                src,
+                limit,
+                true, /* stopAtCompBoundary */
+                only_contiguous,
+                buffer,
+            );
             self.recompose(buffer, recompose_start_index, only_contiguous);
             if !do_compose {
                 if !buffer.equals(s, prev_src, src) {
@@ -1478,7 +1632,15 @@ impl Normalizer2Impl {
     /// `composeQuickCheck(CharSequence s, int src, int limit, boolean
     /// onlyContiguous, boolean doSpan)`: the end of the "yes" prefix
     /// shifted left by 1, with bit 0 set for a "maybe" result.
-    pub fn compose_quick_check(&self, s: &[u16], mut src: i32, limit: i32, only_contiguous: bool, do_span: bool) -> i32 {
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
+    pub fn compose_quick_check(
+        &self,
+        s: &[u16],
+        mut src: i32,
+        limit: i32,
+        only_contiguous: bool,
+        do_span: bool,
+    ) -> i32 {
         let mut qc_result = 0;
         let mut prev_boundary = src;
         let min_no_maybe_cp = self.min_comp_no_maybe_cp;
@@ -1536,7 +1698,8 @@ impl Normalizer2Impl {
                 // Check for canonical order.
                 let mut fcd16 = self.get_fcd16_from_maybe_or_non_zero_cc(norm16);
                 let mut cc = (fcd16 >> 8) & 0xff;
-                if only_contiguous /* FCC */ && cc != 0 && self.get_trail_cc_from_comp_yes_and_zero_cc(prev_norm16) > cc {
+                if only_contiguous /* FCC */ && cc != 0 && self.get_trail_cc_from_comp_yes_and_zero_cc(prev_norm16) > cc
+                {
                     // The [prevBoundary..prevSrc[ character
                     // passed the quick check "yes && ccc==0" test
                     // but is out of canonical order with the current combining mark.
@@ -1582,19 +1745,40 @@ impl Normalizer2Impl {
 
     /// `composeAndAppend(CharSequence s, boolean doCompose, boolean
     /// onlyContiguous, ReorderingBuffer buffer)`.
-    pub fn compose_and_append(&self, s: &[u16], do_compose: bool, only_contiguous: bool, buffer: &mut ReorderingBuffer<'_>) {
+    pub fn compose_and_append(
+        &self,
+        s: &[u16],
+        do_compose: bool,
+        only_contiguous: bool,
+        buffer: &mut ReorderingBuffer<'_>,
+    ) {
         let mut src = 0;
         let limit = s.len() as i32;
         if !buffer.is_empty() {
             let first_starter_in_src = self.find_next_comp_boundary(s, 0, limit, only_contiguous);
             if 0 != first_starter_in_src {
                 let blen = buffer.length();
-                let last_starter_in_dest = self.find_previous_comp_boundary(buffer.get_string_builder(), blen, only_contiguous);
-                let mut middle: Vec<u16> = Vec::with_capacity(((blen - last_starter_in_dest) + first_starter_in_src + 16) as usize);
-                middle.extend_from_slice(&buffer.get_string_builder()[last_starter_in_dest as usize..blen as usize]);
+                let last_starter_in_dest = self.find_previous_comp_boundary(
+                    buffer.get_string_builder(),
+                    blen,
+                    only_contiguous,
+                );
+                let mut middle: Vec<u16> = Vec::with_capacity(
+                    ((blen - last_starter_in_dest) + first_starter_in_src + 16) as usize,
+                );
+                middle.extend_from_slice(
+                    &buffer.get_string_builder()[last_starter_in_dest as usize..blen as usize],
+                );
                 buffer.remove_suffix(blen - last_starter_in_dest);
                 middle.extend_from_slice(&s[..first_starter_in_src as usize]);
-                self.compose(&middle, 0, middle.len() as i32, only_contiguous, true, buffer);
+                self.compose(
+                    &middle,
+                    0,
+                    middle.len() as i32,
+                    only_contiguous,
+                    true,
+                    buffer,
+                );
                 src = first_starter_in_src;
             }
         }
@@ -1610,7 +1794,13 @@ impl Normalizer2Impl {
     // buffer==NULL: isNormalized/quickCheck/spanQuickCheckYes
     /// `makeFCD(CharSequence s, int src, int limit, ReorderingBuffer
     /// buffer)`.
-    pub fn make_fcd(&self, s: &[u16], mut src: i32, limit: i32, mut buffer: Option<&mut ReorderingBuffer<'_>>) -> i32 {
+    pub fn make_fcd(
+        &self,
+        s: &[u16],
+        mut src: i32,
+        limit: i32,
+        mut buffer: Option<&mut ReorderingBuffer<'_>>,
+    ) -> i32 {
         // Note: In this function we use buffer->appendZeroCC() because we track
         // the lead and trail combining classes here, rather than leaving it to
         // the ReorderingBuffer.
@@ -1637,7 +1827,10 @@ impl Normalizer2Impl {
                     prev_fcd16 = 0;
                     src += 1;
                 } else {
-                    if UTF16Plus::is_lead_surrogate(c) && (src + 1) != limit && is_low_surrogate(s[src as usize + 1]) {
+                    if UTF16Plus::is_lead_surrogate(c)
+                        && (src + 1) != limit
+                        && is_low_surrogate(s[src as usize + 1])
+                    {
                         c = to_code_point(c as u16, s[src as usize + 1]);
                     }
                     fcd16 = self.get_fcd16_from_norm_data(c);
@@ -1672,11 +1865,17 @@ impl Normalizer2Impl {
                     }
                 } else {
                     let mut p = src - 1;
-                    if is_low_surrogate(s[p as usize]) && prev_src < p && is_high_surrogate(s[p as usize - 1]) {
+                    if is_low_surrogate(s[p as usize])
+                        && prev_src < p
+                        && is_high_surrogate(s[p as usize - 1])
+                    {
                         p -= 1;
                         // Need to fetch the previous character's FCD value because
                         // prevFCD16 was just for the trail surrogate code point.
-                        prev_fcd16 = self.get_fcd16_from_norm_data(to_code_point(s[p as usize], s[p as usize + 1]));
+                        prev_fcd16 = self.get_fcd16_from_norm_data(to_code_point(
+                            s[p as usize],
+                            s[p as usize + 1],
+                        ));
                         // Still known to have lccc==0 because its lead surrogate unit had lccc==0.
                     }
                     if prev_fcd16 > 1 {
@@ -1737,16 +1936,26 @@ impl Normalizer2Impl {
 
     /// `makeFCDAndAppend(CharSequence s, boolean doMakeFCD,
     /// ReorderingBuffer buffer)`.
-    pub fn make_fcd_and_append(&self, s: &[u16], do_make_fcd: bool, buffer: &mut ReorderingBuffer<'_>) {
+    pub fn make_fcd_and_append(
+        &self,
+        s: &[u16],
+        do_make_fcd: bool,
+        buffer: &mut ReorderingBuffer<'_>,
+    ) {
         let mut src = 0;
         let limit = s.len() as i32;
         if !buffer.is_empty() {
             let first_boundary_in_src = self.find_next_fcd_boundary(s, 0, limit);
             if 0 != first_boundary_in_src {
                 let blen = buffer.length();
-                let last_boundary_in_dest = self.find_previous_fcd_boundary(buffer.get_string_builder(), blen);
-                let mut middle: Vec<u16> = Vec::with_capacity(((blen - last_boundary_in_dest) + first_boundary_in_src + 16) as usize);
-                middle.extend_from_slice(&buffer.get_string_builder()[last_boundary_in_dest as usize..blen as usize]);
+                let last_boundary_in_dest =
+                    self.find_previous_fcd_boundary(buffer.get_string_builder(), blen);
+                let mut middle: Vec<u16> = Vec::with_capacity(
+                    ((blen - last_boundary_in_dest) + first_boundary_in_src + 16) as usize,
+                );
+                middle.extend_from_slice(
+                    &buffer.get_string_builder()[last_boundary_in_dest as usize..blen as usize],
+                );
                 buffer.remove_suffix(blen - last_boundary_in_dest);
                 middle.extend_from_slice(&s[..first_boundary_in_src as usize]);
                 self.make_fcd(&middle, 0, middle.len() as i32, Some(buffer));
@@ -1836,7 +2045,9 @@ impl Normalizer2Impl {
         let norm16 = self.get_norm16(c);
         self.is_comp_yes_and_zero_cc(norm16)
             && (norm16 & Self::HAS_COMP_BOUNDARY_AFTER) != 0
-            && (!only_contiguous || Self::is_inert(norm16) || self.ed(self.get_data_for_yes_or_no(norm16)) <= 0x1ff)
+            && (!only_contiguous
+                || Self::is_inert(norm16)
+                || self.ed(self.get_data_for_yes_or_no(norm16)) <= 0x1ff)
         // The last check fetches the mapping's first unit and checks tccc<=1.
     }
 
@@ -1890,7 +2101,9 @@ impl Normalizer2Impl {
     //     return norm16<=MIN_NORMAL_MAYBE_YES || norm16==JAMO_VT;
     // }
     fn is_decomp_yes_and_zero_cc(&self, norm16: i32) -> bool {
-        norm16 < self.min_yes_no || norm16 == Self::JAMO_VT || (self.min_maybe_yes <= norm16 && norm16 <= Self::MIN_NORMAL_MAYBE_YES)
+        norm16 < self.min_yes_no
+            || norm16 == Self::JAMO_VT
+            || (self.min_maybe_yes <= norm16 && norm16 <= Self::MIN_NORMAL_MAYBE_YES)
     }
     /// A little faster and simpler than isDecompYesAndZeroCC() but does not
     /// include the MaybeYes which combine-forward and have ccc=0.
@@ -1979,7 +2192,15 @@ impl Normalizer2Impl {
     // is unlikely to be amortized.
     // Called by the compose() and makeFCD() implementations.
     // Public in Java for collation implementation code.
-    fn decompose_short(&self, s: &[u16], mut src: i32, limit: i32, stop_at_comp_boundary: bool, only_contiguous: bool, buffer: &mut ReorderingBuffer<'_>) -> i32 {
+    fn decompose_short(
+        &self,
+        s: &[u16],
+        mut src: i32,
+        limit: i32,
+        stop_at_comp_boundary: bool,
+        only_contiguous: bool,
+        buffer: &mut ReorderingBuffer<'_>,
+    ) -> i32 {
         while src < limit {
             let c = code_point_at(s, src);
             if stop_at_comp_boundary && c < self.min_comp_no_maybe_cp {
@@ -1991,7 +2212,8 @@ impl Normalizer2Impl {
             }
             src += char_count(c);
             self.decompose_cp(c, norm16, buffer);
-            if stop_at_comp_boundary && self.norm16_has_comp_boundary_after(norm16, only_contiguous) {
+            if stop_at_comp_boundary && self.norm16_has_comp_boundary_after(norm16, only_contiguous)
+            {
                 return src;
             }
         }
@@ -2023,9 +2245,20 @@ impl Normalizer2Impl {
             let first_unit = self.ed(mapping);
             let length = first_unit & Self::MAPPING_LENGTH_MASK;
             let trail_cc = first_unit >> 8;
-            let lead_cc = if (first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) != 0 { self.ed(mapping - 1) >> 8 } else { 0 };
+            let lead_cc = if (first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) != 0 {
+                self.ed(mapping - 1) >> 8
+            } else {
+                0
+            };
             mapping += 1; // skip over the firstUnit
-            buffer.append_cc(&self.extra_data, mapping, mapping + length, true, lead_cc, trail_cc);
+            buffer.append_cc(
+                &self.extra_data,
+                mapping,
+                mapping + length,
+                true,
+                lead_cc,
+                trail_cc,
+            );
         }
     }
 
@@ -2064,7 +2297,8 @@ impl Normalizer2Impl {
         } else {
             // trail character is 3400..10FFFF
             // result entry has 3 units
-            key1 = Self::COMP_1_TRAIL_LIMIT + ((trail >> Self::COMP_1_TRAIL_SHIFT) & !Self::COMP_1_TRIPLE);
+            key1 = Self::COMP_1_TRAIL_LIMIT
+                + ((trail >> Self::COMP_1_TRAIL_SHIFT) & !Self::COMP_1_TRIPLE);
             let key2 = (trail << Self::COMP_2_TRAIL_SHIFT) & 0xffff;
             loop {
                 first_unit = self.ed(list);
@@ -2079,7 +2313,8 @@ impl Normalizer2Impl {
                             list += 3;
                         }
                     } else if key2 == (second_unit & Self::COMP_2_TRAIL_MASK) {
-                        return ((second_unit & !Self::COMP_2_TRAIL_MASK) << 16) | self.ed(list + 2);
+                        return ((second_unit & !Self::COMP_2_TRAIL_MASK) << 16)
+                            | self.ed(list + 2);
                     } else {
                         break;
                     }
@@ -2101,12 +2336,16 @@ impl Normalizer2Impl {
                 composite_and_fwd = self.ed(list + 1);
                 list += 2;
             } else {
-                composite_and_fwd = ((self.ed(list + 1) & !Self::COMP_2_TRAIL_MASK) << 16) | self.ed(list + 2);
+                composite_and_fwd =
+                    ((self.ed(list + 1) & !Self::COMP_2_TRAIL_MASK) << 16) | self.ed(list + 2);
                 list += 3;
             }
             let composite = composite_and_fwd >> 1;
             if (composite_and_fwd & 1) != 0 {
-                self.add_composites(self.get_compositions_list_for_composite(self.get_raw_norm16(composite)), set)?;
+                self.add_composites(
+                    self.get_compositions_list_for_composite(self.get_raw_norm16(composite)),
+                    set,
+                )?;
             }
             set.add(composite)?;
             if (first_unit & Self::COMP_1_LAST_TUPLE) != 0 {
@@ -2126,7 +2365,12 @@ impl Normalizer2Impl {
      * a composition may contain at most one more code unit than the original starter,
      * while the combining mark that is removed has at least one code unit.
      */
-    fn recompose(&self, buffer: &mut ReorderingBuffer<'_>, recompose_start_index: i32, only_contiguous: bool) {
+    fn recompose(
+        &self,
+        buffer: &mut ReorderingBuffer<'_>,
+        recompose_start_index: i32,
+        only_contiguous: bool,
+    ) {
         {
             let sb = buffer.get_string_builder();
             let mut p = recompose_start_index;
@@ -2168,11 +2412,14 @@ impl Normalizer2Impl {
                         // c is a Jamo V/T, see if we can compose it with the previous character.
                         if c < Hangul::JAMO_T_BASE {
                             // c is a Jamo Vowel, compose with previous Jamo L and following Jamo T.
-                            let prev = sb[starter as usize].wrapping_sub(Hangul::JAMO_L_BASE as u16);
+                            let prev =
+                                sb[starter as usize].wrapping_sub(Hangul::JAMO_L_BASE as u16);
                             if (prev as i32) < Hangul::JAMO_L_COUNT {
                                 p_remove = p - 1;
                                 let mut syllable = (Hangul::HANGUL_BASE
-                                    + (prev as i32 * Hangul::JAMO_V_COUNT + (c - Hangul::JAMO_V_BASE)) * Hangul::JAMO_T_COUNT)
+                                    + (prev as i32 * Hangul::JAMO_V_COUNT
+                                        + (c - Hangul::JAMO_V_BASE))
+                                        * Hangul::JAMO_T_COUNT)
                                     as u16;
                                 if p != sb.len() as i32 {
                                     let t = sb[p as usize].wrapping_sub(Hangul::JAMO_T_BASE as u16);
@@ -2214,7 +2461,8 @@ impl Normalizer2Impl {
                                 if composite > 0xffff {
                                     // both are supplementary
                                     sb[starter as usize] = UTF16::get_lead_surrogate(composite);
-                                    sb[starter as usize + 1] = UTF16::get_trail_surrogate(composite);
+                                    sb[starter as usize + 1] =
+                                        UTF16::get_trail_surrogate(composite);
                                 } else {
                                     sb[starter as usize] = c as u16;
                                     sb.remove(starter as usize + 1);
@@ -2228,7 +2476,10 @@ impl Normalizer2Impl {
                                 // move the intermediate characters back one.
                                 starter_is_supplementary = true;
                                 sb[starter as usize] = UTF16::get_lead_surrogate(composite);
-                                sb.insert(starter as usize + 1, UTF16::get_trail_surrogate(composite));
+                                sb.insert(
+                                    starter as usize + 1,
+                                    UTF16::get_trail_surrogate(composite),
+                                );
                                 p += 1;
                             } else {
                                 // both are on the BMP
@@ -2242,7 +2493,9 @@ impl Normalizer2Impl {
                             }
                             // Is the composite a starter that combines forward?
                             if (composite_and_fwd & 1) != 0 {
-                                compositions_list = self.get_compositions_list_for_composite(self.get_raw_norm16(composite));
+                                compositions_list = self.get_compositions_list_for_composite(
+                                    self.get_raw_norm16(composite),
+                                );
                             } else {
                                 compositions_list = -1;
                             }
@@ -2293,7 +2546,9 @@ impl Normalizer2Impl {
             if Self::is_jamo_l(norm16) {
                 b -= Hangul::JAMO_V_BASE;
                 if (0..Hangul::JAMO_V_COUNT).contains(&b) {
-                    return Hangul::HANGUL_BASE + ((a - Hangul::JAMO_L_BASE) * Hangul::JAMO_V_COUNT + b) * Hangul::JAMO_T_COUNT;
+                    return Hangul::HANGUL_BASE
+                        + ((a - Hangul::JAMO_L_BASE) * Hangul::JAMO_V_COUNT + b)
+                            * Hangul::JAMO_T_COUNT;
                 } else {
                     return -1;
                 }
@@ -2346,9 +2601,16 @@ impl Normalizer2Impl {
         src == limit || self.has_comp_boundary_before(code_point_at(s, src))
     }
     fn norm16_has_comp_boundary_after(&self, norm16: i32, only_contiguous: bool) -> bool {
-        (norm16 & Self::HAS_COMP_BOUNDARY_AFTER) != 0 && (!only_contiguous || self.is_trail_cc01_for_comp_boundary_after(norm16))
+        (norm16 & Self::HAS_COMP_BOUNDARY_AFTER) != 0
+            && (!only_contiguous || self.is_trail_cc01_for_comp_boundary_after(norm16))
     }
-    fn has_comp_boundary_after_range(&self, s: &[u16], start: i32, p: i32, only_contiguous: bool) -> bool {
+    fn has_comp_boundary_after_range(
+        &self,
+        s: &[u16],
+        start: i32,
+        p: i32,
+        only_contiguous: bool,
+    ) -> bool {
         start == p || self.has_comp_boundary_after(code_point_before(s, p), only_contiguous)
     }
     /// For FCC: Given norm16 HAS_COMP_BOUNDARY_AFTER, does it have tccc<=1?
@@ -2375,7 +2637,13 @@ impl Normalizer2Impl {
         }
         p
     }
-    fn find_next_comp_boundary(&self, s: &[u16], mut p: i32, limit: i32, only_contiguous: bool) -> i32 {
+    fn find_next_comp_boundary(
+        &self,
+        s: &[u16],
+        mut p: i32,
+        limit: i32,
+        only_contiguous: bool,
+    ) -> i32 {
         while p < limit {
             let c = code_point_at(s, p);
             let norm16 = self.trie().get(c);
@@ -2390,6 +2658,7 @@ impl Normalizer2Impl {
         p
     }
 
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     fn find_previous_fcd_boundary(&self, s: &[u16], mut p: i32) -> i32 {
         while p > 0 {
             let c = code_point_before(s, p);
@@ -2407,6 +2676,7 @@ impl Normalizer2Impl {
         }
         p
     }
+    #[allow(unused_assignments)] // initial value mirrors the Java declaration
     fn find_next_fcd_boundary(&self, s: &[u16], mut p: i32, limit: i32) -> i32 {
         while p < limit {
             let c = code_point_at(s, p);
@@ -2432,7 +2702,12 @@ impl Normalizer2Impl {
         self.get_fcd16(code_point_before(s, p))
     }
 
-    fn add_to_start_set(mutable_trie: &mut MutableCodePointTrie, canon_start_sets: &mut Vec<UnicodeSet>, origin: i32, decomp_lead: i32) -> Result<()> {
+    fn add_to_start_set(
+        mutable_trie: &mut MutableCodePointTrie,
+        canon_start_sets: &mut Vec<UnicodeSet>,
+        origin: i32,
+        decomp_lead: i32,
+    ) -> Result<()> {
         let mut canon_value = mutable_trie.get(decomp_lead);
         if (canon_value & (CANON_HAS_SET | CANON_VALUE_MASK)) == 0 && origin != 0 {
             // origin is the first character whose decomposition starts with
@@ -2443,7 +2718,9 @@ impl Normalizer2Impl {
             let set;
             if (canon_value & CANON_HAS_SET) == 0 {
                 let first_origin = canon_value & CANON_VALUE_MASK;
-                canon_value = (canon_value & !CANON_VALUE_MASK) | CANON_HAS_SET | canon_start_sets.len() as i32;
+                canon_value = (canon_value & !CANON_VALUE_MASK)
+                    | CANON_HAS_SET
+                    | canon_start_sets.len() as i32;
                 mutable_trie.set(decomp_lead, canon_value)?;
                 canon_start_sets.push(UnicodeSet::new());
                 set = canon_start_sets.last_mut().expect("pushed");
@@ -2516,7 +2793,14 @@ impl UTF16Plus {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException` when a range is outside its text.
-    pub fn equal_range(s1: &[u16], mut start1: i32, limit1: i32, s2: &[u16], mut start2: i32, limit2: i32) -> bool {
+    pub fn equal_range(
+        s1: &[u16],
+        mut start1: i32,
+        limit1: i32,
+        s2: &[u16],
+        mut start2: i32,
+        limit2: i32,
+    ) -> bool {
         if (limit1 - start1) != (limit2 - start2) {
             return false;
         }

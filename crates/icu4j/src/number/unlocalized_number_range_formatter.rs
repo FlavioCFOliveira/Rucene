@@ -33,7 +33,11 @@ impl UnlocalizedNumberRangeFormatter {
     /// Equivalent to the package-private
     /// `UnlocalizedNumberRangeFormatter(NumberRangeFormatterSettings<?>,
     /// int, Object)`.
-    pub(crate) fn with_parent(parent: &Arc<RangeSettingsNode>, key: i32, value: Option<RangeSettingValue>) -> Self {
+    pub(crate) fn with_parent(
+        parent: &Arc<RangeSettingsNode>,
+        key: i32,
+        value: Option<RangeSettingValue>,
+    ) -> Self {
         UnlocalizedNumberRangeFormatter(RangeSettingsNode::new(Some(parent.clone()), key, value))
     }
 
@@ -46,12 +50,20 @@ impl UnlocalizedNumberRangeFormatter {
     /// The errors of `ULocale.forLocale`.
     pub fn locale_java(&self, locale: &Locale) -> Result<LocalizedNumberRangeFormatter> {
         let ulocale = ULocale::for_locale(Some(locale))?;
-        Ok(LocalizedNumberRangeFormatter::with_parent(&self.0, KEY_LOCALE, ulocale.map(RangeSettingValue::Locale)))
+        Ok(LocalizedNumberRangeFormatter::with_parent(
+            &self.0,
+            KEY_LOCALE,
+            ulocale.map(RangeSettingValue::Locale),
+        ))
     }
 
     /// Equivalent to `locale(ULocale)`.
     pub fn locale(&self, locale: &ULocale) -> LocalizedNumberRangeFormatter {
-        LocalizedNumberRangeFormatter::with_parent(&self.0, KEY_LOCALE, Some(RangeSettingValue::Locale(locale.clone())))
+        LocalizedNumberRangeFormatter::with_parent(
+            &self.0,
+            KEY_LOCALE,
+            Some(RangeSettingValue::Locale(locale.clone())),
+        )
     }
 }
 

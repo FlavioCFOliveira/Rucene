@@ -6,12 +6,18 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::r#impl::number::parse::parsed_number::{self, ParsedNumber};
-use crate::r#impl::number::parse::symbol_matcher::{impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl};
+use crate::r#impl::number::parse::symbol_matcher::{
+    impl_symbol_matcher, SymbolMatcher, SymbolMatcherImpl,
+};
 use crate::r#impl::static_unicode_sets::Key;
 use crate::r#impl::string_segment::StringSegment;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 
-static DEFAULT: LazyLock<Arc<PercentMatcher>> = LazyLock::new(|| Arc::new(PercentMatcher { base: SymbolMatcher::from_key(Key::PercentSign) }));
+static DEFAULT: LazyLock<Arc<PercentMatcher>> = LazyLock::new(|| {
+    Arc::new(PercentMatcher {
+        base: SymbolMatcher::from_key(Key::PercentSign),
+    })
+});
 
 /// Equivalent to `com.ibm.icu.impl.number.parse.PercentMatcher`.
 #[derive(Debug)]
@@ -26,7 +32,9 @@ impl PercentMatcher {
         if DEFAULT.base.uni_set.contains_str(symbol_string) {
             DEFAULT.clone()
         } else {
-            Arc::new(PercentMatcher { base: SymbolMatcher::new(symbol_string, DEFAULT.base.uni_set) })
+            Arc::new(PercentMatcher {
+                base: SymbolMatcher::new(symbol_string, DEFAULT.base.uni_set),
+            })
         }
     }
 }

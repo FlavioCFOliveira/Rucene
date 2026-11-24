@@ -13,8 +13,9 @@ use crate::jdk::units;
 use crate::lang::u_character::UCharacter;
 use crate::lang::u_property::UProperty;
 use crate::lang::u_script::UScript;
-use crate::r#impl::breakiter::dictionary_break_engine::{uset_contains, 
-    dictionary_find_breaks, DequeI, DictionaryBreakEngine, DictionaryBreakEngineBase, PossibleWord,
+use crate::r#impl::breakiter::dictionary_break_engine::{
+    dictionary_find_breaks, uset_contains, DequeI, DictionaryBreakEngine,
+    DictionaryBreakEngineBase, PossibleWord,
 };
 use crate::r#impl::breakiter::dictionary_data::DictionaryData;
 use crate::r#impl::breakiter::dictionary_matcher::DictionaryMatcher;
@@ -65,7 +66,8 @@ impl LaoBreakEngine {
         let mut f_mark_set = UnicodeSet::from_pattern(&units("[[:Laoo:]&[:LineBreak=SA:]&[:M:]]"))?;
         f_mark_set.add(0x0020)?;
         let mut f_begin_word_set = UnicodeSet::from_pairs(&[
-            0x0E81, 0x0EAE, // basic consonants (including holes for corresponding Thai characters)
+            0x0E81,
+            0x0EAE, // basic consonants (including holes for corresponding Thai characters)
             0x0EC0, 0x0EC4, // prefix vowels
             0x0EDC, 0x0EDD, // digraph consonants (no Thai equivalent)
         ])?;
@@ -142,7 +144,14 @@ impl LanguageBreakEngine for LaoBreakEngine {
         found_breaks: &mut DequeI,
         is_phrase_breaking: bool,
     ) -> i32 {
-        dictionary_find_breaks(self, text, start_pos, end_pos, found_breaks, is_phrase_breaking)
+        dictionary_find_breaks(
+            self,
+            text,
+            start_pos,
+            end_pos,
+            found_breaks,
+            is_phrase_breaking,
+        )
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -191,7 +200,6 @@ impl DictionaryBreakEngine for LaoBreakEngine {
                 word_length = words[ix(words_found)].accept_marked(f_iter);
                 words_found += 1;
             }
-
             // If there was more than one, see which one can take us forward the most words
             else if candidates > 1 {
                 let mut found_best = false;
@@ -210,7 +218,9 @@ impl DictionaryBreakEngine for LaoBreakEngine {
                             // See if any of the possible second words is followed by a third word
                             loop {
                                 // If we find a third word, stop right away
-                                if words[ix(words_found + 2)].candidates(f_iter, dict, range_end) > 0 {
+                                if words[ix(words_found + 2)].candidates(f_iter, dict, range_end)
+                                    > 0
+                                {
                                     words[ix(words_found)].mark_current();
                                     found_best = true;
                                     break;
@@ -255,9 +265,12 @@ impl DictionaryBreakEngine for LaoBreakEngine {
                         if remaining <= 0 {
                             break;
                         }
-                        if uset_contains(&self.f_end_word_set, pc) && uset_contains(&self.f_begin_word_set, uc) {
+                        if uset_contains(&self.f_end_word_set, pc)
+                            && uset_contains(&self.f_begin_word_set, uc)
+                        {
                             // Maybe. See if it's in the dictionary.
-                            let candidate = words[ix(words_found + 1)].candidates(f_iter, dict, range_end);
+                            let candidate =
+                                words[ix(words_found + 1)].candidates(f_iter, dict, range_end);
                             set_index(f_iter, current + word_length + chars);
                             if candidate > 0 {
                                 break;
@@ -282,7 +295,9 @@ impl DictionaryBreakEngine for LaoBreakEngine {
             // Never stop before a combining mark.
             loop {
                 let curr_pos = f_iter.get_index();
-                if !(curr_pos < range_end && uset_contains(&self.f_mark_set, f_iter.current() as i32)) {
+                if !(curr_pos < range_end
+                    && uset_contains(&self.f_mark_set, f_iter.current() as i32))
+                {
                     break;
                 }
                 f_iter.next();

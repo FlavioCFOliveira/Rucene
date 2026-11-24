@@ -165,7 +165,6 @@ macro_rules! java_format_field_class {
     };
 }
 
-
 /// An object attached to an attribute or a field position.
 ///
 /// Stands for the Java `Object` values the ICU classes of this crate
@@ -265,7 +264,13 @@ impl Clone for FieldPosition {
 impl FieldPosition {
     /// `new FieldPosition(int field)`.
     pub fn new(field: i32) -> Self {
-        Self { field, end_index: 0, begin_index: 0, attribute: None, subclass: None }
+        Self {
+            field,
+            end_index: 0,
+            begin_index: 0,
+            attribute: None,
+            subclass: None,
+        }
     }
 
     /// `new FieldPosition(Format.Field attribute)`: field id -1.
@@ -275,7 +280,13 @@ impl FieldPosition {
 
     /// `new FieldPosition(Format.Field attribute, int fieldID)`.
     pub fn with_attribute_and_field(attribute: Option<FieldRef>, field_id: i32) -> Self {
-        Self { field: field_id, end_index: 0, begin_index: 0, attribute, subclass: None }
+        Self {
+            field: field_id,
+            end_index: 0,
+            begin_index: 0,
+            attribute,
+            subclass: None,
+        }
     }
 
     /// The constructor of a subclass: this position with `subclass`'s added
@@ -342,14 +353,18 @@ impl FieldPosition {
 
     /// `getClass().getName()`.
     pub fn java_class(&self) -> &'static str {
-        self.subclass.as_ref().map_or("java.text.FieldPosition", |s| s.java_class())
+        self.subclass
+            .as_ref()
+            .map_or("java.text.FieldPosition", |s| s.java_class())
     }
 }
 
 impl fmt::Display for FieldPosition {
     /// `toString()`: `<class>[field=<f>,attribute=<a>,beginIndex=<b>,endIndex=<e>]`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let attribute = self.attribute.map_or_else(|| "null".to_string(), |a| a.to_java_string());
+        let attribute = self
+            .attribute
+            .map_or_else(|| "null".to_string(), |a| a.to_java_string());
         write!(
             f,
             "{}[field={},attribute={},beginIndex={},endIndex={}]",
@@ -452,11 +467,18 @@ impl AttributedStringData {
         let at = run_index as usize;
         self.run_starts.insert(at, offset);
         self.run_attributes.insert(at, new_run_attributes);
-        self.run_attribute_values.insert(at, new_run_attribute_values);
+        self.run_attribute_values
+            .insert(at, new_run_attribute_values);
         run_index
     }
 
-    fn add_attribute_run_data(&mut self, attribute: AttributeRef, value: AttributeValue, begin_run_index: i32, end_run_index: i32) {
+    fn add_attribute_run_data(
+        &mut self,
+        attribute: AttributeRef,
+        value: AttributeValue,
+        begin_run_index: i32,
+        end_run_index: i32,
+    ) {
         for i in begin_run_index as usize..end_run_index as usize {
             let mut key_value_index = None;
             if self.run_attributes[i].is_none() {
@@ -483,7 +505,13 @@ impl AttributedStringData {
         }
     }
 
-    fn add_attribute_impl(&mut self, attribute: AttributeRef, value: AttributeValue, begin_index: i32, end_index: i32) {
+    fn add_attribute_impl(
+        &mut self,
+        attribute: AttributeRef,
+        value: AttributeValue,
+        begin_index: i32,
+        end_index: i32,
+    ) {
         if self.run_count == 0 {
             self.create_run_attribute_data_vectors();
         }
@@ -496,15 +524,26 @@ impl AttributedStringData {
     fn get_attribute(&self, attribute: AttributeRef, run_index: i32) -> Option<AttributeValue> {
         let attrs = self.run_attributes.get(run_index as usize)?.as_ref()?;
         let values = self.run_attribute_values[run_index as usize].as_ref()?;
-        attrs.iter().position(|a| same_attribute(*a, attribute)).map(|i| values[i])
+        attrs
+            .iter()
+            .position(|a| same_attribute(*a, attribute))
+            .map(|i| values[i])
     }
 
     /// `attributeValuesMatch(Set<? extends Attribute> attributes, int
     /// runIndex1, int runIndex2)`.
-    fn attribute_values_match(&self, attributes: &[AttributeRef], run_index1: i32, run_index2: i32) -> bool {
-        attributes
-            .iter()
-            .all(|key| values_equal(self.get_attribute(*key, run_index1).as_ref(), self.get_attribute(*key, run_index2).as_ref()))
+    fn attribute_values_match(
+        &self,
+        attributes: &[AttributeRef],
+        run_index1: i32,
+        run_index2: i32,
+    ) -> bool {
+        attributes.iter().all(|key| {
+            values_equal(
+                self.get_attribute(*key, run_index1).as_ref(),
+                self.get_attribute(*key, run_index2).as_ref(),
+            )
+        })
     }
 }
 
@@ -526,7 +565,12 @@ pub struct AttributedString {
 impl AttributedString {
     /// `new AttributedString(String text)`.
     pub fn new(text: Vec<u16>) -> Self {
-        Self { data: Arc::new(RwLock::new(AttributedStringData { text, ..Default::default() })) }
+        Self {
+            data: Arc::new(RwLock::new(AttributedStringData {
+                text,
+                ..Default::default()
+            })),
+        }
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, AttributedStringData> {
@@ -544,7 +588,9 @@ impl AttributedString {
         let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
         let len = data.length();
         if len == 0 {
-            return Err(LuceneError::illegal_argument("Can't add attribute to 0-length text"));
+            return Err(LuceneError::illegal_argument(
+                "Can't add attribute to 0-length text",
+            ));
         }
         data.add_attribute_impl(attribute, value, 0, len);
         Ok(())
@@ -557,7 +603,13 @@ impl AttributedString {
     ///
     /// `IllegalArgumentException("Invalid substring range")` unless `0 <=
     /// begin_index < end_index <= length`.
-    pub fn add_attribute_range(&self, attribute: AttributeRef, value: AttributeValue, begin_index: i32, end_index: i32) -> Result<()> {
+    pub fn add_attribute_range(
+        &self,
+        attribute: AttributeRef,
+        value: AttributeValue,
+        begin_index: i32,
+        end_index: i32,
+    ) -> Result<()> {
         let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
         if begin_index < 0 || end_index > data.length() || begin_index >= end_index {
             return Err(LuceneError::illegal_argument("Invalid substring range"));
@@ -579,11 +631,21 @@ impl AttributedString {
     ///
     /// `IllegalArgumentException("Invalid substring range")` unless `0 <=
     /// begin_index <= end_index <= length`.
-    pub fn get_iterator_range(&self, attributes: Option<&[AttributeRef]>, begin_index: i32, end_index: i32) -> Result<AttributedStringIterator> {
+    pub fn get_iterator_range(
+        &self,
+        attributes: Option<&[AttributeRef]>,
+        begin_index: i32,
+        end_index: i32,
+    ) -> Result<AttributedStringIterator> {
         if begin_index < 0 || begin_index > end_index || end_index > self.read().length() {
             return Err(LuceneError::illegal_argument("Invalid substring range"));
         }
-        Ok(AttributedStringIterator::new(self.data.clone(), attributes.map(|a| a.to_vec()), begin_index, end_index))
+        Ok(AttributedStringIterator::new(
+            self.data.clone(),
+            attributes.map(|a| a.to_vec()),
+            begin_index,
+            end_index,
+        ))
     }
 }
 
@@ -605,7 +667,12 @@ pub struct AttributedStringIterator {
 }
 
 impl AttributedStringIterator {
-    fn new(string: Arc<RwLock<AttributedStringData>>, attributes: Option<Vec<AttributeRef>>, begin_index: i32, end_index: i32) -> Self {
+    fn new(
+        string: Arc<RwLock<AttributedStringData>>,
+        attributes: Option<Vec<AttributeRef>>,
+        begin_index: i32,
+        end_index: i32,
+    ) -> Self {
         let mut it = Self {
             string,
             begin_index,
@@ -666,7 +733,9 @@ impl AttributedStringIterator {
         } else {
             let data = self.string.read().unwrap_or_else(|e| e.into_inner());
             let mut run_index = -1;
-            while run_index < data.run_count - 1 && data.run_starts[(run_index + 1) as usize] <= self.current_index {
+            while run_index < data.run_count - 1
+                && data.run_starts[(run_index + 1) as usize] <= self.current_index
+            {
                 run_index += 1;
             }
             let mut start = self.begin_index;
@@ -763,7 +832,12 @@ impl AttributedCharacterIterator for AttributedStringIterator {
         let data = self.data();
         let mut run_start = self.current_run_start;
         let mut run_index = self.current_run_index;
-        while run_start > self.begin_index && values_equal(value.as_ref(), data.get_attribute(attribute, run_index - 1).as_ref()) {
+        while run_start > self.begin_index
+            && values_equal(
+                value.as_ref(),
+                data.get_attribute(attribute, run_index - 1).as_ref(),
+            )
+        {
             run_index -= 1;
             run_start = data.run_starts[run_index as usize];
         }
@@ -777,7 +851,9 @@ impl AttributedCharacterIterator for AttributedStringIterator {
         let data = self.data();
         let mut run_start = self.current_run_start;
         let mut run_index = self.current_run_index;
-        while run_start > self.begin_index && data.attribute_values_match(attributes, self.current_run_index, run_index - 1) {
+        while run_start > self.begin_index
+            && data.attribute_values_match(attributes, self.current_run_index, run_index - 1)
+        {
             run_index -= 1;
             run_start = data.run_starts[run_index as usize];
         }
@@ -796,9 +872,18 @@ impl AttributedCharacterIterator for AttributedStringIterator {
         let data = self.data();
         let mut run_limit = self.current_run_limit;
         let mut run_index = self.current_run_index;
-        while run_limit < self.end_index && values_equal(value.as_ref(), data.get_attribute(attribute, run_index + 1).as_ref()) {
+        while run_limit < self.end_index
+            && values_equal(
+                value.as_ref(),
+                data.get_attribute(attribute, run_index + 1).as_ref(),
+            )
+        {
             run_index += 1;
-            run_limit = if run_index < data.run_count - 1 { data.run_starts[(run_index + 1) as usize] } else { self.end_index };
+            run_limit = if run_index < data.run_count - 1 {
+                data.run_starts[(run_index + 1) as usize]
+            } else {
+                self.end_index
+            };
         }
         run_limit.min(self.end_index)
     }
@@ -810,9 +895,15 @@ impl AttributedCharacterIterator for AttributedStringIterator {
         let data = self.data();
         let mut run_limit = self.current_run_limit;
         let mut run_index = self.current_run_index;
-        while run_limit < self.end_index && data.attribute_values_match(attributes, self.current_run_index, run_index + 1) {
+        while run_limit < self.end_index
+            && data.attribute_values_match(attributes, self.current_run_index, run_index + 1)
+        {
             run_index += 1;
-            run_limit = if run_index < data.run_count - 1 { data.run_starts[(run_index + 1) as usize] } else { self.end_index };
+            run_limit = if run_index < data.run_count - 1 {
+                data.run_starts[(run_index + 1) as usize]
+            } else {
+                self.end_index
+            };
         }
         run_limit.min(self.end_index)
     }
@@ -824,7 +915,9 @@ impl AttributedCharacterIterator for AttributedStringIterator {
         }
         let i = self.current_run_index as usize;
         match (&data.run_attributes[i], &data.run_attribute_values[i]) {
-            (Some(keys), Some(values)) => keys.iter().copied().zip(values.iter().copied()).collect(),
+            (Some(keys), Some(values)) => {
+                keys.iter().copied().zip(values.iter().copied()).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -841,7 +934,9 @@ impl AttributedCharacterIterator for AttributedStringIterator {
         let mut keys: Vec<AttributeRef> = Vec::new();
         for i in 0..data.run_count {
             let iu = i as usize;
-            if data.run_starts[iu] < self.end_index && (i == data.run_count - 1 || data.run_starts[iu + 1] > self.begin_index) {
+            if data.run_starts[iu] < self.end_index
+                && (i == data.run_count - 1 || data.run_starts[iu + 1] > self.begin_index)
+            {
                 if let Some(attrs) = &data.run_attributes[iu] {
                     for a in attrs {
                         if !keys.iter().any(|k| same_attribute(*k, *a)) {
@@ -876,7 +971,12 @@ pub trait Format: Any + Debug + Send + Sync {
     ///
     /// The implementation's (`IllegalArgumentException` for an object it
     /// cannot format, in the JDK's contract).
-    fn format_object_to(&self, obj: &dyn Any, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()>;
+    fn format_object_to(
+        &self,
+        obj: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()>;
 
     /// `parseObject(String source, ParsePosition pos)` (abstract): the
     /// parsed object, `None` for Java's `null` on failure.
@@ -884,7 +984,11 @@ pub trait Format: Any + Debug + Send + Sync {
     /// # Errors
     ///
     /// The implementation's.
-    fn parse_object_at(&self, source: &[u16], pos: &mut ParsePosition) -> Result<Option<ParsedObject>>;
+    fn parse_object_at(
+        &self,
+        source: &[u16],
+        pos: &mut ParsePosition,
+    ) -> Result<Option<ParsedObject>>;
 
     /// `clone()`.
     fn clone_format(&self) -> Box<dyn Format>;
@@ -910,7 +1014,10 @@ pub trait Format: Any + Debug + Send + Sync {
     /// # Errors
     ///
     /// Those of [`format_object`](Self::format_object).
-    fn format_to_character_iterator(&self, obj: &dyn Any) -> Result<Box<dyn AttributedCharacterIterator>> {
+    fn format_to_character_iterator(
+        &self,
+        obj: &dyn Any,
+    ) -> Result<Box<dyn AttributedCharacterIterator>> {
         let s = self.format_object(obj)?;
         Ok(Box::new(AttributedString::new(s).get_iterator()))
     }
@@ -926,7 +1033,10 @@ pub trait Format: Any + Debug + Send + Sync {
         let mut pos = ParsePosition::new(0);
         let result = self.parse_object_at(source, &mut pos)?;
         if pos.get_index() == 0 {
-            return Err(rucene::util::extra::ParseException::error("Format.parseObject(String) failed", pos.get_error_index()));
+            return Err(rucene::util::extra::ParseException::error(
+                "Format.parseObject(String) failed",
+                pos.get_error_index(),
+            ));
         }
         Ok(result)
     }

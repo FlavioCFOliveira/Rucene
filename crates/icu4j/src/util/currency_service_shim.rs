@@ -10,7 +10,8 @@ use rucene::error::{LuceneError, Result};
 use rucene_queryparser::jdk::locale::Locale;
 
 use crate::r#impl::icu_locale_service::{
-    locale_key_factory_display_name, ICULocaleService, ICUResourceBundleFactory, LocaleKey, LocaleKeyFactory,
+    locale_key_factory_display_name, ICULocaleService, ICUResourceBundleFactory, LocaleKey,
+    LocaleKeyFactory,
 };
 use crate::r#impl::icu_resource_bundle::ICUResourceBundle;
 use crate::r#impl::icu_service::{Factory, ICUService, Key, ServiceObject, VisibleIDMap};
@@ -78,7 +79,12 @@ impl ServiceShim for CurrencyServiceShim {
     }
 
     fn register_instance(&self, currency: Currency, locale: &ULocale) -> Result<RegistryKey> {
-        let factory = SERVICE.register_object_locale(Arc::new(currency), locale, LocaleKey::KIND_ANY, true)?;
+        let factory = SERVICE.register_object_locale(
+            Arc::new(currency),
+            locale,
+            LocaleKey::KIND_ANY,
+            true,
+        )?;
         Ok(Arc::new(factory))
     }
 
@@ -117,7 +123,12 @@ impl LocaleKeyFactory for CurrencyFactory {
         self.inner.get_supported_ids()
     }
 
-    fn handle_create(&self, loc: &ULocale, _kind: i32, _srvc: &ICUService) -> Result<Option<ServiceObject>> {
+    fn handle_create(
+        &self,
+        loc: &ULocale,
+        _kind: i32,
+        _srvc: &ICUService,
+    ) -> Result<Option<ServiceObject>> {
         Ok(Currency::create_currency(loc)?.map(|c| Arc::new(c) as ServiceObject))
     }
 }
@@ -128,8 +139,10 @@ impl Factory for CurrencyFactory {
     }
 
     fn update_visible_ids(self: Arc<Self>, result: &mut VisibleIDMap) -> Result<()> {
-        let visible_ids =
-            ICUResourceBundle::get_available_locale_name_set_of(&self.inner.bundle_name, self.inner.loader())?; // only visible ids
+        let visible_ids = ICUResourceBundle::get_available_locale_name_set_of(
+            &self.inner.bundle_name,
+            self.inner.loader(),
+        )?; // only visible ids
         for id in visible_ids.iter() {
             let me: Arc<dyn Factory> = self.clone();
             result.insert(id.clone(), me);
@@ -142,7 +155,11 @@ impl Factory for CurrencyFactory {
     }
 
     fn to_java_string(&self) -> String {
-        format!("{}, bundle: {}", self.lkf_to_string(), self.inner.bundle_name)
+        format!(
+            "{}, bundle: {}",
+            self.lkf_to_string(),
+            self.inner.bundle_name
+        )
     }
 }
 
@@ -150,7 +167,9 @@ impl Factory for CurrencyFactory {
 /// resource-bundle currency factory registered and marked default).
 static SERVICE: LazyLock<ICULocaleService> = LazyLock::new(|| {
     let service = ICULocaleService::new("Currency");
-    let factory: Arc<dyn Factory> = Arc::new(CurrencyFactory { inner: ICUResourceBundleFactory::new() });
+    let factory: Arc<dyn Factory> = Arc::new(CurrencyFactory {
+        inner: ICUResourceBundleFactory::new(),
+    });
     service
         .register_factory(factory)
         .unwrap_or_else(|e| panic!("java.lang.ExceptionInInitializerError: {e}"));

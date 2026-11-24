@@ -122,7 +122,8 @@ impl Normalizer2WithImpl {
                 self.impl_.decompose(src, 0, src.len() as i32, Some(buffer));
             }
             N2Kind::Compose { only_contiguous } => {
-                self.impl_.compose(src, 0, src.len() as i32, only_contiguous, true, buffer);
+                self.impl_
+                    .compose(src, 0, src.len() as i32, only_contiguous, true, buffer);
             }
             N2Kind::Fcd => {
                 self.impl_.make_fcd(src, 0, src.len() as i32, Some(buffer));
@@ -132,17 +133,30 @@ impl Normalizer2WithImpl {
 
     /// `normalizeAndAppend(CharSequence src, boolean doNormalize,
     /// ReorderingBuffer buffer)` (protected, abstract).
-    fn normalize_and_append(&self, src: &[u16], do_normalize: bool, buffer: &mut ReorderingBuffer<'_>) {
+    fn normalize_and_append(
+        &self,
+        src: &[u16],
+        do_normalize: bool,
+        buffer: &mut ReorderingBuffer<'_>,
+    ) {
         match self.kind {
             N2Kind::Decompose => self.impl_.decompose_and_append(src, do_normalize, buffer),
-            N2Kind::Compose { only_contiguous } => self.impl_.compose_and_append(src, do_normalize, only_contiguous, buffer),
+            N2Kind::Compose { only_contiguous } => {
+                self.impl_
+                    .compose_and_append(src, do_normalize, only_contiguous, buffer)
+            }
             N2Kind::Fcd => self.impl_.make_fcd_and_append(src, do_normalize, buffer),
         }
     }
 
     /// `normalizeSecondAndAppend(StringBuilder first, CharSequence second,
     /// boolean doNormalize)`.
-    pub fn normalize_second_and_append_do(&self, first: &mut Vec<u16>, second: &[u16], do_normalize: bool) {
+    pub fn normalize_second_and_append_do(
+        &self,
+        first: &mut Vec<u16>,
+        second: &[u16],
+        do_normalize: bool,
+    ) {
         let cap = first.len() as i32 + second.len() as i32;
         let mut buffer = ReorderingBuffer::new(&self.impl_, first, cap);
         self.normalize_and_append(second, do_normalize, &mut buffer);
@@ -189,7 +203,9 @@ impl Normalizer2WithImpl {
     pub fn has_boundary_after(&self, c: i32) -> bool {
         match self.kind {
             N2Kind::Decompose => self.impl_.has_decomp_boundary_after(c),
-            N2Kind::Compose { only_contiguous } => self.impl_.has_comp_boundary_after(c, only_contiguous),
+            N2Kind::Compose { only_contiguous } => {
+                self.impl_.has_comp_boundary_after(c, only_contiguous)
+            }
             N2Kind::Fcd => self.impl_.has_fcd_boundary_after(c),
         }
     }
@@ -199,7 +215,11 @@ impl Normalizer2WithImpl {
         match self.kind {
             N2Kind::Decompose => self.impl_.decompose(s, 0, s.len() as i32, None),
             N2Kind::Compose { only_contiguous } => {
-                ((self.impl_.compose_quick_check(s, 0, s.len() as i32, only_contiguous, true)) as u32 >> 1) as i32
+                ((self
+                    .impl_
+                    .compose_quick_check(s, 0, s.len() as i32, only_contiguous, true))
+                    as u32
+                    >> 1) as i32
             }
             N2Kind::Fcd => self.impl_.make_fcd(s, 0, s.len() as i32, None),
         }
@@ -256,7 +276,9 @@ impl Normalizer2 for Normalizer2WithImpl {
                 // 5: small destCapacity for substring normalization
                 let mut sb = Vec::new();
                 let mut buffer = ReorderingBuffer::new(&self.impl_, &mut sb, 5);
-                Ok(self.impl_.compose(s, 0, s.len() as i32, only_contiguous, false, &mut buffer))
+                Ok(self
+                    .impl_
+                    .compose(s, 0, s.len() as i32, only_contiguous, false, &mut buffer))
             }
             _ => Ok(s.len() as i32 == self.span_quick_check_yes_infallible(s)),
         }
@@ -265,7 +287,9 @@ impl Normalizer2 for Normalizer2WithImpl {
     fn quick_check(&self, s: &[u16]) -> Result<QuickCheckResult> {
         match self.kind {
             N2Kind::Compose { only_contiguous } => {
-                let span_length_and_maybe = self.impl_.compose_quick_check(s, 0, s.len() as i32, only_contiguous, false);
+                let span_length_and_maybe =
+                    self.impl_
+                        .compose_quick_check(s, 0, s.len() as i32, only_contiguous, false);
                 if (span_length_and_maybe & 1) != 0 {
                     Ok(QuickCheckResult::Maybe)
                 } else if ((span_length_and_maybe as u32) >> 1) as i32 == s.len() as i32 {
@@ -274,7 +298,11 @@ impl Normalizer2 for Normalizer2WithImpl {
                     Ok(QuickCheckResult::No)
                 }
             }
-            _ => Ok(if self.is_normalized(s)? { QuickCheckResult::Yes } else { QuickCheckResult::No }),
+            _ => Ok(if self.is_normalized(s)? {
+                QuickCheckResult::Yes
+            } else {
+                QuickCheckResult::No
+            }),
         }
     }
 
@@ -335,31 +363,43 @@ static NFKC_CF_SINGLETON: LazyLock<Singleton> = LazyLock::new(|| singleton("nfkc
 static NFKC_SCF_SINGLETON: LazyLock<Singleton> = LazyLock::new(|| singleton("nfkc_scf"));
 
 /// `cache`: the modes of other data, by name.
-static CACHE: LazyLock<SoftCache<String, Arc<Norm2AllModes>, Option<ByteBuffer>>> = LazyLock::new(|| {
-    SoftCache::new(|key: &String, bytes: Option<ByteBuffer>| {
-        let mut impl_ = Normalizer2Impl::new();
-        match bytes {
-            None => {
-                impl_.load_name(&format!("{key}.nrm"))?;
+static CACHE: LazyLock<SoftCache<String, Arc<Norm2AllModes>, Option<ByteBuffer>>> =
+    LazyLock::new(|| {
+        SoftCache::new(|key: &String, bytes: Option<ByteBuffer>| {
+            let mut impl_ = Normalizer2Impl::new();
+            match bytes {
+                None => {
+                    impl_.load_name(&format!("{key}.nrm"))?;
+                }
+                Some(mut b) => {
+                    impl_.load(&mut b)?;
+                }
             }
-            Some(mut b) => {
-                impl_.load(&mut b)?;
-            }
-        }
-        Ok(Some(Arc::new(Norm2AllModes::new(Arc::new(impl_)))))
-    })
-});
+            Ok(Some(Arc::new(Norm2AllModes::new(Arc::new(impl_)))))
+        })
+    });
 
 /// `NOOP_NORMALIZER2`.
-pub static NOOP_NORMALIZER2: LazyLock<Arc<NoopNormalizer2>> = LazyLock::new(|| Arc::new(NoopNormalizer2));
+pub static NOOP_NORMALIZER2: LazyLock<Arc<NoopNormalizer2>> =
+    LazyLock::new(|| Arc::new(NoopNormalizer2));
 
 impl Norm2AllModes {
     fn new(ni: Arc<Normalizer2Impl>) -> Self {
         Self {
-            comp: Arc::new(Normalizer2WithImpl::new(ni.clone(), N2Kind::Compose { only_contiguous: false })),
+            comp: Arc::new(Normalizer2WithImpl::new(
+                ni.clone(),
+                N2Kind::Compose {
+                    only_contiguous: false,
+                },
+            )),
             decomp: Arc::new(Normalizer2WithImpl::new(ni.clone(), N2Kind::Decompose)),
             fcd: Arc::new(Normalizer2WithImpl::new(ni.clone(), N2Kind::Fcd)),
-            fcc: Arc::new(Normalizer2WithImpl::new(ni.clone(), N2Kind::Compose { only_contiguous: true })),
+            fcc: Arc::new(Normalizer2WithImpl::new(
+                ni.clone(),
+                N2Kind::Compose {
+                    only_contiguous: true,
+                },
+            )),
             impl_: ni,
         }
     }
@@ -417,7 +457,9 @@ impl Norm2AllModes {
             1 => Ok(Self::get_nfkc_instance()?.decomp.clone()), // NFKD
             2 => Ok(Self::get_nfc_instance()?.comp.clone()),   // NFC
             3 => Ok(Self::get_nfkc_instance()?.comp.clone()),  // NFKC
-            _ => Err(LuceneError::null_pointer_with_message(format!("getN2WithImpl({index}) is null"))),
+            _ => Err(LuceneError::null_pointer_with_message(format!(
+                "getN2WithImpl({index}) is null"
+            ))),
         }
     }
 
@@ -439,7 +481,9 @@ impl Norm2AllModes {
                 return Self::get_instance_from_singleton(s);
             }
         }
-        Ok(CACHE.get_instance(name.to_string(), bytes)?.expect("createInstance never returns null"))
+        Ok(CACHE
+            .get_instance(name.to_string(), bytes)?
+            .expect("createInstance never returns null"))
     }
 
     /// `getFCDNormalizer2()`.

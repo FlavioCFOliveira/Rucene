@@ -114,7 +114,10 @@ impl TimeUnit {
             2 => Ok(measure_unit::WEEK.clone()),
             1 => Ok(measure_unit::MONTH.clone()),
             0 => Ok(measure_unit::YEAR.clone()),
-            _ => Err(LuceneError::unchecked("java.io.InvalidObjectException", format!("Bad index: {index}"))),
+            _ => Err(LuceneError::unchecked(
+                "java.io.InvalidObjectException",
+                format!("Bad index: {index}"),
+            )),
         }
     }
 }

@@ -16,7 +16,9 @@ use crate::number::number_formatter_settings::{
 use crate::number::unlocalized_number_formatter::UnlocalizedNumberFormatter;
 use crate::r#impl::formatted_string_builder::FormattedStringBuilder;
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 use crate::r#impl::number::localized_number_formatter_as_format::LocalizedNumberFormatterAsFormat;
 use crate::r#impl::number::micro_props::MicroProps;
 use crate::r#impl::standard_plural::StandardPlural;
@@ -50,7 +52,11 @@ pub struct LocalizedNumberFormatter(Arc<Inner>);
 
 impl LocalizedNumberFormatter {
     /// `LocalizedNumberFormatter(NumberFormatterSettings<?>, int, Object)`.
-    pub(crate) fn with_parent(parent: &Arc<SettingsNode>, key: i32, value: Option<SettingValue>) -> Self {
+    pub(crate) fn with_parent(
+        parent: &Arc<SettingsNode>,
+        key: i32,
+        value: Option<SettingValue>,
+    ) -> Self {
         LocalizedNumberFormatter(Arc::new(Inner {
             node: SettingsNode::new(Some(parent.clone()), key, value),
             call_count_internal: AtomicI64::new(0),
@@ -87,7 +93,9 @@ impl LocalizedNumberFormatter {
     ///
     /// The errors of the conversion and of the formatting pipeline.
     pub fn format_number(&self, input: &JavaNumber) -> Result<FormattedNumber> {
-        self.format_quantity(Box::new(DecimalQuantity_DualStorageBCD::from_number(input)?))
+        self.format_quantity(Box::new(DecimalQuantity_DualStorageBCD::from_number(
+            input,
+        )?))
     }
 
     /// Format the given Measure, using the unit of the measure if it
@@ -97,11 +105,18 @@ impl LocalizedNumberFormatter {
     ///
     /// The errors of the conversion and of the formatting pipeline.
     pub fn format_measure(&self, input: &Measure) -> Result<FormattedNumber> {
-        let mut fq: Box<dyn DecimalQuantity> = Box::new(DecimalQuantity_DualStorageBCD::from_number(input.get_number())?);
+        let mut fq: Box<dyn DecimalQuantity> = Box::new(
+            DecimalQuantity_DualStorageBCD::from_number(input.get_number())?,
+        );
         let unit = input.get_unit().clone();
         let mut string = FormattedStringBuilder::new();
         let micros = self.format_impl_with_unit(fq.as_mut(), Some(&unit), &mut string)?;
-        Ok(FormattedNumber::new(string, fq, micros.output_unit, micros.gender))
+        Ok(FormattedNumber::new(
+            string,
+            fq,
+            micros.output_unit,
+            micros.gender,
+        ))
     }
 
     /// Creates a representation of this LocalizedNumberFormat as a
@@ -124,7 +139,12 @@ impl LocalizedNumberFormatter {
     fn format_quantity(&self, mut fq: Box<dyn DecimalQuantity>) -> Result<FormattedNumber> {
         let mut string = FormattedStringBuilder::new();
         let micros = self.format_impl(fq.as_mut(), &mut string)?;
-        Ok(FormattedNumber::new(string, fq, micros.output_unit, micros.gender))
+        Ok(FormattedNumber::new(
+            string,
+            fq,
+            micros.output_unit,
+            micros.gender,
+        ))
     }
 
     /// Equivalent to `formatImpl(DecimalQuantity, FormattedStringBuilder)`
@@ -133,7 +153,11 @@ impl LocalizedNumberFormatter {
     /// # Errors
     ///
     /// The errors of the formatting pipeline.
-    pub fn format_impl(&self, fq: &mut dyn DecimalQuantity, string: &mut FormattedStringBuilder) -> Result<MicroProps> {
+    pub fn format_impl(
+        &self,
+        fq: &mut dyn DecimalQuantity,
+        string: &mut FormattedStringBuilder,
+    ) -> Result<MicroProps> {
         if let Some(compiled) = self.compute_compiled()? {
             return compiled.format(fq, string);
         }
@@ -161,7 +185,11 @@ impl LocalizedNumberFormatter {
         // calls this method with the same unit multiple times in a row,
         // they get a more efficient code path.
         let with_unit = {
-            let mut saved = self.0.saved_with_unit.lock().unwrap_or_else(|e| e.into_inner());
+            let mut saved = self
+                .0
+                .saved_with_unit
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let reuse = match saved.as_ref() {
                 Some(w) => opt_unit_equals(w.resolve().unit.as_ref(), unit),
                 None => false,
@@ -190,12 +218,19 @@ impl LocalizedNumberFormatter {
         let plural = StandardPlural::Other;
         let prefix_length = match self.compute_compiled()? {
             Some(compiled) => compiled.get_prefix_suffix(signum, plural, &mut string)?,
-            None => NumberFormatterImpl::get_prefix_suffix_static(&self.resolve(), signum, plural, &mut string)?,
+            None => NumberFormatterImpl::get_prefix_suffix_static(
+                &self.resolve(),
+                signum,
+                plural,
+                &mut string,
+            )?,
         };
         if is_prefix {
             Ok(string.sub_sequence(0, prefix_length).to_java_string())
         } else {
-            Ok(string.sub_sequence(prefix_length, string.length()).to_java_string())
+            Ok(string
+                .sub_sequence(prefix_length, string.length())
+                .to_java_string())
         }
     }
 
@@ -206,13 +241,20 @@ impl LocalizedNumberFormatter {
         // This is the "double-checked locking" pattern, implemented
         // properly for Java 5+.
         let current_count = self.0.call_count_internal.fetch_add(1, Ordering::SeqCst) + 1;
-        let threshold = macros.threshold.ok_or_else(|| crate::jdk::null_pointer("threshold"))?;
+        let threshold = macros
+            .threshold
+            .ok_or_else(|| crate::jdk::null_pointer("threshold"))?;
         if current_count == threshold {
             let compiled = Arc::new(NumberFormatterImpl::new(&macros)?);
             *self.0.compiled.lock().unwrap_or_else(|e| e.into_inner()) = Some(compiled.clone());
             Ok(Some(compiled))
         } else {
-            Ok(self.0.compiled.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            Ok(self
+                .0
+                .compiled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone())
         }
     }
 }

@@ -34,13 +34,27 @@ const MAX_SEGMENT_LENGTH: i32 = SEGMENT_LENGTH_ARGUMENT_CHAR as i32 - ARG_NUM_LI
 fn common_patterns() -> [(Vec<u16>, Vec<u16>); 4] {
     let compiled = |parts: &[&[u16]]| parts.concat();
     [
-        (units("{0} {1}"), compiled(&[&[2, 0, LEN1_CHAR], &units(" "), &[1]])),
+        (
+            units("{0} {1}"),
+            compiled(&[&[2, 0, LEN1_CHAR], &units(" "), &[1]]),
+        ),
         (
             units("{0} ({1})"),
-            compiled(&[&[2, 0, LEN2_CHAR], &units(" ("), &[1, LEN1_CHAR], &units(")")]),
+            compiled(&[
+                &[2, 0, LEN2_CHAR],
+                &units(" ("),
+                &[1, LEN1_CHAR],
+                &units(")"),
+            ]),
         ),
-        (units("{0}, {1}"), compiled(&[&[2, 0, LEN2_CHAR], &units(", "), &[1]])),
-        (units("{0} – {1}"), compiled(&[&[2, 0, LEN3_CHAR], &units(" – "), &[1]])), // en dash
+        (
+            units("{0}, {1}"),
+            compiled(&[&[2, 0, LEN2_CHAR], &units(", "), &[1]]),
+        ),
+        (
+            units("{0} – {1}"),
+            compiled(&[&[2, 0, LEN3_CHAR], &units(" – "), &[1]]),
+        ), // en dash
     ]
 }
 
@@ -76,7 +90,12 @@ impl SimpleFormatterImpl {
     ///
     /// `IllegalArgumentException` for bad argument syntax and too few or too
     /// many arguments.
-    pub fn compile_to_string_min_max_arguments(pattern: &[u16], sb: &mut Vec<u16>, min: i32, max: i32) -> Result<Vec<u16>> {
+    pub fn compile_to_string_min_max_arguments(
+        pattern: &[u16],
+        sb: &mut Vec<u16>,
+        min: i32,
+        max: i32,
+    ) -> Result<Vec<u16>> {
         // Return some precompiled common two-argument patterns.
         if min <= 2 && 2 <= max {
             for (p, c) in common_patterns() {
@@ -173,7 +192,7 @@ impl SimpleFormatterImpl {
                 sb.push(arg_number as u16);
                 continue;
             } // else: c is part of literal text
-            // Append c and track the literal-text segment length.
+              // Append c and track the literal-text segment length.
             if text_length == 0 {
                 // Reserve a char for the length of a new text segment, preset the maximum length.
                 sb.push(SEGMENT_LENGTH_ARGUMENT_CHAR);
@@ -219,7 +238,10 @@ impl SimpleFormatterImpl {
     /// # Errors
     ///
     /// As [`format_and_append`](Self::format_and_append).
-    pub fn format_compiled_pattern(compiled_pattern: &[u16], values: &[Arg<'_>]) -> Result<Vec<u16>> {
+    pub fn format_compiled_pattern(
+        compiled_pattern: &[u16],
+        values: &[Arg<'_>],
+    ) -> Result<Vec<u16>> {
         let mut sb = Vec::new();
         Self::format_and_append(compiled_pattern, &mut sb, None, values)?;
         Ok(sb)
@@ -231,9 +253,15 @@ impl SimpleFormatterImpl {
     /// # Errors
     ///
     /// The errors of compiling and of formatting.
-    pub fn format_raw_pattern(pattern: &[u16], min: i32, max: i32, values: &[Arg<'_>]) -> Result<Vec<u16>> {
+    pub fn format_raw_pattern(
+        pattern: &[u16],
+        min: i32,
+        max: i32,
+        values: &[Arg<'_>],
+    ) -> Result<Vec<u16>> {
         let mut sb = Vec::new();
-        let compiled_pattern = Self::compile_to_string_min_max_arguments(pattern, &mut sb, min, max)?;
+        let compiled_pattern =
+            Self::compile_to_string_min_max_arguments(pattern, &mut sb, min, max)?;
         sb.clear();
         Self::format_and_append(&compiled_pattern, &mut sb, None, values)?;
         Ok(sb)
@@ -309,13 +337,21 @@ impl SimpleFormatterImpl {
         if first_arg < 0 {
             result.clear();
         }
-        Self::format(compiled_pattern, values, result, result_copy.as_deref(), false, offsets)
+        Self::format(
+            compiled_pattern,
+            values,
+            result,
+            result_copy.as_deref(),
+            false,
+            offsets,
+        )
     }
 
     /// `getTextWithNoArguments(String compiledPattern)`: the pattern text
     /// with none of the arguments.
     pub fn get_text_with_no_arguments(compiled_pattern: &[u16]) -> Vec<u16> {
-        let capacity = compiled_pattern.len() as i32 - 1 - Self::get_argument_limit(compiled_pattern);
+        let capacity =
+            compiled_pattern.len() as i32 - 1 - Self::get_argument_limit(compiled_pattern);
         let mut sb = Vec::with_capacity(capacity.max(0) as usize);
         let mut i = 1;
         while i < compiled_pattern.len() {
@@ -391,14 +427,27 @@ impl SimpleFormatterImpl {
         if arg_limit == 0 {
             // No arguments in compiled pattern; overwrite the entire segment
             // with our string.
-            output.splice(start, end, compiled_pattern, 2, compiled_pattern.len() as i32, field)
+            output.splice(
+                start,
+                end,
+                compiled_pattern,
+                2,
+                compiled_pattern.len() as i32,
+                field,
+            )
         } else {
             debug_assert!(arg_limit == 1);
             let suffix_offset;
             let mut length = 0;
             if compiled_pattern[1] != 0 {
                 let prefix_length = compiled_pattern[1] as i32 - ARG_NUM_LIMIT;
-                length = output.insert_range(start, compiled_pattern, 2, 2 + prefix_length, field.clone());
+                length = output.insert_range(
+                    start,
+                    compiled_pattern,
+                    2,
+                    2 + prefix_length,
+                    field.clone(),
+                );
                 suffix_offset = 3 + prefix_length;
             } else {
                 suffix_offset = 2;
@@ -444,7 +493,9 @@ impl SimpleFormatterImpl {
                 match value {
                     Arg::Result => {
                         if forbid_result_as_value {
-                            return Err(LuceneError::illegal_argument("Value must not be same object as result"));
+                            return Err(LuceneError::illegal_argument(
+                                "Value must not be same object as result",
+                            ));
                         }
                         if i == 2 {
                             // We are appending to result which is also the first value object.
@@ -453,7 +504,8 @@ impl SimpleFormatterImpl {
                             }
                         } else {
                             if n < offsets_length {
-                                offsets.as_deref_mut().expect("offsets_length > 0")[n as usize] = result.len() as i32;
+                                offsets.as_deref_mut().expect("offsets_length > 0")[n as usize] =
+                                    result.len() as i32;
                             }
                             match result_copy {
                                 Some(c) => result.extend_from_slice(c),
@@ -464,13 +516,15 @@ impl SimpleFormatterImpl {
                     }
                     Arg::Text(t) => {
                         if n < offsets_length {
-                            offsets.as_deref_mut().expect("offsets_length > 0")[n as usize] = result.len() as i32;
+                            offsets.as_deref_mut().expect("offsets_length > 0")[n as usize] =
+                                result.len() as i32;
                         }
                         result.extend_from_slice(t);
                     }
                     Arg::Null => {
                         if n < offsets_length {
-                            offsets.as_deref_mut().expect("offsets_length > 0")[n as usize] = result.len() as i32;
+                            offsets.as_deref_mut().expect("offsets_length > 0")[n as usize] =
+                                result.len() as i32;
                         }
                         result.extend_from_slice(&units("null"));
                     }
@@ -490,7 +544,10 @@ fn code_point_count(s: &[u16]) -> i32 {
     let mut count = 0;
     let mut i = 0;
     while i < s.len() {
-        if (0xd800..0xdc00).contains(&s[i]) && i + 1 < s.len() && (0xdc00..0xe000).contains(&s[i + 1]) {
+        if (0xd800..0xdc00).contains(&s[i])
+            && i + 1 < s.len()
+            && (0xdc00..0xe000).contains(&s[i + 1])
+        {
             i += 2;
         } else {
             i += 1;

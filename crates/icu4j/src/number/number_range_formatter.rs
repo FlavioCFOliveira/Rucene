@@ -56,7 +56,8 @@ macro_rules! range_enum {
 range_enum!(
     /// Defines how to merge fields that are identical across the range
     /// sides. Equivalent to `NumberRangeFormatter.RangeCollapse`.
-    RangeCollapse, "com.ibm.icu.number.NumberRangeFormatter$RangeCollapse",
+    RangeCollapse,
+    "com.ibm.icu.number.NumberRangeFormatter$RangeCollapse",
     [
         /// Use locale data and heuristics to determine how much of the string
         /// to collapse. Could end up collapsing none, some, or all repeated
@@ -78,7 +79,8 @@ range_enum!(
     /// Defines the behavior when the two numbers in the range are identical
     /// after rounding. Equivalent to
     /// `NumberRangeFormatter.RangeIdentityFallback`.
-    RangeIdentityFallback, "com.ibm.icu.number.NumberRangeFormatter$RangeIdentityFallback",
+    RangeIdentityFallback,
+    "com.ibm.icu.number.NumberRangeFormatter$RangeIdentityFallback",
     [
         /// Show the number as a single value rather than a range. Example:
         /// "$5".
@@ -103,7 +105,8 @@ range_enum!(
     /// whether the numbers formatted in the range were equal or not, and
     /// whether or not the identity fallback was applied. Equivalent to
     /// `NumberRangeFormatter.RangeIdentityResult`.
-    RangeIdentityResult, "com.ibm.icu.number.NumberRangeFormatter$RangeIdentityResult",
+    RangeIdentityResult,
+    "com.ibm.icu.number.NumberRangeFormatter$RangeIdentityResult",
     [
         /// Used to indicate that the two numbers in the range were equal,
         /// even before any rounding rules were applied.
@@ -150,12 +153,16 @@ pub mod span_field {
             if self.get_name() == NUMBER_RANGE_SPAN.get_name() {
                 return Ok(&NUMBER_RANGE_SPAN);
             }
-            Err(LuceneError::unchecked("java.io.InvalidObjectException", "An invalid object."))
+            Err(LuceneError::unchecked(
+                "java.io.InvalidObjectException",
+                "An invalid object.",
+            ))
         }
     }
 }
 
-static BASE: LazyLock<UnlocalizedNumberRangeFormatter> = LazyLock::new(UnlocalizedNumberRangeFormatter::new);
+static BASE: LazyLock<UnlocalizedNumberRangeFormatter> =
+    LazyLock::new(UnlocalizedNumberRangeFormatter::new);
 
 /// The main entrypoint to the formatting of ranges of numbers, including
 /// currencies and other units of measurement.

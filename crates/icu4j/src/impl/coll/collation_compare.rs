@@ -47,13 +47,15 @@ impl CollationCompare {
             loop {
                 let mut ce = left.next_ce();
                 left_primary = ushr32(ce);
-                if left_primary < variable_top && left_primary > Collation::MERGE_SEPARATOR_PRIMARY {
+                if left_primary < variable_top && left_primary > Collation::MERGE_SEPARATOR_PRIMARY
+                {
                     // Variable CE, shift it to quaternary level.
                     // Ignore all following primary ignorables, and shift further variable CEs.
                     any_variable = true;
                     loop {
                         // Store only the primary of the variable CE.
-                        left.base_mut().set_current_ce(ce & (0xffffffff00000000u64 as i64));
+                        left.base_mut()
+                            .set_current_ce(ce & (0xffffffff00000000u64 as i64));
                         loop {
                             ce = left.next_ce();
                             left_primary = ushr32(ce);
@@ -63,7 +65,9 @@ impl CollationCompare {
                                 break;
                             }
                         }
-                        if !(left_primary < variable_top && left_primary > Collation::MERGE_SEPARATOR_PRIMARY) {
+                        if !(left_primary < variable_top
+                            && left_primary > Collation::MERGE_SEPARATOR_PRIMARY)
+                        {
                             break;
                         }
                     }
@@ -77,13 +81,17 @@ impl CollationCompare {
             loop {
                 let mut ce = right.next_ce();
                 right_primary = ushr32(ce);
-                if right_primary < variable_top && right_primary > Collation::MERGE_SEPARATOR_PRIMARY {
+                if right_primary < variable_top
+                    && right_primary > Collation::MERGE_SEPARATOR_PRIMARY
+                {
                     // Variable CE, shift it to quaternary level.
                     // Ignore all following primary ignorables, and shift further variable CEs.
                     any_variable = true;
                     loop {
                         // Store only the primary of the variable CE.
-                        right.base_mut().set_current_ce(ce & (0xffffffff00000000u64 as i64));
+                        right
+                            .base_mut()
+                            .set_current_ce(ce & (0xffffffff00000000u64 as i64));
                         loop {
                             ce = right.next_ce();
                             right_primary = ushr32(ce);
@@ -93,7 +101,9 @@ impl CollationCompare {
                                 break;
                             }
                         }
-                        if !(right_primary < variable_top && right_primary > Collation::MERGE_SEPARATOR_PRIMARY) {
+                        if !(right_primary < variable_top
+                            && right_primary > Collation::MERGE_SEPARATOR_PRIMARY)
+                        {
                             break;
                         }
                     }
@@ -109,7 +119,11 @@ impl CollationCompare {
                     left_primary = settings.reorder(left_primary);
                     right_primary = settings.reorder(right_primary);
                 }
-                return if left_primary < right_primary { Collation::LESS } else { Collation::GREATER };
+                return if left_primary < right_primary {
+                    Collation::LESS
+                } else {
+                    Collation::GREATER
+                };
             }
             if left_primary == Collation::NO_CE_PRIMARY {
                 break;
@@ -141,7 +155,11 @@ impl CollationCompare {
                         }
                     }
                     if left_secondary != right_secondary {
-                        return if left_secondary < right_secondary { Collation::LESS } else { Collation::GREATER };
+                        return if left_secondary < right_secondary {
+                            Collation::LESS
+                        } else {
+                            Collation::GREATER
+                        };
                     }
                     if left_secondary == Collation::NO_CE_WEIGHT16 {
                         break;
@@ -191,7 +209,11 @@ impl CollationCompare {
                         }
 
                         if left_secondary != right_secondary {
-                            return if left_secondary < right_secondary { Collation::LESS } else { Collation::GREATER };
+                            return if left_secondary < right_secondary {
+                                Collation::LESS
+                            } else {
+                                Collation::GREATER
+                            };
                         }
                         if left_secondary == 0 {
                             break;
@@ -201,7 +223,9 @@ impl CollationCompare {
                     // Did we reach the end of either string?
                     // Both strings have the same number of merge separators,
                     // or else there would have been a primary-level difference.
-                    debug_assert!(left.base().get_ce(left_limit) == right.base().get_ce(right_limit));
+                    debug_assert!(
+                        left.base().get_ce(left_limit) == right.base().get_ce(right_limit)
+                    );
                     if p == Collation::NO_CE_PRIMARY {
                         break;
                     }
@@ -287,9 +311,17 @@ impl CollationCompare {
                 // so level length differences were handled there.
                 if left_case != right_case {
                     if (options & CollationSettings::UPPER_FIRST) == 0 {
-                        return if left_case < right_case { Collation::LESS } else { Collation::GREATER };
+                        return if left_case < right_case {
+                            Collation::LESS
+                        } else {
+                            Collation::GREATER
+                        };
                     } else {
-                        return if left_case < right_case { Collation::GREATER } else { Collation::LESS };
+                        return if left_case < right_case {
+                            Collation::GREATER
+                        } else {
+                            Collation::LESS
+                        };
                     }
                 }
                 if ushr16(left_lower32) == Collation::NO_CE_WEIGHT16 {
@@ -313,7 +345,10 @@ impl CollationCompare {
                 left_lower32 = left.base().get_ce(left_index) as i32;
                 left_index += 1;
                 any_quaternaries |= left_lower32;
-                debug_assert!((left_lower32 & Collation::ONLY_TERTIARY_MASK) != 0 || (left_lower32 & 0xc0c0) == 0);
+                debug_assert!(
+                    (left_lower32 & Collation::ONLY_TERTIARY_MASK) != 0
+                        || (left_lower32 & 0xc0c0) == 0
+                );
                 left_tertiary = left_lower32 & tertiary_mask;
                 if left_tertiary != 0 {
                     break;
@@ -326,7 +361,10 @@ impl CollationCompare {
                 right_lower32 = right.base().get_ce(right_index) as i32;
                 right_index += 1;
                 any_quaternaries |= right_lower32;
-                debug_assert!((right_lower32 & Collation::ONLY_TERTIARY_MASK) != 0 || (right_lower32 & 0xc0c0) == 0);
+                debug_assert!(
+                    (right_lower32 & Collation::ONLY_TERTIARY_MASK) != 0
+                        || (right_lower32 & 0xc0c0) == 0
+                );
                 right_tertiary = right_lower32 & tertiary_mask;
                 if right_tertiary != 0 {
                     break;
@@ -355,7 +393,11 @@ impl CollationCompare {
                         }
                     }
                 }
-                return if left_tertiary < right_tertiary { Collation::LESS } else { Collation::GREATER };
+                return if left_tertiary < right_tertiary {
+                    Collation::LESS
+                } else {
+                    Collation::GREATER
+                };
             }
             if left_tertiary == Collation::NO_CE_WEIGHT16 {
                 break;
@@ -416,7 +458,11 @@ impl CollationCompare {
                     left_quaternary = settings.reorder(left_quaternary);
                     right_quaternary = settings.reorder(right_quaternary);
                 }
-                return if left_quaternary < right_quaternary { Collation::LESS } else { Collation::GREATER };
+                return if left_quaternary < right_quaternary {
+                    Collation::LESS
+                } else {
+                    Collation::GREATER
+                };
             }
             if left_quaternary == Collation::NO_CE_PRIMARY {
                 break;

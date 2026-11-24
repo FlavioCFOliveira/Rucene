@@ -36,22 +36,14 @@ pub trait ContextIterator {
 }
 
 static FLAGS_OFFSET: [i8; 256] = [
-    0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
-    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
-    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
-    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
-    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
-    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
-    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
-    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
-    3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
-    3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
-    4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8,
+    0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5,
+    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+    1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6,
+    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+    2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7,
+    3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7, 4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8,
 ];
 
 const I_DOT: &[u16] = &[0x69, 0x307]; /* "i̇" */
@@ -106,7 +98,6 @@ const EXC_DELTA: i32 = 4;
 const EXC_CLOSURE: i32 = 6;
 const EXC_FULL_MAPPINGS: i32 = 7;
 //private static final int EXC_ALL_SLOTS=8;   /* one past the last slot */
-
 /* each slot is 2 uint16_t instead of 1 */
 const EXC_DOUBLE_SLOTS: i32 = 0x100;
 
@@ -153,7 +144,9 @@ fn is_acceptable(version: &[u8; 4]) -> bool {
 }
 
 /// Reborrows an optional context iterator for one call.
-fn reborrow<'s>(iter: &'s mut Option<&mut dyn ContextIterator>) -> Option<&'s mut dyn ContextIterator> {
+fn reborrow<'s>(
+    iter: &'s mut Option<&mut dyn ContextIterator>,
+) -> Option<&'s mut dyn ContextIterator> {
     match iter {
         Some(i) => Some(&mut **i),
         None => None,
@@ -167,6 +160,7 @@ fn reborrow<'s>(iter: &'s mut Option<&mut dyn ContextIterator>) -> Option<&'s mu
 /// local buffer per call here.
 #[derive(Debug)]
 pub struct UCaseProps {
+    #[allow(dead_code)] // Java member with no caller in the closure
     indexes: Vec<i32>,
     exceptions: Vec<u16>,
     unfold: Option<Vec<u16>>,
@@ -190,6 +184,7 @@ pub(crate) struct LatinCase;
 
 impl LatinCase {
     /// Case mapping/folding data for code points up to U+017F.
+    #[allow(dead_code)] // Java member with no caller in the closure
     pub(crate) const LIMIT: u16 = 0x180;
     /// U+017F case-folds and uppercases crossing the ASCII boundary.
     pub(crate) const LONG_S: u16 = 0x17f;
@@ -198,114 +193,1554 @@ impl LatinCase {
 
     /// `TO_LOWER_NORMAL`.
     pub(crate) const TO_LOWER_NORMAL: [i8; 0x180] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, Self::EXC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 0, 32, 32, 32, 32, 32, 32, 32, Self::EXC,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        Self::EXC, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1,
-        0, 1, 0, 1, 0, 1, 0, 1, 0, Self::EXC, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, -121, 1, 0, 1, 0, 1, 0, Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        0,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        -121,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
     ];
 
     /// `TO_LOWER_TR_LT`.
     pub(crate) const TO_LOWER_TR_LT: [i8; 0x180] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 32, 32, 32, 32, 32, 32, 32, 32, Self::EXC, Self::EXC, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, Self::EXC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, Self::EXC, Self::EXC, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 0, 32, 32, 32, 32, 32, 32, 32, Self::EXC,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, Self::EXC, 0, 1, 0, 1, 0, Self::EXC, 0,
-        Self::EXC, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1,
-        0, 1, 0, 1, 0, 1, 0, 1, 0, Self::EXC, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
-        1, 0, 1, 0, 1, 0, 1, 0, -121, 1, 0, 1, 0, 1, 0, Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        Self::EXC,
+        Self::EXC,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        Self::EXC,
+        Self::EXC,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        0,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
+        0,
+        Self::EXC,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        -121,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        Self::EXC,
     ];
 
     /// `TO_UPPER_NORMAL`.
     pub(crate) const TO_UPPER_NORMAL: [i8; 0x180] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32,
-        -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, Self::EXC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Self::EXC,
-        -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32,
-        -32, -32, -32, -32, -32, -32, -32, 0, -32, -32, -32, -32, -32, -32, -32, 121,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, Self::EXC, 0, -1, 0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, 0,
-        -1, 0, -1, 0, -1, 0, -1, 0, -1, Self::EXC, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Self::EXC,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        0,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        121,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        Self::EXC,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        Self::EXC,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        Self::EXC,
     ];
 
     /// `TO_UPPER_TR`.
     pub(crate) const TO_UPPER_TR: [i8; 0x180] = [
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, -32, -32, -32, -32, -32, -32, -32, -32, Self::EXC, -32, -32, -32, -32, -32, -32,
-        -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, Self::EXC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Self::EXC,
-        -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32, -32,
-        -32, -32, -32, -32, -32, -32, -32, 0, -32, -32, -32, -32, -32, -32, -32, 121,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, Self::EXC, 0, -1, 0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, 0,
-        -1, 0, -1, 0, -1, 0, -1, 0, -1, Self::EXC, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1,
-        0, -1, 0, -1, 0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        Self::EXC,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Self::EXC,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        Self::EXC,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        0,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        -32,
+        121,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        Self::EXC,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        Self::EXC,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        0,
+        -1,
+        0,
+        -1,
+        0,
+        -1,
+        Self::EXC,
     ];
 }
 
@@ -351,14 +1786,21 @@ impl UCaseProps {
         Self::read_data(&mut bytes)
     }
 
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn read_data(bytes: &mut ByteBuffer) -> Result<Self> {
         // read the header
-        ICUBinary::read_header(bytes, FMT, Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool))?;
+        ICUBinary::read_header(
+            bytes,
+            FMT,
+            Some(&is_acceptable as &dyn Fn(&[u8; 4]) -> bool),
+        )?;
 
         // read indexes[]
         let count = bytes.get_int()?;
         if count < IX_TOP {
-            return Err(io_exception(format!("indexes[0] too small in {DATA_FILE_NAME}")));
+            return Err(io_exception(format!(
+                "indexes[0] too small in {DATA_FILE_NAME}"
+            )));
         }
         let mut indexes = vec![0i32; count as usize];
 
@@ -372,19 +1814,34 @@ impl UCaseProps {
         let expected_trie_length = indexes[IX_TRIE_SIZE];
         let trie_length = trie.get_serialized_length();
         if trie_length > expected_trie_length {
-            return Err(io_exception(format!("{DATA_FILE_NAME}: not enough bytes for the trie")));
+            return Err(io_exception(format!(
+                "{DATA_FILE_NAME}: not enough bytes for the trie"
+            )));
         }
         // skip padding after trie bytes
         ICUBinary::skip_bytes(bytes, expected_trie_length - trie_length)?;
 
         // read exceptions[]
         let count = indexes[IX_EXC_LENGTH];
-        let exceptions = if count > 0 { ICUBinary::get_string(bytes, count, 0)? } else { Vec::new() };
+        let exceptions = if count > 0 {
+            ICUBinary::get_string(bytes, count, 0)?
+        } else {
+            Vec::new()
+        };
 
         // read unfold[]
         let count = indexes[IX_UNFOLD_LENGTH];
-        let unfold = if count > 0 { Some(ICUBinary::get_chars(bytes, count, 0)?) } else { None };
-        Ok(Self { indexes, exceptions, unfold, trie })
+        let unfold = if count > 0 {
+            Some(ICUBinary::get_chars(bytes, count, 0)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            indexes,
+            exceptions,
+            unfold,
+            trie,
+        })
     }
 
     /// `INSTANCE`.
@@ -487,7 +1944,11 @@ impl UCaseProps {
             exc_offset += 1;
             if has_slot(exc_word, EXC_DELTA) && Self::is_upper_or_title_from_props(props) {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             if has_slot(exc_word, EXC_LOWER) {
                 c = self.get_slot_value(exc_word, EXC_LOWER, exc_offset);
@@ -509,7 +1970,11 @@ impl UCaseProps {
             exc_offset += 1;
             if has_slot(exc_word, EXC_DELTA) && Self::get_type_from_props(props) == Self::LOWER {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             if has_slot(exc_word, EXC_UPPER) {
                 c = self.get_slot_value(exc_word, EXC_UPPER, exc_offset);
@@ -531,7 +1996,11 @@ impl UCaseProps {
             exc_offset += 1;
             if has_slot(exc_word, EXC_DELTA) && Self::get_type_from_props(props) == Self::LOWER {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             let index = if has_slot(exc_word, EXC_TITLE) {
                 EXC_TITLE
@@ -606,7 +2075,11 @@ impl UCaseProps {
             if has_slot(exc_word, EXC_DELTA) {
                 exc_offset = exc_offset0;
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset);
-                set.add(if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta })?;
+                set.add(if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                })?;
             }
 
             /* get the closure string pointer & length */
@@ -640,7 +2113,9 @@ impl UCaseProps {
                 /* add the full case folding string */
                 let length = full_length & 0xf;
                 if length != 0 {
-                    set.add_str(&self.exceptions[exc_offset as usize..(exc_offset + length) as usize])?;
+                    set.add_str(
+                        &self.exceptions[exc_offset as usize..(exc_offset + length) as usize],
+                    )?;
                     exc_offset += length;
                 }
 
@@ -719,7 +2194,11 @@ impl UCaseProps {
             if has_slot(exc_word, EXC_DELTA) {
                 exc_offset = exc_offset0;
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset);
-                let mapping = if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                let mapping = if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
                 set.add(mapping)?;
             }
 
@@ -814,7 +2293,9 @@ impl UCaseProps {
     ///
     /// The errors of [`UnicodeSet::add`] (a frozen set).
     pub fn add_string_case_closure(&self, s: &[u16], set: &mut UnicodeSet) -> Result<bool> {
-        let Some(unfold) = &self.unfold else { return Ok(false) };
+        let Some(unfold) = &self.unfold else {
+            return Ok(false);
+        };
 
         let length = s.len() as i32;
         if length <= 1 {
@@ -953,7 +2434,11 @@ impl UCaseProps {
     }
 
     /* Is followed by {case-ignorable}* cased  ? (dir determines looking forward/backward) */
-    fn is_followed_by_cased_letter(&self, iter: Option<&mut dyn ContextIterator>, dir: i32) -> bool {
+    fn is_followed_by_cased_letter(
+        &self,
+        iter: Option<&mut dyn ContextIterator>,
+        dir: i32,
+    ) -> bool {
         let Some(iter) = iter else { return false };
 
         iter.reset(dir);
@@ -1099,7 +2584,13 @@ impl UCaseProps {
     /// caseLocale)`: the full lowercase mapping of `c`. Returns the code
     /// point (or `~c` for an unchanged one), or the length of the string it
     /// appended to `out` (at most `MAX_STRING_LENGTH`).
-    pub fn to_full_lower(&self, c: i32, mut iter: Option<&mut dyn ContextIterator>, out: &mut Vec<u16>, case_locale: i32) -> i32 {
+    pub fn to_full_lower(
+        &self,
+        c: i32,
+        mut iter: Option<&mut dyn ContextIterator>,
+        out: &mut Vec<u16>,
+        case_locale: i32,
+    ) -> i32 {
         let mut result = c;
         let props = self.trie.get(c);
         if !Self::props_has_exception(props) {
@@ -1129,21 +2620,21 @@ impl UCaseProps {
                         (c == 0xcc || c == 0xcd || c == 0x128))
                 {
                     /*
-                        # Lithuanian
+                       # Lithuanian
 
-                        # Lithuanian retains the dot in a lowercase i when followed by accents.
+                       # Lithuanian retains the dot in a lowercase i when followed by accents.
 
-                        # Introduce an explicit dot above when lowercasing capital I's and J's
-                        # whenever there are more accents above.
-                        # (of the accents used in Lithuanian: grave, acute, tilde above, and ogonek)
+                       # Introduce an explicit dot above when lowercasing capital I's and J's
+                       # whenever there are more accents above.
+                       # (of the accents used in Lithuanian: grave, acute, tilde above, and ogonek)
 
-                        0049; 0069 0307; 0049; 0049; lt More_Above; # LATIN CAPITAL LETTER I
-                        004A; 006A 0307; 004A; 004A; lt More_Above; # LATIN CAPITAL LETTER J
-                        012E; 012F 0307; 012E; 012E; lt More_Above; # LATIN CAPITAL LETTER I WITH OGONEK
-                        00CC; 0069 0307 0300; 00CC; 00CC; lt; # LATIN CAPITAL LETTER I WITH GRAVE
-                        00CD; 0069 0307 0301; 00CD; 00CD; lt; # LATIN CAPITAL LETTER I WITH ACUTE
-                        0128; 0069 0307 0303; 0128; 0128; lt; # LATIN CAPITAL LETTER I WITH TILDE
-                     */
+                       0049; 0069 0307; 0049; 0049; lt More_Above; # LATIN CAPITAL LETTER I
+                       004A; 006A 0307; 004A; 004A; lt More_Above; # LATIN CAPITAL LETTER J
+                       012E; 012F 0307; 012E; 012E; lt More_Above; # LATIN CAPITAL LETTER I WITH OGONEK
+                       00CC; 0069 0307 0300; 00CC; 00CC; lt; # LATIN CAPITAL LETTER I WITH GRAVE
+                       00CD; 0069 0307 0301; 00CD; 00CD; lt; # LATIN CAPITAL LETTER I WITH ACUTE
+                       0128; 0069 0307 0303; 0128; 0128; lt; # LATIN CAPITAL LETTER I WITH TILDE
+                    */
                     return match c {
                         0x49 => {
                             /* LATIN CAPITAL LETTER I */
@@ -1180,48 +2671,55 @@ impl UCaseProps {
                 /* # Turkish and Azeri */
                 } else if case_locale == Self::LOC_TURKISH && c == 0x130 {
                     /*
-                        # I and i-dotless; I-dot and i are case pairs in Turkish and Azeri
-                        # The following rules handle those cases.
+                       # I and i-dotless; I-dot and i are case pairs in Turkish and Azeri
+                       # The following rules handle those cases.
 
-                        0130; 0069; 0130; 0130; tr # LATIN CAPITAL LETTER I WITH DOT ABOVE
-                        0130; 0069; 0130; 0130; az # LATIN CAPITAL LETTER I WITH DOT ABOVE
-                     */
+                       0130; 0069; 0130; 0130; tr # LATIN CAPITAL LETTER I WITH DOT ABOVE
+                       0130; 0069; 0130; 0130; az # LATIN CAPITAL LETTER I WITH DOT ABOVE
+                    */
                     return 0x69;
-                } else if case_locale == Self::LOC_TURKISH && c == 0x307 && self.is_preceded_by_i(reborrow(&mut iter)) {
+                } else if case_locale == Self::LOC_TURKISH
+                    && c == 0x307
+                    && self.is_preceded_by_i(reborrow(&mut iter))
+                {
                     /*
-                        # When lowercasing, remove dot_above in the sequence I + dot_above, which will turn into i.
-                        # This matches the behavior of the canonically equivalent I-dot_above
+                       # When lowercasing, remove dot_above in the sequence I + dot_above, which will turn into i.
+                       # This matches the behavior of the canonically equivalent I-dot_above
 
-                        0307; ; 0307; 0307; tr After_I; # COMBINING DOT ABOVE
-                        0307; ; 0307; 0307; az After_I; # COMBINING DOT ABOVE
-                     */
+                       0307; ; 0307; 0307; tr After_I; # COMBINING DOT ABOVE
+                       0307; ; 0307; 0307; az After_I; # COMBINING DOT ABOVE
+                    */
                     return 0; /* remove the dot (continue without output) */
-                } else if case_locale == Self::LOC_TURKISH && c == 0x49 && !self.is_followed_by_dot_above(reborrow(&mut iter)) {
+                } else if case_locale == Self::LOC_TURKISH
+                    && c == 0x49
+                    && !self.is_followed_by_dot_above(reborrow(&mut iter))
+                {
                     /*
-                        # When lowercasing, unless an I is before a dot_above, it turns into a dotless i.
+                       # When lowercasing, unless an I is before a dot_above, it turns into a dotless i.
 
-                        0049; 0131; 0049; 0049; tr Not_Before_Dot; # LATIN CAPITAL LETTER I
-                        0049; 0131; 0049; 0049; az Not_Before_Dot; # LATIN CAPITAL LETTER I
-                     */
+                       0049; 0131; 0049; 0049; tr Not_Before_Dot; # LATIN CAPITAL LETTER I
+                       0049; 0131; 0049; 0049; az Not_Before_Dot; # LATIN CAPITAL LETTER I
+                    */
                     return 0x131;
                 } else if c == 0x130 {
                     /*
-                        # Preserve canonical equivalence for I with dot. Turkic is handled below.
+                       # Preserve canonical equivalence for I with dot. Turkic is handled below.
 
-                        0130; 0069 0307; 0130; 0130; # LATIN CAPITAL LETTER I WITH DOT ABOVE
-                     */
+                       0130; 0069 0307; 0130; 0130; # LATIN CAPITAL LETTER I WITH DOT ABOVE
+                    */
                     out.extend_from_slice(I_DOT);
                     return 2;
                 } else if c == 0x3a3
                     && !self.is_followed_by_cased_letter(reborrow(&mut iter), 1)
-                    && self.is_followed_by_cased_letter(reborrow(&mut iter), -1) /* -1=preceded */
+                    && self.is_followed_by_cased_letter(reborrow(&mut iter), -1)
+                /* -1=preceded */
                 {
                     /* greek capital sigma maps depending on surrounding cased letters (see SpecialCasing.txt) */
                     /*
-                        # Special case for final form of sigma
+                       # Special case for final form of sigma
 
-                        03A3; 03C2; 03A3; 03A3; Final_Sigma; # GREEK CAPITAL LETTER SIGMA
-                     */
+                       03A3; 03C2; 03A3; 03A3; Final_Sigma; # GREEK CAPITAL LETTER SIGMA
+                    */
                     return 0x3c2; /* greek small final sigma */
                 } else {
                     /* no known conditional special case mapping, use a normal mapping */
@@ -1234,7 +2732,9 @@ impl UCaseProps {
                     exc_offset = (value >> 32) as i32 + 1;
 
                     // append the lowercase mapping
-                    out.extend_from_slice(&self.exceptions[exc_offset as usize..(exc_offset + full) as usize]);
+                    out.extend_from_slice(
+                        &self.exceptions[exc_offset as usize..(exc_offset + full) as usize],
+                    );
 
                     /* return the string length */
                     return full;
@@ -1243,7 +2743,11 @@ impl UCaseProps {
 
             if has_slot(exc_word, EXC_DELTA) && Self::is_upper_or_title_from_props(props) {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset2);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             if has_slot(exc_word, EXC_LOWER) {
                 result = self.get_slot_value(exc_word, EXC_LOWER, exc_offset2);
@@ -1258,7 +2762,14 @@ impl UCaseProps {
     }
 
     /* internal */
-    fn to_upper_or_title(&self, c: i32, iter: Option<&mut dyn ContextIterator>, out: &mut Vec<u16>, loc: i32, upper_not_title: bool) -> i32 {
+    fn to_upper_or_title(
+        &self,
+        c: i32,
+        iter: Option<&mut dyn ContextIterator>,
+        out: &mut Vec<u16>,
+        loc: i32,
+        upper_not_title: bool,
+    ) -> i32 {
         let mut result = c;
         let props = self.trie.get(c);
         if !Self::props_has_exception(props) {
@@ -1276,27 +2787,30 @@ impl UCaseProps {
                 /* use hardcoded conditions and mappings */
                 if loc == Self::LOC_TURKISH && c == 0x69 {
                     /*
-                        # Turkish and Azeri
+                       # Turkish and Azeri
 
-                        # I and i-dotless; I-dot and i are case pairs in Turkish and Azeri
-                        # The following rules handle those cases.
+                       # I and i-dotless; I-dot and i are case pairs in Turkish and Azeri
+                       # The following rules handle those cases.
 
-                        # When uppercasing, i turns into a dotted capital I
+                       # When uppercasing, i turns into a dotted capital I
 
-                        0069; 0069; 0130; 0130; tr; # LATIN SMALL LETTER I
-                        0069; 0069; 0130; 0130; az; # LATIN SMALL LETTER I
-                     */
+                       0069; 0069; 0130; 0130; tr; # LATIN SMALL LETTER I
+                       0069; 0069; 0130; 0130; az; # LATIN SMALL LETTER I
+                    */
                     return 0x130;
-                } else if loc == Self::LOC_LITHUANIAN && c == 0x307 && self.is_preceded_by_soft_dotted(iter) {
+                } else if loc == Self::LOC_LITHUANIAN
+                    && c == 0x307
+                    && self.is_preceded_by_soft_dotted(iter)
+                {
                     /*
-                        # Lithuanian
+                       # Lithuanian
 
-                        # Lithuanian retains the dot in a lowercase i when followed by accents.
+                       # Lithuanian retains the dot in a lowercase i when followed by accents.
 
-                        # Remove DOT ABOVE after "i" with upper or titlecase
+                       # Remove DOT ABOVE after "i" with upper or titlecase
 
-                        0307; 0307; ; ; lt After_Soft_Dotted; # COMBINING DOT ABOVE
-                     */
+                       0307; 0307; ; ; lt After_Soft_Dotted; # COMBINING DOT ABOVE
+                    */
                     return 0; /* remove the dot (continue without output) */
                 } else if c == 0x0587 {
                     // See ICU-13416:
@@ -1304,9 +2818,17 @@ impl UCaseProps {
                     // uppercases to ԵՒ=ech+yiwn by default and in Western Armenian,
                     // but to ԵՎ=ech+vew in Eastern Armenian.
                     if loc == Self::LOC_ARMENIAN {
-                        out.extend_from_slice(if upper_not_title { &[0x535, 0x54e] } else { &[0x535, 0x57e] });
+                        out.extend_from_slice(if upper_not_title {
+                            &[0x535, 0x54e]
+                        } else {
+                            &[0x535, 0x57e]
+                        });
                     } else {
-                        out.extend_from_slice(if upper_not_title { &[0x535, 0x552] } else { &[0x535, 0x582] });
+                        out.extend_from_slice(if upper_not_title {
+                            &[0x535, 0x552]
+                        } else {
+                            &[0x535, 0x582]
+                        });
                     }
                     return 2;
                 } else {
@@ -1335,7 +2857,9 @@ impl UCaseProps {
 
                 if full != 0 {
                     // append the result string
-                    out.extend_from_slice(&self.exceptions[exc_offset as usize..(exc_offset + full) as usize]);
+                    out.extend_from_slice(
+                        &self.exceptions[exc_offset as usize..(exc_offset + full) as usize],
+                    );
 
                     /* return the string length */
                     return full;
@@ -1344,7 +2868,11 @@ impl UCaseProps {
 
             if has_slot(exc_word, EXC_DELTA) && Self::get_type_from_props(props) == Self::LOWER {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset2);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             let index = if !upper_not_title && has_slot(exc_word, EXC_TITLE) {
                 EXC_TITLE
@@ -1366,13 +2894,25 @@ impl UCaseProps {
 
     /// `toFullUpper(int c, ContextIterator iter, Appendable out, int
     /// caseLocale)`: as [`to_full_lower`](Self::to_full_lower), uppercase.
-    pub fn to_full_upper(&self, c: i32, iter: Option<&mut dyn ContextIterator>, out: &mut Vec<u16>, case_locale: i32) -> i32 {
+    pub fn to_full_upper(
+        &self,
+        c: i32,
+        iter: Option<&mut dyn ContextIterator>,
+        out: &mut Vec<u16>,
+        case_locale: i32,
+    ) -> i32 {
         self.to_upper_or_title(c, iter, out, case_locale, true)
     }
 
     /// `toFullTitle(int c, ContextIterator iter, Appendable out, int
     /// caseLocale)`: as [`to_full_lower`](Self::to_full_lower), titlecase.
-    pub fn to_full_title(&self, c: i32, iter: Option<&mut dyn ContextIterator>, out: &mut Vec<u16>, case_locale: i32) -> i32 {
+    pub fn to_full_title(
+        &self,
+        c: i32,
+        iter: Option<&mut dyn ContextIterator>,
+        out: &mut Vec<u16>,
+        case_locale: i32,
+    ) -> i32 {
         self.to_upper_or_title(c, iter, out, case_locale, false)
     }
 
@@ -1455,7 +2995,11 @@ impl UCaseProps {
             }
             if has_slot(exc_word, EXC_DELTA) && Self::is_upper_or_title_from_props(props) {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             let index = if has_slot(exc_word, EXC_FOLD) {
                 EXC_FOLD
@@ -1536,7 +3080,9 @@ impl UCaseProps {
 
                 if full != 0 {
                     // append the result string
-                    out.extend_from_slice(&self.exceptions[exc_offset as usize..(exc_offset + full) as usize]);
+                    out.extend_from_slice(
+                        &self.exceptions[exc_offset as usize..(exc_offset + full) as usize],
+                    );
 
                     /* return the string length */
                     return full;
@@ -1548,7 +3094,11 @@ impl UCaseProps {
             }
             if has_slot(exc_word, EXC_DELTA) && Self::is_upper_or_title_from_props(props) {
                 let delta = self.get_slot_value(exc_word, EXC_DELTA, exc_offset2);
-                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 { c + delta } else { c - delta };
+                return if (exc_word & EXC_DELTA_IS_NEGATIVE) == 0 {
+                    c + delta
+                } else {
+                    c - delta
+                };
             }
             let index = if has_slot(exc_word, EXC_FOLD) {
                 EXC_FOLD
@@ -1591,9 +3141,15 @@ impl UCaseProps {
              * and the property starts set needs to be the union of the
              * case and NFC/canonical-iteration starts.
              */
-            UProperty::CHANGES_WHEN_LOWERCASED => self.to_full_lower(c, None, &mut dummy, Self::LOC_ROOT) >= 0,
-            UProperty::CHANGES_WHEN_UPPERCASED => self.to_full_upper(c, None, &mut dummy, Self::LOC_ROOT) >= 0,
-            UProperty::CHANGES_WHEN_TITLECASED => self.to_full_title(c, None, &mut dummy, Self::LOC_ROOT) >= 0,
+            UProperty::CHANGES_WHEN_LOWERCASED => {
+                self.to_full_lower(c, None, &mut dummy, Self::LOC_ROOT) >= 0
+            }
+            UProperty::CHANGES_WHEN_UPPERCASED => {
+                self.to_full_upper(c, None, &mut dummy, Self::LOC_ROOT) >= 0
+            }
+            UProperty::CHANGES_WHEN_TITLECASED => {
+                self.to_full_title(c, None, &mut dummy, Self::LOC_ROOT) >= 0
+            }
             /* case UProperty.CHANGES_WHEN_CASEFOLDED: -- in UCharacterProperty.java */
             UProperty::CHANGES_WHEN_CASEMAPPED => {
                 self.to_full_lower(c, None, &mut dummy, Self::LOC_ROOT) >= 0

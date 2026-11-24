@@ -287,12 +287,15 @@ impl Collation {
     /// `ce32HasContext(int)`.
     pub fn ce32_has_context(ce32: i32) -> bool {
         Self::is_special_ce32(ce32)
-            && (Self::tag_from_ce32(ce32) == Self::PREFIX_TAG || Self::tag_from_ce32(ce32) == Self::CONTRACTION_TAG)
+            && (Self::tag_from_ce32(ce32) == Self::PREFIX_TAG
+                || Self::tag_from_ce32(ce32) == Self::CONTRACTION_TAG)
     }
 
     /// Gets the primary CE of a Latin mini expansion.
     pub fn latin_ce0_from_ce32(ce32: i32) -> i64 {
-        (((ce32 & h(0xff000000)) as i64) << 32) | Self::COMMON_SECONDARY_CE as i64 | ((ce32 & 0xff0000) >> 8) as i64
+        (((ce32 & h(0xff000000)) as i64) << 32)
+            | Self::COMMON_SECONDARY_CE as i64
+            | ((ce32 & 0xff0000) >> 8) as i64
     }
 
     /// Gets the secondary CE of a Latin mini expansion.
@@ -319,7 +322,9 @@ impl Collation {
     pub fn ce_from_simple_ce32(ce32: i32) -> i64 {
         // normal form ppppsstt -> pppp0000ss00tt00
         debug_assert!((ce32 & 0xff) < Self::SPECIAL_CE32_LOW_BYTE);
-        (((ce32 & h(0xffff0000)) as i64) << 32) | (((ce32 & 0xff00) as i64) << 16) | ((ce32 & 0xff) << 8) as i64
+        (((ce32 & h(0xffff0000)) as i64) << 32)
+            | (((ce32 & 0xff00) as i64) << 16)
+            | ((ce32 & 0xff) << 8) as i64
     }
 
     /// Returns a 64-bit CE from a simple/long-primary/long-secondary CE32.
@@ -327,7 +332,9 @@ impl Collation {
         let tertiary = ce32 & 0xff;
         if tertiary < Self::SPECIAL_CE32_LOW_BYTE {
             // normal form ppppsstt -> pppp0000ss00tt00
-            (((ce32 & h(0xffff0000)) as i64) << 32) | (((ce32 & 0xff00) as i64) << 16) | (tertiary << 8) as i64
+            (((ce32 & h(0xffff0000)) as i64) << 32)
+                | (((ce32 & 0xff00) as i64) << 16)
+                | (tertiary << 8) as i64
         } else {
             ce32 -= tertiary;
             if (tertiary & 0xf) == Self::LONG_PRIMARY_TAG {
@@ -353,7 +360,11 @@ impl Collation {
     }
 
     /// Increments a 2-byte primary by a code point offset.
-    pub fn inc_two_byte_primary_by_offset(base_primary: i64, is_compressible: bool, mut offset: i32) -> i64 {
+    pub fn inc_two_byte_primary_by_offset(
+        base_primary: i64,
+        is_compressible: bool,
+        mut offset: i32,
+    ) -> i64 {
         // Extract the second byte, minus the minimum byte value,
         // plus the offset, modulo the number of usable byte values, plus the minimum.
         // Reserve the PRIMARY_COMPRESSION_LOW_BYTE and high byte if necessary.
@@ -372,7 +383,11 @@ impl Collation {
     }
 
     /// Increments a 3-byte primary by a code point offset.
-    pub fn inc_three_byte_primary_by_offset(base_primary: i64, is_compressible: bool, mut offset: i32) -> i64 {
+    pub fn inc_three_byte_primary_by_offset(
+        base_primary: i64,
+        is_compressible: bool,
+        mut offset: i32,
+    ) -> i64 {
         // Extract the third byte, minus the minimum byte value,
         // plus the offset, modulo the number of usable byte values, plus the minimum.
         offset += ((base_primary >> 8) as i32 & 0xff) - 2;
@@ -394,7 +409,11 @@ impl Collation {
     }
 
     /// Decrements a 2-byte primary by one range step (1..0x7f).
-    pub fn dec_two_byte_primary_by_one_step(mut base_primary: i64, is_compressible: bool, step: i32) -> i64 {
+    pub fn dec_two_byte_primary_by_one_step(
+        mut base_primary: i64,
+        is_compressible: bool,
+        step: i32,
+    ) -> i64 {
         // Extract the second byte, minus the minimum byte value,
         // minus the step, modulo the number of usable byte values, plus the minimum.
         // Reserve the PRIMARY_COMPRESSION_LOW_BYTE and high byte if necessary.
@@ -414,7 +433,11 @@ impl Collation {
     }
 
     /// Decrements a 3-byte primary by one range step (1..0x7f).
-    pub fn dec_three_byte_primary_by_one_step(mut base_primary: i64, is_compressible: bool, step: i32) -> i64 {
+    pub fn dec_three_byte_primary_by_one_step(
+        mut base_primary: i64,
+        is_compressible: bool,
+        step: i32,
+    ) -> i64 {
         // Extract the third byte, minus the minimum byte value,
         // minus the step, modulo the number of usable byte values, plus the minimum.
         debug_assert!(0 < step && step <= 0x7f);

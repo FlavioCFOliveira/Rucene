@@ -6,8 +6,8 @@
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
-use rucene::error::{LuceneError, Result};
 use crate::util::u_locale::Category;
+use rucene::error::{LuceneError, Result};
 
 use crate::jdk::math::{BigDecimal, BigInteger, MathContext, RoundingMode};
 use crate::jdk::text::{AttributedCharacterIterator, FieldPosition, Format, ParsedObject};
@@ -22,7 +22,9 @@ use crate::r#impl::formatted_value_string_builder_impl::FormattedValueStringBuil
 use crate::r#impl::number::affix_utils::AffixUtils;
 use crate::r#impl::number::decimal_format_properties::{DecimalFormatProperties, ParseMode};
 use crate::r#impl::number::decimal_quantity::DecimalQuantity;
-use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{DecimalQuantity_DualStorageBCD, JavaNumber};
+use crate::r#impl::number::decimal_quantity_dual_storage_bcd::{
+    DecimalQuantity_DualStorageBCD, JavaNumber,
+};
 use crate::r#impl::number::padder::{PadPosition, FALLBACK_PADDING_STRING};
 use crate::r#impl::number::parse::number_parser_impl::NumberParserImpl;
 use crate::r#impl::number::parse::parsed_number::ParsedNumber;
@@ -33,8 +35,8 @@ use crate::text::compact_decimal_format::CompactStyle;
 use crate::text::currency_plural_info::CurrencyPluralInfo;
 use crate::text::decimal_format_symbols::DecimalFormatSymbols;
 use crate::text::number_format::{
-    self, lock, NumberFormat, NumberFormatBase, ACCOUNTINGCURRENCYSTYLE, CASHCURRENCYSTYLE, CURRENCYSTYLE,
-    ISOCURRENCYSTYLE, NUMBERSTYLE, PLURALCURRENCYSTYLE, STANDARDCURRENCYSTYLE,
+    self, lock, NumberFormat, NumberFormatBase, ACCOUNTINGCURRENCYSTYLE, CASHCURRENCYSTYLE,
+    CURRENCYSTYLE, ISOCURRENCYSTYLE, NUMBERSTYLE, PLURALCURRENCYSTYLE, STANDARDCURRENCYSTYLE,
 };
 use crate::text::plural_rules::IFixedDecimal;
 use crate::util::currency::{Currency, CurrencyUsage};
@@ -81,6 +83,7 @@ pub(crate) enum DecimalFormatClass {
 /// A value of a field of the pre-ICU-59 serialized form (`readObject` of a
 /// stream older than version 5).
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // variants mirror Java's serialized field values
 pub enum LegacyFieldValue {
     /// A `boolean`.
     Boolean(bool),
@@ -148,7 +151,11 @@ impl DecimalFormat {
     pub const MINIMUM_GROUPING_DIGITS_MIN2: i32 = -3;
 
     fn from_state(class: DecimalFormatClass, state: State) -> Self {
-        DecimalFormat { class, base: Mutex::new(NumberFormatBase::new()), state: Mutex::new(state) }
+        DecimalFormat {
+            class,
+            base: Mutex::new(NumberFormatBase::new()),
+            state: Mutex::new(state),
+        }
     }
 
     fn initial_state(symbols: DecimalFormatSymbols) -> State {
@@ -173,10 +180,17 @@ impl DecimalFormat {
         // Use the locale's default pattern
         let def = ULocale::get_default_category(Category::Format);
         let pattern = number_format::get_pattern(&def, NUMBERSTYLE)?;
-        let df = Self::from_state(DecimalFormatClass::DecimalFormat, Self::initial_state(Self::get_default_symbols()?));
+        let df = Self::from_state(
+            DecimalFormatClass::DecimalFormat,
+            Self::initial_state(Self::get_default_symbols()?),
+        );
         // Note: ignoreRounding does not affect the default pattern
         df.with_state(|me, s| {
-            Self::set_properties_from_pattern(s, Some(&pattern), PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY)?;
+            Self::set_properties_from_pattern(
+                s,
+                Some(&pattern),
+                PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY,
+            )?;
             me.refresh_formatter(s)
         })?;
         Ok(df)
@@ -190,10 +204,17 @@ impl DecimalFormat {
     /// `NullPointerException` for a `None` pattern; the
     /// `IllegalArgumentException` of a malformed pattern.
     pub fn from_pattern(pattern: Option<&[u16]>) -> Result<Self> {
-        let df = Self::from_state(DecimalFormatClass::DecimalFormat, Self::initial_state(Self::get_default_symbols()?));
+        let df = Self::from_state(
+            DecimalFormatClass::DecimalFormat,
+            Self::initial_state(Self::get_default_symbols()?),
+        );
         // Must call refreshFormatter, even if pattern is null
         df.with_state(|me, s| {
-            Self::set_properties_from_pattern(s, pattern, PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY)?;
+            Self::set_properties_from_pattern(
+                s,
+                pattern,
+                PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY,
+            )?;
             me.refresh_formatter(s)
         })?;
         Ok(df)
@@ -208,9 +229,16 @@ impl DecimalFormat {
     ///
     /// As [`from_pattern`](Self::from_pattern).
     pub fn with_symbols(pattern: Option<&[u16]>, symbols: &DecimalFormatSymbols) -> Result<Self> {
-        let df = Self::from_state(DecimalFormatClass::DecimalFormat, Self::initial_state(symbols.clone()));
+        let df = Self::from_state(
+            DecimalFormatClass::DecimalFormat,
+            Self::initial_state(symbols.clone()),
+        );
         df.with_state(|me, s| {
-            Self::set_properties_from_pattern(s, pattern, PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY)?;
+            Self::set_properties_from_pattern(
+                s,
+                pattern,
+                PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY,
+            )?;
             me.refresh_formatter(s)
         })?;
         Ok(df)
@@ -244,12 +272,23 @@ impl DecimalFormat {
     /// # Errors
     ///
     /// As [`from_pattern`](Self::from_pattern).
-    pub(crate) fn with_style(pattern: &[u16], symbols: &DecimalFormatSymbols, choice: i32) -> Result<Self> {
+    pub(crate) fn with_style(
+        pattern: &[u16],
+        symbols: &DecimalFormatSymbols,
+        choice: i32,
+    ) -> Result<Self> {
         Self::with_style_opt(Some(pattern), symbols, choice)
     }
 
-    fn with_style_opt(pattern: Option<&[u16]>, symbols: &DecimalFormatSymbols, choice: i32) -> Result<Self> {
-        let df = Self::from_state(DecimalFormatClass::DecimalFormat, Self::initial_state(symbols.clone()));
+    fn with_style_opt(
+        pattern: Option<&[u16]>,
+        symbols: &DecimalFormatSymbols,
+        choice: i32,
+    ) -> Result<Self> {
+        let df = Self::from_state(
+            DecimalFormatClass::DecimalFormat,
+            Self::initial_state(symbols.clone()),
+        );
         df.with_state(|me, s| {
             // If choice is a currency type, ignore the rounding information.
             if choice == CURRENCYSTYLE
@@ -259,9 +298,17 @@ impl DecimalFormat {
                 || choice == STANDARDCURRENCYSTYLE
                 || choice == PLURALCURRENCYSTYLE
             {
-                Self::set_properties_from_pattern(s, pattern, PatternStringParser::IGNORE_ROUNDING_ALWAYS)?;
+                Self::set_properties_from_pattern(
+                    s,
+                    pattern,
+                    PatternStringParser::IGNORE_ROUNDING_ALWAYS,
+                )?;
             } else {
-                Self::set_properties_from_pattern(s, pattern, PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY)?;
+                Self::set_properties_from_pattern(
+                    s,
+                    pattern,
+                    PatternStringParser::IGNORE_ROUNDING_IF_CURRENCY,
+                )?;
             }
             me.refresh_formatter(s)
         })?;
@@ -307,7 +354,9 @@ impl DecimalFormat {
 
     /// The exported properties (set by every constructor).
     fn exported(s: &State) -> &DecimalFormatProperties {
-        s.exported_properties.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException: exportedProperties"))
+        s.exported_properties
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException: exportedProperties"))
     }
 
     /// The formatter (set by every constructor).
@@ -330,7 +379,11 @@ impl DecimalFormat {
     /// a malformed pattern.
     pub fn apply_pattern(&self, pattern: Option<&[u16]>) -> Result<()> {
         self.with_state(|me, s| {
-            Self::set_properties_from_pattern(s, pattern, PatternStringParser::IGNORE_ROUNDING_NEVER)?;
+            Self::set_properties_from_pattern(
+                s,
+                pattern,
+                PatternStringParser::IGNORE_ROUNDING_NEVER,
+            )?;
             // Backwards compatibility: clear out user-specified prefix and suffix,
             // as well as CurrencyPluralInfo.
             s.properties.set_positive_prefix(None);
@@ -369,7 +422,11 @@ impl DecimalFormat {
         state.formatter = None;
         state.parser = None;
         state.currency_parser = None;
-        let other = DecimalFormat { class: self.class, base: Mutex::new(base), state: Mutex::new(state) };
+        let other = DecimalFormat {
+            class: self.class,
+            base: Mutex::new(base),
+            state: Mutex::new(state),
+        };
         other.with_state(|me, s| me.refresh_formatter(s))?;
         Ok(other)
     }
@@ -378,7 +435,13 @@ impl DecimalFormat {
     /// `defaultWriteObject()` (the `serialVersionOnStream` field, 5) and
     /// `writeInt(0)`, the properties and the symbols.
     pub fn write_object(&self) -> (i32, DecimalFormatProperties, DecimalFormatSymbols) {
-        self.read(|s| (SERIAL_VERSION_ON_STREAM, s.properties.clone(), (*s.symbols).clone()))
+        self.read(|s| {
+            (
+                SERIAL_VERSION_ON_STREAM,
+                s.properties.clone(),
+                (*s.symbols).clone(),
+            )
+        })
     }
 
     /// Equivalent to `readObject(ObjectInputStream)` of a version-5
@@ -400,18 +463,24 @@ impl DecimalFormat {
         if serial_version > 5 {
             return Err(LuceneError::unchecked(
                 "java.io.IOException",
-                format!("Cannot deserialize newer com.ibm.icu.text.DecimalFormat (v{serial_version})"),
+                format!(
+                    "Cannot deserialize newer com.ibm.icu.text.DecimalFormat (v{serial_version})"
+                ),
             ));
         }
         if serialized_field_count > 1 {
-            return Err(LuceneError::unchecked("java.io.IOException", "Too many fields when reading serial version 5"));
+            return Err(LuceneError::unchecked(
+                "java.io.IOException",
+                "Too many fields when reading serial version 5",
+            ));
         }
         self.with_state(|me, s| {
             s.properties = match serialized_properties {
                 SerializedProperties::DecimalFormatProperties(p) => p,
-                SerializedProperties::Properties(p) => {
-                    p.get_instance().cloned().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
-                }
+                SerializedProperties::Properties(p) => p
+                    .get_instance()
+                    .cloned()
+                    .unwrap_or_else(|| panic!("java.lang.NullPointerException")),
             };
             s.symbols = Arc::new(symbols);
             s.exported_properties = Some(DecimalFormatProperties::new());
@@ -435,8 +504,12 @@ impl DecimalFormat {
         let (mut np, mut npp, mut ns, mut nsp) = (None, None, None, None);
         for (name, value) in fields {
             match (name.as_str(), value) {
-                ("decimalSeparatorAlwaysShown", F::Boolean(v)) => self.set_decimal_separator_always_shown(v)?,
-                ("exponentSignAlwaysShown", F::Boolean(v)) => self.set_exponent_sign_always_shown(v)?,
+                ("decimalSeparatorAlwaysShown", F::Boolean(v)) => {
+                    self.set_decimal_separator_always_shown(v)?
+                }
+                ("exponentSignAlwaysShown", F::Boolean(v)) => {
+                    self.set_exponent_sign_always_shown(v)?
+                }
                 ("formatWidth", F::Int(v)) => self.set_format_width(v)?,
                 ("groupingSize", F::Byte(v)) => self.set_grouping_size(i32::from(v))?,
                 ("groupingSize2", F::Byte(v)) => self.set_secondary_grouping_size(i32::from(v))?,
@@ -447,11 +520,15 @@ impl DecimalFormat {
                 ("pad", F::Char(v)) => self.set_pad_character(v)?,
                 ("padPosition", F::Int(v)) => self.set_pad_position(v)?,
                 ("parseBigDecimal", F::Boolean(v)) => self.set_parse_big_decimal(v)?,
-                ("parseRequireDecimalPoint", F::Boolean(v)) => self.set_decimal_pattern_match_required(v)?,
+                ("parseRequireDecimalPoint", F::Boolean(v)) => {
+                    self.set_decimal_pattern_match_required(v)?
+                }
                 ("roundingMode", F::Int(v)) => self.set_rounding_mode(v)?,
                 ("useExponentialNotation", F::Boolean(v)) => self.set_scientific_notation(v)?,
                 ("useSignificantDigits", F::Boolean(v)) => self.set_significant_digits_used(v)?,
-                ("currencyPluralInfo", F::CurrencyPluralInfo(v)) => self.set_currency_plural_info(v.as_ref())?,
+                ("currencyPluralInfo", F::CurrencyPluralInfo(v)) => {
+                    self.set_currency_plural_info(v.as_ref())?
+                }
                 ("mathContext", F::MathContext(v)) => {
                     let v = v.ok_or_else(|| crate::jdk::null_pointer("mathContext"))?;
                     self.set_math_context_icu(&v)?;
@@ -470,17 +547,40 @@ impl DecimalFormat {
                     self.set_decimal_format_symbols(&v)?;
                 }
                 (
-                    "decimalSeparatorAlwaysShown" | "exponentSignAlwaysShown" | "formatWidth" | "groupingSize"
-                    | "groupingSize2" | "maxSignificantDigits" | "minExponentDigits" | "minSignificantDigits"
-                    | "multiplier" | "pad" | "padPosition" | "parseBigDecimal" | "parseRequireDecimalPoint"
-                    | "roundingMode" | "useExponentialNotation" | "useSignificantDigits" | "currencyPluralInfo"
-                    | "mathContext" | "negPrefixPattern" | "negSuffixPattern" | "negativePrefix" | "negativeSuffix"
-                    | "posPrefixPattern" | "posSuffixPattern" | "positivePrefix" | "positiveSuffix"
-                    | "roundingIncrement" | "symbols",
+                    "decimalSeparatorAlwaysShown"
+                    | "exponentSignAlwaysShown"
+                    | "formatWidth"
+                    | "groupingSize"
+                    | "groupingSize2"
+                    | "maxSignificantDigits"
+                    | "minExponentDigits"
+                    | "minSignificantDigits"
+                    | "multiplier"
+                    | "pad"
+                    | "padPosition"
+                    | "parseBigDecimal"
+                    | "parseRequireDecimalPoint"
+                    | "roundingMode"
+                    | "useExponentialNotation"
+                    | "useSignificantDigits"
+                    | "currencyPluralInfo"
+                    | "mathContext"
+                    | "negPrefixPattern"
+                    | "negSuffixPattern"
+                    | "negativePrefix"
+                    | "negativeSuffix"
+                    | "posPrefixPattern"
+                    | "posSuffixPattern"
+                    | "positivePrefix"
+                    | "positiveSuffix"
+                    | "roundingIncrement"
+                    | "symbols",
                     _,
                 ) => {
                     // GetField.get with a type the stream field does not have.
-                    return Err(LuceneError::illegal_argument(format!("invalid type for {name}")));
+                    return Err(LuceneError::illegal_argument(format!(
+                        "invalid type for {name}"
+                    )));
                 }
                 _ => {
                     // The following fields are ignored:
@@ -517,14 +617,21 @@ impl DecimalFormat {
         // Extract values from parent NumberFormat class.  Have to use reflection here.
         let base = lock(&self.base).clone();
         let io = |e: LuceneError| LuceneError::unchecked("java.io.IOException", e.to_string());
-        self.set_grouping_used(base.grouping_used_field()).map_err(io)?;
-        self.set_parse_integer_only(base.parse_integer_only_field()).map_err(io)?;
-        self.set_maximum_integer_digits(base.maximum_integer_digits_field()).map_err(io)?;
-        self.set_minimum_integer_digits(base.minimum_integer_digits_field()).map_err(io)?;
-        self.set_maximum_fraction_digits(base.maximum_fraction_digits_field()).map_err(io)?;
-        self.set_minimum_fraction_digits(base.minimum_fraction_digits_field()).map_err(io)?;
+        self.set_grouping_used(base.grouping_used_field())
+            .map_err(io)?;
+        self.set_parse_integer_only(base.parse_integer_only_field())
+            .map_err(io)?;
+        self.set_maximum_integer_digits(base.maximum_integer_digits_field())
+            .map_err(io)?;
+        self.set_minimum_integer_digits(base.minimum_integer_digits_field())
+            .map_err(io)?;
+        self.set_maximum_fraction_digits(base.maximum_fraction_digits_field())
+            .map_err(io)?;
+        self.set_minimum_fraction_digits(base.minimum_fraction_digits_field())
+            .map_err(io)?;
         self.set_currency(base.currency_field()).map_err(io)?;
-        self.set_parse_strict(base.parse_strict_field()).map_err(io)?;
+        self.set_parse_strict(base.parse_strict_field())
+            .map_err(io)?;
         // Finish initialization
         self.with_state(|me, s| {
             s.exported_properties = Some(DecimalFormatProperties::new());
@@ -533,7 +640,12 @@ impl DecimalFormat {
     }
 
     /// `format(<number>, StringBuffer, FieldPosition)` of a quantity.
-    fn format_quantity(&self, mut dq: DecimalQuantity_DualStorageBCD, result: &mut Vec<u16>, field_position: &mut FieldPosition) -> Result<()> {
+    fn format_quantity(
+        &self,
+        mut dq: DecimalQuantity_DualStorageBCD,
+        result: &mut Vec<u16>,
+        field_position: &mut FieldPosition,
+    ) -> Result<()> {
         let mut string = FormattedStringBuilder::new();
         self.formatter().format_impl(&mut dq, &mut string)?;
         Self::field_position_helper(&dq, &string, field_position, result.len() as i32)?;
@@ -733,7 +845,9 @@ impl DecimalFormat {
         // and instead set maximum fraction digits.
         if let Some(inc) = increment.as_ref() {
             if inc.compare_to(&BigDecimal::zero()) == 0 {
-                lock(&self.state).properties.set_maximum_fraction_digits(i32::MAX);
+                lock(&self.state)
+                    .properties
+                    .set_maximum_fraction_digits(i32::MAX);
                 return Ok(());
             }
         }
@@ -765,7 +879,8 @@ impl DecimalFormat {
         } else {
             // ICU-20425: Since doubles have no concept of trailing zeros, we should strip
             // trailing zeros from the BigDecimal.
-            let java_big_decimal = BigDecimal::value_of_double(increment)?.strip_trailing_zeros()?;
+            let java_big_decimal =
+                BigDecimal::value_of_double(increment)?.strip_trailing_zeros()?;
             self.set_rounding_increment(Some(java_big_decimal))
         }
     }
@@ -801,7 +916,12 @@ impl DecimalFormat {
     pub fn get_math_context_icu(&self) -> Result<IcuMathContext> {
         let math_context = self.get_math_context();
         let form = self.read(|s| s.icu_math_context_form);
-        IcuMathContext::with_all(math_context.get_precision(), form, false, math_context.get_rounding_mode().ordinal())
+        IcuMathContext::with_all(
+            math_context.get_precision(),
+            form,
+            false,
+            math_context.get_rounding_mode().ordinal(),
+        )
     }
 
     /// Overrides the rounding mode and precision. Equivalent to
@@ -816,7 +936,10 @@ impl DecimalFormat {
             // The getLostDigits() feature in ICU MathContext means "throw an ArithmeticException if
             // rounding causes digits to be lost". That feature is called RoundingMode.UNNECESSARY in
             // Java MathContext.
-            MathContext::with_rounding_mode(math_context_icu.get_digits(), RoundingMode::Unnecessary)?
+            MathContext::with_rounding_mode(
+                math_context_icu.get_digits(),
+                RoundingMode::Unnecessary,
+            )?
         } else {
             MathContext::with_rounding_mode(
                 math_context_icu.get_digits(),
@@ -830,7 +953,8 @@ impl DecimalFormat {
     /// Equivalent to `areSignificantDigitsUsed()`.
     pub fn are_significant_digits_used(&self) -> bool {
         self.read(|s| {
-            s.properties.get_minimum_significant_digits() != -1 || s.properties.get_maximum_significant_digits() != -1
+            s.properties.get_minimum_significant_digits() != -1
+                || s.properties.get_maximum_significant_digits() != -1
         })
     }
 
@@ -1126,7 +1250,11 @@ impl DecimalFormat {
     pub fn get_currency_usage(&self) -> CurrencyUsage {
         // CurrencyUsage is not exported, so we have to get it from the input property bag.
         // TODO: Should we export CurrencyUsage instead?
-        self.read(|s| s.properties.get_currency_usage().unwrap_or(CurrencyUsage::Standard))
+        self.read(|s| {
+            s.properties
+                .get_currency_usage()
+                .unwrap_or(CurrencyUsage::Standard)
+        })
     }
 
     /// Currency Mode: Sets the strategy for rounding currency amounts.
@@ -1284,7 +1412,10 @@ impl DecimalFormat {
         result.push('@');
         result.push_str(&format!("{:x}", NumberFormat::hash_code(self) as u32));
         result.push_str(" { symbols@");
-        result.push_str(&format!("{:x}", self.read(|s| s.symbols.hash_code()) as u32));
+        result.push_str(&format!(
+            "{:x}",
+            self.read(|s| s.symbols.hash_code()) as u32
+        ));
         self.read(|s| s.properties.to_string_bare(&mut result));
         result.push_str(" }");
         result
@@ -1331,7 +1462,10 @@ impl DecimalFormat {
     pub fn to_localized_pattern(&self) -> Result<Vec<u16>> {
         let pattern = self.to_pattern()?;
         let symbols = self.read(|s| s.symbols.clone());
-        Ok(PatternStringUtils::convert_localized(Some(&pattern), &symbols, true)?.unwrap_or_default())
+        Ok(
+            PatternStringUtils::convert_localized(Some(&pattern), &symbols, true)?
+                .unwrap_or_default(),
+        )
     }
 
     /// Converts this DecimalFormat to a NumberFormatter. Starting in ICU 60,
@@ -1370,7 +1504,8 @@ impl DecimalFormat {
             None => s.symbols.get_u_locale(),
         };
         s.formatter = Some(
-            NumberFormatter::from_decimal_format(&s.properties, s.symbols.clone(), Some(exported))?.locale(&locale),
+            NumberFormatter::from_decimal_format(&s.properties, s.symbols.clone(), Some(exported))?
+                .locale(&locale),
         );
 
         // Lazy-initialize the parsers only when we need them.
@@ -1385,7 +1520,11 @@ impl DecimalFormat {
             if let Some(p) = s.parser.as_ref() {
                 return Ok(p.clone());
             }
-            let p = Arc::new(NumberParserImpl::create_parser_from_properties(&s.properties, &s.symbols, false)?);
+            let p = Arc::new(NumberParserImpl::create_parser_from_properties(
+                &s.properties,
+                &s.symbols,
+                false,
+            )?);
             s.parser = Some(p.clone());
             Ok(p)
         })
@@ -1397,7 +1536,11 @@ impl DecimalFormat {
             if let Some(p) = s.currency_parser.as_ref() {
                 return Ok(p.clone());
             }
-            let p = Arc::new(NumberParserImpl::create_parser_from_properties(&s.properties, &s.symbols, true)?);
+            let p = Arc::new(NumberParserImpl::create_parser_from_properties(
+                &s.properties,
+                &s.symbols,
+                true,
+            )?);
             s.currency_parser = Some(p.clone());
             Ok(p)
         })
@@ -1427,9 +1570,17 @@ impl DecimalFormat {
     /// Updates the property bag with settings from the given pattern.
     /// Equivalent to the package-private `setPropertiesFromPattern(String,
     /// int)`.
-    fn set_properties_from_pattern(s: &mut State, pattern: Option<&[u16]>, ignore_rounding: i32) -> Result<()> {
+    fn set_properties_from_pattern(
+        s: &mut State,
+        pattern: Option<&[u16]>,
+        ignore_rounding: i32,
+    ) -> Result<()> {
         let pattern = pattern.ok_or_else(LuceneError::null_pointer)?;
-        PatternStringParser::parse_to_existing_properties_ignore(Some(pattern), &mut s.properties, ignore_rounding)
+        PatternStringParser::parse_to_existing_properties_ignore(
+            Some(pattern),
+            &mut s.properties,
+            ignore_rounding,
+        )
     }
 
     /// Equivalent to the package-private static
@@ -1465,9 +1616,15 @@ impl DecimalFormat {
 
     /// `parse(String, ParsePosition)` body; `None` position is Java's
     /// `null` (a fresh `ParsePosition(0)`).
-    fn parse_impl(&self, text: &[u16], parse_position: &mut ParsePosition) -> Result<Option<JavaNumber>> {
+    fn parse_impl(
+        &self,
+        text: &[u16],
+        parse_position: &mut ParsePosition,
+    ) -> Result<Option<JavaNumber>> {
         if parse_position.get_index() < 0 {
-            return Err(LuceneError::illegal_argument("Cannot start parsing at a negative offset"));
+            return Err(LuceneError::illegal_argument(
+                "Cannot start parsing at a negative offset",
+            ));
         }
         if parse_position.get_index() >= text.len() as i32 {
             // For backwards compatibility, this is not an exception, just an empty result.
@@ -1495,9 +1652,15 @@ impl DecimalFormat {
         }
     }
 
-    fn parse_currency_impl(&self, text: &[u16], parse_position: &mut ParsePosition) -> Result<Option<CurrencyAmount>> {
+    fn parse_currency_impl(
+        &self,
+        text: &[u16],
+        parse_position: &mut ParsePosition,
+    ) -> Result<Option<CurrencyAmount>> {
         if parse_position.get_index() < 0 {
-            return Err(LuceneError::illegal_argument("Cannot start parsing at a negative offset"));
+            return Err(LuceneError::illegal_argument(
+                "Cannot start parsing at a negative offset",
+            ));
         }
         if parse_position.get_index() >= text.len() as i32 {
             // For backwards compatibility, this is not an exception, just an empty result.
@@ -1539,20 +1702,56 @@ impl NumberFormat for DecimalFormat {
         &self.base
     }
 
-    fn format_double_to(&self, number: f64, result: &mut Vec<u16>, field_position: &mut FieldPosition) -> Result<()> {
-        self.format_quantity(DecimalQuantity_DualStorageBCD::from_double(number), result, field_position)
+    fn format_double_to(
+        &self,
+        number: f64,
+        result: &mut Vec<u16>,
+        field_position: &mut FieldPosition,
+    ) -> Result<()> {
+        self.format_quantity(
+            DecimalQuantity_DualStorageBCD::from_double(number),
+            result,
+            field_position,
+        )
     }
 
-    fn format_long_to(&self, number: i64, result: &mut Vec<u16>, field_position: &mut FieldPosition) -> Result<()> {
-        self.format_quantity(DecimalQuantity_DualStorageBCD::from_long(number), result, field_position)
+    fn format_long_to(
+        &self,
+        number: i64,
+        result: &mut Vec<u16>,
+        field_position: &mut FieldPosition,
+    ) -> Result<()> {
+        self.format_quantity(
+            DecimalQuantity_DualStorageBCD::from_long(number),
+            result,
+            field_position,
+        )
     }
 
-    fn format_big_integer_to(&self, number: &BigInteger, result: &mut Vec<u16>, field_position: &mut FieldPosition) -> Result<()> {
-        self.format_quantity(DecimalQuantity_DualStorageBCD::from_big_integer(number), result, field_position)
+    fn format_big_integer_to(
+        &self,
+        number: &BigInteger,
+        result: &mut Vec<u16>,
+        field_position: &mut FieldPosition,
+    ) -> Result<()> {
+        self.format_quantity(
+            DecimalQuantity_DualStorageBCD::from_big_integer(number),
+            result,
+            field_position,
+        )
     }
 
-    fn format_big_decimal_to(&self, number: &BigDecimal, result: &mut Vec<u16>, field_position: &mut FieldPosition) -> Result<()> {
-        self.format_quantity(DecimalQuantity_DualStorageBCD::from_big_decimal(number)?, result, field_position)
+    fn format_big_decimal_to(
+        &self,
+        number: &BigDecimal,
+        result: &mut Vec<u16>,
+        field_position: &mut FieldPosition,
+    ) -> Result<()> {
+        self.format_quantity(
+            DecimalQuantity_DualStorageBCD::from_big_decimal(number)?,
+            result,
+            field_position,
+        )
     }
 
     fn format_icu_big_decimal_to(
@@ -1561,7 +1760,9 @@ impl NumberFormat for DecimalFormat {
         result: &mut Vec<u16>,
         field_position: &mut FieldPosition,
     ) -> Result<()> {
-        let dq = DecimalQuantity_DualStorageBCD::from_number(&JavaNumber::IcuBigDecimal(number.clone()))?;
+        let dq = DecimalQuantity_DualStorageBCD::from_number(&JavaNumber::IcuBigDecimal(
+            number.clone(),
+        ))?;
         self.format_quantity(dq, result, field_position)
     }
 
@@ -1588,7 +1789,11 @@ impl NumberFormat for DecimalFormat {
         Ok(())
     }
 
-    fn parse(&self, text: &[u16], parse_position: &mut ParsePosition) -> Result<Option<JavaNumber>> {
+    fn parse(
+        &self,
+        text: &[u16],
+        parse_position: &mut ParsePosition,
+    ) -> Result<Option<JavaNumber>> {
         if self.class == DecimalFormatClass::CompactDecimalFormat {
             // Parsing is not supported in CompactDecimalFormat.
             return Err(LuceneError::unsupported_operation(""));
@@ -1596,7 +1801,11 @@ impl NumberFormat for DecimalFormat {
         self.parse_impl(text, parse_position)
     }
 
-    fn parse_currency(&self, text: &[u16], parse_position: &mut ParsePosition) -> Result<Option<CurrencyAmount>> {
+    fn parse_currency(
+        &self,
+        text: &[u16],
+        parse_position: &mut ParsePosition,
+    ) -> Result<Option<CurrencyAmount>> {
         if self.class == DecimalFormatClass::CompactDecimalFormat {
             // Parsing is not supported in CompactDecimalFormat.
             return Err(LuceneError::unsupported_operation(""));
@@ -1606,11 +1815,18 @@ impl NumberFormat for DecimalFormat {
 
     fn clone_number_format(&self) -> Box<dyn NumberFormat> {
         // Java's clone() cannot fail; the refresh repeats one that succeeded.
-        Box::new(self.clone_decimal_format().unwrap_or_else(|e| panic!("{e}")))
+        Box::new(
+            self.clone_decimal_format()
+                .unwrap_or_else(|e| panic!("{e}")),
+        )
     }
 
     fn get_rounding_mode(&self) -> Result<i32> {
-        Ok(self.read(|s| Self::exported(s).get_rounding_mode().map_or(0, |m| m.ordinal())))
+        Ok(self.read(|s| {
+            Self::exported(s)
+                .get_rounding_mode()
+                .map_or(0, |m| m.ordinal())
+        }))
     }
 
     fn set_rounding_mode(&self, rounding_mode: i32) -> Result<()> {
@@ -1709,7 +1925,11 @@ impl NumberFormat for DecimalFormat {
     }
 
     fn set_parse_strict(&self, parse_strict: bool) -> Result<()> {
-        let mode = if parse_strict { ParseMode::Strict } else { ParseMode::Lenient };
+        let mode = if parse_strict {
+            ParseMode::Strict
+        } else {
+            ParseMode::Lenient
+        };
         self.update(|p| {
             p.set_parse_mode(Some(mode));
         })
@@ -1741,21 +1961,35 @@ impl NumberFormat for DecimalFormat {
 /// `NumberFormat`, a `CompactDecimalFormat` included.
 pub fn as_decimal_format(obj: &dyn NumberFormat) -> Option<&DecimalFormat> {
     let any = Format::as_any(obj);
-    any.downcast_ref::<DecimalFormat>()
-        .or_else(|| any.downcast_ref::<crate::text::compact_decimal_format::CompactDecimalFormat>().map(|c| &**c))
+    any.downcast_ref::<DecimalFormat>().or_else(|| {
+        any.downcast_ref::<crate::text::compact_decimal_format::CompactDecimalFormat>()
+            .map(|c| &**c)
+    })
 }
 
 impl Format for DecimalFormat {
-    fn format_object_to(&self, obj: &dyn Any, to_append_to: &mut Vec<u16>, pos: &mut FieldPosition) -> Result<()> {
+    fn format_object_to(
+        &self,
+        obj: &dyn Any,
+        to_append_to: &mut Vec<u16>,
+        pos: &mut FieldPosition,
+    ) -> Result<()> {
         self.format_any_to(obj, to_append_to, pos)
     }
 
-    fn parse_object_at(&self, source: &[u16], pos: &mut ParsePosition) -> Result<Option<ParsedObject>> {
+    fn parse_object_at(
+        &self,
+        source: &[u16],
+        pos: &mut ParsePosition,
+    ) -> Result<Option<ParsedObject>> {
         Ok(NumberFormat::parse(self, source, pos)?.map(|n| Box::new(n) as ParsedObject))
     }
 
     fn clone_format(&self) -> Box<dyn Format> {
-        Box::new(self.clone_decimal_format().unwrap_or_else(|e| panic!("{e}")))
+        Box::new(
+            self.clone_decimal_format()
+                .unwrap_or_else(|e| panic!("{e}")),
+        )
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1763,7 +1997,10 @@ impl Format for DecimalFormat {
     }
 
     /// Equivalent to `formatToCharacterIterator(Object)`.
-    fn format_to_character_iterator(&self, obj: &dyn Any) -> Result<Box<dyn AttributedCharacterIterator>> {
+    fn format_to_character_iterator(
+        &self,
+        obj: &dyn Any,
+    ) -> Result<Box<dyn AttributedCharacterIterator>> {
         let number = if let Some(n) = obj.downcast_ref::<JavaNumber>() {
             n.clone()
         } else if let Some(l) = obj.downcast_ref::<i64>() {
@@ -1787,4 +2024,3 @@ impl Format for DecimalFormat {
         crate::text::formatted_value::FormattedValue::to_character_iterator(&output)
     }
 }
-

@@ -36,14 +36,20 @@ pub struct RbnfScannerProviderImpl {
 impl RbnfScannerProviderImpl {
     /// Equivalent to the deprecated `RbnfScannerProviderImpl()`.
     pub fn new() -> Self {
-        RbnfScannerProviderImpl { cache: Mutex::new(HashMap::new()) }
+        RbnfScannerProviderImpl {
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Creates a collation-based scanner: the locale's collator, its rules
     /// extended with `extras` when given, with canonical decomposition; a
     /// scanner without collator when that fails. Equivalent to the
     /// deprecated protected `createScanner(ULocale locale, String extras)`.
-    pub fn create_scanner(&self, locale: &ULocale, extras: Option<&[u16]>) -> Arc<dyn RbnfLenientScanner> {
+    pub fn create_scanner(
+        &self,
+        locale: &ULocale,
+        extras: Option<&[u16]>,
+    ) -> Arc<dyn RbnfLenientScanner> {
         // create a default collator based on the locale,
         // then pull out that collator's rules, append any additional
         // rules specified in the description, and create a _new_
@@ -56,7 +62,10 @@ impl RbnfScannerProviderImpl {
                 return Ok(None);
             }
             if let Some(extras) = extras {
-                let mut rules = collator.as_rule_based().expect("checked above").get_rules()?;
+                let mut rules = collator
+                    .as_rule_based()
+                    .expect("checked above")
+                    .get_rules()?;
                 rules.extend_from_slice(extras);
                 collator = Box::new(RuleBasedCollator::new(Some(&rules))?);
             }
@@ -103,7 +112,11 @@ impl RbnfLenientScannerProvider for RbnfScannerProviderImpl {
     ///
     /// Equivalent to the deprecated `get(ULocale locale, String extras)`.
     fn get(&self, locale: &ULocale, extras: Option<&[u16]>) -> Result<Arc<dyn RbnfLenientScanner>> {
-        let key = format!("{}/{}", locale, extras.map_or_else(|| "null".to_string(), String::from_utf16_lossy));
+        let key = format!(
+            "{}/{}",
+            locale,
+            extras.map_or_else(|| "null".to_string(), String::from_utf16_lossy)
+        );
         {
             let cache = lock(&self.cache);
             if let Some(result) = cache.get(&key) {
@@ -169,7 +182,9 @@ impl RbnfLenientScannerImpl {
                 break;
             }
 
-            if CollationElementIterator::primary_order(o_str) == CollationElementIterator::primary_order(o_key) {
+            if CollationElementIterator::primary_order(o_str)
+                == CollationElementIterator::primary_order(o_key)
+            {
                 key_start = str_iter.get_offset();
                 o_str = str_iter.next();
                 o_key = key_iter.next();
@@ -265,7 +280,9 @@ impl RbnfLenientScanner for RbnfLenientScannerImpl {
             // match collation elements from the two strings
             // (considering only primary differences).  If we
             // get a mismatch, dump out and return 0
-            if CollationElementIterator::primary_order(o_str) != CollationElementIterator::primary_order(o_prefix) {
+            if CollationElementIterator::primary_order(o_str)
+                != CollationElementIterator::primary_order(o_prefix)
+            {
                 return 0;
             }
 

@@ -28,7 +28,10 @@ pub struct CSCharacterIterator {
 impl CSCharacterIterator {
     /// `CSCharacterIterator(CharSequence text)`.
     pub fn new(text: Arc<[u16]>) -> Self {
-        Self { seq: text, index: 0 }
+        Self {
+            seq: text,
+            index: 0,
+        }
     }
 }
 

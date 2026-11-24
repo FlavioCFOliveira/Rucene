@@ -172,7 +172,8 @@ pub const UTRIE2_UTF8_2B_INDEX_2_OFFSET: i32 = UTRIE2_INDEX_2_BMP_LENGTH;
 /// `UTRIE2_UTF8_2B_INDEX_2_LENGTH`.
 pub const UTRIE2_UTF8_2B_INDEX_2_LENGTH: i32 = 0x800 >> 6;
 /// `UTRIE2_INDEX_1_OFFSET`.
-pub const UTRIE2_INDEX_1_OFFSET: i32 = UTRIE2_UTF8_2B_INDEX_2_OFFSET + UTRIE2_UTF8_2B_INDEX_2_LENGTH;
+pub const UTRIE2_INDEX_1_OFFSET: i32 =
+    UTRIE2_UTF8_2B_INDEX_2_OFFSET + UTRIE2_UTF8_2B_INDEX_2_LENGTH;
 /// `UTRIE2_MAX_INDEX_1_LENGTH`.
 pub const UTRIE2_MAX_INDEX_1_LENGTH: i32 = 0x100000 >> UTRIE2_SHIFT_1;
 /// `UTRIE2_BAD_UTF8_DATA_OFFSET`.
@@ -183,7 +184,8 @@ pub const UTRIE2_DATA_START_OFFSET: i32 = 0xc0;
 pub const UNEWTRIE2_INDEX_GAP_OFFSET: i32 = UTRIE2_INDEX_2_BMP_LENGTH;
 /// `UNEWTRIE2_INDEX_GAP_LENGTH`.
 pub const UNEWTRIE2_INDEX_GAP_LENGTH: i32 =
-    ((UTRIE2_UTF8_2B_INDEX_2_LENGTH + UTRIE2_MAX_INDEX_1_LENGTH) + UTRIE2_INDEX_2_MASK) & !UTRIE2_INDEX_2_MASK;
+    ((UTRIE2_UTF8_2B_INDEX_2_LENGTH + UTRIE2_MAX_INDEX_1_LENGTH) + UTRIE2_INDEX_2_MASK)
+        & !UTRIE2_INDEX_2_MASK;
 /// `UNEWTRIE2_MAX_INDEX_2_LENGTH`.
 pub const UNEWTRIE2_MAX_INDEX_2_LENGTH: i32 = (0x110000 >> UTRIE2_SHIFT_2)
     + UTRIE2_LSCP_INDEX_2_LENGTH
@@ -268,11 +270,15 @@ impl Trie2 {
         result
     }
 
-    fn create_from_serialized_inner(bytes: &mut ByteBuffer, outer_byte_order: ByteOrder) -> Result<Trie2> {
-        let mut header = UTrie2Header::default();
-
+    fn create_from_serialized_inner(
+        bytes: &mut ByteBuffer,
+        outer_byte_order: ByteOrder,
+    ) -> Result<Trie2> {
         /* check the signature */
-        header.signature = bytes.get_int()?;
+        let mut header = UTrie2Header {
+            signature: bytes.get_int()?,
+            ..Default::default()
+        };
         match header.signature {
             0x54726932 => {
                 // The buffer is already set to the trie data byte order.
@@ -304,7 +310,9 @@ impl Trie2 {
         // Trie2 data width - 0: 16 bits
         //                    1: 32 bits
         if (header.options & UTRIE2_OPTIONS_VALUE_BITS_MASK) > 1 {
-            return Err(LuceneError::illegal_argument("UTrie2 serialized format error."));
+            return Err(LuceneError::illegal_argument(
+                "UTrie2 serialized format error.",
+            ));
         }
         let width = if (header.options & UTRIE2_OPTIONS_VALUE_BITS_MASK) == 0 {
             ValueWidth::Bits16
@@ -350,7 +358,10 @@ impl Trie2 {
             ),
             ValueWidth::Bits32 => {
                 let d = data32.as_ref().expect("32-bit data was read");
-                (d[data_null_offset as usize], d[UTRIE2_BAD_UTF8_DATA_OFFSET as usize])
+                (
+                    d[data_null_offset as usize],
+                    d[UTRIE2_BAD_UTF8_DATA_OFFSET as usize],
+                )
             }
         };
 
@@ -382,7 +393,9 @@ impl Trie2 {
     /// the `IOException` of the stream.
     pub fn get_version(is: &mut dyn InputStream, little_endian_ok: bool) -> Result<i32> {
         if !is.mark_supported() {
-            return Err(LuceneError::illegal_argument("Input stream must support mark()."));
+            return Err(LuceneError::illegal_argument(
+                "Input stream must support mark().",
+            ));
         }
         is.mark(4);
         let mut sig = [0u8; 4];
@@ -489,7 +502,11 @@ impl Trie2 {
     /// # Errors
     ///
     /// `IllegalArgumentException("Bad lead surrogate value.")`.
-    pub fn iterator_for_lead_surrogate_with<'m>(&self, lead: u16, mapper: ValueMapper<'m>) -> Result<Trie2Iterator<'_, 'm>> {
+    pub fn iterator_for_lead_surrogate_with<'m>(
+        &self,
+        lead: u16,
+        mapper: ValueMapper<'m>,
+    ) -> Result<Trie2Iterator<'_, 'm>> {
         Trie2Iterator::for_lead_surrogate(self, lead, mapper)
     }
 
@@ -537,7 +554,11 @@ impl Trie2 {
     /// # Panics
     ///
     /// `IndexOutOfBoundsException` when `index` is outside `0..=length`.
-    pub fn char_sequence_iterator<'t>(&'t self, text: &'t [u16], index: i32) -> CharSequenceIterator<'t> {
+    pub fn char_sequence_iterator<'t>(
+        &'t self,
+        text: &'t [u16],
+        index: i32,
+    ) -> CharSequenceIterator<'t> {
         CharSequenceIterator::new(self, text, index)
     }
 
@@ -607,7 +628,11 @@ impl<'a, 'm> Trie2Iterator<'a, 'm> {
 
     /// `Trie2Iterator(char leadSurrogate, ValueMapper vm)`: the code points
     /// of one lead surrogate.
-    fn for_lead_surrogate(trie: &'a Trie2, lead_surrogate: u16, vm: ValueMapper<'m>) -> Result<Self> {
+    fn for_lead_surrogate(
+        trie: &'a Trie2,
+        lead_surrogate: u16,
+        vm: ValueMapper<'m>,
+    ) -> Result<Self> {
         if !(0xd800..=0xdbff).contains(&lead_surrogate) {
             return Err(LuceneError::illegal_argument("Bad lead surrogate value."));
         }
@@ -635,7 +660,9 @@ impl<'a, 'm> Trie2Iterator<'a, 'm> {
     ///
     /// Always `UnsupportedOperationException`.
     pub fn remove(&mut self) -> Result<()> {
-        Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"))
+        Err(crate::jdk::unchecked_no_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 
     /// `rangeEndLS(char startingLS)` (private): the last lead surrogate of
@@ -704,7 +731,9 @@ impl Iterator for Trie2Iterator<'_, '_> {
                 if end_of_range >= 0xdbff {
                     break;
                 }
-                val = self.trie.get_from_u16_single_lead((end_of_range + 1) as u16);
+                val = self
+                    .trie
+                    .get_from_u16_single_lead((end_of_range + 1) as u16);
                 if (self.mapper)(val) != mapped_val {
                     break;
                 }
@@ -852,7 +881,7 @@ fn code_point_before(seq: &[u16], index: i32) -> i32 {
 
 /// `initHash()` (private).
 fn init_hash() -> i32 {
-    0x811c9DC5_u32 as i32
+    0x811C9DC5_u32 as i32
 }
 
 /// `hashByte(int h, int b)` (private).

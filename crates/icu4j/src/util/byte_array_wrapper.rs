@@ -70,7 +70,11 @@ impl ByteArrayWrapper {
     /// `ensureCapacity(int capacity)`: grows the array to at least
     /// `capacity` bytes, keeping the used bytes.
     pub fn ensure_capacity(&mut self, capacity: i32) -> &mut Self {
-        if self.bytes.as_ref().is_none_or(|b| (b.len() as i32) < capacity) {
+        if self
+            .bytes
+            .as_ref()
+            .is_none_or(|b| (b.len() as i32) < capacity)
+        {
             let mut newbytes = vec![0i8; capacity as usize];
             if let Some(b) = &self.bytes {
                 copy_bytes(b, 0, &mut newbytes, 0, self.size);
@@ -94,7 +98,13 @@ impl ByteArrayWrapper {
         let len = limit - start;
         self.ensure_capacity(self.size + len);
         let size = self.size;
-        copy_bytes(src, start, self.bytes.as_mut().expect("ensureCapacity allocated"), size, len);
+        copy_bytes(
+            src,
+            start,
+            self.bytes.as_mut().expect("ensureCapacity allocated"),
+            size,
+            len,
+        );
         self.size += len;
         self
     }
@@ -124,7 +134,10 @@ impl ByteArrayWrapper {
             return 0;
         }
         let min_size = self.size.min(other.size) as usize;
-        let (a, b) = (self.bytes.as_deref().unwrap_or(&[]), other.bytes.as_deref().unwrap_or(&[]));
+        let (a, b) = (
+            self.bytes.as_deref().unwrap_or(&[]),
+            other.bytes.as_deref().unwrap_or(&[]),
+        );
         for i in 0..min_size {
             if a[i] != b[i] {
                 return (a[i] as i32 & 0xFF) - (b[i] as i32 & 0xFF);
@@ -143,7 +156,10 @@ impl PartialEq for ByteArrayWrapper {
         if self.size != that.size {
             return false;
         }
-        let (a, b) = (self.bytes.as_deref().unwrap_or(&[]), that.bytes.as_deref().unwrap_or(&[]));
+        let (a, b) = (
+            self.bytes.as_deref().unwrap_or(&[]),
+            that.bytes.as_deref().unwrap_or(&[]),
+        );
         for i in 0..self.size as usize {
             if a[i] != b[i] {
                 return false;
@@ -171,6 +187,7 @@ impl Ord for ByteArrayWrapper {
 impl fmt::Display for ByteArrayWrapper {
     /// `toString()`: the used bytes in two-digit hexadecimal, separated by
     /// spaces.
+    #[allow(clippy::needless_range_loop)] // indexed loop mirrors the Java for-loop
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let b = self.bytes.as_deref().unwrap_or(&[]);
         for i in 0..self.size as usize {

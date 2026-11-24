@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use rucene::error::{LuceneError, Result};
 
-use crate::jdk::{char_count, code_point_at, code_point_before, index_of, offset_by_code_points, units};
+use crate::jdk::{
+    char_count, code_point_at, code_point_before, index_of, offset_by_code_points, units,
+};
 use crate::lang::u_character::UCharacter;
 use crate::r#impl::coll::collation::Collation;
 use crate::r#impl::coll::collation_data::CollationData;
@@ -182,15 +184,21 @@ impl CollationDataBuilder {
     }
 
     fn base(&self) -> &Arc<CollationData> {
-        self.base.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.base
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn trie(&self) -> &Trie2Writable {
-        self.trie.as_ref().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.trie
+            .as_ref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     fn trie_mut(&mut self) -> &mut Trie2Writable {
-        self.trie.as_mut().unwrap_or_else(|| panic!("java.lang.NullPointerException"))
+        self.trie
+            .as_mut()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"))
     }
 
     /// `initForTailoring(CollationData)`.
@@ -201,7 +209,9 @@ impl CollationDataBuilder {
     /// null base.
     pub fn init_for_tailoring(&mut self, b: Option<Arc<CollationData>>) -> Result<()> {
         if self.trie.is_some() {
-            return Err(LuceneError::illegal_state("attempt to reuse a CollationDataBuilder"));
+            return Err(LuceneError::illegal_state(
+                "attempt to reuse a CollationDataBuilder",
+            ));
         }
         let Some(b) = b else {
             return Err(LuceneError::illegal_argument("null CollationData"));
@@ -230,7 +240,10 @@ impl CollationDataBuilder {
 
         // Copy the set contents but don't copy/clone the set as a whole because
         // that would copy the isFrozen state too.
-        let set = b.unsafe_backward_set.as_deref().unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let set = b
+            .unsafe_backward_set
+            .as_deref()
+            .unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         self.unsafe_backward_set.add_all(set)?;
         Ok(())
     }
@@ -279,7 +292,9 @@ impl CollationDataBuilder {
             return Err(LuceneError::illegal_argument("mapping to too many CEs"));
         }
         if !self.is_mutable() {
-            return Err(LuceneError::illegal_state("attempt to add mappings after build()"));
+            return Err(LuceneError::illegal_state(
+                "attempt to add mappings after build()",
+            ));
         }
         if ces_length == 0 {
             // Convenience: We cannot map to nothing, but we can map to a completely ignorable CE.
@@ -333,7 +348,9 @@ impl CollationDataBuilder {
             return Err(LuceneError::illegal_argument("mapping from empty string"));
         }
         if !self.is_mutable() {
-            return Err(LuceneError::illegal_state("attempt to add mappings after build()"));
+            return Err(LuceneError::illegal_state(
+                "attempt to add mappings after build()",
+            ));
         }
         let c = code_point_at(s, 0);
         let c_length = char_count(c);
@@ -418,14 +435,34 @@ impl CollationDataBuilder {
     ///
     /// `IllegalStateException` after build(), and the exceptions of the
     /// encoders.
-    pub fn copy_from(&mut self, src: &CollationDataBuilder, modifier: &mut dyn CEModifier) -> Result<()> {
+    pub fn copy_from(
+        &mut self,
+        src: &CollationDataBuilder,
+        modifier: &mut dyn CEModifier,
+    ) -> Result<()> {
         if !self.is_mutable() {
-            return Err(LuceneError::illegal_state("attempt to copyFrom() after build()"));
+            return Err(LuceneError::illegal_state(
+                "attempt to copyFrom() after build()",
+            ));
         }
-        let mut helper = CopyHelper { src, modifier, modified_ces: [0; Collation::MAX_EXPANSION_LENGTH as usize] };
-        let ranges: Vec<_> = src.trie().iterator().take_while(|r| !r.lead_surrogate).collect();
+        let mut helper = CopyHelper {
+            src,
+            modifier,
+            modified_ces: [0; Collation::MAX_EXPANSION_LENGTH as usize],
+        };
+        let ranges: Vec<_> = src
+            .trie()
+            .iterator()
+            .take_while(|r| !r.lead_surrogate)
+            .collect();
         for range in ranges {
-            enum_range_for_copy(range.start_code_point, range.end_code_point, range.value, &mut helper, self)?;
+            enum_range_for_copy(
+                range.start_code_point,
+                range.end_code_point,
+                range.value,
+                &mut helper,
+                self,
+            )?;
         }
         // Update the contextChars and the unsafeBackwardSet while copying,
         // in case a character had conditional mappings in the source builder
@@ -479,7 +516,8 @@ impl CollationDataBuilder {
                     self.trie_mut().set(c, ce32)?;
                 }
             } else if Self::is_builder_context_ce32(ce32) {
-                ce32 = self.conditional_ce32s[self.get_conditional_ce32_for_ce32(ce32) as usize].ce32;
+                ce32 =
+                    self.conditional_ce32s[self.get_conditional_ce32_for_ce32(ce32) as usize].ce32;
                 // Simply abandon the list of ConditionalCE32.
                 // The caller will copy this builder in the end,
                 // eliminating unreachable data.
@@ -531,7 +569,13 @@ impl CollationDataBuilder {
     /// # Errors
     ///
     /// As [`get_ces`](Self::get_ces).
-    pub fn get_ces_prefix(&mut self, prefix: &[u16], s: &[u16], ces: &mut [i64], ces_length: i32) -> Result<i32> {
+    pub fn get_ces_prefix(
+        &mut self,
+        prefix: &[u16],
+        s: &[u16],
+        ces: &mut [i64],
+        ces_length: i32,
+    ) -> Result<i32> {
         let prefix_length = prefix.len() as i32;
         if prefix_length == 0 {
             self.get_ces_from(s, 0, ces, ces_length)
@@ -544,7 +588,11 @@ impl CollationDataBuilder {
 
     fn get_ce32_from_offset_ce32(&self, from_base: bool, c: i32, ce32: i32) -> i32 {
         let i = Collation::index_from_ce32(ce32);
-        let data_ce = if from_base { self.base().ces[i as usize] } else { self.ce64s.element_ati(i) };
+        let data_ce = if from_base {
+            self.base().ces[i as usize]
+        } else {
+            self.ce64s.element_ati(i)
+        };
         let p = Collation::get_three_byte_primary_for_offset_data(c, data_ce);
         Collation::make_long_primary_ce32(p)
     }
@@ -579,7 +627,8 @@ impl CollationDataBuilder {
             // BufferOverflowException is a better fit
             // but cannot be constructed with a message string.
         }
-        self.conditional_ce32s.push(ConditionalCE32::new(context, ce32));
+        self.conditional_ce32s
+            .push(ConditionalCE32::new(context, ce32));
         Ok(index)
     }
 
@@ -626,7 +675,11 @@ impl CollationDataBuilder {
             // BufferOverflowException is a better fit
             // but cannot be constructed with a message string.
         }
-        Ok(Collation::make_ce32_from_tag_index_and_length(Collation::EXPANSION_TAG, index, 1))
+        Ok(Collation::make_ce32_from_tag_index_and_length(
+            Collation::EXPANSION_TAG,
+            index,
+            1,
+        ))
     }
 
     fn encode_expansion(&mut self, ces: &[i64], start: i32, length: i32) -> Result<i32> {
@@ -643,7 +696,11 @@ impl CollationDataBuilder {
                 let mut j = 1;
                 loop {
                     if j == length {
-                        return Ok(Collation::make_ce32_from_tag_index_and_length(Collation::EXPANSION_TAG, i, length));
+                        return Ok(Collation::make_ce32_from_tag_index_and_length(
+                            Collation::EXPANSION_TAG,
+                            i,
+                            length,
+                        ));
                     }
                     if self.ce64s.element_ati(i + j) != ces[(start + j) as usize] {
                         break;
@@ -662,7 +719,11 @@ impl CollationDataBuilder {
         for j in 0..length {
             self.ce64s.add_element(ces[(start + j) as usize]);
         }
-        Ok(Collation::make_ce32_from_tag_index_and_length(Collation::EXPANSION_TAG, i, length))
+        Ok(Collation::make_ce32_from_tag_index_and_length(
+            Collation::EXPANSION_TAG,
+            i,
+            length,
+        ))
     }
 
     fn encode_expansion32(&mut self, new_ce32s: &[i32], start: i32, length: i32) -> Result<i32> {
@@ -679,7 +740,11 @@ impl CollationDataBuilder {
                 let mut j = 1;
                 loop {
                     if j == length {
-                        return Ok(Collation::make_ce32_from_tag_index_and_length(Collation::EXPANSION32_TAG, i, length));
+                        return Ok(Collation::make_ce32_from_tag_index_and_length(
+                            Collation::EXPANSION32_TAG,
+                            i,
+                            length,
+                        ));
                     }
                     if self.ce32s.element_ati(i + j) != new_ce32s[(start + j) as usize] {
                         break;
@@ -698,7 +763,11 @@ impl CollationDataBuilder {
         for j in 0..length {
             self.ce32s.add_element(new_ce32s[(start + j) as usize]);
         }
-        Ok(Collation::make_ce32_from_tag_index_and_length(Collation::EXPANSION32_TAG, i, length))
+        Ok(Collation::make_ce32_from_tag_index_and_length(
+            Collation::EXPANSION32_TAG,
+            i,
+            length,
+        ))
     }
 
     fn set_cond_next(&mut self, cond: Cond, next: i32) {
@@ -798,7 +867,13 @@ impl CollationDataBuilder {
     /// Copies base contractions to a list of ConditionalCE32. Sets cond.next
     /// to the index of the first new item and returns the index of the last
     /// new item.
-    fn copy_contractions_from_base_ce32(&mut self, context: &mut Vec<u16>, c: i32, mut ce32: i32, mut cond: Cond) -> Result<i32> {
+    fn copy_contractions_from_base_ce32(
+        &mut self,
+        context: &mut Vec<u16>,
+        c: i32,
+        mut ce32: i32,
+        mut cond: Cond,
+    ) -> Result<i32> {
         let base = self.base().clone();
         let trie_index = Collation::index_from_ce32(ce32);
         let mut index;
@@ -850,7 +925,9 @@ impl CollationDataBuilder {
             }
             if Collation::is_special_ce32(ce32) {
                 match Collation::tag_from_ce32(ce32) {
-                    Collation::LONG_PRIMARY_TAG | Collation::LONG_SECONDARY_TAG | Collation::LATIN_EXPANSION_TAG => {
+                    Collation::LONG_PRIMARY_TAG
+                    | Collation::LONG_SECONDARY_TAG
+                    | Collation::LATIN_EXPANSION_TAG => {
                         // Copy the ce32 as-is.
                     }
                     Collation::EXPANSION32_TAG
@@ -875,7 +952,10 @@ impl CollationDataBuilder {
                     _ => {
                         // FALLBACK_TAG, RESERVED_TAG_3, BUILDER_DATA_TAG, DIGIT_TAG,
                         // U0000_TAG, HANGUL_TAG, LEAD_SURROGATE_TAG
-                        panic!("java.lang.AssertionError: unexpected special tag in ce32=0x{:08x}", ce32 as u32);
+                        panic!(
+                            "java.lang.AssertionError: unexpected special tag in ce32=0x{:08x}",
+                            ce32 as u32
+                        );
                     }
                 }
             }
@@ -907,7 +987,11 @@ impl CollationDataBuilder {
                     // BufferOverflowException is a better fit
                     // but cannot be constructed with a message string.
                 }
-                ce32 = Collation::make_ce32_from_tag_index_and_length(Collation::DIGIT_TAG, index, UCharacter::digit(c)); // u_charDigitValue(c)
+                ce32 = Collation::make_ce32_from_tag_index_and_length(
+                    Collation::DIGIT_TAG,
+                    index,
+                    UCharacter::digit(c),
+                ); // u_charDigitValue(c)
                 self.trie_mut().set(c, ce32)?;
             }
         }
@@ -939,7 +1023,8 @@ impl CollationDataBuilder {
             }
             self.trie_mut().set_for_lead_surrogate_code_unit(
                 lead,
-                Collation::make_ce32_from_tag_and_index(Collation::LEAD_SURROGATE_TAG, 0) | lead_value,
+                Collation::make_ce32_from_tag_and_index(Collation::LEAD_SURROGATE_TAG, 0)
+                    | lead_value,
             )?;
         }
         Ok(())
@@ -947,7 +1032,9 @@ impl CollationDataBuilder {
 
     fn build_mappings(&mut self, data: &mut CollationData) -> Result<()> {
         if !self.is_mutable() {
-            return Err(LuceneError::illegal_state("attempt to build() after build()"));
+            return Err(LuceneError::illegal_state(
+                "attempt to build() after build()",
+            ));
         }
 
         self.build_contexts()?;
@@ -1004,7 +1091,10 @@ impl CollationDataBuilder {
         // For U+0000, move its normal ce32 into CE32s[0] and set U0000_TAG.
         let ce32_0 = self.trie().get(0);
         self.ce32s.set_element_at(ce32_0, 0);
-        self.trie_mut().set(0, Collation::make_ce32_from_tag_and_index(Collation::U0000_TAG, 0))?;
+        self.trie_mut().set(
+            0,
+            Collation::make_ce32_from_tag_and_index(Collation::U0000_TAG, 0),
+        )?;
 
         data.trie = Some(Arc::new(self.trie_mut().to_trie2_32()?));
 
@@ -1055,7 +1145,9 @@ impl CollationDataBuilder {
             let c = iter.codepoint;
             let mut ce32 = self.trie().get(c);
             if !Self::is_builder_context_ce32(ce32) {
-                panic!("java.lang.AssertionError: Impossible: No context data for c in contextChars.");
+                panic!(
+                    "java.lang.AssertionError: Impossible: No context data for c in contextChars."
+                );
             }
             let cond = self.get_conditional_ce32_for_ce32(ce32);
             ce32 = self.build_context(cond)?;
@@ -1084,7 +1176,8 @@ impl CollationDataBuilder {
             // After the list head, the prefix or suffix can be empty, but not both.
             debug_assert!(cond == head || self.cc(cond).has_context());
             let prefix_length = self.cc(cond).prefix_length();
-            let mut prefix: Vec<u16> = self.cc(cond).context[..(prefix_length + 1) as usize].to_vec();
+            let mut prefix: Vec<u16> =
+                self.cc(cond).context[..(prefix_length + 1) as usize].to_vec();
             let prefix_string = prefix.clone();
             // Collect all contraction suffixes for one prefix.
             let first_cond = cond;
@@ -1177,25 +1270,34 @@ impl CollationDataBuilder {
                     if fcd16 <= 0xff {
                         flags &= !Collation::CONTRACT_NEXT_CCC;
                     }
-                    fcd16 = self.nfc_impl.get_fcd16(code_point_before(&suffix, suffix.len() as i32));
+                    fcd16 = self
+                        .nfc_impl
+                        .get_fcd16(code_point_before(&suffix, suffix.len() as i32));
                     if fcd16 > 0xff {
                         // The last suffix character has lccc!=0, allowing for discontiguous contractions.
                         flags |= Collation::CONTRACT_TRAILING_CCC;
                     }
                     let v = self.cc(cond).ce32;
-                    contraction_builder.as_mut().expect("created").add(&suffix, v)?;
+                    contraction_builder
+                        .as_mut()
+                        .expect("created")
+                        .add(&suffix, v)?;
                     if cond == last_cond {
                         break;
                     }
                     cond = self.cc(cond).next;
                 }
-                let index = self.add_context_trie(empty_suffix_ce32, contraction_builder.as_mut().expect("created"))?;
+                let index = self.add_context_trie(
+                    empty_suffix_ce32,
+                    contraction_builder.as_mut().expect("created"),
+                )?;
                 if index > Collation::MAX_INDEX {
                     return Err(index_out_of_bounds("too many context-sensitive mappings"));
                     // BufferOverflowException is a better fit
                     // but cannot be constructed with a message string.
                 }
-                ce32 = Collation::make_ce32_from_tag_and_index(Collation::CONTRACTION_TAG, index) | flags;
+                ce32 = Collation::make_ce32_from_tag_and_index(Collation::CONTRACTION_TAG, index)
+                    | flags;
             }
             debug_assert!(cond == last_cond);
             self.conditional_ce32s[first_cond as usize].default_ce32 = ce32;
@@ -1207,7 +1309,9 @@ impl CollationDataBuilder {
             } else {
                 prefix.remove(0); // Remove the length unit.
                 string_builder_reverse(&mut prefix);
-                prefix_builder.get_or_insert_with(CharsTrieBuilder::new).add(&prefix, ce32)?;
+                prefix_builder
+                    .get_or_insert_with(CharsTrieBuilder::new)
+                    .add(&prefix, ce32)?;
                 if self.cc(cond).next < 0 {
                     break;
                 }
@@ -1216,21 +1320,30 @@ impl CollationDataBuilder {
         }
         debug_assert!(self.cc(head).default_ce32 != Collation::NO_CE32);
         let head_default = self.cc(head).default_ce32;
-        let mut prefix_builder = prefix_builder.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
+        let mut prefix_builder =
+            prefix_builder.unwrap_or_else(|| panic!("java.lang.NullPointerException"));
         let index = self.add_context_trie(head_default, &mut prefix_builder)?;
         if index > Collation::MAX_INDEX {
             return Err(index_out_of_bounds("too many context-sensitive mappings"));
             // BufferOverflowException is a better fit
             // but cannot be constructed with a message string.
         }
-        Ok(Collation::make_ce32_from_tag_and_index(Collation::PREFIX_TAG, index))
+        Ok(Collation::make_ce32_from_tag_and_index(
+            Collation::PREFIX_TAG,
+            index,
+        ))
     }
 
-    fn add_context_trie(&mut self, default_ce32: i32, trie_builder: &mut CharsTrieBuilder) -> Result<i32> {
+    fn add_context_trie(
+        &mut self,
+        default_ce32: i32,
+        trie_builder: &mut CharsTrieBuilder,
+    ) -> Result<i32> {
         let mut context: Vec<u16> = Vec::new();
         context.push((default_ce32 >> 16) as u16);
         context.push(default_ce32 as u16);
-        context.extend_from_slice(&trie_builder.build_char_sequence(StringTrieBuilderOption::Small)?);
+        context
+            .extend_from_slice(&trie_builder.build_char_sequence(StringTrieBuilderOption::Small)?);
         let mut index = index_of(&self.contexts, &context, 0);
         if index < 0 {
             index = self.contexts.len() as i32;
@@ -1267,10 +1380,18 @@ impl CollationDataBuilder {
         Ok(())
     }
 
-    fn get_ces_from(&mut self, s: &[u16], start: i32, ces: &mut [i64], ces_length: i32) -> Result<i32> {
+    fn get_ces_from(
+        &mut self,
+        s: &[u16],
+        start: i32,
+        ces: &mut [i64],
+        ces_length: i32,
+    ) -> Result<i32> {
         let mut coll_iter = match self.coll_iter.take() {
             Some(it) => it,
-            None => DataBuilderCollationIterator::new(self, CollationData::new(self.nfc_impl.clone())),
+            None => {
+                DataBuilderCollationIterator::new(self, CollationData::new(self.nfc_impl.clone()))
+            }
         };
         let r = coll_iter.fetch_ces(self, s, start, ces, ces_length);
         self.coll_iter = Some(coll_iter);
@@ -1307,7 +1428,13 @@ struct CopyHelper<'a> {
 }
 
 impl CopyHelper<'_> {
-    fn copy_range_ce32(&mut self, dest: &mut CollationDataBuilder, start: i32, end: i32, mut ce32: i32) -> Result<()> {
+    fn copy_range_ce32(
+        &mut self,
+        dest: &mut CollationDataBuilder,
+        start: i32,
+        end: i32,
+        mut ce32: i32,
+    ) -> Result<()> {
         ce32 = self.copy_ce32(dest, ce32)?;
         dest.trie_mut().set_range(start, end, ce32, true)?;
         if CollationDataBuilder::is_builder_context_ce32(ce32) {
@@ -1344,7 +1471,8 @@ impl CopyHelper<'_> {
                     } else {
                         if !is_modified {
                             for j in 0..i {
-                                self.modified_ces[j as usize] = Collation::ce_from_ce32(src_ce32s[(src_index + j) as usize]);
+                                self.modified_ces[j as usize] =
+                                    Collation::ce_from_ce32(src_ce32s[(src_index + j) as usize]);
                             }
                             is_modified = true;
                         }
@@ -1389,7 +1517,10 @@ impl CopyHelper<'_> {
                 }
             } else if tag == Collation::BUILDER_DATA_TAG {
                 // Copy the list of ConditionalCE32.
-                let mut cond = self.src.cc(self.src.get_conditional_ce32_for_ce32(ce32)).clone();
+                let mut cond = self
+                    .src
+                    .cc(self.src.get_conditional_ce32_for_ce32(ce32))
+                    .clone();
                 debug_assert!(!cond.has_context());
                 let copied = self.copy_ce32(dest, cond.ce32)?;
                 let mut dest_index = dest.add_conditional_ce32(cond.context.clone(), copied)?;
@@ -1400,7 +1531,8 @@ impl CopyHelper<'_> {
                     let copied = self.copy_ce32(dest, cond.ce32)?;
                     dest_index = dest.add_conditional_ce32(cond.context.clone(), copied)?;
                     let suffix_start = cond.prefix_length() + 1;
-                    dest.unsafe_backward_set.add_all_str(&cond.context[suffix_start as usize..])?;
+                    dest.unsafe_backward_set
+                        .add_all_str(&cond.context[suffix_start as usize..])?;
                     dest.conditional_ce32s[prev_dest_cond as usize].next = dest_index;
                 }
             } else {
@@ -1466,11 +1598,17 @@ impl DataBuilderCollationIterator {
         for (j, v) in jamo_ce32s.iter_mut().enumerate() {
             // Count across Jamo types.
             let jamo = CollationDataBuilder::jamo_cp_from_index(j as i32);
-            *v = Collation::make_ce32_from_tag_and_index(Collation::BUILDER_DATA_TAG, jamo) | IS_BUILDER_JAMO_CE32;
+            *v = Collation::make_ce32_from_tag_and_index(Collation::BUILDER_DATA_TAG, jamo)
+                | IS_BUILDER_JAMO_CE32;
         }
         let jamo_ce32s: Arc<[i32]> = Arc::from(jamo_ce32s);
         new_data.jamo_ce32s = jamo_ce32s.clone();
-        Self { base: CollationIteratorBase::with_numeric(Arc::new(new_data), false), jamo_ce32s, s: Vec::new(), pos: 0 }
+        Self {
+            base: CollationIteratorBase::with_numeric(Arc::new(new_data), false),
+            jamo_ce32s,
+            s: Vec::new(),
+            pos: 0,
+        }
     }
 
     fn fetch_ces(
@@ -1489,7 +1627,11 @@ impl DataBuilderCollationIterator {
             d.contexts = Arc::from(&builder.contexts[..]);
             d.jamo_ce32s = self.jamo_ce32s.clone();
         }
-        let mut bound = BoundIter { it: self, builder, pending: None };
+        let mut bound = BoundIter {
+            it: self,
+            builder,
+            pending: None,
+        };
         // Modified copy of CollationIterator.nextCE() and CollationIterator.nextCEFromCE32().
         bound.it.base.reset();
         bound.it.s = str.to_vec();

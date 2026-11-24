@@ -110,10 +110,9 @@ impl StandardPlural {
                     return Some(StandardPlural::Zero);
                 }
             }
-            5
-                if keyword == "other" => {
-                    return Some(StandardPlural::Other);
-                }
+            5 if keyword == "other" => {
+                return Some(StandardPlural::Other);
+            }
             _ => {}
         }
         None
@@ -141,7 +140,8 @@ impl StandardPlural {
 
     /// `indexOrOtherIndexFromString(CharSequence keyword)`.
     pub fn index_or_other_index_from_string(keyword: &str) -> i32 {
-        Self::or_null_from_string(keyword).map_or(StandardPlural::Other.ordinal(), StandardPlural::ordinal)
+        Self::or_null_from_string(keyword)
+            .map_or(StandardPlural::Other.ordinal(), StandardPlural::ordinal)
     }
 
     /// `indexFromString(CharSequence keyword)`.

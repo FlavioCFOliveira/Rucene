@@ -95,7 +95,9 @@ impl IntegerWidth {
     pub fn truncate_at(&self, max_int: i32) -> Result<IntegerWidth> {
         if max_int == self.0.max_int {
             Ok(self.clone())
-        } else if (0..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&max_int) && max_int >= self.0.min_int {
+        } else if (0..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&max_int)
+            && max_int >= self.0.min_int
+        {
             Ok(IntegerWidth::new(self.0.min_int, max_int))
         } else if self.0.min_int == 1 && max_int == -1 {
             Ok(DEFAULT.clone())

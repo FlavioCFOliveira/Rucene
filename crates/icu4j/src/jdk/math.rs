@@ -152,16 +152,28 @@ pub struct MathContext {
 
 impl MathContext {
     /// `MathContext.UNLIMITED`: precision 0, `HALF_UP`.
-    pub const UNLIMITED: MathContext = MathContext { precision: 0, rounding_mode: RoundingMode::HalfUp };
+    pub const UNLIMITED: MathContext = MathContext {
+        precision: 0,
+        rounding_mode: RoundingMode::HalfUp,
+    };
 
     /// `MathContext.DECIMAL32`: 7 digits, `HALF_EVEN`.
-    pub const DECIMAL32: MathContext = MathContext { precision: 7, rounding_mode: RoundingMode::HalfEven };
+    pub const DECIMAL32: MathContext = MathContext {
+        precision: 7,
+        rounding_mode: RoundingMode::HalfEven,
+    };
 
     /// `MathContext.DECIMAL64`: 16 digits, `HALF_EVEN`.
-    pub const DECIMAL64: MathContext = MathContext { precision: 16, rounding_mode: RoundingMode::HalfEven };
+    pub const DECIMAL64: MathContext = MathContext {
+        precision: 16,
+        rounding_mode: RoundingMode::HalfEven,
+    };
 
     /// `MathContext.DECIMAL128`: 34 digits, `HALF_EVEN`.
-    pub const DECIMAL128: MathContext = MathContext { precision: 34, rounding_mode: RoundingMode::HalfEven };
+    pub const DECIMAL128: MathContext = MathContext {
+        precision: 34,
+        rounding_mode: RoundingMode::HalfEven,
+    };
 
     /// `new MathContext(int setPrecision)`: `HALF_UP` rounding.
     ///
@@ -185,7 +197,10 @@ impl MathContext {
         if set_precision < 0 {
             return Err(LuceneError::illegal_argument("Digits < 0"));
         }
-        Ok(Self { precision: set_precision, rounding_mode: set_rounding_mode })
+        Ok(Self {
+            precision: set_precision,
+            rounding_mode: set_rounding_mode,
+        })
     }
 
     /// `getPrecision()`.
@@ -208,7 +223,11 @@ impl MathContext {
 impl fmt::Display for MathContext {
     /// `toString()`: `precision=<p> roundingMode=<mode>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "precision={} roundingMode={}", self.precision, self.rounding_mode)
+        write!(
+            f,
+            "precision={} roundingMode={}",
+            self.precision, self.rounding_mode
+        )
     }
 }
 
@@ -349,7 +368,11 @@ fn mag_shr(a: &[u32], n: u32) -> Vec<u32> {
     let mut r: Vec<u32> = a[words..].to_vec();
     if bits != 0 {
         for i in 0..r.len() {
-            let hi = if i + 1 < r.len() { r[i + 1] << (32 - bits) } else { 0 };
+            let hi = if i + 1 < r.len() {
+                r[i + 1] << (32 - bits)
+            } else {
+                0
+            };
             r[i] = (r[i] >> bits) | hi;
         }
     }
@@ -453,7 +476,10 @@ pub struct BigInteger {
 impl BigInteger {
     /// `BigInteger.ZERO`.
     pub fn zero() -> Self {
-        Self { signum: 0, mag: Vec::new() }
+        Self {
+            signum: 0,
+            mag: Vec::new(),
+        }
     }
 
     /// `BigInteger.ONE`.
@@ -517,13 +543,17 @@ impl BigInteger {
         let index2 = val.iter().rposition(|&c| c == b'+' as u16);
         if let Some(i1) = index1 {
             if i1 != 0 || index2.is_some() {
-                return Err(LuceneError::number_format("Illegal embedded sign character"));
+                return Err(LuceneError::number_format(
+                    "Illegal embedded sign character",
+                ));
             }
             sign = -1;
             cursor = 1;
         } else if let Some(i2) = index2 {
             if i2 != 0 {
-                return Err(LuceneError::number_format("Illegal embedded sign character"));
+                return Err(LuceneError::number_format(
+                    "Illegal embedded sign character",
+                ));
             }
             cursor = 1;
         }
@@ -569,7 +599,10 @@ impl BigInteger {
 
     /// `negate()`.
     pub fn negate(&self) -> Self {
-        Self { signum: -self.signum, mag: self.mag.clone() }
+        Self {
+            signum: -self.signum,
+            mag: self.mag.clone(),
+        }
     }
 
     /// `abs()`.
@@ -629,7 +662,10 @@ impl BigInteger {
             return Err(arithmetic("BigInteger divide by zero"));
         }
         let (q, r) = mag_divmod(&self.mag, &val.mag);
-        Ok([Self::from_parts(self.signum * val.signum, q), Self::from_parts(self.signum, r)])
+        Ok([
+            Self::from_parts(self.signum * val.signum, q),
+            Self::from_parts(self.signum, r),
+        ])
     }
 
     /// `pow(int exponent)`.
@@ -692,7 +728,8 @@ impl BigInteger {
 
     /// The low 64 bits of the two's-complement representation.
     fn low_bits(&self) -> u64 {
-        let lo = self.mag.first().copied().unwrap_or(0) as u64 | (self.mag.get(1).copied().unwrap_or(0) as u64) << 32;
+        let lo = self.mag.first().copied().unwrap_or(0) as u64
+            | (self.mag.get(1).copied().unwrap_or(0) as u64) << 32;
         if self.signum < 0 {
             lo.wrapping_neg()
         } else {
@@ -782,16 +819,50 @@ impl fmt::Display for BigInteger {
 }
 
 /// `BigInteger.digitsPerInt`: the digits of a radix that fit in an `int`.
-const DIGITS_PER_INT: [i32; 37] =
-    [0, 0, 30, 19, 15, 13, 11, 11, 10, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5];
+const DIGITS_PER_INT: [i32; 37] = [
+    0, 0, 30, 19, 15, 13, 11, 11, 10, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 5,
+];
 
 /// `BigInteger.intRadix`: `radix ^ digitsPerInt[radix]`.
 const INT_RADIX: [u32; 37] = [
-    0, 0, 0x4000_0000, 0x4546_b3db, 0x4000_0000, 0x48c2_7395, 0x159f_d800, 0x75db_9c97, 0x4000_0000, 0x1717_9149,
-    0x3b9a_ca00, 0x0cc6_db61, 0x19a1_0000, 0x309f_1021, 0x57f6_c100, 0x0a2f_1b6f, 0x1000_0000, 0x1875_4571,
-    0x247d_bc80, 0x3547_667b, 0x4c4b_4000, 0x6b5a_6e1d, 0x06c2_0a40, 0x08d2_d931, 0x0b64_0000, 0x0e8d_4a51,
-    0x1269_ae40, 0x1717_9149, 0x1cb9_1000, 0x2374_4899, 0x2b73_a840, 0x34e6_3b41, 0x4000_0000, 0x4cfa_3cc1,
-    0x5c13_d840, 0x6d91_b519, 0x039a_a400,
+    0,
+    0,
+    0x4000_0000,
+    0x4546_b3db,
+    0x4000_0000,
+    0x48c2_7395,
+    0x159f_d800,
+    0x75db_9c97,
+    0x4000_0000,
+    0x1717_9149,
+    0x3b9a_ca00,
+    0x0cc6_db61,
+    0x19a1_0000,
+    0x309f_1021,
+    0x57f6_c100,
+    0x0a2f_1b6f,
+    0x1000_0000,
+    0x1875_4571,
+    0x247d_bc80,
+    0x3547_667b,
+    0x4c4b_4000,
+    0x6b5a_6e1d,
+    0x06c2_0a40,
+    0x08d2_d931,
+    0x0b64_0000,
+    0x0e8d_4a51,
+    0x1269_ae40,
+    0x1717_9149,
+    0x1cb9_1000,
+    0x2374_4899,
+    0x2b73_a840,
+    0x34e6_3b41,
+    0x4000_0000,
+    0x4cfa_3cc1,
+    0x5c13_d840,
+    0x6d91_b519,
+    0x039a_a400,
 ];
 
 // ---------------------------------------------------------------------------
@@ -816,7 +887,9 @@ fn ten_pow(n: i32) -> BigInteger {
     if n < 0 {
         return BigInteger::zero();
     }
-    BigInteger::ten().pow(n).unwrap_or_else(|_| BigInteger::zero())
+    BigInteger::ten()
+        .pow(n)
+        .unwrap_or_else(|_| BigInteger::zero())
 }
 
 fn big_multiply_power_ten(value: &BigInteger, n: i32) -> BigInteger {
@@ -874,7 +947,11 @@ fn check_scale_non_zero(val: i64) -> Result<i32> {
 fn check_scale_for(int_val: &BigInteger, val: i64) -> Result<i32> {
     let mut as_int = val as i32;
     if as_int as i64 != val {
-        as_int = if val > i32::MAX as i64 { i32::MAX } else { i32::MIN };
+        as_int = if val > i32::MAX as i64 {
+            i32::MAX
+        } else {
+            i32::MIN
+        };
         if int_val.signum() != 0 {
             return Err(overflow_or_underflow(as_int));
         }
@@ -895,7 +972,12 @@ fn saturate_long(s: i64) -> i32 {
 
 /// `commonNeedIncrement(int roundingMode, int qsign, int cmpFracHalf,
 /// boolean oddQuot)`.
-fn common_need_increment(rounding_mode: i32, qsign: i32, cmp_frac_half: i32, odd_quot: bool) -> Result<bool> {
+fn common_need_increment(
+    rounding_mode: i32,
+    qsign: i32,
+    cmp_frac_half: i32,
+    odd_quot: bool,
+) -> Result<bool> {
     Ok(match rounding_mode {
         ROUND_UNNECESSARY => return Err(arithmetic("Rounding necessary")),
         ROUND_UP => true,
@@ -921,14 +1003,24 @@ fn common_need_increment(rounding_mode: i32, qsign: i32, cmp_frac_half: i32, odd
 /// `bdividend / bdivisor` (`MutableBigInteger.divide`).
 fn divide_parts(bdividend: &BigInteger, bdivisor: &BigInteger) -> (Vec<u32>, Vec<u32>, i32) {
     let (q, r) = mag_divmod(&bdividend.mag, &bdivisor.mag);
-    let qsign = if bdividend.signum != bdivisor.signum { -1 } else { 1 };
+    let qsign = if bdividend.signum != bdivisor.signum {
+        -1
+    } else {
+        1
+    };
     (q, r, qsign)
 }
 
 /// `needIncrement(MutableBigInteger mdivisor, int roundingMode, int qsign,
 /// MutableBigInteger mq, MutableBigInteger mr)`: `cmpFracHalf` is
 /// `mr.compareHalf(mdivisor)`, the comparison of `2 × r` with the divisor.
-fn need_increment(divisor_mag: &[u32], rounding_mode: i32, qsign: i32, q: &[u32], r: &[u32]) -> Result<bool> {
+fn need_increment(
+    divisor_mag: &[u32],
+    rounding_mode: i32,
+    qsign: i32,
+    q: &[u32],
+    r: &[u32],
+) -> Result<bool> {
     let cmp_frac_half = mag_cmp(&mag_shl(r, 1), divisor_mag) as i32;
     let odd = q.first().is_some_and(|w| w & 1 != 0);
     common_need_increment(rounding_mode, qsign, cmp_frac_half, odd)
@@ -936,7 +1028,11 @@ fn need_increment(divisor_mag: &[u32], rounding_mode: i32, qsign: i32, q: &[u32]
 
 /// `divideAndRound(BigInteger bdividend, BigInteger bdivisor, int
 /// roundingMode)`.
-fn divide_and_round(bdividend: &BigInteger, bdivisor: &BigInteger, rounding_mode: i32) -> Result<BigInteger> {
+fn divide_and_round(
+    bdividend: &BigInteger,
+    bdivisor: &BigInteger,
+    rounding_mode: i32,
+) -> Result<BigInteger> {
     let (mut q, r, qsign) = divide_parts(bdividend, bdivisor);
     if !r.is_empty() && need_increment(&bdivisor.mag, rounding_mode, qsign, &q, &r)? {
         q = mag_add(&q, &[1]);
@@ -958,11 +1054,21 @@ fn divide_and_round_scaled(
         if need_increment(&bdivisor.mag, rounding_mode, qsign, &q, &r)? {
             q = mag_add(&q, &[1]);
         }
-        Ok(BigDecimal::new_unscaled(BigInteger::from_parts(qsign, q), scale))
+        Ok(BigDecimal::new_unscaled(
+            BigInteger::from_parts(qsign, q),
+            scale,
+        ))
     } else if preferred_scale != scale {
-        create_and_strip_zeros_to_match_scale(BigInteger::from_parts(qsign, q), scale, preferred_scale as i64)
+        create_and_strip_zeros_to_match_scale(
+            BigInteger::from_parts(qsign, q),
+            scale,
+            preferred_scale as i64,
+        )
     } else {
-        Ok(BigDecimal::new_unscaled(BigInteger::from_parts(qsign, q), scale))
+        Ok(BigDecimal::new_unscaled(
+            BigInteger::from_parts(qsign, q),
+            scale,
+        ))
     }
 }
 
@@ -973,7 +1079,11 @@ fn divide_and_round_scaled(
 /// The JDK finds the removable zeros by binary splitting over powers of
 /// five; dividing by ten one zero at a time removes the same zeros and
 /// reaches the same scale, with the same `checkScale` per step.
-fn create_and_strip_zeros_to_match_scale(mut int_val: BigInteger, mut scale: i32, preferred_scale: i64) -> Result<BigDecimal> {
+fn create_and_strip_zeros_to_match_scale(
+    mut int_val: BigInteger,
+    mut scale: i32,
+    preferred_scale: i64,
+) -> Result<BigDecimal> {
     let preferred_scale = preferred_scale.clamp(i32::MIN as i64 - 1, i32::MAX as i64);
     if int_val.signum == 0 {
         return Ok(BigDecimal::new_unscaled(int_val, scale));
@@ -1010,22 +1120,34 @@ fn do_round_big(mut int_val: BigInteger, mut scale: i32, mc: &MathContext) -> Re
 impl BigDecimal {
     /// `BigDecimal.ZERO`: 0, scale 0.
     pub fn zero() -> Self {
-        Self { int_val: BigInteger::zero(), scale: 0 }
+        Self {
+            int_val: BigInteger::zero(),
+            scale: 0,
+        }
     }
 
     /// `BigDecimal.ONE`: 1, scale 0.
     pub fn one() -> Self {
-        Self { int_val: BigInteger::one(), scale: 0 }
+        Self {
+            int_val: BigInteger::one(),
+            scale: 0,
+        }
     }
 
     /// `BigDecimal.TEN`: 10, scale 0.
     pub fn ten() -> Self {
-        Self { int_val: BigInteger::ten(), scale: 0 }
+        Self {
+            int_val: BigInteger::ten(),
+            scale: 0,
+        }
     }
 
     /// `new BigDecimal(BigInteger unscaledVal, int scale)`.
     pub fn new_unscaled(unscaled_val: BigInteger, scale: i32) -> Self {
-        Self { int_val: unscaled_val, scale }
+        Self {
+            int_val: unscaled_val,
+            scale,
+        }
     }
 
     /// `new BigDecimal(BigInteger val)`: scale 0.
@@ -1084,9 +1206,19 @@ impl BigDecimal {
         let (rb, scl) = if exponent == 0 {
             (BigInteger::value_of(compact_val), 0)
         } else if exponent < 0 {
-            (BigInteger::value_of(5).pow(-exponent)?.multiply_long(compact_val), -exponent)
+            (
+                BigInteger::value_of(5)
+                    .pow(-exponent)?
+                    .multiply_long(compact_val),
+                -exponent,
+            )
         } else {
-            (BigInteger::value_of(2).pow(exponent)?.multiply_long(compact_val), 0)
+            (
+                BigInteger::value_of(2)
+                    .pow(exponent)?
+                    .multiply_long(compact_val),
+                0,
+            )
         };
         Ok(Self::new_unscaled(rb, scl))
     }
@@ -1126,7 +1258,8 @@ impl BigDecimal {
     /// the JDK reads past the end of the array (an empty string, a lone
     /// `e`).
     pub fn from_string(val: &[u16]) -> Result<Self> {
-        let nfe_no_message = || LuceneError::unchecked_with_message("java.lang.NumberFormatException", None);
+        let nfe_no_message =
+            || LuceneError::unchecked_with_message("java.lang.NumberFormatException", None);
         let at = |i: usize| -> Result<u16> { val.get(i).copied().ok_or_else(nfe_no_message) };
         let mut offset = 0usize;
         let mut len = val.len() as i64;
@@ -1177,19 +1310,25 @@ impl BigDecimal {
                 }
             } else if c == b'.' as u16 {
                 if dot {
-                    return Err(LuceneError::number_format("Character array contains more than one decimal point."));
+                    return Err(LuceneError::number_format(
+                        "Character array contains more than one decimal point.",
+                    ));
                 }
                 dot = true;
             } else if c == b'e' as u16 || c == b'E' as u16 {
                 scl -= Self::parse_exp(val, offset, len)?;
                 break;
             } else if is_compact {
-                let ch = char::from_u32(c as u32).map(String::from).unwrap_or_else(|| to_rust_string(&[c]));
+                let ch = char::from_u32(c as u32)
+                    .map(String::from)
+                    .unwrap_or_else(|| to_rust_string(&[c]));
                 return Err(LuceneError::number_format(format!(
                     "Character {ch} is neither a decimal digit number, decimal point, nor \"e\" notation exponential mark."
                 )));
             } else {
-                return Err(LuceneError::number_format("Character array is missing \"e\" notation exponential mark."));
+                return Err(LuceneError::number_format(
+                    "Character array is missing \"e\" notation exponential mark.",
+                ));
             }
             offset += 1;
             len -= 1;
@@ -1204,12 +1343,16 @@ impl BigDecimal {
         if scl as i32 as i64 != scl {
             return Err(LuceneError::number_format("Exponent overflow."));
         }
-        Ok(Self::new_unscaled(BigInteger::from_parts(if isneg { -1 } else { 1 }, mag), scl as i32))
+        Ok(Self::new_unscaled(
+            BigInteger::from_parts(if isneg { -1 } else { 1 }, mag),
+            scl as i32,
+        ))
     }
 
     /// `parseExp(char[] in, int offset, int len)`.
     fn parse_exp(val: &[u16], mut offset: usize, mut len: i64) -> Result<i64> {
-        let nfe_no_message = || LuceneError::unchecked_with_message("java.lang.NumberFormatException", None);
+        let nfe_no_message =
+            || LuceneError::unchecked_with_message("java.lang.NumberFormatException", None);
         let at = |i: usize| -> Result<u16> { val.get(i).copied().ok_or_else(nfe_no_message) };
         let mut exp: i64 = 0;
         offset += 1;
@@ -1230,7 +1373,9 @@ impl BigDecimal {
             len -= 1;
         }
         if len > 10 {
-            return Err(LuceneError::number_format("Too many nonzero exponent digits."));
+            return Err(LuceneError::number_format(
+                "Too many nonzero exponent digits.",
+            ));
         }
         loop {
             let v = if (b'0' as u16..=b'9' as u16).contains(&c) {
@@ -1329,7 +1474,12 @@ impl BigDecimal {
     ///
     /// As [`add`](Self::add).
     pub fn subtract(&self, subtrahend: &BigDecimal) -> Result<Self> {
-        Self::add_big(&self.int_val, self.scale, &subtrahend.int_val.negate(), subtrahend.scale)
+        Self::add_big(
+            &self.int_val,
+            self.scale,
+            &subtrahend.int_val.negate(),
+            subtrahend.scale,
+        )
     }
 
     /// `multiply(BigDecimal multiplicand)`: the exact product, scale
@@ -1341,7 +1491,10 @@ impl BigDecimal {
     /// overflows.
     pub fn multiply(&self, multiplicand: &BigDecimal) -> Result<Self> {
         let product_scale = self.check_scale(self.scale as i64 + multiplicand.scale as i64)?;
-        Ok(Self::new_unscaled(self.int_val.multiply(&multiplicand.int_val), product_scale))
+        Ok(Self::new_unscaled(
+            self.int_val.multiply(&multiplicand.int_val),
+            product_scale,
+        ))
     }
 
     /// `multiply(BigDecimal multiplicand, MathContext mc)`: the product
@@ -1356,7 +1509,11 @@ impl BigDecimal {
             return self.multiply(multiplicand);
         }
         let product_scale = self.check_scale(self.scale as i64 + multiplicand.scale as i64)?;
-        do_round_big(self.int_val.multiply(&multiplicand.int_val), product_scale, mc)
+        do_round_big(
+            self.int_val.multiply(&multiplicand.int_val),
+            product_scale,
+            mc,
+        )
     }
 
     /// `divide(BigDecimal divisor, int scale, RoundingMode roundingMode)`.
@@ -1365,8 +1522,20 @@ impl BigDecimal {
     ///
     /// `ArithmeticException` (`BigInteger divide by zero` for a zero
     /// divisor, `Rounding necessary`, `Overflow`/`Underflow`).
-    pub fn divide_scale(&self, divisor: &BigDecimal, scale: i32, rounding_mode: RoundingMode) -> Result<Self> {
-        Self::divide_to_scale(&self.int_val, self.scale, &divisor.int_val, divisor.scale, scale, rounding_mode.old_mode())
+    pub fn divide_scale(
+        &self,
+        divisor: &BigDecimal,
+        scale: i32,
+        rounding_mode: RoundingMode,
+    ) -> Result<Self> {
+        Self::divide_to_scale(
+            &self.int_val,
+            self.scale,
+            &divisor.int_val,
+            divisor.scale,
+            scale,
+            rounding_mode.old_mode(),
+        )
     }
 
     /// `divide(BigInteger dividend, int dividendScale, BigInteger divisor,
@@ -1424,13 +1593,19 @@ impl BigDecimal {
         if self.signum() == 0 {
             return Ok(Self::new_unscaled(BigInteger::zero(), preferred_scale));
         }
-        let mc_precision = (self.precision() as i64 + (10.0 * divisor.precision() as f64 / 3.0).ceil() as i64)
+        let mc_precision = (self.precision() as i64
+            + (10.0 * divisor.precision() as f64 / 3.0).ceil() as i64)
             .min(i32::MAX as i64) as i32;
-        let mc = MathContext { precision: mc_precision, rounding_mode: RoundingMode::Unnecessary };
+        let mc = MathContext {
+            precision: mc_precision,
+            rounding_mode: RoundingMode::Unnecessary,
+        };
         let quotient = match self.divide_mc(divisor, &mc) {
             Ok(q) => q,
             Err(e) if matches!(e.kind(), rucene::error::LuceneErrorKind::Arithmetic(_)) => {
-                return Err(arithmetic("Non-terminating decimal expansion; no exact representable decimal result."));
+                return Err(arithmetic(
+                    "Non-terminating decimal expansion; no exact representable decimal result.",
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -1463,7 +1638,10 @@ impl BigDecimal {
             return Err(arithmetic("Division by zero"));
         }
         if dividend.signum() == 0 {
-            return Ok(Self::new_unscaled(BigInteger::zero(), saturate_long(preferred_scale)));
+            return Ok(Self::new_unscaled(
+                BigInteger::zero(),
+                saturate_long(preferred_scale),
+            ));
         }
         let xscale = dividend.precision();
         let mut yscale = divisor.precision();
@@ -1475,23 +1653,41 @@ impl BigDecimal {
             yscale -= 1;
         }
         let rounding_mode = mc.rounding_mode.old_mode();
-        let scl = check_scale_non_zero(preferred_scale + yscale as i64 - xscale as i64 + mcp as i64)?;
+        let scl =
+            check_scale_non_zero(preferred_scale + yscale as i64 - xscale as i64 + mcp as i64)?;
         let quotient = if check_scale_non_zero(mcp as i64 + yscale as i64 - xscale as i64)? > 0 {
             let raise = check_scale_non_zero(mcp as i64 + yscale as i64 - xscale as i64)?;
             let rb = big_multiply_power_ten(xs, raise);
-            divide_and_round_scaled(&rb, ys, scl, rounding_mode, check_scale_non_zero(preferred_scale)?)?
+            divide_and_round_scaled(
+                &rb,
+                ys,
+                scl,
+                rounding_mode,
+                check_scale_non_zero(preferred_scale)?,
+            )?
         } else {
             let new_scale = check_scale_non_zero(xscale as i64 - mcp as i64)?;
             let raise = check_scale_non_zero(new_scale as i64 - yscale as i64)?;
             let rb = big_multiply_power_ten(ys, raise);
-            divide_and_round_scaled(xs, &rb, scl, rounding_mode, check_scale_non_zero(preferred_scale)?)?
+            divide_and_round_scaled(
+                xs,
+                &rb,
+                scl,
+                rounding_mode,
+                check_scale_non_zero(preferred_scale)?,
+            )?
         };
         Self::do_round(quotient, mc)
     }
 
     /// `compareMagnitudeNormalized(BigInteger xs, int xscale, BigInteger ys,
     /// int yscale)`.
-    fn compare_magnitude_normalized(xs: &BigInteger, xscale: i32, ys: &BigInteger, yscale: i32) -> i32 {
+    fn compare_magnitude_normalized(
+        xs: &BigInteger,
+        xscale: i32,
+        ys: &BigInteger,
+        yscale: i32,
+    ) -> i32 {
         let sdiff = xscale - yscale;
         if sdiff < 0 {
             big_multiply_power_ten(xs, -sdiff).compare_magnitude(ys)
@@ -1550,7 +1746,10 @@ impl BigDecimal {
             if elength > mc.precision {
                 return Err(arithmetic("Invalid operation"));
             }
-            workmc = MathContext { precision: mc.precision + elength + 1, rounding_mode: mc.rounding_mode };
+            workmc = MathContext {
+                precision: mc.precision + elength + 1,
+                rounding_mode: mc.rounding_mode,
+            };
         }
         let mut acc = Self::one();
         let mut seenbit = false;
@@ -1618,10 +1817,19 @@ impl BigDecimal {
         }
         if new_scale > old_scale {
             let raise = self.check_scale(new_scale as i64 - old_scale as i64)?;
-            Ok(Self::new_unscaled(big_multiply_power_ten(&self.int_val, raise), new_scale))
+            Ok(Self::new_unscaled(
+                big_multiply_power_ten(&self.int_val, raise),
+                new_scale,
+            ))
         } else {
             let drop = self.check_scale(old_scale as i64 - new_scale as i64)?;
-            divide_and_round_scaled(&self.int_val, &ten_pow(drop), new_scale, rounding_mode, new_scale)
+            divide_and_round_scaled(
+                &self.int_val,
+                &ten_pow(drop),
+                new_scale,
+                rounding_mode,
+                new_scale,
+            )
         }
     }
 
@@ -1672,7 +1880,10 @@ impl BigDecimal {
     /// `ArithmeticException` (`Overflow`/`Underflow`) when the scale
     /// overflows.
     pub fn scale_by_power_of_ten(&self, n: i32) -> Result<Self> {
-        Ok(Self::new_unscaled(self.int_val.clone(), self.check_scale(self.scale as i64 - n as i64)?))
+        Ok(Self::new_unscaled(
+            self.int_val.clone(),
+            self.check_scale(self.scale as i64 - n as i64)?,
+        ))
     }
 
     /// `stripTrailingZeros()`: [`zero`](Self::zero) for a zero value,
@@ -1728,9 +1939,12 @@ impl BigDecimal {
                 return 1;
             }
             if sdiff < 0 {
-                return big_multiply_power_ten(&self.int_val, (-sdiff) as i32).compare_magnitude(&val.int_val);
+                return big_multiply_power_ten(&self.int_val, (-sdiff) as i32)
+                    .compare_magnitude(&val.int_val);
             } else {
-                return self.int_val.compare_magnitude(&big_multiply_power_ten(&val.int_val, sdiff as i32));
+                return self
+                    .int_val
+                    .compare_magnitude(&big_multiply_power_ten(&val.int_val, sdiff as i32));
             }
         }
         self.int_val.compare_magnitude(&val.int_val)
@@ -1762,7 +1976,10 @@ impl BigDecimal {
 
     /// `hashCode()`: `31 × unscaledValue().hashCode() + scale()`.
     pub fn hash_code(&self) -> i32 {
-        self.int_val.hash_code().wrapping_mul(31).wrapping_add(self.scale)
+        self.int_val
+            .hash_code()
+            .wrapping_mul(31)
+            .wrapping_add(self.scale)
     }
 
     /// `toBigInteger()`: the integer part (fraction discarded).

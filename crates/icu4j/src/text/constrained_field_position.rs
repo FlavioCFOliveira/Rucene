@@ -82,7 +82,9 @@ impl ConstrainedFieldPosition {
     /// Java's `null`.
     pub fn constrain_field(&mut self, field: Option<FieldRef>) -> Result<()> {
         let Some(field) = field else {
-            return Err(LuceneError::illegal_argument("Cannot constrain on null field"));
+            return Err(LuceneError::illegal_argument(
+                "Cannot constrain on null field",
+            ));
         };
         self.f_constraint = ConstraintType::Field;
         self.f_class_constraint = "java.lang.Object";
@@ -100,7 +102,9 @@ impl ConstrainedFieldPosition {
     /// for Java's `null`.
     pub fn constrain_class(&mut self, class_constraint: Option<&'static str>) -> Result<()> {
         let Some(class_constraint) = class_constraint else {
-            return Err(LuceneError::illegal_argument("Cannot constrain on null field class"));
+            return Err(LuceneError::illegal_argument(
+                "Cannot constrain on null field class",
+            ));
         };
         self.f_constraint = ConstraintType::Class;
         self.f_class_constraint = class_constraint;
@@ -111,7 +115,11 @@ impl ConstrainedFieldPosition {
 
     /// `constrainFieldAndValue(Field field, Object fieldValue)`
     /// (deprecated, internal).
-    pub fn constrain_field_and_value(&mut self, field: Option<FieldRef>, field_value: Option<AttributeValue>) {
+    pub fn constrain_field_and_value(
+        &mut self,
+        field: Option<FieldRef>,
+        field_value: Option<AttributeValue>,
+    ) {
         self.f_constraint = ConstraintType::Value;
         self.f_class_constraint = "java.lang.Object";
         self.f_field = field;
@@ -149,7 +157,13 @@ impl ConstrainedFieldPosition {
     }
 
     /// `setState(Field field, Object value, int start, int limit)`.
-    pub fn set_state(&mut self, field: Option<FieldRef>, value: Option<AttributeValue>, start: i32, limit: i32) {
+    pub fn set_state(
+        &mut self,
+        field: Option<FieldRef>,
+        value: Option<AttributeValue>,
+        start: i32,
+        limit: i32,
+    ) {
         // Clients of ConstrainedFieldPosition should not call setState with a field that does
         // not match the constraint.
         if field.is_some() {
@@ -168,7 +182,11 @@ impl ConstrainedFieldPosition {
     ///
     /// `IllegalArgumentException("field must not be null")` for Java's
     /// `null` field.
-    pub fn matches_field(&self, field: Option<FieldRef>, field_value: Option<&AttributeValue>) -> Result<bool> {
+    pub fn matches_field(
+        &self,
+        field: Option<FieldRef>,
+        field_value: Option<&AttributeValue>,
+    ) -> Result<bool> {
         let Some(f) = field else {
             return Err(LuceneError::illegal_argument("field must not be null"));
         };
@@ -176,7 +194,9 @@ impl ConstrainedFieldPosition {
             ConstraintType::None => true,
             ConstraintType::Class => f.is_instance_of(self.f_class_constraint),
             ConstraintType::Field => same_field(self.f_field, field),
-            ConstraintType::Value => same_field(self.f_field, field) && values_equal(self.f_value.as_ref(), field_value),
+            ConstraintType::Value => {
+                same_field(self.f_field, field) && values_equal(self.f_value.as_ref(), field_value)
+            }
         })
     }
 }
@@ -184,7 +204,9 @@ impl ConstrainedFieldPosition {
 impl fmt::Display for ConstrainedFieldPosition {
     /// `toString()`: `CFPos[<start>-<limit> <field>]`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let field = self.f_field.map_or_else(|| "null".to_string(), |x| x.to_java_string());
+        let field = self
+            .f_field
+            .map_or_else(|| "null".to_string(), |x| x.to_java_string());
         write!(f, "CFPos[{}-{} {}]", self.f_start, self.f_limit, field)
     }
 }

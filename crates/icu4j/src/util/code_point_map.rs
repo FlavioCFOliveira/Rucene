@@ -108,7 +108,9 @@ impl<'a> RangeIterator<'a> {
     ///
     /// Always `UnsupportedOperationException`.
     pub fn remove(&mut self) -> Result<()> {
-        Err(crate::jdk::unchecked_no_message("java.lang.UnsupportedOperationException"))
+        Err(crate::jdk::unchecked_no_message(
+            "java.lang.UnsupportedOperationException",
+        ))
     }
 }
 
