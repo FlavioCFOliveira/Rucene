@@ -733,6 +733,32 @@ fn check_dst(offset: usize, length: usize, len: usize) -> Result<()> {
 }
 
 impl MemorySegmentIndexInput {
+    /// `read_bytes` when the fast path does not apply: a closed input, a
+    /// `null` array, a destination range out of bounds, a segment boundary or
+    /// the end of the file.
+    #[cold]
+    #[inline(never)]
+    fn read_bytes_full(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        self.ensure_open()?;
+        // A `null` array: `MemorySegment.copy` throws NPE, which
+        // `alreadyClosed(e)` rethrows unmodified on an open input.
+        let b = crate::store::require_array(b)?;
+        // `MemorySegment.copy` throws IndexOutOfBoundsException for a source
+        // or destination out of range; both fall into `readBytesBoundary`
+        // (MemorySegmentIndexInput.java:194-206).
+        let pos = self.cur_position;
+        let dst_in_range = offset.checked_add(len).is_some_and(|end| end <= b.len());
+        if dst_in_range
+            && self
+                .cur_segment()
+                .copy_to(pos, &mut b[offset..offset + len])
+        {
+            self.cur_position += len as i64;
+            return Ok(());
+        }
+        self.read_bytes_boundary(b, offset, len)
+    }
+
     /// `read_byte` when the fast path does not apply: a closed input, a
     /// segment boundary or the end of the file.
     #[cold]
@@ -841,25 +867,28 @@ impl DataInput for MemorySegmentIndexInput {
         ))
     }
 
+    #[inline]
     fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
-        self.ensure_open()?;
-        // A `null` array: `MemorySegment.copy` throws NPE, which
-        // `alreadyClosed(e)` rethrows unmodified on an open input.
-        let b = crate::store::require_array(b)?;
-        // `MemorySegment.copy` throws IndexOutOfBoundsException for a source
-        // or destination out of range; both fall into `readBytesBoundary`
-        // (MemorySegmentIndexInput.java:194-206).
-        let pos = self.cur_position;
-        let dst_in_range = offset.checked_add(len).is_some_and(|end| end <= b.len());
-        if dst_in_range
-            && self
-                .cur_segment()
-                .copy_to(pos, &mut b[offset..offset + len])
-        {
-            self.cur_position += len as i64;
-            return Ok(());
+        // PERF: as in `read_byte`: an open input, a non-null array, a
+        // destination range inside it and source bytes inside the current
+        // segment are served here; every other case takes the full path,
+        // which re-checks and raises exactly as before. Keeping the error
+        // construction out of this body keeps it a leaf without a large
+        // stack frame; it is called once per LZ4 literal run.
+        let Some(dst) = b else {
+            return self.read_bytes_full(None, offset, len);
+        };
+        if let Some(segment) = &self.cur_segment {
+            if self.scope.is_alive() {
+                if let Some(end) = offset.checked_add(len).filter(|end| *end <= dst.len()) {
+                    if segment.copy_to(self.cur_position, &mut dst[offset..end]) {
+                        self.cur_position += len as i64;
+                        return Ok(());
+                    }
+                }
+            }
         }
-        self.read_bytes_boundary(b, offset, len)
+        self.read_bytes_full(Some(dst), offset, len)
     }
 
     fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {

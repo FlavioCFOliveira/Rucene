@@ -1542,7 +1542,7 @@ impl Lucene90CompressingStoredFieldsWriter {
         debug_assert_eq!(reader.version(), DATA_VERSION_CURRENT);
         let doc = reader.serialized_document(doc_id)?;
         self.start_document()?;
-        let mut input = ByteArrayDataInput::new(&doc.bytes);
+        let mut input = ByteArrayDataInput::new(doc.slice());
         self.buffered_docs
             .copy_bytes(&mut input, doc.length as i64)?;
         self.num_stored_fields_in_doc = doc.num_stored_fields;
@@ -2331,13 +2331,19 @@ impl BlockState {
         if length == 0 {
             return Ok(SerializedDocument {
                 bytes: Vec::new(),
+                offset: 0,
                 length: 0,
                 num_stored_fields,
             });
         }
 
-        let data: Vec<u8> = if merging {
-            self.bytes[offset..offset + length].to_vec()
+        // PERF: the decompressed buffer is handed over as is, with the
+        // document's window inside it, instead of being copied into a vector
+        // of its own: Java's `ByteArrayDataInput(bytes.bytes, bytes.offset,
+        // length)` reads the decompressor's buffer in place
+        // (`Lucene90CompressingStoredFieldsReader.java:620-621`).
+        let (data, data_offset): (Vec<u8>, usize) = if merging {
+            (self.bytes[offset..offset + length].to_vec(), 0)
         } else {
             let input =
                 fields_stream.expect("INVARIANT: a non-merging read is given the fields stream");
@@ -2357,10 +2363,10 @@ impl BlockState {
             //
             // *Memory*: Java's buffer is bounded by `dictLength + blockLength`,
             // about 90 KiB at `BEST_SPEED`, no matter how large the document
-            // is. This port allocates the whole chunk *and* a second full copy
-            // of the document, so for a document near Lucene's documented 2 GiB
-            // limit that is roughly 4 GiB against a fixed 90 KiB. The
-            // difference is unbounded versus bounded, not merely "higher".
+            // is. This port allocates the whole chunk, so for a document near
+            // Lucene's documented 2 GiB limit that is roughly 2 GiB against a
+            // fixed 90 KiB. The difference is unbounded versus bounded, not
+            // merely "higher".
             //
             // **Divergence from Lucene 10.5.0.** Inflating the whole chunk also
             // makes this path read the chunk's total length, which Java's
@@ -2398,7 +2404,7 @@ impl BlockState {
                 if full.len() as i64 != i64::from(total_length) {
                     return Err(chunk_size_error(full.len()));
                 }
-                full[offset..offset + length].to_vec()
+                (full, offset)
             } else {
                 // The decompressor takes `usize` lengths (see `reset`).
                 let Ok(total) = usize::try_from(total_length) else {
@@ -2407,12 +2413,14 @@ impl BlockState {
                 let mut bytes = BytesRef::default();
                 decompressor.decompress(input, total, offset, length, &mut bytes)?;
                 debug_assert!(bytes.length == length);
-                bytes.slice().to_vec()
+                let window_offset = bytes.offset;
+                (bytes.bytes, window_offset)
             }
         };
 
         Ok(SerializedDocument {
             bytes: data,
+            offset: data_offset,
             length,
             num_stored_fields,
         })
@@ -2427,9 +2435,18 @@ impl BlockState {
 /// wraps them in a [`ByteArrayDataInput`] of its own, because a struct holding
 /// both a buffer and a view of that buffer is a self-reference Rust forbids.
 struct SerializedDocument {
+    /// A buffer holding the document at `offset..offset + length`.
     bytes: Vec<u8>,
+    offset: usize,
     length: usize,
     num_stored_fields: i32,
+}
+
+impl SerializedDocument {
+    /// The document's bytes.
+    fn slice(&self) -> &[u8] {
+        &self.bytes[self.offset..self.offset + self.length]
+    }
 }
 
 impl Lucene90CompressingStoredFieldsReader {
@@ -2634,7 +2651,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
     fn document(&self, doc_id: i32, visitor: &mut dyn StoredFieldVisitor) -> Result<()> {
         let doc = self.serialized_document(doc_id)?;
 
-        let mut input = ByteArrayDataInput::new(&doc.bytes);
+        let mut input = ByteArrayDataInput::new(doc.slice());
         for field_idx in 0..doc.num_stored_fields {
             let info_and_bits = input.read_v_long()? as u64;
             let field_number = (info_and_bits >> (TYPE_BITS as u32)) as i32;
