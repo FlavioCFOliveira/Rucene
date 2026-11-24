@@ -234,7 +234,8 @@ impl ICUNormalizer2CharFilter {
         let mut found_boundary = false;
         let buf_len = self.input_buffer.len() as i32;
 
-        while self.checked_input_boundary <= buf_len - 1 {
+        // Java: `checkedInputBoundary <= bufLen - 1`; the same integer test.
+        while self.checked_input_boundary < buf_len {
             let char_len = char_count(code_point_at(
                 &self.input_buffer,
                 self.checked_input_boundary as usize,

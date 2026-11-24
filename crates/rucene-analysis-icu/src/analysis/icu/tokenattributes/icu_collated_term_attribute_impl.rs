@@ -229,13 +229,13 @@ impl AttributeImpl for ICUCollatedTermAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn CharTermAttribute>(),
-            std::any::type_name::<ICUCollatedTermAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.CharTermAttribute",
             "term",
             &self.term(),
         );
         reflector.reflect(
             TypeId::of::<dyn TermToBytesRefAttribute>(),
-            std::any::type_name::<ICUCollatedTermAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute",
             "bytes",
             &self.get_bytes_ref(),
         );

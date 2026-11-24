@@ -399,13 +399,13 @@ impl AttributeImpl for Token {
         self.packed.reflect_with(reflector);
         reflector.reflect(
             TypeId::of::<dyn FlagsAttribute>(),
-            std::any::type_name::<Token>(),
+            "org.apache.lucene.analysis.tokenattributes.FlagsAttribute",
             "flags",
             &self.flags,
         );
         reflector.reflect(
             TypeId::of::<dyn PayloadAttribute>(),
-            std::any::type_name::<Token>(),
+            "org.apache.lucene.analysis.tokenattributes.PayloadAttribute",
             "payload",
             &self.payload,
         );

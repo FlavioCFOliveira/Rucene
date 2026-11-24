@@ -1025,7 +1025,7 @@ fn assert_attribute_reflection_compares_the_reflected_map() {
     use rucene::analysis::tokenattributes::{FlagsAttribute, FlagsAttributeImpl};
     let mut att = FlagsAttributeImpl::default();
     att.set_flags(5);
-    let name = std::any::type_name::<FlagsAttributeImpl>();
+    let name = "org.apache.lucene.analysis.tokenattributes.FlagsAttribute";
     let expected = std::collections::HashMap::from([(format!("{name}#flags"), "5".to_string())]);
     TestUtil::assert_attribute_reflection(&att, &expected);
     let wrong = std::collections::HashMap::from([(format!("{name}#flags"), "6".to_string())]);

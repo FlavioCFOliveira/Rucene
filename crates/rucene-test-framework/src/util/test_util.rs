@@ -1740,10 +1740,11 @@ impl TestUtil {
     /// reports exactly `reflected_values`, keyed `"AttributeClass#key"`.
     ///
     /// **Divergence.** Core's
-    /// [`AttributeReflector`](rucene::util::attribute::AttributeReflector) reports a source-level
-    /// type name and an [`AttributeValue`](rucene::util::attribute::AttributeValue)
-    /// where Java reports the attribute interface's `Class` and an `Object`;
-    /// the map compared here is keyed by that name, `#` and the key, with
+    /// [`AttributeReflector`](rucene::util::attribute::AttributeReflector) reports the
+    /// attribute interface's Java name (`Class.getName()`) and an
+    /// [`AttributeValue`](rucene::util::attribute::AttributeValue) where Java
+    /// reports the `Class` and an `Object`; the map compared here is keyed by
+    /// that name, `#` and the key, as Java's, with
     /// each value's `Debug` rendering standing in for `Object.equals` (it
     /// keeps the value's type: `"1"` and `1` differ), and is printed in
     /// `java.util.HashMap`'s order.

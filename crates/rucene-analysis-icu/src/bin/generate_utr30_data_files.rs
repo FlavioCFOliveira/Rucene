@@ -332,6 +332,7 @@ fn expand_rules_in_utr30_data_files() -> Result<()> {
 }
 
 /// Equivalent to `expandDataFileRules(Path)`.
+#[allow(clippy::if_same_then_else)] // blank/comment and verbatim branches are identical in the Java source
 fn expand_data_file_rules(file: &Path) -> Result<()> {
     let verbatim_rule_line = verbatim_rule_line_pattern();
     let rule_line = rule_line_pattern();

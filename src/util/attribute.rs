@@ -127,8 +127,10 @@ pub trait AttributeReflector {
     /// Reports a single attribute property.
     ///
     /// `attribute_type` identifies the attribute interface, `attribute_name`
-    /// is its source-level name, `key` is the property name, and `value` is
-    /// the current value (Java's `Object value`).
+    /// is its fully qualified Java name (Java's `attClass.getName()`, e.g.
+    /// `org.apache.lucene.analysis.tokenattributes.CharTermAttribute`), `key`
+    /// is the property name, and `value` is the current value (Java's
+    /// `Object value`).
     fn reflect(
         &mut self,
         attribute_type: TypeId,
@@ -195,7 +197,7 @@ pub trait AttributeImpl: Attribute + Debug + Send + Sync + 'static {
     /// (`AttributeImpl.java:58-71`), which drives [`Self::reflect_with`] with a
     /// reflector that appends `key=value` for each property, separated by
     /// commas, optionally prefixing each key with the attribute interface's
-    /// name and `#`.
+    /// fully qualified Java name (`attClass.getName()`) and `#`.
     ///
     /// Java declares the method `final`, so no implementation may change it;
     /// a provided trait method is the closest Rust equivalent — an
@@ -1474,7 +1476,10 @@ impl AttributeSource {
     /// Returns a comma-separated string of all reflected attribute values.
     ///
     /// If `prepend_att_class` is true, each key is prefixed with the attribute
-    /// source-level name and `#`.
+    /// interface's fully qualified Java name and `#`.
+    ///
+    /// Equivalent to
+    /// `org.apache.lucene.util.AttributeSource#reflectAsString(boolean)`.
     pub fn reflect_as_string(&self, prepend_att_class: bool) -> String {
         let mut reflector = ReflectAsString {
             buffer: String::new(),
@@ -2071,6 +2076,96 @@ mod tests {
         assert_eq!(
             MaxNonCompetitiveBoostAttributeImpl::new().reflect_as_string(false),
             "maxNonCompetitiveBoost=-Infinity,competitiveTerm=null"
+        );
+    }
+
+    /// `reflectAsString(true)` prefixes each key with the attribute
+    /// interface's `Class.getName()` and `#` (`AttributeImpl.java:58-71`,
+    /// `AttributeSource.java:391-408`). The expected strings are the output of
+    /// Lucene 10.5.0 (JDK 25) on the same attributes.
+    #[test]
+    fn reflect_as_string_prepends_the_java_interface_name() {
+        use crate::analysis::default_token_attribute_factory;
+        use crate::analysis::tokenattributes::{
+            BytesTermAttributeImpl, CharTermAttribute, CharTermAttributeImpl, FlagsAttribute,
+            KeywordAttribute, OffsetAttribute, OffsetAttributeImpl, PayloadAttribute,
+            SentenceAttributeImpl,
+        };
+        use crate::search::boost_attribute::BoostAttributeImpl;
+        use crate::search::max_non_competitive_boost_attribute::MaxNonCompetitiveBoostAttributeImpl;
+
+        const T: &str = "org.apache.lucene.analysis.tokenattributes.";
+        let mut term = CharTermAttributeImpl::new();
+        term.append_string(Some("This"));
+        assert_eq!(
+            term.reflect_as_string(true),
+            format!(
+                "{T}CharTermAttribute#term=This,{T}TermToBytesRefAttribute#bytes=[54 68 69 73]"
+            )
+        );
+        assert_eq!(
+            OffsetAttributeImpl::default().reflect_as_string(true),
+            format!("{T}OffsetAttribute#startOffset=0,{T}OffsetAttribute#endOffset=0")
+        );
+        assert_eq!(
+            BoostAttributeImpl::new().reflect_as_string(true),
+            "org.apache.lucene.search.BoostAttribute#boost=1.0"
+        );
+        assert_eq!(
+            MaxNonCompetitiveBoostAttributeImpl::new().reflect_as_string(true),
+            "org.apache.lucene.search.MaxNonCompetitiveBoostAttribute#maxNonCompetitiveBoost=\
+             -Infinity,org.apache.lucene.search.MaxNonCompetitiveBoostAttribute#competitiveTerm=null"
+        );
+        assert_eq!(
+            SentenceAttributeImpl::default().reflect_as_string(true),
+            format!("{T}SentenceAttribute#sentences=0")
+        );
+        assert_eq!(
+            BytesTermAttributeImpl::default().reflect_as_string(true),
+            format!("{T}TermToBytesRefAttribute#bytes=null")
+        );
+
+        // `new AttributeSource(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY)`:
+        // the packed implementation reflects its six interfaces, then the
+        // other implementations follow in insertion order.
+        let mut source = AttributeSource::new_with_factory(default_token_attribute_factory());
+        let cell = source
+            .add_attribute_by_id(TypeId::of::<dyn CharTermAttribute>())
+            .unwrap();
+        cell.borrow_mut()
+            .as_char_term_attribute_mut()
+            .unwrap()
+            .append_string(Some("foo"));
+        let cell = source
+            .add_attribute_by_id(TypeId::of::<dyn OffsetAttribute>())
+            .unwrap();
+        cell.borrow_mut()
+            .as_offset_attribute_mut()
+            .unwrap()
+            .set_offset(1, 4);
+        let cell = source
+            .add_attribute_by_id(TypeId::of::<dyn FlagsAttribute>())
+            .unwrap();
+        cell.borrow_mut()
+            .as_flags_attribute_mut()
+            .unwrap()
+            .set_flags(3);
+        source
+            .add_attribute_by_id(TypeId::of::<dyn KeywordAttribute>())
+            .unwrap();
+        source
+            .add_attribute_by_id(TypeId::of::<dyn PayloadAttribute>())
+            .unwrap();
+        assert_eq!(
+            source.reflect_as_string(true),
+            format!(
+                "{T}CharTermAttribute#term=foo,{T}TermToBytesRefAttribute#bytes=[66 6f 6f],\
+                 {T}OffsetAttribute#startOffset=1,{T}OffsetAttribute#endOffset=4,\
+                 {T}PositionIncrementAttribute#positionIncrement=1,\
+                 {T}PositionLengthAttribute#positionLength=1,{T}TypeAttribute#type=word,\
+                 {T}TermFrequencyAttribute#termFrequency=1,{T}FlagsAttribute#flags=3,\
+                 {T}KeywordAttribute#keyword=false,{T}PayloadAttribute#payload=null"
+            )
         );
     }
 

@@ -351,13 +351,13 @@ impl AttributeImpl for PermissiveOffsetAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn OffsetAttribute>(),
-            "OffsetAttribute",
+            "org.apache.lucene.analysis.tokenattributes.OffsetAttribute",
             "startOffset",
             &self.start,
         );
         reflector.reflect(
             TypeId::of::<dyn OffsetAttribute>(),
-            "OffsetAttribute",
+            "org.apache.lucene.analysis.tokenattributes.OffsetAttribute",
             "endOffset",
             &self.end,
         );

@@ -141,13 +141,13 @@ impl AttributeImpl for ScriptAttributeImpl {
         match &name {
             Some(name) => reflector.reflect(
                 TypeId::of::<dyn ScriptAttribute>(),
-                std::any::type_name::<ScriptAttributeImpl>(),
+                "org.apache.lucene.analysis.icu.tokenattributes.ScriptAttribute",
                 "script",
                 name,
             ),
             None => reflector.reflect(
                 TypeId::of::<dyn ScriptAttribute>(),
-                std::any::type_name::<ScriptAttributeImpl>(),
+                "org.apache.lucene.analysis.icu.tokenattributes.ScriptAttribute",
                 "script",
                 &name,
             ),
@@ -182,5 +182,23 @@ impl AttributeImpl for ScriptAttributeImpl {
     /// Equivalent to `ScriptAttributeImpl.hashCode()`: the code.
     fn hash_code(&self) -> i32 {
         self.code
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `reflectAsString(true)` writes `ScriptAttribute.class.getName()`
+    /// before `#`; the expected string is Lucene 10.5.0's output (JDK 25,
+    /// ICU4J 77.1) for a `ScriptAttributeImpl` set to `UScript.LATIN`.
+    #[test]
+    fn reflect_as_string_prepends_the_java_interface_name() {
+        let mut att = ScriptAttributeImpl::new();
+        att.set_code(UScript::LATIN);
+        assert_eq!(
+            att.reflect_as_string(true),
+            "org.apache.lucene.analysis.icu.tokenattributes.ScriptAttribute#script=Latin"
+        );
     }
 }
