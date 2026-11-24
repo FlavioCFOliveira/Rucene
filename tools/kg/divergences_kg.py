@@ -105,6 +105,22 @@ def _declaration(lines, j):
     return ("unknown", None)
 
 
+def _doc_marker(stripped: str):
+    """`///` or `//!` when a left-stripped line is a doc comment line, else None.
+
+    A line of four or more slashes (`////////`, a banner) is a plain comment, as
+    in the Rust reference's `OUTER_LINE_DOC` (`///` not followed by `/`). The
+    block loop of `scan_text` and its collector must use this one rule: when the
+    loop entered on `startswith("///")` and the collector refused `////`, no line
+    was consumed and the scan never ended (#637, `icu4j`'s
+    `icu_currency_display_info_provider.rs`).
+    """
+    for marker in ("///", "//!"):
+        if stripped.startswith(marker) and not stripped.startswith(marker + "/"):
+            return marker
+    return None
+
+
 def scan_text(path: str, text: str):
     """Every divergence paragraph of one Rust file.
 
@@ -124,11 +140,11 @@ def scan_text(path: str, text: str):
         indent = len(raw) - len(stripped)
         while owners and stripped.startswith("}") and indent <= owners[-1][0]:
             owners.pop()
-        if stripped.startswith("///") or stripped.startswith("//!"):
-            marker = stripped[:3]
+        marker = _doc_marker(stripped)
+        if marker:
             start = i
             block = []
-            while i < n and lines[i].lstrip().startswith(marker) and not lines[i].lstrip().startswith(marker + "/"):
+            while i < n and _doc_marker(lines[i].lstrip()) == marker:
                 content = lines[i].lstrip()[3:]
                 block.append(content[1:] if content.startswith(" ") else content)
                 i += 1

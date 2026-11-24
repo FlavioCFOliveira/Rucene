@@ -369,15 +369,35 @@ class KgIndex:
     fallback takes the only fn of that name in the file, which is what an
     `impl Alias { .. }` needs: SCIP names the aliased type as the owner, the KG
     the alias.
+
+    Several fns may share `(file, owner, name)` -- `test_basics` in each of the
+    inline `mod test_<lang> { .. }` blocks of one file. They are told apart by
+    the KG's own identity rule (`extract_rucene_kg`): `qualifiedName` is the
+    file's `modulePath`, then the inline modules around the item (`local`, the
+    SCIP module path below the file's own), then owner and name. A test
+    support file is based on `<crate>::tests::<dir>`, which no SCIP path
+    spells, so the file's `modulePath` is the only exact key there. An
+    ambiguity neither key settles is refused (None) and counted in
+    `ambiguous`, never settled by the order the graph returned its rows in.
     """
 
     def __init__(self, types, fns, files):
-        self.types = {}
+        # `(name, file)` is not unique across labels (`icu4j` `Key`: a struct
+        # and a trait in one file): such a key is kept out of `types` and
+        # resolved in `node` by qualified name, never by row order.
+        labels = defaultdict(set)
         self.type_qn = defaultdict(list)
         for label, name, file, qn in types:
-            self.types[(name, file)] = label
+            labels[(name, file)].add((label, qn))
             if qn:
                 self.type_qn[qn].append((label, name, file))
+        self.types = {}
+        self.type_labels = {}
+        for key, cands in labels.items():
+            if len({lb for lb, _q in cands}) == 1:
+                self.types[key] = next(iter(cands))[0]
+            else:
+                self.type_labels[key] = cands
         self.fns = defaultdict(list)
         self.fn_qn = set()
         self.fn_file_name = defaultdict(list)
@@ -385,7 +405,14 @@ class KgIndex:
             self.fns[(file, owner, name)].append(qn)
             self.fn_qn.add(qn)
             self.fn_file_name[(file, name)].append(qn)
-        self.files = set(files)
+        self.files = set()
+        self.file_module = {}
+        for f in files:
+            path, module = (f, None) if isinstance(f, str) else f
+            self.files.add(path)
+            if module:
+                self.file_module[path] = module
+        self.ambiguous = Counter()
         self.type_by_name = defaultdict(list)
         for (name, file), label in self.types.items():
             self.type_by_name[name].append((label, name, file))
@@ -393,11 +420,12 @@ class KgIndex:
         for (file, owner, name), qns in self.fns.items():
             self.fn_by_owner_name[(owner, name)] += [(file, q) for q in qns]
 
-    def node(self, item, file, crate=None):
+    def node(self, item, file, crate=None, local=None):
         """The KG node key for a crate item defined in `file`, or None.
 
         `crate` is the item's crate identifier when no file is known; else the
-        crate holding `file` (`ident_of_file`)."""
+        crate holding `file` (`ident_of_file`). `local` is the item's module
+        path inside `file` (`local_mods`), None when unknown."""
         if item is None:
             return None
         kind, owner, name, mods = item
@@ -407,12 +435,31 @@ class KgIndex:
             label = self.types.get((name, file))
             if label:
                 return (label, name, file)
+            cands = self.type_labels.get((name, file))
+            if cands:
+                exact = {qn}
+                module = self.file_module.get(file)
+                if module and local is not None:
+                    exact.add("::".join([module, *local, name]))
+                hits = {lb for lb, q in cands if q in exact}
+                if len(hits) == 1:
+                    return (hits.pop(), name, file)
+                self.ambiguous[file] += 1
+                return None
             hits = self.type_qn.get(qn, [])
             return hits[0] if len(hits) == 1 else None
         if kind == "fn":
             qns = self.fns.get((file, owner, name), [])
             if len(qns) > 1:
-                qns = [q for q in qns if q == qn] or qns[:1]
+                exact = {qn}
+                module = self.file_module.get(file)
+                if module and local is not None:
+                    exact.add("::".join([module, *local, *([owner] if owner else []), name]))
+                hits = [q for q in qns if q in exact]
+                if len(hits) != 1:
+                    self.ambiguous[file] += 1
+                    return None
+                qns = hits
             if qns:
                 return ("RustFn", qns[0])
             if qn in self.fn_qn:
@@ -429,7 +476,8 @@ def kg_rust_index(roadmap):
                                             "t.qualifiedName"):
             types.append((label, name, file, qn))
     fns = read(roadmap, "MATCH (f:RustFn) RETURN f.qualifiedName, f.file, f.owner, f.name")
-    files = [r[0] for r in read(roadmap, "MATCH (f:File) WHERE f.language = 'Rust' RETURN f.path")]
+    files = [(p, m) for p, m in read(roadmap, "MATCH (f:File) WHERE f.language = 'Rust' "
+                                               "RETURN f.path, f.modulePath")]
     return KgIndex(types, fns, files)
 
 
@@ -484,6 +532,38 @@ def _preceding_attributes(lines, start):
     return list(reversed(out))
 
 
+def file_module_path(doc):
+    """The SCIP module path of the file `doc` is, as a tuple, or None.
+
+    rust-analyzer defines a file's module in the file itself, on a range equal
+    to its enclosing range (the whole file): `analysis_lang_generated/` for
+    `tests/analysis_lang_generated/mod.rs`, `crate/` (the empty path) for a
+    crate root. An inline `mod x { .. }` is defined on its name token instead.
+    """
+    for o in doc.occurrences:
+        if not o.is_definition or o.enclosing is None or tuple(o.range) != tuple(o.enclosing):
+            continue
+        desc = crate_descriptors(o.symbol)
+        if not desc or not desc.endswith("/"):
+            continue
+        try:
+            mods = tuple(n for n, _s in parse_descriptors(desc))
+        except (ValueError, IndexError):
+            return None
+        return () if mods == ("crate",) else mods
+    return None
+
+
+def local_mods(item, prefix):
+    """`item`'s module path inside its file: its SCIP path below the file's
+    own (`prefix`, from `file_module_path`), or None when it is not below it
+    (an item a macro defined for another module)."""
+    if item is None or prefix is None:
+        return None
+    mods = item[3]
+    return tuple(mods[len(prefix):]) if tuple(mods[:len(prefix)]) == prefix else None
+
+
 def attribute_document(doc, text, kg, def_index):
     """Yield `(referrer, target, is_test)` for every reference in one file.
 
@@ -495,6 +575,7 @@ def attribute_document(doc, text, kg, def_index):
     regions = scan_regions(text)
     lines = regions["lines"]
     file_is_test = not is_production_path(path)
+    prefix = file_module_path(doc)
 
     defs = []  # (span, def_line, symbol, node, is_test)
     for o in doc.occurrences:
@@ -505,7 +586,8 @@ def attribute_document(doc, text, kg, def_index):
         name = None
         if desc.endswith("/"):
             name = parse_descriptors(desc)[-1][0] if desc else None
-        node = kg.node(item, path) if item and item[0] in ("type", "fn") else None
+        node = (kg.node(item, path, local=local_mods(item, prefix))
+                if item and item[0] in ("type", "fn") else None)
         is_test = _span_is_test(o.enclosing, (o.range[0], o.range[1]), lines, name)
         if desc.endswith("/") and not is_test:
             continue  # a non-test module span says nothing
@@ -581,13 +663,13 @@ def _target(symbol, path, kg, def_index):
         item = item_of(symbol)
         return (kg.node(item, None, crate_ident(symbol))
                 if item and item[0] in ("type", "fn") else None)
-    tgt = next(((dp, di) for dp, di in tgt_defs if dp == path), None)
+    tgt = next((d for d in tgt_defs if d[0] == path), None)
     if tgt is None:
         src_defs = [d for d in tgt_defs if is_production_path(d[0])]
         tgt = src_defs[0] if src_defs else tgt_defs[0]
     if not is_production_path(tgt[0]):
         return None
-    return kg.node(tgt[1], tgt[0])
+    return kg.node(tgt[1], tgt[0], local=tgt[2] if len(tgt) > 2 else None)
 
 
 def _impl_self_node(doc, imp, kg, def_index):
@@ -596,7 +678,7 @@ def _impl_self_node(doc, imp, kg, def_index):
     for o in doc.occurrences:
         if o.is_definition or not (sl <= o.range[0] <= hl):
             continue
-        for dpath, ditem in def_index.get(o.symbol, []):
+        for dpath, ditem, *_local in def_index.get(o.symbol, []):
             if ditem and ditem[0] == "type" and ditem[2] == self_type:
                 node = kg.node(ditem, dpath)
                 if node:
@@ -605,11 +687,15 @@ def _impl_self_node(doc, imp, kg, def_index):
 
 
 def build_def_index(docs):
+    """`{symbol: [(path, item, local)]}` over every definition of the index;
+    `local` as `local_mods`."""
     idx = defaultdict(list)
     for doc in docs:
+        prefix = file_module_path(doc)
         for o in doc.occurrences:
             if o.is_definition and is_crate_symbol(o.symbol):
-                idx[o.symbol].append((doc.path, item_of(o.symbol)))
+                item = item_of(o.symbol)
+                idx[o.symbol].append((doc.path, item, local_mods(item, prefix)))
     return idx
 
 
@@ -923,6 +1009,8 @@ def main():
                                          "prod": prod, "test": test, "evidence": ev,
                                          "commit": commit}) + "\n")
         print(f"  macro bodies: {len(lex)} lexical File->item pairs", file=sys.stderr)
+        print(f"  ambiguous definitions refused: {sum(kg.ambiguous.values())} "
+              f"in {len(kg.ambiguous)} files", file=sys.stderr)
         print(f"  extracted {len(agg)} referrer->target pairs "
               f"({sum(v[0] for v in agg.values())} production, "
               f"{sum(v[1] for v in agg.values())} test occurrences) "
