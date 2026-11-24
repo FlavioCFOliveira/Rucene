@@ -473,7 +473,7 @@ impl MultiTerms {
     /// when no sub yields a term — `None` here.
     fn build_enum(
         sub_slices: &[ReaderSlice],
-        terms_enums: Vec<TermsEnumIndex>,
+        terms_enums: Vec<TermsEnumIndex<'static>>,
     ) -> Result<Option<MultiTermsEnum>> {
         if terms_enums.is_empty() {
             return Ok(None);
@@ -692,7 +692,7 @@ fn null_sub_terms_enum(method: &str, expression: &str) -> LuceneError {
 pub struct TermsEnumWithSlice {
     /// The `TermsEnumIndex` this class extends. Its enum is `None` — Java's
     /// `super(null, index)` — until [`MultiTermsEnum::reset`] hands it one.
-    base: TermsEnumIndex,
+    base: TermsEnumIndex<'static>,
     /// Java's `private final ReaderSlice subSlice`.
     sub_slice: ReaderSlice,
 }
@@ -709,7 +709,7 @@ impl TermsEnumWithSlice {
     }
 
     /// Returns the [`TermsEnumIndex`] this sub-enum extends in Java.
-    pub fn terms_enum_index(&self) -> &TermsEnumIndex {
+    pub fn terms_enum_index(&self) -> &TermsEnumIndex<'static> {
         &self.base
     }
 
@@ -993,7 +993,10 @@ impl MultiTermsEnum {
     /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — for a sub index this enum has no
     /// slice for.
-    pub fn reset(&mut self, terms_enums_index: Vec<TermsEnumIndex>) -> Result<Option<&mut Self>> {
+    pub fn reset(
+        &mut self,
+        terms_enums_index: Vec<TermsEnumIndex<'static>>,
+    ) -> Result<Option<&mut Self>> {
         debug_assert!(terms_enums_index.len() <= self.queue.subs().len());
         self.current_subs.clear();
         self.top.clear();

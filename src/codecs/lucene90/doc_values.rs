@@ -1136,15 +1136,10 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
 
         // `addTermsDict(DocValues.singleton(valuesProducer.getSorted(field)))`
         // (`Lucene90DocValuesConsumer.java:742`).
-        self.add_terms_dict_values(&|| {
-            let sorted =
-                crate::codecs::doc_values::non_null(values_producer.get_sorted(field)?, field)?;
-            Ok(
-                Box::new(crate::index::doc_values::SingletonSortedSetDocValues::new(
-                    sorted,
-                )?) as Box<dyn SortedSetDocValues>,
-            )
-        })?;
+        let sorted =
+            crate::codecs::doc_values::non_null(values_producer.get_sorted(field)?, field)?;
+        let mut singleton = crate::index::doc_values::SingletonSortedSetDocValues::new(sorted)?;
+        self.add_terms_dict_values(&mut singleton)?;
         Ok(())
     }
 
@@ -1317,21 +1312,9 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     /// Equivalent to `Lucene90DocValuesConsumer.addTermsDict(SortedSetDocValues)`
     /// (`Lucene90DocValuesConsumer.java:745-829`): the terms are walked with
     /// `values.termsEnum()` (`:765`), so a merge reads the merged dictionary
-    /// sequentially through `DocValuesConsumer.MergedTermsEnum`.
-    ///
-    /// **Divergence from Lucene 10.5.0.** Java calls `termsEnum()` twice on
-    /// the one `values` instance, here and in `writeTermsIndex` (`:865`).
-    /// [`SortedSetDocValues::terms_enum`] consumes the values it is called on
-    /// (its own declared divergence), so the values come from `values`, the
-    /// expression Java evaluates once, evaluated again for the reverse index:
-    /// the producer's `getSorted`/`getSortedSet` is asked once more than in
-    /// Java, for an instance over the same dictionary.
-    fn add_terms_dict_values(
-        &mut self,
-        values: &dyn Fn() -> Result<Box<dyn SortedSetDocValues>>,
-    ) -> Result<()> {
-        let index_values = values;
-        let values = values()?;
+    /// sequentially through `DocValuesConsumer.MergedTermsEnum`; the reverse
+    /// index walks a second `termsEnum()` of the same values (`:865`).
+    fn add_terms_dict_values(&mut self, values: &mut dyn SortedSetDocValues) -> Result<()> {
         let value_count = values.get_value_count()?;
         self.meta.write_v_long(value_count)?;
         self.meta.write_int(DIRECT_MONOTONIC_BLOCK_SHIFT)?;
@@ -1422,6 +1405,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
             previous.copy_ref(term);
             ord += 1;
         }
+        drop(iterator);
         // Compress and write out the last block
         if buffered_position > dict_length {
             let uncompressed_length = Self::compress_and_get_terms_dict_block_length(
@@ -1448,7 +1432,7 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
         self.meta.write_long(self.data.file_pointer() - start)?;
 
         // Now write the reverse terms index
-        self.write_terms_index_values(index_values()?)?;
+        self.write_terms_index_values(values)?;
         Ok(())
     }
 
@@ -1456,9 +1440,8 @@ impl<'a> Lucene90DocValuesConsumer<'a> {
     ///
     /// Equivalent to `Lucene90DocValuesConsumer.writeTermsIndex(SortedSetDocValues)`
     /// (`Lucene90DocValuesConsumer.java:849-896`), walking `values.termsEnum()`
-    /// (`:865`); see [`add_terms_dict_values`](Self::add_terms_dict_values) for
-    /// why `values` is a fresh instance.
-    fn write_terms_index_values(&mut self, values: Box<dyn SortedSetDocValues>) -> Result<()> {
+    /// (`:865`).
+    fn write_terms_index_values(&mut self, values: &mut dyn SortedSetDocValues) -> Result<()> {
         let value_count = values.get_value_count()?;
         self.meta.write_int(TERMS_DICT_REVERSE_INDEX_SHIFT)?;
         let start = self.data.file_pointer();
@@ -1652,9 +1635,9 @@ impl<'a> DocValuesConsumer for Lucene90DocValuesConsumer<'a> {
         self.do_add_sorted_numeric_field(field, &producer, true)?;
 
         // `addTermsDict(valuesProducer.getSortedSet(field))` (`:1048`).
-        self.add_terms_dict_values(&|| {
-            crate::codecs::doc_values::non_null(values.get_sorted_set(field)?, field)
-        })?;
+        let mut sorted_set =
+            crate::codecs::doc_values::non_null(values.get_sorted_set(field)?, field)?;
+        self.add_terms_dict_values(sorted_set.as_mut())?;
         Ok(())
     }
 
@@ -4424,7 +4407,7 @@ impl SortedDocValues for LazySortedDocValues {
     /// `BaseSortedDocValues.termsEnum()`
     /// (`Lucene90DocValuesProducer.java:1525-1528`): a dictionary of its own
     /// over the same entry, not a view over `lookupOrd`.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn crate::index::TermsEnum>> {
+    fn terms_enum(&mut self) -> Result<Box<dyn crate::index::TermsEnum + '_>> {
         Ok(Box::new(TermsDict::new(
             &*self.data,
             &self.terms_dict_entry,
@@ -4850,7 +4833,7 @@ impl SortedSetDocValues for LazySortedSetDocValues {
     /// `BaseSortedSetDocValues.termsEnum()`
     /// (`Lucene90DocValuesProducer.java:1567-1570`): a dictionary of its own
     /// over the same entry.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn crate::index::TermsEnum>> {
+    fn terms_enum(&mut self) -> Result<Box<dyn crate::index::TermsEnum + '_>> {
         Ok(Box::new(TermsDict::new(
             &*self.data,
             &self.terms_dict_entry,
@@ -5757,9 +5740,10 @@ mod tests {
         sorted: HashMap<i32, SortedDocsValues>,
         sorted_numeric: HashMap<i32, SortedNumericDocsValues>,
         sorted_set: HashMap<i32, SortedSetDocsValues>,
-        /// Counts the `termsEnum()` calls made on the sorted-set values handed
-        /// out.
-        sorted_set_terms_enums: Arc<std::sync::atomic::AtomicUsize>,
+        /// How many sorted-set values `getSortedSet` handed out.
+        sorted_set_instances: Arc<std::sync::atomic::AtomicUsize>,
+        /// The instance of every `termsEnum()` call made on them.
+        sorted_set_terms_enums: Arc<std::sync::Mutex<Vec<usize>>>,
     }
 
     impl TestDocValuesProducer {
@@ -5976,8 +5960,10 @@ mod tests {
         ords: Vec<Vec<i64>>,
         terms: Vec<BytesRef>,
         index: usize,
-        /// Counts the `termsEnum()` calls made on these values.
-        terms_enums: Arc<std::sync::atomic::AtomicUsize>,
+        /// Which instance of the producer's sorted-set values these are.
+        instance: usize,
+        /// The instance of every `termsEnum()` call made on the values.
+        terms_enums: Arc<std::sync::Mutex<Vec<usize>>>,
     }
     impl DocIdSetIterator for VecSortedSet {
         fn doc_id(&self) -> i32 {
@@ -6023,10 +6009,9 @@ mod tests {
             Ok(self.terms.len() as i64)
         }
 
-        /// The default `SortedSetDocValues.termsEnum()`, counted.
-        fn terms_enum(self: Box<Self>) -> Result<Box<dyn crate::index::terms::TermsEnum>> {
-            self.terms_enums
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        /// The default `SortedSetDocValues.termsEnum()`, recorded.
+        fn terms_enum(&mut self) -> Result<Box<dyn crate::index::terms::TermsEnum + '_>> {
+            self.terms_enums.lock().unwrap().push(self.instance);
             Ok(crate::index::doc_values::SortedSetDocValuesTermsEnum::new(
                 self,
             ))
@@ -6099,6 +6084,9 @@ mod tests {
                         ords: ords.clone(),
                         terms: terms.iter().cloned().map(BytesRef::new).collect(),
                         index: 0,
+                        instance: self
+                            .sorted_set_instances
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
                         terms_enums: Arc::clone(&self.sorted_set_terms_enums),
                     })),
                     None => Ok(Box::new(EmptySortedSetDocValues::new())),
@@ -6528,10 +6516,11 @@ mod tests {
         assert_eq!(sorted_numeric.next_doc().unwrap(), NO_MORE_DOCS);
     }
 
-    /// Regression for rmp #662 (round 2): `addTermsDict` and
-    /// `writeTermsIndex` walk `values.termsEnum()`
-    /// (`Lucene90DocValuesConsumer.java:765, 865`), once each, rather than
-    /// `lookupOrd` per term.
+    /// Regression for rmp #662: `addTermsDict` and `writeTermsIndex` walk
+    /// `values.termsEnum()` (`Lucene90DocValuesConsumer.java:765, 865`), once
+    /// each, on the one values object `addTermsDict(valuesProducer
+    /// .getSortedSet(field))` hands them (`:1048`), rather than `lookupOrd`
+    /// per term.
     #[test]
     fn the_terms_dictionary_is_written_through_the_terms_enum() {
         let field = FieldInfo::new("sorted_set", 0);
@@ -6542,10 +6531,14 @@ mod tests {
             vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
         );
         let terms_enums = Arc::clone(&values.sorted_set_terms_enums);
+        let instances = Arc::clone(&values.sorted_set_instances);
         let producer = write_and_read(5, &field, |consumer| {
             consumer.add_sorted_set_field(&field, &values).unwrap();
         });
-        assert_eq!(terms_enums.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // The last `getSortedSet` is the terms dictionary's; both enums come
+        // from it.
+        let last = instances.load(std::sync::atomic::Ordering::SeqCst) - 1;
+        assert_eq!(*terms_enums.lock().unwrap(), vec![last, last]);
         let mut sorted_set = producer.get_sorted_set(&field).unwrap().unwrap();
         assert_eq!(sorted_set.get_value_count().unwrap(), 3);
         assert_eq!(sorted_set.lookup_ord(0).unwrap().slice(), b"a");

@@ -1892,7 +1892,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             drop(iwriter);
 
             let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-            let dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.getValueCount()\" because \"dv\" is null");
+            let mut dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.getValueCount()\" because \"dv\" is null");
             aeq(3, dv.get_value_count()?);
 
             let mut terms_enum = dv.terms_enum()?;
@@ -1974,7 +1974,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(2, terms_enum.ord()?);
 
             // NORMAL automaton
-            let dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
+            let mut dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
             let mut terms_enum = dv.intersect(&compiled(".*l.*", true)?)?;
             aeq_str(
                 "hello",
@@ -1989,7 +1989,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             assert_null(terms_enum.next()?.cloned());
 
             // SINGLE automaton
-            let dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
+            let mut dv = npe_at(leaf.get_sorted_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
             let mut terms_enum = dv.intersect(&compiled("hello", false)?)?;
             aeq_str(
                 "hello",
@@ -3132,7 +3132,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         merge_away_all_values(
             Box::new(|| Box::new(SortedSetDocValuesField::new("field", nbr("hello")))),
             |leaf| {
-                let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.getValueCount()\" because \"dv\" is null");
+                let mut dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.getValueCount()\" because \"dv\" is null");
                 aeq(0, dv.get_value_count()?);
 
                 let mut terms_enum = dv.terms_enum()?;
@@ -3162,7 +3162,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             drop(iwriter);
 
             let leaf = LuceneTestCase::get_only_leaf_reader(Arc::clone(&ireader) as _)?;
-            let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.getValueCount()\" because \"dv\" is null");
+            let mut dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.getValueCount()\" because \"dv\" is null");
             aeq(3, dv.get_value_count()?);
 
             let mut terms_enum = dv.terms_enum()?;
@@ -3241,7 +3241,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             aeq(2, terms_enum.ord()?);
 
             // NORMAL automaton
-            let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
+            let mut dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
             let mut terms_enum = dv.intersect(&compiled(".*l.*", true)?)?;
             aeq_str(
                 "hello",
@@ -3256,7 +3256,7 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             assert_null(terms_enum.next()?.cloned());
 
             // SINGLE automaton
-            let dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
+            let mut dv = npe_at(leaf.get_sorted_set_doc_values("field")?, "Cannot invoke \"org.apache.lucene.index.SortedSetDocValues.intersect(org.apache.lucene.util.automaton.CompiledAutomaton)\" because \"dv\" is null");
             let mut terms_enum = dv.intersect(&compiled("hello", false)?)?;
             aeq_str(
                 "hello",
@@ -4346,7 +4346,8 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
             return Ok(());
         }
         let mut terms: Vec<BytesRef> = Vec::new();
-        let mut te = dv()?.terms_enum()?;
+        let mut te_values = dv()?;
+        let mut te = te_values.terms_enum()?;
         terms.push(BytesRef::deep_copy_of(&npe_at(
             te.next()?.cloned(),
             "Cannot read field \"bytes\" because \"other\" is null",
@@ -4357,8 +4358,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         )));
 
         // Make sure that calls to next() does not modify the term of the other enum
-        let mut enum1 = dv()?.terms_enum()?;
-        let mut enum2 = dv()?.terms_enum()?;
+        let mut enum1_values = dv()?;
+        let mut enum1 = enum1_values.terms_enum()?;
+        let mut enum2_values = dv()?;
+        let mut enum2 = enum2_values.terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4379,8 +4382,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekCeil
-        let mut enum1 = dv()?.terms_enum()?;
-        let mut enum2 = dv()?.terms_enum()?;
+        let mut enum1_values = dv()?;
+        let mut enum1 = enum1_values.terms_enum()?;
+        let mut enum2_values = dv()?;
+        let mut enum2 = enum2_values.terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4401,8 +4406,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekCeil on an exact value
-        let mut enum1 = dv()?.terms_enum()?;
-        let mut enum2 = dv()?.terms_enum()?;
+        let mut enum1_values = dv()?;
+        let mut enum1 = enum1_values.terms_enum()?;
+        let mut enum2_values = dv()?;
+        let mut enum2 = enum2_values.terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4420,8 +4427,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         Assert::assert_equals_nullable(Some(term2.get()), enum2.term()?.cloned());
 
         // Same for seekExact
-        let mut enum1 = dv()?.terms_enum()?;
-        let mut enum2 = dv()?.terms_enum()?;
+        let mut enum1_values = dv()?;
+        let mut enum1 = enum1_values.terms_enum()?;
+        let mut enum2_values = dv()?;
+        let mut enum2 = enum2_values.terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 
@@ -4437,8 +4446,10 @@ pub trait LegacyBaseDocValuesFormatTestCase: BaseIndexFileFormatTestCase {
         ));
 
         // Same for seek by ord
-        let mut enum1 = dv()?.terms_enum()?;
-        let mut enum2 = dv()?.terms_enum()?;
+        let mut enum1_values = dv()?;
+        let mut enum1 = enum1_values.terms_enum()?;
+        let mut enum2_values = dv()?;
+        let mut enum2 = enum2_values.terms_enum()?;
         let mut term1 = BytesRefBuilder::new();
         let mut term2 = BytesRefBuilder::new();
 

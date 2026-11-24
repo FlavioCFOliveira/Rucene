@@ -220,7 +220,7 @@ fn check_empty_skipper(leaf: &dyn LeafReader) -> Result<()> {
 /// the values it enumerates (the declared divergence of the module docs).
 fn check_sorted_terms(
     leaf: &dyn LeafReader,
-    mut terms_enum: Box<dyn rucene::index::TermsEnum>,
+    mut terms_enum: Box<dyn rucene::index::TermsEnum + '_>,
     set: bool,
 ) -> Result<()> {
     let lucene = BytesRef::from_char_sequence("lucene");
@@ -763,7 +763,8 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut dv = npe(leaf.get_sorted_doc_values("field")?);
                 aeq(NO_MORE_DOCS, dv.next_doc()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, dv.terms_enum()?, false)
+                let terms_enum = dv.terms_enum()?;
+                check_sorted_terms(leaf, terms_enum, false)
             },
         )
     }
@@ -778,10 +779,11 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 ))
             }),
             |leaf| {
-                let dv = npe(leaf.get_sorted_set_doc_values("field")?);
+                let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
                 aeq(0, dv.get_value_count()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, dv.terms_enum()?, true)
+                let terms_enum = dv.terms_enum()?;
+                check_sorted_terms(leaf, terms_enum, true)
             },
         )
     }
@@ -818,7 +820,8 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut dv = npe(leaf.get_sorted_doc_values("field")?);
                 aeq(NO_MORE_DOCS, dv.next_doc()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, dv.terms_enum()?, false)
+                let terms_enum = dv.terms_enum()?;
+                check_sorted_terms(leaf, terms_enum, false)
             },
         )
     }
@@ -836,7 +839,8 @@ pub trait BaseDocValuesFormatTestCase: LegacyBaseDocValuesFormatTestCase {
                 let mut dv = npe(leaf.get_sorted_set_doc_values("field")?);
                 aeq(NO_MORE_DOCS, dv.next_doc()?);
                 check_empty_skipper(leaf)?;
-                check_sorted_terms(leaf, dv.terms_enum()?, true)
+                let terms_enum = dv.terms_enum()?;
+                check_sorted_terms(leaf, terms_enum, true)
             },
         )
     }

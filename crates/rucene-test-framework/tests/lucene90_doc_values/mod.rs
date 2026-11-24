@@ -768,10 +768,10 @@ fn do_test_terms_enum_random(
                 .unwrap_or_else(|| npe("ssdv"));
             Assert::assert_equals(terms.size()?, ssdv.get_value_count()?);
             let mut expected = terms.iterator()?;
-            let mut actual = r
+            let mut actual_values = r
                 .get_sorted_set_doc_values("dv")?
-                .unwrap_or_else(|| npe("getSortedSetDocValues(\"dv\")"))
-                .terms_enum()?;
+                .unwrap_or_else(|| npe("getSortedSetDocValues(\"dv\")"));
+            let mut actual = actual_values.terms_enum()?;
             assert_equals_terms_enum(terms.size()?, &mut *expected, &mut *actual)?;
 
             let leaf = Arc::clone(&r);
@@ -797,10 +797,10 @@ fn do_test_terms_enum_random(
                 .get_value_count()?,
         );
         let mut expected = terms.iterator()?;
-        let mut actual = ar
+        let mut actual_values = ar
             .get_sorted_set_doc_values("dv")?
-            .unwrap_or_else(|| npe("getSortedSetDocValues(\"dv\")"))
-            .terms_enum()?;
+            .unwrap_or_else(|| npe("getSortedSetDocValues(\"dv\")"));
+        let mut actual = actual_values.terms_enum()?;
         assert_equals_terms_enum(terms.size()?, &mut *expected, &mut *actual)?;
     }
     drop(ar);
@@ -1537,7 +1537,7 @@ fn test_terms_enum_dictionary(_suite: &CompressingDocValuesSuite) -> Result<()> 
     let reader = directory_reader::open(directory.as_directory())?;
     let leaf_reader =
         LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
-    let values = leaf_reader
+    let mut values = leaf_reader
         .get_sorted_doc_values("field")?
         .unwrap_or_else(|| npe("values"));
     let mut terms_enum = values.terms_enum()?;
@@ -1589,7 +1589,7 @@ fn test_terms_enum_consistency(_suite: &CompressingDocValuesSuite) -> Result<()>
     let reader = directory_reader::open(directory.as_directory())?;
     let leaf_reader =
         LuceneTestCase::get_only_leaf_reader(Arc::clone(&reader) as Arc<dyn IndexReader>)?;
-    let values = leaf_reader
+    let mut values = leaf_reader
         .get_sorted_doc_values("field")?
         .unwrap_or_else(|| npe("values"));
     let mut terms_enum = values.terms_enum()?;

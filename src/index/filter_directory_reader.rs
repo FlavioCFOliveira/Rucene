@@ -2543,18 +2543,12 @@ impl SortedDocValues for ExitableSortedDocValues {
         self.inner.lookup_term(key)
     }
 
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).terms_enum()
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.terms_enum()
     }
 
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).intersect(automaton)
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.intersect(automaton)
     }
 }
 
@@ -2745,18 +2739,12 @@ impl SortedSetDocValues for ExitableSortedSetDocValues {
         self.inner.lookup_term(key)
     }
 
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).terms_enum()
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.terms_enum()
     }
 
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        Box::new(self.inner).intersect(automaton)
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
+        self.inner.intersect(automaton)
     }
 }
 

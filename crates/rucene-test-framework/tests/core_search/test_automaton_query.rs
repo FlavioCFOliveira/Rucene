@@ -9,7 +9,7 @@ use rucene::document::{Document, Field, Store};
 use rucene::error::Result;
 use rucene::index::directory_reader::DirectoryReader;
 use rucene::index::multi_fields::MultiTerms;
-use rucene::index::terms::{EmptyTermsEnum, FilteredTermsEnum, SingleTermsEnum, TermsEnum};
+use rucene::index::terms::{EmptyTermsEnum, SingleTermsEnum, TermsEnum};
 use rucene::index::{IndexReader, Term};
 use rucene::search::index_searcher::IndexSearcher;
 use rucene::search::multi_term_query::{
@@ -269,11 +269,7 @@ fn test_rewrite_single_term(f: &mut AutomatonFixture) -> Result<()> {
     let terms = field_terms(f)?;
     let te = aq.terms_enum(&*terms)?;
     // `te instanceof SingleTermsEnum`: the filter of the FilteredTermsEnum.
-    let is_single = te
-        .as_any()
-        .and_then(|a| a.downcast_ref::<FilteredTermsEnum>())
-        .and_then(|fte| fte.filter().as_any())
-        .is_some_and(|a| a.is::<SingleTermsEnum>());
+    let is_single = te.as_any().is_some_and(|a| a.is::<SingleTermsEnum>());
     Assert::assert_true(is_single);
     assert_equals(&1, &automaton_query_nr_hits(f, aq)?);
     Ok(())

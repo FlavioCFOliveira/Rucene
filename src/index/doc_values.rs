@@ -243,17 +243,9 @@ pub trait SortedDocValues: DocValuesIterator {
     ///
     /// The enum supports [`TermsEnum::ord`] and [`TermsEnum::seek_ord`].
     ///
-    /// Equivalent to `org.apache.lucene.index.SortedDocValues#termsEnum`.
-    ///
-    /// Divergence: Java's `termsEnum()` keeps a reference to `this`, which
-    /// stays owned by the caller. Rust cannot hand out a borrow that outlives
-    /// this call through an object-safe trait method, so the returned enum
-    /// takes ownership of the boxed iterator instead. The observable contract
-    /// of the returned enum is unchanged.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
+    /// Equivalent to `org.apache.lucene.index.SortedDocValues#termsEnum`:
+    /// the enum holds a reference to these values, here the borrow it lends.
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         Ok(SortedDocValuesTermsEnum::new(self))
     }
 
@@ -261,10 +253,7 @@ pub trait SortedDocValues: DocValuesIterator {
     /// [`CompiledAutomaton`]. The enum supports [`TermsEnum::ord`].
     ///
     /// Equivalent to `org.apache.lucene.index.SortedDocValues#intersect`.
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
         let terms = self.terms_enum()?;
         match automaton.automaton_type {
             AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
@@ -433,15 +422,9 @@ pub trait SortedSetDocValues: DocValuesIterator {
     ///
     /// The enum supports [`TermsEnum::ord`] and [`TermsEnum::seek_ord`].
     ///
-    /// Equivalent to `org.apache.lucene.index.SortedSetDocValues#termsEnum`.
-    ///
-    /// Divergence: as for [`SortedDocValues::terms_enum`], the returned enum
-    /// owns the boxed iterator rather than borrowing it, because an
-    /// object-safe trait method cannot lend `self` beyond the call.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
+    /// Equivalent to `org.apache.lucene.index.SortedSetDocValues#termsEnum`:
+    /// the enum holds a reference to these values, here the borrow it lends.
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         Ok(SortedSetDocValuesTermsEnum::new(self))
     }
 
@@ -449,10 +432,7 @@ pub trait SortedSetDocValues: DocValuesIterator {
     /// [`CompiledAutomaton`]. The enum supports [`TermsEnum::ord`].
     ///
     /// Equivalent to `org.apache.lucene.index.SortedSetDocValues#intersect`.
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
         let terms = self.terms_enum()?;
         match automaton.automaton_type {
             AutomatonType::None => Ok(Box::new(EmptyTermsEnum::new())),
@@ -1413,10 +1393,7 @@ impl SortedSetDocValues for SingletonSortedSetDocValues<'_> {
     ///
     /// `SingletonSortedSetDocValues` does not override `intersect`; the
     /// inherited default runs over this enum, exactly as in Java.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.terms_enum()
     }
 }
@@ -1687,12 +1664,12 @@ impl SortedDocValues for FilterSortedDocValues {
     }
 
     /// Equivalent to `org.apache.lucene.index.FilterSortedDocValues#termsEnum`.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>> {
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.terms_enum()
     }
 
     /// Equivalent to `org.apache.lucene.index.FilterSortedDocValues#intersect`.
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>> {
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.intersect(automaton)
     }
 }
@@ -1837,12 +1814,12 @@ impl SortedSetDocValues for FilterSortedSetDocValues {
     }
 
     /// Equivalent to `org.apache.lucene.index.FilterSortedSetDocValues#termsEnum`.
-    fn terms_enum(self: Box<Self>) -> Result<Box<dyn TermsEnum>> {
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.terms_enum()
     }
 
     /// Equivalent to `org.apache.lucene.index.FilterSortedSetDocValues#intersect`.
-    fn intersect(self: Box<Self>, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum>> {
+    fn intersect(&mut self, automaton: &CompiledAutomaton) -> Result<Box<dyn TermsEnum + '_>> {
         self.inner.intersect(automaton)
     }
 }
@@ -2015,14 +1992,16 @@ impl OrdinalMap {
     /// (`OrdinalMap.java:127-137`); `owner` is `None` for Java's `null`.
     pub fn build_sorted(
         owner: Option<CacheKey>,
-        values: Vec<Box<dyn SortedDocValues>>,
+        values: &mut [Box<dyn SortedDocValues>],
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
-        let mut subs: Vec<Box<dyn TermsEnum>> = Vec::with_capacity(values.len());
+        let mut subs: Vec<Box<dyn TermsEnum + '_>> = Vec::with_capacity(values.len());
         let mut weights = Vec::with_capacity(values.len());
-        for dv in values {
+        // `subs[i] = dv.termsEnum(); weights[i] = dv.getValueCount();`: the
+        // caller keeps `values`, as Java's caller keeps its array.
+        for dv in values.iter_mut() {
             let weight = dv.get_value_count()? as i64;
-            subs.push(SortedDocValuesTermsEnum::new(dv));
+            subs.push(dv.terms_enum()?);
             weights.push(weight);
         }
         Self::build(owner, subs, &weights, acceptable_overhead_ratio)
@@ -2035,14 +2014,16 @@ impl OrdinalMap {
     /// (`OrdinalMap.java:145-155`); `owner` is `None` for Java's `null`.
     pub fn build_sorted_set(
         owner: Option<CacheKey>,
-        values: Vec<Box<dyn SortedSetDocValues>>,
+        values: &mut [Box<dyn SortedSetDocValues>],
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
-        let mut subs: Vec<Box<dyn TermsEnum>> = Vec::with_capacity(values.len());
+        let mut subs: Vec<Box<dyn TermsEnum + '_>> = Vec::with_capacity(values.len());
         let mut weights = Vec::with_capacity(values.len());
-        for dv in values {
+        // `subs[i] = dv.termsEnum(); weights[i] = dv.getValueCount();`: the
+        // caller keeps `values`, as Java's caller keeps its array.
+        for dv in values.iter_mut() {
             let weight = dv.get_value_count()?;
-            subs.push(SortedSetDocValuesTermsEnum::new(dv));
+            subs.push(dv.terms_enum()?);
             weights.push(weight);
         }
         Self::build(owner, subs, &weights, acceptable_overhead_ratio)
@@ -2058,7 +2039,7 @@ impl OrdinalMap {
     /// they may be filtered terms enums).
     pub fn build(
         owner: Option<CacheKey>,
-        subs: Vec<Box<dyn TermsEnum>>,
+        subs: Vec<Box<dyn TermsEnum + '_>>,
         weights: &[i64],
         acceptable_overhead_ratio: f32,
     ) -> Result<Self> {
@@ -2090,7 +2071,7 @@ impl OrdinalMap {
         let mut ord_delta_bits = vec![0i64; num_subs];
         let mut segment_ords = vec![0i64; num_subs];
 
-        let mut subs: Vec<Option<Box<dyn TermsEnum>>> = subs.into_iter().map(Some).collect();
+        let mut subs: Vec<Option<Box<dyn TermsEnum + '_>>> = subs.into_iter().map(Some).collect();
         let mut queue = PriorityQueue::new(num_subs, TermsEnumIndexComparator)?;
         for i in 0..num_subs {
             let old_index = segment_map.new_to_old(i);
@@ -2431,8 +2412,8 @@ impl SegmentMap {
 /// Priority queue ordering for [`TermsEnumIndex`] by current term.
 struct TermsEnumIndexComparator;
 
-impl PriorityQueueComparator<TermsEnumIndex> for TermsEnumIndexComparator {
-    fn less_than(&self, a: &TermsEnumIndex, b: &TermsEnumIndex) -> bool {
+impl<'a> PriorityQueueComparator<TermsEnumIndex<'a>> for TermsEnumIndexComparator {
+    fn less_than(&self, a: &TermsEnumIndex<'a>, b: &TermsEnumIndex<'a>) -> bool {
         // `compare_term_to` already sorts exhausted enums last, so no separate
         // emptiness check is needed here.
         a.compare_term_to(b) == Ordering::Less
@@ -2492,22 +2473,30 @@ impl LongValues for MonotonicDeltaLongValues {
 /// Implements a [`TermsEnum`] wrapping a provided [`SortedDocValues`].
 ///
 /// Equivalent to `org.apache.lucene.index.SortedDocValuesTermsEnum`.
-pub struct SortedDocValuesTermsEnum<V: SortedDocValues + ?Sized = dyn SortedDocValues> {
-    values: Box<V>,
+///
+/// Java's class holds a reference to the values it wraps. `P` is that
+/// reference: `&mut V` for the enum [`SortedDocValues::terms_enum`] lends over its
+/// own values, or `Box<V>` for one that keeps values nobody else holds.
+pub struct SortedDocValuesTermsEnum<P> {
+    values: P,
     current_ord: i64,
     scratch: BytesRefBuilder,
     atts: AttributeSource,
 }
 
-impl<V: SortedDocValues + ?Sized + 'static> SortedDocValuesTermsEnum<V> {
+impl<P> SortedDocValuesTermsEnum<P>
+where
+    P: std::ops::DerefMut,
+    P::Target: SortedDocValues,
+{
     /// Creates a new terms enum over the provided sorted doc values.
     ///
-    /// The values iterator is generic over `V` so that
-    /// [`SortedDocValues::terms_enum`] can hand it its own `Box<Self>` without
-    /// an unsizing coercion, which is unavailable in a default trait method
-    /// where `Self: ?Sized`.
+    /// Equivalent to `new SortedDocValuesTermsEnum(SortedDocValues values)`.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(values: Box<V>) -> Box<dyn TermsEnum> {
+    pub fn new<'a>(values: P) -> Box<dyn TermsEnum + 'a>
+    where
+        P: 'a,
+    {
         Box::new(SortedDocValuesTermsEnum {
             values,
             current_ord: -1,
@@ -2517,7 +2506,7 @@ impl<V: SortedDocValues + ?Sized + 'static> SortedDocValuesTermsEnum<V> {
     }
 }
 
-impl<V: SortedDocValues + ?Sized> std::fmt::Display for SortedDocValuesTermsEnum<V> {
+impl<P> std::fmt::Display for SortedDocValuesTermsEnum<P> {
     /// `org.apache.lucene.index.SortedDocValuesTermsEnum` declares no
     /// `toString()`, so `java.lang.Object`'s applies.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2528,7 +2517,11 @@ impl<V: SortedDocValues + ?Sized> std::fmt::Display for SortedDocValuesTermsEnum
     }
 }
 
-impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
+impl<P> TermsEnum for SortedDocValuesTermsEnum<P>
+where
+    P: std::ops::DerefMut,
+    P::Target: SortedDocValues,
+{
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }
@@ -2632,22 +2625,30 @@ impl<V: SortedDocValues + ?Sized> TermsEnum for SortedDocValuesTermsEnum<V> {
 /// Implements a [`TermsEnum`] wrapping a provided [`SortedSetDocValues`].
 ///
 /// Equivalent to `org.apache.lucene.index.SortedSetDocValuesTermsEnum`.
-pub struct SortedSetDocValuesTermsEnum<V: SortedSetDocValues + ?Sized = dyn SortedSetDocValues> {
-    values: Box<V>,
+///
+/// Java's class holds a reference to the values it wraps. `P` is that
+/// reference: `&mut V` for the enum [`SortedSetDocValues::terms_enum`] lends over its
+/// own values, or `Box<V>` for one that keeps values nobody else holds.
+pub struct SortedSetDocValuesTermsEnum<P> {
+    values: P,
     current_ord: i64,
     scratch: BytesRefBuilder,
     atts: AttributeSource,
 }
 
-impl<V: SortedSetDocValues + ?Sized + 'static> SortedSetDocValuesTermsEnum<V> {
+impl<P> SortedSetDocValuesTermsEnum<P>
+where
+    P: std::ops::DerefMut,
+    P::Target: SortedSetDocValues,
+{
     /// Creates a new terms enum over the provided sorted-set doc values.
     ///
-    /// The values iterator is generic over `V` so that
-    /// [`SortedSetDocValues::terms_enum`] can hand it its own `Box<Self>`
-    /// without an unsizing coercion, which is unavailable in a default trait
-    /// method where `Self: ?Sized`.
+    /// Equivalent to `new SortedSetDocValuesTermsEnum(SortedSetDocValues values)`.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(values: Box<V>) -> Box<dyn TermsEnum> {
+    pub fn new<'a>(values: P) -> Box<dyn TermsEnum + 'a>
+    where
+        P: 'a,
+    {
         Box::new(SortedSetDocValuesTermsEnum {
             values,
             current_ord: -1,
@@ -2657,7 +2658,7 @@ impl<V: SortedSetDocValues + ?Sized + 'static> SortedSetDocValuesTermsEnum<V> {
     }
 }
 
-impl<V: SortedSetDocValues + ?Sized> std::fmt::Display for SortedSetDocValuesTermsEnum<V> {
+impl<P> std::fmt::Display for SortedSetDocValuesTermsEnum<P> {
     /// `org.apache.lucene.index.SortedSetDocValuesTermsEnum` declares no
     /// `toString()`, so `java.lang.Object`'s applies.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2668,7 +2669,11 @@ impl<V: SortedSetDocValues + ?Sized> std::fmt::Display for SortedSetDocValuesTer
     }
 }
 
-impl<V: SortedSetDocValues + ?Sized> TermsEnum for SortedSetDocValuesTermsEnum<V> {
+impl<P> TermsEnum for SortedSetDocValuesTermsEnum<P>
+where
+    P: std::ops::DerefMut,
+    P::Target: SortedSetDocValues,
+{
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.atts
     }
@@ -3630,7 +3635,7 @@ mod tests {
             vec![b"b".to_vec(), b"d".to_vec()],
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
-        let map = OrdinalMap::build_sorted(None, vec![seg0, seg1], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, &mut [seg0, seg1], 0.0).unwrap();
 
         let floor = ORDINAL_MAP_BASE_RAM_BYTES_USED + SEGMENT_MAP_BASE_RAM_BYTES_USED;
         assert!(
@@ -3659,7 +3664,7 @@ mod tests {
             vec![b"a".to_vec(), b"b".to_vec()],
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
-        let map = OrdinalMap::build_sorted(None, vec![only], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, &mut [only], 0.0).unwrap();
         let expected = ORDINAL_MAP_BASE_RAM_BYTES_USED
             + map.segment_map.ram_bytes_used()
             + RamUsageEstimator::align_object_size(
@@ -3686,7 +3691,7 @@ mod tests {
             vec![0, 1],
         )) as Box<dyn SortedDocValues>;
 
-        let map = OrdinalMap::build_sorted(None, vec![seg0, seg1, seg2], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted(None, &mut [seg0, seg1, seg2], 0.0).unwrap();
         // Global order: a, b, c, d, e -> 5 unique values
         assert_eq!(map.get_value_count(), 5);
 
@@ -3731,7 +3736,7 @@ mod tests {
             vec![vec![0, 1, 2], vec![]],
         )) as Box<dyn SortedSetDocValues>;
 
-        let map = OrdinalMap::build_sorted_set(None, vec![seg0, seg1], 0.0).unwrap();
+        let map = OrdinalMap::build_sorted_set(None, &mut [seg0, seg1], 0.0).unwrap();
         // Global order: a, b, c -> 3 unique values
         assert_eq!(map.get_value_count(), 3);
 
@@ -3781,8 +3786,8 @@ mod ordinal_map_packed_tests {
     /// `lucene-core-10.5.0.jar` (`oracle/passD/Oracle.java`, `ORDMAP`).
     #[test]
     fn ram_bytes_used_is_javas() {
-        let ram = |values: Vec<Box<dyn SortedDocValues>>, ratio: f32| {
-            let map = OrdinalMap::build_sorted(None, values, ratio).unwrap();
+        let ram = |mut values: Vec<Box<dyn SortedDocValues>>, ratio: f32| {
+            let map = OrdinalMap::build_sorted(None, &mut values, ratio).unwrap();
             (map.ram_bytes_used(), map.get_value_count())
         };
         assert_eq!(
@@ -3823,7 +3828,7 @@ mod ordinal_map_packed_tests {
             (38560, 14371)
         );
         // The mappings still resolve as before.
-        let map = OrdinalMap::build_sorted(None, big(), PackedInts::DEFAULT).unwrap();
+        let map = OrdinalMap::build_sorted(None, &mut big(), PackedInts::DEFAULT).unwrap();
         let mut seen = 0;
         for (segment, len) in [(0usize, 2000i64), (1, 1000), (2, 1000)] {
             for ord in 0..len {
@@ -3846,7 +3851,7 @@ mod ordinal_map_packed_tests {
     #[test]
     fn child_resources_are_javas_named_segment_map() {
         let map =
-            OrdinalMap::build_sorted(None, vec![letters(&["a", "c"]), letters(&["b", "d"])], 0.0)
+            OrdinalMap::build_sorted(None, &mut [letters(&["a", "c"]), letters(&["b", "d"])], 0.0)
                 .unwrap();
         let children = map.child_resources();
         assert_eq!(children.len(), 1);

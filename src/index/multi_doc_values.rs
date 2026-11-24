@@ -264,9 +264,7 @@ impl MultiDocValues {
     ///
     /// # Errors
     ///
-    /// Propagates any error raised while reading a leaf's doc values, and
-    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if a leaf reports the field on one
-    /// call and not on the next.
+    /// Propagates any error raised while reading a leaf's doc values.
     pub fn get_sorted_values(
         reader: &Arc<dyn IndexReader>,
         field: &str,
@@ -306,9 +304,6 @@ impl MultiDocValues {
 
         let mut any_real = false;
         let mut values: Vec<Box<dyn SortedDocValues>> = Vec::with_capacity(size);
-        // Parallel set of instances consumed by the ordinal map; see the
-        // `dual_instances` note on this module's `get_sorted_set_values`.
-        let mut map_inputs: Vec<Box<dyn SortedDocValues>> = Vec::with_capacity(size);
         let mut doc_starts: Vec<i32> = Vec::with_capacity(size + 1);
         let mut total_cost = 0i64;
 
@@ -319,15 +314,9 @@ impl MultiDocValues {
                     any_real = true;
                     total_cost += v.cost();
                     values.push(v);
-                    map_inputs.push(second_instance(
-                        leaf_reader.get_sorted_doc_values(field)?,
-                        field,
-                        "sorted",
-                    )?);
                 }
                 None => {
                     values.push(Box::new(DocValues::empty_sorted()));
-                    map_inputs.push(Box::new(DocValues::empty_sorted()));
                 }
             }
             doc_starts.push(leaf.doc_base());
@@ -343,7 +332,7 @@ impl MultiDocValues {
             .map(|cache_helper| cache_helper.get_key().clone());
         let mapping = Arc::new(OrdinalMap::build_sorted(
             owner,
-            map_inputs,
+            &mut values,
             DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
         )?);
         let view: Box<dyn SortedDocValues> = Box::new(MultiSortedDocValues::new(
@@ -376,9 +365,7 @@ impl MultiDocValues {
     ///
     /// # Errors
     ///
-    /// Propagates any error raised while reading a leaf's doc values, and
-    /// returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) if a leaf reports the field on one
-    /// call and not on the next.
+    /// Propagates any error raised while reading a leaf's doc values.
     pub fn get_sorted_set_values(
         reader: &Arc<dyn IndexReader>,
         field: &str,
@@ -418,7 +405,6 @@ impl MultiDocValues {
 
         let mut any_real = false;
         let mut values: Vec<Box<dyn SortedSetDocValues>> = Vec::with_capacity(size);
-        let mut map_inputs: Vec<Box<dyn SortedSetDocValues>> = Vec::with_capacity(size);
         let mut doc_starts: Vec<i32> = Vec::with_capacity(size + 1);
         let mut total_cost = 0i64;
 
@@ -429,15 +415,9 @@ impl MultiDocValues {
                     any_real = true;
                     total_cost += v.cost();
                     values.push(v);
-                    map_inputs.push(second_instance(
-                        leaf_reader.get_sorted_set_doc_values(field)?,
-                        field,
-                        "sorted-set",
-                    )?);
                 }
                 None => {
                     values.push(Box::new(DocValues::empty_sorted_set()));
-                    map_inputs.push(Box::new(DocValues::empty_sorted_set()));
                 }
             }
             doc_starts.push(leaf.doc_base());
@@ -453,7 +433,7 @@ impl MultiDocValues {
             .map(|cache_helper| cache_helper.get_key().clone());
         let mapping = Arc::new(OrdinalMap::build_sorted_set(
             owner,
-            map_inputs,
+            &mut values,
             DEFAULT_ACCEPTABLE_OVERHEAD_RATIO,
         )?);
         let view: Box<dyn SortedSetDocValues> = Box::new(MultiSortedSetDocValues::new(
@@ -477,18 +457,6 @@ fn any_leaf_has(leaves: &[Arc<LeafReaderContext>], field: &str, wanted: DocValue
             .get_field_infos()
             .field_info(field)
             .is_some_and(|info| info.get_doc_values_type() == wanted)
-    })
-}
-
-/// Unwraps the second instance opened for the ordinal map, turning a leaf that
-/// changed its mind between two calls into a clear error instead of a silent
-/// ordinal-space corruption.
-fn second_instance<T: ?Sized>(values: Option<Box<T>>, field: &str, kind: &str) -> Result<Box<T>> {
-    values.ok_or_else(|| {
-        LuceneError::illegal_state(format!(
-            "leaf reader returned {kind} doc values for field '{field}' on the first call \
-             but not on the second"
-        ))
     })
 }
 
@@ -2995,11 +2963,11 @@ mod tests {
             ListSorted::boxed(&["b"], &[(0, 0)]),
             ListSorted::boxed(&["a"], &[(0, 0)]),
         ];
-        let map_inputs: Vec<Box<dyn SortedDocValues>> = vec![
+        let mut map_inputs: Vec<Box<dyn SortedDocValues>> = vec![
             ListSorted::boxed(&["b"], &[(0, 0)]),
             ListSorted::boxed(&["a"], &[(0, 0)]),
         ];
-        let mapping = Arc::new(OrdinalMap::build_sorted(None, map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted(None, &mut map_inputs, 0.25).unwrap());
         let values = MultiSortedDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);
@@ -3017,8 +2985,9 @@ mod tests {
     )]
     fn multi_sorted_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
-        let map_inputs: Vec<Box<dyn SortedDocValues>> = vec![ListSorted::boxed(&["b"], &[(0, 0)])];
-        let mapping = Arc::new(OrdinalMap::build_sorted(None, map_inputs, 0.25).unwrap());
+        let mut map_inputs: Vec<Box<dyn SortedDocValues>> =
+            vec![ListSorted::boxed(&["b"], &[(0, 0)])];
+        let mapping = Arc::new(OrdinalMap::build_sorted(None, &mut map_inputs, 0.25).unwrap());
         // One leaf needs two doc starts (its docBase plus the maxDoc sentinel).
         let values = MultiSortedDocValues::new(leaf_values, vec![0], mapping, 1);
         assert_eq!(values.doc_starts(), &[0]);
@@ -3176,9 +3145,9 @@ mod tests {
     fn multi_sorted_set_doc_values_assert_the_length_of_the_doc_start_table() {
         let leaf_values: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
-        let map_inputs: Vec<Box<dyn SortedSetDocValues>> =
+        let mut map_inputs: Vec<Box<dyn SortedSetDocValues>> =
             vec![ListSortedSet::boxed(&["b"], &[(0, &[0])])];
-        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, &mut map_inputs, 0.25).unwrap());
         let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 1);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
     }
@@ -3189,11 +3158,11 @@ mod tests {
             ListSortedSet::boxed(&["b"], &[(0, &[0])]),
             ListSortedSet::boxed(&["a"], &[(0, &[0])]),
         ];
-        let map_inputs: Vec<Box<dyn SortedSetDocValues>> = vec![
+        let mut map_inputs: Vec<Box<dyn SortedSetDocValues>> = vec![
             ListSortedSet::boxed(&["b"], &[(0, &[0])]),
             ListSortedSet::boxed(&["a"], &[(0, &[0])]),
         ];
-        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, map_inputs, 0.25).unwrap());
+        let mapping = Arc::new(OrdinalMap::build_sorted_set(None, &mut map_inputs, 0.25).unwrap());
         let values = MultiSortedSetDocValues::new(leaf_values, vec![0, 1, 2], mapping, 2);
         assert_eq!(values.doc_starts(), &[0, 1, 2]);
         assert_eq!(values.values().len(), 2);

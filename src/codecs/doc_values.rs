@@ -687,7 +687,7 @@ mod tests {
     }
 
     /// The terms `terms` yields, with their ordinals.
-    fn walk(mut terms: Box<dyn TermsEnum>) -> Vec<(i64, Vec<u8>)> {
+    fn walk(mut terms: Box<dyn TermsEnum + '_>) -> Vec<(i64, Vec<u8>)> {
         let mut walked = Vec::new();
         while let Some(term) = terms.next().unwrap() {
             let term = term.slice().to_vec();
@@ -735,7 +735,7 @@ mod tests {
         )
         .unwrap();
         let field = |name: &str| merge_state.field_infos[0].field_info(name).unwrap();
-        let is_merged_terms_enum = |terms: &dyn TermsEnum| {
+        let is_merged_terms_enum = |terms: &(dyn TermsEnum + '_)| {
             terms
                 .to_string()
                 .contains("DocValuesConsumer$MergedTermsEnum@")
@@ -754,10 +754,8 @@ mod tests {
                 )
             })
             .collect();
-        let terms = get_merged_sorted_doc_values(field("s"), &merge_state, map)
-            .unwrap()
-            .terms_enum()
-            .unwrap();
+        let mut merged = get_merged_sorted_doc_values(field("s"), &merge_state, map).unwrap();
+        let terms = merged.terms_enum().unwrap();
         assert!(is_merged_terms_enum(terms.as_ref()));
         assert_eq!(walk(terms), expected);
 
@@ -774,10 +772,9 @@ mod tests {
             let expected: Vec<(i64, Vec<u8>)> = (0..count)
                 .map(|ord| (ord, by_ord.lookup_ord(ord).unwrap().slice().to_vec()))
                 .collect();
-            let terms = get_merged_sorted_set_doc_values(field(name), &merge_state, map)
-                .unwrap()
-                .terms_enum()
-                .unwrap();
+            let mut merged =
+                get_merged_sorted_set_doc_values(field(name), &merge_state, map).unwrap();
+            let terms = merged.terms_enum().unwrap();
             assert!(is_merged_terms_enum(terms.as_ref()));
             assert_eq!(walk(terms), expected);
         }
@@ -1446,8 +1443,8 @@ pub fn get_merged_sorted_numeric_doc_values(
 /// (`DocValuesConsumer.java:527-610`), which extends `BaseTermsEnum`: it only
 /// iterates; every seek and every statistic throws
 /// `UnsupportedOperationException`.
-struct MergedTermsEnum {
-    subs: Vec<Box<dyn TermsEnum>>,
+struct MergedTermsEnum<'a> {
+    subs: Vec<Box<dyn TermsEnum + 'a>>,
     ordinal_map: Arc<OrdinalMap>,
     value_count: i64,
     ord: i64,
@@ -1457,9 +1454,9 @@ struct MergedTermsEnum {
     term: Option<usize>,
 }
 
-impl MergedTermsEnum {
+impl<'a> MergedTermsEnum<'a> {
     /// Equivalent to `MergedTermsEnum(OrdinalMap, TermsEnum[])`.
-    fn new(ordinal_map: Arc<OrdinalMap>, subs: Vec<Box<dyn TermsEnum>>) -> Self {
+    fn new(ordinal_map: Arc<OrdinalMap>, subs: Vec<Box<dyn TermsEnum + 'a>>) -> Self {
         let value_count = ordinal_map.get_value_count();
         Self {
             subs,
@@ -1471,7 +1468,7 @@ impl MergedTermsEnum {
     }
 }
 
-impl fmt::Display for MergedTermsEnum {
+impl fmt::Display for MergedTermsEnum<'_> {
     /// `MergedTermsEnum` declares no `toString()`, so `java.lang.Object.toString()` applies
     /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1481,7 +1478,7 @@ impl fmt::Display for MergedTermsEnum {
     }
 }
 
-impl TermsEnum for MergedTermsEnum {
+impl TermsEnum for MergedTermsEnum<'_> {
     /// Java's `attributes()` throws `UnsupportedOperationException`
     /// (`DocValuesConsumer.java:571-574`).
     ///
@@ -1636,19 +1633,15 @@ impl SortedDocValues for MergedSortedDocValues {
             .lookup_ord(segment_ord)
     }
     /// `new MergedTermsEnum(map, termsEnurmSubs)` over each sub's
-    /// `values.termsEnum()` (`DocValuesConsumer.java:808-815`). The merged
-    /// values are consumed, as each sub's enum takes ownership of the sub's
-    /// values (see [`SortedDocValues::terms_enum`]).
-    fn terms_enum(mut self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        let subs = std::mem::take(self.merger.subs_mut());
+    /// `values.termsEnum()` (`DocValuesConsumer.java:808-815`).
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
+        let map = Arc::clone(&self.map);
+        let subs = self.merger.subs_mut();
         let mut terms_enum_subs = Vec::with_capacity(subs.len());
-        for sub in subs {
+        for sub in subs.iter_mut() {
             terms_enum_subs.push(sub.values.terms_enum()?);
         }
-        Ok(Box::new(MergedTermsEnum::new(self.map, terms_enum_subs)))
+        Ok(Box::new(MergedTermsEnum::new(map, terms_enum_subs)))
     }
 }
 
@@ -1662,10 +1655,10 @@ pub fn create_ordinal_map_for_sorted_dv(
     field: &FieldInfo,
     merge_state: &MergeState,
 ) -> Result<OrdinalMap> {
-    let to_merge = select_sorted_leaves_to_merge(field, merge_state)?;
-    let mut live_terms: Vec<Box<dyn TermsEnum>> = Vec::with_capacity(to_merge.len());
+    let mut to_merge = select_sorted_leaves_to_merge(field, merge_state)?;
+    let mut live_terms: Vec<Box<dyn TermsEnum + '_>> = Vec::with_capacity(to_merge.len());
     let mut weights: Vec<i64> = Vec::with_capacity(to_merge.len());
-    for (sub, mut dv) in to_merge.into_iter().enumerate() {
+    for (sub, dv) in to_merge.iter_mut().enumerate() {
         match merge_state.live_docs.get(sub).and_then(Option::as_ref) {
             None => {
                 weights.push(i64::from(dv.get_value_count()?));
@@ -1847,19 +1840,15 @@ impl SortedSetDocValues for MergedSortedSetDocValues {
 
     /// `new MergedTermsEnum(map, subs)` over each `toMerge.get(sub).termsEnum()`
     /// (`DocValuesConsumer.java:1043-1050`). The subs' values stand for Java's
-    /// `toMerge` list, as in [`lookup_ord`](SortedSetDocValues::lookup_ord); the
-    /// merged values are consumed, as each sub's enum takes ownership of the
-    /// sub's values (see [`SortedSetDocValues::terms_enum`]).
-    fn terms_enum(mut self: Box<Self>) -> Result<Box<dyn TermsEnum>>
-    where
-        Self: 'static,
-    {
-        let subs = std::mem::take(self.merger.subs_mut());
+    /// `toMerge` list, as in [`lookup_ord`](SortedSetDocValues::lookup_ord).
+    fn terms_enum(&mut self) -> Result<Box<dyn TermsEnum + '_>> {
+        let map = Arc::clone(&self.map);
+        let subs = self.merger.subs_mut();
         let mut terms_enum_subs = Vec::with_capacity(subs.len());
-        for sub in subs {
+        for sub in subs.iter_mut() {
             terms_enum_subs.push(sub.values.terms_enum()?);
         }
-        Ok(Box::new(MergedTermsEnum::new(self.map, terms_enum_subs)))
+        Ok(Box::new(MergedTermsEnum::new(map, terms_enum_subs)))
     }
 }
 
@@ -1900,9 +1889,10 @@ pub fn create_ordinal_map_for_sorted_set_dv(
     to_merge: Vec<Box<dyn SortedSetDocValues>>,
     merge_state: &MergeState,
 ) -> Result<OrdinalMap> {
-    let mut live_terms: Vec<Box<dyn TermsEnum>> = Vec::with_capacity(to_merge.len());
+    let mut to_merge = to_merge;
+    let mut live_terms: Vec<Box<dyn TermsEnum + '_>> = Vec::with_capacity(to_merge.len());
     let mut weights: Vec<i64> = Vec::with_capacity(to_merge.len());
-    for (sub, mut dv) in to_merge.into_iter().enumerate() {
+    for (sub, dv) in to_merge.iter_mut().enumerate() {
         match merge_state.live_docs.get(sub).and_then(Option::as_ref) {
             None => {
                 weights.push(dv.get_value_count()?);
@@ -2042,13 +2032,13 @@ pub fn singleton_view(
 /// because that type's filter is handed only the term bytes and this decision
 /// is made on the delegate's *ordinal*. Wrapping keeps the delegate reachable;
 /// the accepted sequence of terms and their ordinals are identical either way.
-struct BitsFilteredTermsEnum {
-    inner: Box<dyn TermsEnum>,
+struct BitsFilteredTermsEnum<'a> {
+    inner: Box<dyn TermsEnum + 'a>,
     live_terms: LongBitSet,
 }
 
-impl BitsFilteredTermsEnum {
-    fn new(inner: Box<dyn TermsEnum>, live_terms: LongBitSet) -> Self {
+impl<'a> BitsFilteredTermsEnum<'a> {
+    fn new(inner: Box<dyn TermsEnum + 'a>, live_terms: LongBitSet) -> Self {
         Self { inner, live_terms }
     }
 
@@ -2065,7 +2055,7 @@ impl BitsFilteredTermsEnum {
     }
 }
 
-impl std::fmt::Display for BitsFilteredTermsEnum {
+impl std::fmt::Display for BitsFilteredTermsEnum<'_> {
     /// `BitsFilteredTermsEnum` declares no `toString()` in Lucene 10.5.0, so
     /// `java.lang.Object`'s applies: the binary class name, `@`, and the
     /// identity hash. See
@@ -2079,7 +2069,7 @@ impl std::fmt::Display for BitsFilteredTermsEnum {
     }
 }
 
-impl TermsEnum for BitsFilteredTermsEnum {
+impl TermsEnum for BitsFilteredTermsEnum<'_> {
     fn attributes(&mut self) -> &mut AttributeSource {
         self.inner.attributes()
     }
