@@ -33,7 +33,7 @@ pub struct CharacterProperties;
 impl CharacterProperties {
     fn make_set(property: i32) -> Result<UnicodeSet> {
         let mut set = UnicodeSet::new();
-        if UProperty::BASIC_EMOJI <= property && property <= UProperty::RGI_EMOJI {
+        if (UProperty::BASIC_EMOJI..=UProperty::RGI_EMOJI).contains(&property) {
             // property of strings
             EmojiProps::instance().add_strings(property, &mut set)?;
             if property != UProperty::BASIC_EMOJI && property != UProperty::RGI_EMOJI {
@@ -122,7 +122,7 @@ impl CharacterProperties {
     /// `IllegalArgumentException("<p> is not a constant for a UProperty
     /// binary property")`; the errors of the property data.
     pub fn get_binary_property_set(property: i32) -> Result<Arc<UnicodeSet>> {
-        if property < 0 || UProperty::BINARY_LIMIT <= property {
+        if !(0..UProperty::BINARY_LIMIT).contains(&property) {
             return Err(LuceneError::illegal_argument(format!(
                 "{property} is not a constant for a UProperty binary property"
             )));

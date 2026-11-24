@@ -246,7 +246,7 @@ impl UCharacterName {
 
             while shift >= 0 {
                 // getting nibble
-                n = ((b >> shift) & 0x0F) as i8;
+                n = ((b >> shift) & 0x0F);
                 if length == 0xffff && n > SINGLE_NIBBLE_MAX {
                     length = ((n as i32 - 12) << 4) as u16;
                 } else {

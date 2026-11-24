@@ -152,7 +152,7 @@ impl EmojiProps {
 
     /// `hasBinaryProperty(int c, int which)`.
     pub fn has_binary_property(&self, c: i32, which: i32) -> bool {
-        if which < UProperty::EMOJI || UProperty::RGI_EMOJI < which {
+        if !(UProperty::EMOJI..=UProperty::RGI_EMOJI).contains(&which) {
             return false;
         }
         // Note: UCHAR_REGIONAL_INDICATOR is a single, hardcoded range implemented elsewhere.
@@ -171,7 +171,7 @@ impl EmojiProps {
             return false;
         } // empty string
         // The caller should have delegated single code points to hasBinaryProperty(c, which).
-        if which < UProperty::BASIC_EMOJI || UProperty::RGI_EMOJI < which {
+        if !(UProperty::BASIC_EMOJI..=UProperty::RGI_EMOJI).contains(&which) {
             return false;
         }
         let mut first_prop = which;
@@ -199,7 +199,7 @@ impl EmojiProps {
     ///
     /// The errors of [`UnicodeSet::add_str`] (a frozen set).
     pub fn add_strings(&self, which: i32, set: &mut UnicodeSet) -> Result<()> {
-        if which < UProperty::BASIC_EMOJI || UProperty::RGI_EMOJI < which {
+        if !(UProperty::BASIC_EMOJI..=UProperty::RGI_EMOJI).contains(&which) {
             return Ok(());
         }
         let mut first_prop = which;

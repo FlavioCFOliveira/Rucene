@@ -217,10 +217,7 @@ impl<'a> InflectedPluralSink<'a> {
                 return Ok(true);
             }
         }
-        if self.load_for_gender(gender_table, &units("_"), value)? {
-            return Ok(true);
-        }
-        Ok(false)
+        Ok(self.load_for_gender(gender_table, &units("_"), value)?)
     }
 
     /// Tries to load data for the given gender from `genderTable`.
@@ -240,10 +237,7 @@ impl<'a> InflectedPluralSink<'a> {
                 return Ok(true);
             }
         }
-        if Self::load_for_case(case_table.as_ref(), &units("_"), value) {
-            return Ok(true);
-        }
-        Ok(false)
+        Ok(Self::load_for_case(case_table.as_ref(), &units("_"), value))
     }
 
     /// Tries to load data for the given case from `caseTable`. Returns true
@@ -920,7 +914,7 @@ impl LongNameHandler {
                 });
             } else {
                 // It's okay to mutate fullUnit, we made a temporary copy:
-                sub_unit.set_dimensionality(sub_unit.get_dimensionality() * -1);
+                sub_unit.set_dimensionality(-sub_unit.get_dimensionality());
                 per_unit = Some(match per_unit {
                     None => sub_unit.build()?,
                     Some(p) => p.product(Some(&sub_unit.build()?))?,

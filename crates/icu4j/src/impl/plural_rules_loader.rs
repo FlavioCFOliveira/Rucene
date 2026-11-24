@@ -101,8 +101,8 @@ impl PluralRulesLoader {
             let value = to_rust_string(&b.get_string()?);
             maps.locale_id_to_cardinal_rules_id.insert(id.clone(), value.clone());
 
-            if !maps.rules_id_to_equivalent_u_locale.contains_key(&value) {
-                maps.rules_id_to_equivalent_u_locale.insert(value, ULocale::new(&id)?);
+            if let std::collections::hash_map::Entry::Vacant(e) = maps.rules_id_to_equivalent_u_locale.entry(value) {
+                e.insert(ULocale::new(&id)?);
             }
         }
 

@@ -149,7 +149,7 @@ impl BreakIteratorServiceShim for BreakIteratorFactory {
     }
 
     fn get_available_locales(&self) -> Result<Vec<Locale>> {
-        Ok(self.service.get_available_locales()?)
+        self.service.get_available_locales()
     }
 
     fn get_available_u_locales(&self) -> Result<Vec<ULocale>> {

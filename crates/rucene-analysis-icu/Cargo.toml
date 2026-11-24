@@ -33,3 +33,11 @@ icu4j = { path = "../icu4j" }
 # `java.net.URLConnection` (MIT OR Apache-2.0; user decision on rmp #641,
 # 2026-11-23). No gzip: `URLConnection` asks for no content encoding.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+# The tests port Lucene's analysis/icu tests onto lucene/test-framework (and
+# its randomized-testing base), as `rucene-analysis-common`'s do.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
+# `java.util.Locale` as the `icu4j` port takes it (`Collator.getInstance(Locale)`).
+rucene-queryparser = { path = "../rucene-queryparser" }

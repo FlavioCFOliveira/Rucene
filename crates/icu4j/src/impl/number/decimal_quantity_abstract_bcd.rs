@@ -279,7 +279,9 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
         }
 
         // 3.3219... is log2(10)
-        let frac_length = ((52 - exponent) as f64 / 3.32192809488736234787031942948939017586) as i32;
+        // Java's literal, kept as written (it rounds to `LOG2_10`).
+        #[allow(clippy::approx_constant)]
+        let frac_length = ((52 - exponent) as f64 / 3.321_928_094_887_362) as i32;
         if frac_length >= 0 {
             let mut i = frac_length;
             // 1e22 is the largest exact double.
@@ -607,8 +609,7 @@ pub trait DecimalQuantityAbstractBcd: std::fmt::Debug + Send + Sync + Sized + 's
             // Nickel rounding "half even" goes to the nearest whole (away
             // from the 5).
             let is_even = if nickel {
-                trailing_digit < 2
-                    || trailing_digit > 7
+                !(2..=7).contains(&trailing_digit)
                     || (trailing_digit == 2 && section != RoundingUtils::SECTION_UPPER)
                     || (trailing_digit == 7 && section == RoundingUtils::SECTION_UPPER)
             } else {

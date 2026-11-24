@@ -52,6 +52,11 @@ path = "src/bin/sample.rs"
 rucene = { path = "../.." }
 nekohtml = { path = "../nekohtml" }
 rucene-analysis-common = { path = "../rucene-analysis-common" }
+# `lucene/benchmark/build.gradle`: `moduleImplementation deps.icu4j` and
+# `moduleRuntimeOnly project(':lucene:analysis:icu')` (the ICU implementation of
+# `NewCollationAnalyzerTask`, rmp #642).
+icu4j = { path = "../icu4j" }
+rucene-analysis-icu = { path = "../rucene-analysis-icu" }
 rucene-facet = { path = "../rucene-facet" }
 rucene-highlighter = { path = "../rucene-highlighter" }
 rucene-queries = { path = "../rucene-queries" }

@@ -540,7 +540,7 @@ fn skip_value_at(chars: &[u16], mut pos: i32) -> i32 {
 
 /// `readNodeValue(CharSequence chars, int pos, int leadUnit)` (private).
 fn read_node_value(chars: &[u16], pos: i32, lead_unit: i32) -> i32 {
-    debug_assert!(K_MIN_VALUE_LEAD <= lead_unit && lead_unit < K_VALUE_IS_FINAL);
+    debug_assert!((K_MIN_VALUE_LEAD..K_VALUE_IS_FINAL).contains(&lead_unit));
     if lead_unit < K_MIN_TWO_UNIT_NODE_VALUE_LEAD {
         (lead_unit >> 6) - 1
     } else if lead_unit < K_THREE_UNIT_NODE_VALUE_LEAD {
@@ -552,7 +552,7 @@ fn read_node_value(chars: &[u16], pos: i32, lead_unit: i32) -> i32 {
 
 /// `skipNodeValue(int pos, int leadUnit)` (private).
 fn skip_node_value(mut pos: i32, lead_unit: i32) -> i32 {
-    debug_assert!(K_MIN_VALUE_LEAD <= lead_unit && lead_unit < K_VALUE_IS_FINAL);
+    debug_assert!((K_MIN_VALUE_LEAD..K_VALUE_IS_FINAL).contains(&lead_unit));
     if lead_unit >= K_MIN_TWO_UNIT_NODE_VALUE_LEAD {
         if lead_unit < K_THREE_UNIT_NODE_VALUE_LEAD {
             pos += 1;

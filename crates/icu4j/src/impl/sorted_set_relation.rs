@@ -79,11 +79,10 @@ impl SortedSetRelation {
                     return Ok(false);
                 }
             }
-            Self::EQUALS => {
-                if a.len() != b.len() {
+            Self::EQUALS
+                if a.len() != b.len() => {
                     return Ok(false);
                 }
-            }
             _ => {}
         }
 

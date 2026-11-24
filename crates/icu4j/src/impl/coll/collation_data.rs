@@ -121,7 +121,7 @@ impl CollationData {
     /// `isDigit(int)`.
     pub fn is_digit(&self, c: i32) -> bool {
         if c < 0x660 {
-            c <= 0x39 && 0x30 <= c
+            (0x30..=0x39).contains(&c)
         } else {
             Collation::has_ce32_tag(self.get_ce32(c), Collation::DIGIT_TAG)
         }
@@ -399,7 +399,7 @@ impl CollationData {
         let mut specials = 0;
         for &code in &reorder[..length] {
             let reorder_code = code.wrapping_sub(ReorderCodes::FIRST);
-            if 0 <= reorder_code && reorder_code < Self::MAX_NUM_SPECIAL_REORDER_CODES {
+            if (0..Self::MAX_NUM_SPECIAL_REORDER_CODES).contains(&reorder_code) {
                 specials |= 1 << reorder_code;
             }
         }

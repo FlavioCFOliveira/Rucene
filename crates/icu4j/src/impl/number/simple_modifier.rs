@@ -122,7 +122,7 @@ impl SimpleModifier {
 
 impl Modifier for SimpleModifier {
     fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32> {
-        Ok(SimpleFormatterImpl::format_prefix_suffix(&self.compiled_pattern, self.field.clone(), left_index, right_index, output))
+        Ok(SimpleFormatterImpl::format_prefix_suffix(&self.compiled_pattern, self.field, left_index, right_index, output))
     }
 
     fn get_prefix_length(&self) -> Result<i32> {

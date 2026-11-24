@@ -78,20 +78,20 @@ impl Hangul {
 
     /// `isHangul(int c)`.
     pub fn is_hangul(c: i32) -> bool {
-        Self::HANGUL_BASE <= c && c < Self::HANGUL_LIMIT
+        (Self::HANGUL_BASE..Self::HANGUL_LIMIT).contains(&c)
     }
     /// `isHangulLV(int c)`.
     pub fn is_hangul_lv(mut c: i32) -> bool {
         c -= Self::HANGUL_BASE;
-        0 <= c && c < Self::HANGUL_COUNT && c % Self::JAMO_T_COUNT == 0
+        (0..Self::HANGUL_COUNT).contains(&c) && c % Self::JAMO_T_COUNT == 0
     }
     /// `isJamoL(int c)`.
     pub fn is_jamo_l(c: i32) -> bool {
-        Self::JAMO_L_BASE <= c && c < Self::JAMO_L_LIMIT
+        (Self::JAMO_L_BASE..Self::JAMO_L_LIMIT).contains(&c)
     }
     /// `isJamoV(int c)`.
     pub fn is_jamo_v(c: i32) -> bool {
-        Self::JAMO_V_BASE <= c && c < Self::JAMO_V_LIMIT
+        (Self::JAMO_V_BASE..Self::JAMO_V_LIMIT).contains(&c)
     }
     /// `isJamoT(int c)`.
     pub fn is_jamo_t(c: i32) -> bool {
@@ -100,9 +100,8 @@ impl Hangul {
     }
     /// `isJamo(int c)`.
     pub fn is_jamo(c: i32) -> bool {
-        Self::JAMO_L_BASE <= c
-            && c <= Self::JAMO_T_END
-            && (c <= Self::JAMO_L_END || (Self::JAMO_V_BASE <= c && c <= Self::JAMO_V_END) || Self::JAMO_T_BASE < c)
+        (Self::JAMO_L_BASE..=Self::JAMO_T_END).contains(&c)
+            && (c <= Self::JAMO_L_END || (Self::JAMO_V_BASE..=Self::JAMO_V_END).contains(&c) || Self::JAMO_T_BASE < c)
     }
 
     /// `decompose(int c, Appendable buffer)`: decomposes c, which must be a
@@ -796,11 +795,10 @@ impl Normalizer2Impl {
                             let mut mapping = self.get_data_for_yes_or_no(norm16_2);
                             let first_unit = self.ed(mapping);
                             let length = first_unit & Self::MAPPING_LENGTH_MASK;
-                            if (first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) != 0 {
-                                if c == c2 && (self.ed(mapping - 1) & 0xff) != 0 {
+                            if (first_unit & Self::MAPPING_HAS_CCC_LCCC_WORD) != 0
+                                && c == c2 && (self.ed(mapping - 1) & 0xff) != 0 {
                                     new_value |= CANON_NOT_SEGMENT_STARTER; // original c has cc!=0
                                 }
-                            }
                             // Skip empty mappings (no characters in the decomposition).
                             if length != 0 {
                                 mapping += 1; // skip over the firstUnit
@@ -1949,7 +1947,7 @@ impl Normalizer2Impl {
 
     /// @return index into maybeYesCompositions, or -1
     fn get_compositions_list_for_decomp_yes(&self, norm16: i32) -> i32 {
-        if norm16 < Self::JAMO_L || Self::MIN_NORMAL_MAYBE_YES <= norm16 {
+        if !(Self::JAMO_L..Self::MIN_NORMAL_MAYBE_YES).contains(&norm16) {
             -1
         } else {
             // if yesYes: if Jamo L: harmless empty list
@@ -2294,7 +2292,7 @@ impl Normalizer2Impl {
             // a combines forward.
             if Self::is_jamo_l(norm16) {
                 b -= Hangul::JAMO_V_BASE;
-                if 0 <= b && b < Hangul::JAMO_V_COUNT {
+                if (0..Hangul::JAMO_V_COUNT).contains(&b) {
                     return Hangul::HANGUL_BASE + ((a - Hangul::JAMO_L_BASE) * Hangul::JAMO_V_COUNT + b) * Hangul::JAMO_T_COUNT;
                 } else {
                     return -1;

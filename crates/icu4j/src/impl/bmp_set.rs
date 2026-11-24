@@ -123,7 +123,7 @@ impl BMPSet {
                 found = self.latin1_contains[c as usize];
             } else if c <= 0x7ff {
                 found = (self.table7ff[(c & 0x3f) as usize] & shl(1, (c >> 6) as i32)) != 0;
-            } else if c < 0xd800 || c >= 0xdc00 || (i + 1) == limit || {
+            } else if !(0xd800..0xdc00).contains(&c) || (i + 1) == limit || {
                 let c2 = s[i as usize + 1];
                 !(0xdc00..0xe000).contains(&c2)
             } {
@@ -237,9 +237,9 @@ impl BMPSet {
                 lead += 1;
             }
             if lead < limit_lead {
-                bits = !(shl(1, lead) - 1);
+                bits = !shl(1, lead).wrapping_sub(1);
                 if limit_lead < 0x20 {
-                    bits &= shl(1, limit_lead) - 1;
+                    bits &= shl(1, limit_lead).wrapping_sub(1);
                 }
                 for t in table.iter_mut() {
                     *t |= bits;

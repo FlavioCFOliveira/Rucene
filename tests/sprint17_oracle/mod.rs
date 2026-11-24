@@ -16,8 +16,8 @@
  */
 
 //! The Java-oracle harness of the sprint-17 modules (rmp #628): Lucene
-//! 10.5.0 `memory`, `facet`, `highlighter`, `spatial3d`, `spatial-extras` and
-//! `benchmark` run side by side with Rucene on one seed, and their dumps are
+//! 10.5.0 `memory`, `facet`, `highlighter`, `spatial3d`, `spatial-extras`,
+//! `benchmark` and `analysis/icu` run side by side with Rucene on one seed, and their dumps are
 //! compared line for line.
 //!
 //! It follows the harness of the query modules (rmp #475,
@@ -76,6 +76,8 @@ pub enum Module {
     SpatialExtras,
     /// `lucene/benchmark`.
     Benchmark,
+    /// `lucene/analysis/icu` (over ICU4J 77.1).
+    AnalysisIcu,
 }
 
 /// A jar of the local Maven repository: its path under
@@ -197,13 +199,14 @@ static TEST_JARS: [&Jar; 5] = [
 
 impl Module {
     /// Every module, in the order of the sprint.
-    pub const ALL: [Module; 6] = [
+    pub const ALL: [Module; 7] = [
         Module::Memory,
         Module::Facet,
         Module::Highlighter,
         Module::Spatial3d,
         Module::SpatialExtras,
         Module::Benchmark,
+        Module::AnalysisIcu,
     ];
 
     /// The name of the module's Java program (without `.java`).
@@ -215,6 +218,7 @@ impl Module {
             Module::Spatial3d => "Spatial3dOracle",
             Module::SpatialExtras => "SpatialExtrasOracle",
             Module::Benchmark => "BenchmarkOracle",
+            Module::AnalysisIcu => "AnalysisIcuOracle",
         }
     }
 
@@ -249,6 +253,7 @@ impl Module {
                 &NEKOHTML,
                 &XERCES,
             ],
+            Module::AnalysisIcu => vec![&CORE, &ANALYSIS_COMMON, &ANALYSIS_ICU, &ICU4J],
         };
         module
             .into_iter()

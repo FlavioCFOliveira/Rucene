@@ -272,7 +272,7 @@ impl Currency {
     pub fn get_available_currency_codes(loc: &ULocale, d: &Date) -> Result<Option<Vec<String>>> {
         let region = ULocale::get_region_for_supplemental_data(loc, false)?;
         let filter = CurrencyFilter::on_date(d).with_region(Some(&region));
-        let list = Self::get_tender_currencies(&filter);
+        let list = Self::get_tender_currencies(&filter)?;
         // Note: Prior to 4.4 the spec didn't say that we return null if
         // there are no results, but the test assumed it did.  Kept the
         // behavior.
@@ -302,7 +302,7 @@ impl Currency {
     /// The errors of `getInstance`.
     pub fn get_available_currencies() -> Result<Vec<Currency>> {
         let info = currency_meta_info::get_instance();
-        let list = info.currencies(&CurrencyFilter::all());
+        let list = info.currencies(&CurrencyFilter::all())?;
         let mut result_set: Vec<Currency> = Vec::with_capacity(list.len());
         for code in &list {
             let c = Self::get_instance(Some(code))?;
@@ -329,9 +329,9 @@ impl Currency {
         let region = key;
         let info = currency_meta_info::get_instance();
         // Note: Prior to ICU 74, we passed tender=false here.
-        let mut list = info.currencies(&CurrencyFilter::on_region(Some(region)).with_tender());
+        let mut list = info.currencies(&CurrencyFilter::on_region(Some(region)).with_tender())?;
         if list.is_empty() {
-            list = info.currencies(&CurrencyFilter::on_region(Some(region)));
+            list = info.currencies(&CurrencyFilter::on_region(Some(region)))?;
         }
         if !list.is_empty() {
             let code = &list[0];
@@ -466,7 +466,7 @@ impl Currency {
 
         if !commonly_used {
             // Behavior change from 4.3.3, no longer sort the currencies
-            return Ok(Self::get_all_tender_currencies().as_ref().clone());
+            return Ok(Self::get_all_tender_currencies()?.as_ref().clone());
         }
 
         // Don't resolve region if the requested locale is 'und', it will
@@ -480,7 +480,7 @@ impl Currency {
 
         // currencies are in region's preferred order when we're filtering on
         // region, which matches our spec
-        let result = Self::get_tender_currencies(&filter);
+        let result = Self::get_tender_currencies(&filter)?;
 
         // No fallback anymore (change from 4.3.3)
         if result.is_empty() {
@@ -763,51 +763,67 @@ impl Currency {
     /// Returns the number of the number of fraction digits that should be
     /// displayed for this currency. Equivalent to
     /// `getDefaultFractionDigits()`.
-    pub fn get_default_fraction_digits(&self) -> i32 {
+    ///
+    /// # Errors
+    ///
+    /// The errors of the currency meta data.
+    pub fn get_default_fraction_digits(&self) -> Result<i32> {
         self.get_default_fraction_digits_usage(CurrencyUsage::Standard)
     }
 
     /// Returns the number of the number of fraction digits that should be
     /// displayed for this currency with Usage. Equivalent to
     /// `getDefaultFractionDigits(CurrencyUsage)`.
-    pub fn get_default_fraction_digits_usage(&self, usage: CurrencyUsage) -> i32 {
+    ///
+    /// # Errors
+    ///
+    /// The errors of the currency meta data.
+    pub fn get_default_fraction_digits_usage(&self, usage: CurrencyUsage) -> Result<i32> {
         let info = currency_meta_info::get_instance();
-        let digits = info.currency_digits_usage(self.sub_type(), usage);
-        digits.fraction_digits
+        let digits = info.currency_digits_usage(self.sub_type(), usage)?;
+        Ok(digits.fraction_digits)
     }
 
     /// Returns the rounding increment for this currency, or 0.0 if no
     /// rounding is done by this currency. Equivalent to
     /// `getRoundingIncrement()`.
-    pub fn get_rounding_increment(&self) -> f64 {
+    ///
+    /// # Errors
+    ///
+    /// The errors of the currency meta data.
+    pub fn get_rounding_increment(&self) -> Result<f64> {
         self.get_rounding_increment_usage(CurrencyUsage::Standard)
     }
 
     /// Returns the rounding increment for this currency, or 0.0 if no
     /// rounding is done by this currency with the Usage. Equivalent to
     /// `getRoundingIncrement(CurrencyUsage)`.
-    pub fn get_rounding_increment_usage(&self, usage: CurrencyUsage) -> f64 {
+    ///
+    /// # Errors
+    ///
+    /// The errors of the currency meta data.
+    pub fn get_rounding_increment_usage(&self, usage: CurrencyUsage) -> Result<f64> {
         let info = currency_meta_info::get_instance();
-        let digits = info.currency_digits_usage(self.sub_type(), usage);
+        let digits = info.currency_digits_usage(self.sub_type(), usage)?;
 
         let data1 = digits.rounding_increment;
 
         // If there is no rounding return 0.0 to indicate no rounding.
         // This is the high-runner case, by far.
         if data1 == 0 {
-            return 0.0;
+            return Ok(0.0);
         }
 
         let data0 = digits.fraction_digits;
 
         // If the meta data is invalid, return 0.0 to indicate no rounding.
         if data0 < 0 || data0 >= POW10.len() as i32 {
-            return 0.0;
+            return Ok(0.0);
         }
 
         // Return data[1] / 10^(data[0]). The only actual rounding data, as
         // of this writing, is CHF { 2, 25 }.
-        data1 as f64 / POW10[data0 as usize] as f64
+        Ok(data1 as f64 / POW10[data0 as usize] as f64)
     }
 
     /// Returns the ISO 4217 code for this currency. Equivalent to
@@ -817,25 +833,25 @@ impl Currency {
     }
 
     /// `getAllTenderCurrencies()` (`static synchronized`).
-    fn get_all_tender_currencies() -> Arc<Vec<String>> {
+    fn get_all_tender_currencies() -> Result<Arc<Vec<String>>> {
         let mut guard = ALL_TENDER_CODES.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             // Filter out non-tender currencies which have "from" date set
             // to 9999-12-31 CLDR adds them as placeholders.
             let filter = CurrencyFilter::all();
-            *guard = Some(Arc::new(Self::get_tender_currencies(&filter)));
+            *guard = Some(Arc::new(Self::get_tender_currencies(&filter)?));
         }
-        guard.clone().expect("set above")
+        Ok(guard.clone().expect("set above"))
     }
 
     /// `getAllCurrenciesAsSet()` (`static synchronized`).
-    fn get_all_currencies_as_set() -> Arc<HashSet<String>> {
+    fn get_all_currencies_as_set() -> Result<Arc<HashSet<String>>> {
         let mut guard = ALL_CODES_AS_SET.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             let info = currency_meta_info::get_instance();
-            *guard = Some(Arc::new(info.currencies(&CurrencyFilter::all()).into_iter().collect()));
+            *guard = Some(Arc::new(info.currencies(&CurrencyFilter::all())?.into_iter().collect()));
         }
-        guard.clone().expect("set above")
+        Ok(guard.clone().expect("set above"))
     }
 
     /// Queries if the given ISO 4217 3-letter code is available on the
@@ -857,7 +873,7 @@ impl Currency {
         }
 
         let code = code.to_ascii_uppercase();
-        let is_known = Self::get_all_currencies_as_set().contains(&code);
+        let is_known = Self::get_all_currencies_as_set()?.contains(&code);
         if !is_known {
             return Ok(false);
         } else if from.is_none() && to.is_none() {
@@ -866,14 +882,14 @@ impl Currency {
 
         // If caller passed a date range, we cannot rely solely on the cache
         let info = currency_meta_info::get_instance();
-        let all_active = info.currencies(&CurrencyFilter::on_date_range(from, to).with_currency(Some(&code)));
+        let all_active = info.currencies(&CurrencyFilter::on_date_range(from, to).with_currency(Some(&code)))?;
 
         Ok(all_active.contains(&code))
     }
 
     /// Returns the list of remaining tender currencies after a filter is
     /// applied. Equivalent to `getTenderCurrencies(CurrencyFilter)`.
-    fn get_tender_currencies(filter: &CurrencyFilter) -> Vec<String> {
+    fn get_tender_currencies(filter: &CurrencyFilter) -> Result<Vec<String>> {
         let info = currency_meta_info::get_instance();
         info.currencies(&filter.with_tender())
     }

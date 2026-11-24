@@ -189,7 +189,7 @@ impl KeyTypeData {
         let ty = AsciiUtil::to_lower_string(ty);
         let tables = tables()?;
         if let Some(key_data) = tables.keymap.get(&key) {
-            if let Some(k) = is_known_key.as_deref_mut() {
+            if let Some(k) = is_known_key {
                 k.value = Some(true);
             }
             if let Some(t) = key_data.type_map.get(&ty) {

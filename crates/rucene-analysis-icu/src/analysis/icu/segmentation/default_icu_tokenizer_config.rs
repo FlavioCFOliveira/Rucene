@@ -42,37 +42,43 @@ use crate::resources::get_resource_as_stream;
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_IDEO`,
 /// `StandardTokenizer.TOKEN_TYPES[StandardTokenizer.IDEOGRAPHIC]` (the same
 /// string object).
-pub static WORD_IDEO: &str = TOKEN_TYPES[IDEOGRAPHIC];
+///
+/// Each `WORD_*` static is a reference to the element of `TOKEN_TYPES`
+/// itself, read at run time: a `&str` static initialized with
+/// `TOKEN_TYPES[i]` would be const-evaluated in this crate into a copy of the
+/// literal bytes, losing the string identity that `CJKBigramFilter`'s
+/// `type == doHan` test needs (rmp #642).
+pub static WORD_IDEO: &&str = &TOKEN_TYPES[IDEOGRAPHIC];
 
 /// Token type for words containing Japanese hiragana.
 ///
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_HIRAGANA`.
-pub static WORD_HIRAGANA: &str = TOKEN_TYPES[HIRAGANA];
+pub static WORD_HIRAGANA: &&str = &TOKEN_TYPES[HIRAGANA];
 
 /// Token type for words containing Japanese katakana.
 ///
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_KATAKANA`.
-pub static WORD_KATAKANA: &str = TOKEN_TYPES[KATAKANA];
+pub static WORD_KATAKANA: &&str = &TOKEN_TYPES[KATAKANA];
 
 /// Token type for words containing Korean hangul.
 ///
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_HANGUL`.
-pub static WORD_HANGUL: &str = TOKEN_TYPES[HANGUL];
+pub static WORD_HANGUL: &&str = &TOKEN_TYPES[HANGUL];
 
 /// Token type for words that contain letters.
 ///
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_LETTER`.
-pub static WORD_LETTER: &str = TOKEN_TYPES[ALPHANUM];
+pub static WORD_LETTER: &&str = &TOKEN_TYPES[ALPHANUM];
 
 /// Token type for words that appear to be numbers.
 ///
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_NUMBER`.
-pub static WORD_NUMBER: &str = TOKEN_TYPES[NUM];
+pub static WORD_NUMBER: &&str = &TOKEN_TYPES[NUM];
 
 /// Token type for words that appear to be emoji sequences.
 ///
 /// Equivalent to `DefaultICUTokenizerConfig.WORD_EMOJI`.
-pub static WORD_EMOJI: &str = TOKEN_TYPES[EMOJI];
+pub static WORD_EMOJI: &&str = &TOKEN_TYPES[EMOJI];
 
 /// The class's three private static break iterators, initialized together
 /// the first time the class is referenced, as Java's static initializer
@@ -220,23 +226,23 @@ impl ICUTokenizerConfig for DefaultICUTokenizerConfig {
     /// Equivalent to `DefaultICUTokenizerConfig.getType(int, int)`.
     fn get_type(&self, script: i32, rule_status: i32) -> Cow<'static, str> {
         Cow::Borrowed(match rule_status {
-            RBBI_WORD_IDEO => WORD_IDEO,
+            RBBI_WORD_IDEO => *WORD_IDEO,
             WORD_KANA => {
                 if script == UScript::HIRAGANA {
-                    WORD_HIRAGANA
+                    *WORD_HIRAGANA
                 } else {
-                    WORD_KATAKANA
+                    *WORD_KATAKANA
                 }
             }
             RBBI_WORD_LETTER => {
                 if script == UScript::HANGUL {
-                    WORD_HANGUL
+                    *WORD_HANGUL
                 } else {
-                    WORD_LETTER
+                    *WORD_LETTER
                 }
             }
-            RBBI_WORD_NUMBER => WORD_NUMBER,
-            EMOJI_SEQUENCE_STATUS => WORD_EMOJI,
+            RBBI_WORD_NUMBER => *WORD_NUMBER,
+            EMOJI_SEQUENCE_STATUS => *WORD_EMOJI,
             _ => {
                 /* some other custom code */
                 "<OTHER>"

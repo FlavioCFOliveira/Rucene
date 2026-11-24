@@ -18,7 +18,7 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 ## Project structure
 
 - `src/` — the `rucene` crate (`lucene/core`). Its top-level modules mirror Lucene Core's packages: `analysis`, `codecs`, `document`, `geo`, `index`, `internal`, `search`, `store`, `util`, plus `error`.
-- `crates/` — the other nineteen workspace members: thirteen ported Lucene modules, four ported third-party libraries (randomizedtesting, spatial4j, s2-geometry, NekoHTML) and two command-line examples:
+- `crates/` — the other twenty-one workspace members: fourteen ported Lucene modules, five ported third-party libraries (randomizedtesting, spatial4j, s2-geometry, NekoHTML, ICU4J) and two command-line examples:
   - `rucene-codecs` — `lucene/codecs` (the `org.apache.lucene.codecs.*` formats outside core);
   - `rucene-analysis-common` — `lucene/analysis/common` (see [Analysis: `rucene-analysis-common`](#analysis-rucene-analysis-common));
   - `rucene-queries` — `lucene/queries` (function queries and value sources, intervals, spans, payload queries, more-like-this);
@@ -33,6 +33,8 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
   - `rucene-highlighter` — `lucene/highlighter` (the original, fast vector, unified and match highlighters; see `specs/modules/highlighter.md`);
   - `rucene-facet` — `lucene/facet` (taxonomy, sorted-set, range, range-on-range and facet-set facets, drill-down and drill-sideways; see `specs/modules/facet.md`);
   - `rucene-benchmark` — `lucene/benchmark` (the `byTask` benchmark framework and the `quality` TREC evaluation; see `specs/modules/benchmark.md`);
+  - `rucene-analysis-icu` — `lucene/analysis/icu` (ICU normalization, folding, segmentation, transforms and collation; see `specs/modules/analysis-icu.md`);
+  - `icu4j` — ICU4J 77.1, limited to the classes `analysis/icu` and `benchmark` use, with the ICU data they read (see `specs/modules/icu4j.md`);
   - `nekohtml` — NekoHTML 1.9.17, limited to the SAX HTML parser `benchmark` uses (with the Xerces-J and SAX types it needs; see `specs/modules/nekohtml.md`);
   - `randomizedtesting` — randomizedtesting 2.8.1 (`com.carrotsearch.randomizedtesting`), the runner of Lucene's tests;
   - `rucene-test-framework` — `lucene/test-framework`;

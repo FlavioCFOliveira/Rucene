@@ -442,13 +442,13 @@ impl LSTMBreakEngine {
         Self::tanh(&mut ifco, 2 * hunits, hunits); // c_
         Self::sigmoid(&mut ifco, 3 * hunits, hunits); // o
 
-        Self::hadamard_product_to(&ifco[hunits..2 * hunits].to_vec(), c);
-        Self::add_hadamard_product_to(&ifco[..hunits].to_vec(), &ifco[2 * hunits..3 * hunits].to_vec(), c);
+        Self::hadamard_product_to(&ifco[hunits..2 * hunits], c);
+        Self::add_hadamard_product_to(&ifco[..hunits], &ifco[2 * hunits..3 * hunits], c);
 
         let mut h = c.to_vec();
         let len = h.len();
         Self::tanh(&mut h, 0, len);
-        Self::hadamard_product_to(&ifco[3 * hunits..4 * hunits].to_vec(), &mut h);
+        Self::hadamard_product_to(&ifco[3 * hunits..4 * hunits], &mut h);
         // System.out.println(Arrays.toString(h));
         h
     }

@@ -373,7 +373,7 @@ impl RBBINodes {
     /// `printNode(RBBINode n)`: prints one node (debugging).
     pub(crate) fn print_node(&self, n: Option<NodeId>) {
         match n {
-            None => print!(" -- null --\n"),
+            None => println!(" -- null --"),
             Some(n) => {
                 let node = &self.nodes[n];
                 print_int(node.f_serial_num, 10);

@@ -1355,10 +1355,7 @@ impl UnicodeSet {
             return false;
         }
 
-        if !b.strings.is_subset(&self.strings) {
-            return false;
-        }
-        true
+        b.strings.is_subset(&self.strings)
     }
 
     /// `containsAll(String s)`: whether `s` can be built from the code
@@ -4146,9 +4143,9 @@ impl UnicodeMatcher for UnicodeSet {
             // about them here.  If we ever allow zero-length strings
             // we much check for them here.
             if self.contains_valid(ETHER as i32) {
-                return Ok(if incremental { U_PARTIAL_MATCH } else { U_MATCH });
+                Ok(if incremental { U_PARTIAL_MATCH } else { U_MATCH })
             } else {
-                return Ok(U_MISMATCH);
+                Ok(U_MISMATCH)
             }
         } else {
             if self.has_strings() {

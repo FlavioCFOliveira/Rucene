@@ -166,12 +166,12 @@ impl NumberPropertyMapper {
         // NOTE: Increments are handled in "Precision.constructCurrency()".
         if use_currency {
             if min_frac == -1 && max_frac == -1 {
-                min_frac = currency.get_default_fraction_digits_usage(currency_usage);
-                max_frac = currency.get_default_fraction_digits_usage(currency_usage);
+                min_frac = currency.get_default_fraction_digits_usage(currency_usage)?;
+                max_frac = currency.get_default_fraction_digits_usage(currency_usage)?;
             } else if min_frac == -1 {
-                min_frac = max_frac.min(currency.get_default_fraction_digits_usage(currency_usage));
+                min_frac = max_frac.min(currency.get_default_fraction_digits_usage(currency_usage)?);
             } else if max_frac == -1 {
-                max_frac = min_frac.max(currency.get_default_fraction_digits_usage(currency_usage));
+                max_frac = min_frac.max(currency.get_default_fraction_digits_usage(currency_usage)?);
             } else {
                 // No-op: user override for both minFrac and maxFrac
             }
@@ -189,7 +189,7 @@ impl NumberPropertyMapper {
                 max_frac
             };
             min_int = 0;
-            max_int = if max_int < 0 || max_int > RoundingUtils::MAX_INT_FRAC_SIG { -1 } else { max_int };
+            max_int = if !(0..=RoundingUtils::MAX_INT_FRAC_SIG).contains(&max_int) { -1 } else { max_int };
         } else {
             // Force a digit before the decimal point.
             min_frac = if min_frac < 0 { 0 } else { min_frac };
@@ -385,7 +385,7 @@ impl NumberPropertyMapper {
 
         if let Some(exported_properties) = exported_properties {
             exported_properties.set_currency(Some(currency.clone()));
-            exported_properties.set_math_context(Some(math_context.clone()));
+            exported_properties.set_math_context(Some(math_context));
             exported_properties.set_rounding_mode(Some(math_context.get_rounding_mode()));
             exported_properties.set_minimum_integer_digits(min_int);
             exported_properties.set_maximum_integer_digits(if max_int == -1 { i32::MAX } else { max_int });

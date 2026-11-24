@@ -110,11 +110,10 @@ impl StandardPlural {
                     return Some(StandardPlural::Zero);
                 }
             }
-            5 => {
-                if keyword == "other" {
+            5
+                if keyword == "other" => {
                     return Some(StandardPlural::Other);
                 }
-            }
             _ => {}
         }
         None

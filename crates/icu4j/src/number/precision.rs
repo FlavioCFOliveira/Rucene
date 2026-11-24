@@ -192,7 +192,7 @@ impl Precision {
     /// concrete class.
     pub(crate) fn construct(kind: PrecisionKind) -> Precision {
         Precision(Arc::new(PrecisionData {
-            math_context: DEFAULT_MATH_CONTEXT_UNLIMITED.clone(),
+            math_context: *DEFAULT_MATH_CONTEXT_UNLIMITED,
             trailing_zero_display: TrailingZeroDisplayCell::new(None),
             kind,
         }))
@@ -408,7 +408,7 @@ impl Precision {
             return self.clone();
         }
         let mut other = self.create_copy_data();
-        other.math_context = math_context.clone();
+        other.math_context = *math_context;
         Precision(Arc::new(other))
     }
 
@@ -416,7 +416,7 @@ impl Precision {
     /// with this object's `mathContext` and `trailingZeroDisplay`.
     fn create_copy_data(&self) -> PrecisionData {
         PrecisionData {
-            math_context: self.0.math_context.clone(),
+            math_context: self.0.math_context,
             trailing_zero_display: self.0.trailing_zero_display.clone(),
             kind: self.0.kind.clone(),
         }
@@ -632,12 +632,12 @@ impl Precision {
             PrecisionKind::Currency { usage } => *usage,
             _ => panic!("java.lang.AssertionError"),
         };
-        let increment_double = currency.get_rounding_increment_usage(usage);
+        let increment_double = currency.get_rounding_increment_usage(usage)?;
         let return_value = if increment_double != 0.0 {
             let increment = BigDecimal::value_of_double(increment_double)?;
             Self::construct_increment(&increment)?
         } else {
-            let min_max_frac = currency.get_default_fraction_digits_usage(usage);
+            let min_max_frac = currency.get_default_fraction_digits_usage(usage)?;
             Self::construct_fraction(min_max_frac, min_max_frac).into_precision()
         };
         Ok(return_value.with_mode(base.math_context()))
@@ -726,7 +726,7 @@ impl Precision {
     pub fn bogus_into(&self, precision: &Precision) -> Precision {
         assert!(matches!(self.0.kind, PrecisionKind::Bogus), "java.lang.ClassCastException");
         Precision(Arc::new(PrecisionData {
-            math_context: self.0.math_context.clone(),
+            math_context: self.0.math_context,
             trailing_zero_display: self.0.trailing_zero_display.clone(),
             kind: precision.0.kind.clone(),
         }))

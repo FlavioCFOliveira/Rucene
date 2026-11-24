@@ -74,10 +74,7 @@ impl DatPackageReader {
         // Check for 'b' or 'l' followed by '/'.
         let c = bytes.get_at(start + length);
         length += 1;
-        if (c != b'b' as i8 && c != b'l' as i8) || bytes.get_at(start + length) != b'/' as i8 {
-            return false;
-        }
-        true
+        !((c != b'b' as i8 && c != b'l' as i8) || bytes.get_at(start + length) != b'/' as i8)
     }
 
     /// `getData(ByteBuffer bytes, CharSequence key)`: the item `key` as a
@@ -581,9 +578,8 @@ impl ICUBinary {
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     eprintln!(
-                        "java.io.FileNotFoundException: {} ({})",
-                        path.display(),
-                        "No such file or directory"
+                        "java.io.FileNotFoundException: {} (No such file or directory)",
+                        path.display()
                     );
                 } else {
                     eprintln!("java.io.IOException: {e}");

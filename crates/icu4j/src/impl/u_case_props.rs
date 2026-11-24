@@ -1123,10 +1123,10 @@ impl UCaseProps {
                  */
                 if case_locale == Self::LOC_LITHUANIAN &&
                         /* base characters, find accents above */
-                        ((((c == 0x49 || c == 0x4a || c == 0x12e) &&
+                        (((c == 0x49 || c == 0x4a || c == 0x12e) &&
                             self.is_followed_by_more_above(reborrow(&mut iter))) ||
                         /* precomposed with accent above, no need to find one */
-                        (c == 0xcc || c == 0xcd || c == 0x128)))
+                        (c == 0xcc || c == 0xcd || c == 0x128))
                 {
                     /*
                         # Lithuanian

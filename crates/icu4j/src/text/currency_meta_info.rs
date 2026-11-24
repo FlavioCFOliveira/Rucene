@@ -12,6 +12,7 @@
 use std::fmt;
 use std::sync::{Arc, LazyLock};
 
+use rucene::error::Result;
 use rucene_queryparser::jdk::date::Date;
 
 use crate::r#impl::grego::Grego;
@@ -45,35 +46,39 @@ pub const DEFAULT_DIGITS: CurrencyDigits = CurrencyDigits { fraction_digits: 2, 
 /// methods; its data-backed subclass is
 /// [`ICUCurrencyMetaInfo`]. The statics are [`get_instance`],
 /// [`get_instance_no_substitute`] and [`has_data`].
+///
+/// The methods return `Result`: the unchecked exceptions of the resource data
+/// a subclass reads (`MissingResourceException`, ...) are their `Err` (crate
+/// convention, rmp #643).
 pub trait CurrencyMetaInfo: fmt::Debug + Send + Sync {
     /// Returns the properties of currencies that match the filter.
     /// Equivalent to `currencyInfo(CurrencyFilter)`.
-    fn currency_info(&self, _filter: &CurrencyFilter) -> Vec<CurrencyInfo> {
-        Vec::new()
+    fn currency_info(&self, _filter: &CurrencyFilter) -> Result<Vec<CurrencyInfo>> {
+        Ok(Vec::new())
     }
 
     /// Returns the ISO codes of currencies that match the filter.
     /// Equivalent to `currencies(CurrencyFilter)`.
-    fn currencies(&self, _filter: &CurrencyFilter) -> Vec<String> {
-        Vec::new()
+    fn currencies(&self, _filter: &CurrencyFilter) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     /// Returns the region codes of regions that match the filter.
     /// Equivalent to `regions(CurrencyFilter)`.
-    fn regions(&self, _filter: &CurrencyFilter) -> Vec<String> {
-        Vec::new()
+    fn regions(&self, _filter: &CurrencyFilter) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
 
     /// Returns the CurrencyDigits for the currency code. Equivalent to
     /// `currencyDigits(String)`.
-    fn currency_digits(&self, iso_code: &str) -> CurrencyDigits {
+    fn currency_digits(&self, iso_code: &str) -> Result<CurrencyDigits> {
         self.currency_digits_usage(iso_code, CurrencyUsage::Standard)
     }
 
     /// Returns the CurrencyDigits for the currency code with Context Usage.
     /// Equivalent to `currencyDigits(String, CurrencyUsage)`.
-    fn currency_digits_usage(&self, _iso_code: &str, _currency_usage: CurrencyUsage) -> CurrencyDigits {
-        DEFAULT_DIGITS
+    fn currency_digits_usage(&self, _iso_code: &str, _currency_usage: CurrencyUsage) -> Result<CurrencyDigits> {
+        Ok(DEFAULT_DIGITS)
     }
 }
 

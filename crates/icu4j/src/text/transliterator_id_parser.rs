@@ -377,11 +377,7 @@ impl TransliteratorIDParser {
 
         // Trailing unparsed text is a syntax error
         pos[0] = PatternProps::skip_white_space(id, pos[0]);
-        if pos[0] != id.len() as i32 {
-            return Ok(false);
-        }
-
-        Ok(true)
+        Ok(pos[0] == id.len() as i32)
     }
 
     /// `instantiateList(List<SingleID> ids)`: instantiates the single IDs,

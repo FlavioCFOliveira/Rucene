@@ -438,7 +438,7 @@ impl Trie2Writable {
         // fill around existing values if any, if(overwrite)
 
         // valid, uncompacted trie and valid arguments?
-        if start > 0x10ffff || start < 0 || end > 0x10ffff || end < 0 || start > end {
+        if !(0..=0x10ffff).contains(&start) || !(0..=0x10ffff).contains(&end) || start > end {
             return Err(LuceneError::illegal_argument("Invalid code point range."));
         }
         if !overwrite && value == self.initial_value {

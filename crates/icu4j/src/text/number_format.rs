@@ -475,10 +475,17 @@ pub trait NumberFormat: Format {
     /// Set a particular DisplayContext value in the formatter, such as
     /// CAPITALIZATION_FOR_STANDALONE. Equivalent to
     /// `setContext(DisplayContext)`.
-    fn set_context(&self, context: DisplayContext) {
+    ///
+    /// # Errors
+    ///
+    /// None here; an override's unchecked exceptions (such as
+    /// `RuleBasedNumberFormat`'s locale data and break iterator errors) are
+    /// its `Err` (crate convention, rmp #643).
+    fn set_context(&self, context: DisplayContext) -> Result<()> {
         if context.r#type() == display_context::Type::Capitalization {
             lock(self.number_format_base()).capitalization_setting = Some(context);
         }
+        Ok(())
     }
 
     /// Get the formatter's DisplayContext value for the specified
@@ -826,7 +833,7 @@ pub trait NumberFormat: Format {
         let result = self.parse(text, &mut parse_position)?;
         if parse_position.get_index() == 0 {
             return Err(rucene::util::extra::ParseException::error(
-                &format!("Unparseable number: \"{}\"", String::from_utf16_lossy(text)),
+                format!("Unparseable number: \"{}\"", String::from_utf16_lossy(text)),
                 parse_position.get_error_index(),
             ));
         }

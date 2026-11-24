@@ -1382,7 +1382,7 @@ impl Normalizer {
                 }
 
                 // push current level pointers
-                let st = stack1.get_or_insert_with(|| [(None, 0), (None, 0)]);
+                let st = stack1.get_or_insert([(None, 0), (None, 0)]);
                 st[0] = (Some(cs1.clone()), s1);
                 level1 += 1;
 
@@ -1429,7 +1429,7 @@ impl Normalizer {
                 }
 
                 // push current level pointers
-                let st = stack2.get_or_insert_with(|| [(None, 0), (None, 0)]);
+                let st = stack2.get_or_insert([(None, 0), (None, 0)]);
                 st[0] = (Some(cs2.clone()), s2);
                 level2 += 1;
 
@@ -1474,7 +1474,7 @@ impl Normalizer {
                     }
 
                     // push current level pointers
-                    let st = stack1.get_or_insert_with(|| [(None, 0), (None, 0)]);
+                    let st = stack1.get_or_insert([(None, 0), (None, 0)]);
                     st[level1 as usize] = (Some(cs1.clone()), s1);
                     level1 += 1;
 
@@ -1516,7 +1516,7 @@ impl Normalizer {
                     }
 
                     // push current level pointers
-                    let st = stack2.get_or_insert_with(|| [(None, 0), (None, 0)]);
+                    let st = stack2.get_or_insert([(None, 0), (None, 0)]);
                     st[level2 as usize] = (Some(cs2.clone()), s2);
                     level2 += 1;
 

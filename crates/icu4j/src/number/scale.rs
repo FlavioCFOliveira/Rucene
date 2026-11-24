@@ -51,13 +51,13 @@ impl Scale {
             magnitude,
             arbitrary: None,
             reciprocal: None,
-            mc: DEFAULT_MATH_CONTEXT_34_DIGITS.clone(),
+            mc: *DEFAULT_MATH_CONTEXT_34_DIGITS,
         }))
     }
 
     /// `Scale(int, BigDecimal)`.
     fn new(magnitude: i32, arbitrary: Option<BigDecimal>) -> Result<Scale> {
-        Self::with_mc(magnitude, arbitrary, DEFAULT_MATH_CONTEXT_34_DIGITS.clone())
+        Self::with_mc(magnitude, arbitrary, *DEFAULT_MATH_CONTEXT_34_DIGITS)
     }
 
     /// `Scale(int, BigDecimal, MathContext)`.
@@ -185,7 +185,7 @@ impl Scale {
         if self.0.mc.java_equals(mc) {
             return Ok(self.clone());
         }
-        Scale::with_mc(self.0.magnitude, self.0.arbitrary.clone(), mc.clone())
+        Scale::with_mc(self.0.magnitude, self.0.arbitrary.clone(), *mc)
     }
 
     /// Equivalent to `applyTo(DecimalQuantity)` (internal).

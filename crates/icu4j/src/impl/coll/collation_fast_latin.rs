@@ -133,7 +133,7 @@ impl CollationFastLatin {
         let c = c as i32;
         if c <= Self::LATIN_MAX {
             c
-        } else if Self::PUNCT_START <= c && c < Self::PUNCT_LIMIT {
+        } else if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c) {
             c - (Self::PUNCT_START - Self::LATIN_LIMIT)
         } else {
             // Not a fast Latin character.
@@ -260,11 +260,11 @@ impl CollationFastLatin {
                     if left_pair != 0 {
                         break;
                     }
-                    if c <= 0x39 && c >= 0x30 && (options & CollationSettings::NUMERIC) != 0 {
+                    if (0x30..=0x39).contains(&c) && (options & CollationSettings::NUMERIC) != 0 {
                         return Self::BAIL_OUT_RESULT;
                     }
                     left_pair = t(c);
-                } else if Self::PUNCT_START <= c && c < Self::PUNCT_LIMIT {
+                } else if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c) {
                     left_pair = t(c - Self::PUNCT_START + Self::LATIN_LIMIT);
                 } else {
                     left_pair = Self::lookup(table, c);
@@ -300,11 +300,11 @@ impl CollationFastLatin {
                     if right_pair != 0 {
                         break;
                     }
-                    if c <= 0x39 && c >= 0x30 && (options & CollationSettings::NUMERIC) != 0 {
+                    if (0x30..=0x39).contains(&c) && (options & CollationSettings::NUMERIC) != 0 {
                         return Self::BAIL_OUT_RESULT;
                     }
                     right_pair = t(c);
-                } else if Self::PUNCT_START <= c && c < Self::PUNCT_LIMIT {
+                } else if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c) {
                     right_pair = t(c - Self::PUNCT_START + Self::LATIN_LIMIT);
                 } else {
                     right_pair = Self::lookup(table, c);
@@ -369,7 +369,7 @@ impl CollationFastLatin {
                     left_index += 1;
                     if c <= Self::LATIN_MAX {
                         left_pair = t(c);
-                    } else if Self::PUNCT_START <= c && c < Self::PUNCT_LIMIT {
+                    } else if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c) {
                         left_pair = t(c - Self::PUNCT_START + Self::LATIN_LIMIT);
                     } else {
                         left_pair = Self::lookup(table, c);
@@ -398,7 +398,7 @@ impl CollationFastLatin {
                     right_index += 1;
                     if c <= Self::LATIN_MAX {
                         right_pair = t(c);
-                    } else if Self::PUNCT_START <= c && c < Self::PUNCT_LIMIT {
+                    } else if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c) {
                         right_pair = t(c - Self::PUNCT_START + Self::LATIN_LIMIT);
                     } else {
                         right_pair = Self::lookup(table, c);
@@ -658,7 +658,7 @@ impl CollationFastLatin {
 
     fn lookup(table: &[u16], c: i32) -> i32 {
         debug_assert!(c > Self::LATIN_MAX);
-        if Self::PUNCT_START <= c && c < Self::PUNCT_LIMIT {
+        if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c) {
             table[(c - Self::PUNCT_START + Self::LATIN_LIMIT) as usize] as i32
         } else if c == 0xfffe {
             Self::MERGE_WEIGHT
@@ -673,7 +673,7 @@ impl CollationFastLatin {
     /// consumed by a contraction.
     fn next_pair(table: &[u16], _c: i32, ce: i32, s16: &[u16], s_index: i32) -> i64 {
         let t = |i: i32| table[i as usize] as i32;
-        if ce >= Self::MIN_LONG || ce < Self::CONTRACTION {
+        if !(Self::CONTRACTION..Self::MIN_LONG).contains(&ce) {
             ce as i64 // simple or special mini CE
         } else if ce >= Self::EXPANSION {
             let index = Self::NUM_FAST_CHARS + (ce & Self::INDEX_MASK);
@@ -688,7 +688,7 @@ impl CollationFastLatin {
                 let next_index = s_index;
                 let mut c2 = s16[next_index as usize] as i32;
                 if c2 > Self::LATIN_MAX {
-                    if Self::PUNCT_START <= c2 && c2 < Self::PUNCT_LIMIT {
+                    if (Self::PUNCT_START..Self::PUNCT_LIMIT).contains(&c2) {
                         c2 = c2 - Self::PUNCT_START + Self::LATIN_LIMIT; // 2000..203F -> 0180..01BF
                     } else if c2 == 0xfffe || c2 == 0xffff {
                         c2 = -1; // U+FFFE & U+FFFF cannot occur in contractions.

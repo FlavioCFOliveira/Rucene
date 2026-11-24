@@ -382,10 +382,7 @@ impl CollationFastLatinBuilder {
             }
         }
         // No quaternary weights.
-        if ((self.ce0 | self.ce1) & Collation::QUATERNARY_MASK as i64) != 0 {
-            return false;
-        }
-        true
+        ((self.ce0 | self.ce1) & Collation::QUATERNARY_MASK as i64) == 0
     }
 
     fn get_ces_from_contraction_ce32(&mut self, data: &CollationData, mut ce32: i32) -> bool {
@@ -573,7 +570,7 @@ impl CollationFastLatinBuilder {
                     continue;
                 }
             }
-            if CollationFastLatin::MIN_LONG <= pri && pri <= CollationFastLatin::MAX_LONG {
+            if (CollationFastLatin::MIN_LONG..=CollationFastLatin::MAX_LONG).contains(&pri) {
                 debug_assert!(sec == CollationFastLatin::COMMON_SEC);
                 mini_ces[i as usize] = (pri | ter) as u16;
             } else {

@@ -502,7 +502,7 @@ fn internal_to_lower(
             prev = src_index;
         }
     }
-    append_unchanged(src, prev, src_index - prev, dest, options, edits.as_deref_mut())
+    append_unchanged(src, prev, src_index - prev, dest, options, edits)
 }
 
 fn internal_to_upper(case_locale: i32, options: i32, src: &[u16], dest: &mut Vec<u16>, mut edits: Option<&mut Edits>) -> Result<()> {
@@ -580,7 +580,7 @@ fn internal_to_upper(case_locale: i32, options: i32, src: &[u16], dest: &mut Vec
             prev = src_index;
         }
     }
-    append_unchanged(src, prev, src_index - prev, dest, options, edits.as_deref_mut())
+    append_unchanged(src, prev, src_index - prev, dest, options, edits)
 }
 
 impl CaseMapImpl {
@@ -912,7 +912,7 @@ fn maybe_title_dutch_ij(src: &[u16], c: i32, start: i32, segment_limit: i32, des
         }
         start += 1;
     }
-    append_unchanged(src, start, unchanged2, dest, options, edits.as_deref_mut())?;
+    append_unchanged(src, start, unchanged2, dest, options, edits)?;
     debug_assert!(start + unchanged2 == index);
     Ok(index)
 }

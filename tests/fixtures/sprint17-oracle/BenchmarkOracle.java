@@ -123,6 +123,7 @@ public class BenchmarkOracle {
       case "trec" -> trec(args, out);
       case "linedoc" -> linedoc(args, out);
       case "report" -> report(args, out);
+      case "collation" -> collation(args, out);
       default -> throw unknown(scenario);
     }
   }
@@ -321,5 +322,46 @@ public class BenchmarkOracle {
     return sb.toString();
   }
 
-
+  /**
+   * A run of an alg text whose analyzer is set by {@code NewCollationAnalyzer} (rmp #642): the
+   * masked RepSumByName report (as {@link #report}), the class of the run's analyzer, then the hex
+   * collation key of every further argument through it. The task's own {@code System.out} line
+   * ("Changed Analyzer to: ...") is not part of the dump.
+   */
+  static void collation(String[] args, PrintStream out) throws Exception {
+    PrintStream stdout = System.out;
+    System.setOut(new PrintStream(java.io.OutputStream.nullOutputStream()));
+    Benchmark b = new Benchmark(new StringReader(args[0]));
+    try {
+      b.execute();
+    } finally {
+      System.setOut(stdout);
+    }
+    Report rep = new SumByName(b.getRunData()).report();
+    out.println("outOf=" + rep.getOutOf() + " size=" + rep.getSize() + " reported=" + rep.getReported());
+    for (String line : rep.getText().split("\n", -1)) {
+      out.println(escape(maskReportLine(line)));
+    }
+    org.apache.lucene.analysis.Analyzer a = b.getRunData().getAnalyzer();
+    out.println("analyzer " + a.getClass().getName());
+    for (int i = 1; i < args.length; i++) {
+      try (org.apache.lucene.analysis.TokenStream ts = a.tokenStream("bogus", args[i])) {
+        org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute term =
+            ts.addAttribute(
+                org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute.class);
+        ts.reset();
+        StringBuilder sb = new StringBuilder();
+        while (ts.incrementToken()) {
+          org.apache.lucene.util.BytesRef bytes = term.getBytesRef();
+          sb.append(' ');
+          for (int j = 0; j < bytes.length; j++) {
+            sb.append(String.format("%02x", bytes.bytes[bytes.offset + j] & 0xff));
+          }
+        }
+        ts.end();
+        out.println(escape(args[i]) + sb);
+      }
+    }
+    b.getRunData().close();
+  }
 }

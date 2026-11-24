@@ -173,7 +173,7 @@ impl RBBITableBuilder {
         calc_last_pos(&mut rb.nodes, Some(cn));
         calc_follow_pos(&mut rb.nodes, Some(cn));
         if rb.f_debug_env.as_deref().is_some_and(|e| e.contains("pos")) {
-            print!("\n");
+            println!();
             print_pos_sets(&rb.nodes, Some(cn));
         }
 
@@ -948,17 +948,17 @@ impl RBBITableBuilder {
     /// `printStates()`: debug.
     pub(crate) fn print_states(&self, rb: &RBBIRuleBuilder) {
         let ncat = rb.set_builder().get_num_char_categories();
-        print!("state |           i n p u t     s y m b o l s \n");
+        println!("state |           i n p u t     s y m b o l s ");
         print!("      | Acc  LA    Tag");
         for c in 0..ncat {
             rbbi_node::print_int(c, 4);
         }
-        print!("\n");
+        println!();
         print!("      |---------------");
         for _ in 0..ncat {
             print!("----");
         }
-        print!("\n");
+        println!();
 
         for (n, sd) in self.f_d_states.iter().enumerate() {
             rbbi_node::print_int(n as i32, 5);
@@ -971,30 +971,30 @@ impl RBBITableBuilder {
             for c in 0..ncat as usize {
                 rbbi_node::print_int(sd.f_dtran[c], 4);
             }
-            print!("\n");
+            println!();
         }
         print!("\n\n");
     }
 
     /// `printReverseTable()`: debug.
     pub(crate) fn print_reverse_table(&self) {
-        print!("    Safe Reverse Table \n");
+        println!("    Safe Reverse Table ");
         let Some(safe) = self.f_safe_table.as_ref() else {
-            print!("   --- nullptr ---\n");
+            println!("   --- nullptr ---");
             return;
         };
         let num_char_categories = safe[0].len();
-        print!("state |           i n p u t     s y m b o l s \n");
+        println!("state |           i n p u t     s y m b o l s ");
         print!("      | Acc  LA    Tag");
         for c in 0..num_char_categories {
             print!(" {c:2}");
         }
-        print!("\n");
+        println!();
         print!("      |---------------");
         for _ in 0..num_char_categories {
             print!("---");
         }
-        print!("\n");
+        println!();
 
         for (n, row_array) in safe.iter().enumerate() {
             print!("  {n:3} | ");
@@ -1002,7 +1002,7 @@ impl RBBITableBuilder {
             for c in 0..num_char_categories {
                 print!(" {:2}", row_array[c]);
             }
-            print!("\n");
+            println!();
         }
         print!("\n\n");
     }
@@ -1012,8 +1012,8 @@ impl RBBITableBuilder {
         let mut next_record = 0usize;
         let tbl = &rb.f_rule_status_vals;
 
-        print!("index |  tags \n");
-        print!("-------------------\n");
+        println!("index |  tags ");
+        println!("-------------------");
 
         while next_record < tbl.len() {
             let this_record = next_record;
@@ -1022,7 +1022,7 @@ impl RBBITableBuilder {
             for &val in &tbl[this_record + 1..next_record] {
                 rbbi_node::print_int(val, 7);
             }
-            print!("\n");
+            println!();
         }
         print!("\n\n");
     }

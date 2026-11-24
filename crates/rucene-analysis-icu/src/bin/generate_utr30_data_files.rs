@@ -43,7 +43,8 @@
 //! #641, 2026-11-23). The request is the one `HttpURLConnection` sends for
 //! `GenerateUTR30DataFiles.openConnection`: method `GET`, `Cache-Control:
 //! no-cache` (`addRequestProperty`), `Pragma: no-cache` (`setUseCaches(false)`),
-//! `User-Agent: Java/<java.version>` of
+//! `Connection: keep-alive` (`Proxy-Connection` for plain HTTP through a
+//! proxy, `writeRequests`), `User-Agent: Java/<java.version>` of
 //! the reference JDK 25, `Accept: */*` and no `Accept-Encoding`
 //! (`HttpURLConnection`'s defaults); no proxy taken from the environment
 //! (`ProxySelector.getDefault()` reads only system properties, unset here);
@@ -583,6 +584,18 @@ fn open_connection(uri: &Uri) -> Result<UrlConnection> {
             // `setIfNotSet("Cache-Control", "no-cache")` (already set by
             // `addRequestProperty`) and `setIfNotSet("Pragma", "no-cache")`.
             .header("Pragma", "no-cache")
+            // `HttpURLConnection.writeRequests`: with `http.keepAlive` (default
+            // true), `setIfNotSet("Proxy-Connection", "keep-alive")` for a plain
+            // HTTP request through a proxy (not tunneling), else
+            // `setIfNotSet("Connection", "keep-alive")`.
+            .header(
+                if proxy.is_some() && url.protocol != "https" {
+                    "Proxy-Connection"
+                } else {
+                    "Connection"
+                },
+                "keep-alive",
+            )
             .call()
             .map_err(|e| transport_exception(e, &connect_host, url.protocol == "https"))?;
         let status = response.status().as_u16();

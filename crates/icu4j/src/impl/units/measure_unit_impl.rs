@@ -135,7 +135,7 @@ impl MeasureUnitImpl {
     pub fn take_reciprocal(&mut self) {
         self.identifier = None;
         for single_unit in self.single_units.iter_mut() {
-            single_unit.set_dimensionality(single_unit.get_dimensionality() * -1);
+            single_unit.set_dimensionality(-single_unit.get_dimensionality());
         }
     }
 

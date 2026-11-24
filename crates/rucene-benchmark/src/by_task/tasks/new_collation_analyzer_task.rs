@@ -25,10 +25,10 @@ use rucene::error::Result;
 use rucene_analysis_common::collation::collation_key_analyzer::CollationKeyAnalyzer;
 use rucene_analysis_common::jdk::collator::RuleBasedCollator;
 use rucene_analysis_common::jdk::locale::Locale;
+use rucene_analysis_icu::analysis::icu::icu_collation_key_analyzer::ICUCollationKeyAnalyzer;
 
 use crate::by_task::perf_run_data::PerfRunData;
 use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
-use crate::classes;
 use crate::jdk;
 
 /// Equivalent to `org.apache.lucene.benchmark.byTask.tasks.NewCollationAnalyzerTask.Implementation`
@@ -94,12 +94,20 @@ impl NewCollationAnalyzerTask {
 
     /// `createAnalyzer(Locale locale, Implementation impl)`: the analyzer
     /// class's `(Collator)` constructor over `Collator.getInstance(locale)`,
-    /// both found by name. The ICU classes (lucene/analysis/icu, icu4j) are
-    /// not part of this port's classpath, so `Class.forName` fails for them.
+    /// both found by name: `CollationKeyAnalyzer` over
+    /// `java.text.Collator.getInstance(locale)` for [`Implementation::Jdk`],
+    /// `ICUCollationKeyAnalyzer` over `com.ibm.icu.text.Collator.getInstance(locale)`
+    /// for [`Implementation::Icu`] (the reflective lookups resolve to these two
+    /// pairs, the only ones the enum names).
+    ///
+    /// The `icu4j` port takes its `java.util.Locale` from `rucene-queryparser`'s
+    /// emulation; the locale crosses over as its BCP 47 language tag, the form
+    /// `NewLocaleTask` builds it from (`new Locale.Builder().setLanguageTag(tag)`),
+    /// so the same `Locale.Builder` rebuilds it.
     ///
     /// # Errors
     ///
-    /// `ClassNotFoundException` for the ICU implementation.
+    /// The errors of loading the ICU collation data.
     pub(crate) fn create_analyzer(
         locale: &Locale,
         impl_: Implementation,
@@ -109,7 +117,13 @@ impl NewCollationAnalyzerTask {
                 let collator = RuleBasedCollator::get_instance(locale);
                 Ok(Arc::new(CollationKeyAnalyzer::new(&collator)))
             }
-            Implementation::Icu => Err(classes::class_not_found(impl_.collator_class_name())),
+            Implementation::Icu => {
+                let locale = rucene_queryparser::jdk::locale::Locale::builder_from_language_tag(
+                    &locale.to_language_tag(),
+                )?;
+                let collator = icu4j::text::collator::get_instance_locale(Some(&locale))?;
+                Ok(Arc::new(ICUCollationKeyAnalyzer::new(Arc::from(collator))))
+            }
         }
     }
 }

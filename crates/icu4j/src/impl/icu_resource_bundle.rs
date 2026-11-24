@@ -1456,7 +1456,7 @@ impl ICUResourceBundle {
     ///
     /// `IllegalArgumentException("variants is too long")` from the parser.
     pub fn get_parent_locale_id(name: &str, orig_name: &str, open_type: OpenType) -> Result<Option<String>> {
-        Ok(Self::get_parent_locale_id_impl(name, orig_name, open_type)?)
+        Self::get_parent_locale_id_impl(name, orig_name, open_type)
     }
 
     fn get_parent_locale_id_impl(name: &str, orig_name: &str, open_type: OpenType) -> Result<Option<String>> {

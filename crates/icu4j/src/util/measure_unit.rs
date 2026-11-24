@@ -1003,7 +1003,7 @@ impl MeasureUnitProxy {
 
 /// `DataOutput.writeUTF(String)`.
 fn write_utf(out: &mut DataOutputStream<'_>, s: Option<&str>) -> Result<()> {
-    let s = s.ok_or_else(|| LuceneError::null_pointer())?;
+    let s = s.ok_or_else(LuceneError::null_pointer)?;
     let mut bytes: Vec<u8> = Vec::new();
     for c in s.encode_utf16() {
         let c = c as u32;

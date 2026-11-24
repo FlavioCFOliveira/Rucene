@@ -337,8 +337,8 @@ impl Edits {
             // However, the result is observably different when
             // ab deletions meet bc insertions at the same intermediate-string index.
             // Some users expect the bc insertions to come first, so we fetch from bc first.
-            if bc_b_length == 0 {
-                if bc_has_next && {
+            if bc_b_length == 0
+                && bc_has_next && {
                     bc_has_next = bc_iter.next();
                     bc_has_next
                 } {
@@ -357,7 +357,6 @@ impl Edits {
                     }
                 }
                 // else see if the other iterator is done, too.
-            }
             if ab_b_length == 0 {
                 if ab_has_next && {
                     ab_has_next = ab_iter.next();

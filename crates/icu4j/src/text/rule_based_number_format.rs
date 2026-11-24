@@ -1808,20 +1808,19 @@ impl NumberFormat for RuleBasedNumberFormat {
     /// data and the sentence break iterator lazily. Equivalent to
     /// `setContext(DisplayContext context)`.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// The unchecked exceptions Java's `setContext` lets through (the
-    /// errors of the locale data and of the break iterator factory), as
-    /// panics carrying their text, the trait's signature being Java's
-    /// `void`.
-    fn set_context(&self, context: DisplayContext) {
+    /// errors of the locale data and of the break iterator factory); a
+    /// missing locale is Java's `NullPointerException`, a panic.
+    fn set_context(&self, context: DisplayContext) -> Result<()> {
         number_format::super_set_context(self.number_format_base(), context);
         let mut s = self.fields.lock();
         if !s.capitalization_info_is_set
             && (context == DisplayContext::CapitalizationForUiListOrMenu
                 || context == DisplayContext::CapitalizationForStandalone)
         {
-            Self::init_capitalization_context_info(&mut s).unwrap_or_else(|e| panic!("{e}"));
+            Self::init_capitalization_context_info(&mut s)?;
             s.capitalization_info_is_set = true;
         }
         if s.capitalization_brk_iter.is_none()
@@ -1830,11 +1829,12 @@ impl NumberFormat for RuleBasedNumberFormat {
                 || (context == DisplayContext::CapitalizationForStandalone && s.capitalization_for_stand_alone))
         {
             let iter = match &s.locale {
-                Some(locale) => break_iterator::get_sentence_instance_ulocale(locale).unwrap_or_else(|e| panic!("{e}")),
+                Some(locale) => break_iterator::get_sentence_instance_ulocale(locale)?,
                 None => panic!("{}", npe()),
             };
             s.capitalization_brk_iter = Some(Arc::new(Mutex::new(iter)));
         }
+        Ok(())
     }
 
     /// Returns the rounding mode. Equivalent to `getRoundingMode()`.

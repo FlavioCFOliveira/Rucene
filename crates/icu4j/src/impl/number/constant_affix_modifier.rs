@@ -71,7 +71,7 @@ impl Modifier for ConstantAffixModifier {
     fn apply(&self, output: &mut FormattedStringBuilder, left_index: i32, right_index: i32) -> Result<i32> {
         // Insert the suffix first since inserting the prefix will change the
         // rightIndex
-        let field = self.field.clone().map(FieldObject::Field);
+        let field = self.field.map(FieldObject::Field);
         let mut length = output.insert(right_index, &self.suffix, field.clone());
         length += output.insert(left_index, &self.prefix, field);
         Ok(length)

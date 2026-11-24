@@ -864,10 +864,7 @@ impl ULocale {
 
     fn get_fallback_string(fallback: &str) -> String {
         let ext_start = fallback.find('@').unwrap_or(fallback.len());
-        let mut last = match fallback[..ext_start].rfind('_') {
-            None => 0,
-            Some(l) => l,
-        };
+        let mut last = fallback[..ext_start].rfind('_').unwrap_or_default();
         if last > 0 || fallback[..ext_start].rfind('_').is_some() {
             // truncate empty segment
             while last > 0 {

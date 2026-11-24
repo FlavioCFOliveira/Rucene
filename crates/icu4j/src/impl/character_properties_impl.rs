@@ -93,7 +93,7 @@ impl CharacterPropertiesImpl {
     }
 
     fn get_int_prop_inclusions(inclusions: &mut [Option<Arc<UnicodeSet>>], prop: i32) -> Result<Arc<UnicodeSet>> {
-        debug_assert!(UProperty::INT_START <= prop && prop < UProperty::INT_LIMIT);
+        debug_assert!((UProperty::INT_START..UProperty::INT_LIMIT).contains(&prop));
         let incl_index = (ucp::SRC_COUNT + prop - UProperty::INT_START) as usize;
         if let Some(i) = &inclusions[incl_index] {
             return Ok(i.clone());
@@ -132,7 +132,7 @@ impl CharacterPropertiesImpl {
     /// errors of the property data.
     pub fn get_inclusions_for_property(prop: i32) -> Result<Arc<UnicodeSet>> {
         let mut g = lock();
-        if UProperty::INT_START <= prop && prop < UProperty::INT_LIMIT {
+        if (UProperty::INT_START..UProperty::INT_LIMIT).contains(&prop) {
             Self::get_int_prop_inclusions(&mut g, prop)
         } else {
             let src = UCharacterProperty::instance().get_source(prop);

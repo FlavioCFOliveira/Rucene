@@ -42,13 +42,13 @@ static MATH_CONTEXT_BY_ROUNDING_MODE_34_DIGITS: LazyLock<Vec<MathContext>> = Laz
 /// `DEFAULT_MATH_CONTEXT_UNLIMITED`: the unlimited context of
 /// [`RoundingUtils::DEFAULT_ROUNDING_MODE`].
 pub static DEFAULT_MATH_CONTEXT_UNLIMITED: LazyLock<MathContext> = LazyLock::new(|| {
-    MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[RoundingUtils::DEFAULT_ROUNDING_MODE.ordinal() as usize].clone()
+    MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[RoundingUtils::DEFAULT_ROUNDING_MODE.ordinal() as usize]
 });
 
 /// `DEFAULT_MATH_CONTEXT_34_DIGITS`: the 34-digit context at the ordinal of
 /// [`RoundingUtils::DEFAULT_ROUNDING_MODE`].
 pub static DEFAULT_MATH_CONTEXT_34_DIGITS: LazyLock<MathContext> = LazyLock::new(|| {
-    MATH_CONTEXT_BY_ROUNDING_MODE_34_DIGITS[RoundingUtils::DEFAULT_ROUNDING_MODE.ordinal() as usize].clone()
+    MATH_CONTEXT_BY_ROUNDING_MODE_34_DIGITS[RoundingUtils::DEFAULT_ROUNDING_MODE.ordinal() as usize]
 });
 
 /// Rounding helpers of the number formatting pipeline.
@@ -164,10 +164,10 @@ impl RoundingUtils {
     /// `getMathContextOrUnlimited(DecimalFormatProperties)`.
     pub fn get_math_context_or_unlimited(properties: &DecimalFormatProperties) -> MathContext {
         match properties.get_math_context() {
-            Some(math_context) => math_context.clone(),
+            Some(math_context) => *math_context,
             None => {
                 let rounding_mode = properties.get_rounding_mode().unwrap_or(RoundingMode::HalfEven);
-                MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[rounding_mode.ordinal() as usize].clone()
+                MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[rounding_mode.ordinal() as usize]
             }
         }
     }
@@ -176,10 +176,10 @@ impl RoundingUtils {
     /// to `getMathContextOr34Digits(DecimalFormatProperties)`.
     pub fn get_math_context_or_34_digits(properties: &DecimalFormatProperties) -> MathContext {
         match properties.get_math_context() {
-            Some(math_context) => math_context.clone(),
+            Some(math_context) => *math_context,
             None => {
                 let rounding_mode = properties.get_rounding_mode().unwrap_or(RoundingMode::HalfEven);
-                MATH_CONTEXT_BY_ROUNDING_MODE_34_DIGITS[rounding_mode.ordinal() as usize].clone()
+                MATH_CONTEXT_BY_ROUNDING_MODE_34_DIGITS[rounding_mode.ordinal() as usize]
             }
         }
     }
@@ -187,7 +187,7 @@ impl RoundingUtils {
     /// A math context with unlimited precision and the given rounding mode.
     /// Equivalent to `mathContextUnlimited(RoundingMode)`.
     pub fn math_context_unlimited(rounding_mode: RoundingMode) -> MathContext {
-        MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[rounding_mode.ordinal() as usize].clone()
+        MATH_CONTEXT_BY_ROUNDING_MODE_UNLIMITED[rounding_mode.ordinal() as usize]
     }
 
     /// Equivalent to `scaleFromProperties(DecimalFormatProperties)` (`None`

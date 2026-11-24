@@ -400,7 +400,7 @@ impl DecimalFormat {
         if serial_version > 5 {
             return Err(LuceneError::unchecked(
                 "java.io.IOException",
-                &format!("Cannot deserialize newer com.ibm.icu.text.DecimalFormat (v{serial_version})"),
+                format!("Cannot deserialize newer com.ibm.icu.text.DecimalFormat (v{serial_version})"),
             ));
         }
         if serialized_field_count > 1 {
@@ -516,7 +516,7 @@ impl DecimalFormat {
         })?;
         // Extract values from parent NumberFormat class.  Have to use reflection here.
         let base = lock(&self.base).clone();
-        let io = |e: LuceneError| LuceneError::unchecked("java.io.IOException", &e.to_string());
+        let io = |e: LuceneError| LuceneError::unchecked("java.io.IOException", e.to_string());
         self.set_grouping_used(base.grouping_used_field()).map_err(io)?;
         self.set_parse_integer_only(base.parse_integer_only_field()).map_err(io)?;
         self.set_maximum_integer_digits(base.maximum_integer_digits_field()).map_err(io)?;
@@ -578,7 +578,7 @@ impl DecimalFormat {
     ///
     /// `NullPointerException` for `None`; the errors of the refresh.
     pub fn set_positive_prefix(&self, prefix: Option<&[u16]>) -> Result<()> {
-        let prefix = prefix.ok_or_else(|| LuceneError::null_pointer())?;
+        let prefix = prefix.ok_or_else(LuceneError::null_pointer)?;
         self.update(|p| {
             p.set_positive_prefix(Some(prefix));
         })
@@ -601,7 +601,7 @@ impl DecimalFormat {
     ///
     /// `NullPointerException` for `None`; the errors of the refresh.
     pub fn set_negative_prefix(&self, prefix: Option<&[u16]>) -> Result<()> {
-        let prefix = prefix.ok_or_else(|| LuceneError::null_pointer())?;
+        let prefix = prefix.ok_or_else(LuceneError::null_pointer)?;
         self.update(|p| {
             p.set_negative_prefix(Some(prefix));
         })
@@ -624,7 +624,7 @@ impl DecimalFormat {
     ///
     /// `NullPointerException` for `None`; the errors of the refresh.
     pub fn set_positive_suffix(&self, suffix: Option<&[u16]>) -> Result<()> {
-        let suffix = suffix.ok_or_else(|| LuceneError::null_pointer())?;
+        let suffix = suffix.ok_or_else(LuceneError::null_pointer)?;
         self.update(|p| {
             p.set_positive_suffix(Some(suffix));
         })
@@ -647,7 +647,7 @@ impl DecimalFormat {
     ///
     /// `NullPointerException` for `None`; the errors of the refresh.
     pub fn set_negative_suffix(&self, suffix: Option<&[u16]>) -> Result<()> {
-        let suffix = suffix.ok_or_else(|| LuceneError::null_pointer())?;
+        let suffix = suffix.ok_or_else(LuceneError::null_pointer)?;
         self.update(|p| {
             p.set_negative_suffix(Some(suffix));
         })
@@ -1428,7 +1428,7 @@ impl DecimalFormat {
     /// Equivalent to the package-private `setPropertiesFromPattern(String,
     /// int)`.
     fn set_properties_from_pattern(s: &mut State, pattern: Option<&[u16]>, ignore_rounding: i32) -> Result<()> {
-        let pattern = pattern.ok_or_else(|| LuceneError::null_pointer())?;
+        let pattern = pattern.ok_or_else(LuceneError::null_pointer)?;
         PatternStringParser::parse_to_existing_properties_ignore(Some(pattern), &mut s.properties, ignore_rounding)
     }
 

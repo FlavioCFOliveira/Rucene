@@ -528,10 +528,10 @@ impl RBBISetBuilder {
                         rbbi_node::print_hex(t.f_end_char, 0);
                     }
                 }
-                print!("\n");
+                println!();
             }
         }
-        print!("\n");
+        println!();
     }
 
     /// `printSets()`: debug.
@@ -544,12 +544,12 @@ impl RBBISetBuilder {
             print!("  {set_name}");
             print!("   ");
             print!("{}", rbbi_node::text_string(&rb.nodes[uset_node].f_text));
-            print!("\n");
+            println!();
             if let Some(l) = rb.nodes[uset_node].f_left_child {
                 rb.nodes.print_tree(l, true);
             }
         }
-        print!("\n");
+        println!();
     }
 }
 

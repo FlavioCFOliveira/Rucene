@@ -102,14 +102,14 @@ impl RBBISymbolTable {
             print!("  {}  ", String::from_utf16_lossy(&s.key));
             print!("  RBBINode@{}  ", nodes[s.val].f_serial_num);
             print!("{}", text_string(&nodes[child(nodes[s.val].f_left_child)].f_text));
-            print!("\n");
+            println!();
         }
 
         println!("\nParsed Variable Definitions\n");
         for s in &syms {
             print!("{}", String::from_utf16_lossy(&s.key));
             nodes.print_tree(child(nodes[s.val].f_left_child), true);
-            print!("\n");
+            println!();
         }
     }
 }

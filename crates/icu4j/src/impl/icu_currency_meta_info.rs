@@ -31,13 +31,6 @@ const EVERYTHING: i32 = i32::MAX;
 /// `MASK` (private): the low 32 bits of a `long`.
 const MASK: i64 = 4294967295;
 
-/// The result of a resource access in a method whose Java signature
-/// declares no exception: an unchecked exception of the resource code
-/// surfaces as a panic carrying its text.
-fn unchecked<T>(r: Result<T>) -> T {
-    r.unwrap_or_else(|e| panic!("{e}"))
-}
-
 /// A non-`null` bundle (Java's dereference of the result of `at(...)`).
 fn non_null(b: Option<Arc<ICUResourceBundle>>) -> Arc<ICUResourceBundle> {
     b.unwrap_or_else(|| panic!("{}", npe()))
@@ -46,9 +39,10 @@ fn non_null(b: Option<Arc<ICUResourceBundle>>) -> Arc<ICUResourceBundle> {
 /// ICU's currency meta info data.
 ///
 /// Equivalent to `com.ibm.icu.impl.ICUCurrencyMetaInfo` (a
-/// `CurrencyMetaInfo`). The trait's methods are infallible, as their Java
-/// signatures: an unchecked exception of the resource data surfaces as a
-/// panic carrying its text.
+/// `CurrencyMetaInfo`). An unchecked exception of the resource data
+/// (`MissingResourceException`, ...) is the `Err` of the trait's methods (crate
+/// convention, rmp #643); a dereference of a missing table stays Java's
+/// implicit `NullPointerException`, a panic.
 #[derive(Debug)]
 pub struct ICUCurrencyMetaInfo {
     /// `regionInfo`: the `CurrencyMap` table (`None` is Java's `null`).
@@ -84,7 +78,7 @@ impl ICUCurrencyMetaInfo {
     }
 
     /// `collect(Collector<T> collector, CurrencyFilter filter)` (private).
-    fn collect<T>(&self, collector: &mut dyn Collector<T>, filter: &CurrencyFilter) -> Vec<T> {
+    fn collect<T>(&self, collector: &mut dyn Collector<T>, filter: &CurrencyFilter) -> Result<Vec<T>> {
         // We rely on the fact that the data lists the regions in order, and the
         // priorities in order within region.  This means we don't need
         // to sort the results to ensure the ordering matches the spec.
@@ -106,31 +100,31 @@ impl ICUCurrencyMetaInfo {
         if needed != 0 {
             let region_info = self.region_info.as_ref().unwrap_or_else(|| panic!("{}", npe()));
             if let Some(region) = &filter.region {
-                if let Some(b) = unchecked(region_info.find_with_fallback(region)) {
-                    self.collect_region(collector, filter, needed, &b);
+                if let Some(b) = region_info.find_with_fallback(region)? {
+                    self.collect_region(collector, filter, needed, &b)?;
                 }
             } else {
                 for i in 0..region_info.get_size() {
-                    let b = non_null(unchecked(region_info.at(i)));
-                    self.collect_region(collector, filter, needed, &b);
+                    let b = non_null(region_info.at(i)?);
+                    self.collect_region(collector, filter, needed, &b)?;
                 }
             }
         }
 
-        collector.get_list()
+        Ok(collector.get_list())
     }
 
     /// `collectRegion(Collector<T> collector, CurrencyFilter filter, int
     /// needed, ICUResourceBundle b)` (private).
-    fn collect_region<T>(&self, collector: &mut dyn Collector<T>, filter: &CurrencyFilter, needed: i32, b: &Arc<ICUResourceBundle>) {
+    fn collect_region<T>(&self, collector: &mut dyn Collector<T>, filter: &CurrencyFilter, needed: i32, b: &Arc<ICUResourceBundle>) -> Result<()> {
         let region = b.get_key().map(str::to_string);
         if needed == REGION {
             collector.collect(b.get_key().map(str::to_string), None, 0, 0, -1, false);
-            return;
+            return Ok(());
         }
 
         for i in 0..b.get_size() {
-            let r = non_null(unchecked(b.at(i)));
+            let r = non_null(b.at(i)?);
             if r.get_size() == 0 {
                 // AQ[0] is an empty array instead of a table, so the bundle is null.
                 // There's no data here, so we skip this entirely.
@@ -143,8 +137,8 @@ impl ICUCurrencyMetaInfo {
             let mut tender = true;
 
             if (needed & CURRENCY) != 0 {
-                let curr_bundle = non_null(unchecked(r.at_key("id")));
-                let c = to_rust_string(&unchecked(curr_bundle.get_string()));
+                let curr_bundle = non_null(r.at_key("id")?);
+                let c = to_rust_string(&curr_bundle.get_string()?);
                 if let Some(fc) = &filter.currency {
                     if *fc != c {
                         continue;
@@ -154,8 +148,8 @@ impl ICUCurrencyMetaInfo {
             }
 
             if (needed & DATE) != 0 {
-                from = self.get_date(unchecked(r.at_key("from")), i64::MIN, false);
-                to = self.get_date(unchecked(r.at_key("to")), i64::MAX, true);
+                from = self.get_date(r.at_key("from")?, i64::MIN, false)?;
+                to = self.get_date(r.at_key("to")?, i64::MAX, true)?;
                 // In the data, to is always > from.  This means that when we have a range
                 // from == to, the comparisons below will always do the right thing, despite
                 // the range being technically empty.  It really should be [from, from+1) but
@@ -168,10 +162,10 @@ impl ICUCurrencyMetaInfo {
                 }
             }
             if (needed & TENDER) != 0 {
-                let tender_bundle = unchecked(r.at_key("tender"));
+                let tender_bundle = r.at_key("tender")?;
                 tender = match tender_bundle {
                     None => true,
-                    Some(t) => unchecked(t.get_string()) == crate::jdk::units("true"),
+                    Some(t) => t.get_string()? == crate::jdk::units("true"),
                 };
                 if filter.tender_only && !tender {
                     continue;
@@ -181,53 +175,54 @@ impl ICUCurrencyMetaInfo {
             // data lists elements in priority order, so 'i' suffices
             collector.collect(region.clone(), currency, from, to, i, tender);
         }
+        Ok(())
     }
 
     /// `getDate(ICUResourceBundle b, long defaultValue, boolean endOfDay)`
     /// (private): the date of a two-int vector, `default_value` without
     /// one.
-    fn get_date(&self, b: Option<Arc<ICUResourceBundle>>, default_value: i64, _end_of_day: bool) -> i64 {
+    fn get_date(&self, b: Option<Arc<ICUResourceBundle>>, default_value: i64, _end_of_day: bool) -> Result<i64> {
         match b {
-            None => default_value,
+            None => Ok(default_value),
             Some(b) => {
-                let values = unchecked(b.get_int_vector());
-                (i64::from(values[0]) << 32) | (i64::from(values[1]) & MASK)
+                let values = b.get_int_vector()?;
+                Ok((i64::from(values[0]) << 32) | (i64::from(values[1]) & MASK))
             }
         }
     }
 }
 
 impl CurrencyMetaInfo for ICUCurrencyMetaInfo {
-    fn currency_info(&self, filter: &CurrencyFilter) -> Vec<CurrencyInfo> {
+    fn currency_info(&self, filter: &CurrencyFilter) -> Result<Vec<CurrencyInfo>> {
         self.collect(&mut InfoCollector::default(), filter)
     }
 
-    fn currencies(&self, filter: &CurrencyFilter) -> Vec<String> {
+    fn currencies(&self, filter: &CurrencyFilter) -> Result<Vec<String>> {
         self.collect(&mut CurrencyCollector::default(), filter)
     }
 
-    fn regions(&self, filter: &CurrencyFilter) -> Vec<String> {
+    fn regions(&self, filter: &CurrencyFilter) -> Result<Vec<String>> {
         self.collect(&mut RegionCollector::default(), filter)
     }
 
-    fn currency_digits(&self, iso_code: &str) -> CurrencyDigits {
+    fn currency_digits(&self, iso_code: &str) -> Result<CurrencyDigits> {
         self.currency_digits_usage(iso_code, CurrencyUsage::Standard)
     }
 
-    fn currency_digits_usage(&self, iso_code: &str, currency_purpose: CurrencyUsage) -> CurrencyDigits {
+    fn currency_digits_usage(&self, iso_code: &str, currency_purpose: CurrencyUsage) -> Result<CurrencyDigits> {
         let digit_info = self.digit_info.as_ref().unwrap_or_else(|| panic!("{}", npe()));
-        let b = match unchecked(digit_info.find_with_fallback(iso_code)) {
+        let b = match digit_info.find_with_fallback(iso_code)? {
             Some(b) => b,
-            None => non_null(unchecked(digit_info.find_with_fallback("DEFAULT"))),
+            None => non_null(digit_info.find_with_fallback("DEFAULT")?),
         };
-        let data = unchecked(b.get_int_vector());
-        if currency_purpose == CurrencyUsage::Cash {
+        let data = b.get_int_vector()?;
+        Ok(if currency_purpose == CurrencyUsage::Cash {
             CurrencyDigits::new(data[2], data[3])
         } else if currency_purpose == CurrencyUsage::Standard {
             CurrencyDigits::new(data[0], data[1])
         } else {
             CurrencyDigits::new(data[0], data[1])
-        }
+        })
     }
 }
 

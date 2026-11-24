@@ -2857,7 +2857,7 @@ impl UCharacter {
 
     /// `isISOControl(int ch)`.
     pub fn is_iso_control(ch: i32) -> bool {
-        ch >= 0 && ch <= APPLICATION_PROGRAM_COMMAND && ((ch <= UNIT_SEPARATOR) || (ch >= DELETE))
+        (0..=APPLICATION_PROGRAM_COMMAND).contains(&ch) && ((ch <= UNIT_SEPARATOR) || (ch >= DELETE))
     }
 
     /// `isLetter(int ch)`.
@@ -3023,12 +3023,12 @@ impl UCharacter {
 
     /// `isSupplementary(int ch)`.
     pub fn is_supplementary(ch: i32) -> bool {
-        ch >= Self::SUPPLEMENTARY_MIN_VALUE && ch <= Self::MAX_VALUE
+        (Self::SUPPLEMENTARY_MIN_VALUE..=Self::MAX_VALUE).contains(&ch)
     }
 
     /// `isBMP(int ch)`.
     pub fn is_bmp(ch: i32) -> bool {
-        ch >= 0 && ch <= LAST_CHAR_MASK
+        (0..=LAST_CHAR_MASK).contains(&ch)
     }
 
     /// `isPrintable(int ch)`.
@@ -3242,8 +3242,7 @@ impl UCharacter {
             || property == UProperty::TRAIL_CANONICAL_COMBINING_CLASS)
             && value >= Self::get_int_property_min_value(UProperty::CANONICAL_COMBINING_CLASS)
             && value <= Self::get_int_property_max_value(UProperty::CANONICAL_COMBINING_CLASS)
-            && name_choice >= 0
-            && name_choice < NameChoice::COUNT
+            && (0..NameChoice::COUNT).contains(&name_choice)
         {
             // this is hard coded for the valid cc
             // because PropertyValueAliases.txt does not contain all of them
@@ -3661,7 +3660,7 @@ impl UCharacter {
 
     /// `isValidCodePoint(int cp)`.
     pub fn is_valid_code_point(cp: i32) -> bool {
-        cp >= 0 && cp <= Self::MAX_CODE_POINT
+        (0..=Self::MAX_CODE_POINT).contains(&cp)
     }
 
     /// `isSupplementaryCodePoint(int cp)`.

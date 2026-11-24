@@ -397,7 +397,7 @@ impl BigDecimal {
         // strip leading zeros/dot (leave final if all 0's)
         {
             let mut i = offset;
-            while i <= last - 1 {
+            while i < last {
                 let si = at(i);
                 if si == b'0' as u16 {
                     offset += 1;
@@ -478,7 +478,7 @@ impl BigDecimal {
                 this.form = MathContext::SCIENTIFIC as i8;
                 // 1999.06.29 check for overflow
                 let mag = (this.exp + this.mant.len() as i32) - 1; // true exponent in scientific notation
-                if (mag < MIN_EXP) | (mag > MAX_EXP) {
+                if !(MIN_EXP..=MAX_EXP).contains(&mag) {
                     return Err(bad(inchars));
                 }
             }
@@ -1271,7 +1271,7 @@ impl BigDecimal {
     /// non-zero: ...`.
     pub fn byte_value_exact(&self) -> Result<i8> {
         let num = self.int_value_exact()?; // will check decimal part too
-        if (num > 127) | (num < -128) {
+        if !(-128..=127).contains(&num) {
             return Err(arith(format!("Conversion overflow: {self}")));
         }
         Ok(num as i8)
@@ -1778,7 +1778,7 @@ impl BigDecimal {
     /// non-zero: ...`.
     pub fn short_value_exact(&self) -> Result<i16> {
         let num = self.int_value_exact()?; // will check decimal part too
-        if (num > 32767) | (num < -32768) {
+        if !(-32768..=32767).contains(&num) {
             return Err(arith(format!("Conversion overflow: {self}")));
         }
         Ok(num as i16)
@@ -2490,7 +2490,7 @@ impl BigDecimal {
                 }
                 /* check for overflow */
                 mag -= 1;
-                if (mag < MIN_EXP) | (mag > MAX_EXP) {
+                if !(MIN_EXP..=MAX_EXP).contains(&mag) {
                     // possible reprieve if form is engineering
                     if self.form as i32 == MathContext::ENGINEERING {
                         let mut sig = mag % 3; // leftover

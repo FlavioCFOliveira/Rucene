@@ -1021,8 +1021,8 @@ impl CollationDataBuilder {
         }
         self.unsafe_backward_set.freeze();
 
-        data.ce32s = Arc::from(&self.ce32s.get_buffer()[..]);
-        data.ces = Arc::from(&self.ce64s.get_buffer()[..]);
+        data.ce32s = Arc::from(self.ce32s.get_buffer());
+        data.ces = Arc::from(self.ce64s.get_buffer());
         data.contexts = Arc::from(&self.contexts[..]);
 
         data.base = self.base.clone();

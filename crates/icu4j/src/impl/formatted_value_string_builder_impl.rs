@@ -121,7 +121,7 @@ impl FormattedValueStringBuilderImpl {
             let new_field = SpanFieldPlaceholder {
                 span_field: Some(span_field),
                 normal_field: old_field,
-                value: value.clone(),
+                value: value,
                 start,
                 length: end - start,
             };
@@ -333,7 +333,7 @@ impl FormattedValueStringBuilderImpl {
                 if matches(cfpos, span_field, ph.value.as_ref()) {
                     field_start = i - self_.zero;
                     let end = field_start + ph.length;
-                    cfpos.set_state(Some(span_field), ph.value.clone(), field_start, end);
+                    cfpos.set_state(Some(span_field), ph.value, field_start, end);
                     return true;
                 } else if ph.normal_field.is_some_and(|f| same_attribute(f, &list_formatter::field::ELEMENT)) {
                     // Special handling for ULISTFMT_ELEMENT_FIELD

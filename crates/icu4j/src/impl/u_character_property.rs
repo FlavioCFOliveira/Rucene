@@ -291,8 +291,8 @@ impl BinaryProperty {
             }
             BinKind::PosixXdigit => {
                 /* check ASCII and Fullwidth ASCII a-fA-F */
-                if (c <= 0x66 && c >= 0x41 && (c <= 0x46 || c >= 0x61))
-                    || (c >= 0xff21 && c <= 0xff46 && (c <= 0xff26 || c >= 0xff41))
+                if ((0x41..=0x66).contains(&c) && (c <= 0x46 || c >= 0x61))
+                    || ((0xff21..=0xff46).contains(&c) && (c <= 0xff26 || c >= 0xff41))
                 {
                     return true;
                 }
@@ -1068,7 +1068,7 @@ impl UCharacterProperty {
 
     /// `hasBinaryProperty(int c, int which)`.
     pub fn has_binary_property(&self, c: i32, which: i32) -> bool {
-        if which < UProperty::BINARY_START || UProperty::BINARY_LIMIT <= which {
+        if !(UProperty::BINARY_START..UProperty::BINARY_LIMIT).contains(&which) {
             // not a known binary property
             false
         } else {
@@ -1084,7 +1084,7 @@ impl UCharacterProperty {
     /// `getIntPropertyValue(int c, int which)`.
     pub fn get_int_property_value(&self, c: i32, which: i32) -> i32 {
         if which < UProperty::INT_START {
-            if UProperty::BINARY_START <= which && which < UProperty::BINARY_LIMIT {
+            if (UProperty::BINARY_START..UProperty::BINARY_LIMIT).contains(&which) {
                 return if self.bin_props[which as usize].contains(self, c) { 1 } else { 0 };
             }
         } else if which < UProperty::INT_LIMIT {
@@ -1098,7 +1098,7 @@ impl UCharacterProperty {
     /// `getIntPropertyMaxValue(int which)`.
     pub fn get_int_property_max_value(&self, which: i32) -> i32 {
         if which < UProperty::INT_START {
-            if UProperty::BINARY_START <= which && which < UProperty::BINARY_LIMIT {
+            if (UProperty::BINARY_START..UProperty::BINARY_LIMIT).contains(&which) {
                 return 1; // maximum true for all binary properties
             }
         } else if which < UProperty::INT_LIMIT {

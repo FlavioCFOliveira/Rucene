@@ -422,3 +422,111 @@ fn benchmark_spellout_oracle() {
         &diffs[..diffs.len().min(5)]
     );
 }
+
+/// The words whose collation keys `benchmark_collation_icu_oracle` dumps.
+const COLLATION_WORDS: [&str; 10] = [
+    "foobar",
+    "Müller",
+    "Mueller",
+    "côte",
+    "coté",
+    "Ärger",
+    "Zebra",
+    "ångström",
+    "日本語",
+    "Ölberg",
+];
+
+/// `NewCollationAnalyzer(impl:icu)` (rmp #642): for each locale, an alg in the
+/// shape of `conf/collation.alg` (`NewLocale`, `NewCollationAnalyzer(impl:icu)`,
+/// then `ReadTokens` over the Reuters lines) gives the same masked
+/// RepSumByName report and the same analyzer and collation keys as Lucene's
+/// `ICUCollationKeyAnalyzer` (`BenchmarkOracle.collation`).
+#[test]
+fn benchmark_collation_icu_oracle() {
+    sprint17_oracle::pin_tests_seed();
+    let reuters = manifest().join("tests/resources/by_task/reuters.first20.lines.txt");
+    for locale in [
+        "fr",
+        "de",
+        "uk",
+        "en",
+        "en-US",
+        "nn-NO",
+        "zh-Hant-TW",
+        "ja",
+        "ar",
+        "ROOT",
+    ] {
+        let work = WorkDir::new("s17b-collation");
+        let alg = format!(
+            "work.dir={}\ndirectory=ByteBuffersDirectory\nprint.props=false\n\
+             content.source=org.apache.lucene.benchmark.byTask.feeds.LineDocSource\n\
+             content.source.encoding=UTF-8\ndoc.tokenized=false\ndoc.body.tokenized=true\n\
+             docs.file={}\ncontent.source.forever=false\nlog.step=-1\n\
+             {{ \"Rounds\"\n  -NewLocale({locale})\n  -NewCollationAnalyzer(impl:icu)\n  ResetInputs\n  \
+             {{ \"ICU\" {{ ReadTokens > : * ResetInputs }} : 2\n  NewRound\n}} : 1\n",
+            abs(work.path()).replace('\\', "/"),
+            abs(&reuters).replace('\\', "/")
+        );
+        let mut args: Vec<&str> = vec![&alg];
+        args.extend(COLLATION_WORDS);
+        let java = sprint17_oracle::run(Module::Benchmark, "collation", SEED, &args);
+
+        let b = Benchmark::new(&alg).unwrap();
+        b.execute().unwrap();
+        let stats: Vec<TaskStats> = b
+            .get_run_data()
+            .get_points()
+            .task_stats()
+            .iter()
+            .map(|s| s.lock().unwrap().clone())
+            .collect();
+        let rep = RepSumByNameTask::new(Arc::clone(b.get_run_data()))
+            .unwrap()
+            .report_sum_by_name(&stats)
+            .unwrap();
+        let mut out = format!(
+            "outOf={} size={} reported={}\n",
+            rep.get_out_of(),
+            rep.get_size(),
+            rep.get_reported()
+        );
+        for line in rep.get_text().split('\n') {
+            out.push_str(&escape(&mask_report_line(line)));
+            out.push('\n');
+        }
+        let a = b.get_run_data().get_analyzer().expect("the run's analyzer");
+        out.push_str(&format!("analyzer {}\n", a.java_class_name()));
+        for word in COLLATION_WORDS {
+            let ts = a
+                .token_stream(
+                    "bogus",
+                    Box::new(rucene::analysis::StringCharReader::new(word)),
+                )
+                .unwrap();
+            let mut ts = ts.borrow_mut();
+            ts.attribute_source_mut()
+                .add_attribute_interface::<dyn rucene::analysis::tokenattributes::TermToBytesRefAttribute>()
+                .unwrap();
+            ts.reset().unwrap();
+            let mut keys = String::new();
+            while ts.increment_token().unwrap() {
+                let bytes = ts
+                    .attribute_source()
+                    .get_attribute_interface::<dyn rucene::analysis::tokenattributes::TermToBytesRefAttribute>()
+                    .unwrap()
+                    .get_bytes_ref();
+                keys.push(' ');
+                for b in &bytes.bytes[bytes.offset..bytes.offset + bytes.length] {
+                    keys.push_str(&format!("{b:02x}"));
+                }
+            }
+            ts.end().unwrap();
+            ts.close().unwrap();
+            out.push_str(&format!("{}{keys}\n", escape(word)));
+        }
+        b.get_run_data().close().unwrap();
+        sprint17_oracle::assert_same(&java, &out);
+    }
+}
