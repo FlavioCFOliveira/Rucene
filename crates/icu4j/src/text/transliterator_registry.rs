@@ -5,9 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rucene::error::Result;
+use rucene::error::{LuceneError, Result};
 use rucene::util::java_collections::{JavaHashCode, JavaObjectHashMap};
 
 use crate::jdk::{to_rust_string, units};
@@ -337,14 +338,176 @@ pub(crate) struct TransliteratorRegistry {
     /// owned by this object. We use a Vector instead of a Hashtable
     /// because we want the variants to be ordered (in the order they were
     /// registered).
-    spec_dag: Mutex<
-        JavaObjectHashMap<
-            CaseInsensitiveString,
-            JavaObjectHashMap<CaseInsensitiveString, Vec<CaseInsensitiveString>>,
-        >,
-    >,
+    spec_dag: Mutex<Counted<JavaObjectHashMap<CaseInsensitiveString, Targets>>>,
     /// Vector of public full IDs (a `LinkedHashSet`).
-    available_ids: Mutex<(Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)>,
+    available_ids: Mutex<Counted<(Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)>>,
+    /// The source of the `id` and `mod_count` stamps of the [`Counted`]
+    /// collections above.
+    stamps: AtomicU64,
+}
+
+/// One of the registry's `java.util` collections, with the state its
+/// fail-fast iterators read (`HashMap.modCount`, `ArrayList.modCount`).
+///
+/// `mod_count` is redrawn from [`TransliteratorRegistry::stamp`] at each
+/// structural modification (Java increments it), so an [`IDEnumeration`]
+/// detects a modification by inequality, as `HashIterator.nextNode` and
+/// `ArrayList.Itr.checkForComodification` do. `id` is drawn once, when the
+/// Java object is created: an inner `targets` map or `variants` list that
+/// `removeSTV` detached from `specDAG` and `registerSTV` re-created is a
+/// different object, which an enumeration created over the old one must not
+/// read.
+#[derive(Debug)]
+struct Counted<C> {
+    coll: C,
+    id: u64,
+    mod_count: u64,
+}
+
+impl<C> Counted<C> {
+    fn new(coll: C, stamp: u64) -> Self {
+        Self {
+            coll,
+            id: stamp,
+            mod_count: stamp,
+        }
+    }
+}
+
+/// `specDAG.get(source)`: target => variants.
+type Targets = Counted<JavaObjectHashMap<CaseInsensitiveString, Variants>>;
+
+/// `targets.get(target)`: the variants, in registration order.
+type Variants = Counted<Vec<CaseInsensitiveString>>;
+
+/// The collection a [`IDEnumeration`] iterates
+/// (`Collections.enumeration(c)`).
+#[derive(Debug)]
+enum Backing {
+    /// `availableIDs` (a `LinkedHashSet`).
+    AvailableIds,
+    /// `specDAG.keySet()`.
+    Sources,
+    /// `specDAG.get(source).keySet()`; `id` is that map's.
+    Targets {
+        source: CaseInsensitiveString,
+        id: u64,
+    },
+    /// `specDAG.get(source).get(target)` (an `ArrayList`); `id` is that
+    /// list's.
+    Variants {
+        source: CaseInsensitiveString,
+        target: CaseInsensitiveString,
+        id: u64,
+    },
+}
+
+/// The iterator `Collections.enumeration(c)` wraps: `c.iterator()`, taken
+/// when the enumeration is created.
+#[derive(Debug)]
+struct LiveIterator {
+    backing: Backing,
+    /// The collection's `mod_count` at creation (`expectedModCount`).
+    expected_mod_count: u64,
+    /// The elements at creation. For the `HashMap` and `LinkedHashSet`
+    /// iterators this is exactly what Java reads: `hasNext()` tests the next
+    /// node computed by the previous step, and `next()` fails before reading
+    /// a node once the map was modified, so every element returned is the
+    /// one at `cursor` of this list.
+    elements: Vec<CaseInsensitiveString>,
+    /// `cursor`: the index of the next element.
+    cursor: usize,
+}
+
+/// An enumeration over the visible IDs, sources, targets or variants of a
+/// [`TransliteratorRegistry`], each returned as its string.
+///
+/// Equivalent to `com.ibm.icu.text.TransliteratorRegistry.IDEnumeration`
+/// over the `Collections.enumeration(c)` the `getAvailable*` methods pass it
+/// (TransliteratorRegistry.java:396-468), or over `null` (empty).
+///
+/// The view is live, as in Java: it reads the registry's collection at each
+/// step and fails with `java.util.ConcurrentModificationException` once that
+/// collection was structurally modified after the enumeration was created.
+/// It does not hold the registry's lock between steps, as Java's iterator
+/// holds no `synchronizedMap` monitor: `AnyTransliterator.register`
+/// registers transliterators while it enumerates.
+#[derive(Debug)]
+pub struct IDEnumeration<'a> {
+    registry: &'a TransliteratorRegistry,
+    /// `en`; `None` for `new IDEnumeration(null)`.
+    en: Option<LiveIterator>,
+}
+
+impl IDEnumeration<'_> {
+    /// `hasMoreElements()`: `en != null && en.hasMoreElements()`.
+    pub fn has_more_elements(&self) -> bool {
+        let Some(en) = &self.en else {
+            return false;
+        };
+        match &en.backing {
+            // `ArrayList.Itr.hasNext()`: `cursor != size`, on the live list.
+            // A list `removeSTV` detached was emptied first and is never
+            // reached again, so its size is 0.
+            Backing::Variants { source, target, id } => {
+                let dag = self.registry.spec_dag();
+                let size = dag
+                    .coll
+                    .get(source)
+                    .and_then(|targets| targets.coll.get(target))
+                    .filter(|variants| variants.id == *id)
+                    .map_or(0, |variants| variants.coll.len());
+                en.cursor != size
+            }
+            // `HashMap.HashIterator.hasNext()` / `LinkedHashMap.
+            // LinkedHashIterator.hasNext()`: `next != null`.
+            _ => en.cursor < en.elements.len(),
+        }
+    }
+
+    /// `nextElement()`: `en.nextElement().getString()`.
+    ///
+    /// # Errors
+    ///
+    /// * `java.lang.NullPointerException` for an enumeration over `null`.
+    /// * `java.util.ConcurrentModificationException` when the collection was
+    ///   structurally modified since the enumeration was created
+    ///   (`HashIterator.nextNode`, `ArrayList.Itr.next`).
+    /// * `java.util.NoSuchElementException` past the last element.
+    pub fn next_element(&mut self) -> Result<Vec<u16>> {
+        let Some(en) = &mut self.en else {
+            return Err(LuceneError::null_pointer_with_message(
+                "Cannot invoke \"java.util.Enumeration.nextElement()\" because \"this.en\" is null",
+            ));
+        };
+        if self.registry.mod_count_of(&en.backing) != Some(en.expected_mod_count) {
+            return Err(LuceneError::unchecked_with_message(
+                "java.util.ConcurrentModificationException",
+                None,
+            ));
+        }
+        let Some(element) = en.elements.get(en.cursor) else {
+            return Err(LuceneError::unchecked_with_message(
+                "java.util.NoSuchElementException",
+                None,
+            ));
+        };
+        en.cursor += 1;
+        Ok(element.get_string().to_vec())
+    }
+}
+
+impl Iterator for IDEnumeration<'_> {
+    type Item = Result<Vec<u16>>;
+
+    /// `hasMoreElements()`, then `nextElement()`.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.has_more_elements() {
+            Some(self.next_element())
+        } else {
+            None
+        }
+    }
 }
 
 impl fmt::Debug for TransliteratorRegistry {
@@ -359,8 +522,57 @@ impl TransliteratorRegistry {
     pub fn new() -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
-            spec_dag: Mutex::new(JavaObjectHashMap::new()),
-            available_ids: Mutex::new((Vec::new(), HashSet::new())),
+            spec_dag: Mutex::new(Counted::new(JavaObjectHashMap::new(), 0)),
+            available_ids: Mutex::new(Counted::new((Vec::new(), HashSet::new()), 1)),
+            stamps: AtomicU64::new(2),
+        }
+    }
+
+    /// A fresh `id` / `mod_count` stamp for a [`Counted`] collection.
+    /// `Relaxed`: only uniqueness is needed; every read and write of the
+    /// stamped collections happens under their `Mutex`.
+    fn stamp(&self) -> u64 {
+        self.stamps.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The current `mod_count` of the collection `backing` names, or `None`
+    /// when that Java object is no longer reachable (`removeSTV` detached it
+    /// after emptying it, a structural modification).
+    fn mod_count_of(&self, backing: &Backing) -> Option<u64> {
+        match backing {
+            Backing::AvailableIds => Some(self.available_ids().mod_count),
+            Backing::Sources => Some(self.spec_dag().mod_count),
+            Backing::Targets { source, id } => self
+                .spec_dag()
+                .coll
+                .get(source)
+                .filter(|targets| targets.id == *id)
+                .map(|targets| targets.mod_count),
+            Backing::Variants { source, target, id } => self
+                .spec_dag()
+                .coll
+                .get(source)
+                .and_then(|targets| targets.coll.get(target))
+                .filter(|variants| variants.id == *id)
+                .map(|variants| variants.mod_count),
+        }
+    }
+
+    /// `new IDEnumeration(Collections.enumeration(c))`.
+    fn enumeration(
+        &self,
+        backing: Backing,
+        expected_mod_count: u64,
+        elements: Vec<CaseInsensitiveString>,
+    ) -> IDEnumeration<'_> {
+        IDEnumeration {
+            registry: self,
+            en: Some(LiveIterator {
+                backing,
+                expected_mod_count,
+                elements,
+                cursor: 0,
+            }),
         }
     }
 
@@ -371,19 +583,14 @@ impl TransliteratorRegistry {
     #[allow(clippy::type_complexity)]
     fn spec_dag(
         &self,
-    ) -> MutexGuard<
-        '_,
-        JavaObjectHashMap<
-            CaseInsensitiveString,
-            JavaObjectHashMap<CaseInsensitiveString, Vec<CaseInsensitiveString>>,
-        >,
-    > {
+    ) -> MutexGuard<'_, Counted<JavaObjectHashMap<CaseInsensitiveString, Targets>>> {
         self.spec_dag.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[allow(clippy::type_complexity)]
     fn available_ids(
         &self,
-    ) -> MutexGuard<'_, (Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)> {
+    ) -> MutexGuard<'_, Counted<(Vec<CaseInsensitiveString>, HashSet<CaseInsensitiveString>)>> {
         self.available_ids.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -501,60 +708,78 @@ impl TransliteratorRegistry {
         self.registry_map().remove(&ci);
         self.remove_stv(&stv.0, &stv.1, &stv.2);
         let mut ids = self.available_ids();
-        if ids.1.remove(&ci) {
-            ids.0.retain(|x| *x != ci);
+        if ids.coll.1.remove(&ci) {
+            ids.coll.0.retain(|x| *x != ci);
+            ids.mod_count = self.stamp();
         }
         Ok(())
     }
 
-    /// `getAvailableIDs()`: the visible IDs, in registration order
-    /// (Java returns an `Enumeration` over them).
-    ///
-    /// Java wraps the enumeration of each `getAvailable*` method in a
-    /// `TransliteratorRegistry.IDEnumeration`, which maps each
-    /// `CaseInsensitiveString` to its string and is empty when created over
-    /// `null`; that is the `map` of these methods and their empty result.
-    pub fn get_available_ids(&self) -> Vec<Vec<u16>> {
-        self.available_ids()
-            .0
-            .iter()
-            .map(|c| c.get_string().to_vec())
-            .collect()
+    /// `getAvailableIDs()`: an enumeration over the visible IDs, in
+    /// registration order (`availableIDs` is a `LinkedHashSet`).
+    pub fn get_available_ids(&self) -> IDEnumeration<'_> {
+        let ids = self.available_ids();
+        let (mod_count, elements) = (ids.mod_count, ids.coll.0.clone());
+        drop(ids);
+        self.enumeration(Backing::AvailableIds, mod_count, elements)
     }
 
-    /// `getAvailableSources()`: the sources of the visible IDs, in Java's
-    /// `HashMap` iteration order.
-    pub fn get_available_sources(&self) -> Vec<Vec<u16>> {
-        self.spec_dag()
-            .keys()
-            .map(|c| c.get_string().to_vec())
-            .collect()
+    /// `getAvailableSources()`: an enumeration over the sources of the
+    /// visible IDs, in Java's `HashMap` iteration order.
+    pub fn get_available_sources(&self) -> IDEnumeration<'_> {
+        let dag = self.spec_dag();
+        let (mod_count, elements) = (dag.mod_count, dag.coll.keys().cloned().collect());
+        drop(dag);
+        self.enumeration(Backing::Sources, mod_count, elements)
     }
 
-    /// `getAvailableTargets(String source)`: the targets of the given
-    /// source, in Java's `HashMap` iteration order.
-    pub fn get_available_targets(&self, source: &[u16]) -> Vec<Vec<u16>> {
+    /// `getAvailableTargets(String source)`: an enumeration over the
+    /// targets of the given source, in Java's `HashMap` iteration order;
+    /// empty (`new IDEnumeration(null)`) for an unknown source.
+    pub fn get_available_targets(&self, source: &[u16]) -> IDEnumeration<'_> {
         let cisrc = CaseInsensitiveString::new(source.to_vec());
         let dag = self.spec_dag();
-        match dag.get(&cisrc) {
-            None => Vec::new(),
-            Some(targets) => targets.keys().map(|c| c.get_string().to_vec()).collect(),
-        }
+        let Some(targets) = dag.coll.get(&cisrc) else {
+            return IDEnumeration {
+                registry: self,
+                en: None,
+            };
+        };
+        let (id, mod_count) = (targets.id, targets.mod_count);
+        let elements = targets.coll.keys().cloned().collect();
+        drop(dag);
+        self.enumeration(Backing::Targets { source: cisrc, id }, mod_count, elements)
     }
 
-    /// `getAvailableVariants(String source, String target)`: the variants of
-    /// the given source and target, in registration order.
-    pub fn get_available_variants(&self, source: &[u16], target: &[u16]) -> Vec<Vec<u16>> {
+    /// `getAvailableVariants(String source, String target)`: an
+    /// enumeration over the variants of the given source and target, in
+    /// registration order; empty (`new IDEnumeration(null)`) for an unknown
+    /// source or target.
+    pub fn get_available_variants(&self, source: &[u16], target: &[u16]) -> IDEnumeration<'_> {
         let cisrc = CaseInsensitiveString::new(source.to_vec());
         let citrg = CaseInsensitiveString::new(target.to_vec());
         let dag = self.spec_dag();
-        let Some(targets) = dag.get(&cisrc) else {
-            return Vec::new();
+        let Some(variants) = dag
+            .coll
+            .get(&cisrc)
+            .and_then(|targets| targets.coll.get(&citrg))
+        else {
+            return IDEnumeration {
+                registry: self,
+                en: None,
+            };
         };
-        match targets.get(&citrg) {
-            None => Vec::new(),
-            Some(variants) => variants.iter().map(|c| c.get_string().to_vec()).collect(),
-        }
+        let (id, mod_count, elements) = (variants.id, variants.mod_count, variants.coll.clone());
+        drop(dag);
+        self.enumeration(
+            Backing::Variants {
+                source: cisrc,
+                target: citrg,
+                id,
+            },
+            mod_count,
+            elements,
+        )
     }
 
     //----------------------------------------------------------------------
@@ -617,14 +842,16 @@ impl TransliteratorRegistry {
         if visible {
             self.register_stv(source, target, variant);
             let mut ids = self.available_ids();
-            if ids.1.insert(ci_id.clone()) {
-                ids.0.push(ci_id);
+            if ids.coll.1.insert(ci_id.clone()) {
+                ids.coll.0.push(ci_id);
+                ids.mod_count = self.stamp();
             }
         } else {
             self.remove_stv(source, target, variant);
             let mut ids = self.available_ids();
-            if ids.1.remove(&ci_id) {
-                ids.0.retain(|x| *x != ci_id);
+            if ids.coll.1.remove(&ci_id) {
+                ids.coll.0.retain(|x| *x != ci_id);
+                ids.mod_count = self.stamp();
             }
         }
     }
@@ -641,23 +868,29 @@ impl TransliteratorRegistry {
         let citrg = CaseInsensitiveString::new(target.to_vec());
         let civar = CaseInsensitiveString::new(variant.to_vec());
         let mut dag = self.spec_dag();
-        if dag.get(&cisrc).is_none() {
-            dag.insert(cisrc.clone(), JavaObjectHashMap::new());
+        if dag.coll.get(&cisrc).is_none() {
+            let targets = Counted::new(JavaObjectHashMap::new(), self.stamp());
+            dag.coll.insert(cisrc.clone(), targets);
+            dag.mod_count = self.stamp();
         }
-        let targets = dag.get_mut(&cisrc).expect("inserted above");
-        if targets.get(&citrg).is_none() {
-            targets.insert(citrg.clone(), Vec::new());
+        let targets = dag.coll.get_mut(&cisrc).expect("inserted above");
+        if targets.coll.get(&citrg).is_none() {
+            targets
+                .coll
+                .insert(citrg.clone(), Counted::new(Vec::new(), self.stamp()));
+            targets.mod_count = self.stamp();
         }
-        let variants = targets.get_mut(&citrg).expect("inserted above");
+        let variants = targets.coll.get_mut(&citrg).expect("inserted above");
         // assert(NO_VARIANT == "");
         // We add the variant string.  If it is the special "no variant"
         // string, that is, the empty string, we add it at position zero.
-        if !variants.contains(&civar) {
+        if !variants.coll.contains(&civar) {
             if !variant.is_empty() {
-                variants.push(civar);
+                variants.coll.push(civar);
             } else {
-                variants.insert(0, civar);
+                variants.coll.insert(0, civar);
             }
+            variants.mod_count = self.stamp();
         }
     }
 
@@ -670,19 +903,23 @@ impl TransliteratorRegistry {
         let citrg = CaseInsensitiveString::new(target.to_vec());
         let civar = CaseInsensitiveString::new(variant.to_vec());
         let mut dag = self.spec_dag();
-        let Some(targets) = dag.get_mut(&cisrc) else {
+        let dag = &mut *dag;
+        let Some(targets) = dag.coll.get_mut(&cisrc) else {
             return; // should never happen for valid s-t/v
         };
-        let Some(variants) = targets.get_mut(&citrg) else {
+        let Some(variants) = targets.coll.get_mut(&citrg) else {
             return; // should never happen for valid s-t/v
         };
-        if let Some(i) = variants.iter().position(|v| *v == civar) {
-            variants.remove(i);
+        if let Some(i) = variants.coll.iter().position(|v| *v == civar) {
+            variants.coll.remove(i);
+            variants.mod_count = self.stamp();
         }
-        if variants.is_empty() {
-            targets.remove(&citrg); // should delete variants
-            if targets.is_empty() {
-                dag.remove(&cisrc); // should delete targets
+        if variants.coll.is_empty() {
+            targets.coll.remove(&citrg); // should delete variants
+            targets.mod_count = self.stamp();
+            if targets.coll.is_empty() {
+                dag.coll.remove(&cisrc); // should delete targets
+                dag.mod_count = self.stamp();
             }
         }
     }

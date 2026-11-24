@@ -34,7 +34,7 @@ enum ModelIndex {
 
 impl ModelIndex {
     /// `getValue()`.
-    fn get_value(self) -> usize {
+    fn get_value(self) -> i32 {
         match self {
             ModelIndex::kUWStart => 0,
             ModelIndex::kBWStart => 6,
@@ -192,8 +192,10 @@ impl MlBreakEngine {
         boundary: &mut Vec<i32>,
     ) {
         let mut score = self.f_negative_sum;
-        let feature = |group: ModelIndex, i: usize, from: i32, to: i32| -> i32 {
-            *self.f_model[group.get_value() + i]
+        // `fModel.get(ModelIndex.kXXStart.getValue() + i)`: an `int` sum used
+        // as the list index.
+        let feature = |group: ModelIndex, i: i32, from: i32, to: i32| -> i32 {
+            *self.f_model[(group.get_value() + i) as usize]
                 .get(&input_str[from as usize..to as usize])
                 .unwrap_or(&0)
         };
@@ -207,12 +209,8 @@ impl MlBreakEngine {
                 } else {
                     num_code_units
                 };
-                score = score.wrapping_add(feature(
-                    ModelIndex::kUWStart,
-                    i as usize,
-                    index_list[start],
-                    end,
-                ));
+                score =
+                    score.wrapping_add(feature(ModelIndex::kUWStart, i, index_list[start], end));
             }
         }
         for i in 0..3 {
@@ -224,12 +222,8 @@ impl MlBreakEngine {
                 } else {
                     num_code_units
                 };
-                score = score.wrapping_add(feature(
-                    ModelIndex::kBWStart,
-                    i as usize,
-                    index_list[start],
-                    end,
-                ));
+                score =
+                    score.wrapping_add(feature(ModelIndex::kBWStart, i, index_list[start], end));
             }
         }
         for i in 0..4 {
@@ -242,12 +236,8 @@ impl MlBreakEngine {
                 } else {
                     num_code_units
                 };
-                score = score.wrapping_add(feature(
-                    ModelIndex::kTWStart,
-                    i as usize,
-                    index_list[start],
-                    end,
-                ));
+                score =
+                    score.wrapping_add(feature(ModelIndex::kTWStart, i, index_list[start], end));
             }
         }
         if score > 0 {

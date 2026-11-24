@@ -32,6 +32,7 @@ use crate::text::titlecase_transliterator::TitlecaseTransliterator;
 use crate::text::transform::Transform;
 use crate::text::transliterator_id_parser::TransliteratorIDParser;
 use crate::text::transliterator_parser::TransliteratorParser;
+pub use crate::text::transliterator_registry::IDEnumeration;
 use crate::text::transliterator_registry::TransliteratorRegistry;
 use crate::text::unescape_transliterator::UnescapeTransliterator;
 use crate::text::unicode_filter::UnicodeFilter;
@@ -1515,26 +1516,27 @@ pub fn unregister(id: &[u16]) -> Result<()> {
     registry().remove(id)
 }
 
-/// `getAvailableIDs()`: the programmatic identifiers of the currently
-/// registered (visible) transliterators, in registration order.
-pub fn get_available_ids() -> Vec<Vec<u16>> {
+/// `getAvailableIDs()`: an enumeration over the programmatic identifiers
+/// of the currently registered (visible) transliterators, in registration
+/// order. Live and fail-fast, as Java's (see [`IDEnumeration`]).
+pub fn get_available_ids() -> IDEnumeration<'static> {
     registry().get_available_ids()
 }
 
-/// `getAvailableSources()`: all available source names.
-pub fn get_available_sources() -> Vec<Vec<u16>> {
+/// `getAvailableSources()`: an enumeration over all available source names.
+pub fn get_available_sources() -> IDEnumeration<'static> {
     registry().get_available_sources()
 }
 
-/// `getAvailableTargets(String source)`: all available target names for
-/// the given source.
-pub fn get_available_targets(source: &[u16]) -> Vec<Vec<u16>> {
+/// `getAvailableTargets(String source)`: an enumeration over all available
+/// target names for the given source.
+pub fn get_available_targets(source: &[u16]) -> IDEnumeration<'static> {
     registry().get_available_targets(source)
 }
 
-/// `getAvailableVariants(String source, String target)`: all available
-/// variant names for the given source and target.
-pub fn get_available_variants(source: &[u16], target: &[u16]) -> Vec<Vec<u16>> {
+/// `getAvailableVariants(String source, String target)`: an enumeration over
+/// all available variant names for the given source and target.
+pub fn get_available_variants(source: &[u16], target: &[u16]) -> IDEnumeration<'static> {
     registry().get_available_variants(source, target)
 }
 

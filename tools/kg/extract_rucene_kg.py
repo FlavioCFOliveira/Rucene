@@ -170,7 +170,11 @@ def mask(text: str) -> str:
 
 VIS = r"(?:pub(?:\s*\([^)]*\))?\s+)?"
 
-RE_MOD = re.compile(r"^[ \t]*" + VIS + r"mod\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+# A module named by a raw identifier (`pub mod r#impl { ... }`, icu4j's
+# `com.ibm.icu.impl`) is captured without its `r#`: module paths are built from
+# file paths (`module_path_for`: `src/impl/x.rs` is `<crate>::impl::x`), which
+# never carry the prefix.
+RE_MOD = re.compile(r"^[ \t]*" + VIS + r"mod\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)", re.M)
 RE_TYPE = re.compile(
     r"^[ \t]*"
     + VIS
@@ -771,7 +775,9 @@ def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool,
     `crate` e o identificador do crate do ficheiro, para onde `crate::` aponta;
     um caminho que comeca pelo identificador de outro crate do workspace
     resolve nesse crate."""
-    segs = path.split("::")
+    # `crate::r#impl::x`: a raw identifier names the module `impl`, which is
+    # how `mod_to_file` (built from file paths) spells it (rmp #634).
+    segs = [s[2:] if s.startswith("r#") else s for s in path.split("::")]
     if not segs:
         return None
     head = segs[0]
@@ -820,7 +826,7 @@ def resolve_use(path: str, base_path: str, mod_to_file: dict, is_test: bool,
 # parser did not already record for the same file. Expansion is compiled with
 # `cfg(test)` off, so it contributes production types only.
 
-RE_EXP_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*\{")
+RE_EXP_MOD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_]\w*)\s*\{")
 RE_EXP_TYPE = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|trait|union)\s+([A-Za-z_]\w*)"
 )
@@ -986,7 +992,10 @@ def parse_expanded_records(text: str, crate: str = CRATE):
 
     def classify(header):
         h = " ".join(header.split())
-        m = re.search(r"\bmod\s+([A-Za-z_]\w*)\s*$", h)
+        # `r#` dropped as in `RE_MOD`: without it `mod r#impl {` read as an
+        # anonymous block, and every item under it lost the `impl` segment and
+        # fell back to the crate root file (rmp #634).
+        m = re.search(r"\bmod\s+(?:r#)?([A-Za-z_]\w*)\s*$", h)
         if m:
             return ("mod", m.group(1))
         m = re.search(r"\b(struct|enum|union)\s+([A-Za-z_]\w*)", h)

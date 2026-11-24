@@ -188,12 +188,14 @@ impl AnyTransliterator {
         let mut seen: HashMap<Vec<u16>, HashSet<Vec<u16>>> = HashMap::new();
 
         for source in registry.get_available_sources() {
+            let source = source?;
             // Ignore the "Any" source
             if equals_ignore_case(&source, &units(ANY)) {
                 continue;
             }
 
             for target in registry.get_available_targets(&source) {
+                let target = target?;
                 // Get the script code for the target.  If not a script, ignore.
                 let target_script = Self::script_name_to_code(&target)?;
                 if target_script == UScript::INVALID_CODE {
@@ -203,6 +205,7 @@ impl AnyTransliterator {
                 let seen_variants = seen.entry(target.clone()).or_default();
 
                 for variant in registry.get_available_variants(&source, &target) {
+                    let variant = variant?;
                     // Only process each target/variant pair once
                     if seen_variants.contains(&variant) {
                         continue;
