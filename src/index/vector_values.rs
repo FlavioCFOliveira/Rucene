@@ -382,6 +382,19 @@ pub trait KnnVectorValues: Send + Sync {
         None
     }
 
+    /// This instance as a
+    /// [`HasIndexSlice`](crate::codecs::lucene95::HasIndexSlice), when its
+    /// class implements that interface.
+    ///
+    /// Answers Java's `vectorValues instanceof HasIndexSlice`
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:52, 72, 92, 112`): a Rust
+    /// trait object cannot be tested for a different trait, so a class that
+    /// implements `HasIndexSlice` returns `Some(self)`. The default, `None`,
+    /// is the `false` of every other class.
+    fn as_has_index_slice(&self) -> Option<&dyn crate::codecs::lucene95::HasIndexSlice> {
+        None
+    }
+
     /// Returns the vector byte length.
     fn vector_byte_length(&self) -> i32 {
         self.dimension() * self.encoding().byte_size()

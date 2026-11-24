@@ -25,7 +25,7 @@ use crate::util::java_collections::{JavaHashMap, JavaHashSet, JavaStringMap};
 
 use crate::index::documents_writer::{DeleteNode, DocumentsWriter, FlushNotifications, MAX_DOCS};
 use crate::index::field_infos::FieldNumbers;
-use crate::index::index_commit::IndexCommit;
+use crate::index::index_commit::{IndexCommit, TwoPhaseCommit};
 use crate::index::index_file_deleter::{IndexFileDeleter, WRITE_LOCK_NAME};
 use crate::index::index_reader::IndexReader;
 use crate::index::index_writer_config::{IndexWriterConfig, LiveIndexWriterConfig, OpenMode};
@@ -5771,6 +5771,23 @@ impl MergeContext for LockedMergeContext<'_> {
 
     fn get_info_stream(&self) -> Arc<dyn InfoStream> {
         Arc::clone(&self.writer.info_stream)
+    }
+}
+
+/// `IndexWriter implements TwoPhaseCommit` (`IndexWriter.java:198-199`): the
+/// three methods are the writer's own public `prepareCommit()`, `commit()` and
+/// `rollback()`, so this impl only forwards to the inherent methods.
+impl TwoPhaseCommit for IndexWriter {
+    fn prepare_commit(&self) -> Result<i64> {
+        IndexWriter::prepare_commit(self)
+    }
+
+    fn commit(&self) -> Result<i64> {
+        IndexWriter::commit(self)
+    }
+
+    fn rollback(&self) -> Result<()> {
+        IndexWriter::rollback(self)
     }
 }
 

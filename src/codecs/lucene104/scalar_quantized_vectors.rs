@@ -18,7 +18,7 @@ use crate::codecs::knn_vectors::{
     MergedVectorValues,
 };
 use crate::codecs::lucene90::indexed_disi::IndexedDISI;
-use crate::codecs::lucene95::{HasIndexSlice, OrdToDocDISIReaderConfiguration};
+use crate::codecs::lucene95::{HasIndexSlice, IndexSliceRef, OrdToDocDISIReaderConfiguration};
 use crate::codecs::lucene99::flat_vectors_format::{
     sparse_accept_ords, EmptyOffHeapFloatVectorValues,
 };
@@ -568,8 +568,8 @@ impl QuantizedByteVectorValues for OffHeapScalarQuantizedVectorValues {
 /// Equivalent to `OffHeapScalarQuantizedVectorValues.getSlice()`, which the
 /// class inherits from `HasIndexSlice`.
 impl HasIndexSlice for OffHeapScalarQuantizedVectorValues {
-    fn get_slice(&self) -> Option<&dyn IndexInput> {
-        Some(self.slice.as_ref())
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>> {
+        Some(IndexSliceRef::Borrowed(self.slice.as_ref()))
     }
 }
 
@@ -742,9 +742,31 @@ impl OffHeapScalarQuantizedFloatVectorValues {
     }
 }
 
+/// `OffHeapScalarQuantizedFloatVectorValues implements HasIndexSlice`
+/// (`OffHeapScalarQuantizedFloatVectorValues.java:55-56`), for the dense and
+/// sparse subclasses alike; the empty one is the shared
+/// `EmptyOffHeapFloatVectorValues`, whose slice is `null` as here.
+impl HasIndexSlice for OffHeapScalarQuantizedFloatVectorValues {
+    /// Equivalent to `OffHeapScalarQuantizedFloatVectorValues.getSlice()`
+    /// (`OffHeapScalarQuantizedFloatVectorValues.java:173-176`): the slice the
+    /// quantized vectors are read from, handed back through its lock.
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>> {
+        let guard = self
+            .slice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(IndexSliceRef::Locked(guard))
+    }
+}
+
 impl KnnVectorValues for OffHeapScalarQuantizedFloatVectorValues {
     fn dimension(&self) -> i32 {
         self.dimension
+    }
+
+    /// `OffHeapScalarQuantizedFloatVectorValues implements HasIndexSlice`.
+    fn as_has_index_slice(&self) -> Option<&dyn HasIndexSlice> {
+        Some(self)
     }
 
     fn size(&self) -> i32 {
@@ -4746,6 +4768,30 @@ mod tests {
             let view = values.get_accept_ords(Some(&only_last)).unwrap();
             let accepted: Vec<usize> = (0..docs.len()).filter(|&ord| view.get(ord)).collect();
             assert_eq!(accepted, vec![docs.len() - 1], "dense={dense}");
+        }
+    }
+
+    /// Regression for rmp #660 (round 2): the dense and sparse
+    /// `OffHeapScalarQuantizedFloatVectorValues` are a `HasIndexSlice`
+    /// (`OffHeapScalarQuantizedFloatVectorValues.java:55-56`) whose
+    /// `getSlice()` is the quantized data they read, one stride per vector
+    /// (`:173-176`).
+    #[test]
+    fn the_dequantized_values_have_an_index_slice() {
+        for dense in [true, false] {
+            let (values, _docs, _similarity) = dequantized_values(dense, 20);
+            let sliceable = values
+                .as_has_index_slice()
+                .unwrap_or_else(|| panic!("dense={dense}: not a HasIndexSlice"));
+            let slice = sliceable
+                .get_slice()
+                .unwrap_or_else(|| panic!("dense={dense}: null slice"));
+            assert!(slice.length() > 0, "dense={dense}");
+            assert_eq!(
+                slice.length() % i64::from(values.size()),
+                0,
+                "dense={dense}: whole strides"
+            );
         }
     }
 

@@ -799,7 +799,7 @@ impl PendingSoftDeletes {
     /// `DocValuesFieldUpdates.Iterator`; here the caller states it, as the
     /// second element of each entry. A caller passing a plain doc-values
     /// iterator passes `true`, which is the branch Java's null check selects.
-    fn apply_soft_deletes<F>(bits: &mut FixedBitSet, mut next: F) -> Result<i32>
+    pub(crate) fn apply_soft_deletes<F>(bits: &mut FixedBitSet, mut next: F) -> Result<i32>
     where
         F: FnMut() -> Result<Option<(i32, bool)>>,
     {

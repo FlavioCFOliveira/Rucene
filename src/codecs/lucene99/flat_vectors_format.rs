@@ -29,7 +29,7 @@ use crate::codecs::knn_vectors::{
     SorterDocMap,
 };
 use crate::codecs::lucene90::indexed_disi::IndexedDISI;
-use crate::codecs::lucene95::OrdToDocDISIReaderConfiguration;
+use crate::codecs::lucene95::{HasIndexSlice, IndexSliceRef, OrdToDocDISIReaderConfiguration};
 use crate::codecs::postings::MergeState;
 use crate::codecs::state::{OwnedSegmentWriteState, SegmentReadState, SegmentWriteState};
 use crate::codecs::stub::FieldInfo;
@@ -1552,6 +1552,11 @@ impl OffHeapFloatVectorValues {
 }
 
 impl KnnVectorValues for OffHeapFloatVectorValues {
+    /// `OffHeapFloatVectorValues implements HasIndexSlice`.
+    fn as_has_index_slice(&self) -> Option<&dyn HasIndexSlice> {
+        Some(self)
+    }
+
     fn dimension(&self) -> i32 {
         self.dimension
     }
@@ -1622,25 +1627,34 @@ impl KnnVectorValues for OffHeapFloatVectorValues {
 }
 
 impl OffHeapFloatVectorValues {
-    /// Returns the input slice the vectors are read from.
+    /// Locks the input slice the vectors are read from.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the `IndexInput` field
-    /// itself (`OffHeapFloatVectorValues.java:426-429`), which its callers then seek in.
+    /// **Divergence from Lucene 10.5.0.** Java reads through the `IndexInput`
+    /// field itself (`OffHeapFloatVectorValues.java:73-86`), seeking it.
     /// Reading a vector mutates that input, and
     /// [`FloatVectorValues::vector_value`] takes `&self`, so this port keeps
-    /// the slice behind a `Mutex`; the accessor therefore hands back the lock
-    /// guard, which derefs to the very same `IndexInput` Java returns.
+    /// the slice behind a `Mutex`; the reads, and
+    /// [`HasIndexSlice::get_slice`], go through its lock guard, which derefs
+    /// to the very same `IndexInput` Java uses.
     ///
     /// Java has no lock poisoning, so a poisoned mutex continues with the
     /// slice it guards.
-    ///
-    /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene95.OffHeapFloatVectorValues#getSlice`.
-    fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
-        Ok(self
-            .slice
+    fn lock_slice(&self) -> MutexGuard<'_, Box<dyn IndexInput>> {
+        self.slice
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// `OffHeapFloatVectorValues implements HasIndexSlice`
+/// (`OffHeapFloatVectorValues.java:35`), for the dense and sparse subclasses
+/// alike.
+impl HasIndexSlice for OffHeapFloatVectorValues {
+    /// Equivalent to `OffHeapFloatVectorValues.getSlice()`
+    /// (`OffHeapFloatVectorValues.java:72-75`): the slice the vectors are read
+    /// from, handed back through its lock (see `lock_slice`).
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>> {
+        Some(IndexSliceRef::Locked(self.lock_slice()))
     }
 }
 
@@ -1651,7 +1665,7 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
 
     fn vector_value(&self, ord: i32) -> Result<Vec<f32>> {
         let mut value = vec![0.0f32; self.dimension as usize];
-        let mut slice = self.get_slice()?;
+        let mut slice = self.lock_slice();
         slice.seek((ord as i64) * self.byte_size as i64)?;
         slice.read_floats(Some(&mut value), 0, self.dimension as usize)?;
         Ok(value)
@@ -1671,7 +1685,7 @@ impl FloatVectorValues for OffHeapFloatVectorValues {
                 value.len()
             )));
         }
-        let mut slice = self.get_slice()?;
+        let mut slice = self.lock_slice();
         slice.seek((ord as i64) * self.byte_size as i64)?;
         slice.read_floats(Some(dest), 0, self.dimension as usize)
     }
@@ -1712,6 +1726,11 @@ pub(crate) struct EmptyOffHeapFloatVectorValues {
 }
 
 impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
+    /// `OffHeapFloatVectorValues implements HasIndexSlice`.
+    fn as_has_index_slice(&self) -> Option<&dyn HasIndexSlice> {
+        Some(self)
+    }
+
     fn dimension(&self) -> i32 {
         self.dimension
     }
@@ -1738,6 +1757,15 @@ impl KnnVectorValues for EmptyOffHeapFloatVectorValues {
         &self,
         _accept_docs: Option<&'a dyn Bits>,
     ) -> Option<Box<dyn Bits + 'a>> {
+        None
+    }
+}
+
+/// The empty subclass inherits `HasIndexSlice` from `OffHeapFloatVectorValues`
+/// and passes `null` as the slice to its constructor
+/// (`OffHeapFloatVectorValues.java:307`), so `getSlice()` answers `null`.
+impl HasIndexSlice for EmptyOffHeapFloatVectorValues {
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>> {
         None
     }
 }
@@ -1892,6 +1920,11 @@ impl OffHeapByteVectorValues {
 }
 
 impl KnnVectorValues for OffHeapByteVectorValues {
+    /// `OffHeapByteVectorValues implements HasIndexSlice`.
+    fn as_has_index_slice(&self) -> Option<&dyn HasIndexSlice> {
+        Some(self)
+    }
+
     fn dimension(&self) -> i32 {
         self.dimension
     }
@@ -1961,26 +1994,35 @@ impl KnnVectorValues for OffHeapByteVectorValues {
     }
 }
 
+/// `OffHeapByteVectorValues implements HasIndexSlice`
+/// (`OffHeapByteVectorValues.java:36`), for the dense and sparse subclasses
+/// alike.
+impl HasIndexSlice for OffHeapByteVectorValues {
+    /// Equivalent to `OffHeapByteVectorValues.getSlice()`
+    /// (`OffHeapByteVectorValues.java:101-104`): the slice the vectors are
+    /// read from, handed back through its lock (see `lock_slice`).
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>> {
+        Some(IndexSliceRef::Locked(self.lock_slice()))
+    }
+}
+
 impl OffHeapByteVectorValues {
-    /// Returns the input slice the vectors are read from.
+    /// Locks the input slice the vectors are read from.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java returns the `IndexInput` field
-    /// itself (`OffHeapByteVectorValues.java:101-104`), which its callers then seek in.
+    /// **Divergence from Lucene 10.5.0.** Java reads through the `IndexInput`
+    /// field itself (`OffHeapByteVectorValues.java:101-114`), seeking it.
     /// Reading a vector mutates that input, and
     /// [`ByteVectorValues::vector_value`] takes `&self`, so this port keeps
-    /// the slice behind a `Mutex`; the accessor therefore hands back the lock
-    /// guard, which derefs to the very same `IndexInput` Java returns.
+    /// the slice behind a `Mutex`; the reads, and
+    /// [`HasIndexSlice::get_slice`], go through its lock guard, which derefs
+    /// to the very same `IndexInput` Java uses.
     ///
     /// Java has no lock poisoning, so a poisoned mutex continues with the
     /// slice it guards.
-    ///
-    /// Equivalent to
-    /// `org.apache.lucene.codecs.lucene95.OffHeapByteVectorValues#getSlice`.
-    fn get_slice(&self) -> Result<MutexGuard<'_, Box<dyn IndexInput>>> {
-        Ok(self
-            .slice
+    fn lock_slice(&self) -> MutexGuard<'_, Box<dyn IndexInput>> {
+        self.slice
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Reads the vector at `target_ord` into `value`.
@@ -1996,7 +2038,7 @@ impl OffHeapByteVectorValues {
     ///
     /// Returns whatever seeking or reading the slice raises.
     fn read_value(&self, target_ord: i32, value: &mut [u8]) -> Result<()> {
-        let mut slice = self.get_slice()?;
+        let mut slice = self.lock_slice();
         slice.seek((target_ord as i64) * self.byte_size as i64)?;
         slice.read_bytes(Some(value), 0, self.byte_size as usize)
     }
@@ -2064,6 +2106,11 @@ struct EmptyOffHeapByteVectorValues {
 }
 
 impl KnnVectorValues for EmptyOffHeapByteVectorValues {
+    /// `OffHeapByteVectorValues implements HasIndexSlice`.
+    fn as_has_index_slice(&self) -> Option<&dyn HasIndexSlice> {
+        Some(self)
+    }
+
     fn dimension(&self) -> i32 {
         self.dimension
     }
@@ -2090,6 +2137,15 @@ impl KnnVectorValues for EmptyOffHeapByteVectorValues {
         &self,
         _accept_docs: Option<&'a dyn Bits>,
     ) -> Option<Box<dyn Bits + 'a>> {
+        None
+    }
+}
+
+/// The empty subclass inherits `HasIndexSlice` from `OffHeapByteVectorValues`
+/// and passes `null` as the slice to its constructor
+/// (`OffHeapByteVectorValues.java:311`), so `getSlice()` answers `null`.
+impl HasIndexSlice for EmptyOffHeapByteVectorValues {
+    fn get_slice(&self) -> Option<IndexSliceRef<'_>> {
         None
     }
 }

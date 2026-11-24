@@ -667,10 +667,12 @@ pub fn register_codec_class(name: &str, constructor: CodecConstructor) {
     CODECS.register(name, constructor);
 }
 
-/// Puts `lucene-analysis-common` on the "classpath" of the analysis SPI
-/// loaders, as the benchmark's classpath holds it
-/// (`lucene/benchmark/build.gradle`): the core's char filter, token filter
-/// and tokenizer loaders are reloaded once with its class loader.
+/// Puts `lucene-analysis-common` and `lucene-analysis-icu` on the
+/// "classpath" of the analysis SPI loaders, as the benchmark's runtime
+/// classpath holds both (`lucene/benchmark/build.gradle:27, 48`): the core's
+/// char filter, token filter and tokenizer loaders are reloaded once with the
+/// analysis-icu class loader, whose parent is analysis-common's, so the
+/// factories of both modules are visible.
 ///
 /// # Errors
 ///
@@ -678,7 +680,7 @@ pub fn register_codec_class(name: &str, constructor: CodecConstructor) {
 pub fn ensure_analysis_classpath() -> Result<()> {
     static DONE: std::sync::OnceLock<std::result::Result<(), String>> = std::sync::OnceLock::new();
     let outcome = DONE.get_or_init(|| {
-        let loader = rucene_analysis_common::spi::class_loader();
+        let loader = rucene_analysis_icu::spi::class_loader();
         rucene::analysis::factories::reload_char_filters(loader)
             .and_then(|()| rucene::analysis::factories::reload_token_filters(loader))
             .and_then(|()| rucene::analysis::factories::reload_tokenizers(loader))

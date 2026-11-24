@@ -624,6 +624,167 @@ mod tests {
     use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
     use std::sync::Arc;
 
+    /// Three segments of sorted, multi-valued sorted-set and single-valued
+    /// sorted-set doc values, with deletions in the second, opened as the
+    /// codec readers a merge reads.
+    fn merge_test_readers() -> (
+        Arc<dyn crate::index::directory_reader::DirectoryReader>,
+        Vec<Arc<dyn crate::index::codec_reader::CodecReader>>,
+    ) {
+        use crate::codecs::{register_codec, Lucene104Codec};
+        use crate::document::{
+            Document, SortedDocValuesField, SortedSetDocValuesField, Store, StringField,
+        };
+        use crate::index::index_writer::IndexWriter;
+        use crate::index::index_writer_config::IndexWriterConfig;
+        use crate::index::Term;
+        use crate::store::{ByteBuffersDirectory, Directory};
+        use crate::util::BytesRef;
+
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let config = IndexWriterConfig::new();
+        config
+            .set_merge_policy(Some(crate::index::merge_policy::NoMergePolicy::instance()))
+            .unwrap();
+        let writer = IndexWriter::new(Arc::clone(&dir), config).unwrap();
+        let term = |s: String| BytesRef::new(s.into_bytes());
+        for segment in 0..3 {
+            for i in 0..40 {
+                let n = segment * 25 + i * 3 % 37;
+                let mut doc = Document::new();
+                doc.add(StringField::new("id", format!("{segment}-{i}"), Store::NO).unwrap());
+                doc.add(SortedDocValuesField::new("s", term(format!("s{n:03}"))));
+                doc.add(SortedSetDocValuesField::new("ss", term(format!("a{n:03}"))));
+                doc.add(SortedSetDocValuesField::new(
+                    "ss",
+                    term(format!("b{:03}", n / 2)),
+                ));
+                doc.add(SortedSetDocValuesField::new(
+                    "ss1",
+                    term(format!("c{n:03}")),
+                ));
+                writer.add_document(&doc).unwrap();
+            }
+            if segment == 1 {
+                let deleted = (0..40)
+                    .step_by(3)
+                    .map(|i| Term::from_text("id", &format!("1-{i}")))
+                    .collect();
+                writer.delete_documents_by_terms(deleted).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+        writer.close().unwrap();
+        let reader = crate::index::directory_reader::open(dir).unwrap();
+        let readers = Arc::clone(&reader)
+            .leaves()
+            .unwrap()
+            .iter()
+            .map(|leaf| leaf.leaf_reader().as_codec_reader().unwrap())
+            .collect();
+        (reader, readers)
+    }
+
+    /// The terms `terms` yields, with their ordinals.
+    fn walk(mut terms: Box<dyn TermsEnum>) -> Vec<(i64, Vec<u8>)> {
+        let mut walked = Vec::new();
+        while let Some(term) = terms.next().unwrap() {
+            let term = term.slice().to_vec();
+            walked.push((terms.ord().unwrap(), term));
+        }
+        walked
+    }
+
+    /// Regression for rmp #662: the merged sorted and sorted-set doc values
+    /// answer `termsEnum()` with `DocValuesConsumer.MergedTermsEnum`
+    /// (`DocValuesConsumer.java:808-815, 1043-1050`), which walks the merged
+    /// dictionary in ordinal order: the same terms `lookupOrd` reads, without
+    /// a lookup per term.
+    #[test]
+    fn merged_sorted_doc_values_terms_enum_is_the_merged_terms_enum() {
+        use crate::index::merge::MergeState;
+        use crate::index::segment_info::SegmentInfo;
+        use crate::store::ByteBuffersDirectory;
+        use crate::util::extra::Version;
+        use crate::util::string_helper::StringHelper;
+
+        let (reader, readers) = merge_test_readers();
+        assert_eq!(readers.len(), 3);
+        let segment_info = SegmentInfo::new(
+            Arc::new(ByteBuffersDirectory::new()),
+            Version::LUCENE_10_5_0,
+            Some(Version::LUCENE_10_5_0),
+            "_m".to_string(),
+            -1,
+            false,
+            false,
+            Arc::new(crate::codecs::Lucene104Codec::new()),
+            std::collections::HashMap::new(),
+            StringHelper::random_id(),
+            std::collections::HashMap::new(),
+            None,
+        )
+        .unwrap();
+        let merge_state = MergeState::from_readers(
+            &readers,
+            segment_info,
+            Arc::new(crate::util::NoOutputInfoStream),
+            None,
+            None,
+        )
+        .unwrap();
+        let field = |name: &str| merge_state.field_infos[0].field_info(name).unwrap();
+        let is_merged_terms_enum = |terms: &dyn TermsEnum| {
+            terms
+                .to_string()
+                .contains("DocValuesConsumer$MergedTermsEnum@")
+        };
+
+        // Sorted.
+        let map = Arc::new(create_ordinal_map_for_sorted_dv(field("s"), &merge_state).unwrap());
+        let mut by_ord =
+            get_merged_sorted_doc_values(field("s"), &merge_state, Arc::clone(&map)).unwrap();
+        let count = by_ord.get_value_count().unwrap();
+        let expected: Vec<(i64, Vec<u8>)> = (0..count)
+            .map(|ord| {
+                (
+                    i64::from(ord),
+                    by_ord.lookup_ord(ord).unwrap().slice().to_vec(),
+                )
+            })
+            .collect();
+        let terms = get_merged_sorted_doc_values(field("s"), &merge_state, map)
+            .unwrap()
+            .terms_enum()
+            .unwrap();
+        assert!(is_merged_terms_enum(terms.as_ref()));
+        assert_eq!(walk(terms), expected);
+
+        // Sorted set, multi-valued and all-singleton.
+        for name in ["ss", "ss1"] {
+            let to_merge = select_leaves_to_merge(field(name), &merge_state).unwrap();
+            let map =
+                Arc::new(create_ordinal_map_for_sorted_set_dv(to_merge, &merge_state).unwrap());
+            let mut by_ord =
+                get_merged_sorted_set_doc_values(field(name), &merge_state, Arc::clone(&map))
+                    .unwrap();
+            assert_eq!(by_ord.is_singleton(), name == "ss1");
+            let count = by_ord.get_value_count().unwrap();
+            let expected: Vec<(i64, Vec<u8>)> = (0..count)
+                .map(|ord| (ord, by_ord.lookup_ord(ord).unwrap().slice().to_vec()))
+                .collect();
+            let terms = get_merged_sorted_set_doc_values(field(name), &merge_state, map)
+                .unwrap()
+                .terms_enum()
+                .unwrap();
+            assert!(is_merged_terms_enum(terms.as_ref()));
+            assert_eq!(walk(terms), expected);
+        }
+        drop(merge_state);
+        reader.close().unwrap();
+    }
+
     /// Java's empty doc values `longValue()` body is `assert false`
     /// (`DocValues.java:100-101`): under `-ea` (debug builds) the call fails the
     /// assertion; this port reports an error without assertions.
@@ -1275,6 +1436,141 @@ pub fn get_merged_sorted_numeric_doc_values(
     }))
 }
 
+// -- MergedTermsEnum ----------------------------------------------------------
+
+/// A merged [`TermsEnum`], walking the merged dictionary in order by advancing
+/// each sub-reader's own enum, instead of the default terms enum, which calls
+/// `lookupOrd` on every call to `next()`.
+///
+/// Equivalent to the private `DocValuesConsumer.MergedTermsEnum`
+/// (`DocValuesConsumer.java:527-610`), which extends `BaseTermsEnum`: it only
+/// iterates; every seek and every statistic throws
+/// `UnsupportedOperationException`.
+struct MergedTermsEnum {
+    subs: Vec<Box<dyn TermsEnum>>,
+    ordinal_map: Arc<OrdinalMap>,
+    value_count: i64,
+    ord: i64,
+    /// The sub whose current term is Java's `term` field; `None` while that
+    /// field is `null`. The term is read back from that sub, which lends it,
+    /// instead of being held across calls.
+    term: Option<usize>,
+}
+
+impl MergedTermsEnum {
+    /// Equivalent to `MergedTermsEnum(OrdinalMap, TermsEnum[])`.
+    fn new(ordinal_map: Arc<OrdinalMap>, subs: Vec<Box<dyn TermsEnum>>) -> Self {
+        let value_count = ordinal_map.get_value_count();
+        Self {
+            subs,
+            ordinal_map,
+            value_count,
+            ord: -1,
+            term: None,
+        }
+    }
+}
+
+impl fmt::Display for MergedTermsEnum {
+    /// `MergedTermsEnum` declares no `toString()`, so `java.lang.Object.toString()` applies
+    /// ([`java_object_to_string_stand_in`](crate::index::index_reader::java_object_to_string_stand_in)).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&crate::index::index_reader::java_object_to_string_stand_in(
+            "org.apache.lucene.codecs.DocValuesConsumer$MergedTermsEnum",
+        ))
+    }
+}
+
+impl TermsEnum for MergedTermsEnum {
+    /// Java's `attributes()` throws `UnsupportedOperationException`
+    /// (`DocValuesConsumer.java:571-574`).
+    ///
+    /// # Panics
+    ///
+    /// Always: `attributes` returns no `Result`, so the unchecked exception
+    /// is raised as a panic payload.
+    fn attributes(&mut self) -> &mut AttributeSource {
+        std::panic::panic_any(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Java's `seekCeil(BytesRef)` throws `UnsupportedOperationException`.
+    fn seek_ceil(&mut self, _text: &BytesRef) -> Result<SeekStatus> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Java's `seekExact(long)` throws `UnsupportedOperationException`.
+    fn seek_ord(&mut self, _ord: i64) -> Result<()> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    fn term(&self) -> Result<Option<&BytesRef>> {
+        match self.term {
+            Some(sub) => self.subs[sub].term(),
+            None => Ok(None),
+        }
+    }
+
+    fn ord(&self) -> Result<i64> {
+        Ok(self.ord)
+    }
+
+    /// Java's `docFreq()` throws `UnsupportedOperationException`.
+    fn doc_freq(&mut self) -> Result<i32> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Java's `totalTermFreq()` throws `UnsupportedOperationException`.
+    fn total_term_freq(&mut self) -> Result<i64> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Java's `postings(PostingsEnum, int)` throws
+    /// `UnsupportedOperationException`.
+    fn postings(
+        &mut self,
+        _reuse: Option<Box<dyn crate::index::postings_enum::PostingsEnum>>,
+        _flags: i32,
+    ) -> Result<Option<Box<dyn crate::index::postings_enum::PostingsEnum>>> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Java's `impacts(int)` throws `UnsupportedOperationException`.
+    fn impacts(
+        &mut self,
+        _flags: i32,
+    ) -> Result<Box<dyn crate::index::postings_enum::ImpactsEnum>> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Java's `termState()` throws `UnsupportedOperationException`.
+    fn term_state(&mut self) -> Result<Box<dyn TermState>> {
+        Err(LuceneError::unsupported_operation(String::new()))
+    }
+
+    /// Equivalent to `MergedTermsEnum.next()` (`DocValuesConsumer.java:556-569`):
+    /// the merged ordinal's first segment advances its own enum up to the
+    /// segment ordinal the ordinal map records.
+    fn next(&mut self) -> Result<Option<&BytesRef>> {
+        self.ord += 1;
+        if self.ord >= self.value_count {
+            return Ok(None);
+        }
+        let sub_num = self.ordinal_map.get_first_segment_number(self.ord);
+        let sub_ord = self.ordinal_map.get_first_segment_ord(self.ord);
+        let sub = &mut self.subs[sub_num];
+        let mut term_is_null;
+        loop {
+            term_is_null = sub.next()?.is_none();
+            if sub.ord()? >= sub_ord {
+                break;
+            }
+        }
+        debug_assert_eq!(sub.ord()?, sub_ord);
+        self.term = if term_is_null { None } else { Some(sub_num) };
+        self.term()
+    }
+}
+
 // -- Sorted -------------------------------------------------------------------
 
 /// The merged sorted view over a set of sub-readers.
@@ -1338,6 +1634,21 @@ impl SortedDocValues for MergedSortedDocValues {
         self.merger.subs_mut()[segment_number]
             .values
             .lookup_ord(segment_ord)
+    }
+    /// `new MergedTermsEnum(map, termsEnurmSubs)` over each sub's
+    /// `values.termsEnum()` (`DocValuesConsumer.java:808-815`). The merged
+    /// values are consumed, as each sub's enum takes ownership of the sub's
+    /// values (see [`SortedDocValues::terms_enum`]).
+    fn terms_enum(mut self: Box<Self>) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        let subs = std::mem::take(self.merger.subs_mut());
+        let mut terms_enum_subs = Vec::with_capacity(subs.len());
+        for sub in subs {
+            terms_enum_subs.push(sub.values.terms_enum()?);
+        }
+        Ok(Box::new(MergedTermsEnum::new(self.map, terms_enum_subs)))
     }
 }
 
@@ -1532,6 +1843,23 @@ impl SortedSetDocValues for MergedSortedSetDocValues {
 
     fn get_value_count(&self) -> Result<i64> {
         Ok(self.map.get_value_count())
+    }
+
+    /// `new MergedTermsEnum(map, subs)` over each `toMerge.get(sub).termsEnum()`
+    /// (`DocValuesConsumer.java:1043-1050`). The subs' values stand for Java's
+    /// `toMerge` list, as in [`lookup_ord`](SortedSetDocValues::lookup_ord); the
+    /// merged values are consumed, as each sub's enum takes ownership of the
+    /// sub's values (see [`SortedSetDocValues::terms_enum`]).
+    fn terms_enum(mut self: Box<Self>) -> Result<Box<dyn TermsEnum>>
+    where
+        Self: 'static,
+    {
+        let subs = std::mem::take(self.merger.subs_mut());
+        let mut terms_enum_subs = Vec::with_capacity(subs.len());
+        for sub in subs {
+            terms_enum_subs.push(sub.values.terms_enum()?);
+        }
+        Ok(Box::new(MergedTermsEnum::new(self.map, terms_enum_subs)))
     }
 }
 

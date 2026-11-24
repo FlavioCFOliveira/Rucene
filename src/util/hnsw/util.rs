@@ -7,7 +7,10 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::index::{IndexReader, LeafReaderContext};
+use crate::codecs::hnsw::graph_provider::HnswGraphProvider;
+use crate::error::LuceneError;
+use crate::index::filter_reader::FilterLeafReader;
+use crate::index::IndexReader;
 use crate::search::NO_MORE_DOCS;
 use crate::util::FixedBitSet;
 
@@ -44,8 +47,14 @@ impl Component {
 /// Equivalent to `org.apache.lucene.util.hnsw.HnswUtil`.
 pub struct HnswUtil;
 
-/// Opens the HNSW graph of one leaf for a vector field.
-type GraphOfLeafFn = dyn Fn(&LeafReaderContext, &str) -> Result<Box<dyn HnswGraph>>;
+/// The `ClassCastException` of one of `graphIsRooted`'s casts to `target`.
+fn class_cast(target: &str) -> LuceneError {
+    LuceneError::unchecked(
+        "java.lang.ClassCastException",
+        format!("the reader cannot be cast to class {target}"),
+    )
+}
+
 impl HnswUtil {
     /// Returns true if every node on every level is reachable from the entry
     /// point.
@@ -73,25 +82,35 @@ impl HnswUtil {
     ///
     /// Propagates whatever obtaining or walking a leaf's graph raises.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java reaches each leaf's graph with a
-    /// chain of casts (`HnswUtil.java:209-215`): it unwraps the leaf to a
-    /// `CodecReader`, casts its vector reader to
-    /// `PerFieldKnnVectorsFormat.FieldsReader`, asks it for the field's reader
-    /// and casts *that* to `HnswGraphProvider`. The first of those narrowings
-    /// does not exist in this port — a `dyn LeafReader` cannot be narrowed to a
-    /// `dyn CodecReader` — while the last is
-    /// [`KnnVectorsReader::as_hnsw_graph_provider`](crate::codecs::knn_vectors::KnnVectorsReader::as_hnsw_graph_provider).
-    /// The cast chain is therefore supplied by the caller as
-    /// `graph_of_leaf`, and everything Java does around it — walking the
-    /// leaves, testing each graph with [`HnswUtil::is_rooted`] and answering
-    /// `false` at the first leaf that is not rooted — is unchanged.
-    pub fn graph_is_rooted(
-        reader: Arc<dyn IndexReader>,
-        vector_field: &str,
-        graph_of_leaf: &GraphOfLeafFn,
-    ) -> Result<bool> {
+    /// Each leaf's graph is reached as Java reaches it (`HnswUtil.java:208-215`):
+    /// the leaf is unwrapped with [`FilterLeafReader::unwrap`] and cast to a
+    /// `CodecReader` ([`LeafReader::as_codec_reader`](crate::index::LeafReader::as_codec_reader)), its vector reader is
+    /// asked for the field's reader
+    /// ([`KnnVectorsReader::get_field_reader`](crate::codecs::knn_vectors::KnnVectorsReader::get_field_reader),
+    /// the `PerFieldKnnVectorsFormat.FieldsReader` cast) and that reader is
+    /// cast to a `HnswGraphProvider`
+    /// ([`KnnVectorsReader::as_hnsw_graph_provider`](crate::codecs::knn_vectors::KnnVectorsReader::as_hnsw_graph_provider)).
+    /// A failed cast is Java's `ClassCastException`; a null vector reader is
+    /// its `NullPointerException`.
+    pub fn graph_is_rooted(reader: Arc<dyn IndexReader>, vector_field: &str) -> Result<bool> {
         for ctx in reader.leaves()? {
-            let mut graph = graph_of_leaf(&ctx, vector_field)?;
+            let codec_reader = FilterLeafReader::unwrap(&ctx.leaf_reader())
+                .as_codec_reader()
+                .ok_or_else(|| class_cast("org.apache.lucene.index.CodecReader"))?;
+            let vector_reader = codec_reader
+                .get_vector_reader()?
+                .ok_or_else(LuceneError::null_pointer)?;
+            let field_reader = vector_reader
+                .get_field_reader(vector_field)
+                .ok_or_else(|| {
+                    class_cast(
+                        "org.apache.lucene.codecs.perfield.PerFieldKnnVectorsFormat$FieldsReader",
+                    )
+                })?;
+            let provider = field_reader
+                .as_hnsw_graph_provider()
+                .ok_or_else(|| class_cast("org.apache.lucene.codecs.hnsw.HnswGraphProvider"))?;
+            let mut graph = HnswGraphProvider::get_graph(provider, vector_field)?;
             if !Self::is_rooted(graph.as_mut())? {
                 return Ok(false);
             }

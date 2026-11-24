@@ -868,7 +868,9 @@ impl SpatialQuery {
             return Ok(None);
         }
         // Walk the tree to get the matching documents.
-        self.build_iterator(reader, values.as_ref(), visitor)
+        self.build_iterator(reader, values.as_ref(), visitor, &|| {
+            self.cost(values.as_ref(), visitor)
+        })
     }
 
     /// Returns the estimated number of documents this query matches in
@@ -1037,18 +1039,21 @@ impl SpatialQuery {
     }
 
     /// Equivalent to `RelationScorerSupplier.getScorer(LeafReader, float, ScoreMode)`.
+    ///
+    /// `cost` is the supplier's `cost()`, which `getSparseScorer` reads.
     fn build_iterator(
         &self,
         reader: &dyn LeafReader,
         values: &dyn PointValues,
         visitor: &dyn SpatialVisitor,
+        cost: &dyn Fn() -> Result<i64>,
     ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
         match self.query_relation {
-            QueryRelation::Intersects => self.sparse_iterator(reader, values, visitor),
+            QueryRelation::Intersects => self.sparse_iterator(reader, values, visitor, cost),
             QueryRelation::Contains => self.contains_dense_iterator(reader, values, visitor),
             QueryRelation::Within | QueryRelation::Disjoint => {
                 if i64::from(values.doc_count()?) == values.size()? {
-                    self.sparse_iterator(reader, values, visitor)
+                    self.sparse_iterator(reader, values, visitor, cost)
                 } else {
                     self.dense_iterator(reader, values, visitor)
                 }
@@ -1063,12 +1068,13 @@ impl SpatialQuery {
         reader: &dyn LeafReader,
         values: &dyn PointValues,
         visitor: &dyn SpatialVisitor,
+        cost: &dyn Fn() -> Result<i64>,
     ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
         let max_doc = reader.max_doc();
         if self.query_relation == QueryRelation::Disjoint
             && values.doc_count()? == max_doc
             && i64::from(values.doc_count()?) == values.size()?
-            && self.cost(values, visitor)? > i64::from(max_doc) / 2
+            && cost()? > i64::from(max_doc / 2)
         {
             // Every document has exactly one value and the cost is more than
             // half the leaf, so computing the complement may be faster.
@@ -3239,15 +3245,28 @@ pub trait SpatialMatcher: std::fmt::Debug + Send + Sync {
     /// Equivalent to `SpatialQuery.RelationScorerSupplier.cost()`.
     fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64>;
 
+    /// The `SpatialQuery` state and the `SpatialVisitor` of a query that
+    /// extends `SpatialQuery` and keeps its `getScorerSupplier`; `None` for
+    /// any other query.
+    ///
+    /// [`SpatialWeight`] builds `SpatialQuery.getScorerSupplier`'s lazy
+    /// supplier from them (`SpatialQuery.java:150-206`).
+    fn spatial_query(&self) -> Option<(&SpatialQuery, &dyn SpatialVisitor)> {
+        None
+    }
+
     /// Returns whether a weight over this query may be cached.
     ///
-    /// Equivalent to `SpatialQuery`'s `isCacheable`, which answers `true`.
-    fn spatial_is_cacheable(&self) -> bool {
+    /// Equivalent to `SpatialQuery`'s `isCacheable`, which answers `true`;
+    /// a query whose weight overrides `isCacheable(LeafReaderContext)`
+    /// overrides this.
+    fn spatial_is_cacheable(&self, _ctx: &crate::index::LeafReaderContext) -> bool {
         true
     }
 
     /// Returns the scorer supplier of a query that overrides
-    /// `SpatialQuery.getScorerSupplier`, or `None` when the query keeps
+    /// `SpatialQuery.getScorerSupplier`, or that builds its own
+    /// `ConstantScoreWeight.scorerSupplier`; `None` when the query keeps
     /// `SpatialQuery`'s own, which iterates
     /// [`spatial_matching_docs`](Self::spatial_matching_docs).
     ///
@@ -3255,7 +3274,10 @@ pub trait SpatialMatcher: std::fmt::Debug + Send + Sync {
     /// Java's `null`, a leaf where nothing matches.
     ///
     /// Equivalent to the `getScorerSupplier(LeafReader, SpatialVisitor,
-    /// ScoreMode, float, float)` override of `BaseShapeDocValuesQuery`.
+    /// ScoreMode, float, float)` override of `BaseShapeDocValuesQuery`, and to
+    /// the `scorerSupplier(LeafReaderContext)` of the weights
+    /// `LatLonPointDistanceQuery`, `XYPointInGeometryQuery` and the three
+    /// doc-values point queries build.
     ///
     /// # Errors
     ///
@@ -3271,14 +3293,15 @@ pub trait SpatialMatcher: std::fmt::Debug + Send + Sync {
     }
 }
 
-/// Hands out the scorer over the iterator a spatial query matched.
+/// Hands out the scorer over the iterator a matcher already built.
 ///
-/// Equivalent to `SpatialQuery.RelationScorerSupplier`, whose `cost()` Lucene
-/// computes lazily because walking the tree to estimate it is expensive, and
-/// to the anonymous `ScorerSupplier`s of `LatLonPointDistanceQuery`
-/// (`LatLonPointDistanceQuery.java:141-171`) and `XYPointInGeometryQuery`,
-/// and the `DefaultScorerSupplier`s of the doc-values point queries. None of
-/// them overrides `bulkScorer()`, so a bulk scorer over this supplier is
+/// The fallback of [`SpatialWeight`] for a matcher that neither extends
+/// `SpatialQuery` ([`SpatialMatcher::spatial_query`]) nor supplies its own
+/// supplier ([`SpatialMatcher::spatial_scorer_supplier_override`]); every
+/// query of the port does one or the other, so the lazy
+/// `RelationScorerSupplier` or the query's own supplier runs instead. Like
+/// Java's suppliers, it does not override `bulkScorer()`, so a bulk scorer
+/// over this supplier is
 /// `ScorerSupplier`'s default `DefaultBulkScorer` over `get(Long.MAX_VALUE)`
 /// (`ScorerSupplier.java:46-48`): the scorer's `ConstantScoreScorer`
 /// collected one document at a time, never a `ConstantScoreScorerSupplier`'s
@@ -3323,6 +3346,168 @@ impl<M: SpatialMatcher> crate::search::ScorerSupplier for SpatialIteratorSupplie
     }
 }
 
+/// Equivalent to `SpatialQuery.getScorerSupplier(LeafReader, SpatialVisitor,
+/// ScoreMode, float, float)` (`SpatialQuery.java:150-206`): the cheap checks
+/// that answer `null` or the all-documents supplier run here; the tree is
+/// walked only by the returned supplier's `get`, and estimated only by its
+/// `cost()`.
+///
+/// # Errors
+///
+/// Propagates whatever opening the points or relating their bounds raises.
+fn spatial_query_scorer_supplier<M: SpatialMatcher + 'static>(
+    matcher: &Arc<M>,
+    query: &SpatialQuery,
+    visitor: &dyn SpatialVisitor,
+    reader: Arc<dyn LeafReader>,
+    score_mode: crate::search::ScoreMode,
+    score: f32,
+) -> Result<Option<Box<dyn crate::search::ScorerSupplier>>> {
+    let Some(values) = reader.get_point_values(query.get_field())? else {
+        // No docs in this segment had any points fields
+        return Ok(None);
+    };
+    if reader
+        .get_field_infos()
+        .field_info(query.get_field())
+        .is_none()
+    {
+        // No docs in this segment indexed this field at all
+        return Ok(None);
+    }
+    let (Some(min_packed), Some(max_packed)) =
+        (values.min_packed_value()?, values.max_packed_value()?)
+    else {
+        return Ok(None);
+    };
+    let query_relation = query.get_query_relation();
+    let rel = visitor.inner_function(query_relation, &min_packed, &max_packed)?;
+    if rel == Relation::CellOutsideQuery
+        || (rel == Relation::CellInsideQuery && query_relation == QueryRelation::Contains)
+    {
+        // no documents match the query
+        return Ok(None);
+    } else if values.doc_count()? == reader.max_doc() && rel == Relation::CellInsideQuery {
+        // all documents match the query
+        return Ok(Some(Box::new(AllDocsScorerSupplier {
+            max_doc: reader.max_doc(),
+            score,
+            score_mode,
+        })));
+    }
+    if query_relation != QueryRelation::Intersects
+        && query_relation != QueryRelation::Contains
+        && i64::from(values.doc_count()?) != values.size()?
+        && !has_any_hits(visitor, query_relation, values.as_ref())?
+    {
+        // First we check if we have any hits so we are fast in the adversarial case where
+        // the shape does not match any documents and we are in the dense case
+        return Ok(None);
+    }
+    // walk the tree to get matching documents
+    Ok(Some(Box::new(RelationScorerSupplier {
+        matcher: Arc::clone(matcher),
+        reader,
+        values,
+        cost: std::cell::Cell::new(-1),
+        score,
+        score_mode,
+    })))
+}
+
+/// The anonymous supplier `SpatialQuery.getScorerSupplier` returns when every
+/// document matches (`SpatialQuery.java:178-188`).
+#[derive(Debug)]
+struct AllDocsScorerSupplier {
+    max_doc: i32,
+    score: f32,
+    score_mode: crate::search::ScoreMode,
+}
+
+impl crate::search::ScorerSupplier for AllDocsScorerSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn crate::search::Scorer>> {
+        Ok(Box::new(crate::search::ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            Box::new(crate::search::all(self.max_doc)?),
+        )))
+    }
+
+    fn cost(&self) -> i64 {
+        i64::from(self.max_doc)
+    }
+}
+
+/// `SpatialQuery.RelationScorerSupplier` with the `get` override of
+/// `getScorerSupplier` (`SpatialQuery.java:199-204, 274-391`): `get` walks the
+/// tree through `getScorer`; `cost()` estimates once with the estimate visitor
+/// and memoises it in `cost` (`-1` until computed), as Java's `long cost = -1`.
+///
+/// The query state and the visitor are read back from `matcher`
+/// ([`SpatialMatcher::spatial_query`]), which owns them as Java's anonymous
+/// class captures them.
+struct RelationScorerSupplier<M: SpatialMatcher> {
+    matcher: Arc<M>,
+    reader: Arc<dyn LeafReader>,
+    values: Box<dyn PointValues>,
+    cost: std::cell::Cell<i64>,
+    score: f32,
+    score_mode: crate::search::ScoreMode,
+}
+
+impl<M: SpatialMatcher> std::fmt::Debug for RelationScorerSupplier<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelationScorerSupplier")
+            .field("matcher", &self.matcher)
+            .field("cost", &self.cost.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<M: SpatialMatcher> RelationScorerSupplier<M> {
+    fn query_and_visitor(&self) -> (&SpatialQuery, &dyn SpatialVisitor) {
+        self.matcher
+            .spatial_query()
+            .expect("INVARIANT: built only for a matcher that answers spatial_query")
+    }
+}
+
+impl<M: SpatialMatcher> crate::search::ScorerSupplier for RelationScorerSupplier<M> {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn crate::search::Scorer>> {
+        let (query, visitor) = self.query_and_visitor();
+        let iterator = query
+            .build_iterator(self.reader.as_ref(), self.values.as_ref(), visitor, &|| {
+                Ok(crate::search::ScorerSupplier::cost(self))
+            })?
+            .unwrap_or_else(|| Box::new(crate::search::empty()));
+        Ok(Box::new(crate::search::ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
+    }
+
+    /// `if (cost == -1) cost = values.estimateDocCount(getEstimateVisitor(...))`
+    /// (`SpatialQuery.java:383-391`).
+    ///
+    /// # Panics
+    ///
+    /// Java's `estimateDocCount` rethrows an `IOException` as the unchecked
+    /// `UncheckedIOException`, which `cost()` lets propagate; this port
+    /// raises the error the estimate returns as a panic payload.
+    fn cost(&self) -> i64 {
+        if self.cost.get() == -1 {
+            // Computing the cost may be expensive, so only do it if necessary
+            let (query, visitor) = self.query_and_visitor();
+            let cost = query
+                .cost(self.values.as_ref(), visitor)
+                .unwrap_or_else(|e| std::panic::panic_any(e));
+            self.cost.set(cost);
+        }
+        self.cost.get()
+    }
+}
+
 /// The weight a spatial query produces.
 ///
 /// Equivalent to the anonymous `ConstantScoreWeight` in
@@ -3363,6 +3548,16 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
         {
             return Ok(supplier);
         }
+        if let Some((query, visitor)) = self.matcher.spatial_query() {
+            return spatial_query_scorer_supplier(
+                &self.matcher,
+                query,
+                visitor,
+                Arc::clone(&leaf),
+                self.score_mode,
+                score,
+            );
+        }
         let Some(iterator) = self.matcher.spatial_matching_docs(reader)? else {
             return Ok(None);
         };
@@ -3376,8 +3571,8 @@ impl<M: SpatialMatcher + 'static> crate::search::ConstantScoreWeightImpl for Spa
         })))
     }
 
-    fn is_cacheable(&self, _ctx: &crate::index::LeafReaderContext) -> bool {
-        self.matcher.spatial_is_cacheable()
+    fn is_cacheable(&self, ctx: &crate::index::LeafReaderContext) -> bool {
+        self.matcher.spatial_is_cacheable(ctx)
     }
 }
 
@@ -3464,6 +3659,12 @@ macro_rules! impl_shape_query_exec {
             fn spatial_cost(&self, $reader: &dyn LeafReader) -> Result<i64> {
                 let $this = self;
                 $cost
+            }
+
+            /// The query extends `SpatialQuery` and keeps its
+            /// `getScorerSupplier`.
+            fn spatial_query(&self) -> Option<(&SpatialQuery, &dyn SpatialVisitor)> {
+                Some((&self.$($sq).+, &self.visitor))
             }
         }
 

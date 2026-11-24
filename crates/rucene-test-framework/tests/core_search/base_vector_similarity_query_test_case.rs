@@ -13,14 +13,12 @@ use std::sync::Arc;
 
 use randomizedtesting::jdk::reflect::{Class, Method};
 use randomizedtesting::junit::Assert;
-use rucene::codecs::hnsw::graph_provider::HnswGraphProvider;
 use rucene::codecs::lucene99::hnsw_vectors_format::{
     Lucene99HnswVectorsFormat, DEFAULT_BEAM_WIDTH, DEFAULT_MAX_CONN, DEFAULT_NUM_MERGE_WORKER,
 };
 use rucene::document::{Document, IntField, Store};
-use rucene::error::{LuceneError, LuceneErrorKind, Result};
+use rucene::error::Result;
 use rucene::index::directory_reader::{self, DirectoryReader};
-use rucene::index::filter_reader::FilterLeafReader;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
 use rucene::index::VectorSimilarityFunction;
@@ -43,7 +41,6 @@ use rucene::search::term_query::TermQuery;
 use rucene::search::weight::Weight;
 use rucene::search::Query;
 use rucene::util::hnsw::util::HnswUtil;
-use rucene::util::hnsw::HnswGraph;
 use rucene_test_framework::index::random_index_writer::RandomIndexWriter;
 use rucene_test_framework::util::java_exceptions::expect_throws;
 use rucene_test_framework::util::lucene_test_case::{Monster, SuppressCodecs};
@@ -576,43 +573,10 @@ fn test_empty_index<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>)
     })
 }
 
-/// `HnswUtil.graphIsRooted(reader, vectorField)`, with the cast chain Java
-/// writes inside it (`(HnswGraphProvider) ((PerFieldKnnVectorsFormat.FieldsReader)
-/// ((CodecReader) FilterLeafReader.unwrap(ctx.reader())).getVectorReader())
-/// .getFieldReader(vectorField)`) supplied as the leaf-to-graph function
-/// Rucene's `HnswUtil::graph_is_rooted` takes.
+/// `HnswUtil.graphIsRooted(reader, vectorField)` over the test's
+/// `DirectoryReader`.
 fn graph_is_rooted(reader: &Arc<dyn DirectoryReader>, vector_field: &str) -> Result<bool> {
-    HnswUtil::graph_is_rooted(
-        Arc::clone(reader) as Arc<dyn IndexReader>,
-        vector_field,
-        &hnsw_graph_of_leaf,
-    )
-}
-
-fn class_cast(what: &str) -> LuceneError {
-    // `ClassCastException` has no `LuceneError` variant; the failed cast is
-    // reported as an unchecked error naming it.
-    LuceneError::from(LuceneErrorKind::Other(format!(
-        "java.lang.ClassCastException: {what}"
-    )))
-}
-
-fn hnsw_graph_of_leaf(ctx: &LeafReaderContext, vector_field: &str) -> Result<Box<dyn HnswGraph>> {
-    let leaf = FilterLeafReader::unwrap(&ctx.leaf_reader());
-    let codec_reader = leaf
-        .as_codec_reader()
-        .ok_or_else(|| class_cast("not a CodecReader"))?;
-    let vectors_reader = codec_reader
-        .get_vector_reader()?
-        .ok_or_else(|| class_cast("null vector reader"))?;
-    let field_reader = vectors_reader
-        .get_field_reader(vector_field)
-        .ok_or_else(|| class_cast("not a PerFieldKnnVectorsFormat.FieldsReader"))?;
-    // `(HnswGraphProvider) ...getFieldReader(vectorField)` (`HnswUtil.java:212-215`).
-    let provider = field_reader
-        .as_hnsw_graph_provider()
-        .ok_or_else(|| class_cast("not a HnswGraphProvider"))?;
-    HnswGraphProvider::get_graph(provider, vector_field)
+    HnswUtil::graph_is_rooted(Arc::clone(reader) as Arc<dyn IndexReader>, vector_field)
 }
 
 fn test_extremes<C: VectorSimilarityCase>(f: &mut VectorSimilarityFixture<C>) -> Result<()> {

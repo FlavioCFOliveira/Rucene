@@ -683,3 +683,34 @@ fn test_replace_taxo_with_large_taxonomy() -> Result<()> {
     src_taxo_dir.close()?;
     target_taxo_dir.close()
 }
+
+/// Regression for rmp #659: Lucene's `IndexWriter implements TwoPhaseCommit`
+/// (`IndexWriter.java:198-199`), so `TwoPhaseCommitTool.execute(indexWriter,
+/// taxoWriter)` runs the two-phase commit over an index writer and a taxonomy
+/// writer together, and both commit.
+#[test]
+fn two_phase_commit_tool_commits_an_index_writer_and_a_taxonomy_writer() -> Result<()> {
+    use rucene::index::execute_two_phase_commit;
+    use rucene::store::ByteBuffersDirectory;
+
+    let index_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let taxo_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+    let index_writer = IndexWriter::new(Arc::clone(&index_dir), IndexWriterConfig::new())?;
+    let taxo_writer = DirectoryTaxonomyWriter::new(Arc::clone(&taxo_dir))?;
+    index_writer.add_document(&Document::new())?;
+    taxo_writer.add_category(&label(&["a"])?)?;
+    Assert::assert_false(directory_reader::index_exists(&*index_dir)?);
+
+    let objects: [Option<&dyn TwoPhaseCommit>; 2] = [Some(&*index_writer), Some(&taxo_writer)];
+    execute_two_phase_commit(&objects)?;
+
+    let index_reader = directory_reader::open(Arc::clone(&index_dir))?;
+    Assert::assert_equals(1, index_reader.num_docs());
+    index_reader.close()?;
+    let taxo_reader = directory_reader::open(Arc::clone(&taxo_dir))?;
+    // The root category and "a".
+    Assert::assert_equals(2, taxo_reader.num_docs());
+    taxo_reader.close()?;
+    index_writer.close()?;
+    taxo_writer.close()
+}
