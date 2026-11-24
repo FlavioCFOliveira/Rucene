@@ -31,27 +31,45 @@ macro_rules! marker {
 
 marker!(
     /// `@org.junit.Before`.
-    Before, BEFORE, "org.junit.Before", "Before"
+    Before,
+    BEFORE,
+    "org.junit.Before",
+    "Before"
 );
 marker!(
     /// `@org.junit.After`.
-    After, AFTER, "org.junit.After", "After"
+    After,
+    AFTER,
+    "org.junit.After",
+    "After"
 );
 marker!(
     /// `@org.junit.BeforeClass`.
-    BeforeClass, BEFORE_CLASS, "org.junit.BeforeClass", "BeforeClass"
+    BeforeClass,
+    BEFORE_CLASS,
+    "org.junit.BeforeClass",
+    "BeforeClass"
 );
 marker!(
     /// `@org.junit.AfterClass`.
-    AfterClass, AFTER_CLASS, "org.junit.AfterClass", "AfterClass"
+    AfterClass,
+    AFTER_CLASS,
+    "org.junit.AfterClass",
+    "AfterClass"
 );
 marker!(
     /// `@org.junit.Rule`.
-    Rule, RULE, "org.junit.Rule", "Rule"
+    Rule,
+    RULE,
+    "org.junit.Rule",
+    "Rule"
 );
 marker!(
     /// `@org.junit.ClassRule`.
-    ClassRule, CLASS_RULE, "org.junit.ClassRule", "ClassRule"
+    ClassRule,
+    CLASS_RULE,
+    "org.junit.ClassRule",
+    "ClassRule"
 );
 
 /// `@org.junit.Test(expected = …, timeout = …)`.

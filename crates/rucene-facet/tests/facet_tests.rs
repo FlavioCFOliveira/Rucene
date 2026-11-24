@@ -21,18 +21,18 @@
 mod facet_support;
 
 mod root {
+    pub mod multi_values_source_test_case;
     pub mod slow_directory;
     pub mod test_drill_down_query;
-    pub mod multi_values_source_test_case;
+    pub mod test_facet_query;
+    pub mod test_facet_utils;
+    pub mod test_facets_config;
     pub mod test_long_value_facet_counts;
     pub mod test_multi_double_values_source;
     pub mod test_multi_long_values_source;
     pub mod test_multiple_index_fields;
     pub mod test_random_sampling_facets_collector;
     pub mod test_string_value_facet_counts;
-    pub mod test_facet_query;
-    pub mod test_facet_utils;
-    pub mod test_facets_config;
 }
 
 mod taxonomy {
@@ -44,13 +44,13 @@ mod taxonomy {
         pub mod test_taxonomy_index_arrays;
     }
     pub mod test_facet_label;
+    pub mod test_lru_hash_map;
     pub mod test_ordinal_data;
     pub mod test_ordinal_mapping_leaf_reader;
     pub mod test_searcher_taxonomy_manager;
     pub mod test_taxonomy_combined;
     pub mod test_taxonomy_facet_counts2;
     pub mod test_taxonomy_facet_labels;
-    pub mod test_lru_hash_map;
     pub mod writercache {
         pub mod test_2gb_char_block_array;
         pub mod test_char_block_array;

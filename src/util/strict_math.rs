@@ -1666,7 +1666,7 @@ impl StrictMath {
         const HUGE: f64 = 1.0e+300;
         const TWOM1000: f64 = f64::from_bits(0x01700000_00000000); // 9.33263618503218878990e-302, 2**-1000
         const O_THRESHOLD: f64 = f64::from_bits(0x40862E42_FEFA39EF); // 7.09782712893383973096e+02
-        const U_THRESHOLD: f64 = f64::from_bits(0xc0874910_D52D3051); // -7.45133219101941108420e+02
+        const U_THRESHOLD: f64 = f64::from_bits(0xc0874910_d52d3051); // -7.45133219101941108420e+02
         const LN2_HI: [f64; 2] = [
             f64::from_bits(0x3fe62e42_fee00000), // 6.93147180369123816490e-01
             f64::from_bits(0xbfe62e42_fee00000), // -6.93147180369123816490e-01

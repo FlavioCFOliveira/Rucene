@@ -800,7 +800,8 @@ static DEFAULT_LOCALE: std::sync::RwLock<Option<Locale>> = std::sync::RwLock::ne
 /// `defaultDisplayLocale` and `defaultFormatLocale`, `None` until set or
 /// first read (`Locale.java` keeps them `null` until `getDefault(Category)`
 /// initialises them).
-static CATEGORY_DEFAULTS: std::sync::RwLock<[Option<Locale>; 2]> = std::sync::RwLock::new([None, None]);
+static CATEGORY_DEFAULTS: std::sync::RwLock<[Option<Locale>; 2]> =
+    std::sync::RwLock::new([None, None]);
 
 /// The default `FORMAT` locale a JVM starts with on Linux: `java_props_md.c`
 /// parses `LC_CTYPE` into the `format_*` properties (`LC_MESSAGES` gives the
