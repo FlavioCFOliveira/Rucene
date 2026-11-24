@@ -43,7 +43,7 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 - `tests/` — integration tests, portability tests (`tests/portability/`), fuzz tests (`tests/fuzz/`), and the Java oracle harness (`tests/fixtures/java-codec-harness/`).
 - `specs/` — specifications: overview, architecture, compatibility, security, testing, workflow, and one file per module (`specs/modules/`).
 - `tools/` — development tooling, not part of any crate:
-  - `tools/kg/` — Python scripts that build the project Knowledge Graph (see `tools/kg/README.md`);
+  - `tools/kgsync/` — the fast, differential synchronisation of the project Knowledge Graph from the Rust and Java ASTs (see `tools/kgsync/README.md`);
   - `tools/gen/` — code generators (DFA tables, JDK collator and time-zone data) and the test-translation guide `J2R_GUIDE.md`.
 - `knowledge-model.md` — the label and predicate model of the project Knowledge Graph.
 

@@ -4,11 +4,23 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Each entry names the evidence behind it: a knowledge-graph (KG) query run with
-`python3 tools/kg/ask.py`, a test file, or an `rmp` task or sprint of the `rucene`
-roadmap.
+Each entry names the evidence behind it: a knowledge-graph (KG) query (run with
+`python3 tools/kg/ask.py` up to 0.1.0, with `rmp graph client` since), a test file, or
+an `rmp` task or sprint of the `rucene` roadmap.
 
 ## [Unreleased]
+
+### Changed
+
+- Knowledge Graph synchronisation: `tools/kgsync` (Rust) replaces the `tools/kg`
+  Python chain, which is removed. Each layer derives the desired state of the slices it
+  owns (the `syn` AST of the crate, the javac AST of every reference module, the port
+  claims in the doc comments, `git` and `rmp`). It reads the current state concurrently
+  with the parse, writes only the difference, and skips a layer whose inputs are
+  unchanged. Measured on 16 cores: 0.15 s with no change, about 1.8 s for a commit
+  that changes Rust sources, 4–7 s for a full verification. Every identity now carries a
+  `UNIQUE` constraint, and Rust types are keyed by `qualifiedName`
+  (`tools/kgsync/README.md`, `knowledge-model.md`).
 
 ## [0.1.0] - 2026-11-21
 
