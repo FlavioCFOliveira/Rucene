@@ -984,7 +984,6 @@ impl IndexedDISI {
     }
 
     fn dense_advance_exact(&mut self, target: i32) -> Result<bool> {
-        self.sync_slice()?;
         let target_in_block = target & 0xFFFF;
         let target_word_index = target_in_block >> 6;
         if self.dense_rank_power != -1
@@ -992,11 +991,22 @@ impl IndexedDISI {
         {
             self.rank_skip(target_in_block)?;
         }
-        for _ in self.word_index.wrapping_add(1)..=target_word_index {
-            self.word = self.slice.read_long()? as u64;
-            self.number_of_ones = self
-                .number_of_ones
-                .wrapping_add(self.word.count_ones() as i32);
+        let first_word = self.word_index.wrapping_add(1);
+        if first_word <= target_word_index {
+            // PERF (rmp #681): the words `slice.readLong()` returns
+            // (`IndexedDISI.java:668-672`), read from the mapped block bytes
+            // at the same positions when they are all there; the position
+            // reached is written back lazily, as the SPARSE scan does (see
+            // `block_bytes` and `scan_fp`). Otherwise through `slice`.
+            if !self.dense_words_from_bytes(first_word, target_word_index)? {
+                self.sync_slice()?;
+                for _ in first_word..=target_word_index {
+                    self.word = self.slice.read_long()? as u64;
+                    self.number_of_ones = self
+                        .number_of_ones
+                        .wrapping_add(self.word.count_ones() as i32);
+                }
+            }
         }
         self.word_index = target_word_index;
         let left_bits = self.word >> (target & 0x3F);
@@ -1004,6 +1014,38 @@ impl IndexedDISI {
             .number_of_ones
             .wrapping_sub(left_bits.count_ones() as i32);
         Ok((left_bits & 1) != 0)
+    }
+
+    /// Reads the DENSE words `first..=last` from `block_bytes`, accumulating
+    /// `word` and `number_of_ones` exactly as the `slice.readLong()` loop
+    /// does, and records the position reached in `scan_fp`. Returns `false`,
+    /// having changed nothing, when the bytes are absent, closed or do not
+    /// hold every word: the caller then reads through `slice`.
+    #[inline]
+    fn dense_words_from_bytes(&mut self, first: i32, last: i32) -> Result<bool> {
+        let Some(segment) = self.block_bytes.as_ref().filter(|s| s.is_alive()) else {
+            return Ok(false);
+        };
+        let start = self.slice_file_pointer()?;
+        let count = (last - first + 1) as usize;
+        let Some(window) = usize::try_from(start).ok().and_then(|at| {
+            segment
+                .bytes()
+                .get(at..at.checked_add(count.checked_mul(8)?)?)
+        }) else {
+            return Ok(false);
+        };
+        let (words, _) = window.as_chunks::<8>();
+        let mut number_of_ones = self.number_of_ones;
+        let mut word = self.word;
+        for bytes in words {
+            word = u64::from_le_bytes(*bytes);
+            number_of_ones = number_of_ones.wrapping_add(word.count_ones() as i32);
+        }
+        self.word = word;
+        self.number_of_ones = number_of_ones;
+        self.scan_fp = Some(start + 8 * count as i64);
+        Ok(true)
     }
 }
 
