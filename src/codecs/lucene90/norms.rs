@@ -1151,6 +1151,52 @@ impl NormsSlice {
     }
 }
 
+/// The in-memory bytes of an own values slice ([`NormsSlice::Owned`]) when it
+/// is a memory-mapped input whose whole range lies in one mapped segment;
+/// `None` otherwise (a merge instance's shared slice, another directory, a
+/// closed input).
+///
+/// Reached through Lucene's own `MemorySegmentAccessInput.segmentSliceOrNull`
+/// ([`IndexInput::as_memory_segment_access_input`]), as
+/// [`IndexedDISI`]'s block bytes are; see [`SparseNormsIterator`]'s `values`.
+fn values_segment_of(slice: &NormsSlice) -> Option<MemorySegment> {
+    match slice {
+        NormsSlice::Owned(slice) => slice
+            .as_memory_segment_access_input()?
+            .segment_slice_or_null(0, slice.length())
+            .ok()
+            .flatten(),
+        NormsSlice::Shared(_) => None,
+    }
+}
+
+/// The packed norm of the value at ordinal `index` read from `bytes`, the
+/// bytes of the values slice, as [`read_norm_at`] reads it there
+/// (`RandomAccessInput.readByte/readShort/readInt/readLong`, little-endian),
+/// or `None` when the value is not all inside `bytes` or `bytes_per_norm` is
+/// not one of 1, 2, 4 and 8: the caller then reads through the slice, which
+/// fails as Java does.
+#[inline]
+fn norm_in_bytes(bytes: &[u8], index: i32, bytes_per_norm: i8) -> Option<i64> {
+    let index = usize::try_from(index).ok()?;
+    Some(match bytes_per_norm {
+        1 => *bytes.get(index)? as i8 as i64,
+        2 => {
+            let at = index.checked_mul(2)?;
+            i16::from_le_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?) as i64
+        }
+        4 => {
+            let at = index.checked_mul(4)?;
+            i32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as i64
+        }
+        8 => {
+            let at = index.checked_mul(8)?;
+            i64::from_le_bytes(bytes.get(at..at.checked_add(8)?)?.try_into().ok()?)
+        }
+        _ => return None,
+    })
+}
+
 /// Dense iterator over norms where every document has the same singleton value.
 ///
 /// Equivalent to the `DenseNormsIterator` with `bytesPerNorm == 0` of
@@ -1379,6 +1425,20 @@ impl NumericDocValues for SparseConstantNormsIterator {
 struct SparseNormsIterator {
     disi: IndexedDISI,
     slice: RefCell<NormsSlice>,
+    /// The bytes of `slice` in memory ([`values_segment_of`]).
+    ///
+    /// **Internal deviation from Lucene 10.5.0, no observable difference.**
+    /// Java's `longValue()` reads `slice.readByte(disi.index())` (or the
+    /// `readShort`/`readInt`/`readLong` of its `bytesPerNorm`;
+    /// `Lucene90NormsProducer.java:458-494`), which the JIT inlines into a
+    /// plain load. Here the read would take the `RefCell` borrow, the
+    /// [`NormsSlice`] match and a dynamic `read_byte_at` call per scored
+    /// document (7 % of search time, rmp #676). It therefore reads the value
+    /// straight from these bytes — the same bytes, at the same position, that
+    /// the slice returns. Any read the bytes cannot serve (a position outside
+    /// the slice, a closed input) goes through `slice`, which raises exactly
+    /// what Java raises; without bytes the read is Java's.
+    values: Option<MemorySegment>,
     bytes_per_norm: i8,
 }
 
@@ -1393,9 +1453,11 @@ impl fmt::Debug for SparseNormsIterator {
 
 impl SparseNormsIterator {
     fn new(disi: IndexedDISI, slice: NormsSlice, bytes_per_norm: i8) -> Self {
+        let values = values_segment_of(&slice);
         Self {
             disi,
             slice: RefCell::new(slice),
+            values,
             bytes_per_norm,
         }
     }
@@ -1441,6 +1503,14 @@ impl DocValuesIterator for SparseNormsIterator {
 
 impl NumericDocValues for SparseNormsIterator {
     fn long_value(&self) -> Result<i64> {
+        // PERF: see `values`.
+        if let Some(values) = self.values.as_ref().filter(|s| s.is_alive()) {
+            if let Some(value) =
+                norm_in_bytes(values.bytes(), self.disi.index(), self.bytes_per_norm)
+            {
+                return Ok(value);
+            }
+        }
         self.slice
             .borrow_mut()
             .read_norm_at(self.disi.index(), self.bytes_per_norm)
@@ -2511,6 +2581,94 @@ mod tests {
             !message.contains("misplaced codec footer"),
             "the footer must not be blamed, got: {message}"
         );
+    }
+
+    /// rmp #676: a sparse norms field read from a memory-mapped directory
+    /// (values from the mapped bytes, [`SparseNormsIterator`]'s `values`, and
+    /// the DISI's mapped scan) gives, for every byte width, the values the
+    /// same field gives from a heap directory, through `advance_exact` +
+    /// `long_value` and through the boxed bulk `long_values` the term scorer
+    /// calls.
+    #[test]
+    fn mapped_sparse_norms_match_the_heap_read() {
+        use crate::store::mmap::MMapDirectory;
+
+        let max_doc = 140_000;
+        let widths: [(i32, &str, i64); 4] = [
+            (0, "byte", 120),
+            (1, "short", 30_000),
+            (2, "int", 2_000_000_000),
+            (3, "long", 9_000_000_000_000_000_000),
+        ];
+        let mut values_map = HashMap::new();
+        let mut fis_fields = Vec::new();
+        for &(number, name, scale) in &widths {
+            fis_fields.push(norm_field(name, number));
+            // Sparse in every block, with a dense stretch in block 1.
+            let docs: Vec<(i32, i64)> = (0..max_doc)
+                .filter(|d| d % (7 + number) == 0 || (70_000..90_000).contains(d))
+                .map(|d| (d, ((d as i64 * 31) % 255 - 127) * (scale / 127)))
+                .collect();
+            values_map.insert(number, docs);
+        }
+        let fis = field_infos(fis_fields);
+        let info = test_segment_info("_0", max_doc);
+        let source = VecNormsProducer::new(values_map);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let mapped_dir: Arc<dyn Directory> =
+            Arc::new(MMapDirectory::open(temp.path().canonicalize().unwrap()).unwrap());
+        let heap_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        for dir in [&mapped_dir, &heap_dir] {
+            let mut consumer = Lucene90NormsFormat::new()
+                .norms_consumer(&write_state(dir, &info, &fis))
+                .unwrap();
+            for &(number, _, _) in &widths {
+                consumer
+                    .add_norms_field(fis.field_info_by_number(number).unwrap(), &source)
+                    .unwrap();
+            }
+            consumer.close().unwrap();
+        }
+        let mapped = Lucene90NormsProducer::new(&read_state(&mapped_dir, &info, &fis)).unwrap();
+        let heap = Lucene90NormsProducer::new(&read_state(&heap_dir, &info, &fis)).unwrap();
+
+        for &(number, name, _) in &widths {
+            let field = fis.field_info_by_number(number).unwrap();
+            // Positive control: the mapped producer's values slice has bytes,
+            // the heap one's has none.
+            let entry = &mapped.norms[&number];
+            assert!(values_segment_of(&mapped.get_data_input(field, entry).unwrap()).is_some());
+            let entry = &heap.norms[&number];
+            assert!(values_segment_of(&heap.get_data_input(field, entry).unwrap()).is_none());
+
+            let mut m = mapped.get_norms(field).unwrap().unwrap();
+            let mut h = heap.get_norms(field).unwrap().unwrap();
+            for target in (0..max_doc).step_by(3) {
+                let found = m.advance_exact(target).unwrap();
+                assert_eq!(found, h.advance_exact(target).unwrap(), "{name} {target}");
+                if found {
+                    assert_eq!(
+                        m.long_value().unwrap(),
+                        h.long_value().unwrap(),
+                        "{name} {target}"
+                    );
+                }
+            }
+
+            let mut m = mapped.get_norms(field).unwrap().unwrap();
+            let mut h = heap.get_norms(field).unwrap().unwrap();
+            let docs: Vec<i32> = (0..max_doc).filter(|d| d % 5 == 1).collect();
+            for window in docs.chunks(128) {
+                let mut mv = vec![0i64; window.len()];
+                let mut hv = vec![0i64; window.len()];
+                m.long_values(window.len() as i32, window, 0, &mut mv, 0, 1)
+                    .unwrap();
+                h.long_values(window.len() as i32, window, 0, &mut hv, 0, 1)
+                    .unwrap();
+                assert_eq!(mv, hv, "{name}");
+            }
+        }
     }
 }
 

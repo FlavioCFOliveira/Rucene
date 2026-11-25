@@ -1509,6 +1509,30 @@ impl<T: NumericDocValues + ?Sized> NumericDocValues for Box<T> {
     fn long_value(&self) -> Result<i64> {
         (**self).long_value()
     }
+
+    /// Forwarded, so that a call through the box reaches the boxed values'
+    /// own `longValues`, as Java's virtual call does (an override such as
+    /// `Lucene90DocValuesProducer`'s, or the trait body instantiated for the
+    /// concrete type), instead of the trait body over the box, which would
+    /// make two dynamic calls per document.
+    fn long_values(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        docs_offset: i32,
+        values: &mut [i64],
+        values_offset: i32,
+        default_value: i64,
+    ) -> Result<()> {
+        (**self).long_values(
+            size,
+            docs,
+            docs_offset,
+            values,
+            values_offset,
+            default_value,
+        )
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -3880,6 +3904,65 @@ mod tests {
         assert_eq!(map.get_first_segment_number(0), 1); // a: seg1 has weight 3, sorted first
         assert_eq!(map.get_first_segment_number(1), 1); // b: only in seg1
         assert_eq!(map.get_first_segment_number(2), 1); // c: seg1 first by weight
+    }
+
+    /// rmp #676: `long_values` through a `Box<dyn NumericDocValues>` reaches
+    /// the boxed values' own `long_values`, as Java's virtual call does.
+    #[test]
+    fn boxed_long_values_reaches_the_override() {
+        struct Overriding(std::cell::Cell<bool>);
+        impl DocIdSetIterator for Overriding {
+            fn doc_id(&self) -> i32 {
+                -1
+            }
+            fn next_doc(&mut self) -> Result<i32> {
+                Ok(crate::search::NO_MORE_DOCS)
+            }
+            fn advance(&mut self, _target: i32) -> Result<i32> {
+                Ok(crate::search::NO_MORE_DOCS)
+            }
+            fn cost(&self) -> i64 {
+                0
+            }
+        }
+        impl DocValuesIterator for Overriding {
+            fn advance_exact(&mut self, _target: i32) -> Result<bool> {
+                Ok(false)
+            }
+        }
+        impl NumericDocValues for Overriding {
+            fn long_value(&self) -> Result<i64> {
+                Ok(0)
+            }
+            fn long_values(
+                &mut self,
+                size: i32,
+                _docs: &[i32],
+                _docs_offset: i32,
+                values: &mut [i64],
+                values_offset: i32,
+                _default_value: i64,
+            ) -> Result<()> {
+                self.0.set(true);
+                for v in &mut values[values_offset as usize..(values_offset + size) as usize] {
+                    *v = 42;
+                }
+                Ok(())
+            }
+        }
+        let mut boxed: Box<dyn NumericDocValues> =
+            Box::new(Overriding(std::cell::Cell::new(false)));
+        let mut values = [0i64; 3];
+        boxed
+            .long_values(3, &[0, 1, 2], 0, &mut values, 0, 7)
+            .unwrap();
+        assert_eq!(values, [42, 42, 42]);
+        boxed
+            .long_values_no_offsets(2, &[0, 1], &mut values, 7)
+            .unwrap();
+        let mut double: Box<Box<dyn NumericDocValues>> = Box::new(boxed);
+        double.long_values(1, &[5], 0, &mut values, 2, 7).unwrap();
+        assert_eq!(values, [42, 42, 42]);
     }
 }
 
