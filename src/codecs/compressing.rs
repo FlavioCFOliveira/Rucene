@@ -27,7 +27,9 @@ use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, 
 
 use crate::codecs::MergeState;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
-use crate::store::{ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput};
+use crate::store::{
+    ByteBuffersDataInput, ByteBuffersDataOutput, DataInput, DataOutput, IndexInput,
+};
 use crate::util::compress::{
     FastCompressionHashTable, HighCompressionHashTable, Lz4, LZ4_MAX_DISTANCE,
 };
@@ -569,21 +571,22 @@ impl Compressor for Lz4WithPresetDictCompressor {
 /// Equivalent to
 /// `LZ4WithPresetDictCompressionMode.LZ4WithPresetDictDecompressor`.
 #[derive(Debug, Default)]
-struct Lz4WithPresetDictDecompressor {
+pub(crate) struct Lz4WithPresetDictDecompressor {
     compressed_lengths: Vec<i32>,
     buffer: Vec<u8>,
 }
 
 impl Lz4WithPresetDictDecompressor {
-    fn new() -> Self {
+    /// Equivalent to `new LZ4WithPresetDictDecompressor()`.
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Reads the per-block compressed lengths and returns how many blocks the
     /// chunk holds.
-    fn read_compressed_lengths(
+    fn read_compressed_lengths<I: DataInput + ?Sized>(
         &mut self,
-        input: &mut dyn DataInput,
+        input: &mut I,
         original_length: usize,
         dict_length: usize,
         block_length: usize,
@@ -636,6 +639,52 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
     fn decompress(
         &mut self,
         input: &mut dyn DataInput,
+        original_length: usize,
+        offset: usize,
+        length: usize,
+        bytes: &mut BytesRef,
+    ) -> Result<()> {
+        self.decompress_from(input, original_length, offset, length, bytes)
+    }
+}
+
+impl Lz4WithPresetDictDecompressor {
+    /// [`Decompressor::decompress`] from an `IndexInput`, the
+    /// `fieldsStream` of a stored-fields reader of [`BEST_SPEED_MODE`].
+    ///
+    /// **Internal deviation from Lucene 10.5.0, no observable difference.**
+    /// Java decodes with `fieldsStream.readByte()`/`readShort()`/`readBytes()`
+    /// calls the JIT inlines; through `&mut dyn DataInput` each is a dynamic
+    /// call, which made `Warm` LZ4-dispatch-bound (rmp #676). When `input` is
+    /// memory-mapped, the chunk is decoded from a [`MappedDataInput`] over
+    /// its bytes, statically dispatched: the same bytes, at the same
+    /// positions, with Java's position accounting, falling back to `input`
+    /// itself for the first read the bytes cannot serve, so `input` consumes
+    /// exactly what Java's `LZ4.decompress` consumes, valid or corrupt, and
+    /// raises what Java raises.
+    ///
+    /// [`BEST_SPEED_MODE`]: crate::codecs::lucene90::stored_fields::BEST_SPEED_MODE
+    pub(crate) fn decompress_index_input(
+        &mut self,
+        input: &mut dyn IndexInput,
+        original_length: usize,
+        offset: usize,
+        length: usize,
+        bytes: &mut BytesRef,
+    ) -> Result<()> {
+        let Some((segment, base)) = MappedDataInput::segment_of(input) else {
+            return self.decompress_from(input, original_length, offset, length, bytes);
+        };
+        let mut mapped = MappedDataInput::new(segment.bytes(), base, input);
+        let outcome = self.decompress_from(&mut mapped, original_length, offset, length, bytes);
+        let finished = mapped.finish();
+        outcome.and(finished)
+    }
+
+    /// `LZ4WithPresetDictDecompressor.decompress`, over any input.
+    fn decompress_from<I: DataInput + ?Sized>(
+        &mut self,
+        input: &mut I,
         original_length: usize,
         offset: usize,
         length: usize,
@@ -723,6 +772,159 @@ impl Decompressor for Lz4WithPresetDictDecompressor {
         bytes.length = length;
         debug_assert!(bytes.is_valid().is_ok(), "{:?}", bytes.is_valid());
         Ok(())
+    }
+}
+
+/// A [`DataInput`] over the memory-mapped bytes of an [`IndexInput`] from its
+/// file pointer, used by
+/// [`Lz4WithPresetDictDecompressor::decompress_index_input`].
+///
+/// Every read takes the bytes at the logical position, which starts at the
+/// input's file pointer and advances exactly as the input's would. The first
+/// read (or skip) the bytes cannot serve — past their end, a `None` array, an
+/// out-of-range destination — seeks the input to the logical position and is
+/// delegated to it, as is every read after it, so the input raises its own
+/// error at Java's position. [`finish`](Self::finish) leaves the input at the
+/// logical position. The arena is checked open when the bytes are taken
+/// (`segmentSliceOrNull`); the mapping itself is reference-counted, so a read
+/// can never touch unmapped memory.
+struct MappedDataInput<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    /// The input's file pointer at `bytes[0]`.
+    base: i64,
+    input: &'a mut dyn IndexInput,
+    /// Whether reads now go to `input`, which is then at the logical position.
+    delegated: bool,
+}
+
+impl<'a> MappedDataInput<'a> {
+    /// The mapped bytes of `input` from its file pointer to its end, with that
+    /// file pointer; `None` when `input` is not memory-mapped in one segment
+    /// over that range, or refuses the request.
+    fn segment_of(input: &dyn IndexInput) -> Option<(crate::store::MemorySegment, i64)> {
+        let base = input.file_pointer().ok()?;
+        let segment = input
+            .as_memory_segment_access_input()?
+            .segment_slice_or_null(base, input.length().checked_sub(base)?)
+            .ok()??;
+        Some((segment, base))
+    }
+
+    fn new(bytes: &'a [u8], base: i64, input: &'a mut dyn IndexInput) -> Self {
+        Self {
+            bytes,
+            pos: 0,
+            base,
+            input,
+            delegated: false,
+        }
+    }
+
+    /// The `n` bytes at the logical position, advancing past them, or `None`
+    /// when reads go (or must now go) to `input`.
+    #[inline]
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        if self.delegated {
+            return None;
+        }
+        let bytes: &'a [u8] = self.bytes;
+        let window = bytes.get(self.pos..self.pos.checked_add(n)?)?;
+        self.pos += n;
+        Some(window)
+    }
+
+    /// Hands every further read to `input`, positioned where this one is.
+    #[cold]
+    fn delegate(&mut self) -> Result<&mut dyn IndexInput> {
+        if !self.delegated {
+            self.input.seek(self.base + self.pos as i64)?;
+            self.delegated = true;
+        }
+        Ok(&mut *self.input)
+    }
+
+    /// Leaves `input` at the logical position.
+    fn finish(self) -> Result<()> {
+        if self.delegated {
+            Ok(())
+        } else {
+            self.input.seek(self.base + self.pos as i64)
+        }
+    }
+}
+
+impl DataInput for MappedDataInput<'_> {
+    fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+        self.input.to_java_string()
+    }
+
+    #[inline]
+    fn read_byte(&mut self) -> Result<u8> {
+        match self.take(1) {
+            Some(window) => Ok(window[0]),
+            None => self.delegate()?.read_byte(),
+        }
+    }
+
+    #[inline]
+    fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+        if let Some(b) = b {
+            if let Some(dst) = offset
+                .checked_add(len)
+                .and_then(|end| b.get_mut(offset..end))
+            {
+                if let Some(window) = self.take(len) {
+                    dst.copy_from_slice(window);
+                    return Ok(());
+                }
+            }
+            return self.delegate()?.read_bytes(Some(b), offset, len);
+        }
+        self.delegate()?.read_bytes(None, offset, len)
+    }
+
+    fn read_bytes_out_of_range(&mut self, b: &mut [u8], offset: i32, len: i32) -> Result<()> {
+        self.delegate()?.read_bytes_out_of_range(b, offset, len)
+    }
+
+    fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+        if let Ok(n) = usize::try_from(num_bytes) {
+            if self.take(n).is_some() {
+                return Ok(());
+            }
+        }
+        self.delegate()?.skip_bytes(num_bytes)
+    }
+
+    #[inline]
+    fn read_short(&mut self) -> Result<i16> {
+        match self.take(2) {
+            Some(window) => Ok(i16::from_le_bytes([window[0], window[1]])),
+            None => self.delegate()?.read_short(),
+        }
+    }
+
+    #[inline]
+    fn read_int(&mut self) -> Result<i32> {
+        match self
+            .take(4)
+            .and_then(|window| <[u8; 4]>::try_from(window).ok())
+        {
+            Some(window) => Ok(i32::from_le_bytes(window)),
+            None => self.delegate()?.read_int(),
+        }
+    }
+
+    #[inline]
+    fn read_long(&mut self) -> Result<i64> {
+        match self
+            .take(8)
+            .and_then(|window| <[u8; 8]>::try_from(window).ok())
+        {
+            Some(window) => Ok(i64::from_le_bytes(window)),
+            None => self.delegate()?.read_long(),
+        }
     }
 }
 
@@ -1737,6 +1939,191 @@ mod census_gap_tests {
         assert_eq!(
             error.original_message(),
             Some("Invalid decoder state: needsInput=true, needsDict=false")
+        );
+    }
+
+    /// The outcome of a decompression, comparable across the two paths: the
+    /// bytes exposed on success, the Java class and message on failure, a
+    /// panic as such, and in every case where the input stopped.
+    fn lz4_outcome(
+        run: impl FnOnce(&mut dyn IndexInput, &mut BytesRef) -> Result<()>,
+        input: &mut dyn IndexInput,
+    ) -> String {
+        let mut bytes = BytesRef::default();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(&mut *input, &mut bytes)
+        }));
+        let fp = input.file_pointer().unwrap();
+        match result {
+            Ok(Ok(())) => format!("ok {:?} fp={fp}", bytes.slice()),
+            Ok(Err(e)) => format!("err {}: {e} fp={fp}", e.java_simple_name()),
+            Err(_) => format!("panic fp={fp}"),
+        }
+    }
+
+    /// rmp #676, item 3: decoding a `BEST_SPEED` chunk from the mapped bytes
+    /// of `fieldsStream` ([`Lz4WithPresetDictDecompressor::decompress_index_input`])
+    /// consumes exactly the bytes, and ends exactly where, the plain path
+    /// through `&mut dyn DataInput` (Java's `LZ4.decompress` on
+    /// `fieldsStream`) does, with the same result or error — on valid chunks
+    /// and on truncated, bit-flipped and mis-framed ones, with and without
+    /// bytes after the chunk.
+    #[test]
+    fn lz4_preset_dict_mapped_path_consumes_what_the_input_path_consumes() {
+        use crate::store::mmap::MMapDirectory;
+        use crate::store::Directory as _;
+        use crate::store::{ByteArrayDataInput, VecDataOutput};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        let dir = MMapDirectory::open(path.clone()).unwrap();
+
+        let mode = LZ4WithPresetDictCompressionMode::new();
+        let compress = |data: &[u8]| {
+            let mut compressor = mode.new_compressor();
+            let mut output = VecDataOutput::new();
+            let mut bbo = ByteBuffersDataOutput::with_expected_size(data.len());
+            bbo.write_bytes(data, 0, data.len()).unwrap();
+            compressor
+                .compress(&mut bbo.to_data_input().unwrap(), &mut output)
+                .unwrap();
+            output.into_inner()
+        };
+        // Repetitive text (long matches, overlaps), a short record, and bytes
+        // with little redundancy (long literal runs).
+        let text: Vec<u8> = (0..30_000u32)
+            .flat_map(|i| format!("doc {} title {} body ", i % 97, i % 13).into_bytes())
+            .take(70_000)
+            .collect();
+        let noise: Vec<u8> = (0..9_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let datasets: Vec<Vec<u8>> = vec![text, b"short stored field".to_vec(), noise];
+
+        let mut cases = 0;
+        let mut differing_streams = 0;
+        for data in &datasets {
+            let stream = compress(data);
+            let n = data.len();
+            let windows = [(0, n), (n / 3, n / 3), (n - 1, 1)];
+            // The LZ4 payload starts after the framing vints; corrupt it only
+            // there, so no corrupt length asks for a huge buffer (the same on
+            // both paths, but not worth the memory).
+            let mut header = ByteArrayDataInput::new(&stream);
+            let dict_length = header.read_v_int().unwrap() as usize;
+            let block_length = header.read_v_int().unwrap() as usize;
+            header.read_v_int().unwrap();
+            let mut total = dict_length;
+            while total < n {
+                header.read_v_int().unwrap();
+                total += block_length;
+            }
+            let payload = header.position();
+
+            let mut variants: Vec<Vec<u8>> = vec![stream.clone()];
+            for cut in [payload, payload + 1, stream.len() / 2, stream.len() - 1] {
+                variants.push(stream[..cut.min(stream.len())].to_vec());
+            }
+            let step = ((stream.len() - payload) / 40).max(1);
+            for pos in (payload..stream.len()).step_by(step) {
+                for mask in [0x01u8, 0x80, 0xFF] {
+                    let mut v = stream.clone();
+                    v[pos] ^= mask;
+                    variants.push(v);
+                }
+            }
+            for variant in &variants {
+                if variant != &stream {
+                    differing_streams += 1;
+                }
+                for suffix in [&b""[..], &[0x1Fu8, 0x00, 0x00, 0x00, 0x00, 0x00][..]] {
+                    let mut file = vec![0xA5u8; 3];
+                    file.extend_from_slice(variant);
+                    file.extend_from_slice(suffix);
+                    std::fs::write(path.join("c.fdt"), &file).unwrap();
+                    for &(offset, length) in &windows {
+                        let open = || {
+                            let mut input = dir
+                                .open_input("c.fdt", &*crate::store::DEFAULT_IO_CONTEXT)
+                                .unwrap();
+                            input.seek(3).unwrap();
+                            input
+                        };
+                        let mut plain = open();
+                        let expected = lz4_outcome(
+                            |input, bytes| {
+                                Lz4WithPresetDictDecompressor::new().decompress(
+                                    input as &mut dyn DataInput,
+                                    n,
+                                    offset,
+                                    length,
+                                    bytes,
+                                )
+                            },
+                            plain.as_mut(),
+                        );
+                        let mut mapped = open();
+                        // Positive control: the mapped path is the one taken.
+                        assert!(MappedDataInput::segment_of(mapped.as_ref()).is_some());
+                        let actual = lz4_outcome(
+                            |input, bytes| {
+                                Lz4WithPresetDictDecompressor::new()
+                                    .decompress_index_input(input, n, offset, length, bytes)
+                            },
+                            mapped.as_mut(),
+                        );
+                        assert_eq!(actual, expected, "variant of {} bytes", variant.len());
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert!(differing_streams > 300, "{differing_streams}");
+        assert!(cases > 2_000, "{cases}");
+    }
+
+    /// The mapped input hands a read it cannot serve to the input, at the
+    /// logical position: a read past the end fails with the input's own
+    /// `EOFException`, and every byte before it is the file's.
+    #[test]
+    fn mapped_data_input_delegates_at_the_logical_position() {
+        use crate::store::mmap::MMapDirectory;
+        use crate::store::Directory as _;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        std::fs::write(path.join("m.bin"), [1u8, 2, 3, 4, 5, 6, 7]).unwrap();
+        let dir = MMapDirectory::open(path).unwrap();
+        let open = || {
+            let mut input = dir
+                .open_input("m.bin", &*crate::store::DEFAULT_IO_CONTEXT)
+                .unwrap();
+            input.seek(1).unwrap();
+            input
+        };
+        let mut reference = open();
+        let mut input = open();
+        let (segment, base) = MappedDataInput::segment_of(input.as_ref()).unwrap();
+        assert_eq!(base, 1);
+        let mut mapped = MappedDataInput::new(segment.bytes(), base, input.as_mut());
+        assert_eq!(mapped.read_byte().unwrap(), reference.read_byte().unwrap());
+        assert_eq!(
+            mapped.read_short().unwrap(),
+            reference.read_short().unwrap()
+        );
+        mapped.skip_bytes(1).unwrap();
+        reference.skip_bytes(1).unwrap();
+        assert!(!mapped.delegated);
+        // Two bytes left, four asked for: the input's own error.
+        let expected = reference.read_int().unwrap_err();
+        let actual = mapped.read_int().unwrap_err();
+        assert!(mapped.delegated);
+        assert_eq!(actual.to_string(), expected.to_string());
+        assert_eq!(actual.java_simple_name(), expected.java_simple_name());
+        mapped.finish().unwrap();
+        assert_eq!(
+            input.file_pointer().unwrap(),
+            reference.file_pointer().unwrap()
         );
     }
 }

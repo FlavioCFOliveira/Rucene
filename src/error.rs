@@ -451,8 +451,18 @@ const ILLEGAL_ARGUMENT_SUBCLASSES: [&str; 6] = [
 /// [`LuceneError::from`] or with a named constructor
 /// ([`LuceneError::illegal_state`], [`LuceneError::null_pointer`], …);
 /// match on its kind with [`kind`](Self::kind), [`into_kind`](Self::into_kind)
-/// or a struct pattern `LuceneError { kind: LuceneErrorKind::…, .. }`.
-pub struct LuceneError {
+/// or a pattern on its kind (`matches!(error.kind, LuceneErrorKind::…)`).
+///
+/// PERF: one pointer wide. The contents live in a [`LuceneErrorInner`] on the
+/// heap, reached through `Deref`, so that a `Result<T>` of a small `T` (the
+/// `u8`/`i16`/`i32`/`i64` of every `DataInput` read) is returned in registers
+/// instead of through memory; an error is only ever built on a failure path,
+/// where one allocation is negligible.
+pub struct LuceneError(Box<LuceneErrorInner>);
+
+/// The contents of a [`LuceneError`], which dereferences to it: `error.kind`
+/// reads the kind through the box.
+pub struct LuceneErrorInner {
     /// The Java exception class this error stands for, with its fields.
     pub kind: LuceneErrorKind,
     /// `getSuppressed()`, in the order the exceptions were added.
@@ -485,7 +495,7 @@ pub struct StackFrame {
 
 impl From<LuceneErrorKind> for LuceneError {
     fn from(kind: LuceneErrorKind) -> Self {
-        Self {
+        Self(Box::new(LuceneErrorInner {
             kind,
             suppressed: Vec::new(),
             suppression_enabled: true,
@@ -494,7 +504,23 @@ impl From<LuceneErrorKind> for LuceneError {
                 (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
                     .then(|| Arc::new(backtrace))
             },
-        }
+        }))
+    }
+}
+
+impl std::ops::Deref for LuceneError {
+    type Target = LuceneErrorInner;
+
+    #[inline]
+    fn deref(&self) -> &LuceneErrorInner {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for LuceneError {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut LuceneErrorInner {
+        &mut self.0
     }
 }
 
@@ -563,7 +589,7 @@ impl LuceneError {
 
     /// The kind, by value; the suppressed exceptions are dropped.
     pub fn into_kind(self) -> LuceneErrorKind {
-        self.kind
+        self.0.kind
     }
 
     /// `Throwable.addSuppressed(exception)`: appends `exception` to the
@@ -687,12 +713,12 @@ impl LuceneError {
     /// Returns an equal error: [`LuceneErrorKind::duplicate`] of its kind,
     /// with the same suppressed exceptions.
     pub fn duplicate(&self) -> Self {
-        Self {
+        Self(Box::new(LuceneErrorInner {
             kind: self.kind.duplicate(),
             suppressed: self.suppressed.clone(),
             suppression_enabled: self.suppression_enabled,
             backtrace: self.backtrace.clone(),
-        }
+        }))
     }
 
     /// `new IllegalStateException(String)`.
@@ -1614,7 +1640,7 @@ mod tests {
             .expect("the cause is the source");
         assert!(Arc::ptr_eq(cause, &tragedy));
         assert!(
-            matches!(closed.duplicate(), LuceneError { kind: LuceneErrorKind::AlreadyClosed { cause: Some(c), .. }, .. } if Arc::ptr_eq(&c, &tragedy))
+            matches!(&closed.duplicate().kind, LuceneErrorKind::AlreadyClosed { cause: Some(c), .. } if Arc::ptr_eq(c, &tragedy))
         );
     }
 
@@ -1628,23 +1654,18 @@ mod tests {
 
         let error = to_int_exact(1i64 << 40).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
         assert_eq!(error.java_simple_name(), "ArithmeticException");
-        assert!(matches!(
-            to_int_exact(i64::from(i32::MIN) - 1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::Arithmetic(_),
-                ..
-            })
-        ));
+        assert!(
+            matches!(to_int_exact(i64::from(i32::MIN) - 1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Arithmetic(_)))
+        );
         assert_eq!(to_int_exact(i64::from(i32::MAX)).unwrap(), i32::MAX);
         assert_eq!(to_int_exact(i64::from(i32::MIN)).unwrap(), i32::MIN);
-        assert!(matches!(
-            LuceneError::integer_overflow().duplicate(),
-            LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"
-        ));
+        assert!(
+            matches!(&(LuceneError::integer_overflow().duplicate()).kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow")
+        );
     }
 
     /// `new IllegalArgumentException(String, Throwable)` keeps the cause apart
@@ -1670,10 +1691,9 @@ mod tests {
             .and_then(|source| source.downcast_ref::<Arc<LuceneError>>())
             .expect("the cause is the source");
         assert!(Arc::ptr_eq(source, &cause));
-        assert!(matches!(
-            error.duplicate(),
-            LuceneError { kind: LuceneErrorKind::IllegalArgument { cause: Some(c), .. }, .. } if Arc::ptr_eq(&c, &cause)
-        ));
+        assert!(
+            matches!(&error.duplicate().kind, LuceneErrorKind::IllegalArgument { cause: Some(c), .. } if Arc::ptr_eq(c, &cause))
+        );
     }
 
     /// G-007 and G-103: `CorruptIndexException` keeps the composed message,

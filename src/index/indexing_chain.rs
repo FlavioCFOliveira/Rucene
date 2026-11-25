@@ -2492,10 +2492,9 @@ impl DefaultIndexingChain {
         // so the carried string is used directly to keep the two messages
         // identical.
         let original_message = match &original {
-            LuceneError {
-                kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
-                ..
-            } => message.clone(),
+            __lerr if let LuceneErrorKind::MaxBytesLengthExceeded(message) = &__lerr.kind => {
+                message.clone()
+            }
             other => other.to_string(),
         };
         let prefix: Vec<String> = term
@@ -5797,17 +5796,15 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            } => {
+            __lerr
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert_eq!(message, "too many tokens for field \"body\"");
                 assert!(
-                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+                    matches!(&cause.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
                     "{cause:?}"
                 );
             }
@@ -5838,14 +5835,12 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            } => {
+            __lerr
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert!(
                     message.starts_with(
                         "Document contains at least one immense term in field=\"body\""
@@ -5855,8 +5850,7 @@ mod tests {
                     "{message}"
                 );
                 assert!(
-                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::MaxBytesLengthExceeded(m), .. }
-                        if m == "bytes can be at most 32766 in length; got 40000"),
+                    matches!(&cause.kind, LuceneErrorKind::MaxBytesLengthExceeded(m) if m == "bytes can be at most 32766 in length; got 40000"),
                     "{cause:?}"
                 );
             }
@@ -6147,8 +6141,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a repeated vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message.contains("appears more than once in this document")
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains("appears more than once in this document")
                     && message.contains('v')),
             "unexpected error: {error:?}"
         );
@@ -6173,8 +6166,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an over-wide vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
             "unexpected error: {error:?}"
         );
         assert!(
@@ -6242,8 +6234,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
-                if message.contains("not bound to a segment")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message, .. } if message.contains("not bound to a segment")),
             "unexpected error: {error:?}"
         );
     }
@@ -6637,8 +6628,7 @@ mod tests {
             .process_document(1, Some(&second), true, &mut field_infos)
             .expect_err("the schema change must be refused");
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("index options")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("index options")),
             "unexpected error: {error:?}"
         );
         assert!(chain.take_aborting_error().is_none());
@@ -6803,7 +6793,7 @@ mod tests {
         use crate::analysis::tokenattributes::{CharTermAttribute, OffsetAttribute};
         let mut state = FieldInvertState::new(10, "f".to_string(), IndexOptions::DOCS);
         assert!(matches!(
-            state.attributes().map_err(|e| e.kind),
+            state.attributes().map_err(|e| e.into_kind()),
             Err(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 ..
@@ -7002,8 +6992,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a zero norm for a non-empty field must be refused");
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
-                if m.contains("return 0 for non-empty field")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m.contains("return 0 for non-empty field")),
             "unexpected error: {error:?}"
         );
         // The failure is document-level, not a reason to throw the segment away.
@@ -7426,13 +7415,7 @@ mod tests {
         let error = IndexingChain::bind_segment(&mut chain, tracking, &info)
             .expect_err("a chain writes exactly one segment");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -7447,13 +7430,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -8219,13 +8196,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("the two instances disagree on storeTermVectorPositions");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { .. }),
             "{error:?}"
         );
     }
@@ -8248,8 +8219,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("payloads need positions");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message.contains("cannot index term vector payloads without term vector positions")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains("cannot index term vector payloads without term vector positions")),
             "{error:?}"
         );
     }
@@ -8277,8 +8247,7 @@ mod tests {
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("term vectors were not requested");
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                    if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
+                matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
                 "{error:?}"
             );
         }
@@ -8300,8 +8269,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a non-indexed field cannot store term vectors");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message.contains("cannot store term vectors for a field that is not indexed")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains("cannot store term vectors for a field that is not indexed")),
             "{error:?}"
         );
     }
@@ -8391,13 +8359,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }

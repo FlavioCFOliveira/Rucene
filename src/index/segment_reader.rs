@@ -2409,11 +2409,9 @@ mod shared_bits_tests {
         let mut mask = FixedBitSet::new(64);
         mask.set(3);
         mask.set(20);
-        assert!(matches!(
-            shared.apply_mask(&mut mask, 0),
-            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
-                if message == "Some bits are set beyond the end of live docs"
-        ));
+        assert!(
+            matches!(shared.apply_mask(&mut mask, 0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { ref message, .. } if message == "Some bits are set beyond the end of live docs"))
+        );
     }
 }
 
@@ -4057,10 +4055,9 @@ mod core_close_order_tests {
     /// The `AlreadyClosedException` message of `error`, or a panic.
     fn already_closed_message(error: LuceneError) -> String {
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            } => message,
+            ref __lerr if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind => {
+                message.clone()
+            }
             other => panic!("expected an AlreadyClosedException, got {other:?}"),
         }
     }

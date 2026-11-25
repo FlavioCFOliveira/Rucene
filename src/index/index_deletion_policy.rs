@@ -1403,13 +1403,7 @@ mod tests {
             .on_commit(&commits)
             .unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::UnsupportedOperation { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::UnsupportedOperation { .. }),
             "{err}"
         );
     }
@@ -1469,8 +1463,7 @@ mod tests {
         for n in [0, -1, i32::MIN] {
             let err = KeepLastNCommitsDeletionPolicy::new(n).unwrap_err();
             assert!(
-                matches!(err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                    if m.contains("must be positive")),
+                matches!(&err.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("must be positive")),
                 "unexpected error for n={n}: {err}"
             );
         }
@@ -1526,8 +1519,7 @@ mod tests {
         // `IndexWriterConfig::index_deletion_policy` returns, so — unlike Java —
         // the message must point at keeping the concrete `Arc`.
         assert!(
-            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
-                if m.contains("not being used by IndexWriter")
+            matches!(&err.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m.contains("not being used by IndexWriter")
                     && m.contains("Arc<SnapshotDeletionPolicy>")
                     && m.contains("set_index_deletion_policy")),
             "{err}"
@@ -1535,13 +1527,7 @@ mod tests {
 
         let err = policy.release_gen(1).unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::IllegalState { .. }),
             "{err}"
         );
     }
@@ -1553,8 +1539,7 @@ mod tests {
 
         let err = policy.snapshot().unwrap_err();
         assert!(
-            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
-                if m == "No index commit to snapshot"),
+            matches!(&err.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m == "No index commit to snapshot"),
             "{err}"
         );
         assert_eq!(policy.get_snapshot_count(), 0);
@@ -1637,8 +1622,7 @@ mod tests {
 
         let err = policy.release(snapshotted.as_ref()).unwrap_err();
         assert!(
-            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m == "commit gen=1 is not currently snapshotted"),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m == "commit gen=1 is not currently snapshotted"),
             "{err}"
         );
     }
@@ -1652,13 +1636,7 @@ mod tests {
         let stranger = TestCommit::at_generation(Arc::clone(&dir), 42);
         let err = policy.release(stranger.as_ref()).unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }),
             "{err}"
         );
     }
@@ -2397,8 +2375,7 @@ mod tests {
         .unwrap_err();
         // `Long.parseLong("oops")` (`PersistentSnapshotDeletionPolicy.java:230`).
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, message: Some(m), .. }, .. }
-                if *class == "java.lang.NumberFormatException" && m == "For input string: \"oops\""),
+            matches!(&err.kind, LuceneErrorKind::Unchecked { class, message: Some(m), .. } if *class == "java.lang.NumberFormatException" && m == "For input string: \"oops\""),
             "{err}"
         );
     }
@@ -2414,8 +2391,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
-                if m == "no snapshots stored in this directory"),
+            matches!(&err.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m == "no snapshots stored in this directory"),
             "{err}"
         );
 
@@ -2718,7 +2694,7 @@ mod tests {
         )
         .expect_err("a save file that cannot be closed must not be silently ignored");
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("could not be closed")),
+            matches!(&err.kind, LuceneErrorKind::Io(io) if io.to_string().contains("could not be closed")),
             "unexpected error: {err:?}"
         );
 
@@ -2825,7 +2801,7 @@ mod tests {
             .snapshot()
             .expect_err("snapshot must report the I/O failure");
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("no space left")),
+            matches!(&err.kind, LuceneErrorKind::Io(io) if io.to_string().contains("no space left")),
             "unexpected error: {err:?}"
         );
 
@@ -2845,7 +2821,7 @@ mod tests {
             .snapshot()
             .expect_err("the leftover save file must block the next attempt");
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::AlreadyExists),
+            matches!(&err.kind, LuceneErrorKind::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
             "unexpected error: {err:?}"
         );
         assert_eq!(policy.get_snapshot_count(), 0);
@@ -2869,13 +2845,7 @@ mod tests {
 
         let err = policy.release_gen(99).unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }),
             "{err}"
         );
         assert_eq!(snapshot_files(dir.as_ref()), before);

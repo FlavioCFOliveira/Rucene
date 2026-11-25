@@ -432,15 +432,7 @@ fn assert_float_equals(expected: f32, actual: f32, delta: f32) {
 fn expect_illegal_argument<T>(runnable: impl FnOnce() -> Result<T>) -> String {
     let e = expect_throws_lucene(
         "java.lang.IllegalArgumentException",
-        |e| {
-            matches!(
-                e,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            )
-        },
+        |e| matches!(&e.kind, LuceneErrorKind::IllegalArgument { .. }),
         runnable,
     );
     exception_message(&e)
@@ -506,16 +498,13 @@ impl MergeScheduler for TestMergeScheduler {
             };
             match merge_source.merge(merge) {
                 Ok(()) => {}
-                Err(
-                    e @ (LuceneError {
-                        kind: LuceneErrorKind::IllegalState { .. },
-                        ..
-                    }
-                    | LuceneError {
-                        kind: LuceneErrorKind::IllegalArgument { .. },
-                        ..
-                    }),
-                ) => {
+                Err(e)
+                    if matches!(
+                        &e.kind,
+                        LuceneErrorKind::IllegalState { .. }
+                            | LuceneErrorKind::IllegalArgument { .. }
+                    ) =>
+                {
                     *self.ex.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                     break;
                 }

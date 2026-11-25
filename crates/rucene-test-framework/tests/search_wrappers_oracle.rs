@@ -73,28 +73,18 @@ fn or_null(message: &str) -> String {
 
 fn class_and_message(e: &LuceneError) -> (String, String) {
     match e {
-        LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::Io(io) = &__lerr.kind => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(|| "<null>".to_string()),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { class, message, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::Unchecked { class, message, .. } = &__lerr.kind => (
             class.to_string(),
             message.clone().unwrap_or_else(|| "<null>".to_string()),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(message),
-            ..
-        } => ("java.lang.AssertionError".to_string(), or_null(message)),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::AssertionError(message) = &__lerr.kind => {
+            ("java.lang.AssertionError".to_string(), or_null(message))
+        }
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => (
             "java.lang.IllegalArgumentException".to_string(),
             or_null(message),
         ),

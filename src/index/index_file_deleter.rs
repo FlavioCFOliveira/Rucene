@@ -1296,7 +1296,7 @@ mod tests {
         dir.delete_file("_1.fdt").unwrap();
         let error = d.checkpoint(&sis, false, &names).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::NotFound),
+            matches!(&error.kind, LuceneErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
             "{error:?}"
         );
         assert!(d.last_files.is_empty(), "{:?}", d.last_files);
@@ -2101,8 +2101,7 @@ mod tests {
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
 
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. }
-                if *class == "java.lang.NullPointerException"),
+            matches!(&err.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"),
             "expected a NullPointerException, got {err:?}"
         );
     }
@@ -2129,13 +2128,7 @@ mod tests {
         // here.
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
         assert!(
-            matches!(
-                &err,
-                LuceneError {
-                    kind: LuceneErrorKind::Unchecked { class, .. },
-                    ..
-                } if *class == "java.lang.NumberFormatException"
-            ),
+            matches!(&err.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NumberFormatException"),
             "got {err:?}"
         );
     }

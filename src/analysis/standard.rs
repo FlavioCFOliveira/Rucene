@@ -606,7 +606,7 @@ mod tests {
         let mut reader = FailingReader { closes: 0 };
         let error = StopwordAnalyzerBase::load_stopword_set(&mut reader).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.to_string() == "close failed"),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.to_string() == "close failed"),
             "{error:?}"
         );
         assert_eq!(reader.closes, 1);
@@ -919,10 +919,9 @@ mod tests {
         analyzer.set_max_token_length(0);
         assert_eq!(analyzer.max_token_length(), 0);
         match tokens(&analyzer, "abcdefgh ij") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "maxTokenLength must be greater than zero")
             }
             other => panic!("expected the tokenizer's refusal, got {other:?}"),
@@ -946,10 +945,9 @@ mod tests {
         let mut analyzer = StandardAnalyzer::new();
         analyzer.set_max_token_length(0);
         match tokens(&analyzer, "abc") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "maxTokenLength must be greater than zero")
             }
             other => panic!("expected the tokenizer's refusal, got {other:?}"),

@@ -972,13 +972,7 @@ mod tests {
         bytes.copy_from_slice(&0i32.to_be_bytes());
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 1).unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::CorruptIndex { .. }));
         assert!(err.to_string().contains("codec header mismatch"));
     }
 
@@ -993,11 +987,7 @@ mod tests {
 
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "WrongCodec", 1, 10).unwrap_err();
-        let LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { message, .. },
-            ..
-        } = &err
-        else {
+        let LuceneErrorKind::CorruptIndex { message, .. } = &err.kind else {
             panic!("{err:?}");
         };
         assert!(
@@ -1021,13 +1011,7 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 6, 10).unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::IndexFormatTooOld { .. }),
             "{err:?}"
         );
         assert_eq!(
@@ -1047,13 +1031,7 @@ mod tests {
         let mut input = ByteArrayDataInput::new(&bytes);
         let err = check_header(&mut input, "TestCodec", 1, 4).unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooNew { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::IndexFormatTooNew { .. }),
             "{err:?}"
         );
         assert_eq!(
@@ -1110,7 +1088,7 @@ mod tests {
         input.read_int().unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "bad entry"),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "bad entry"),
             "{err:?}"
         );
 
@@ -1121,10 +1099,7 @@ mod tests {
         let mut input = BufferedChecksumIndexInput::new(Box::new(MockIndexInput::new(bytes, "t")));
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message: m, .. },
-                ..
-            } => {
+            __lerr if let LuceneErrorKind::CorruptIndex { message: m, .. } = &__lerr.kind => {
                 assert!(m.starts_with("checksum failed"), "{m}");
                 assert!(!m.contains("bad entry"), "{m}");
             }
@@ -1139,10 +1114,7 @@ mod tests {
         input.read_bytes(Some(&mut skip), 0, len - 8).unwrap();
         let err = check_footer_with_prior(&mut input, prior());
         match &err {
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message: m, .. },
-                ..
-            } => {
+            __lerr if let LuceneErrorKind::CorruptIndex { message: m, .. } = &__lerr.kind => {
                 assert_eq!(
                     m,
                     &format!(
@@ -1235,13 +1207,7 @@ mod tests {
         let footer_start = checksum_input.length() - footer_length() as i64;
         ChecksumIndexInput::seek(&mut checksum_input, footer_start).unwrap();
         let err = check_footer(&mut checksum_input).unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::CorruptIndex { .. }));
         assert!(err.to_string().contains("codec footer mismatch"));
     }
 
@@ -1261,13 +1227,7 @@ mod tests {
         let footer_start = checksum_input.length() - footer_length() as i64;
         ChecksumIndexInput::seek(&mut checksum_input, footer_start).unwrap();
         let err = check_footer(&mut checksum_input).unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::CorruptIndex { .. }));
     }
 
     #[test]
@@ -1325,23 +1285,11 @@ mod tests {
     fn codec_name_validation() {
         let mut out = MockIndexOutput::new("test", "test.bin");
         let err = write_header(&mut out, "Bad\u{00E9}Codec", 1).unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
 
         let mut out = MockIndexOutput::new("test", "test.bin");
         let long = "a".repeat(128);
         let err = write_header(&mut out, &long, 1).unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 }

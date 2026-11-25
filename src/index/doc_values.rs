@@ -3615,16 +3615,10 @@ mod tests {
     /// none hands out values.
     fn empty_doc_values_producer_is_unsupported_throughout() {
         use crate::codecs::doc_values::DocValuesProducer;
-        use crate::error::{LuceneError, LuceneErrorKind};
+        use crate::error::LuceneErrorKind;
 
         fn unsupported<T>(result: Result<T>) -> bool {
-            matches!(
-                result,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::UnsupportedOperation { .. },
-                    ..
-                })
-            )
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
         }
 
         let producer = EmptyDocValuesProducer;

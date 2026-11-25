@@ -2422,13 +2422,9 @@ mod tests {
             vec!["title".to_string()]
         );
         assert!(producer.terms("title").unwrap().is_none());
-        assert!(matches!(
-            producer.terms("body"),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(producer.terms("body"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
         assert!(restricted.fields_producers[1].is_none());
     }
 
@@ -2692,10 +2688,7 @@ mod close_family_tests {
     /// The message of the `IOException` a [`Closing`] raised.
     fn surfaced(error: LuceneError) -> String {
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::Io(e),
-                ..
-            } => e.to_string(),
+            ref __lerr if let LuceneErrorKind::Io(e) = &__lerr.kind => e.to_string(),
             other => format!("{other:?}"),
         }
     }

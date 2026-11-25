@@ -5116,13 +5116,14 @@ mod tests {
         ];
         for entry in refused {
             match super::check_ordinals_entry(&entry) {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalState { message, .. },
-                    ..
-                }) => assert_eq!(
-                    message,
-                    "Ordinals shouldn't use GCD, offset or table compression"
-                ),
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind =>
+                {
+                    assert_eq!(
+                        message,
+                        "Ordinals shouldn't use GCD, offset or table compression"
+                    )
+                }
                 other => panic!("expected Java's IllegalStateException, got {other:?}"),
             }
         }
@@ -5382,10 +5383,9 @@ mod tests {
         let mut terms = values.terms_enum().unwrap();
         // `totalTermFreq=-1`, `docFreq=java.lang.UnsupportedOperationException`.
         assert_eq!(terms.total_term_freq().unwrap(), -1);
-        assert!(matches!(
-            terms.doc_freq(),
-            Err(LuceneError { kind: LuceneErrorKind::UnsupportedOperation { ref message, .. }, .. }) if message.is_empty()
-        ));
+        assert!(
+            matches!(terms.doc_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { ref message, .. } if message.is_empty()))
+        );
         let mut seeks = Vec::new();
         for key in ["t15005", "t1024", "a", "z", "t0064"] {
             let status = terms
@@ -5558,15 +5558,13 @@ mod tests {
             .get_sorted_doc_values("s")
             .unwrap()
             .unwrap();
-        assert!(matches!(
-            values.lookup_ord(3000),
-            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
-        ));
+        assert!(
+            matches!(values.lookup_ord(3000), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { ref message, .. } if message.is_empty()))
+        );
         let mut terms = values.terms_enum().unwrap();
-        assert!(matches!(
-            terms.seek_ord(-1),
-            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
-        ));
+        assert!(
+            matches!(terms.seek_ord(-1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { ref message, .. } if message.is_empty()))
+        );
         drop(leaves);
         drop(reader);
     }
@@ -5631,13 +5629,7 @@ mod tests {
         let field = infos.field_info("n").unwrap();
         let producer = segment.get_doc_values_reader().unwrap().unwrap();
         assert!(
-            matches!(
-                producer.get_numeric(field),
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                })
-            ),
+            matches!(producer.get_numeric(field), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. })),
             "the plain reader refuses a width of 3"
         );
         let merge = producer.get_merge_instance().unwrap();
@@ -5724,13 +5716,7 @@ mod tests {
         let mut plain = producer.get_numeric(field).unwrap().unwrap();
         plain.next_doc().unwrap();
         assert!(
-            matches!(
-                plain.long_value(),
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                })
-            ),
+            matches!(plain.long_value(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. })),
             "the plain reader refuses a width of 3"
         );
 
@@ -6724,13 +6710,14 @@ mod tests {
             };
             let mut skipper = Lucene90DocValuesSkipper::new(entry, input);
             match skipper.advance(0) {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { message, .. },
-                    ..
-                }) => assert!(
-                    message.contains(&format!("level out of range [{}]", level as i8)),
-                    "{message}"
-                ),
+                Err(ref __lerr)
+                    if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind =>
+                {
+                    assert!(
+                        message.contains(&format!("level out of range [{}]", level as i8)),
+                        "{message}"
+                    )
+                }
                 other => panic!("level byte {level:#x}: expected a corrupt index, got {other:?}"),
             }
         }
@@ -7176,11 +7163,8 @@ mod close_family_tests {
         let error = Lucene90DocValuesProducer::new(&read_state(&*dir, &info, &fis)).unwrap_err();
         assert!(
             matches!(
-                error,
-                crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
+                &error.kind,
+                crate::error::LuceneErrorKind::CorruptIndex { .. }
             ),
             "{error:?}"
         );

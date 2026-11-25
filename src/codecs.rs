@@ -1685,13 +1685,7 @@ pub(crate) mod tests {
         let err = registry
             .register("Dummy", DummyCodec::new("Dummy2"))
             .expect_err("duplicate registration should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalState { .. }));
     }
 
     #[test]
@@ -1700,24 +1694,12 @@ pub(crate) mod tests {
         let err = registry
             .register("", DummyCodec::new("Empty"))
             .expect_err("empty name should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
 
         let err = registry
             .register("Bad Name", DummyCodec::new("Bad"))
             .expect_err("name with space should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]

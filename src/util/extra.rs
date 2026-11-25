@@ -1491,18 +1491,17 @@ impl Ord for Version {
 /// `Version.parse` chains, which [`Display`] would prefix with the variant.
 fn java_message(error: &LuceneError) -> String {
     match error {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => message.clone(),
-        LuceneError {
-            kind:
-                LuceneErrorKind::Unchecked {
-                    message: Some(message),
-                    ..
-                },
-            ..
-        } => message.clone(),
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+            message.clone()
+        }
+        __lerr
+            if let LuceneErrorKind::Unchecked {
+                message: Some(message),
+                ..
+            } = &__lerr.kind =>
+        {
+            message.clone()
+        }
         other => other.to_string(),
     }
 }
@@ -1790,27 +1789,22 @@ mod tests {
             "9.1.0"
         );
         match Version::parse("+.1.0") {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::Unchecked {
-                        class: PARSE_EXCEPTION,
-                        message: Some(message),
-                        cause: Some(cause),
-                    },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::Unchecked {
+                    class: PARSE_EXCEPTION,
+                    message: Some(message),
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert_eq!(
                     message,
                     "Failed to parse major version from \"+\" (got: +.1.0)"
                 );
-                assert!(matches!(
-                    cause.as_ref(),
-                    LuceneError { kind: LuceneErrorKind::Unchecked {
+                assert!(matches!(&cause.as_ref().kind, LuceneErrorKind::Unchecked {
                         class: NUMBER_FORMAT_EXCEPTION,
                         message: Some(m),
                         ..
-                    }, .. } if m == "For input string: \"+\""
-                ));
+                    } if m == "For input string: \"+\""));
             }
             other => panic!("expected the major-version failure, got {other:?}"),
         }
@@ -2051,15 +2045,11 @@ mod tests {
             ),
         ] {
             let error = Version::parse_leniently(input).unwrap_err();
-            let LuceneError {
-                kind:
-                    LuceneErrorKind::Unchecked {
-                        class: PARSE_EXCEPTION,
-                        message: Some(message),
-                        cause: Some(source),
-                    },
-                ..
-            } = &error
+            let LuceneErrorKind::Unchecked {
+                class: PARSE_EXCEPTION,
+                message: Some(message),
+                cause: Some(source),
+            } = &error.kind
             else {
                 panic!("{error:?}");
             };

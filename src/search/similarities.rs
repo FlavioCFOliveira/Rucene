@@ -1030,7 +1030,7 @@ mod tests {
         let state = state(IndexOptions::DOCS_AND_FREQS, 2, 5, 0);
         let error = sim.compute_norm(&state).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. } if m.contains("positive")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("positive")),
             "unexpected error: {error:?}"
         );
     }

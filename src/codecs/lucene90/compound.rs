@@ -662,10 +662,7 @@ mod tests {
         cfs.extend_from_slice(&footer);
         overwrite(&dir, "_0.cfs", &cfs);
         match Lucene90CompoundReader::new(&shared(&dir), &info) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
                 assert!(message.starts_with("length should be "), "{message}")
             }
             other => panic!("expected CorruptIndex, got {other:?}"),
@@ -714,10 +711,7 @@ mod tests {
         codec_util::write_footer(out.as_mut()).unwrap();
         out.close().unwrap();
         match Lucene90CompoundReader::new(&shared(&dir), &info) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
                 // `"Duplicate cfs entry id=" + id + " in CFS "`, then
                 // `CorruptIndexException`'s `" (resource=" + ... + ")"`.
                 assert!(
@@ -756,11 +750,7 @@ mod tests {
         let Err(err) = reader.open_input("_0.tim", &*crate::store::DEFAULT_IO_CONTEXT) else {
             panic!("a missing sub-file must not open")
         };
-        let LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } = err
-        else {
+        let LuceneErrorKind::Io(io) = &err.kind else {
             panic!("expected a FileNotFoundException, got {err:?}")
         };
         assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
@@ -769,10 +759,9 @@ mod tests {
             "No sub-file with id .tim found in compound file \"_0.cfs\" (fileName=_0.tim files: [.fnm, .fdx, .fdt])"
         );
         match reader.file_length("_0.tim") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(io),
-                ..
-            }) => assert_eq!(io.to_string(), "_0.tim"),
+            Err(ref __lerr) if let LuceneErrorKind::Io(io) = &__lerr.kind => {
+                assert_eq!(io.to_string(), "_0.tim")
+            }
             other => panic!("expected a FileNotFoundException, got {other:?}"),
         }
     }

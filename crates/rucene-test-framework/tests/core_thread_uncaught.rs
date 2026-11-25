@@ -25,7 +25,7 @@ use randomizedtesting::junit::{Failure, JUnitCore, Request, RunListener};
 use rucene::codecs::stored_fields::{StoredFieldsFormat, StoredFieldsReader, StoredFieldsWriter};
 use rucene::codecs::{Codec, FilterCodec, Lucene104Codec};
 use rucene::document::{Document, StoredField};
-use rucene::error::{LuceneError, LuceneErrorKind};
+use rucene::error::LuceneErrorKind;
 use rucene::index::field_infos::FieldInfos;
 use rucene::index::index_writer::IndexWriter;
 use rucene::index::index_writer_config::IndexWriterConfig;
@@ -114,13 +114,12 @@ fn test_merge_thread_throws() {
     // end so that its uncaught exception is captured during the test.
     writer.close().ok();
     match outcome {
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        }) => assert_eq!(
-            message,
-            "this writer hit an unrecoverable error; cannot complete forceMerge"
-        ),
+        Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+            assert_eq!(
+                message,
+                "this writer hit an unrecoverable error; cannot complete forceMerge"
+            )
+        }
         other => panic!("expected IllegalStateException, got {other:?}"),
     }
 }

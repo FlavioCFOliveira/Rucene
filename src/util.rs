@@ -2434,13 +2434,7 @@ impl Thrown {
     /// as an `Error`, so it is rethrown and never swallowed.
     fn is_java_error(&self) -> bool {
         match self {
-            Self::Error(e) => matches!(
-                e,
-                LuceneError {
-                    kind: LuceneErrorKind::AssertionError(_),
-                    ..
-                }
-            ),
+            Self::Error(e) => matches!(&e.kind, LuceneErrorKind::AssertionError(_)),
             Self::Panic(_) => true,
         }
     }
@@ -6191,11 +6185,9 @@ mod tests {
     /// `The given long array is too small  to hold 65 bits`, two spaces.
     #[test]
     fn fixed_bit_set_from_too_few_words_is_lucenes_illegal_argument() {
-        assert!(matches!(
-            super::FixedBitSet::from_bits(vec![0u64], 65),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
-                if message == "The given long array is too small  to hold 65 bits"
-        ));
+        assert!(
+            matches!(super::FixedBitSet::from_bits(vec![0u64], 65), Err(ref __lerr) if matches!(&__lerr.kind, super::LuceneErrorKind::IllegalArgument { ref message, .. } if message == "The given long array is too small  to hold 65 bits"))
+        );
     }
 
     /// `ArrayUtil.parseInt` reads digits with `Character.digit`, and refuses
@@ -6212,11 +6204,9 @@ mod tests {
             super::ArrayUtil::parse_int_radix(&fullwidth, 0, 2, 16).unwrap(),
             127
         );
-        assert!(matches!(
-            super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::Unchecked { class, message: None, .. }, .. })
-                if class == "java.lang.NumberFormatException"
-        ));
+        assert!(
+            matches!(super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1), Err(ref __lerr) if matches!(&__lerr.kind, super::LuceneErrorKind::Unchecked { class, message: None, .. } if *class == "java.lang.NumberFormatException"))
+        );
     }
 
     /// `UnicodeUtil.newString` refuses a code point past `0x10FFFF` with a
@@ -6225,10 +6215,9 @@ mod tests {
     /// item 25): `IllegalArgumentException: null`.
     #[test]
     fn unicode_util_new_string_refuses_an_invalid_code_point_without_a_message() {
-        assert!(matches!(
-            super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
-        ));
+        assert!(
+            matches!(super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1), Err(ref __lerr) if matches!(&__lerr.kind, super::LuceneErrorKind::IllegalArgument { ref message, .. } if message.is_empty()))
+        );
     }
 
     /// `new LongsRef(long[], int, int)` only asserts `isValid()`
@@ -6467,7 +6456,7 @@ mod tests {
                 )
                 .unwrap_err();
                 assert!(
-                    matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+                    matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
                     "{error:?}"
                 );
             }
@@ -6816,12 +6805,12 @@ mod tests {
         let mut result = [0u8; 2];
         let error = NumericUtils::subtract(2, 0, &[0, 1], &[0, 2], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a < b"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "a < b"),
             "{error:?}"
         );
         let error = NumericUtils::add(2, 0, &[0xff, 0xff], &[0, 1], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a + b overflows bytesPerDim=2"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "a + b overflows bytesPerDim=2"),
             "{error:?}"
         );
         NumericUtils::subtract(2, 0, &[0x12, 0x05], &[0x10, 0x00], &mut result).unwrap();
@@ -6870,10 +6859,7 @@ mod tests {
         let error =
             IOUtils::close([IOUtils::closeable(first), IOUtils::closeable(second)]).unwrap_err();
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::Io(e),
-                ..
-            } => {
+            ref __lerr if let LuceneErrorKind::Io(e) = &__lerr.kind => {
                 assert_eq!(e.to_string(), "first close failed");
                 assert_eq!(e.kind(), io::ErrorKind::Other);
             }
@@ -6907,18 +6893,11 @@ mod tests {
 
     fn java_class_and_message(error: &LuceneError) -> String {
         let message = match error {
-            LuceneError {
-                kind: LuceneErrorKind::Io(e),
-                ..
-            } => e.to_string(),
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            } => message.clone(),
-            LuceneError {
-                kind: LuceneErrorKind::AssertionError(m),
-                ..
-            } => m.clone(),
+            __lerr if let LuceneErrorKind::Io(e) = &__lerr.kind => e.to_string(),
+            __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+                message.clone()
+            }
+            __lerr if let LuceneErrorKind::AssertionError(m) = &__lerr.kind => m.clone(),
             other => panic!("{other:?}"),
         };
         format!("{}({message})", error.java_simple_name())
@@ -7128,12 +7107,12 @@ mod tests {
         fs::set_permissions(&file, permissions).unwrap();
         let error = IOUtils::fsync(&file, false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         let error = IOUtils::fsync(tmp.path().join("missing"), false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::NotFound),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::NotFound),
             "{error:?}"
         );
         IOUtils::fsync(tmp.path(), true).unwrap();
@@ -7154,7 +7133,7 @@ mod tests {
         let dir = crate::store::FSDirectory::open(tmp.path()).unwrap();
         let error = dir.sync(&["ro"]).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         dir.sync_metadata().unwrap();
@@ -7219,7 +7198,7 @@ mod tests {
         );
         let error = EvenBits(true).apply_mask(&mut set, 0).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Other(m), .. } if m == "exiting"),
+            matches!(&error.kind, LuceneErrorKind::Other(m) if m == "exiting"),
             "{error:?}"
         );
     }

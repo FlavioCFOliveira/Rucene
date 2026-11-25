@@ -5738,16 +5738,10 @@ mod tests {
         reader.prefetch(0).unwrap();
         let result = reader.get(0).map(|_| ());
         assert!(
-            matches!(
-                result,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::Unchecked {
-                        class: "java.lang.ArrayIndexOutOfBoundsException",
-                        ..
-                    },
-                    ..
-                })
-            ),
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Unchecked {
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+                ..
+            })),
             "{result:?}"
         );
     }
@@ -5892,11 +5886,8 @@ mod close_family_tests {
         let error = format.vectors_reader(&*dir, &info, &fis, ctx).unwrap_err();
         assert!(
             matches!(
-                error,
-                crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
+                &error.kind,
+                crate::error::LuceneErrorKind::CorruptIndex { .. }
             ),
             "{error:?}"
         );

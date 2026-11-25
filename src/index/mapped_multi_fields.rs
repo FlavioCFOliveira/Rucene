@@ -879,15 +879,7 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         // Java throws UnsupportedOperationException from all four
         // (MappedMultiFields.java:74-92).
-        let unsupported = |e: Option<LuceneError>| {
-            matches!(
-                e,
-                Some(LuceneError {
-                    kind: LuceneErrorKind::UnsupportedOperation { .. },
-                    ..
-                })
-            )
-        };
+        let unsupported = |e: Option<LuceneError>| matches!(e, Some(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }));
         assert!(unsupported(terms.size().err()));
         assert!(unsupported(terms.sum_total_term_freq().err()));
         assert!(unsupported(terms.sum_doc_freq().err()));
@@ -900,20 +892,12 @@ mod tests {
         let terms = fields.terms("body").unwrap().unwrap();
         let mut enumerator = terms.iterator().unwrap();
         assert!(enumerator.seek_exact(&term("apple")).unwrap());
-        assert!(matches!(
-            enumerator.doc_freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            enumerator.total_term_freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.doc_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(enumerator.total_term_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]
@@ -1061,13 +1045,9 @@ mod tests {
         let automaton = crate::util::automaton::Automata::make_string("apple");
         let compiled = CompiledAutomaton::new(automaton, true, true, false).unwrap();
         let terms = fields.terms("body").unwrap().unwrap();
-        assert!(matches!(
-            terms.intersect(&compiled, None),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(terms.intersect(&compiled, None), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]

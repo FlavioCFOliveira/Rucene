@@ -15,7 +15,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::doc_values::DocValuesIterator;
 use crate::index::vector_values::DocIndexIterator;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{IndexInput, IndexOutput, RandomAccessInput};
+use crate::store::{IndexInput, IndexOutput, MemorySegment, RandomAccessInput};
 use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::FixedBitSet;
 
@@ -296,11 +296,53 @@ impl JumpTable {
     }
 }
 
+/// The bytes of `slice`, positioned as its file pointer, when it is a
+/// memory-mapped input whose whole range lies in one mapped segment; `None`
+/// otherwise, or when the input refuses the request (closed).
+///
+/// Reached through Lucene's own `MemorySegmentAccessInput.segmentSliceOrNull`
+/// ([`IndexInput::as_memory_segment_access_input`]); see
+/// [`IndexedDISI`]'s `block_bytes` for how the scan uses it.
+pub(crate) fn block_segment_of(slice: &dyn IndexInput) -> Option<MemorySegment> {
+    slice
+        .as_memory_segment_access_input()?
+        .segment_slice_or_null(0, slice.length())
+        .ok()
+        .flatten()
+}
+
+/// The doc id stored as an unsigned short at `pos` of `bytes`, as
+/// `Short.toUnsignedInt(slice.readShort())` reads it there, or `None` when the
+/// two bytes are not all inside `bytes`.
+#[inline]
+fn doc_in_block_at(bytes: &[u8], pos: i64) -> Option<i32> {
+    let pos = usize::try_from(pos).ok()?;
+    let pair = bytes.get(pos..pos.checked_add(2)?)?;
+    Some(i32::from(u16::from_le_bytes([pair[0], pair[1]])))
+}
+
 /// An indexed, random-accessible DISI.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene90.IndexedDISI`.
 pub struct IndexedDISI {
     slice: Box<dyn IndexInput>,
+    /// The bytes of `slice` in memory ([`block_segment_of`]), or of the shared
+    /// block slice a norms merge instance wraps
+    /// ([`set_block_segment`](Self::set_block_segment)).
+    ///
+    /// **Internal deviation from Lucene 10.5.0, no observable difference.**
+    /// Java's SPARSE scan reads each doc id with `slice.readShort()`
+    /// (`IndexedDISI.java:597-623`, `:648-660`), which the JIT inlines into a
+    /// plain load. A Rust `Box<dyn IndexInput>` pays a dynamic call per short
+    /// (plus, on a merge instance, the shared-input borrow and seek of
+    /// `getDisiInput`'s wrapper), which made the scan ~4x Lucene's cost (rmp
+    /// #675). The scan therefore reads the shorts straight from these bytes
+    /// — the same bytes, at the same positions, that `readShort` would return —
+    /// takes the slice's file pointer once on entry and seeks it once on exit,
+    /// so `slice` ends where Java's would. Any read the bytes cannot serve (a
+    /// position past the end, a closed input) goes through `slice` itself, which
+    /// raises exactly what Java raises; without bytes the scan is Java's.
+    block_bytes: Option<MemorySegment>,
     jump_table: Option<JumpTable>,
     jump_table_entry_count: i32,
     dense_rank_power: i8,
@@ -402,8 +444,10 @@ impl IndexedDISI {
         } else {
             vec![0u8; DENSE_BLOCK_LONGS >> rank_index_shift]
         };
+        let block_bytes = block_segment_of(slice.as_ref());
         Ok(Self {
             slice,
+            block_bytes,
             jump_table,
             jump_table_entry_count,
             dense_rank_power,
@@ -429,6 +473,14 @@ impl IndexedDISI {
     /// Returns the ordinal (index) of the current document.
     pub fn index(&self) -> i32 {
         self.index
+    }
+
+    /// Sets the in-memory bytes of `slice` when `slice` cannot give them
+    /// itself: the wrapper a norms merge instance hands out over its shared
+    /// block slice (`Lucene90NormsProducer.getDisiInput`), whose file pointer
+    /// is a position in that slice.
+    pub(crate) fn set_block_segment(&mut self, block_bytes: Option<MemorySegment>) {
+        self.block_bytes = block_bytes;
     }
 
     /// Returns an iterator that delegates to this `IndexedDISI`. Advancing the
@@ -530,6 +582,38 @@ impl IndexedDISI {
     }
 
     fn sparse_advance(&mut self, target: i32) -> Result<bool> {
+        // PERF: see `block_bytes`.
+        if let Some(segment) = self.block_bytes.as_ref().filter(|s| s.is_alive()) {
+            let bytes = segment.bytes();
+            let target_in_block = target & 0xFFFF;
+            let start = self.slice.file_pointer()?;
+            let mut fp = start;
+            while self.index < self.next_block_index {
+                let Some(doc_in_block) = doc_in_block_at(bytes, fp) else {
+                    // Not in the bytes: `slice` reads (and fails) as Java does.
+                    self.slice.seek(fp)?;
+                    return self.sparse_advance_scan(target);
+                };
+                fp += 2;
+                self.index = self.index.wrapping_add(1);
+                if doc_in_block >= target_in_block {
+                    self.doc = self.block | doc_in_block;
+                    self.exists = true;
+                    self.next_exist_doc_in_block = doc_in_block;
+                    self.slice.seek(fp)?;
+                    return Ok(true);
+                }
+            }
+            if fp != start {
+                self.slice.seek(fp)?;
+            }
+            return Ok(false);
+        }
+        self.sparse_advance_scan(target)
+    }
+
+    /// The SPARSE `advanceWithinBlock` loop, reading through `slice`.
+    fn sparse_advance_scan(&mut self, target: i32) -> Result<bool> {
         let target_in_block = target & 0xFFFF;
         while self.index < self.next_block_index {
             let doc_in_block = self.slice.read_short()? as u16 as i32;
@@ -619,6 +703,43 @@ impl IndexedDISI {
         if target == self.doc {
             return Ok(self.exists);
         }
+        // PERF: see `block_bytes`.
+        if let Some(segment) = self.block_bytes.as_ref().filter(|s| s.is_alive()) {
+            let bytes = segment.bytes();
+            let start = self.slice.file_pointer()?;
+            let mut fp = start;
+            while self.index < self.next_block_index {
+                let Some(doc_in_block) = doc_in_block_at(bytes, fp) else {
+                    // Not in the bytes: `slice` reads (and fails) as Java does.
+                    self.slice.seek(fp)?;
+                    return self.sparse_advance_exact_scan(target);
+                };
+                fp += 2;
+                self.index = self.index.wrapping_add(1);
+                if doc_in_block >= target_in_block {
+                    self.next_exist_doc_in_block = doc_in_block;
+                    if doc_in_block != target_in_block {
+                        self.index = self.index.wrapping_sub(1);
+                        fp -= 2;
+                        break;
+                    }
+                    self.exists = true;
+                    self.slice.seek(fp)?;
+                    return Ok(true);
+                }
+            }
+            if fp != start {
+                self.slice.seek(fp)?;
+            }
+            self.exists = false;
+            return Ok(false);
+        }
+        self.sparse_advance_exact_scan(target)
+    }
+
+    /// The SPARSE `advanceExactWithinBlock` loop, reading through `slice`.
+    fn sparse_advance_exact_scan(&mut self, target: i32) -> Result<bool> {
+        let target_in_block = target & 0xFFFF;
         while self.index < self.next_block_index {
             let doc_in_block = self.slice.read_short()? as u16 as i32;
             self.index = self.index.wrapping_add(1);

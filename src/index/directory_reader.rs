@@ -930,10 +930,11 @@ impl IndexReader for StandardDirectoryReader {
                 // before we were, and this may leave some un-referenced files
                 // in the index, which is harmless. The next time IW is opened
                 // on the index, it will delete them.
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                }) => Ok(()),
+                Err(ref __lerr)
+                    if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }) =>
+                {
+                    Ok(())
+                }
                 other => other,
             },
             None => Ok(()),
@@ -2080,10 +2081,10 @@ pub fn list_commits(directory: Arc<dyn Directory>) -> Result<Vec<Arc<dyn IndexCo
                             Arc::clone(&directory),
                         )?));
                     }
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::Io(err),
-                        ..
-                    }) if err.kind() == io::ErrorKind::NotFound => {
+                    Err(ref __lerr)
+                        if let LuceneErrorKind::Io(err) = &__lerr.kind
+                            && (err.kind() == io::ErrorKind::NotFound) =>
+                    {
                         // Stale directory listing; ignore this file.
                     }
                     Err(err) => return Err(err),
@@ -2184,10 +2185,9 @@ mod tests {
             (2, 3, 5, 3, 0)
         );
         reader.close().unwrap();
-        assert!(matches!(
-            reader.doc_freq(&a),
-            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { ref message, .. }, .. }) if message == "this IndexReader is closed"
-        ));
+        assert!(
+            matches!(reader.doc_freq(&a), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { ref message, .. } if message == "this IndexReader is closed"))
+        );
     }
 
     /// Reopening an NRT reader on a commit of another directory throws, in
@@ -2216,10 +2216,7 @@ mod tests {
         writer.add_document(&doc).unwrap();
         let reader = open_with_writer(&*writer).unwrap();
         match open_if_changed_with_commit(Arc::clone(&reader), commit.as_ref()) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(ref error),
-                ..
-            }) => assert_eq!(
+            Err(ref __lerr) if let LuceneErrorKind::Io(ref error) = &__lerr.kind => assert_eq!(
                 crate::store::java_nio_file::java_to_string(error),
                 "java.io.IOException: the specified commit does not match the specified Directory"
             ),
@@ -2259,10 +2256,9 @@ mod tests {
         assert_eq!(reader.get_sum_total_term_freq("body").unwrap(), 5);
         assert_eq!(reader.get_sum_total_term_freq("nope").unwrap(), 0);
         reader.close().unwrap();
-        assert!(matches!(
-            reader.get_sum_total_term_freq("body"),
-            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { ref message, .. }, .. }) if message == "this IndexReader is closed"
-        ));
+        assert!(
+            matches!(reader.get_sum_total_term_freq("body"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { ref message, .. } if message == "this IndexReader is closed"))
+        );
     }
     use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
@@ -2375,8 +2371,7 @@ mod tests {
     fn a_closed_reader_refuses_its_context_and_leaves() {
         let closed = |error: LuceneError| {
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }
-                    if message == "this IndexReader is closed"),
+                matches!(&error.kind, LuceneErrorKind::AlreadyClosed { message, .. } if message == "this IndexReader is closed"),
                 "{error:?}"
             );
         };
@@ -2500,13 +2495,9 @@ mod tests {
             Some(&"data".to_string())
         );
         assert!(!commit.is_deleted());
-        assert!(matches!(
-            commit.delete(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(commit.delete(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]
@@ -2555,8 +2546,7 @@ mod tests {
         let err = list_commits(Arc::clone(&dir))
             .expect_err("a segments.gen file must be reported, not skipped");
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: msg, .. }, .. }
-                if msg.contains("segments.gen") && msg.contains("not a valid segment file name")),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { message: msg, .. } if msg.contains("segments.gen") && msg.contains("not a valid segment file name")),
             "unexpected error: {err:?}"
         );
     }
@@ -2955,7 +2945,7 @@ mod tests {
         let (_writer, reader, _segment_reader) = reader_with_deleter(DeleterOutcome::Failed);
         let error = IndexReader::close(reader.as_ref()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string() == "decRef failed"),
+            matches!(&error.kind, LuceneErrorKind::Io(io) if io.to_string() == "decRef failed"),
             "{error:?}"
         );
     }
@@ -2969,8 +2959,7 @@ mod tests {
         segment_reader.dec_ref().unwrap();
         let error = IndexReader::close(reader.as_ref()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }
-                if message == "this IndexReader is closed"),
+            matches!(&error.kind, LuceneErrorKind::AlreadyClosed { message, .. } if message == "this IndexReader is closed"),
             "{error:?}"
         );
         assert_eq!(

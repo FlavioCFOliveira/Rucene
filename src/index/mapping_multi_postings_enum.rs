@@ -903,13 +903,9 @@ mod tests {
             ReaderSlice::new(0, 3, 0),
         )];
         let mut postings = mapping(state, subs).unwrap();
-        assert!(matches!(
-            postings.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(postings.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]
@@ -961,12 +957,7 @@ mod tests {
         let mut postings = mapping(state, subs).unwrap();
         // `current.postings` with `current == null`: Java's
         // `NullPointerException` (`MappingMultiPostingsEnum.java:81, 110`).
-        let is_npe = |result: Result<i32>| {
-            matches!(result, Err(LuceneError {
-                kind: LuceneErrorKind::Unchecked { class, .. },
-                ..
-            }) if class == "java.lang.NullPointerException")
-        };
+        let is_npe = |result: Result<i32>| matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"));
         assert!(is_npe(postings.freq()));
         assert_eq!(postings.start_offset(), -1);
         assert_eq!(postings.end_offset(), -1);
@@ -984,7 +975,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex { message: m, .. }, .. } if m.contains("is negative")),
+            matches!(&err.kind, LuceneErrorKind::CorruptIndex { message: m, .. } if m.contains("is negative")),
             "unexpected error: {err:?}"
         );
     }
@@ -1000,7 +991,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex { message: m, .. }, .. } if m.contains("too large")),
+            matches!(&err.kind, LuceneErrorKind::CorruptIndex { message: m, .. } if m.contains("too large")),
             "unexpected error: {err:?}"
         );
     }

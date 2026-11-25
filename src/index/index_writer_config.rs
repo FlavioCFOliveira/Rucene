@@ -1826,8 +1826,7 @@ mod tests {
         live.bind_attached_writer(Arc::downgrade(&writer));
         let error = live.attach_writer().unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
-                if message == "do not share IndexWriterConfig instances across IndexWriters"),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message, .. } if message == "do not share IndexWriterConfig instances across IndexWriters"),
             "{error}"
         );
     }

@@ -1561,8 +1561,7 @@ mod tests {
     fn a_sorter_holds_its_sort_and_refuses_a_score_sort() {
         let error = Sorter::new(crate::search::Sort::new()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "Cannot sort an index with a Sort that refers to the relevance score"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "Cannot sort an index with a Sort that refers to the relevance score"),
             "{error:?}"
         );
         let sorter = long_sorter();

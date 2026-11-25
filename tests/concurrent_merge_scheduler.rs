@@ -358,20 +358,12 @@ fn max_merge_count_stalls_the_producer() {
 #[test]
 fn invalid_max_merge_count_and_threads_are_rejected() {
     let cms = ConcurrentMergeScheduler::new();
-    assert!(matches!(
-        cms.set_max_merges_and_threads(AUTO_DETECT_MERGES_AND_THREADS, 3),
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { .. },
-            ..
-        })
-    ));
-    assert!(matches!(
-        cms.set_max_merges_and_threads(3, AUTO_DETECT_MERGES_AND_THREADS),
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { .. },
-            ..
-        })
-    ));
+    assert!(
+        matches!(cms.set_max_merges_and_threads(AUTO_DETECT_MERGES_AND_THREADS, 3), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+    );
+    assert!(
+        matches!(cms.set_max_merges_and_threads(3, AUTO_DETECT_MERGES_AND_THREADS), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+    );
 }
 
 /// `testDynamicDefaults` and `testResetToAutoDefault`.
@@ -577,13 +569,8 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
     // the writer the tragedy closed.
     if let Err(error) = writer.commit() {
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                }
-            ) || error.to_string().contains("unrecoverable"),
+            matches!(&error.kind, LuceneErrorKind::AlreadyClosed { .. })
+                || error.to_string().contains("unrecoverable"),
             "{error}"
         );
     }
@@ -609,10 +596,7 @@ fn a_merge_exception_reaches_the_writer_and_the_merge_thread() {
         // `new IllegalStateException("this writer hit an unrecoverable error;
         // cannot merge", tragedy.get())`: Java's message, and the tragedy as
         // the cause.
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, cause },
-            ..
-        }) => {
+        Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, cause } = &__lerr.kind => {
             assert_eq!(
                 message,
                 "this writer hit an unrecoverable error; cannot merge"
@@ -1192,10 +1176,7 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
     let outcome = watchdog(60, move || force_merger.join().unwrap());
     rollback.join().unwrap().unwrap();
     match outcome {
-        Err(LuceneError {
-            kind: LuceneErrorKind::Io(error),
-            ..
-        }) => {
+        Err(ref __lerr) if let LuceneErrorKind::Io(error) = &__lerr.kind => {
             assert!(
                 error
                     .to_string()
@@ -1206,13 +1187,7 @@ fn an_aborted_forced_merge_surfaces_background_merge_hit_exception() {
             // (`IndexWriter.java:2259-2260`): the cause is the merge's
             // `MergeAbortedException`.
             assert!(
-                matches!(
-                    rucene::store::java_nio_file::java_cause_of(&error),
-                    Some(LuceneError {
-                        kind: LuceneErrorKind::MergeAborted(_),
-                        ..
-                    })
-                ),
+                matches!(rucene::store::java_nio_file::java_cause_of(error), Some(__lerr) if matches!(&__lerr.kind, LuceneErrorKind::MergeAborted(_))),
                 "{error}"
             );
         }
@@ -1267,23 +1242,16 @@ fn a_negative_merge_rate_is_rejected_as_lucene_does() {
     let limiter = MergeRateLimiter::new();
     limiter.set_mb_per_sec(5.0).unwrap();
     match limiter.set_mb_per_sec(-1.5) {
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        }) => {
+        Err(ref __lerr) if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
             assert_eq!(message, "mbPerSec must be positive; got: -1.5");
         }
         other => panic!("expected IllegalArgument, got {other:?}"),
     }
     assert_eq!(limiter.get_mb_per_sec(), 5.0);
     let as_trait: &dyn rucene::store::RateLimiter = &limiter;
-    assert!(matches!(
-        as_trait.set_mb_per_sec(-0.5),
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { .. },
-            ..
-        })
-    ));
+    assert!(
+        matches!(as_trait.set_mb_per_sec(-0.5), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+    );
     limiter.set_mb_per_sec(0.0).unwrap();
     assert_eq!(limiter.get_mb_per_sec(), 0.0);
 }

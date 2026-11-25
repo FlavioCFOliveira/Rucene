@@ -3584,10 +3584,9 @@ fn check_fields(
             if has_ord {
                 let ord = match terms_enum.ord() {
                     Ok(ord) => Some(ord),
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::UnsupportedOperation { .. },
-                        ..
-                    }) => {
+                    Err(ref __lerr)
+                        if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }) =>
+                    {
                         has_ord = false;
                         None
                     }

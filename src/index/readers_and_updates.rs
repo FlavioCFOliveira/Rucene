@@ -3899,13 +3899,7 @@ mod pending_soft_deletes_tests {
         })
         .expect_err("the failure must surface");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::CorruptIndex { .. }),
             "{error:?}"
         );
     }
@@ -4725,39 +4719,23 @@ mod tests {
         let mut updates = HashMap::new();
         updates.insert(1, Some(5_i64));
         let mut numeric = MergedNumericDocValues::new(Some(Box::new(on_disk)), &updates);
-        assert!(matches!(
-            numeric.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            numeric.advance_exact(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(numeric.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(numeric.advance_exact(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
 
         let on_disk = MockBinaryDv::new(&[(0, b"alpha")]);
         let mut updates = HashMap::new();
         updates.insert(1, Some(BytesRef::new(b"beta".to_vec())));
         let mut binary = MergedBinaryDocValues::new(Some(Box::new(on_disk)), &updates);
-        assert!(matches!(
-            binary.advance(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            binary.advance_exact(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(binary.advance(0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(binary.advance_exact(0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]

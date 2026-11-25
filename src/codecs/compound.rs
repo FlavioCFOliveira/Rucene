@@ -160,48 +160,24 @@ mod tests {
         let dir = EmptyCompoundDirectory;
 
         assert!(dir.list_all().unwrap().is_empty());
-        assert!(matches!(
-            dir.delete_file("x"),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            dir.create_output("x", &*crate::store::DEFAULT_IO_CONTEXT),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            dir.create_temp_output("p", "s", &*crate::store::DEFAULT_IO_CONTEXT),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            dir.sync(&[]),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            dir.rename("a", "b"),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            dir.obtain_lock("x"),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(dir.delete_file("x"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(dir.create_output("x", &*crate::store::DEFAULT_IO_CONTEXT), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(dir.create_temp_output("p", "s", &*crate::store::DEFAULT_IO_CONTEXT), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(dir.sync(&[]), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(dir.rename("a", "b"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(dir.obtain_lock("x"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         assert!(dir.sync_metadata().is_ok());
         assert!(dir.get_pending_deletions().unwrap().is_empty());
         assert!(dir.check_integrity().is_ok());
@@ -210,13 +186,9 @@ mod tests {
     #[test]
     fn empty_compound_directory_open_input_not_found() {
         let dir = EmptyCompoundDirectory;
-        assert!(matches!(
-            dir.open_input("x", &*crate::store::DEFAULT_IO_CONTEXT),
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(_),
-                ..
-            })
-        ));
+        assert!(
+            matches!(dir.open_input("x", &*crate::store::DEFAULT_IO_CONTEXT), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Io(_)))
+        );
     }
 
     #[test]

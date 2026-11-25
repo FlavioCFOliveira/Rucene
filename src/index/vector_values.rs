@@ -1299,13 +1299,9 @@ mod tests {
                 VectorEncoding::FLOAT32
             }
         }
-        assert!(matches!(
-            Bare.iterator(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(Bare.iterator(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         assert_eq!(Bare.vector_byte_length(), 16);
     }
 

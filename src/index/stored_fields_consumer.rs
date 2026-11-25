@@ -1085,13 +1085,7 @@ mod tests {
             .start_document(1)
             .expect_err("an aborted consumer must not write again");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::AlreadyClosed { .. }),
             "{error:?}"
         );
         assert_eq!(
@@ -1108,13 +1102,7 @@ mod tests {
             .flush(&flushed)
             .expect_err("an aborted segment has nothing to flush");
         assert!(
-            matches!(
-                &error,
-                LuceneError {
-                    kind: LuceneErrorKind::Unchecked { class, .. },
-                    ..
-                } if *class == "java.lang.NullPointerException"
-            ),
+            matches!(&error.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"),
             "{error:?}"
         );
     }
@@ -1404,13 +1392,7 @@ mod tests {
         );
         let error = consumer.flush(&flushed).expect_err("conflicting attribute");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }

@@ -4263,11 +4263,8 @@ mod close_family_tests {
         };
         assert!(
             matches!(
-                error,
-                crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
+                &error.kind,
+                crate::error::LuceneErrorKind::CorruptIndex { .. }
             ),
             "{error:?}"
         );

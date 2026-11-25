@@ -2042,6 +2042,60 @@ impl StoredFieldsWriter for Lucene90CompressingStoredFieldsWriter {
 // Lucene90CompressingStoredFieldsReader
 // -----------------------------------------------------------------------------
 
+/// The `decompressor` of a [`Lucene90CompressingStoredFieldsReader`], which
+/// reads each chunk from the reader's `fieldsStream`.
+///
+/// **Internal deviation from Lucene 10.5.0, no observable difference.** Java
+/// holds `compressionMode.newDecompressor()` and calls it virtually. For
+/// [`BEST_SPEED_MODE`] (the same singleton test `compressing::same_mode`
+/// applies), this port holds the concrete LZ4-with-preset-dictionary
+/// decompressor that mode creates, so that it can decode from the mapped
+/// bytes of `fieldsStream` with static dispatch
+/// ([`Lz4WithPresetDictDecompressor::decompress_index_input`], rmp #676);
+/// every other mode goes through its own [`Decompressor`] unchanged.
+#[derive(Debug)]
+enum ChunkDecompressor {
+    /// `BEST_SPEED_MODE.newDecompressor()`.
+    BestSpeed(compressing::Lz4WithPresetDictDecompressor),
+    /// `compressionMode.newDecompressor()` of any other mode.
+    Other(Box<dyn Decompressor>),
+}
+
+impl ChunkDecompressor {
+    /// `compressionMode.newDecompressor()`.
+    fn new(compression_mode: &Arc<dyn CompressionMode>) -> Self {
+        if compressing::same_mode(compression_mode, &BEST_SPEED_MODE) {
+            Self::BestSpeed(compressing::Lz4WithPresetDictDecompressor::new())
+        } else {
+            Self::Other(compression_mode.new_decompressor())
+        }
+    }
+
+    /// `decompressor.decompress(fieldsStream, originalLength, offset, length,
+    /// bytes)`.
+    fn decompress(
+        &mut self,
+        fields_stream: &mut dyn IndexInput,
+        original_length: usize,
+        offset: usize,
+        length: usize,
+        bytes: &mut BytesRef,
+    ) -> Result<()> {
+        match self {
+            Self::BestSpeed(decompressor) => decompressor.decompress_index_input(
+                fields_stream,
+                original_length,
+                offset,
+                length,
+                bytes,
+            ),
+            Self::Other(decompressor) => {
+                decompressor.decompress(fields_stream, original_length, offset, length, bytes)
+            }
+        }
+    }
+}
+
 /// Decompresses and visits stored fields for a segment.
 pub struct Lucene90CompressingStoredFieldsReader {
     version: i32,
@@ -2050,7 +2104,7 @@ pub struct Lucene90CompressingStoredFieldsReader {
     max_pointer: i64,
     chunk_size: usize,
     compression_mode: Arc<dyn CompressionMode>,
-    decompressor: Mutex<Box<dyn Decompressor>>,
+    decompressor: Mutex<ChunkDecompressor>,
     num_docs: i32,
     num_chunks: i64,
     num_dirty_chunks: i64,
@@ -2145,7 +2199,7 @@ impl BlockState {
         fields_stream: &mut dyn IndexInput,
         num_docs: i32,
         chunk_size: usize,
-        decompressor: &mut dyn Decompressor,
+        decompressor: &mut ChunkDecompressor,
         merging: bool,
     ) -> Result<()> {
         let outcome = self.do_reset(
@@ -2171,7 +2225,7 @@ impl BlockState {
         fields_stream: &mut dyn IndexInput,
         num_docs: i32,
         chunk_size: usize,
-        decompressor: &mut dyn Decompressor,
+        decompressor: &mut ChunkDecompressor,
         merging: bool,
     ) -> Result<()> {
         self.doc_base = fields_stream.read_v_int()?;
@@ -2292,7 +2346,7 @@ impl BlockState {
         doc_id: i32,
         fields_stream: Option<&mut dyn IndexInput>,
         chunk_size: usize,
-        decompressor: &mut dyn Decompressor,
+        decompressor: &mut ChunkDecompressor,
         merging: bool,
     ) -> Result<SerializedDocument> {
         if !self.contains(doc_id) {
@@ -2618,7 +2672,7 @@ impl Lucene90CompressingStoredFieldsReader {
             index_reader: Box::new(index_reader.expect(expect)),
             max_pointer,
             chunk_size,
-            decompressor: Mutex::new(compression_mode.new_decompressor()),
+            decompressor: Mutex::new(ChunkDecompressor::new(&compression_mode)),
             compression_mode,
             num_docs,
             num_chunks,
@@ -2709,7 +2763,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
             compression_mode: Arc::clone(&self.compression_mode),
-            decompressor: Mutex::new(self.compression_mode.new_decompressor()),
+            decompressor: Mutex::new(ChunkDecompressor::new(&self.compression_mode)),
             num_docs: self.num_docs,
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
@@ -2739,7 +2793,7 @@ impl StoredFieldsReader for Lucene90CompressingStoredFieldsReader {
             max_pointer: self.max_pointer,
             chunk_size: self.chunk_size,
             compression_mode: Arc::clone(&self.compression_mode),
-            decompressor: Mutex::new(self.compression_mode.new_decompressor()),
+            decompressor: Mutex::new(ChunkDecompressor::new(&self.compression_mode)),
             num_docs: self.num_docs,
             num_chunks: self.num_chunks,
             num_dirty_chunks: self.num_dirty_chunks,
@@ -2983,7 +3037,7 @@ impl Lucene90CompressingStoredFieldsReader {
                 fields_stream.as_mut(),
                 self.num_docs,
                 self.chunk_size,
-                &mut **self
+                &mut self
                     .decompressor
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -2997,13 +3051,13 @@ impl Lucene90CompressingStoredFieldsReader {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.merging {
-            state.document(doc_id, None, self.chunk_size, &mut **decompressor, true)
+            state.document(doc_id, None, self.chunk_size, &mut decompressor, true)
         } else {
             state.document(
                 doc_id,
                 Some(fields_stream.as_mut()),
                 self.chunk_size,
-                &mut **decompressor,
+                &mut decompressor,
                 false,
             )
         }
@@ -3534,13 +3588,12 @@ mod tests {
             .unwrap();
         let mut visitor = DocumentStoredFieldVisitor::new();
         match merge.document(0, &mut visitor) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message, .. },
-                ..
-            }) => assert!(
-                message.starts_with("Corrupted: expected chunk size = -5, got 0 (resource="),
-                "{message}"
-            ),
+            Err(ref __lerr) if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
+                assert!(
+                    message.starts_with("Corrupted: expected chunk size = -5, got 0 (resource="),
+                    "{message}"
+                )
+            }
             other => panic!("expected the chunk-size CorruptIndexException, got {other:?}"),
         }
         drop(leaves);
@@ -4643,9 +4696,9 @@ mod tests {
         out.write_v_int(4 << 2).unwrap(); // token: chunkDocs = 4
         let mut input = MockIndexInput::new(out.into_inner(), "_0.fdt");
         let mut state = BlockState::new();
-        let mut decompressor = BEST_SPEED_MODE.new_decompressor();
+        let mut decompressor = ChunkDecompressor::new(&BEST_SPEED_MODE);
         let error = state
-            .do_reset(4, &mut input, 5, 1024, &mut *decompressor, false)
+            .do_reset(4, &mut input, 5, 1024, &mut decompressor, false)
             .unwrap_err();
         assert_eq!(
             error.original_message(),
@@ -4679,19 +4732,13 @@ mod tests {
         state.start_pointer = 0;
         state.bytes = vec![0u8; 32];
 
-        let mut decompressor = BEST_SPEED_MODE.new_decompressor();
-        let error = match state.document(1, None, 1024, &mut *decompressor, true) {
+        let mut decompressor = ChunkDecompressor::new(&BEST_SPEED_MODE);
+        let error = match state.document(1, None, 1024, &mut decompressor, true) {
             Ok(_) => panic!("a document cannot have a negative length"),
             Err(error) => error,
         };
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::CorruptIndex { .. }),
             "{error:?}"
         );
 
@@ -4711,12 +4758,12 @@ mod tests {
             huge.offsets = offsets.clone();
             huge.num_stored_fields = vec![1, 1];
             huge.bytes = vec![0u8; 32];
-            let error = match huge.document(0, None, 1024, &mut *decompressor, true) {
+            let error = match huge.document(0, None, 1024, &mut decompressor, true) {
                 Ok(_) => panic!("an offset past int range is refused: {offsets:?}"),
                 Err(error) => error,
             };
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+                matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
                 "{offsets:?}: {error:?}"
             );
         }
@@ -4729,12 +4776,12 @@ mod tests {
         many.offsets = vec![0, 4];
         many.num_stored_fields = vec![i64::from(i32::MAX) + 1];
         many.bytes = vec![0u8; 32];
-        let error = match many.document(0, None, 1024, &mut *decompressor, true) {
+        let error = match many.document(0, None, 1024, &mut decompressor, true) {
             Ok(_) => panic!("a stored-field count past int range is refused"),
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
 
@@ -4746,7 +4793,7 @@ mod tests {
         good.num_stored_fields = vec![0];
         good.bytes = vec![1u8, 2, 3, 4];
         assert!(
-            good.document(0, None, 1024, &mut *decompressor, true)
+            good.document(0, None, 1024, &mut decompressor, true)
                 .is_ok(),
             "a valid block must still read"
         );
@@ -5645,13 +5692,12 @@ mod tests {
         );
 
         match search.is_loaded(0) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "isLoaded should only ever get called on a merge instance"
-            ),
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+                assert_eq!(
+                    message,
+                    "isLoaded should only ever get called on a merge instance"
+                )
+            }
             other => panic!("a search instance must refuse, got {other:?}"),
         }
 
@@ -5659,13 +5705,12 @@ mod tests {
         old_version.merging = true;
         old_version.version = DATA_VERSION_CURRENT - 1;
         match old_version.is_loaded(0) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => assert_eq!(
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+                assert_eq!(
                 message,
                 "isLoaded should only ever get called when the reader is on the current version"
-            ),
+            )
+            }
             other => panic!("a reader on another version must refuse, got {other:?}"),
         }
     }
@@ -5771,16 +5816,10 @@ mod tests {
         let index = reader.index_reader();
         assert_eq!(index.get_block_id(0).unwrap(), -1);
         let is_aioobe = |result: &Result<i64>| {
-            matches!(
-                result,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::Unchecked {
-                        class: "java.lang.ArrayIndexOutOfBoundsException",
-                        ..
-                    },
-                    ..
-                })
-            )
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Unchecked {
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+                ..
+            }))
         };
         let start = index.get_block_start_pointer(-1);
         assert!(is_aioobe(&start), "{start:?}");
@@ -5846,16 +5885,14 @@ mod tests {
 
         for doc in [11, -1] {
             match index.get_block_id(doc) {
-                Err(LuceneError {
-                    kind:
-                        LuceneErrorKind::Unchecked {
-                            class: "java.lang.IndexOutOfBoundsException",
-                            message: Some(message),
-                            ..
-                        },
-                    ..
-                }) => {
-                    assert_eq!(message, format!("Index {doc} out of bounds for length 11"));
+                Err(ref __lerr)
+                    if let LuceneErrorKind::Unchecked {
+                        class: "java.lang.IndexOutOfBoundsException",
+                        message: Some(message),
+                        ..
+                    } = &__lerr.kind =>
+                {
+                    assert_eq!(*message, format!("Index {doc} out of bounds for length 11"));
                 }
                 other => panic!("expected Java's IndexOutOfBoundsException, got {other:?}"),
             }
@@ -6063,11 +6100,8 @@ mod close_family_tests {
         let error = format.fields_reader(&*dir, &info, &fis, ctx).unwrap_err();
         assert!(
             matches!(
-                error,
-                crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
+                &error.kind,
+                crate::error::LuceneErrorKind::CorruptIndex { .. }
             ),
             "{error:?}"
         );

@@ -435,13 +435,7 @@ mod tests {
     fn read_rejects_unknown_and_negative_field_ids() {
         let e = read(&[3]).unwrap_err();
         assert!(
-            matches!(
-                &e,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
+            matches!(&e.kind, LuceneErrorKind::CorruptIndex { .. }),
             "{e:?}"
         );
         assert!(e.to_string().contains("Illegal field id= 3"), "{e}");
@@ -450,7 +444,7 @@ mod tests {
         out.write_v_int(-2).unwrap();
         let e = read(&out.to_array_copy().unwrap()).unwrap_err();
         assert!(
-            matches!(&e, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "Illegal field number: -2"),
+            matches!(&e.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "Illegal field number: -2"),
             "{e:?}"
         );
     }

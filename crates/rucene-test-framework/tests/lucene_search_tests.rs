@@ -58,12 +58,8 @@ fn run_suite(builder: ClassBuilder) {
 /// an assertion error carried as an error (`java_assert!`) unwinds as the
 /// `java.lang.AssertionError` Java throws.
 fn rethrow(e: LuceneError) -> ! {
-    if let LuceneError {
-        kind: LuceneErrorKind::AssertionError(message),
-        ..
-    } = e
-    {
-        Throwable::new(ASSERTION_ERROR, message).throw()
+    if let LuceneErrorKind::AssertionError(message) = &e.kind {
+        Throwable::new(ASSERTION_ERROR, message.clone()).throw()
     }
     let (class, message) =
         rucene_test_framework::analysis::base_token_stream_test_case::java_class_and_message(&e);

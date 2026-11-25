@@ -233,15 +233,7 @@ pub fn test_obtains_lock(dir: Arc<dyn Directory>) -> Result<()> {
     // keep IW open... should not be able to obtain write lock
     expect_throws_lucene(
         "org.apache.lucene.store.LockObtainFailedException",
-        |e| {
-            matches!(
-                e,
-                LuceneError {
-                    kind: LuceneErrorKind::LockObtainFailed { .. },
-                    ..
-                }
-            )
-        },
+        |e| matches!(&e.kind, LuceneErrorKind::LockObtainFailed { .. }),
         || CheckIndex::new(Arc::clone(&dir)),
     );
 

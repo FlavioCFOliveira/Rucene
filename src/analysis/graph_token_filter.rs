@@ -732,10 +732,9 @@ mod tests {
         };
         assert_eq!(successes, MAX_GRAPH_STACK_SIZE + 1);
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            } => assert_eq!(message, "Too many graph paths (> 1000)"),
+            ref __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+                assert_eq!(message, "Too many graph paths (> 1000)")
+            }
             other => panic!("expected IllegalStateException, got {other:?}"),
         }
     }
@@ -755,10 +754,7 @@ mod tests {
             }
         };
         match err {
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            } => {
+            ref __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
                 assert_eq!(message, "Too many cached tokens (> 100)")
             }
             other => panic!("expected IllegalStateException, got {other:?}"),

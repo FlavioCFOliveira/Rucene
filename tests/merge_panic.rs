@@ -159,10 +159,9 @@ fn force_merge_with(
 /// `error` rendered as a Java throwable's `toString()`, `class: message`.
 fn throwable(error: &LuceneError) -> String {
     match error {
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(message),
-            ..
-        } => format!("java.lang.AssertionError: {message}"),
+        __lerr if let LuceneErrorKind::AssertionError(message) = &__lerr.kind => {
+            format!("java.lang.AssertionError: {message}")
+        }
         other => other.to_string(),
     }
 }
@@ -186,10 +185,7 @@ fn a_panicking_merge_fails_force_merge_under_concurrent_merge_scheduler() {
         // Java's three outcomes, by interleaving (see the module docs); each
         // is caused by the thrown exception.
         let cause = match &error {
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, cause },
-                ..
-            } => {
+            __lerr if let LuceneErrorKind::IllegalState { message, cause } = &__lerr.kind => {
                 assert!(
                     [
                         "this writer hit an unrecoverable error; cannot complete forceMerge",
@@ -200,10 +196,7 @@ fn a_panicking_merge_fails_force_merge_under_concurrent_merge_scheduler() {
                 );
                 throwable(cause.as_ref().expect("the tragedy as the cause"))
             }
-            LuceneError {
-                kind: LuceneErrorKind::Io(io),
-                ..
-            } => {
+            __lerr if let LuceneErrorKind::Io(io) = &__lerr.kind => {
                 assert_eq!(
                     io.to_string(),
                     "background merge hit exception: _0(10.5.0):c1 _1(10.5.0):c1 into _2 \

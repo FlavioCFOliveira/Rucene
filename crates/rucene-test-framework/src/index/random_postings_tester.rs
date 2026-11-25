@@ -2368,10 +2368,9 @@ impl RandomPostingsTester {
                 // Try seek by ord sometimes:
                 match terms_enum.seek_ord(field_and_term.ord) {
                     Ok(()) => {}
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::UnsupportedOperation { .. },
-                        ..
-                    }) => {
+                    Err(ref __lerr)
+                        if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }) =>
+                    {
                         supports_ords = false;
                         Assert::assert_true(terms_enum.seek_exact(&field_and_term.term)?);
                     }
@@ -2387,10 +2386,9 @@ impl RandomPostingsTester {
             let term_ord = if supports_ords {
                 match terms_enum.ord() {
                     Ok(ord) => ord,
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::UnsupportedOperation { .. },
-                        ..
-                    }) => {
+                    Err(ref __lerr)
+                        if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }) =>
+                    {
                         supports_ords = false;
                         -1
                     }

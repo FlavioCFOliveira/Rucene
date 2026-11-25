@@ -168,7 +168,7 @@ mod tests {
     use crate::codecs::segment_info::SegmentInfoFormat;
     use crate::codecs::tests::{test_segment_info_with_codec, DummyCodec};
     use crate::codecs::{register_codec, FilterCodec, Lucene99SegmentInfoFormat};
-    use crate::error::{LuceneError, LuceneErrorKind};
+    use crate::error::LuceneErrorKind;
     use crate::index::index_file_names::segment_file_name;
     use crate::index::index_file_names::FIELD_INFO_EXTENSION;
     use crate::index::{SegmentCommitInfo, SegmentInfos};
@@ -335,13 +335,7 @@ mod tests {
         assert!(manager.is_closed());
         let err = manager.acquire().unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::AlreadyClosed { .. }),
             "got {err:?}"
         );
     }

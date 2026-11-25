@@ -2354,20 +2354,12 @@ mod tests {
             .unwrap();
         assert_eq!(values.next_doc().unwrap(), 0);
         assert_eq!(values.advance(2).unwrap(), 2);
-        assert!(matches!(
-            values.advance(2),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            values.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(values.advance(2), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
+        assert!(
+            matches!(values.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -2410,17 +2402,11 @@ mod tests {
     fn assert_null_current_values<T: std::fmt::Debug>(result: Result<T>, call: &str) {
         let expected = format!("Cannot invoke \"{call}\" because \"this.currentValues\" is null");
         assert!(
-            matches!(
-                &result,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::Unchecked {
+            matches!(&result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Unchecked {
                         class: "java.lang.NullPointerException",
                         message: Some(message),
                         ..
-                    },
-                    ..
-                }) if *message == expected
-            ),
+                    } if *message == expected)),
             "{result:?}"
         );
     }
@@ -2471,13 +2457,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(values.advance_exact(2).unwrap());
-        assert!(matches!(
-            values.advance_exact(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(values.advance_exact(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
         assert!(
             values.advance_exact(2).is_ok(),
             "advance_exact may repeat the current document, unlike advance, which rejects it"
@@ -2648,13 +2630,9 @@ mod tests {
             "leaves 0 and 1 are exhausted"
         );
         assert_eq!(text(&values.binary_value().unwrap()), "c");
-        assert!(matches!(
-            values.advance(5),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(values.advance(5), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -2936,7 +2914,7 @@ mod tests {
             .unwrap();
         let err = values.advance_exact(4).unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("Out of range")),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m.contains("Out of range")),
             "unexpected error: {err:?}"
         );
     }
@@ -2948,13 +2926,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(values.next_doc().unwrap(), 0);
-        assert!(matches!(
-            values.advance(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(values.advance(0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -3111,7 +3085,7 @@ mod tests {
             .unwrap();
         let err = values.advance_exact(4).unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("Out of range")),
+            matches!(&err.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m.contains("Out of range")),
             "unexpected error: {err:?}"
         );
     }
@@ -3199,13 +3173,9 @@ mod tests {
         assert!(!values.advance_exact(1_000).unwrap());
         // The out-of-range target still counts as a position, so the
         // advance-backwards guard fires afterwards, exactly as in Java.
-        assert!(matches!(
-            values.advance_exact(11),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(values.advance_exact(11), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]

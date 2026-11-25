@@ -450,10 +450,10 @@ fn clone_document_is_lucenes() {
         let actual = match TestUtil::clone_document(&one) {
             Ok(d) => d.get_fields()[0].to_string(),
             // The port's `IllegalStateException`.
-            Err(rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let rucene::error::LuceneErrorKind::IllegalState { message, .. } =
+                    &__lerr.kind =>
+            {
                 format!("java.lang.IllegalStateException\t{message}")
             }
             Err(e) => panic!("{name}: {e}"),
@@ -947,12 +947,12 @@ fn check_reader_checks_the_reader_api() {
             lie,
         });
         match TestUtil::check_leaf_reader(liar, 3).unwrap_err() {
-            rucene::error::LuceneError { kind: rucene::error::LuceneErrorKind::Unchecked {
+            ref __lerr if let rucene::error::LuceneErrorKind::Unchecked {
                 class,
                 message: actual,
                 ..
-            }, .. } => {
-                assert_eq!(class, "java.lang.RuntimeException", "{lie:?}");
+            } = &__lerr.kind => {
+                assert_eq!(*class, "java.lang.RuntimeException", "{lie:?}");
                 assert_eq!(actual.as_deref(), Some(message.as_str()), "{lie:?}");
             }
             other => panic!("{lie:?}: {other}"),

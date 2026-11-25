@@ -1455,25 +1455,17 @@ mod tests {
         assert_eq!(merged.long_value(), 70);
         // The merged view's `delGen()` throws in Java, positioned or not
         // (`DocValuesFieldUpdates.java:231-234`).
-        assert!(matches!(
-            merged.del_gen(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(merged.del_gen(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         assert_eq!(merged.next_doc().unwrap(), 1);
         assert_eq!(merged.long_value(), 71);
         assert_eq!(merged.next_doc().unwrap(), NO_MORE_DOCS);
         // The merged view's `delGen()` throws in Java
         // (`DocValuesFieldUpdates.java:231-234`).
-        assert!(matches!(
-            merged.del_gen(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(merged.del_gen(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]
@@ -1606,13 +1598,7 @@ mod iterator_doc_values_tests {
     use crate::error::LuceneErrorKind;
 
     fn is_unsupported(result: Result<bool>) -> bool {
-        matches!(
-            result,
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        )
+        matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
     }
 
     /// #594: `DocValuesFieldUpdates.Iterator.advanceExact(int)` is final and
@@ -1650,13 +1636,9 @@ mod iterator_doc_values_tests {
         assert_eq!(numeric.long_value().unwrap(), 10);
         // `Iterator.advance(int)` is final and throws
         // (`DocValuesFieldUpdates.java:55-57`); the wrapper forwards it.
-        assert!(matches!(
-            numeric.advance(3),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(numeric.advance(3), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         assert_eq!(numeric.next_doc().unwrap(), 4);
         assert_eq!(numeric.long_value().unwrap(), 40);
         assert!(is_unsupported(numeric.advance_exact(4)));

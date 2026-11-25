@@ -6409,10 +6409,12 @@ mod merge_policy_setting_tests {
     fn temporal_setters_reject_what_java_rejects() {
         fn message(result: Result<&mut TemporalMergePolicy>) -> String {
             match result {
-                Err(crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::IllegalArgument { message, .. },
-                    ..
-                }) => message,
+                Err(ref __lerr)
+                    if let crate::error::LuceneErrorKind::IllegalArgument { message, .. } =
+                        &__lerr.kind =>
+                {
+                    message.clone()
+                }
                 other => panic!(
                     "expected IllegalArgumentException, got {:?}",
                     other.map(|_| ())

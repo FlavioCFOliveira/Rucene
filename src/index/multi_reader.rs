@@ -1452,13 +1452,7 @@ mod tests {
         let other = leaf(i32::MAX / 2, i32::MAX / 2);
         let res = MultiReader::new(vec![big, other], true);
         assert!(
-            matches!(
-                res,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                })
-            ),
+            matches!(res, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. })),
             "expected IllegalArgument for exceeding MAX_DOCS"
         );
     }
@@ -1490,13 +1484,7 @@ mod tests {
         assert!(mr.core().is_closed_by_child());
         let err = mr.ensure_open().unwrap_err();
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::AlreadyClosed { .. }),
             "expected AlreadyClosed, got {err:?}"
         );
         // The poisoning reaches the public API, not just ensure_open().

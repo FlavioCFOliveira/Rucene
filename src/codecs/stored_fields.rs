@@ -652,19 +652,19 @@ mod tests {
         let merge_state = two_segment_merge_state(vec![Some(Box::new(reader)), None], vec![3, 2]);
         let mut writer = RecordingStoredFieldsWriter::default();
         match writer.merge(&merge_state) {
-            Err(crate::error::LuceneError {
-                kind:
-                    crate::error::LuceneErrorKind::Unchecked {
-                        class: "java.lang.NullPointerException",
-                        message: Some(message),
-                        ..
-                    },
-                ..
-            }) => assert_eq!(
+            Err(ref __lerr)
+                if let crate::error::LuceneErrorKind::Unchecked {
+                    class: "java.lang.NullPointerException",
+                    message: Some(message),
+                    ..
+                } = &__lerr.kind =>
+            {
+                assert_eq!(
                 message,
                 "Cannot invoke \"org.apache.lucene.codecs.StoredFieldsReader.checkIntegrity()\" \
                  because \"storedFieldsReader\" is null"
-            ),
+            )
+            }
             other => panic!("a missing reader must fail the merge, got {other:?}"),
         }
         assert_eq!(

@@ -356,13 +356,7 @@ mod tests {
             .binary_field_data_input(&info, &mut value)
             .expect_err("new byte[-1] throws");
         assert!(
-            matches!(
-                &error,
-                LuceneError {
-                    kind: LuceneErrorKind::Unchecked { class, message: Some(m), .. },
-                    ..
-                } if *class == "java.lang.NegativeArraySizeException" && m == "-1"
-            ),
+            matches!(&error.kind, LuceneErrorKind::Unchecked { class, message: Some(m), .. } if *class == "java.lang.NegativeArraySizeException" && m == "-1"),
             "{error:?}"
         );
     }

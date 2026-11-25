@@ -2559,15 +2559,13 @@ mod tests {
             .postings(field_info, &state, None, crate::index::POSTINGS_ENUM_FREQS)
             .expect("postings exist");
         match it.next_doc() {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::Unchecked {
-                        class: "java.lang.ArrayIndexOutOfBoundsException",
-                        message: Some(message),
-                        ..
-                    },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::Unchecked {
+                    class: "java.lang.ArrayIndexOutOfBoundsException",
+                    message: Some(message),
+                    ..
+                } = &__lerr.kind =>
+            {
                 assert_eq!(message, "Index 40 out of bounds for length 32")
             }
             other => panic!("expected Java's index-out-of-bounds failure, got {other:?}"),

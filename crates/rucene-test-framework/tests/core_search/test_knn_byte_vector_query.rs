@@ -201,14 +201,13 @@ impl KnnByteMMapCase {
             "TestKnnByteVectorQueryMMap",
         ))
         .map_err(|e| match e {
-            LuceneError {
-                kind: LuceneErrorKind::Io(_),
-                ..
-            } => LuceneError::from(LuceneErrorKind::Unchecked {
-                class: "java.io.UncheckedIOException",
-                message: Some(e.to_string()),
-                cause: Some(Arc::new(e)),
-            }),
+            ref __lerr if matches!(&__lerr.kind, LuceneErrorKind::Io(_)) => {
+                LuceneError::from(LuceneErrorKind::Unchecked {
+                    class: "java.io.UncheckedIOException",
+                    message: Some(e.to_string()),
+                    cause: Some(Arc::new(e)),
+                })
+            }
             other => other,
         })?;
         Ok(TestDirectory::Mock(MockDirectoryWrapper::new(

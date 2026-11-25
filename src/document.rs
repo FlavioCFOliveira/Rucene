@@ -10277,10 +10277,11 @@ mod shared_mutable_field_tests {
         ft.set_stored(true).unwrap();
         let number = Field::new_with_number("n", NumericValue::Int(1), ft.clone()).unwrap();
         let message = |r: Result<()>| match r {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
-                ..
-            }) => m,
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message: m, .. } = &__lerr.kind =>
+            {
+                m.clone()
+            }
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         };
         assert_eq!(

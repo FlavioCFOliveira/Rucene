@@ -84,39 +84,25 @@ fn m(s: &str) -> String {
 fn class_and_message(e: &LuceneError) -> (String, String) {
     let null = || "<null>".to_string();
     match e {
-        LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::Io(io) = &__lerr.kind => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(null),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { class, message, .. },
-            ..
-        } => (class.to_string(), message.clone().unwrap_or_else(null)),
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(message),
-            ..
-        } => ("java.lang.AssertionError".to_string(), message.clone()),
-        LuceneError {
-            kind: LuceneErrorKind::AlreadyClosed { message, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::Unchecked { class, message, .. } = &__lerr.kind => {
+            (class.to_string(), message.clone().unwrap_or_else(null))
+        }
+        __lerr if let LuceneErrorKind::AssertionError(message) = &__lerr.kind => {
+            ("java.lang.AssertionError".to_string(), message.clone())
+        }
+        __lerr if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind => (
             "org.apache.lucene.store.AlreadyClosedException".to_string(),
             message.clone(),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => (
             "java.lang.IllegalStateException".to_string(),
             message.clone(),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => (
             "java.lang.IllegalArgumentException".to_string(),
             if message.is_empty() {
                 null()
@@ -124,17 +110,11 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
                 message.clone()
             },
         ),
-        LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { message, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => (
             "org.apache.lucene.index.CorruptIndexException".to_string(),
             message.clone(),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::IndexNotFound(message),
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::IndexNotFound(message) = &__lerr.kind => (
             "org.apache.lucene.index.IndexNotFoundException".to_string(),
             message.clone(),
         ),
@@ -150,15 +130,11 @@ fn class_and_message(e: &LuceneError) -> (String, String) {
 fn err(e: &LuceneError) -> String {
     let (class, message) = class_and_message(e);
     let mut s = format!("{class}\t{}", m(&message));
-    if let LuceneError {
-        kind:
-            LuceneErrorKind::Unchecked {
-                class: "java.lang.RuntimeException",
-                cause: Some(cause),
-                ..
-            },
+    if let LuceneErrorKind::Unchecked {
+        class: "java.lang.RuntimeException",
+        cause: Some(cause),
         ..
-    } = e
+    } = &e.kind
     {
         let (cc, cm) = class_and_message(cause);
         s.push_str(&format!("\tcause={cc}: {}", m(&cm)));

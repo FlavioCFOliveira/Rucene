@@ -2495,13 +2495,9 @@ mod tests {
         tokenizer.reset().unwrap();
         // Without close, set_reader must be rejected.
         let result = tokenizer.set_reader(Box::new(StringCharReader::new("b")));
-        assert!(matches!(
-            result,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { .. }))
+        );
     }
 
     /// Java's `Tokenizer.reset()` cannot fail: without a reader it installs
@@ -2512,17 +2508,13 @@ mod tests {
     fn tokenizer_reset_without_a_reader_fails_on_the_first_read() {
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         let reset = tokenizer.reset();
-        assert!(matches!(
-            reset,
-            Err(LuceneError { kind: LuceneErrorKind::IllegalState { ref message, .. }, .. }) if message == ILLEGAL_STATE_READER_MESSAGE
-        ));
+        assert!(
+            matches!(reset, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { ref message, .. } if message == ILLEGAL_STATE_READER_MESSAGE))
+        );
         let mut tokenizer = Tokenizer::new(CountingLogic::default());
         tokenizer.reset().unwrap();
         match tokenizer.increment_token() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
                 assert_eq!(message, ILLEGAL_STATE_READER_MESSAGE)
             }
             other => panic!("{other:?}"),
@@ -3387,7 +3379,7 @@ mod reader_default_tests {
         assert!(StringCharReader::new("").ready().unwrap());
         r.close().unwrap();
         assert!(r.mark_supported());
-        match r.ready().unwrap_err().kind {
+        match r.ready().unwrap_err().into_kind() {
             LuceneErrorKind::Io(e) => assert_eq!(
                 crate::store::java_nio_file::java_to_string(&e),
                 "java.io.IOException: Stream closed"

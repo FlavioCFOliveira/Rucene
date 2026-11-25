@@ -1937,19 +1937,16 @@ fn java_list<S: AsRef<str>>(items: &[S]) -> String {
 /// `Throwable.toString()` of an unchecked exception.
 fn throwable_to_string(e: &LuceneError) -> String {
     match e {
-        LuceneError {
-            kind:
-                LuceneErrorKind::Unchecked {
-                    class,
-                    message: Some(message),
-                    ..
-                },
-            ..
-        } => format!("{class}: {message}"),
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { class, .. },
-            ..
-        } => class.to_string(),
+        __lerr
+            if let LuceneErrorKind::Unchecked {
+                class,
+                message: Some(message),
+                ..
+            } = &__lerr.kind =>
+        {
+            format!("{class}: {message}")
+        }
+        __lerr if let LuceneErrorKind::Unchecked { class, .. } = &__lerr.kind => class.to_string(),
         other => other.to_string(),
     }
 }

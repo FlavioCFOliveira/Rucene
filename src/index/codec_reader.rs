@@ -582,10 +582,11 @@ pub mod final_members {
                 max_doc: 2,
             };
             let class_message = |e: LuceneError| match e {
-                LuceneError {
-                    kind: LuceneErrorKind::Unchecked { class, message, .. },
-                    ..
-                } => (class, message.unwrap()),
+                ref __lerr
+                    if let LuceneErrorKind::Unchecked { class, message, .. } = &__lerr.kind =>
+                {
+                    (*class, message.clone().unwrap())
+                }
                 other => panic!("expected an unchecked exception, got {other:?}"),
             };
             let mut visitor = crate::document::DocumentStoredFieldVisitor::new();
@@ -626,10 +627,9 @@ mod tests {
 
     fn unchecked(e: LuceneError) -> (String, Option<String>) {
         match e {
-            LuceneError {
-                kind: LuceneErrorKind::Unchecked { class, message, .. },
-                ..
-            } => (class.to_string(), message),
+            ref __lerr if let LuceneErrorKind::Unchecked { class, message, .. } = &__lerr.kind => {
+                (class.to_string(), message.clone())
+            }
             other => panic!("expected an unchecked exception, got {other:?}"),
         }
     }

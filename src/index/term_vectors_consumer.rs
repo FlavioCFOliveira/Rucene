@@ -1352,13 +1352,7 @@ mod tests {
             .init_term_vectors_writer()
             .expect_err("a discarded segment must not grow a second set of files");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::AlreadyClosed { .. }),
             "{error:?}"
         );
     }
@@ -1663,8 +1657,7 @@ mod tests {
                 .add(&mut streams, &mut ints, &state, text_start, &custom)
                 .expect_err("a custom frequency has no positions to go with");
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                    if message.contains(&format!("cannot index term vector {expected}"))),
+                matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains(&format!("cannot index term vector {expected}"))),
                 "{error:?}"
             );
         }

@@ -63,10 +63,9 @@ pub fn next_polygon() -> XYPolygon {
             let center_y = f64::from(next_float(&*random));
             match create_regular_polygon(center_x, center_y, radius, gons) {
                 Ok(p) => return p,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }) => {
+                Err(ref __lerr)
+                    if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }) =>
+                {
                     // we tried to cross dateline or pole ... try again
                 }
                 Err(e) => rethrow(e),
@@ -327,10 +326,11 @@ mod tests {
     #[test]
     fn negative_gons_throw_as_java_arrays_do() {
         let class_and_message = |gons: i32| match create_regular_polygon(0.0, 0.0, 1.0, gons) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Unchecked { class, message, .. },
-                ..
-            }) => (class, message.unwrap_or_default()),
+            Err(ref __lerr)
+                if let LuceneErrorKind::Unchecked { class, message, .. } = &__lerr.kind =>
+            {
+                (*class, message.clone().unwrap_or_default())
+            }
             other => panic!("{other:?}"),
         };
         assert_eq!(

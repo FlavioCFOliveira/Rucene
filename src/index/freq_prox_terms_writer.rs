@@ -1559,10 +1559,9 @@ impl FreqProxTermsWriterPerField {
             self.new_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
         } else {
             match self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token) {
-                Err(TermsHashAddError::DuplicateTerm(LuceneError {
-                    kind: LuceneErrorKind::IllegalState { message, cause },
-                    ..
-                })) => {
+                Err(TermsHashAddError::DuplicateTerm(ref __lerr))
+                    if let LuceneErrorKind::IllegalState { message, cause } = &__lerr.kind =>
+                {
                     // `BytesRef.utf8ToString()` decodes with
                     // `UnicodeUtil.UTF8toUTF16`, which never rejects a byte.
                     let mut utf16 = vec![0u16; term_bytes.len()];
@@ -1578,7 +1577,7 @@ impl FreqProxTermsWriterPerField {
                                 "{message} '{}'",
                                 String::from_utf16_lossy(&utf16[..length])
                             ),
-                            cause,
+                            cause: cause.clone(),
                         },
                     )));
                 }
@@ -4333,13 +4332,7 @@ mod tests {
             .add_doc(0, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -4354,13 +4347,7 @@ mod tests {
             .add_doc(1, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -4400,7 +4387,7 @@ mod tests {
             )
             .expect_err("the frequency overflows");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(message), .. } if message == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(message) if message == "integer overflow"),
             "{error:?}"
         );
     }
@@ -4420,11 +4407,7 @@ mod tests {
             .add_doc(0, &[Token::new("alpha", 1), Token::new("alpha", 1)])
             .expect_err("must be rejected");
         assert!(
-            matches!(
-                error,
-                LuceneError { kind: LuceneErrorKind::IllegalState { ref message, cause: None }, .. }
-                    if message == "field 'body' has duplicate term 'alpha'"
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { ref message, cause: None } if message == "field 'body' has duplicate term 'alpha'"),
             "{error:?}"
         );
     }
@@ -4445,13 +4428,7 @@ mod tests {
             .intern(&mut pool, &mut ints, &huge, 0)
             .expect_err("too long");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::MaxBytesLengthExceeded(_),
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::MaxBytesLengthExceeded(_)),
             "{error:?}"
         );
         assert_eq!(field.num_terms(), 0);
@@ -4530,27 +4507,15 @@ mod tests {
         let terms = fields.terms("body").expect("terms").expect("present");
         let mut enumerator = terms.iterator().expect("iterator");
         enumerator.next().expect("first term");
-        assert!(matches!(
-            enumerator.doc_freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            enumerator.total_term_freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            enumerator.impacts(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.doc_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(enumerator.total_term_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(enumerator.impacts(0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     fn drain_positions(postings: &mut dyn PostingsEnum) -> Vec<(i32, Vec<i32>)> {
@@ -4740,13 +4705,9 @@ mod tests {
         let terms = fields.terms("body").expect("terms").expect("present");
         let mut enumerator = terms.iterator().expect("iterator");
         enumerator.next().expect("first term");
-        assert!(matches!(
-            enumerator.postings(None, POSTINGS_ENUM_POSITIONS),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.postings(None, POSTINGS_ENUM_POSITIONS), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -4759,13 +4720,9 @@ mod tests {
         let terms = fields.terms("body").expect("terms").expect("present");
         let mut enumerator = terms.iterator().expect("iterator");
         enumerator.next().expect("first term");
-        assert!(matches!(
-            enumerator.postings(None, POSTINGS_ENUM_OFFSETS),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.postings(None, POSTINGS_ENUM_OFFSETS), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     /// `FreqProxTermsEnum.postings` refuses `FREQS` on a field that did not
@@ -4786,7 +4743,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "did not index freq"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "did not index freq"),
             "{error:?}"
         );
         assert!(enumerator
@@ -5200,13 +5157,7 @@ mod tests {
         let mut input = PooledSliceReader::new(reader, &pool);
         let error = input.skip_bytes(-1).expect_err("negative skip");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { .. }),
             "{error:?}"
         );
         input.skip_bytes(1).expect("one byte to skip");

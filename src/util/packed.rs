@@ -2457,7 +2457,7 @@ mod tests {
         assert_eq!(reader.binary_search(0, 10, 9).unwrap(), 3);
         let error = reader.binary_search(0, i64::MAX, 9).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
     }

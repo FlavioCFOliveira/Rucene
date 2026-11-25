@@ -556,10 +556,9 @@ pub fn next_polygon() -> Polygon {
             let lon = next_longitude();
             match create_regular_polygon(lat, lon, radius_meters, gons) {
                 Ok(p) => return p,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }) => {
+                Err(ref __lerr)
+                    if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }) =>
+                {
                     // we tried to cross dateline or pole ... try again
                 }
                 Err(e) => rethrow(e),
@@ -1050,10 +1049,11 @@ mod a3_tests {
     #[test]
     fn negative_gons_throw_as_java_arrays_do() {
         let class_and_message = |gons: i32| match create_regular_polygon(0.0, 0.0, 1.0, gons) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Unchecked { class, message, .. },
-                ..
-            }) => (class, message.unwrap_or_default()),
+            Err(ref __lerr)
+                if let LuceneErrorKind::Unchecked { class, message, .. } = &__lerr.kind =>
+            {
+                (*class, message.clone().unwrap_or_default())
+            }
             other => panic!("{other:?}"),
         };
         assert_eq!(
