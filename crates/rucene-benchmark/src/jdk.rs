@@ -346,23 +346,80 @@ pub fn lock<T: ?Sized>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_,
 /// committed heap, and `freeMemory()`, its unused part), which the
 /// benchmark's `TaskStats` records (`TaskStats.java:73-74`, `:79-87`). A
 /// Rust process has no managed heap: `total_memory` is the process's
-/// resident set size (`VmRSS` of `/proc/self/status`, 0 where it cannot be
-/// read) and `free_memory` is 0, so "used" equals "total".
+/// resident set size (the `VmRSS` figure of `/proc/self/status`, 0 where it
+/// cannot be read) and `free_memory` is 0, so "used" equals "total".
 pub struct Runtime;
+
+/// The resident-set probe behind [`Runtime::total_memory`]: `/proc/self/statm`
+/// held open and the kernel page size (`AT_PAGESZ` of `/proc/self/auxv`).
+///
+/// PERF: `TaskStats` reads `totalMemory()` twice per task run, i.e. twice per
+/// `AddDoc` or `Search`; Java's is a field read. Opening, rendering and parsing
+/// `/proc/self/status` on every call was 77 % of an indexing run (rmp #679).
+/// One positional read of the one-line `statm` (resident pages) gives the same
+/// figure as `VmRSS`: both are the sum of the anonymous, file and shmem RSS
+/// counters (`task_statm` and `task_mem`, `fs/proc/task_mmu.c`), `statm` in
+/// pages, `VmRSS` in kB.
+#[cfg(unix)]
+struct RssProbe {
+    statm: std::fs::File,
+    page_size: i64,
+}
+
+#[cfg(unix)]
+impl RssProbe {
+    /// The probe, opened once per process; `None` where `/proc` is missing.
+    fn get() -> Option<&'static RssProbe> {
+        static PROBE: std::sync::OnceLock<Option<RssProbe>> = std::sync::OnceLock::new();
+        PROBE
+            .get_or_init(|| {
+                Some(RssProbe {
+                    statm: std::fs::File::open("/proc/self/statm").ok()?,
+                    page_size: Self::page_size()?,
+                })
+            })
+            .as_ref()
+    }
+
+    /// `AT_PAGESZ` (6) of the auxiliary vector: pairs of native words.
+    fn page_size() -> Option<i64> {
+        const AT_PAGESZ: u64 = 6;
+        let auxv = std::fs::read("/proc/self/auxv").ok()?;
+        let word = std::mem::size_of::<usize>();
+        let read = |b: &[u8]| -> u64 {
+            let mut w = [0u8; 8];
+            w[..word].copy_from_slice(b);
+            u64::from_ne_bytes(w)
+        };
+        auxv.chunks_exact(2 * word)
+            .find_map(|pair| (read(&pair[..word]) == AT_PAGESZ).then(|| read(&pair[word..]) as i64))
+    }
+
+    /// Resident bytes: the second field of `statm` times the page size.
+    fn resident_bytes(&self) -> Option<i64> {
+        use std::os::unix::fs::FileExt;
+        // `size resident shared text lib data dt`: seven decimal counters.
+        let mut buf = [0u8; 256];
+        let n = self.statm.read_at(&mut buf, 0).ok()?;
+        let line = std::str::from_utf8(&buf[..n]).ok()?;
+        let pages: i64 = line.split_ascii_whitespace().nth(1)?.parse().ok()?;
+        Some(pages * self.page_size)
+    }
+}
 
 impl Runtime {
     /// `Runtime.getRuntime().totalMemory()`.
     pub fn total_memory() -> i64 {
-        std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|status| {
-                status.lines().find_map(|line| {
-                    let rest = line.strip_prefix("VmRSS:")?;
-                    let kb: i64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
-                    Some(kb * 1024)
-                })
-            })
-            .unwrap_or(0)
+        #[cfg(unix)]
+        {
+            RssProbe::get()
+                .and_then(RssProbe::resident_bytes)
+                .unwrap_or(0)
+        }
+        #[cfg(not(unix))]
+        {
+            0
+        }
     }
 
     /// `Runtime.getRuntime().freeMemory()`.
@@ -573,5 +630,44 @@ pub mod system {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Runtime;
+
+    /// `VmRSS` of `/proc/self/status`, in bytes (the figure `total_memory`
+    /// reported before rmp #679).
+    fn vm_rss_from_status() -> i64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    let rest = line.strip_prefix("VmRSS:")?;
+                    let kb: i64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+                    Some(kb * 1024)
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    /// `total_memory` equals `VmRSS` whenever the resident set does not move
+    /// between the two status reads around it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn total_memory_equals_status_vm_rss() {
+        let mut equal = 0;
+        for _ in 0..200 {
+            let before = vm_rss_from_status();
+            let probe = Runtime::total_memory();
+            let after = vm_rss_from_status();
+            assert!(probe > 0, "statm probe read 0");
+            if before == after {
+                assert_eq!(probe, before, "statm resident != VmRSS");
+                equal += 1;
+            }
+        }
+        assert!(equal > 0, "the resident set moved on every attempt");
     }
 }

@@ -106,6 +106,7 @@ use crate::index::{NumericValue, StoredValue};
 use crate::search::Similarity;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
+use crate::util::attribute::{AttributeImpl, AttributeInterface};
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
@@ -287,6 +288,13 @@ struct InvertAttributes {
     /// `payloadAttribute = attributeSource.getAttribute(PayloadAttribute.class)`,
     /// `None` where Java's is `null`.
     payload: Option<AttributeHandle<dyn PayloadAttribute>>,
+    /// Whether one implementation instance provides the term, term-frequency,
+    /// position-increment and offset attributes and the payload attribute when
+    /// present (the default factory's `PackedTokenAttributeImpl`).
+    ///
+    /// PERF: [`read_token`] then reads the token under one borrow of that
+    /// instance instead of one borrow per attribute (rmp #679).
+    packed: bool,
 }
 
 impl FieldInvertState {
@@ -402,12 +410,21 @@ impl FieldInvertState {
                 let pos_incr = AttributeHandle::add(&mut source)?;
                 let offset = AttributeHandle::add(&mut source)?;
                 let payload = AttributeHandle::get(&source);
+                let packed = term.as_ref().is_some_and(|term| {
+                    term.same_impl_as(&term_freq)
+                        && term.same_impl_as(&pos_incr)
+                        && term.same_impl_as(&offset)
+                        && payload
+                            .as_ref()
+                            .is_none_or(|payload| term.same_impl_as(payload))
+                });
                 self.attributes = Some(InvertAttributes {
                     term,
                     term_freq,
                     pos_incr,
                     offset,
                     payload,
+                    packed,
                 });
                 self.attribute_source = Some(source);
             }
@@ -1140,6 +1157,9 @@ struct RawToken {
 /// position-increment, offset and term-frequency attributes were added to
 /// the stream there, so only the term and the payload may be absent.
 fn read_token(attributes: &InvertAttributes, term: &mut BytesRef) -> Result<RawToken> {
+    if attributes.packed {
+        return Ok(read_packed_token(attributes, term));
+    }
     // `termAttribute = attributeSource.getAttribute(...)` is `null` without
     // the attribute (`FieldInvertState.java:106`); the dereference happens in
     // `termsHashPerField.add(invertState.termAttribute.getBytesRef(), docID)`
@@ -1176,6 +1196,38 @@ fn read_token(attributes: &InvertAttributes, term: &mut BytesRef) -> Result<RawT
         // `invertTerm`, which passes no attribute source, leaves it `null`.
         has_term_freq_attribute: true,
     })
+}
+
+/// [`read_token`] for attributes one implementation provides: the same reads,
+/// in the same order, under one borrow of that implementation.
+fn read_packed_token(attributes: &InvertAttributes, term: &mut BytesRef) -> RawToken {
+    fn cast<I: AttributeInterface + ?Sized>(att: &dyn AttributeImpl) -> &I {
+        I::cast(att).expect("INVARIANT: an implementation answers the casts it is keyed by")
+    }
+    let term_attribute = attributes
+        .term
+        .as_ref()
+        .expect("INVARIANT: packed attributes have a term attribute");
+    let att = term_attribute.borrow_impl();
+    let att: &dyn AttributeImpl = &**att;
+    cast::<dyn TermToBytesRefAttribute>(att).copy_bytes_ref_to(term);
+    let position_increment = cast::<dyn PositionIncrementAttribute>(att).get_position_increment();
+    let offset = cast::<dyn OffsetAttribute>(att);
+    let (start_offset, end_offset) = (offset.start_offset(), offset.end_offset());
+    let payload = attributes
+        .payload
+        .as_ref()
+        .and_then(|_| cast::<dyn PayloadAttribute>(att).get_payload().cloned());
+    let term_freq = cast::<dyn TermFrequencyAttribute>(att).get_term_frequency();
+    RawToken {
+        has_term: true,
+        position_increment,
+        start_offset,
+        end_offset,
+        payload,
+        term_freq,
+        has_term_freq_attribute: true,
+    }
 }
 
 /// Reads the end-of-stream position increment and end offset.

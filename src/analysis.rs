@@ -830,6 +830,19 @@ impl<I: AttributeInterface + ?Sized> AttributeHandle<I> {
         Arc::ptr_eq(&self.cell, &other.cell)
     }
 
+    /// Borrows the implementation, for a crate-internal caller that reads
+    /// several interfaces of one implementation (see
+    /// [`same_impl_as`](Self::same_impl_as)) under one borrow, casting with
+    /// [`AttributeInterface::cast`].
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed mutably.
+    #[inline]
+    pub(crate) fn borrow_impl(&self) -> AtomicRef<'_, Box<dyn AttributeImpl>> {
+        self.cell.borrow()
+    }
+
     /// Borrows the implementation mutably, for a caller that sets several
     /// interfaces of one implementation (see [`same_impl_as`](Self::same_impl_as))
     /// under one borrow, casting with [`AttributeInterface::cast_mut`].

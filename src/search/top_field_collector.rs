@@ -617,6 +617,12 @@ impl TopFieldLeafCollector<'_> {
     }
 
     /// Equivalent to `TopFieldLeafCollector.collectCompetitiveHit(int)`.
+    ///
+    /// PERF: kept out of line, with [`collect_any_hit`](Self::collect_any_hit),
+    /// so that [`collect`](LeafCollector::collect), inlined into the doc loop of
+    /// `collect_stream`, carries only the counting and threshold path every
+    /// document takes (rmp #680).
+    #[inline(never)]
     fn collect_competitive_hit(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
         // This hit is competitive: replace the bottom element of the queue and
         // adjust the top.
@@ -637,6 +643,7 @@ impl TopFieldLeafCollector<'_> {
     }
 
     /// Equivalent to `TopFieldLeafCollector.collectAnyHit(int, int)`.
+    #[inline(never)]
     fn collect_any_hit(
         &mut self,
         doc: i32,
@@ -671,6 +678,8 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
         }
     }
 
+    // PERF: `#[inline]` alone left the call in the `collect_stream` loop.
+    #[inline(always)]
     fn collect(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<()> {
         self.count_hit(scorer)?;
         match self.after_doc {
