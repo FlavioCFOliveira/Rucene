@@ -34,6 +34,12 @@
 //! tools/bench-compare/run.sh compare  # re-print the table of the last runs
 //! ```
 
+/// The lib's unit tests run on the allocator the `benchmark` executable
+/// installs, so that `jdk::Runtime::total_memory` is exercised as it runs.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: jdk::CountingAllocator = jdk::CountingAllocator;
+
 pub mod by_task;
 pub mod constants;
 pub mod quality;

@@ -6619,7 +6619,8 @@ impl DocumentsWriter {
 
         let outcome: Result<(i64, Option<Arc<DocumentsWriterPerThread>>)> = (|| {
             self.ensure_open()?;
-            let shared = Arc::clone(&self.shared);
+            // PERF: borrowed, not an `Arc` clone per document (rmp #679).
+            let shared = &self.shared;
             let indexed = guard.update_documents(
                 docs,
                 del_node,

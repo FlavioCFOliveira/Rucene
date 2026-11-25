@@ -73,7 +73,7 @@ use crate::analysis::tokenattributes::{
     OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
     TermToBytesRefAttribute,
 };
-use crate::analysis::{Analyzer, AttributeHandle, TokenStream};
+use crate::analysis::{Analyzer, AttributeHandle, SharedTokenStream, TokenStream};
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
@@ -2753,7 +2753,23 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1908-1912`).
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
-            while stream.increment_token()? {
+            // PERF: the stream of the reused components is borrowed once for
+            // the token loop instead of once per `increment_token` (rmp #679);
+            // the attributes are separate cells, read between calls.
+            let mut hoisted = None;
+            let tokens: &mut dyn TokenStream = if stream
+                .as_any()
+                .is_some_and(|stream| stream.is::<SharedTokenStream>())
+            {
+                let shared = stream
+                    .as_any_mut()
+                    .and_then(|stream| stream.downcast_mut::<SharedTokenStream>())
+                    .expect("INVARIANT: the stream was checked to be a SharedTokenStream");
+                &mut **hoisted.insert(shared.borrow_inner_mut())
+            } else {
+                &mut *stream
+            };
+            while tokens.increment_token()? {
                 let token = read_token(per_field.invert_state.attributes()?, &mut term_bytes)?;
                 let state = &mut per_field.invert_state;
 
@@ -2872,6 +2888,7 @@ impl DefaultIndexingChain {
                     ));
                 }
             }
+            drop(hoisted);
 
             stream.end()?;
             let (end_position_increment, end_offset) =

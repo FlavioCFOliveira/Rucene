@@ -28,7 +28,12 @@
 use std::process::ExitCode;
 
 use rucene_benchmark::by_task::benchmark::Benchmark;
-use rucene_benchmark::jdk::run_main;
+use rucene_benchmark::jdk::{run_main, CountingAllocator};
+
+/// The heap counter behind `Runtime.totalMemory()` (see
+/// [`rucene_benchmark::jdk::Runtime`]).
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 fn main() -> ExitCode {
     run_main(|args| {

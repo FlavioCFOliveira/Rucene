@@ -10,7 +10,7 @@
 //! | the functions below | `System`, `Thread`, `String`, `Integer`, `Double` and `Boolean` members |
 //! | [`run_main`] | the `java` launcher running a class's `main(String[])` |
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rucene::error::{LuceneError, Result};
@@ -345,81 +345,72 @@ pub fn lock<T: ?Sized>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_,
 /// **Divergence.** Java reports the JVM heap (`Runtime.totalMemory()`, the
 /// committed heap, and `freeMemory()`, its unused part), which the
 /// benchmark's `TaskStats` records (`TaskStats.java:73-74`, `:79-87`). A
-/// Rust process has no managed heap: `total_memory` is the process's
-/// resident set size (the `VmRSS` figure of `/proc/self/status`, 0 where it
-/// cannot be read) and `free_memory` is 0, so "used" equals "total".
+/// Rust process has no managed heap: `total_memory` is the number of heap
+/// bytes currently allocated through [`CountingAllocator`], and
+/// `free_memory` is 0, so "used" equals "total". Like Java's, the figure is a
+/// field read. It is 0 in a process whose global allocator is not
+/// [`CountingAllocator`]; the `benchmark` executable installs it.
 pub struct Runtime;
 
-/// The resident-set probe behind [`Runtime::total_memory`]: `/proc/self/statm`
-/// held open and the kernel page size (`AT_PAGESZ` of `/proc/self/auxv`).
+/// The live heap bytes of [`CountingAllocator`].
+static LIVE_HEAP_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// A global allocator that forwards to [`System`](std::alloc::System) and
+/// keeps the number of live heap bytes for [`Runtime::total_memory`].
 ///
 /// PERF: `TaskStats` reads `totalMemory()` twice per task run, i.e. twice per
-/// `AddDoc` or `Search`; Java's is a field read. Opening, rendering and parsing
-/// `/proc/self/status` on every call was 77 % of an indexing run (rmp #679).
-/// One positional read of the one-line `statm` (resident pages) gives the same
-/// figure as `VmRSS`: both are the sum of the anonymous, file and shmem RSS
-/// counters (`task_statm` and `task_mem`, `fs/proc/task_mmu.c`), `statm` in
-/// pages, `VmRSS` in kB.
-#[cfg(unix)]
-struct RssProbe {
-    statm: std::fs::File,
-    page_size: i64,
-}
+/// `AddDoc`; reading `/proc` for the process RSS was a syscall per read
+/// (27 % of an indexing run with a held `statm` file, 77 % with
+/// `/proc/self/status`; rmp #679). The counter costs one relaxed atomic add
+/// per allocation and one subtraction per release.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CountingAllocator;
 
-#[cfg(unix)]
-impl RssProbe {
-    /// The probe, opened once per process; `None` where `/proc` is missing.
-    fn get() -> Option<&'static RssProbe> {
-        static PROBE: std::sync::OnceLock<Option<RssProbe>> = std::sync::OnceLock::new();
-        PROBE
-            .get_or_init(|| {
-                Some(RssProbe {
-                    statm: std::fs::File::open("/proc/self/statm").ok()?,
-                    page_size: Self::page_size()?,
-                })
-            })
-            .as_ref()
+// SAFETY: every method forwards to `System` with the caller's arguments
+// unchanged, so `System`'s guarantees hold; the counter updates only read
+// `layout.size()` / `new_size` and never touch the memory.
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: forwarded unchanged; the caller upholds `alloc`'s contract.
+        let ptr = unsafe { std::alloc::System.alloc(layout) };
+        if !ptr.is_null() {
+            LIVE_HEAP_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
     }
 
-    /// `AT_PAGESZ` (6) of the auxiliary vector: pairs of native words.
-    fn page_size() -> Option<i64> {
-        const AT_PAGESZ: u64 = 6;
-        let auxv = std::fs::read("/proc/self/auxv").ok()?;
-        let word = std::mem::size_of::<usize>();
-        let read = |b: &[u8]| -> u64 {
-            let mut w = [0u8; 8];
-            w[..word].copy_from_slice(b);
-            u64::from_ne_bytes(w)
-        };
-        auxv.chunks_exact(2 * word)
-            .find_map(|pair| (read(&pair[..word]) == AT_PAGESZ).then(|| read(&pair[word..]) as i64))
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: forwarded unchanged; the caller upholds `alloc_zeroed`'s contract.
+        let ptr = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            LIVE_HEAP_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
     }
 
-    /// Resident bytes: the second field of `statm` times the page size.
-    fn resident_bytes(&self) -> Option<i64> {
-        use std::os::unix::fs::FileExt;
-        // `size resident shared text lib data dt`: seven decimal counters.
-        let mut buf = [0u8; 256];
-        let n = self.statm.read_at(&mut buf, 0).ok()?;
-        let line = std::str::from_utf8(&buf[..n]).ok()?;
-        let pages: i64 = line.split_ascii_whitespace().nth(1)?.parse().ok()?;
-        Some(pages * self.page_size)
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: forwarded unchanged; `ptr` was allocated by this allocator,
+        // i.e. by `System`, with `layout`.
+        unsafe { std::alloc::System.dealloc(ptr, layout) };
+        LIVE_HEAP_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: forwarded unchanged; the caller upholds `realloc`'s contract.
+        let new_ptr = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
+        if !new_ptr.is_null() {
+            // On failure the old block stays allocated with its old size.
+            LIVE_HEAP_BYTES.fetch_add(new_size, Ordering::Relaxed);
+            LIVE_HEAP_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
+        new_ptr
     }
 }
 
 impl Runtime {
     /// `Runtime.getRuntime().totalMemory()`.
     pub fn total_memory() -> i64 {
-        #[cfg(unix)]
-        {
-            RssProbe::get()
-                .and_then(RssProbe::resident_bytes)
-                .unwrap_or(0)
-        }
-        #[cfg(not(unix))]
-        {
-            0
-        }
+        LIVE_HEAP_BYTES.load(Ordering::Relaxed) as i64
     }
 
     /// `Runtime.getRuntime().freeMemory()`.
@@ -637,37 +628,29 @@ pub mod system {
 mod tests {
     use super::Runtime;
 
-    /// `VmRSS` of `/proc/self/status`, in bytes (the figure `total_memory`
-    /// reported before rmp #679).
-    fn vm_rss_from_status() -> i64 {
-        std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|status| {
-                status.lines().find_map(|line| {
-                    let rest = line.strip_prefix("VmRSS:")?;
-                    let kb: i64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
-                    Some(kb * 1024)
-                })
-            })
-            .unwrap_or(0)
-    }
-
-    /// `total_memory` equals `VmRSS` whenever the resident set does not move
-    /// between the two status reads around it.
-    #[cfg(target_os = "linux")]
+    /// The lib's test binary runs on [`super::CountingAllocator`] (see
+    /// `lib.rs`): `total_memory` grows by an allocation's size while it is
+    /// live and falls back when it is released. Other test threads allocate
+    /// too, so the check retries until one window is undisturbed.
     #[test]
-    fn total_memory_equals_status_vm_rss() {
-        let mut equal = 0;
-        for _ in 0..200 {
-            let before = vm_rss_from_status();
-            let probe = Runtime::total_memory();
-            let after = vm_rss_from_status();
-            assert!(probe > 0, "statm probe read 0");
-            if before == after {
-                assert_eq!(probe, before, "statm resident != VmRSS");
-                equal += 1;
+    fn total_memory_counts_live_heap_bytes() {
+        const SIZE: usize = 64 << 20;
+        let mut exact = 0;
+        for _ in 0..50 {
+            let before = Runtime::total_memory();
+            let block = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+            let during = Runtime::total_memory();
+            drop(block);
+            let after = Runtime::total_memory();
+            assert!(before > 0, "the counting allocator is not installed");
+            assert!(
+                during - before >= SIZE as i64 / 2,
+                "a live 64 MiB block is not counted"
+            );
+            if during - before == SIZE as i64 && after == before {
+                exact += 1;
             }
         }
-        assert!(equal > 0, "the resident set moved on every attempt");
+        assert!(exact > 0, "no undisturbed window in 50 attempts");
     }
 }

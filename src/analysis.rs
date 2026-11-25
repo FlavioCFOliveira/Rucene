@@ -1055,6 +1055,19 @@ impl SharedTokenStream {
     }
 }
 
+impl SharedTokenStream {
+    /// Borrows the wrapped stream mutably, for a crate-internal consumer that
+    /// calls it many times in a row (the indexing chain's token loop): what
+    /// [`increment_token`](TokenStream::increment_token) borrows per call.
+    ///
+    /// # Panics
+    ///
+    /// When the wrapped stream is borrowed.
+    pub(crate) fn borrow_inner_mut(&self) -> AtomicRefMut<'_, dyn TokenStream + 'static> {
+        self.inner.borrow_mut()
+    }
+}
+
 impl TokenStream for SharedTokenStream {
     fn increment_token(&mut self) -> Result<bool> {
         self.inner.borrow_mut().increment_token()
@@ -1760,13 +1773,11 @@ pub trait Analyzer: Debug + Send + Sync {
                 c
             }
         };
-        {
-            let mut components = components.borrow_mut();
-            components.set_reader(reader)?;
-            components.reusable_string_reader = Some(str_reader);
-        }
-        let stream = components.borrow().token_stream();
-        Ok(stream)
+        // PERF: one borrow for the reader and the stream (rmp #679).
+        let mut components = components.borrow_mut();
+        components.set_reader(reader)?;
+        components.reusable_string_reader = Some(str_reader);
+        Ok(components.token_stream())
     }
 
     /// Normalizes `text` to the representation it would have in the index.

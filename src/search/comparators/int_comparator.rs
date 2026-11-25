@@ -8,7 +8,10 @@ use crate::index::LeafReaderContext;
 use crate::search::comparators::numeric_comparator::{
     NumericComparator, NumericDocValuesSource, NumericLeafState,
 };
-use crate::search::field_comparator::{java_int_compare, SlotComparator, SortValue};
+use crate::search::field_comparator::{
+    java_int_compare, SharedLeafComparator, SlotComparator, SortValue,
+};
+use crate::search::leaf_field_comparator::LeafFieldComparator;
 use crate::search::pruning::Pruning;
 use crate::search::scorable::Scorable;
 use crate::util::NumericUtils;
@@ -245,5 +248,89 @@ impl SlotComparator for IntComparator {
             self.bottom_as_comparable_long(),
             self.top_as_comparable_long(),
         )
+    }
+}
+
+/// Equivalent to `IntComparator.IntLeafComparator`: the leaf comparator of
+/// [`IntComparator`] for one segment.
+///
+/// Java's leaf reads `bottom` and `missingValue`, fields of the enclosing
+/// comparator, directly; here the enclosing comparator is shared state behind
+/// an `AtomicRefCell` (see [`SharedLeafComparator`]), so the leaf keeps its own
+/// copies: `missingValue` is final, and `bottom` is taken when the leaf is
+/// created (the value Java's leaf would read before its first `setBottom`)
+/// and after each `setBottom(slot)` (`bottom = values[slot]`,
+/// `IntComparator.java` `IntLeafComparator.setBottom`), the only writer of the
+/// field while the leaf collects.
+///
+/// PERF: `compareBottom`, called for every collected document, then borrows
+/// nothing (rmp #680). Every other method goes through the shared state as
+/// [`SharedLeafComparator`] does.
+pub(crate) struct IntLeafComparator {
+    inner: SharedLeafComparator<IntComparator>,
+    bottom: i32,
+    missing_value: i32,
+}
+
+impl IntLeafComparator {
+    /// Wraps the shared leaf comparator `IntComparator.getLeafComparator`
+    /// built.
+    pub(crate) fn new(mut inner: SharedLeafComparator<IntComparator>) -> Self {
+        let (bottom, missing_value) = {
+            let (shared, _) = inner.parts_mut();
+            let comparator = shared.borrow();
+            (comparator.bottom, comparator.missing_value)
+        };
+        Self {
+            inner,
+            bottom,
+            missing_value,
+        }
+    }
+}
+
+impl LeafFieldComparator for IntLeafComparator {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn set_bottom(&mut self, slot: i32) -> Result<()> {
+        let (shared, leaf) = self.inner.parts_mut();
+        let mut comparator = shared.borrow_mut();
+        comparator.set_bottom(leaf, slot)?;
+        self.bottom = comparator.bottom;
+        Ok(())
+    }
+
+    /// `Integer.compare(bottom, getValueForDoc(doc))`.
+    fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
+        let (_, leaf) = self.inner.parts_mut();
+        let doc_values = leaf.doc_values();
+        let value = if doc_values.advance_exact(doc)? {
+            doc_values.long_value()? as i32
+        } else {
+            self.missing_value
+        };
+        Ok(java_int_compare(self.bottom, value))
+    }
+
+    fn compare_top(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
+        self.inner.compare_top(doc, scorer)
+    }
+
+    fn copy(&mut self, slot: i32, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
+        self.inner.copy(slot, doc, scorer)
+    }
+
+    fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
+        self.inner.set_scorer(scorer)
+    }
+
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
+        self.inner.competitive_iterator()
+    }
+
+    fn set_hits_threshold_reached(&mut self) -> Result<()> {
+        self.inner.set_hits_threshold_reached()
     }
 }
