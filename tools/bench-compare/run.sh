@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Comparative byTask benchmark: Lucene 10.5.0 (Java) vs Rucene on Reuters-21578.
 #
-# Runs Lucene's `gradle run` default algorithm (conf/micro-standard.alg) with
-# both engines on the same dataset and prints the RepSumByName /
-# RepSumByPrefRound reports side by side. See README.md.
+# Runs one byTask algorithm of conf/ (default micro-standard.alg, the default
+# of Lucene's `gradle run`) with both engines on the same dataset and prints
+# every report block side by side. See README.md.
 #
-# Usage: tools/bench-compare/run.sh [fetch|lucene|rucene|compare|all]   (default: all)
+# Usage: tools/bench-compare/run.sh [fetch|addindexes-input|lucene|rucene|compare|all] [ALG]
+#   (default: all; ALG defaults to $ALG, then micro-standard.alg; the ".alg"
+#   suffix is optional)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,10 +23,23 @@ KILL_CAP="${KILL_CAP:-900}"
 JAVA="${JAVA:-java}"
 export CARGO_TARGET_DIR TMPDIR
 
-ALG_NAME="micro-standard.alg"
+ALG_NAME="${2:-${ALG:-micro-standard.alg}}"
+[[ "$ALG_NAME" == *.alg ]] || ALG_NAME="$ALG_NAME.alg"
 ALG="$REPO/crates/rucene-benchmark/tests/conf/$ALG_NAME"
-WORK="$BENCH_HOME/work"            # work.dir default "work", relative to the cwd
+WORK="$BENCH_HOME/work"            # where the dataset is extracted
 RUNS="$BENCH_HOME/runs"
+OUT_DIR="${OUT_DIR:-$RUNS/latest}" # run logs and the comparison table
+RUCENE_BUILD="${RUCENE_BUILD:-1}"  # 0: run the existing release binary
+
+# Last assignment of a property in the .alg (byTask Config: a later line wins),
+# or the given default.
+alg_prop() {
+  local v
+  v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$ALG" | tail -1 | sed 's/[[:space:]]*$//')"
+  echo "${v:-$2}"
+}
+# work.dir (PerfRunData, default "work"), relative to the cwd $BENCH_HOME.
+ALG_WORK="$BENCH_HOME/$(alg_prop 'work\.dir' work)"
 
 # getReuters (gradle/datasets/external-datasets.gradle:137-166).
 REUTERS_URL="https://kdd.ics.uci.edu/databases/reuters21578/reuters21578.tar.gz"
@@ -120,28 +135,113 @@ cmd_fetch() {
 
 check_dataset() {
   [[ -d "$REUTERS_OUT" ]] || die "dataset missing: run '$0 fetch' first"
+  check_addindexes_input
+  # Algorithms with docs.dir=reuters21578 (resolved against work.dir, as
+  # ReutersContentSource does) read the same extracted reuters-out. A symlink
+  # to the directory does not work: ContentSource.collectFiles walks with
+  # Files.walkFileTree, which does not follow links, and then opens the link
+  # itself ("Is a directory", both engines). The directory is therefore a real
+  # one holding hard links to the same files (same inodes, same bytes).
+  if [[ "$(alg_prop 'docs\.dir' reuters-out)" == reuters21578 ]]; then
+    local dir="$ALG_WORK/reuters21578"
+    [[ ! -L "$dir" ]] || die "$dir is a symlink; remove it (see check_dataset)"
+    if [[ ! -d "$dir" ]]; then
+      rm -rf "$dir.part"
+      cp -al "$REUTERS_OUT" "$dir.part"
+      mv "$dir.part" "$dir"
+    fi
+    local n
+    n="$(find "$dir" -maxdepth 1 -type f -name '*.txt' -links +1 | wc -l)"
+    [[ "$n" -eq "$EXPECTED_DOCS" ]] \
+      || die "$dir holds $n hard-linked documents, expected $EXPECTED_DOCS"
+  fi
+}
+
+# Index and taxonomy directories of PerfRunData (work.dir/index, work.dir/taxo),
+# removed before each run.
+wipe_index() {
+  rm -rf "$ALG_WORK/index" "$ALG_WORK/taxo"
 }
 
 run_dir() {
-  local d="$RUNS/latest"
-  mkdir -p "$d"
-  echo "$d"
+  mkdir -p "$OUT_DIR"
+  echo "$OUT_DIR"
 }
 
-cmd_lucene() {
-  check_alg
-  check_dataset
+# Runs "$@" in the capped scope from $BENCH_HOME, output to $1's log; writes
+# the process wall-clock seconds to <log>.wall.
+timed_run() {
+  local out="$1"; shift
+  local t0 t1 rc=0
+  t0="$(date +%s.%N)"
+  (cd "$BENCH_HOME" && capped "$@") >"$out" 2>&1 || rc=$?
+  t1="$(date +%s.%N)"
+  echo "$t0 $t1" | LC_ALL=C awk '{printf "%.3f\n", $2 - $1}' >"$out.wall"
+  return "$rc"
+}
+
+lucene_cp() {
   local cp="" jar
   for jar in "${JARS[@]}"; do
     [[ -f "$M2/$jar" ]] || die "missing jar $M2/$jar"
     cp="${cp:+$cp:}$M2/$jar"
   done
+  echo "$cp"
+}
+
+# Input index of addIndexes.alg (addindexes.input.dir=input/index, opened by
+# AddIndexesTask relative to the cwd). Lucene ships none: it is built once,
+# by Lucene 10.5.0, from the 21578 Reuters documents (StandardAnalyzer,
+# FSDirectory and the default codec, as addIndexes.alg configures its target),
+# and then read by both engines.
+ADDINDEXES_INPUT="$BENCH_HOME/input/index"
+cmd_addindexes_input() {
+  check_lucene_src
+  [[ -d "$REUTERS_OUT" ]] || die "dataset missing: run '$0 fetch' first"
+  [[ ! -e "$ADDINDEXES_INPUT" ]] || die "$ADDINDEXES_INPUT exists; remove it to rebuild"
+  mkdir -p "$TMPDIR" "$(run_dir)"
+  local alg="$TMPDIR/addIndexes-input.alg"
+  cat >"$alg" <<ALG
+analyzer=org.apache.lucene.analysis.standard.StandardAnalyzer
+directory=FSDirectory
+work.dir=$BENCH_HOME/input
+docs.dir=$REUTERS_OUT
+content.source=org.apache.lucene.benchmark.byTask.feeds.ReutersContentSource
+ResetSystemErase
+CreateIndex
+{ AddDoc } : $EXPECTED_DOCS
+CloseIndex
+OpenReader
+CloseReader
+RepSumByName
+ALG
+  local out
+  out="$(run_dir)/addindexes-input.out"
+  echo "Building $ADDINDEXES_INPUT with Lucene 10.5.0 -> $out"
+  timed_run "$out" "$JAVA" -Xmx1g -Djava.io.tmpdir="$TMPDIR" -cp "$(lucene_cp)" \
+    org.apache.lucene.benchmark.byTask.Benchmark "$alg" \
+    || { tail -20 "$out" >&2; die "input index build failed (log: $out)"; }
+  cp "$alg" "$(run_dir)/addIndexes-input.alg"
+}
+
+check_addindexes_input() {
+  if [[ -n "$(alg_prop 'addindexes\.input\.dir' '')" ]]; then
+    [[ -d "$BENCH_HOME/$(alg_prop 'addindexes\.input\.dir' '')" ]] \
+      || die "addIndexes input index missing: run '$0 addindexes-input' first"
+  fi
+}
+
+cmd_lucene() {
+  check_alg
+  check_dataset
+  local cp
+  cp="$(lucene_cp)"
   local out
   out="$(run_dir)/lucene.out"
-  rm -rf "$WORK/index"
-  echo "Running Lucene 10.5.0 ($("$JAVA" -version 2>&1 | head -1)) -> $out"
-  (cd "$BENCH_HOME" && capped "$JAVA" -Xmx1g -Djava.io.tmpdir="$TMPDIR" -cp "$cp" \
-    org.apache.lucene.benchmark.byTask.Benchmark "$ALG") >"$out" 2>&1 \
+  wipe_index
+  echo "Running Lucene 10.5.0 ($("$JAVA" -version 2>&1 | head -1)) on $ALG_NAME -> $out"
+  timed_run "$out" "$JAVA" -Xmx1g -Djava.io.tmpdir="$TMPDIR" -cp "$cp" \
+    org.apache.lucene.benchmark.byTask.Benchmark "$ALG" \
     || { tail -20 "$out" >&2; die "Lucene run failed (log: $out)"; }
 }
 
@@ -149,25 +249,29 @@ cmd_rucene() {
   check_alg
   check_dataset
   mkdir -p "$TMPDIR"
-  echo "Building rucene-benchmark (release) ..."
-  (cd "$REPO" && "$RUCENE_CARGO" build --release -j 6 -p rucene-benchmark --bin benchmark)
+  if [[ "$RUCENE_BUILD" != 0 ]]; then
+    echo "Building rucene-benchmark (release) ..."
+    (cd "$REPO" && "$RUCENE_CARGO" build --release -j 6 -p rucene-benchmark --bin benchmark)
+  fi
   local bin="$CARGO_TARGET_DIR/release/benchmark"
+  [[ -x "$bin" ]] || die "missing $bin (run with RUCENE_BUILD=1)"
   local out
   out="$(run_dir)/rucene.out"
-  rm -rf "$WORK/index"
-  echo "Running Rucene ($bin) -> $out"
-  (cd "$BENCH_HOME" && capped "$bin" "$ALG") >"$out" 2>&1 \
+  wipe_index
+  echo "Running Rucene ($bin) on $ALG_NAME -> $out"
+  timed_run "$out" "$bin" "$ALG" \
     || { tail -20 "$out" >&2; die "Rucene run failed (log: $out)"; }
 }
 
 cmd_compare() {
-  local d="$RUNS/latest"
+  local d="$OUT_DIR"
   [[ -f "$d/lucene.out" && -f "$d/rucene.out" ]] || die "run '$0 lucene' and '$0 rucene' first"
   python3 -I "$TOOL/compare.py" "$d/lucene.out" "$d/rucene.out" | tee "$d/compare.txt"
 }
 
 case "${1:-all}" in
   fetch) cmd_fetch ;;
+  addindexes-input) cmd_addindexes_input ;;
   lucene) cmd_lucene ;;
   rucene) cmd_rucene ;;
   compare) cmd_compare ;;
@@ -177,5 +281,5 @@ case "${1:-all}" in
     cmd_rucene
     cmd_compare
     ;;
-  *) die "usage: $0 [fetch|lucene|rucene|compare|all]" ;;
+  *) die "usage: $0 [fetch|addindexes-input|lucene|rucene|compare|all] [ALG]" ;;
 esac
