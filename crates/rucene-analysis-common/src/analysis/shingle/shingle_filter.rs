@@ -22,8 +22,8 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use rucene::analysis::{
-    CharTermAttribute, OffsetAttribute, PositionIncrementAttribute, PositionLengthAttribute,
-    TokenFilter, TokenFilterLogic, TokenStream, TypeAttribute,
+    AttributeHandle, CharTermAttribute, OffsetAttribute, PositionIncrementAttribute,
+    PositionLengthAttribute, TokenFilter, TokenFilterLogic, TokenStream, TypeAttribute,
 };
 use rucene::error::{LuceneError, Result};
 use rucene::util::attribute::{AttributeSource, CapturedState};
@@ -53,43 +53,28 @@ pub const DEFAULT_TOKEN_TYPE: &str = "shingle";
 /// Equivalent to `ShingleFilter.DEFAULT_TOKEN_SEPARATOR`.
 pub const DEFAULT_TOKEN_SEPARATOR: &str = " ";
 
-/// Appends the term of `source`, which an `InputWindowToken` holds, to
-/// `gram_builder`: Java's `gramBuilder.append(nextToken.termAtt.buffer(), 0,
-/// nextToken.termAtt.length())`.
-fn append_term_of(source: &AttributeSource, gram_builder: &mut Vec<char>) {
-    // PERF: appended from the borrowed buffer, with no intermediate copy.
-    let term = source
-        .get_attribute_interface::<dyn CharTermAttribute>()
-        .expect("INVARIANT: an input window token holds a CharTermAttribute");
-    gram_builder.extend_from_slice(&term.buffer()[..term.length()]);
+/// The attributes of the filter's own source that Java keeps in fields
+/// (`termAtt`, `offsetAtt`, `posIncrAtt`, `posLenAtt`, `typeAtt`,
+/// `ShingleFilter.java`), set by [`new_shingle_filter`].
+///
+/// PERF: held as handles, as Java holds the references, so a token costs no
+/// attribute lookup by type (rmp #682: 945 ms of lookups per shingle run).
+#[derive(Debug, Clone)]
+struct SourceAttributes {
+    term: AttributeHandle<dyn CharTermAttribute>,
+    offset: AttributeHandle<dyn OffsetAttribute>,
+    pos_incr: AttributeHandle<dyn PositionIncrementAttribute>,
+    pos_len: AttributeHandle<dyn PositionLengthAttribute>,
+    type_att: AttributeHandle<dyn TypeAttribute>,
 }
 
-fn start_offset_of(source: &AttributeSource) -> i32 {
-    source
-        .get_attribute_interface::<dyn OffsetAttribute>()
-        .expect("INVARIANT: the source holds an OffsetAttribute")
-        .start_offset()
-}
-
-fn end_offset_of(source: &AttributeSource) -> i32 {
-    source
-        .get_attribute_interface::<dyn OffsetAttribute>()
-        .expect("INVARIANT: the source holds an OffsetAttribute")
-        .end_offset()
-}
-
+/// `set_offset` on the `OffsetAttribute` of `source`, for a source whose
+/// handle is not kept.
 fn set_offset_of(source: &AttributeSource, start: i32, end: i32) {
     source
         .get_attribute_interface_mut::<dyn OffsetAttribute>()
         .expect("INVARIANT: the source holds an OffsetAttribute")
         .set_offset(start, end);
-}
-
-fn position_increment_of(source: &AttributeSource) -> i32 {
-    source
-        .get_attribute_interface::<dyn PositionIncrementAttribute>()
-        .expect("INVARIANT: the constructor added the PositionIncrementAttribute")
-        .get_position_increment()
 }
 
 /// The body of [`ShingleFilter`]: what Lucene's `ShingleFilter` adds to
@@ -144,9 +129,19 @@ pub struct ShingleFilterLogic {
     /// our end() impl.
     end_state: Option<CapturedState>,
     exhausted: bool,
+    /// The source's attribute handles; `None` only inside the constructor.
+    atts: Option<SourceAttributes>,
 }
 
 impl ShingleFilterLogic {
+    /// The handles of the source's attributes.
+    #[inline]
+    fn atts(&self) -> &SourceAttributes {
+        self.atts
+            .as_ref()
+            .expect("INVARIANT: the constructor sets the attribute handles")
+    }
+
     /// Set the type of the shingle tokens produced by this filter. (default:
     /// "shingle")
     ///
@@ -262,15 +257,15 @@ impl ShingleFilterLogic {
                 .as_ref()
                 .expect("INVARIANT: filler tokens are inserted before a held token");
             let mut token = match target {
-                None => InputWindowToken::new(next_input_stream_token.clone_attributes()),
+                None => InputWindowToken::new(next_input_stream_token.clone_attributes())?,
                 Some(target) => {
                     next_input_stream_token.copy_to(&target.att_source)?;
                     target
                 }
             };
             // A filler token occupies no space
-            let start = start_offset_of(&token.att_source);
-            set_offset_of(&token.att_source, start, start);
+            let start = token.offset_att.borrow().start_offset();
+            token.offset_att.borrow_mut().set_offset(start, start);
             token.set_term(&self.filler_token);
             token.is_filler = true;
             self.num_filler_tokens_to_insert -= 1;
@@ -281,7 +276,7 @@ impl ShingleFilterLogic {
                 .as_ref()
                 .expect("INVARIANT: the held token is set with its flag");
             let mut token = match target {
-                None => InputWindowToken::new(next_input_stream_token.clone_attributes()),
+                None => InputWindowToken::new(next_input_stream_token.clone_attributes())?,
                 Some(target) => {
                     next_input_stream_token.copy_to(&target.att_source)?;
                     target
@@ -293,13 +288,13 @@ impl ShingleFilterLogic {
         } else if !self.exhausted {
             if input.increment_token()? {
                 let mut token = match target {
-                    None => InputWindowToken::new(source.clone_attributes()),
+                    None => InputWindowToken::new(source.clone_attributes())?,
                     Some(target) => {
                         source.copy_to(&target.att_source)?;
                         target
                     }
                 };
-                let position_increment = position_increment_of(source);
+                let position_increment = self.atts().pos_incr.borrow().get_position_increment();
                 if position_increment > 1 {
                     // Each output shingle must contain at least one input token,
                     // so no more than (maxShingleSize - 1) filler tokens will be inserted.
@@ -312,8 +307,8 @@ impl ShingleFilterLogic {
                     }
                     self.is_next_input_stream_token = true;
                     // A filler token occupies no space
-                    let start = start_offset_of(source);
-                    set_offset_of(&token.att_source, start, start);
+                    let start = self.atts().offset.borrow().start_offset();
+                    token.offset_att.borrow_mut().set_offset(start, start);
                     token.set_term(&self.filler_token);
                     token.is_filler = true;
                     self.num_filler_tokens_to_insert -= 1;
@@ -325,13 +320,14 @@ impl ShingleFilterLogic {
                 self.exhausted = true;
                 input.end()?;
                 self.end_state = source.capture_state();
+                let position_increment = self.atts().pos_incr.borrow().get_position_increment();
                 self.num_filler_tokens_to_insert =
-                    position_increment_of(source).min(self.max_shingle_size - 1);
+                    position_increment.min(self.max_shingle_size - 1);
                 if self.num_filler_tokens_to_insert > 0 {
                     let mut next = AttributeSource::new_with_factory(source.attribute_factory());
                     next.add_attribute_interface::<dyn CharTermAttribute>()?;
                     next.add_attribute_interface::<dyn OffsetAttribute>()?;
-                    let end = end_offset_of(source);
+                    let end = self.atts().offset.borrow().end_offset();
                     set_offset_of(&next, end, end);
                     self.next_input_stream_token = Some(next);
                     // Recurse/loop just once:
@@ -416,7 +412,11 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     if built_gram_size > 0 {
                         self.gram_builder.extend(self.token_separator.chars());
                     }
-                    append_term_of(&token.att_source, &mut self.gram_builder);
+                    // `gramBuilder.append(nextToken.termAtt.buffer(), 0,
+                    // nextToken.termAtt.length())`, from the borrowed buffer.
+                    let term = token.term_att.borrow();
+                    self.gram_builder
+                        .extend_from_slice(&term.buffer()[..term.length()]);
                     built_gram_size += 1;
                 }
                 if is_all_filler && token.is_filler {
@@ -435,18 +435,18 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     .expect("INVARIANT: the window holds the gram's tokens")
                     .att_source
                     .copy_to(source)?;
-                source
-                    .get_attribute_interface_mut::<dyn PositionIncrementAttribute>()
-                    .expect("INVARIANT: the constructor added the PositionIncrementAttribute")
+                let atts = self
+                    .atts
+                    .as_ref()
+                    .expect("INVARIANT: the constructor sets the attribute handles");
+                atts.pos_incr
+                    .borrow_mut()
                     .set_position_increment(if self.is_output_here { 0 } else { 1 });
-                source
-                    .get_attribute_interface_mut::<dyn CharTermAttribute>()
-                    .expect("INVARIANT: the constructor added the CharTermAttribute")
+                atts.term
+                    .borrow_mut()
                     .copy_buffer(&self.gram_builder, 0, self.gram_builder.len());
                 if self.gram_size.get_value() > 1 {
-                    let mut type_att = source
-                        .get_attribute_interface_mut::<dyn TypeAttribute>()
-                        .expect("INVARIANT: the constructor added the TypeAttribute");
+                    let mut type_att = atts.type_att.borrow_mut();
                     // PERF: the default type is set as the constant, with no
                     // `String` allocation per shingle (nor per later copy).
                     match &self.token_type {
@@ -457,9 +457,12 @@ impl TokenFilterLogic for ShingleFilterLogic {
                 }
                 let next_token =
                     &self.input_window[next_token.expect("INVARIANT: the loop ran at least once")];
-                let end_offset = end_offset_of(&next_token.att_source);
-                let start_offset = start_offset_of(source);
-                set_offset_of(source, start_offset, end_offset);
+                let end_offset = next_token.offset_att.borrow().end_offset();
+                {
+                    let mut offset = atts.offset.borrow_mut();
+                    let start_offset = offset.start_offset();
+                    offset.set_offset(start_offset, end_offset);
+                }
                 let position_length = if self.output_unigrams {
                     built_gram_size
                 } else {
@@ -467,9 +470,8 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     // size.
                     1.max((built_gram_size - self.min_shingle_size) + 1)
                 };
-                source
-                    .get_attribute_interface_mut::<dyn PositionLengthAttribute>()
-                    .expect("INVARIANT: the constructor added the PositionLengthAttribute")
+                atts.pos_len
+                    .borrow_mut()
                     .set_position_length(position_length);
                 self.is_output_here = true;
                 self.gram_size
@@ -568,14 +570,18 @@ pub fn new_shingle_filter(
         no_shingle_output: true,
         end_state: None,
         exhausted: false,
+        atts: None,
     };
     let mut filter = TokenFilter::new(input, logic);
     let source = filter.attribute_source_mut();
-    source.add_attribute_interface::<dyn CharTermAttribute>()?;
-    source.add_attribute_interface::<dyn OffsetAttribute>()?;
-    source.add_attribute_interface::<dyn PositionIncrementAttribute>()?;
-    source.add_attribute_interface::<dyn PositionLengthAttribute>()?;
-    source.add_attribute_interface::<dyn TypeAttribute>()?;
+    let atts = SourceAttributes {
+        term: AttributeHandle::add(source)?,
+        offset: AttributeHandle::add(source)?,
+        pos_incr: AttributeHandle::add(source)?,
+        pos_len: AttributeHandle::add(source)?,
+        type_att: AttributeHandle::add(source)?,
+    };
+    filter.logic_mut().atts = Some(atts);
     filter.logic_mut().set_max_shingle_size(max_shingle_size)?;
     filter.logic_mut().set_min_shingle_size(min_shingle_size)?;
     Ok(filter)
@@ -715,29 +721,40 @@ impl CircularSequence {
 
 /// A token of the input window: its attributes and whether it is a filler.
 ///
-/// Equivalent to `org.apache.lucene.analysis.shingle.ShingleFilter$InputWindowToken`;
-/// Java's `termAtt` and `offsetAtt` fields are read from `att_source` when
-/// needed.
+/// Equivalent to `org.apache.lucene.analysis.shingle.ShingleFilter$InputWindowToken`,
+/// with its `termAtt` and `offsetAtt` fields.
 #[derive(Debug)]
 pub(crate) struct InputWindowToken {
     att_source: AttributeSource,
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+    offset_att: AttributeHandle<dyn OffsetAttribute>,
     is_filler: bool,
 }
 
 impl InputWindowToken {
-    /// Equivalent to `InputWindowToken(AttributeSource)`.
-    fn new(att_source: AttributeSource) -> Self {
-        Self {
+    /// Equivalent to `InputWindowToken(AttributeSource)`: `termAtt =
+    /// attSource.getAttribute(CharTermAttribute.class)` and `offsetAtt =
+    /// attSource.getAttribute(OffsetAttribute.class)`.
+    ///
+    /// # Errors
+    ///
+    /// The `NullPointerException` Java raises on first use when the source
+    /// lacks one of the two attributes.
+    fn new(att_source: AttributeSource) -> Result<Self> {
+        let term_att = AttributeHandle::get(&att_source).ok_or_else(LuceneError::null_pointer)?;
+        let offset_att = AttributeHandle::get(&att_source).ok_or_else(LuceneError::null_pointer)?;
+        Ok(Self {
             att_source,
+            term_att,
+            offset_att,
             is_filler: false,
-        }
+        })
     }
 
     /// `termAtt.copyBuffer(buffer, 0, buffer.length)`.
     fn set_term(&mut self, buffer: &[char]) {
-        self.att_source
-            .get_attribute_interface_mut::<dyn CharTermAttribute>()
-            .expect("INVARIANT: an input window token holds a CharTermAttribute")
+        self.term_att
+            .borrow_mut()
             .copy_buffer(buffer, 0, buffer.len());
     }
 }

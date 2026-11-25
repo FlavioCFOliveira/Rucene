@@ -10,7 +10,7 @@
 use std::fmt::Debug;
 
 use crate::analysis::character_utils::to_lower_case;
-use crate::analysis::tokenattributes::CharTermAttribute;
+use crate::analysis::tokenattributes::{CharTermAttribute, PackedTokenAttributeImpl};
 use crate::analysis::{AttributeHandle, TokenFilter, TokenFilterLogic, TokenStream};
 use crate::error::Result;
 use crate::util::attribute::AttributeSource;
@@ -50,6 +50,17 @@ impl TokenFilterLogic for LowerCaseFilterLogic {
         if !input.increment_token()? {
             return Ok(false);
         }
+        // PERF: the default factory's `PackedTokenAttributeImpl` is reached
+        // through its concrete type, statically and inlined, as the JIT
+        // inlines Java's monomorphic `termAtt` calls (rmp #679
+        // devirtualisation); any other implementation takes the `dyn` path.
+        let mut att = self.term_att.borrow_impl_mut();
+        if let Some(packed) = att.as_any_mut().downcast_mut::<PackedTokenAttributeImpl>() {
+            let length = packed.length();
+            to_lower_case(packed.buffer_mut(), 0, length);
+            return Ok(true);
+        }
+        drop(att);
         let mut att = self.term_att.borrow_mut();
         let length = att.length();
         to_lower_case(att.buffer_mut(), 0, length);

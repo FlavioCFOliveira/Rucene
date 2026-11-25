@@ -783,7 +783,9 @@ impl PhraseMatcher for SloppyPhraseMatcher {
             .pq
             .pop(&self.phrase_positions)
             .expect("INVARIANT: positioned implies a full queue");
-        self.capture_lead(pp)?;
+        if self.capture_lead_match {
+            self.capture_lead(pp)?;
+        }
         self.match_length = self.end - self.phrase_positions[pp].position;
         let mut next = self.phrase_positions[self
             .pq
@@ -817,7 +819,11 @@ impl PhraseMatcher for SloppyPhraseMatcher {
                     self.match_length = match_length2;
                 }
             }
-            self.capture_lead(pp)?;
+            // PERF: the flag `captureLead` tests first is tested here, so the
+            // common case pays no call (rmp #681).
+            if self.capture_lead_match {
+                self.capture_lead(pp)?;
+            }
         }
         self.positioned = false;
         Ok(self.match_length <= self.slop)

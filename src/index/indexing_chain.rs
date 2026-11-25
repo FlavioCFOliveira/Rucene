@@ -70,8 +70,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use crate::analysis::tokenattributes::{
-    OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
-    TermToBytesRefAttribute,
+    OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute, PositionIncrementAttribute,
+    TermFrequencyAttribute, TermToBytesRefAttribute,
 };
 use crate::analysis::{Analyzer, AttributeHandle, SharedTokenStream, TokenStream};
 use crate::codecs::doc_values::DocValuesConsumer;
@@ -1210,6 +1210,29 @@ fn read_packed_token(attributes: &InvertAttributes, term: &mut BytesRef) -> RawT
         .expect("INVARIANT: packed attributes have a term attribute");
     let att = term_attribute.borrow_impl();
     let att: &dyn AttributeImpl = &**att;
+    // PERF: the default factory's `PackedTokenAttributeImpl` is read through
+    // its concrete type, statically and inlined, as the JIT inlines Java's
+    // monomorphic attribute reads (rmp #679 devirtualisation; same reads,
+    // same order). Any other implementation takes the `dyn` path below.
+    if let Some(packed) = att.as_any().downcast_ref::<PackedTokenAttributeImpl>() {
+        packed.copy_bytes_ref_to(term);
+        let position_increment = packed.get_position_increment();
+        let (start_offset, end_offset) = (packed.start_offset(), packed.end_offset());
+        let payload = attributes
+            .payload
+            .as_ref()
+            .and_then(|_| cast::<dyn PayloadAttribute>(att).get_payload().cloned());
+        let term_freq = packed.get_term_frequency();
+        return RawToken {
+            has_term: true,
+            position_increment,
+            start_offset,
+            end_offset,
+            payload,
+            term_freq,
+            has_term_freq_attribute: true,
+        };
+    }
     cast::<dyn TermToBytesRefAttribute>(att).copy_bytes_ref_to(term);
     let position_increment = cast::<dyn PositionIncrementAttribute>(att).get_position_increment();
     let offset = cast::<dyn OffsetAttribute>(att);

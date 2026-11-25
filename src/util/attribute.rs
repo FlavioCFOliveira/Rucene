@@ -1592,8 +1592,12 @@ where
 static NEXT_THREAD_LOCAL_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    static CLOSEABLE_THREAD_LOCALS: RefCell<HashMap<u64, Box<dyn Any>>> =
-        RefCell::new(HashMap::new());
+    // PERF: keyed by the thread local's sequential id and only looked up by
+    // key (never walked), so it uses the Fx step of [`TypeIdHasher`] rather
+    // than SipHash, as Java's `ThreadLocalMap` hashes with a cheap
+    // per-instance code; every `Analyzer.tokenStream` call reads it (rmp #679).
+    static CLOSEABLE_THREAD_LOCALS: RefCell<HashMap<u64, Box<dyn Any>, BuildHasherDefault<TypeIdHasher>>> =
+        RefCell::new(HashMap::default());
 }
 
 /// Port of `org.apache.lucene.util.CloseableThreadLocal`.

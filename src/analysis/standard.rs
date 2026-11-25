@@ -23,8 +23,9 @@ use std::sync::Arc;
 use crate::analysis::{
     get_buffered_reader, get_word_set, new_lower_case_filter, new_stop_filter, Analyzer,
     AnalyzerState, AttributeHandle, CharArraySet, CharReader, CharTermAttribute,
-    GlobalReuseStrategy, OffsetAttribute, PositionIncrementAttribute, SharedTokenStream,
-    StringCharReader, TokenStream, TokenStreamComponents, Tokenizer, TokenizerLogic, TypeAttribute,
+    GlobalReuseStrategy, OffsetAttribute, PackedTokenAttributeImpl, PositionIncrementAttribute,
+    SharedTokenStream, StringCharReader, TokenStream, TokenStreamComponents, Tokenizer,
+    TokenizerLogic, TypeAttribute,
 };
 use crate::error::{LuceneError, Result};
 use crate::util::attribute::{AttributeImpl, AttributeInterface, AttributeSource};
@@ -245,6 +246,20 @@ impl TokenizerLogic for StandardTokenizerLogic {
                     // PERF: one borrow of the implementation for the four
                     // attributes it provides.
                     let mut att = attributes.term_att.borrow_impl_mut();
+                    // PERF: the default factory's `PackedTokenAttributeImpl`
+                    // is written through its concrete type, statically and
+                    // inlined, as the JIT inlines Java's monomorphic attribute
+                    // calls (rmp #679 devirtualisation; same writes, same
+                    // order). Any other implementation takes the `dyn` path.
+                    if let Some(packed) =
+                        att.as_any_mut().downcast_mut::<PackedTokenAttributeImpl>()
+                    {
+                        packed.set_position_increment(position_increment);
+                        self.scanner.get_text_into(packed);
+                        packed.set_offset(start_offset, end_offset);
+                        packed.set_type_static(token_type_name);
+                        return Ok(true);
+                    }
                     cast_mut::<dyn PositionIncrementAttribute>(&mut **att)
                         .set_position_increment(position_increment);
                     self.scanner

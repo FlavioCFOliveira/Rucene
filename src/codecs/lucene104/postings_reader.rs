@@ -1622,6 +1622,46 @@ impl BlockPostingsEnum {
         Ok(())
     }
 
+    /// `docIn.seek(freqFP); pforUtil.decode(docInUtil, freqBuffer); freqFP =
+    /// -1` (`Lucene104PostingsReader.java:585-587`), the lazy decode of a full
+    /// block's frequencies [`PostingsEnum::freq`] does on its first call.
+    #[inline(never)]
+    fn decode_pending_freqs(&self, freq_fp: i64) -> Result<()> {
+        let mut doc_in_util = self.doc_in_util.borrow_mut();
+        let doc_in_util = doc_in_util.as_mut().ok_or_else(LuceneError::null_pointer)?;
+        doc_in_util.r#in.seek(freq_fp)?;
+        PForUtil::new().decode(doc_in_util, &mut self.freq_buffer.borrow_mut())?;
+        self.freq_fp.set(-1);
+        Ok(())
+    }
+
+    /// The body of `BlockPostingsEnum.nextPosition()`
+    /// (`Lucene104PostingsReader.java`) once positions are needed: the
+    /// out-of-line part of [`PostingsEnum::next_position`] for this enum.
+    #[inline(never)]
+    fn next_position_slow(&mut self) -> Result<i32> {
+        debug_assert!(self.pos_doc_buffer_upto <= self.doc_buffer_upto);
+        if self.pos_doc_buffer_upto != self.doc_buffer_upto {
+            self.accumulate_pending_positions()?;
+            self.position = 0;
+            self.last_start_offset = 0;
+        }
+
+        if self.pos_buffer_upto == BS_I32 {
+            self.refill_positions()?;
+            self.pos_buffer_upto = 0;
+        }
+        self.position += self.pos_delta_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
+
+        if self.needs_offsets_or_payloads {
+            self.accumulate_payload_and_offsets();
+        }
+
+        self.pos_buffer_upto += 1;
+        self.pos_pending_count -= 1;
+        Ok(self.position)
+    }
+
     fn accumulate_payload_and_offsets(&mut self) {
         if self.needs_payloads {
             self.payload_length =
@@ -1887,16 +1927,13 @@ impl PostingsEnum for BlockPostingsEnum {
     ///
     /// A document position that a corrupt bit-set block put outside the block
     /// raises the `ArrayIndexOutOfBoundsException` Java throws.
+    // PERF: the block decode is out of line (`decode_pending_freqs`), so the
+    // common read is small and inlinable (rmp #681). Same steps.
+    #[inline]
     fn freq(&self) -> Result<i32> {
         let freq_fp = self.freq_fp.get();
         if freq_fp != -1 {
-            // `docIn.seek(freqFP); pforUtil.decode(docInUtil, freqBuffer)`
-            // (`Lucene104PostingsReader.java:585-587`).
-            let mut doc_in_util = self.doc_in_util.borrow_mut();
-            let doc_in_util = doc_in_util.as_mut().ok_or_else(LuceneError::null_pointer)?;
-            doc_in_util.r#in.seek(freq_fp)?;
-            PForUtil::new().decode(doc_in_util, &mut self.freq_buffer.borrow_mut())?;
-            self.freq_fp.set(-1);
+            self.decode_pending_freqs(freq_fp)?;
         }
         let upto = self.doc_buffer_upto;
         // `freqBuffer[docBufferUpto - 1]` on a `long[BLOCK_SIZE]`: the JVM's
@@ -1913,28 +1950,27 @@ impl PostingsEnum for BlockPostingsEnum {
         Ok(self.freq_buffer.borrow()[upto as usize - 1])
     }
 
+    // PERF: the common step (positions of the current document already
+    // pending, the block not exhausted, no offsets or payloads) is a few
+    // field updates; it is kept small and inlinable, and the rest is out of
+    // line in `next_position_slow`, as the JIT inlines only the hot path of
+    // Java's `nextPosition()` (rmp #681). Same steps, same results.
+    #[inline]
     fn next_position(&mut self) -> Result<i32> {
         if !self.needs_pos {
             return Ok(-1);
         }
-
-        debug_assert!(self.pos_doc_buffer_upto <= self.doc_buffer_upto);
-        if self.pos_doc_buffer_upto != self.doc_buffer_upto {
-            self.accumulate_pending_positions()?;
-            self.position = 0;
-            self.last_start_offset = 0;
+        if self.pos_doc_buffer_upto != self.doc_buffer_upto
+            || self.pos_buffer_upto == BS_I32
+            || self.needs_offsets_or_payloads
+        {
+            return self.next_position_slow();
         }
-
-        if self.pos_buffer_upto == BS_I32 {
-            self.refill_positions()?;
-            self.pos_buffer_upto = 0;
-        }
-        self.position += self.pos_delta_buffer.as_ref().unwrap()[self.pos_buffer_upto as usize];
-
-        if self.needs_offsets_or_payloads {
-            self.accumulate_payload_and_offsets();
-        }
-
+        let deltas = self
+            .pos_delta_buffer
+            .as_deref()
+            .expect("INVARIANT: an enum that needs positions has a position buffer");
+        self.position += deltas[self.pos_buffer_upto as usize];
         self.pos_buffer_upto += 1;
         self.pos_pending_count -= 1;
         Ok(self.position)
@@ -2032,6 +2068,12 @@ impl PostingsEnum for BlockPostingsEnum {
     /// This enum answers with itself: it is the `true` arm of Java's
     /// `reuse instanceof BlockPostingsEnum` (`Lucene104PostingsReader.java:259`).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// The phrase matchers' static fast path owns this enum as itself
+    /// ([`SharedPostings`](crate::search::phrase_matcher::SharedPostings)).
+    fn into_any(self: Box<Self>) -> Option<Box<dyn std::any::Any>> {
         Some(self)
     }
 }

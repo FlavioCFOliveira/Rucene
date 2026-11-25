@@ -205,6 +205,14 @@ impl StandardTokenizerImpl {
     /// decoded first; a token is a sequence of whole code points of the
     /// buffer, so it holds no unpaired surrogate.
     pub fn get_text(&self, t: &mut dyn CharTermAttribute) {
+        self.get_text_into(t);
+    }
+
+    /// [`get_text`](Self::get_text) for any term attribute type, so that a
+    /// caller holding the concrete implementation calls it statically
+    /// (rmp #679, devirtualisation fast path).
+    #[inline]
+    pub(crate) fn get_text_into<T: CharTermAttribute + ?Sized>(&self, t: &mut T) {
         // Java copies `zzBuffer` straight into the term
         // (`StandardTokenizerImpl.java:723-725`: `t.copyBuffer(zzBuffer,
         // zzStartRead, zzMarkedPos-zzStartRead)`). The port's term holds
