@@ -295,6 +295,45 @@ impl DocState {
         Ok(f)
     }
 
+    /// Runs `f` on [`get_field`](Self::get_field)`(name, ft)`, borrowing a
+    /// reused field from the map rather than cloning its handle.
+    ///
+    /// PERF: the caller adds the field to the document through
+    /// [`DocField::indexable`], which takes the one reference the document
+    /// needs; the clone `get_field` returns was a second, port-only
+    /// reference count round trip per field and document (rmp #679).
+    fn with_field<R>(
+        &mut self,
+        name: &str,
+        ft: &Arc<FieldType>,
+        f: impl FnOnce(&DocField) -> Result<R>,
+    ) -> Result<R> {
+        if self.reuse_fields {
+            if let Some(field) = self.fields.as_ref().expect("reuseFields").get(name) {
+                return f(field);
+            }
+        }
+        let field = self.get_field(name, ft)?;
+        f(&field)
+    }
+
+    /// [`with_field`](Self::with_field) for
+    /// [`get_numeric_field`](Self::get_numeric_field).
+    fn with_numeric_field<R>(
+        &mut self,
+        name: &str,
+        numeric_type: NumericType,
+        f: impl FnOnce(&DocField) -> Result<R>,
+    ) -> Result<R> {
+        if self.reuse_fields {
+            if let Some(field) = self.numeric_fields.as_ref().and_then(|m| m.get(name)) {
+                return f(field);
+            }
+        }
+        let field = self.get_numeric_field(name, numeric_type)?;
+        f(&field)
+    }
+
     /// `getNumericField(String name, Class<? extends Number> numericType)`.
     ///
     /// # Errors
@@ -510,7 +549,7 @@ impl DocMaker {
         // Set ID_FIELD
         let ft = FieldType::new_from(&*val_type);
         ft.set_stored(true)?;
-        let id_field = ds.get_field(Self::ID_FIELD, &Arc::new(ft))?;
+        let id_ft = Arc::new(ft);
         let id = {
             let mut s = self.settings();
             let limit = s.update_doc_id_limit;
@@ -526,8 +565,11 @@ impl DocMaker {
                 }
             }
         };
-        id_field.set_string_value(id.to_string())?;
-        doc.add_shared(id_field.indexable());
+        ds.with_field(Self::ID_FIELD, &id_ft, |id_field| {
+            id_field.set_string_value(id.to_string())?;
+            doc.add_shared(id_field.indexable());
+            Ok(())
+        })?;
 
         // Set NAME_FIELD
         let name = doc_data.get_name().unwrap_or("").to_string();
@@ -536,9 +578,11 @@ impl DocMaker {
         } else {
             format!("{name}_{cnt}")
         };
-        let name_field = ds.get_field(Self::NAME_FIELD, &val_type)?;
-        name_field.set_string_value(name)?;
-        doc.add_shared(name_field.indexable());
+        ds.with_field(Self::NAME_FIELD, &val_type, |name_field| {
+            name_field.set_string_value(name)?;
+            doc.add_shared(name_field.indexable());
+            Ok(())
+        })?;
 
         // Set DATE_FIELD
         let util = match self.date_parsers.get() {
@@ -559,16 +603,20 @@ impl DocMaker {
             }
             None => String::new(),
         };
-        let date_string_field = ds.get_field(Self::DATE_FIELD, &val_type)?;
-        date_string_field.set_string_value(date_string)?;
-        doc.add_shared(date_string_field.indexable());
+        ds.with_field(Self::DATE_FIELD, &val_type, |date_string_field| {
+            date_string_field.set_string_value(date_string)?;
+            doc.add_shared(date_string_field.indexable());
+            Ok(())
+        })?;
 
         // just set to right now
         let date = date.unwrap_or_else(Date::now);
 
-        let date_field = ds.get_numeric_field(Self::DATE_MSEC_FIELD, NumericType::Long)?;
-        date_field.set_long_value(date.get_time())?;
-        doc.add_shared(date_field.indexable());
+        ds.with_numeric_field(Self::DATE_MSEC_FIELD, NumericType::Long, |date_field| {
+            date_field.set_long_value(date.get_time())?;
+            doc.add_shared(date_field.indexable());
+            Ok(())
+        })?;
 
         util.cal.set_time(date);
         let sec = util.cal.get(calendar::HOUR_OF_DAY)? * 3600
@@ -576,17 +624,25 @@ impl DocMaker {
             + util.cal.get(calendar::SECOND)?;
         drop(util);
 
-        let time_sec_field = ds.get_numeric_field(Self::TIME_SEC_FIELD, NumericType::Integer)?;
-        time_sec_field.set_int_value(sec)?;
-        doc.add_shared(time_sec_field.indexable());
+        ds.with_numeric_field(
+            Self::TIME_SEC_FIELD,
+            NumericType::Integer,
+            |time_sec_field| {
+                time_sec_field.set_int_value(sec)?;
+                doc.add_shared(time_sec_field.indexable());
+                Ok(())
+            },
+        )?;
 
         // Set TITLE_FIELD
         // The field holds the Java String; Lucene indexes it as
         // `UnicodeUtil.UTF16toUTF8` of it.
         let title = doc_data.get_title_string().unwrap_or_default();
-        let title_field = ds.get_field(Self::TITLE_FIELD, &val_type)?;
-        title_field.set_string_value(title)?;
-        doc.add_shared(title_field.indexable());
+        ds.with_field(Self::TITLE_FIELD, &val_type, |title_field| {
+            title_field.set_string_value(title)?;
+            doc.add_shared(title_field.indexable());
+            Ok(())
+        })?;
 
         if doc_data.get_body().is_some_and(|b| !b.is_empty()) {
             // PERF: the body is moved out of `doc_data` rather than copied
@@ -613,9 +669,11 @@ impl DocMaker {
                 doc_data.set_body_utf16(Some(left)); // some left
             }
             let bdy: &[u16] = &body;
-            let body_field = ds.get_field(Self::BODY_FIELD, &body_val_type)?;
-            body_field.set_string_value(jdk::utf16_to_string(bdy))?;
-            doc.add_shared(body_field.indexable());
+            ds.with_field(Self::BODY_FIELD, &body_val_type, |body_field| {
+                body_field.set_string_value(jdk::utf16_to_string(bdy))?;
+                doc.add_shared(body_field.indexable());
+                Ok(())
+            })?;
 
             if store_bytes {
                 let stored = Arc::new(StringField::type_stored().clone());
@@ -628,9 +686,11 @@ impl DocMaker {
         if index_properties {
             if let Some(props) = doc_data.get_props() {
                 for (key, value) in props.entries() {
-                    let f = ds.get_field(key, &val_type)?;
-                    f.set_string_value(value.to_string())?;
-                    doc.add_shared(f.indexable());
+                    ds.with_field(key, &val_type, |f| {
+                        f.set_string_value(value.to_string())?;
+                        doc.add_shared(f.indexable());
+                        Ok(())
+                    })?;
                 }
                 doc_data.set_props(None);
             }

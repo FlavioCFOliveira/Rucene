@@ -261,6 +261,15 @@ impl SnowballProgram {
         self.length
     }
 
+    /// Takes the current buffer out of the program, leaving it empty, so a
+    /// caller that hands a buffer to
+    /// [`set_current_buffer`](Self::set_current_buffer) per word can reuse
+    /// it (no counterpart in Lucene, whose `SnowballFilter` hands the term's
+    /// own array).
+    pub(crate) fn take_current_buffer(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.current)
+    }
+
     /// Equivalent to the copy constructor `SnowballProgram(SnowballProgram
     /// other)`, which shares `other`'s array (here, a clone of it; see the
     /// type's divergences).

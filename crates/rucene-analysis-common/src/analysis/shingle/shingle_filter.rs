@@ -22,8 +22,9 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use rucene::analysis::{
-    AttributeHandle, CharTermAttribute, OffsetAttribute, PositionIncrementAttribute,
-    PositionLengthAttribute, TokenFilter, TokenFilterLogic, TokenStream, TypeAttribute,
+    AttributeHandle, CharTermAttribute, OffsetAttribute, PackedTokenAttributeImpl,
+    PositionIncrementAttribute, PositionLengthAttribute, TokenFilter, TokenFilterLogic,
+    TokenStream, TypeAttribute,
 };
 use rucene::error::{LuceneError, Result};
 use rucene::util::attribute::{AttributeSource, CapturedState};
@@ -66,6 +67,33 @@ struct SourceAttributes {
     pos_incr: AttributeHandle<dyn PositionIncrementAttribute>,
     pos_len: AttributeHandle<dyn PositionLengthAttribute>,
     type_att: AttributeHandle<dyn TypeAttribute>,
+    /// Whether one implementation provides the five attributes, as the
+    /// default token attribute factory's `PackedTokenAttributeImpl` does, so
+    /// that a shingle is written under one borrow of it.
+    packed: bool,
+}
+
+impl SourceAttributes {
+    fn new(
+        term: AttributeHandle<dyn CharTermAttribute>,
+        offset: AttributeHandle<dyn OffsetAttribute>,
+        pos_incr: AttributeHandle<dyn PositionIncrementAttribute>,
+        pos_len: AttributeHandle<dyn PositionLengthAttribute>,
+        type_att: AttributeHandle<dyn TypeAttribute>,
+    ) -> Self {
+        let packed = term.same_impl_as(&offset)
+            && term.same_impl_as(&pos_incr)
+            && term.same_impl_as(&pos_len)
+            && term.same_impl_as(&type_att);
+        Self {
+            term,
+            offset,
+            pos_incr,
+            pos_len,
+            type_att,
+            packed,
+        }
+    }
 }
 
 /// `set_offset` on the `OffsetAttribute` of `source`, for a source whose
@@ -439,30 +467,9 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     .atts
                     .as_ref()
                     .expect("INVARIANT: the constructor sets the attribute handles");
-                atts.pos_incr
-                    .borrow_mut()
-                    .set_position_increment(if self.is_output_here { 0 } else { 1 });
-                atts.term
-                    .borrow_mut()
-                    .copy_buffer(&self.gram_builder, 0, self.gram_builder.len());
-                if self.gram_size.get_value() > 1 {
-                    let mut type_att = atts.type_att.borrow_mut();
-                    // PERF: the default type is set as the constant, with no
-                    // `String` allocation per shingle (nor per later copy).
-                    match &self.token_type {
-                        Cow::Borrowed(token_type) => type_att.set_type_static(token_type),
-                        Cow::Owned(token_type) => type_att.set_type(token_type.clone()),
-                    }
-                    self.no_shingle_output = false;
-                }
+                let position_increment = if self.is_output_here { 0 } else { 1 };
                 let next_token =
                     &self.input_window[next_token.expect("INVARIANT: the loop ran at least once")];
-                let end_offset = next_token.offset_att.borrow().end_offset();
-                {
-                    let mut offset = atts.offset.borrow_mut();
-                    let start_offset = offset.start_offset();
-                    offset.set_offset(start_offset, end_offset);
-                }
                 let position_length = if self.output_unigrams {
                     built_gram_size
                 } else {
@@ -470,9 +477,64 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     // size.
                     1.max((built_gram_size - self.min_shingle_size) + 1)
                 };
-                atts.pos_len
-                    .borrow_mut()
-                    .set_position_length(position_length);
+                let is_shingle = self.gram_size.get_value() > 1;
+                let mut written = false;
+                if atts.packed {
+                    // PERF: the default factory's `PackedTokenAttributeImpl`
+                    // provides the five attributes: the shingle is written
+                    // under one borrow, through the concrete type, statically
+                    // (rmp #682 devirtualisation; same writes, same order).
+                    // Any other implementation takes the per-attribute path.
+                    let mut att = atts.term.borrow_impl_mut();
+                    if let Some(packed) =
+                        att.as_any_mut().downcast_mut::<PackedTokenAttributeImpl>()
+                    {
+                        packed.set_position_increment(position_increment);
+                        packed.copy_buffer(&self.gram_builder, 0, self.gram_builder.len());
+                        if is_shingle {
+                            match &self.token_type {
+                                Cow::Borrowed(token_type) => packed.set_type_static(token_type),
+                                Cow::Owned(token_type) => packed.set_type(token_type.clone()),
+                            }
+                        }
+                        let end_offset = next_token.offset_att.borrow().end_offset();
+                        let start_offset = packed.start_offset();
+                        packed.set_offset(start_offset, end_offset);
+                        packed.set_position_length(position_length);
+                        written = true;
+                    }
+                }
+                if !written {
+                    atts.pos_incr
+                        .borrow_mut()
+                        .set_position_increment(position_increment);
+                    atts.term.borrow_mut().copy_buffer(
+                        &self.gram_builder,
+                        0,
+                        self.gram_builder.len(),
+                    );
+                    if is_shingle {
+                        let mut type_att = atts.type_att.borrow_mut();
+                        // PERF: the default type is set as the constant, with no
+                        // `String` allocation per shingle (nor per later copy).
+                        match &self.token_type {
+                            Cow::Borrowed(token_type) => type_att.set_type_static(token_type),
+                            Cow::Owned(token_type) => type_att.set_type(token_type.clone()),
+                        }
+                    }
+                    let end_offset = next_token.offset_att.borrow().end_offset();
+                    {
+                        let mut offset = atts.offset.borrow_mut();
+                        let start_offset = offset.start_offset();
+                        offset.set_offset(start_offset, end_offset);
+                    }
+                    atts.pos_len
+                        .borrow_mut()
+                        .set_position_length(position_length);
+                }
+                if is_shingle {
+                    self.no_shingle_output = false;
+                }
                 self.is_output_here = true;
                 self.gram_size
                     .advance(self.min_shingle_size, self.max_shingle_size);
@@ -574,13 +636,13 @@ pub fn new_shingle_filter(
     };
     let mut filter = TokenFilter::new(input, logic);
     let source = filter.attribute_source_mut();
-    let atts = SourceAttributes {
-        term: AttributeHandle::add(source)?,
-        offset: AttributeHandle::add(source)?,
-        pos_incr: AttributeHandle::add(source)?,
-        pos_len: AttributeHandle::add(source)?,
-        type_att: AttributeHandle::add(source)?,
-    };
+    let atts = SourceAttributes::new(
+        AttributeHandle::add(source)?,
+        AttributeHandle::add(source)?,
+        AttributeHandle::add(source)?,
+        AttributeHandle::add(source)?,
+        AttributeHandle::add(source)?,
+    );
     filter.logic_mut().atts = Some(atts);
     filter.logic_mut().set_max_shingle_size(max_shingle_size)?;
     filter.logic_mut().set_min_shingle_size(min_shingle_size)?;
