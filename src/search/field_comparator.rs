@@ -512,6 +512,22 @@ impl<C: SlotComparator> SharedFieldComparator<C> {
     }
 }
 
+impl SharedFieldComparator<IntComparator> {
+    /// `getLeafComparator(context)` of an int comparator, as its concrete
+    /// leaf class, for a crate-internal caller that dispatches to it
+    /// statically (see `TopFieldCollector`'s leaf collector).
+    pub(crate) fn int_leaf_comparator(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<IntLeafComparator> {
+        let leaf = lock_slots(&self.shared).new_leaf(context)?;
+        Ok(IntLeafComparator::new(SharedLeafComparator {
+            shared: Arc::clone(&self.shared),
+            leaf,
+        }))
+    }
+}
+
 impl<C: SlotComparator> Debug for SharedFieldComparator<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         lock_slots(&self.shared).fmt(f)

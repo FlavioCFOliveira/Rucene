@@ -240,17 +240,22 @@ impl DirContentSource {
 
 /// Reads a Reuters/Dir collection file: first line is the date, 3rd is the
 /// title, rest is body (each line followed by a space).
-pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<String>, String)> {
+///
+/// The body is returned as the UTF-16 units of Java's `bodyBuf.toString()`.
+// PERF: the body lines are appended as the UTF-16 units the reader decodes,
+// as Java's `StringBuilder` does, instead of a `String` per line that
+// `DocData::set_body` then re-encoded (rmp #679).
+pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<String>, Vec<u16>)> {
     let mut reader = jdk::new_buffered_reader_utf8(f)?;
-    let result = (|| -> Result<(Option<String>, Option<String>, String)> {
+    let result = (|| -> Result<(Option<String>, Option<String>, Vec<u16>)> {
         let date_str = jdk::read_line(&mut reader)?;
         jdk::read_line(&mut reader)?; // skip an empty line
         let title = jdk::read_line(&mut reader)?;
         jdk::read_line(&mut reader)?; // skip an empty line
-        let mut body_buf = String::with_capacity(1024);
-        while let Some(line) = jdk::read_line(&mut reader)? {
-            body_buf.push_str(&line);
-            body_buf.push(' ');
+        let mut body_buf: Vec<u16> = Vec::with_capacity(1024);
+        while let Some(line) = reader.read_line()? {
+            body_buf.extend_from_slice(&line);
+            body_buf.push(u16::from(b' '));
         }
         Ok((date_str, title, body_buf))
     })();
@@ -341,7 +346,7 @@ impl ContentSource for DirContentSource {
         let date = jdk::lock(&dfi).parse_date(&date_str)?;
         doc_data.clear();
         doc_data.set_name(Some(name));
-        doc_data.set_body(Some(body_buf));
+        doc_data.set_body_utf16(Some(body_buf));
         doc_data.set_title(title);
         doc_data.set_date_from(date.as_ref());
         Ok(())

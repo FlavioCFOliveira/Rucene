@@ -193,7 +193,7 @@ impl ContentSource for ReutersContentSource {
         let date = jdk::lock(&dfi).parse_date(jdk::java_trim(&date_str))?;
         doc_data.clear();
         doc_data.set_name(Some(name));
-        doc_data.set_body(Some(body_buf));
+        doc_data.set_body_utf16(Some(body_buf));
         doc_data.set_title(title);
         doc_data.set_date_from(date.as_ref());
         Ok(())

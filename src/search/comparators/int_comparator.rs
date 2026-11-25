@@ -294,6 +294,7 @@ impl LeafFieldComparator for IntLeafComparator {
         Some(self)
     }
 
+    #[inline]
     fn set_bottom(&mut self, slot: i32) -> Result<()> {
         let (shared, leaf) = self.inner.parts_mut();
         let mut comparator = shared.borrow_mut();
@@ -303,6 +304,7 @@ impl LeafFieldComparator for IntLeafComparator {
     }
 
     /// `Integer.compare(bottom, getValueForDoc(doc))`.
+    #[inline]
     fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
         let (_, leaf) = self.inner.parts_mut();
         let doc_values = leaf.doc_values();

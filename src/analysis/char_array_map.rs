@@ -296,6 +296,11 @@ impl<V> CharArrayMap<V> {
     ///
     /// Equivalent to `CharArrayMap.get(char[], int, int)`.
     pub fn get_chars(&self, text: &[u16], off: usize, len: usize) -> Option<&V> {
+        // `EmptyCharArrayMap.get(char[], int, int)` and `containsKey(char[],
+        // int, int)` answer without hashing (`CharArrayMap.java:614-617`).
+        if self.empty_map {
+            return None;
+        }
         let slot = self.get_slot(&text[off..off + len]);
         self.values[slot].as_ref()
     }

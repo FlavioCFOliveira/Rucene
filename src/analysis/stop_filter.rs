@@ -51,6 +51,12 @@ impl FilteringTokenFilterLogic for StopFilterLogic {
     fn accept(&mut self, _source: &AttributeSource) -> Result<bool> {
         // `!stopWords.contains(termAtt.buffer(), 0, termAtt.length())`
         // (`StopFilter.java:96-98`).
+        // PERF: an empty set contains no term, whatever its UTF-16 units: the
+        // conversion below (a port-only step, see `scratch`) is skipped
+        // (rmp #679; `StandardAnalyzer()`'s default set is empty).
+        if self.stop_words.is_empty() {
+            return Ok(true);
+        }
         let term_att = self.term_att.borrow();
         let length = term_att.length();
         term_to_utf16(&term_att.buffer()[..length], &mut self.scratch);
