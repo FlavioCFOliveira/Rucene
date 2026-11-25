@@ -20,6 +20,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -146,12 +147,41 @@ pub enum NumericType {
     Double,
 }
 
+/// FNV-1a over the bytes of a field name, the hasher of [`DocState`]'s maps.
+///
+/// PERF: Java's `HashMap<String, Field>` hashes with the name's cached
+/// `String.hashCode`, so the per-document lookups of the constant field
+/// names cost no hashing; std's default SipHash costs ~7 % of `createDocument`
+/// here. The maps are never iterated, so the hasher changes no behaviour.
+struct FieldNameHasher(u64);
+
+impl Default for FieldNameHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for FieldNameHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A map keyed by field name, with [`FieldNameHasher`].
+type FieldMap = HashMap<String, DocField, BuildHasherDefault<FieldNameHasher>>;
+
 /// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.DocMaker.DocState`:
 /// document state, supports reuse of field instances across documents (see
 /// `reuseFields` parameter).
 pub struct DocState {
-    fields: Option<HashMap<String, DocField>>,
-    numeric_fields: Option<HashMap<String, DocField>>,
+    fields: Option<FieldMap>,
+    numeric_fields: Option<FieldMap>,
     reuse_fields: bool,
     /// `doc`.
     pub(crate) doc: Option<Document>,
@@ -167,8 +197,8 @@ impl DocState {
     /// The `IllegalArgumentException` of building a field.
     pub fn new(reuse_fields: bool, ft: &Arc<FieldType>, body_ft: &Arc<FieldType>) -> Result<Self> {
         if reuse_fields {
-            let mut fields = HashMap::new();
-            let mut numeric_fields = HashMap::new();
+            let mut fields = FieldMap::default();
+            let mut numeric_fields = FieldMap::default();
             // Initialize the map with the default fields.
             fields.insert(
                 DocMaker::BODY_FIELD.to_string(),
@@ -558,11 +588,14 @@ impl DocMaker {
         title_field.set_string_value(title)?;
         doc.add_shared(title_field.indexable());
 
-        if let Some(body) = doc_data.get_body().filter(|b| !b.is_empty()) {
-            let body: Vec<u16> = body.to_vec();
-            let bdy: &[u16];
+        if doc_data.get_body().is_some_and(|b| !b.is_empty()) {
+            // PERF: the body is moved out of `doc_data` rather than copied
+            // first; the leftover is one copy, as Java's `body.substring(size)`.
+            let mut body = doc_data
+                .take_body_utf16()
+                .expect("INVARIANT: checked non-empty above");
             if size <= 0 || size as usize >= body.len() {
-                bdy = &body; // use all
+                // use all
                 doc_data.set_body_utf16(Some(Vec::new())); // nothing left
             } else {
                 // attempt not to break words - if whitespace found within next 20 chars...
@@ -576,9 +609,10 @@ impl DocMaker {
                     }
                     n += 1;
                 }
-                bdy = &body[..size as usize]; // use part
-                doc_data.set_body_utf16(Some(body[size as usize..].to_vec())); // some left
+                let left = body.split_off(size as usize); // use part
+                doc_data.set_body_utf16(Some(left)); // some left
             }
+            let bdy: &[u16] = &body;
             let body_field = ds.get_field(Self::BODY_FIELD, &body_val_type)?;
             body_field.set_string_value(jdk::utf16_to_string(bdy))?;
             doc.add_shared(body_field.indexable());

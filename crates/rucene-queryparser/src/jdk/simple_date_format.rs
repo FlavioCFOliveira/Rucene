@@ -512,6 +512,9 @@ pub struct SimpleDateFormat {
     /// The `DateFormatSymbols` arrays: eras, months, short months, weekdays,
     /// short weekdays, AM/PM strings.
     symbols: [Vec<Option<String>>; 6],
+    /// `symbols` as the UTF-16 strings `matchString` compares (`None` as the
+    /// empty string), encoded once here rather than per parse.
+    symbols_utf16: [Vec<Vec<u16>>; 6],
     /// The display-names maps per `LocaleData::combos` entry (`None` for
     /// `null`), as `Calendar.getDisplayNames` answers them.
     names: Vec<Option<NamesMap>>,
@@ -710,6 +713,12 @@ impl SimpleDateFormat {
             force_standalone_form,
             locale: locale.clone(),
             calendar_type,
+            symbols_utf16: std::array::from_fn(|i| {
+                symbols[i]
+                    .iter()
+                    .map(|name| name.as_deref().unwrap_or("").encode_utf16().collect())
+                    .collect()
+            }),
             symbols,
             names,
             zero_digit: record.zero_digit,
@@ -1233,14 +1242,14 @@ impl SimpleDateFormat {
         array: usize,
         calb: &mut CalendarBuilder,
     ) -> i64 {
-        let data = &self.symbols[array];
+        // PERF: the names were encoded to UTF-16 once, at construction.
+        let data = &self.symbols_utf16[array];
         let first = if field == DAY_OF_WEEK { 1 } else { 0 };
         let mut best_match_length = 0;
         let mut best_match: Option<usize> = None;
         for (i, name) in data.iter().enumerate().skip(first) {
-            let name: Vec<u16> = name.as_deref().unwrap_or("").encode_utf16().collect();
             let length = name.len();
-            if length > best_match_length && region_matches_ci(text, start, &name) {
+            if length > best_match_length && region_matches_ci(text, start, name) {
                 best_match = Some(i);
                 best_match_length = length;
             }

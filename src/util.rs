@@ -751,9 +751,20 @@ impl BytesRefBuilder {
     /// the one [`copy_chars`](Self::copy_chars) gives for the same text,
     /// without first collecting it into a `String`.
     pub fn copy_char_array(&mut self, text: &[char]) {
+        debug_assert!(self.inner.offset == 0);
+        // PERF: an all-ASCII term (UTF-16 length = text length) is one byte
+        // per char; same buffer growth and bytes as the general path below.
+        if text.iter().all(char::is_ascii) {
+            self.grow_no_copy(UnicodeUtil::max_utf8_length(text.len()));
+            for (out, &c) in self.inner.bytes.iter_mut().zip(text) {
+                *out = c as u8;
+            }
+            self.inner.offset = 0;
+            self.inner.length = text.len();
+            return;
+        }
         let utf16_length: usize = text.iter().map(|c| c.len_utf16()).sum();
         self.grow_no_copy(UnicodeUtil::max_utf8_length(utf16_length));
-        debug_assert!(self.inner.offset == 0);
         let mut length = 0;
         for c in text {
             length += c.encode_utf8(&mut self.inner.bytes[length..]).len();

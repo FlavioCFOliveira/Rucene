@@ -85,6 +85,7 @@ impl PhrasePositions {
     /// # Errors
     ///
     /// Propagates any I/O error raised while reading the position.
+    #[inline]
     pub fn next_position(&mut self) -> Result<bool> {
         let count = self.count;
         self.count -= 1;

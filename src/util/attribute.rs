@@ -1417,20 +1417,21 @@ impl AttributeSource {
     /// Returns `LuceneErrorKind::IllegalArgument` if `target` lacks a matching
     /// implementation.
     pub fn copy_to(&self, target: &AttributeSource) -> Result<(), LuceneError> {
-        for cell in self.impl_cells() {
-            let type_id = cell.borrow().impl_type_id();
-            let target_rc = target
-                .shared
-                .borrow()
-                .impl_of(type_id)
-                .map(Arc::clone)
-                .ok_or_else(|| {
-                    LuceneError::illegal_argument(format!(
-                        "This AttributeSource contains AttributeImpl of type {:?} that is not in the target",
-                        type_id
-                    ))
-                })?;
-            if Arc::ptr_eq(&cell, &target_rc) {
+        // PERF: walks both shared lists in place, as Java walks its state
+        // chain (`AttributeSource.java:457-468`), with no snapshot `Vec` and
+        // no reference-count traffic per implementation. Both lists are only
+        // read (a source sharing its maps with `target` reads the same list
+        // twice), and an implementation's `copy_to` cannot reach a source.
+        let shared = self.shared.borrow();
+        let target_shared = target.shared.borrow();
+        for (type_id, cell) in &shared.impls {
+            let target_rc = target_shared.impl_of(*type_id).ok_or_else(|| {
+                LuceneError::illegal_argument(format!(
+                    "This AttributeSource contains AttributeImpl of type {:?} that is not in the target",
+                    type_id
+                ))
+            })?;
+            if Arc::ptr_eq(cell, target_rc) {
                 continue;
             }
             cell.borrow().copy_to(&mut **target_rc.borrow_mut());

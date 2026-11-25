@@ -123,14 +123,9 @@ impl DoubleComparator {
 
     /// Equivalent to the private `DoubleComparator.DoubleLeafComparator.getValueForDoc(int)`.
     fn get_value_for_doc(&self, leaf: &mut NumericLeafState, doc: i32) -> Result<f64> {
-        let missing_value = self.missing_value;
-        let doc_values = leaf.doc_values();
-        if doc_values.advance_exact(doc)? {
-            let raw = doc_values.long_value()?;
-            Ok(f64::from_bits(raw as u64))
-        } else {
-            Ok(missing_value)
-        }
+        Ok(leaf
+            .exact_long_value(doc)?
+            .map_or(self.missing_value, |raw| f64::from_bits(raw as u64)))
     }
 
     /// Equivalent to `DoubleComparator.DoubleLeafComparator.bottomAsComparableLong()`.

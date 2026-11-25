@@ -173,6 +173,9 @@ impl SloppyPhraseMatcher {
     ///
     /// Equivalent to the private
     /// `SloppyPhraseMatcher.advancePP(PhrasePositions)`.
+    // PERF: called per position step of `next_match`; inlined as the JIT
+    // inlines it, so the per-step call and `Result` return disappear.
+    #[inline]
     fn advance_pp(&mut self, pp: usize) -> Result<bool> {
         if !self.phrase_positions[pp].next_position()? {
             return Ok(false);
@@ -187,6 +190,9 @@ impl SloppyPhraseMatcher {
     ///
     /// Equivalent to the private
     /// `SloppyPhraseMatcher.captureLead(PhrasePositions)`.
+    // PERF: called per position step of `next_match`; inlined as the JIT
+    // inlines it, so the per-step call and `Result` return disappear.
+    #[inline]
     fn capture_lead(&mut self, pp: usize) -> Result<()> {
         if !self.capture_lead_match {
             return Ok(());

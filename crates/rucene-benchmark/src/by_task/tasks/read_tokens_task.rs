@@ -25,6 +25,7 @@ use rucene::analysis::tokenattributes::TermToBytesRefAttribute;
 use rucene::document::Document;
 use rucene::error::{LuceneError, Result};
 use rucene::index::IndexOptions;
+use rucene::util::BytesRef;
 
 use crate::by_task::perf_run_data::PerfRunData;
 use crate::by_task::tasks::perf_task::{self, PerfTask, PerfTaskBase};
@@ -104,6 +105,11 @@ impl PerfTask for ReadTokensTask {
             .get_fields();
         let analyzer = self.base.get_run_data().get_analyzer();
         let mut token_count = 0;
+        // PERF: Java's `termAtt.getBytesRef()` returns the attribute's own
+        // `BytesRef`; the port's returns an owned copy, so the term is encoded
+        // into this one reused buffer instead (`copy_bytes_ref_to`, the same
+        // UTF-8 bytes), with no allocation per token.
+        let mut term_bytes = BytesRef::default();
         for field in fields {
             if field.field_type().index_options() == IndexOptions::NONE
                 || !field.field_type().tokenized()
@@ -121,7 +127,7 @@ impl PerfTask for ReadTokensTask {
                     .attribute_source()
                     .get_attribute_interface::<dyn TermToBytesRefAttribute>()
                     .ok_or_else(|| LuceneError::illegal_argument("TermToBytesRefAttribute"))?;
-                let _ = term_att.get_bytes_ref();
+                term_att.copy_bytes_ref_to(&mut term_bytes);
                 token_count += 1;
             }
             stream.end()?;

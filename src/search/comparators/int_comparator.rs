@@ -129,14 +129,9 @@ impl IntComparator {
 
     /// Equivalent to the private `IntComparator.IntLeafComparator.getValueForDoc(int)`.
     fn get_value_for_doc(&self, leaf: &mut NumericLeafState, doc: i32) -> Result<i32> {
-        let missing_value = self.missing_value;
-        let doc_values = leaf.doc_values();
-        if doc_values.advance_exact(doc)? {
-            let raw = doc_values.long_value()?;
-            Ok(raw as i32)
-        } else {
-            Ok(missing_value)
-        }
+        Ok(leaf
+            .exact_long_value(doc)?
+            .map_or(self.missing_value, |raw| raw as i32))
     }
 
     /// Equivalent to `IntComparator.IntLeafComparator.bottomAsComparableLong()`.
@@ -307,12 +302,9 @@ impl LeafFieldComparator for IntLeafComparator {
     #[inline]
     fn compare_bottom(&mut self, doc: i32, _scorer: &mut dyn Scorable) -> Result<i32> {
         let (_, leaf) = self.inner.parts_mut();
-        let doc_values = leaf.doc_values();
-        let value = if doc_values.advance_exact(doc)? {
-            doc_values.long_value()? as i32
-        } else {
-            self.missing_value
-        };
+        let value = leaf
+            .exact_long_value(doc)?
+            .map_or(self.missing_value, |raw| raw as i32);
         Ok(java_int_compare(self.bottom, value))
     }
 

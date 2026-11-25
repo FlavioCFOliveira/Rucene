@@ -113,6 +113,12 @@ impl DocData {
         self.body = body;
     }
 
+    /// Moves the body out, leaving `None`, for a caller that replaces it
+    /// right after (`DocMaker.createDocument`'s `docData.setBody(...)`).
+    pub(crate) fn take_body_utf16(&mut self) -> Option<Vec<u16>> {
+        self.body.take()
+    }
+
     /// `setDate(Date)`.
     pub fn set_date_from(&mut self, date: Option<&Date>) {
         match date {

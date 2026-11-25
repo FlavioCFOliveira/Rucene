@@ -18,6 +18,7 @@
 //! Constructs shingles (token n-grams) from a token stream, ported from
 //! `org.apache.lucene.analysis.shingle.ShingleFilter`.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use rucene::analysis::{
@@ -52,12 +53,15 @@ pub const DEFAULT_TOKEN_TYPE: &str = "shingle";
 /// Equivalent to `ShingleFilter.DEFAULT_TOKEN_SEPARATOR`.
 pub const DEFAULT_TOKEN_SEPARATOR: &str = " ";
 
-/// The term and the offsets of `source`, which an `InputWindowToken` holds.
-fn term_of(source: &AttributeSource) -> Vec<char> {
+/// Appends the term of `source`, which an `InputWindowToken` holds, to
+/// `gram_builder`: Java's `gramBuilder.append(nextToken.termAtt.buffer(), 0,
+/// nextToken.termAtt.length())`.
+fn append_term_of(source: &AttributeSource, gram_builder: &mut Vec<char>) {
+    // PERF: appended from the borrowed buffer, with no intermediate copy.
     let term = source
         .get_attribute_interface::<dyn CharTermAttribute>()
         .expect("INVARIANT: an input window token holds a CharTermAttribute");
-    term.buffer()[..term.length()].to_vec()
+    gram_builder.extend_from_slice(&term.buffer()[..term.length()]);
 }
 
 fn start_offset_of(source: &AttributeSource) -> i32 {
@@ -101,7 +105,11 @@ pub struct ShingleFilterLogic {
     /// Shingle and unigram text is composed here.
     gram_builder: Vec<char>,
     /// The token type attribute value to use - default is "shingle"
-    token_type: String,
+    ///
+    /// Java's `String tokenType` is a reference that every shingle's
+    /// `typeAtt.setType(tokenType)` shares; the default constant is kept
+    /// borrowed here so that setting it copies nothing.
+    token_type: Cow<'static, str>,
     /// The string to use when joining adjacent tokens to form a shingle
     token_separator: String,
     /// The string to insert for each position at which there is no token
@@ -145,7 +153,7 @@ impl ShingleFilterLogic {
     /// Equivalent to `ShingleFilter.setTokenType(String)`; Java's
     /// `NullPointerException` for `null` has no counterpart.
     pub fn set_token_type(&mut self, token_type: impl Into<String>) {
-        self.token_type = token_type.into();
+        self.token_type = Cow::Owned(token_type.into());
     }
 
     /// Shall the output stream contain the input tokens (unigrams) as well
@@ -408,7 +416,7 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     if built_gram_size > 0 {
                         self.gram_builder.extend(self.token_separator.chars());
                     }
-                    self.gram_builder.extend(term_of(&token.att_source));
+                    append_term_of(&token.att_source, &mut self.gram_builder);
                     built_gram_size += 1;
                 }
                 if is_all_filler && token.is_filler {
@@ -436,10 +444,15 @@ impl TokenFilterLogic for ShingleFilterLogic {
                     .expect("INVARIANT: the constructor added the CharTermAttribute")
                     .copy_buffer(&self.gram_builder, 0, self.gram_builder.len());
                 if self.gram_size.get_value() > 1 {
-                    source
+                    let mut type_att = source
                         .get_attribute_interface_mut::<dyn TypeAttribute>()
-                        .expect("INVARIANT: the constructor added the TypeAttribute")
-                        .set_type(self.token_type.clone());
+                        .expect("INVARIANT: the constructor added the TypeAttribute");
+                    // PERF: the default type is set as the constant, with no
+                    // `String` allocation per shingle (nor per later copy).
+                    match &self.token_type {
+                        Cow::Borrowed(token_type) => type_att.set_type_static(token_type),
+                        Cow::Owned(token_type) => type_att.set_type(token_type.clone()),
+                    }
                     self.no_shingle_output = false;
                 }
                 let next_token =
@@ -541,7 +554,7 @@ pub fn new_shingle_filter(
         // Java's field is `null` until `setMinShingleSize` sets it below.
         gram_size: CircularSequence::new(true, 0),
         gram_builder: Vec::new(),
-        token_type: DEFAULT_TOKEN_TYPE.to_string(),
+        token_type: Cow::Borrowed(DEFAULT_TOKEN_TYPE),
         token_separator: DEFAULT_TOKEN_SEPARATOR.to_string(),
         filler_token: DEFAULT_FILLER_TOKEN.chars().collect(),
         output_unigrams: true,
