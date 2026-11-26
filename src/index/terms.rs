@@ -532,6 +532,20 @@ pub trait TermsEnum: std::fmt::Display {
         None
     }
 
+    /// This enum as an owned [`Any`], so that a caller that already learned
+    /// the concrete type through [`as_any`](Self::as_any) can unbox it once
+    /// and call it statically.
+    ///
+    /// **Hidden port-only hook (rmp #679).** Java's JIT inlines the per-term
+    /// calls of a merge into the monomorphic `SegmentTermsEnum`; this port
+    /// can only do so by holding the concrete enum. The default answers
+    /// `None` and drops the enum, so a caller asks only after `as_any` named
+    /// the type; only the core enums the fast paths know override it.
+    #[doc(hidden)]
+    fn into_any(self: Box<Self>) -> Option<Box<dyn Any>> {
+        None
+    }
+
     /// Attempts to seek to the exact term, returning `true` if found.
     ///
     /// Default implementation uses `seek_ceil`.

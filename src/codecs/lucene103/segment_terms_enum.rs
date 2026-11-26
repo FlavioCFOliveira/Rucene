@@ -83,6 +83,22 @@ pub(crate) fn range_check_from_after_to(from: i32, to: i32) -> LuceneError {
     LuceneError::illegal_argument(format!("fromIndex({from}) > toIndex({to})"))
 }
 
+/// A non-negative vInt of at most four bytes at the start of `bytes`, with
+/// its encoded length: the values `DataInput.readVInt` decodes from the same
+/// bytes. `None` for anything else (a five-byte vInt, too few bytes), which
+/// the caller reads through its `ByteArrayDataInput` instead.
+#[inline]
+fn short_v_int(bytes: &[u8]) -> Option<(i32, usize)> {
+    let mut value = 0i32;
+    for (i, &b) in bytes.iter().take(4).enumerate() {
+        value |= i32::from(b & 0x7F) << (7 * i);
+        if b & 0x80 == 0 {
+            return Some((value, i + 1));
+        }
+    }
+    None
+}
+
 /// One decoded block of the terms dictionary.
 ///
 /// Equivalent to
@@ -541,6 +557,31 @@ impl SegmentTermsEnumFrame {
             self.fp
         );
         self.next_ent += 1;
+        // PERF (rmp #679): the common entry straight from the block's bytes,
+        // as Java's `ByteArrayDataInput`s read them: a vInt of at most four
+        // bytes, a suffix entirely inside the block, appended to the prefix
+        // the term already holds. Anything else takes the readers below,
+        // which raise exactly what they raised before.
+        if let Some((suffix_length, vint_len)) = short_v_int(
+            self.suffix_length_bytes
+                .get(self.suffix_lengths_pos..self.suffix_lengths_limit)
+                .unwrap_or(&[]),
+        ) {
+            let start = self.suffixes_pos;
+            let suffix = start
+                .checked_add(suffix_length as usize)
+                .filter(|&end| end <= self.suffixes_limit)
+                .and_then(|end| self.suffix_bytes.get(start..end));
+            if let Some(suffix) = suffix.filter(|_| term.len() >= self.prefix_length) {
+                self.suffix_lengths_pos += vint_len;
+                self.suffix_length = suffix_length as usize;
+                self.start_byte_pos = start;
+                term.truncate(self.prefix_length);
+                term.extend_from_slice(suffix);
+                self.suffixes_pos = start + suffix.len();
+                return Ok(());
+            }
+        }
         let suffix_length = self.with_suffix_lengths(|r| r.read_v_int())?;
         if suffix_length < 0 {
             // `suffixesReader.readBytes(ste.term.bytes(), prefixLength,
@@ -1871,6 +1912,16 @@ impl std::fmt::Display for SegmentTermsEnum {
 }
 
 impl TermsEnum for SegmentTermsEnum {
+    /// Names this type, so that a merge's `TermsEnumIndex` can hold it by
+    /// its concrete type (rmp #679).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn into_any(self: Box<Self>) -> Option<Box<dyn std::any::Any>> {
+        Some(self)
+    }
+
     fn attributes(&mut self) -> &mut AttributeSource {
         &mut self.attributes
     }

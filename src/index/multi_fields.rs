@@ -1350,16 +1350,18 @@ impl TermsEnum for MultiTermsEnum {
                 .sub_postings_enums
                 .get_mut(sub_index)
                 .and_then(Option::take);
-            let sub_postings_enum = entry
-                .base
-                .terms_enum_mut()
-                .ok_or_else(|| {
-                    null_sub_terms_enum(
-                        "postings(org.apache.lucene.index.PostingsEnum, int)",
-                        "entry.termsEnum",
-                    )
-                })?
-                .postings(reuse_sub, flags)?;
+            if entry.base.terms_enum().is_none() {
+                return Err(null_sub_terms_enum(
+                    "postings(org.apache.lucene.index.PostingsEnum, int)",
+                    "entry.termsEnum",
+                ));
+            }
+            // PERF (rmp #679): static for a `SegmentTermsEnum` sub.
+            let sub_postings_enum = entry.base.postings(
+                reuse_sub,
+                flags,
+                "postings(org.apache.lucene.index.PostingsEnum, int)",
+            )?;
             debug_assert!(sub_postings_enum.is_some());
             let sub_postings_enum = sub_postings_enum.ok_or_else(LuceneError::null_pointer)?;
             // Java stores the enum both in `subPostingsEnums[subIndex]` and in
