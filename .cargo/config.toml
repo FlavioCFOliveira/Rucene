@@ -1,0 +1,6 @@
+# Build for x86-64-v2 (SSE4.2, POPCNT, SSSE3, CX16): `count_ones` and the
+# bit-set and norms kernels compile to `popcnt`, as Lucene's JIT emits on
+# the same hardware. User decision, 2026-11-26 (rmp #680/#681, proposal P3).
+# The crate therefore requires an x86-64 CPU with SSE4.2 and POPCNT.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v2"]

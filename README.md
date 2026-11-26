@@ -49,7 +49,10 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 
 ## Getting started
 
-Prerequisite: Rust 1.89 or later (`rust-version` of every workspace crate).
+Prerequisites: Rust 1.89 or later (`rust-version` of every workspace crate).
+On x86-64 Linux, `.cargo/config.toml` builds for `target-cpu=x86-64-v2`, so the
+binaries require a CPU with SSE4.2 and POPCNT (bit counts compile to `popcnt`,
+as Lucene's JIT emits on the same hardware).
 
 ```bash
 cargo build                                   # the rucene crate
