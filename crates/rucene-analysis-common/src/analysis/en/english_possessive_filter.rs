@@ -62,6 +62,38 @@ impl TokenFilterLogic for EnglishPossessiveFilterLogic {
     }
 }
 
+/// `EnglishPossessiveFilter` as an owned stage (see
+/// [`rucene::analysis::owned`]): the same test and length change as
+/// [`EnglishPossessiveFilterLogic`].
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct OwnedEnglishPossessiveFilter;
+
+impl rucene::analysis::owned::OwnedTokenFilter for OwnedEnglishPossessiveFilter {
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut rucene::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn rucene::analysis::owned::OwnedInput,
+    ) -> Result<bool> {
+        if !input.increment_token(attrs)? {
+            return Ok(false);
+        }
+        let term_att = &mut *attrs.term;
+        let buffer_length = term_att.length();
+        let buffer = term_att.buffer();
+        if buffer_length >= 2
+            && (buffer[buffer_length - 2] == '\''
+                || buffer[buffer_length - 2] == '\u{2019}'
+                || buffer[buffer_length - 2] == '\u{FF07}')
+            && (buffer[buffer_length - 1] == 's' || buffer[buffer_length - 1] == 'S')
+        {
+            term_att.set_length(buffer_length - 2); // Strip last 2 characters off
+        }
+        Ok(true)
+    }
+}
+
 /// TokenFilter that removes possessives (trailing 's) from words.
 ///
 /// Equivalent to `org.apache.lucene.analysis.en.EnglishPossessiveFilter`.

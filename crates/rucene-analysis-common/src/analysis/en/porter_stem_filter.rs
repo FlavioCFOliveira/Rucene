@@ -76,6 +76,42 @@ impl TokenFilterLogic for PorterStemFilterLogic {
     }
 }
 
+/// `PorterStemFilter` as an owned stage (see [`rucene::analysis::owned`]):
+/// the same keyword test, stem and copy as [`PorterStemFilterLogic`].
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct OwnedPorterStemFilter {
+    stemmer: PorterStemmer,
+    units: Vec<u16>,
+    chars: Vec<char>,
+}
+
+impl rucene::analysis::owned::OwnedTokenFilter for OwnedPorterStemFilter {
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut rucene::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn rucene::analysis::owned::OwnedInput,
+    ) -> Result<bool> {
+        if !input.increment_token(attrs)? {
+            return Ok(false);
+        }
+        if !attrs.is_keyword() {
+            let term_att = &mut *attrs.term;
+            chars_to_utf16_into(&term_att.buffer()[..term_att.length()], &mut self.units);
+            let units = &self.units;
+            if self.stemmer.stem_range(units, 0, units.len()) {
+                utf16_to_term_chars_into(
+                    &self.stemmer.get_result_buffer()[..self.stemmer.get_result_length()],
+                    &mut self.chars,
+                );
+                term_att.copy_buffer(&self.chars, 0, self.chars.len());
+            }
+        }
+        Ok(true)
+    }
+}
+
 /// Transforms the token stream as per the Porter stemming algorithm. Note:
 /// the input to the stemming filter must already be in lower case, so you
 /// will need to use LowerCaseFilter or LowerCaseTokenizer farther down the

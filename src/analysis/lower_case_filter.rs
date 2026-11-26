@@ -84,6 +84,38 @@ pub fn new_lower_case_filter(input: Box<dyn TokenStream>) -> Result<LowerCaseFil
     TokenFilter::with_logic(input, LowerCaseFilterLogic::new)
 }
 
+/// `LowerCaseFilter` as an owned stage (see [`owned`](crate::analysis::owned)):
+/// `if (input.incrementToken()) { CharacterUtils.toLowerCase(termAtt.buffer(),
+/// 0, termAtt.length()); return true; }` (`LowerCaseFilter.java:36-43`).
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct OwnedLowerCaseFilter;
+
+impl OwnedLowerCaseFilter {
+    /// The filter's work on a token its input produced:
+    /// `CharacterUtils.toLowerCase(termAtt.buffer(), 0, termAtt.length())`.
+    #[inline]
+    pub fn lower_case(attrs: &mut crate::analysis::owned::TokenAttrs<'_>) {
+        let length = attrs.term.length();
+        to_lower_case(attrs.term.buffer_mut(), 0, length);
+    }
+}
+
+impl crate::analysis::owned::OwnedTokenFilter for OwnedLowerCaseFilter {
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut crate::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn crate::analysis::owned::OwnedInput,
+    ) -> Result<bool> {
+        if !input.increment_token(attrs)? {
+            return Ok(false);
+        }
+        Self::lower_case(attrs);
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,8 @@ pub mod filtering_token_filter;
 pub mod graph_token_filter;
 pub mod java_regex;
 pub mod lower_case_filter;
+#[doc(hidden)]
+pub mod owned;
 pub mod reusable_string_reader;
 pub mod standard;
 pub mod stop_filter;
@@ -1476,6 +1478,19 @@ pub trait ReuseStrategy: Debug + Send + Sync {
         field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     );
+
+    /// Whether one components instance serves every field (`Some(true)`, the
+    /// global strategy), one per field name (`Some(false)`, the per-field
+    /// strategy), or neither is known (`None`, the default). An owned chain
+    /// ([`owned`]) is shared by the same fields as the components it
+    /// reproduces, so that a consumer reading its attribute source sees what
+    /// it sees with the shared stream.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679 owned chain).
+    #[doc(hidden)]
+    fn shares_components_across_fields(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Reuses the same components for every field.
@@ -1505,6 +1520,10 @@ impl ReuseStrategy for GlobalReuseStrategy {
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         state.stored_value().set(Some(Box::new(components)));
+    }
+
+    fn shares_components_across_fields(&self) -> Option<bool> {
+        Some(true)
     }
 }
 
@@ -1551,6 +1570,10 @@ impl ReuseStrategy for PerFieldReuseStrategy {
                 map.insert(field_name.map(str::to_string), components);
             }
         }
+    }
+
+    fn shares_components_across_fields(&self) -> Option<bool> {
+        Some(false)
     }
 }
 
@@ -1599,6 +1622,18 @@ pub trait Analyzer: Debug + Send + Sync {
     /// as the other hot traits' `as_any` (rmp #679 ownership prototype).
     #[doc(hidden)]
     fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    /// This analyzer's components for `field_name` as owned stages (see
+    /// [`owned`]), or `None` (the default) for an analyzer whose consumers
+    /// use the shared stream. An implementation that answers must describe
+    /// exactly the tokenizer and filters `create_components(field_name)`
+    /// builds, with the analyzer's current settings, and no `init_reader`.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679 owned chain).
+    #[doc(hidden)]
+    fn owned_stages(&self, _field_name: Option<&str>) -> Option<Result<owned::OwnedStages>> {
         None
     }
 

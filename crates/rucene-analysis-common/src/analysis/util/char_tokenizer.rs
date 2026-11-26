@@ -303,6 +303,100 @@ impl<T: CharTokenizerLogic> TokenizerLogic for CharTokenizerAdapter<T> {
     }
 }
 
+/// `CharTokenizer` as an owned stage (see [`rucene::analysis::owned`]):
+/// the same scan and attribute writes as [`CharTokenizerAdapter`], over its
+/// own `ReusableStringReader`.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct OwnedCharTokenizer<T: CharTokenizerLogic> {
+    adapter: CharTokenizerAdapter<T>,
+    reader: rucene::analysis::reusable_string_reader::ReusableStringReader,
+    /// Whether `reader` is the tokenizer's `input` (between `reset()` and
+    /// `close()`); Java's `input` is `ILLEGAL_STATE_READER` otherwise.
+    input_open: bool,
+    /// Java's `inputPending` holds the reader.
+    input_pending: bool,
+}
+
+impl<T: CharTokenizerLogic> OwnedCharTokenizer<T> {
+    /// The stage of the tokenizer `adapter` describes (its logic and
+    /// maximum token length).
+    pub fn new(adapter: CharTokenizerAdapter<T>) -> Self {
+        Self {
+            adapter,
+            reader: rucene::analysis::reusable_string_reader::ReusableStringReader::new(),
+            input_open: false,
+            input_pending: false,
+        }
+    }
+}
+
+impl<T: CharTokenizerLogic> rucene::analysis::owned::OwnedTokenizer for OwnedCharTokenizer<T> {
+    fn set_text(&mut self, text: &str) -> Result<()> {
+        // Tokenizer.setReader: `if (input != ILLEGAL_STATE_READER) throw`.
+        if self.input_open {
+            return Err(LuceneError::illegal_state(
+                "TokenStream contract violation: close() call missing".to_string(),
+            ));
+        }
+        self.reader.set_value(text);
+        self.input_pending = true;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        // Tokenizer.reset(): input = inputPending; then CharTokenizer.reset()
+        self.input_open = std::mem::take(&mut self.input_pending);
+        let adapter = &mut self.adapter;
+        adapter.buffer_index = 0;
+        adapter.offset = 0;
+        adapter.data_len = 0;
+        adapter.final_offset = 0;
+        adapter.io_buffer.reset(); // make sure to reset the IO buffer!!
+        Ok(())
+    }
+
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut rucene::analysis::owned::TokenAttrs<'_>,
+    ) -> Result<bool> {
+        attrs.clear();
+        let span = if self.input_open {
+            self.adapter.scan_token(attrs.term, &mut self.reader)?
+        } else {
+            let mut illegal = rucene::analysis::IllegalStateReader;
+            self.adapter.scan_token(attrs.term, &mut illegal)?
+        };
+        Ok(match span {
+            Some((start_offset, end_offset)) => {
+                attrs.term.set_offset(start_offset, end_offset);
+                true
+            }
+            None => false,
+        })
+    }
+
+    fn end(&mut self, attrs: &mut rucene::analysis::owned::TokenAttrs<'_>) -> Result<()> {
+        // super.end(), then offsetAtt.setOffset(finalOffset, finalOffset)
+        attrs.end();
+        let final_offset = self.adapter.final_offset;
+        attrs.term.set_offset(final_offset, final_offset);
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        let closed = if self.input_open {
+            rucene::analysis::CharReader::close(&mut self.reader)
+        } else {
+            Ok(())
+        };
+        self.input_open = false;
+        self.input_pending = false;
+        closed
+    }
+}
+
 /// An abstract base class for simple, character-oriented tokenizers.
 ///
 /// The base class also provides factories to create instances of

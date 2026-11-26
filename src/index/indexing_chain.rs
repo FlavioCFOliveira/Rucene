@@ -69,7 +69,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
-use crate::analysis::standard::{OwnedStandardChain, StandardAnalyzer};
+use crate::analysis::owned::{analyzed_text, OwnedTokenChain};
 use crate::analysis::tokenattributes::{
     OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute, PositionIncrementAttribute,
     TermFrequencyAttribute, TermToBytesRefAttribute,
@@ -1150,48 +1150,56 @@ struct RawToken {
     has_term_freq_attribute: bool,
 }
 
-/// The indexing chain's own [`OwnedStandardChain`] (rmp #679 ownership
-/// prototype; see [`DefaultIndexingChain::invert_owned_standard`]).
+/// The indexing chain's owned token chains (rmp #679 owned chain; see
+/// [`DefaultIndexingChain::invert_owned`]), built on first use for the
+/// analyzer of that use and shared by the fields that share the analyzer's
+/// components: every field under the global reuse strategy, one field under
+/// the per-field strategy. A consumer reading the attribute source (a
+/// similarity's `computeNorm`, after every field of the document) then sees
+/// the state the shared components hold.
 #[derive(Debug, Default)]
 struct OwnedChainSlot {
-    /// Whether the writer's similarity is Lucene's `BM25Similarity`, the
-    /// condition of the path (its `computeNorm` reads no attribute source).
-    enabled: bool,
-    /// The analyzer the chain was built for (its address), and the chain.
-    chain: Option<(usize, OwnedStandardChain)>,
+    /// The chain of an analyzer whose components serve every field: the
+    /// analyzer (its address) and its chain, `None` when it has none.
+    global: Option<(usize, Option<OwnedTokenChain>)>,
+    /// Per field (the index of its [`PerField`]), under the per-field
+    /// strategy.
+    per_field: Vec<Option<(usize, Option<OwnedTokenChain>)>>,
 }
 
 impl OwnedChainSlot {
-    fn new(config: &LiveIndexWriterConfig) -> Self {
-        Self {
-            enabled: config.similarity().java_class_name()
-                == "org.apache.lucene.search.similarities.BM25Similarity",
-            chain: None,
+    /// The owned chain field `index` uses with `analyzer`, built (or found
+    /// missing) once per analyzer.
+    fn chain(
+        &mut self,
+        index: usize,
+        analyzer: &dyn Analyzer,
+        field_name: &str,
+    ) -> Option<&mut OwnedTokenChain> {
+        let key = analyzer as *const dyn Analyzer as *const () as usize;
+        // PERF: the global chain of this analyzer, found without asking the
+        // reuse strategy again (one `dyn` call per value saved).
+        if matches!(&self.global, Some((built_for, _)) if *built_for == key) {
+            return self.global.as_mut().and_then(|(_, chain)| chain.as_mut());
         }
+        let entry = match analyzer
+            .analyzer_state()
+            .reuse_strategy()
+            .shares_components_across_fields()?
+        {
+            true => &mut self.global,
+            false => {
+                if self.per_field.len() <= index {
+                    self.per_field.resize_with(index + 1, || None);
+                }
+                &mut self.per_field[index]
+            }
+        };
+        if !matches!(entry, Some((built_for, _)) if *built_for == key) {
+            *entry = Some((key, OwnedTokenChain::build(analyzer, Some(field_name))));
+        }
+        entry.as_mut().and_then(|(_, chain)| chain.as_mut())
     }
-}
-
-/// The analyzer and the text when `field.tokenStream(analyzer, reuse)` is
-/// `analyzer.tokenStream(name, stringValue)` of a [`StandardAnalyzer`]
-/// that is not closed: a [`Field`](crate::document::Field) that is
-/// tokenized and holds a string (or number) value, which `Field.tokenStream`
-/// hands to the analyzer (`Field.java:465-498`); `None` otherwise.
-fn owned_standard_text<'a>(
-    analyzer: Option<&'a dyn Analyzer>,
-    field: &dyn IndexableField,
-) -> Option<(&'a StandardAnalyzer, String)> {
-    let standard = analyzer?.as_any()?.downcast_ref::<StandardAnalyzer>()?;
-    if standard.analyzer_state().is_closed() {
-        return None;
-    }
-    let field = field.as_any()?.downcast_ref::<crate::document::Field>()?;
-    if !field.field_type().tokenized() {
-        return None;
-    }
-    // A string (or number) value excludes a token-stream and a reader value:
-    // they are variants of the one field value.
-    let text = field.string_value()?;
-    Some((standard, text))
 }
 
 /// Reads the current token off the attributes `FieldInvertState` cached.
@@ -1407,7 +1415,7 @@ impl DefaultIndexingChain {
         let parent_field = config
             .parent_field()
             .map(|name| NumericDocValuesField::new(&name, -1));
-        let owned_standard = OwnedChainSlot::new(&config);
+        let owned_standard = OwnedChainSlot::default();
         Self {
             owned_standard,
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
@@ -2470,7 +2478,7 @@ impl DefaultIndexingChain {
         field: &dyn IndexableField,
         first: bool,
         aborting_error: &mut Option<LuceneError>,
-        owned: &mut OwnedChainSlot,
+        (owned, field_index): (&mut OwnedChainSlot, usize),
     ) -> Result<()> {
         debug_assert!(field
             .field_type()
@@ -2490,24 +2498,30 @@ impl DefaultIndexingChain {
                 first,
             ),
             Some(InvertableType::TOKEN_STREAM) => {
-                // rmp #679 ownership prototype: StandardAnalyzer's chain,
-                // owned by this indexing chain, for a field whose
-                // `tokenStream` would be `analyzer.tokenStream(name, value)`.
-                if owned.enabled {
-                    if let Some((standard, text)) = owned_standard_text(analyzer, field) {
-                        return Self::invert_owned_standard(
-                            standard,
-                            &text,
-                            owned,
-                            info_stream,
-                            terms_writer,
-                            term_vectors,
-                            per_field,
-                            doc_id,
-                            field,
-                            first,
-                            aborting_error,
-                        );
+                // rmp #679 owned chain: the analyzer's stages, owned by this
+                // indexing chain, for a field whose `tokenStream` would be
+                // `analyzer.tokenStream(name, value)` (`Field.java:465-498`).
+                if let Some(analyzer) =
+                    analyzer.filter(|analyzer| !analyzer.analyzer_state().is_closed())
+                {
+                    if let Some(text) = analyzed_text(field) {
+                        if let Some(chain) =
+                            owned.chain(field_index, analyzer, &per_field.field_name)
+                        {
+                            return Self::invert_owned(
+                                analyzer,
+                                &text,
+                                chain,
+                                info_stream,
+                                terms_writer,
+                                term_vectors,
+                                per_field,
+                                doc_id,
+                                field,
+                                first,
+                                aborting_error,
+                            );
+                        }
                     }
                 }
                 Self::invert_token_stream(
@@ -2791,22 +2805,18 @@ impl DefaultIndexingChain {
         consumer.add(index, &per_field.invert_state, text_start, token)
     }
 
-    /// `invertTokenStream` over the indexing chain's own
-    /// [`OwnedStandardChain`] (rmp #679 ownership prototype): the same steps
-    /// as [`invert_token_stream`](Self::invert_token_stream) — the stream's
-    /// `reset`, `termsHashPerField.start`, the token loop, `end` and the end
-    /// position and offset, `close`, then the analyzer's gaps — with the
-    /// chain's attributes read in place instead of through shared cells.
-    ///
-    /// `invertState.setAttributeSource(stream)` has no counterpart: the
-    /// chain's attributes live in no `AttributeSource`; the path is only taken
-    /// under `BM25Similarity`, whose `computeNorm` reads the invert state's
-    /// counters, never its attribute source.
+    /// `invertTokenStream` over an [`OwnedTokenChain`] (rmp #679 owned
+    /// chain): the same steps as [`invert_token_stream`](Self::invert_token_stream)
+    /// — `field.tokenStream` (the chain takes the text), `stream.reset()`,
+    /// `invertState.setAttributeSource(stream)` (the chain's attribute
+    /// source, the shared stream's own), `termsHashPerField.start`, the token
+    /// loop, `end` and the end position and offset, `close`, then the
+    /// analyzer's gaps — with the attributes read in place.
     #[allow(clippy::too_many_arguments)]
-    fn invert_owned_standard(
-        analyzer: &StandardAnalyzer,
+    fn invert_owned(
+        analyzer: &dyn Analyzer,
         text: &str,
-        owned: &mut OwnedChainSlot,
+        chain: &mut OwnedTokenChain,
         info_stream: &dyn InfoStream,
         terms_writer: &mut FreqProxTermsWriter,
         term_vectors: Option<&mut TermVectorsConsumer>,
@@ -2816,18 +2826,10 @@ impl DefaultIndexingChain {
         first: bool,
         aborting_error: &mut Option<LuceneError>,
     ) -> Result<()> {
-        let key = analyzer as *const StandardAnalyzer as usize;
-        let chain = match &mut owned.chain {
-            Some((built_for, chain)) if *built_for == key => chain,
-            slot => &mut slot.insert((key, OwnedStandardChain::new(analyzer))).1,
-        };
-        // A panic (Java's unchecked throwable) inside the previous value left
-        // the chain open; Java's try-with-resources closed its stream.
-        chain.close_if_open();
         let is_term_doc = per_field.field_info().is_term_doc_field();
         // `field.tokenStream(analyzer, tokenStream)`, logged on failure as the
         // shared path logs it.
-        if let Err(error) = chain.set_text(analyzer, text) {
+        if let Err(error) = chain.set_text(text) {
             if info_stream.is_enabled("DW") {
                 info_stream.message(
                     "DW",
@@ -2842,13 +2844,15 @@ impl DefaultIndexingChain {
         let mut term_vectors = term_vectors;
         let mut term_bytes = std::mem::take(&mut per_field.term_bytes);
         let outcome = (|| -> Result<()> {
-            chain.reset();
+            chain.reset()?;
+            per_field
+                .invert_state
+                .set_stream_attribute_source(chain.attribute_source())?;
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
-            while chain.increment_token()? {
-                let att = chain.attributes();
+            let (end_position_increment, end_offset) = chain.for_each_token(|att| {
                 att.copy_bytes_ref_to(&mut term_bytes);
-                // The chain has no `PayloadAttribute`: Java's
-                // `getAttribute(PayloadAttribute.class)` is `null`.
+                // The chain's source holds no `PayloadAttribute`
+                // (`OwnedTokenChain::build`): Java's `getAttribute` is `null`.
                 let token = RawToken {
                     has_term: true,
                     position_increment: att.get_position_increment(),
@@ -2869,12 +2873,10 @@ impl DefaultIndexingChain {
                     &token,
                     &term_bytes,
                     aborting_error,
-                )?;
-            }
-            chain.end();
-            let att = chain.attributes();
-            per_field.invert_state.position += att.get_position_increment();
-            per_field.invert_state.offset += att.end_offset();
+                )
+            })?;
+            per_field.invert_state.position += end_position_increment;
+            per_field.invert_state.offset += end_offset;
             Ok(())
         })();
         per_field.term_bytes = term_bytes;
@@ -2899,7 +2901,7 @@ impl DefaultIndexingChain {
     /// One token of `invertTokenStream`'s loop (`IndexingChain.java:1913-2032`),
     /// after the token was read: position, offset and length accounting, then
     /// the postings and term vectors. Shared by the shared-chain loop and the
-    /// owned-chain prototype ([`OwnedStandardChain`]).
+    /// owned chain ([`OwnedTokenChain`]).
     #[allow(clippy::too_many_arguments)]
     #[inline]
     fn invert_one_token(
@@ -3729,7 +3731,7 @@ impl DefaultIndexingChain {
                 field,
                 first,
                 &mut self.aborting_error,
-                &mut self.owned_standard,
+                (&mut self.owned_standard, pf),
             )?;
             if first {
                 self.per_fields[pf].first = false;
@@ -4648,7 +4650,7 @@ impl DefaultIndexingChain {
                         field,
                         first,
                         &mut self.aborting_error,
-                        &mut self.owned_standard,
+                        (&mut self.owned_standard, index),
                     )
                 })) {
                     Ok(result) => result,
@@ -7217,6 +7219,154 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .unwrap();
         assert_eq!(*SEEN.lock().unwrap(), vec![true]);
+    }
+
+    /// rmp #679 owned chain: a similarity that reads the invert state's
+    /// attribute source in `computeNorm` sees the same thing through the
+    /// owned chain (StandardAnalyzer) as through the shared stream (the same
+    /// analyzer behind a wrapper that describes no owned stages): the same
+    /// attribute interfaces, and the end-of-stream term, offsets and position
+    /// increment, field after field and value after value.
+    #[test]
+    fn a_non_bm25_similarity_sees_the_same_attribute_source_on_both_paths() {
+        use crate::analysis::tokenattributes::{
+            OffsetAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
+        };
+        use crate::analysis::{Analyzer, AnalyzerState, TokenStreamComponents};
+        use crate::document::{Store, TextField};
+
+        type Seen = (String, usize, String, i32, i32, i32, bool, i32, i32, i32);
+        static SEEN: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
+        #[derive(Debug)]
+        struct SourceReadingSimilarity;
+        impl Similarity for SourceReadingSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
+            fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
+                let source = state.get_attribute_source().expect("a stream was inverted");
+                let term = source
+                    .get_attribute_interface::<dyn CharTermAttribute>()
+                    .expect("term attribute");
+                let text: String = term.buffer()[..term.length()].iter().collect();
+                drop(term);
+                let offset = source
+                    .get_attribute_interface::<dyn OffsetAttribute>()
+                    .expect("offset attribute");
+                let (so, eo) = (offset.start_offset(), offset.end_offset());
+                drop(offset);
+                let pi = source
+                    .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                    .expect("position increment attribute")
+                    .get_position_increment();
+                SEEN.lock().unwrap().push((
+                    state.name().to_string(),
+                    source.attribute_classes().count(),
+                    text,
+                    so,
+                    eo,
+                    pi,
+                    source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
+                    state.length(),
+                    state.position(),
+                    state.offset(),
+                ));
+                Ok(1)
+            }
+
+            fn scorer<'a>(
+                &'a self,
+                boost: f32,
+                _collection_stats: &CollectionStatistics,
+                _term_stats: &[TermStatistics],
+            ) -> Box<dyn SimScorer + 'a> {
+                struct ConstantScorer(f32);
+                impl SimScorer for ConstantScorer {
+                    fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                        self.0
+                    }
+                }
+                Box::new(ConstantScorer(boost))
+            }
+        }
+
+        /// StandardAnalyzer without owned stages: the shared stream.
+        #[derive(Debug)]
+        struct SharedOnly(StandardAnalyzer, AnalyzerState);
+        impl Analyzer for SharedOnly {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                &self.1
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.standard.StandardAnalyzer"
+            }
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
+                self.0.create_components(field_name)
+            }
+        }
+
+        let run = |analyzer: Arc<dyn Analyzer>| -> Vec<Seen> {
+            SEEN.lock().unwrap().clear();
+            let live = LiveIndexWriterConfig::new(Some(analyzer));
+            live.set_similarity(Arc::new(SourceReadingSimilarity));
+            let config = Arc::new(live);
+            let codec = ensure_codec();
+            let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                ByteBuffersDirectory::new(),
+            )));
+            let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+            let info = SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                -1,
+                false,
+                false,
+                codec,
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info");
+            let mut chain =
+                DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
+                    .expect("bind segment");
+            let mut field_infos = builder();
+            let docs = [
+                vec![
+                    ("body", "The quick brown fox, jumps!"),
+                    ("title", "Hello World"),
+                ],
+                vec![
+                    ("body", "a"),
+                    ("body", "second value of body"),
+                    ("title", ""),
+                ],
+                vec![("title", "   trailing spaces   ")],
+            ];
+            for (doc_id, fields) in docs.iter().enumerate() {
+                let mut document = Document::new();
+                for (name, text) in fields {
+                    document.add(
+                        TextField::new(*name, text.to_string(), Store::NO).expect("text field"),
+                    );
+                }
+                chain
+                    .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
+                    .unwrap();
+            }
+            std::mem::take(&mut *SEEN.lock().unwrap())
+        };
+        let owned = run(Arc::new(StandardAnalyzer::new()));
+        let shared = run(Arc::new(SharedOnly(
+            StandardAnalyzer::new(),
+            AnalyzerState::new(Box::new(crate::analysis::GlobalReuseStrategy)),
+        )));
+        assert!(!owned.is_empty());
+        assert_eq!(owned, shared);
     }
 
     #[test]

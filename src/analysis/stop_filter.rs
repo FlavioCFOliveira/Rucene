@@ -98,6 +98,115 @@ where
     CharArraySet::from_iter(words, ignore_case)
 }
 
+/// `StopFilter` as an owned stage (see [`owned`](crate::analysis::owned)):
+/// `FilteringTokenFilter.incrementToken()` (`FilteringTokenFilter.java:43-61`)
+/// with `StopFilter.accept()` (`StopFilter.java:96-98`), answered as
+/// [`StopFilterLogic`] answers it, and `FilteringTokenFilter.end()`/`reset()`.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct OwnedStopFilter {
+    stop_words: CharArraySet,
+    /// The term's UTF-16 units for the set lookup (see [`StopFilterLogic`]).
+    scratch: Vec<u16>,
+    /// `FilteringTokenFilter.skippedPositions`.
+    skipped_positions: i32,
+}
+
+impl OwnedStopFilter {
+    /// The stage over `stop_words`.
+    pub fn new(stop_words: CharArraySet) -> Self {
+        Self {
+            stop_words,
+            scratch: Vec::new(),
+            skipped_positions: 0,
+        }
+    }
+
+    #[inline]
+    fn accept(&mut self, attrs: &crate::analysis::owned::TokenAttrs<'_>) -> bool {
+        if self.stop_words.is_empty() {
+            return true;
+        }
+        let length = attrs.term.length();
+        term_to_utf16(&attrs.term.buffer()[..length], &mut self.scratch);
+        !self
+            .stop_words
+            .contains_chars(Some(&self.scratch), 0, self.scratch.len())
+    }
+}
+
+impl OwnedStopFilter {
+    /// `FilteringTokenFilter.incrementToken()` over `input`, the stages
+    /// below, for a caller that holds them statically (a fused stage).
+    ///
+    /// # Errors
+    ///
+    /// What `input` raises.
+    #[inline]
+    pub fn increment_with(
+        &mut self,
+        attrs: &mut crate::analysis::owned::TokenAttrs<'_>,
+        mut input: impl FnMut(&mut crate::analysis::owned::TokenAttrs<'_>) -> Result<bool>,
+    ) -> Result<bool> {
+        use crate::analysis::tokenattributes::PositionIncrementAttribute;
+        self.skipped_positions = 0;
+        while input(attrs)? {
+            if self.accept(attrs) {
+                if self.skipped_positions != 0 {
+                    let pos_incr = attrs.term.get_position_increment();
+                    attrs
+                        .term
+                        .set_position_increment(pos_incr + self.skipped_positions);
+                }
+                return Ok(true);
+            }
+            self.skipped_positions += attrs.term.get_position_increment();
+        }
+        Ok(false)
+    }
+
+    /// `FilteringTokenFilter.end()` after `input.end()`: the skipped
+    /// positions added to the end position increment.
+    pub fn end_after_input(&mut self, attrs: &mut crate::analysis::owned::TokenAttrs<'_>) {
+        use crate::analysis::tokenattributes::PositionIncrementAttribute;
+        let pos_incr = attrs.term.get_position_increment();
+        attrs
+            .term
+            .set_position_increment(pos_incr + self.skipped_positions);
+    }
+
+    /// `FilteringTokenFilter.reset()` after `input.reset()`.
+    pub fn reset_state(&mut self) {
+        self.skipped_positions = 0;
+    }
+}
+
+impl crate::analysis::owned::OwnedTokenFilter for OwnedStopFilter {
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut crate::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn crate::analysis::owned::OwnedInput,
+    ) -> Result<bool> {
+        self.increment_with(attrs, |attrs| input.increment_token(attrs))
+    }
+
+    fn end(
+        &mut self,
+        attrs: &mut crate::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn crate::analysis::owned::OwnedInput,
+    ) -> Result<()> {
+        input.end(attrs)?;
+        self.end_after_input(attrs);
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.reset_state();
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

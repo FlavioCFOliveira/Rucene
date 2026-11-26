@@ -52,6 +52,26 @@ impl Analyzer for WhitespaceAnalyzer {
         "org.apache.lucene.analysis.core.WhitespaceAnalyzer"
     }
 
+    /// `createComponents`' `WhitespaceTokenizer(maxTokenLength)` as an
+    /// owned stage (rmp #679 owned chain).
+    fn owned_stages(
+        &self,
+        _field_name: Option<&str>,
+    ) -> Option<Result<rucene::analysis::owned::OwnedStages>> {
+        use crate::analysis::util::char_tokenizer::{CharTokenizerAdapter, OwnedCharTokenizer};
+        Some(
+            CharTokenizerAdapter::with_max_token_len(
+                super::whitespace_tokenizer::WhitespaceTokenizerLogic,
+                self.max_token_length,
+            )
+            .map(|adapter| {
+                rucene::analysis::owned::OwnedStages::new(Box::new(OwnedCharTokenizer::new(
+                    adapter,
+                )))
+            }),
+        )
+    }
+
     /// Equivalent to `WhitespaceAnalyzer.createComponents(String)`.
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         Ok(TokenStreamComponents::from_tokenizer(Arc::new(
