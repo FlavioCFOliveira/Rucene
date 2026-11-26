@@ -598,3 +598,10 @@ This policy applies globally and across all work: code, tests, features, documen
 - Efficiency never overrides effectiveness. **Never deliver something that does not fully do what is expected of it in favor of efficiency.**
 - Deliver efficient work only when it is also effective. A first version may be only effective and become efficient later.
 - Synergy and convergence (5.3), the shortest path (section 2, rule 7), test economy (9.3), and token economy (section 12) are means of efficiency, and this rule binds them. It agrees with section 11: correctness comes before speed.
+
+### 17.3 Empirical observation
+
+- **Observed, never assumed.** Effectiveness and efficiency are established empirically, with evidence from the project, never assumed.
+- **Detect non-contributing operations.** Use all of the project's profiling knowledge — profilers, tracing, metrics, and comparisons against the Java oracle — to detect operations that run without contributing to the objective of the code, the feature, or the tests.
+- **Find more efficient means.** Use the same knowledge to determine whether a more efficient way exists to produce the same result.
+- The diagnostic techniques and the evidence standard are those of section 8; this rule applies them to every deliverable, not only to defects and performance issues.
