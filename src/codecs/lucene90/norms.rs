@@ -45,7 +45,6 @@
 #![deny(unsafe_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -60,6 +59,7 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
+use crate::internal::hppc::IntObjectHashMap;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::{DataInput, IndexInput, IndexOutput, MemorySegment, RandomAccessInput};
 use crate::util::atomic_ref_cell::AtomicRefCell;
@@ -378,20 +378,25 @@ struct NormsEntry {
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer`.
 pub struct Lucene90NormsProducer {
-    norms: HashMap<i32, NormsEntry>,
+    /// `norms`, Java's `IntObjectHashMap<NormsEntry>`.
+    ///
+    /// PERF (rmp #679): the port's `IntObjectHashMap`, as Java declares it,
+    /// instead of a SipHash `HashMap`; a merge looks a field up once per
+    /// term (`PushPostingsWriterBase.writeTerm` -> `getNorms`).
+    norms: IntObjectHashMap<NormsEntry>,
     max_doc: i32,
     data: crate::store::SharedIndexInput,
     /// `merging`: set on the instance `getMergeInstance()` returns.
     merging: bool,
     /// `disiInputs`: the docs-with-field inputs a merge instance opened, by
     /// field number.
-    disi_inputs: Mutex<HashMap<i32, Arc<DisiBlockSlice>>>,
+    disi_inputs: Mutex<IntObjectHashMap<Arc<DisiBlockSlice>>>,
     /// `disiJumpTables`: the jump tables a merge instance opened, by field
     /// number, each with its resource description read once.
-    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessInput>>,
+    disi_jump_tables: Mutex<IntObjectHashMap<SharedRandomAccessInput>>,
     /// `dataInputs`: the values slices a merge instance opened, by field
     /// number, each with its resource description read once.
-    data_inputs: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
+    data_inputs: Mutex<IntObjectHashMap<SharedRandomAccessSlice>>,
 }
 
 /// An `IndexInput` several readers of a merge instance share: Java shares
@@ -425,7 +430,7 @@ type SharedRandomAccessInput = Arc<AtomicRefCell<Box<dyn RandomAccessInput>>>;
 impl fmt::Debug for Lucene90NormsProducer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90NormsProducer")
-            .field("fields", &self.norms.len())
+            .field("fields", &self.norms.size())
             .field("max_doc", &self.max_doc)
             .finish_non_exhaustive()
     }
@@ -441,7 +446,7 @@ impl Lucene90NormsProducer {
             NORMS_META_EXTENSION,
         );
         let mut meta = state.directory.open_checksum_input(&meta_name)?;
-        let mut norms = HashMap::new();
+        let mut norms = IntObjectHashMap::new();
         // Java puts **both** the header check and the entry parse inside one
         // `try`, and verifies the footer in the matching `finally` with
         // whatever they threw (`Lucene90NormsProducer.java:49-64`). Rust has no
@@ -512,9 +517,9 @@ impl Lucene90NormsProducer {
             max_doc,
             data: crate::store::SharedIndexInput::new(data),
             merging: false,
-            disi_inputs: Mutex::new(HashMap::new()),
-            disi_jump_tables: Mutex::new(HashMap::new()),
-            data_inputs: Mutex::new(HashMap::new()),
+            disi_inputs: Mutex::new(IntObjectHashMap::new()),
+            disi_jump_tables: Mutex::new(IntObjectHashMap::new()),
+            data_inputs: Mutex::new(IntObjectHashMap::new()),
         })
     }
 
@@ -527,9 +532,9 @@ impl Lucene90NormsProducer {
             max_doc: self.max_doc,
             data: crate::store::SharedIndexInput::new(self.data.clone_input()?),
             merging: true,
-            disi_inputs: Mutex::new(HashMap::new()),
-            disi_jump_tables: Mutex::new(HashMap::new()),
-            data_inputs: Mutex::new(HashMap::new()),
+            disi_inputs: Mutex::new(IntObjectHashMap::new()),
+            disi_jump_tables: Mutex::new(IntObjectHashMap::new()),
+            data_inputs: Mutex::new(IntObjectHashMap::new()),
         })
     }
 
@@ -543,7 +548,7 @@ impl Lucene90NormsProducer {
     fn get_data_input(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<NormsSlice> {
         let mut slice: Option<SharedRandomAccessSlice> = None;
         if self.merging {
-            slice = lock(&self.data_inputs).get(&field.number).cloned();
+            slice = lock(&self.data_inputs).get(field.number).cloned();
         }
         let slice = match slice {
             Some(slice) => slice,
@@ -558,7 +563,7 @@ impl Lucene90NormsProducer {
                     return Ok(NormsSlice::Owned(slice));
                 }
                 let slice = SharedRandomAccessSlice::new(Arc::new(AtomicRefCell::new(slice)));
-                lock(&self.data_inputs).insert(field.number, slice.clone());
+                lock(&self.data_inputs).put(field.number, slice.clone());
                 slice
             }
         };
@@ -617,7 +622,7 @@ impl Lucene90NormsProducer {
         }
 
         let mut disi_inputs = lock(&self.disi_inputs);
-        let r#in = match disi_inputs.get(&field.number) {
+        let r#in = match disi_inputs.get(field.number) {
             Some(r#in) => Arc::clone(r#in),
             None => {
                 let block_slice = create_block_slice(
@@ -631,7 +636,7 @@ impl Lucene90NormsProducer {
                     segment: block_segment_of(block_slice.as_ref()),
                     r#in: Arc::new(AtomicRefCell::new(block_slice)),
                 });
-                disi_inputs.insert(field.number, Arc::clone(&r#in));
+                disi_inputs.put(field.number, Arc::clone(&r#in));
                 r#in
             }
         };
@@ -661,7 +666,7 @@ impl Lucene90NormsProducer {
     ) -> Result<Option<JumpTable>> {
         let mut jump_table: Option<SharedRandomAccessInput> = None;
         if self.merging {
-            jump_table = lock(&self.disi_jump_tables).get(&field.number).cloned();
+            jump_table = lock(&self.disi_jump_tables).get(field.number).cloned();
         }
         let jump_table = match jump_table {
             Some(jump_table) => jump_table,
@@ -679,7 +684,7 @@ impl Lucene90NormsProducer {
                     return Ok(Some(JumpTable::Owned(jump_table)));
                 }
                 let jump_table = Arc::new(AtomicRefCell::new(jump_table));
-                lock(&self.disi_jump_tables).insert(field.number, Arc::clone(&jump_table));
+                lock(&self.disi_jump_tables).put(field.number, Arc::clone(&jump_table));
                 jump_table
             }
         };
@@ -715,7 +720,7 @@ impl Lucene90NormsProducer {
 fn read_fields(
     meta: &mut dyn IndexInput,
     infos: &crate::index::FieldInfos,
-    norms: &mut HashMap<i32, NormsEntry>,
+    norms: &mut IntObjectHashMap<NormsEntry>,
 ) -> Result<()> {
     loop {
         let field_number = meta.read_int()?;
@@ -758,7 +763,7 @@ fn read_fields(
             }
         }
         entry.norms_offset = meta.read_long()?;
-        norms.insert(info.number, entry);
+        norms.put(info.number, entry);
     }
     Ok(())
 }
@@ -766,7 +771,7 @@ fn read_fields(
 impl Lucene90NormsProducer {
     /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
     fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        let entry = self.norms.get(&field.number).ok_or_else(|| {
+        let entry = self.norms.get(field.number).ok_or_else(|| {
             // `entry.docsWithFieldOffset` on the `null` that `norms.get`
             // returns: the JVM's `NullPointerException`.
             LuceneError::null_pointer_with_message(
@@ -850,14 +855,31 @@ fn lock<T>(cache: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct SharedRandomAccessSlice {
     input: SharedRandomAccessInput,
     resource_description: Arc<str>,
+    /// The bytes of the slice in memory, read once when it is opened
+    /// ([`values_segment_of`]).
+    ///
+    /// PERF (rmp #679): the norms iterators read their values from these
+    /// bytes, as they do from an owned slice's, instead of a `RefCell`
+    /// borrow and a dynamic `read_byte_at` per document during a merge.
+    segment: Option<MemorySegment>,
 }
 
 impl SharedRandomAccessSlice {
     fn new(input: SharedRandomAccessInput) -> Self {
-        let resource_description = Arc::from(input.borrow().resource_description());
+        let (resource_description, segment) = {
+            let slice = input.borrow();
+            let segment = slice.as_memory_segment_access_input().and_then(|access| {
+                access
+                    .segment_slice_or_null(0, slice.length())
+                    .ok()
+                    .flatten()
+            });
+            (Arc::from(slice.resource_description()), segment)
+        };
         Self {
             input,
             resource_description,
+            segment,
         }
     }
 }
@@ -1166,7 +1188,7 @@ fn values_segment_of(slice: &NormsSlice) -> Option<MemorySegment> {
             .segment_slice_or_null(0, slice.length())
             .ok()
             .flatten(),
-        NormsSlice::Shared(_) => None,
+        NormsSlice::Shared(slice) => slice.segment.clone(),
     }
 }
 
@@ -2292,8 +2314,8 @@ mod tests {
         assert!(merge.merging);
         let mut first = merge.get_norms(&body).unwrap().unwrap();
         let mut second = merge.get_norms(&body).unwrap().unwrap();
-        assert_eq!(lock(&merge.disi_inputs).len(), 1);
-        assert_eq!(lock(&merge.data_inputs).len(), 1);
+        assert_eq!(lock(&merge.disi_inputs).size(), 1);
+        assert_eq!(lock(&merge.data_inputs).size(), 1);
         // Interleaved: each iterator keeps its own position over the shared
         // inputs.
         assert_eq!(first.next_doc().unwrap(), 1);
@@ -2325,7 +2347,7 @@ mod tests {
         let info = test_segment_info("_0", max_doc);
         let fis = field_infos(vec![body.clone()]);
         let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
-        let entry = producer.norms[&body.number];
+        let entry = *producer.norms.get(body.number).unwrap();
         assert!(
             entry.jump_table_entry_count > 0,
             "a field with a jump table"
@@ -2346,7 +2368,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(
             &first,
-            &lock(&merge.disi_jump_tables)[&body.number]
+            lock(&merge.disi_jump_tables).get(body.number).unwrap()
         ));
 
         let (target, value) = *values.last().unwrap();
@@ -2374,7 +2396,7 @@ mod tests {
         let info = test_segment_info("_0", 50);
         let fis = field_infos(vec![body.clone()]);
         let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
-        let entry = producer.norms[&body.number];
+        let entry = *producer.norms.get(body.number).unwrap();
         assert!(matches!(
             producer.get_data_input(&body, &entry).unwrap(),
             NormsSlice::Owned(_)
@@ -2390,7 +2412,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(
             &first,
-            &lock(&merge.data_inputs)[&body.number].input
+            &lock(&merge.data_inputs).get(body.number).unwrap().input
         ));
     }
 
@@ -2637,9 +2659,9 @@ mod tests {
             let field = fis.field_info_by_number(number).unwrap();
             // Positive control: the mapped producer's values slice has bytes,
             // the heap one's has none.
-            let entry = &mapped.norms[&number];
+            let entry = mapped.norms.get(number).unwrap();
             assert!(values_segment_of(&mapped.get_data_input(field, entry).unwrap()).is_some());
-            let entry = &heap.norms[&number];
+            let entry = heap.norms.get(number).unwrap();
             assert!(values_segment_of(&heap.get_data_input(field, entry).unwrap()).is_none());
 
             let mut m = mapped.get_norms(field).unwrap().unwrap();
@@ -2669,13 +2691,45 @@ mod tests {
                 assert_eq!(mv, hv, "{name}");
             }
         }
+
+        // rmp #679: a merge instance's shared values slice carries the mapped
+        // bytes too (positive control: the heap one's has none), and its
+        // iterators, read as `PushPostingsWriterBase.writeTerm` and
+        // `startDoc` read them (one `getNorms` per term), give the heap
+        // merge instance's values.
+        let mapped_merge = mapped.merge_instance().unwrap();
+        let heap_merge = heap.merge_instance().unwrap();
+        for &(number, name, _) in &widths {
+            let field = fis.field_info_by_number(number).unwrap();
+            let entry = mapped_merge.norms.get(number).unwrap();
+            assert!(
+                values_segment_of(&mapped_merge.get_data_input(field, entry).unwrap()).is_some()
+            );
+            let entry = heap_merge.norms.get(number).unwrap();
+            assert!(values_segment_of(&heap_merge.get_data_input(field, entry).unwrap()).is_none());
+            for term in 0..3 {
+                let mut m = mapped_merge.get_norms(field).unwrap().unwrap();
+                let mut h = heap_merge.get_norms(field).unwrap().unwrap();
+                for target in (term..max_doc).step_by(11) {
+                    let found = m.advance_exact(target).unwrap();
+                    assert_eq!(found, h.advance_exact(target).unwrap(), "{name} {target}");
+                    if found {
+                        assert_eq!(
+                            m.long_value().unwrap(),
+                            h.long_value().unwrap(),
+                            "{name} {target}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
 impl fmt::Display for Lucene90NormsProducer {
     /// Port of `Lucene90NormsProducer.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Lucene90NormsProducer(fields={})", self.norms.len())
+        write!(f, "Lucene90NormsProducer(fields={})", self.norms.size())
     }
 }
 
