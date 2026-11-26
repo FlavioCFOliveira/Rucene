@@ -1292,27 +1292,17 @@ impl TermsEnum for MultiTermsEnum {
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         // Can only reuse if incoming enum is also a MultiDocsEnum ... and was
         // previously created w/ this MultiTermsEnum:
-        let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
-            // `reuse != null && reuse instanceof MultiPostingsEnum`
-            Some(mut reuse) => match reuse
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
-            {
-                // ... and was previously created w/ this MultiTermsEnum:
-                Some(docs_enum) if docs_enum.can_reuse(self) => reuse,
-                _ => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
-            },
-            None => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
+        // PERF: the reused enum is unboxed once, through the hidden
+        // `into_any` hook, instead of being downcast twice (rmp #679); an enum
+        // that cannot be reused is dropped, as Java drops its reference.
+        let mut multi: Box<MultiPostingsEnum> = match reuse
+            .and_then(|reuse| reuse.into_any())
+            .and_then(|any| any.downcast::<MultiPostingsEnum>().ok())
+        {
+            // ... and was previously created w/ this MultiTermsEnum:
+            Some(docs_enum) if docs_enum.can_reuse(self) => docs_enum,
+            _ => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
         };
-        let multi = docs_enum
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "INVARIANT: the enum was just checked or built as a MultiPostingsEnum"
-                        .to_string(),
-                )
-            })?;
         // Rust-only: the live sub-enums go back to `subPostingsEnums`, which
         // in Java still holds them alongside the live slots
         // (`MultiPostingsEnum::release_live_subs`). PERF: drained in place, so
@@ -1376,7 +1366,7 @@ impl TermsEnum for MultiTermsEnum {
         multi.upto = -1;
         multi.doc = -1;
         multi.current = None;
-        Ok(Some(docs_enum))
+        Ok(Some(multi))
     }
 
     /// Equivalent to `MultiTermsEnum.impacts(int)`: implemented to not fail
@@ -1833,6 +1823,10 @@ impl PostingsEnum for MultiPostingsEnum {
     /// the cast `(MultiPostingsEnum) in.postings(...)`
     /// (`MappedMultiFields.java:129-131`).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn into_any(self: Box<Self>) -> Option<Box<dyn std::any::Any>> {
         Some(self)
     }
 }

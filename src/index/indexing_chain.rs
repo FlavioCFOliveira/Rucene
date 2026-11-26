@@ -69,6 +69,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
+use crate::analysis::standard::{OwnedStandardChain, StandardAnalyzer};
 use crate::analysis::tokenattributes::{
     OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute, PositionIncrementAttribute,
     TermFrequencyAttribute, TermToBytesRefAttribute,
@@ -1149,6 +1150,50 @@ struct RawToken {
     has_term_freq_attribute: bool,
 }
 
+/// The indexing chain's own [`OwnedStandardChain`] (rmp #679 ownership
+/// prototype; see [`DefaultIndexingChain::invert_owned_standard`]).
+#[derive(Debug, Default)]
+struct OwnedChainSlot {
+    /// Whether the writer's similarity is Lucene's `BM25Similarity`, the
+    /// condition of the path (its `computeNorm` reads no attribute source).
+    enabled: bool,
+    /// The analyzer the chain was built for (its address), and the chain.
+    chain: Option<(usize, OwnedStandardChain)>,
+}
+
+impl OwnedChainSlot {
+    fn new(config: &LiveIndexWriterConfig) -> Self {
+        Self {
+            enabled: config.similarity().java_class_name()
+                == "org.apache.lucene.search.similarities.BM25Similarity",
+            chain: None,
+        }
+    }
+}
+
+/// The analyzer and the text when `field.tokenStream(analyzer, reuse)` is
+/// `analyzer.tokenStream(name, stringValue)` of a [`StandardAnalyzer`]
+/// that is not closed: a [`Field`](crate::document::Field) that is
+/// tokenized and holds a string (or number) value, which `Field.tokenStream`
+/// hands to the analyzer (`Field.java:465-498`); `None` otherwise.
+fn owned_standard_text<'a>(
+    analyzer: Option<&'a dyn Analyzer>,
+    field: &dyn IndexableField,
+) -> Option<(&'a StandardAnalyzer, String)> {
+    let standard = analyzer?.as_any()?.downcast_ref::<StandardAnalyzer>()?;
+    if standard.analyzer_state().is_closed() {
+        return None;
+    }
+    let field = field.as_any()?.downcast_ref::<crate::document::Field>()?;
+    if !field.field_type().tokenized() {
+        return None;
+    }
+    // A string (or number) value excludes a token-stream and a reader value:
+    // they are variants of the one field value.
+    let text = field.string_value()?;
+    Some((standard, text))
+}
+
 /// Reads the current token off the attributes `FieldInvertState` cached.
 ///
 /// Lucene reaches for `TermToBytesRefAttribute`, `PositionIncrementAttribute`,
@@ -1321,6 +1366,9 @@ pub struct DefaultIndexingChain {
     /// array.
     doc_fields: Vec<usize>,
     aborting_error: Option<LuceneError>,
+    /// The chain's own `StandardAnalyzer` token stream (rmp #679 ownership
+    /// prototype), built on first use.
+    owned_standard: OwnedChainSlot,
     /// The stored-fields half of the chain, present once the chain knows which
     /// segment it writes. Equivalent to `IndexingChain.storedFieldsConsumer`,
     /// which Lucene builds in the constructor because it already has the
@@ -1359,7 +1407,9 @@ impl DefaultIndexingChain {
         let parent_field = config
             .parent_field()
             .map(|name| NumericDocValuesField::new(&name, -1));
+        let owned_standard = OwnedChainSlot::new(&config);
         Self {
+            owned_standard,
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
             terms_writer: FreqProxTermsWriter::new(Arc::clone(&bytes_used)),
             doc_values_byte_pool: Arc::new(ByteBlockPool::new(Arc::clone(&bytes_used))),
@@ -2420,6 +2470,7 @@ impl DefaultIndexingChain {
         field: &dyn IndexableField,
         first: bool,
         aborting_error: &mut Option<LuceneError>,
+        owned: &mut OwnedChainSlot,
     ) -> Result<()> {
         debug_assert!(field
             .field_type()
@@ -2438,17 +2489,39 @@ impl DefaultIndexingChain {
                 field,
                 first,
             ),
-            Some(InvertableType::TOKEN_STREAM) => Self::invert_token_stream(
-                analyzer,
-                info_stream,
-                terms_writer,
-                term_vectors,
-                per_field,
-                doc_id,
-                field,
-                first,
-                aborting_error,
-            ),
+            Some(InvertableType::TOKEN_STREAM) => {
+                // rmp #679 ownership prototype: StandardAnalyzer's chain,
+                // owned by this indexing chain, for a field whose
+                // `tokenStream` would be `analyzer.tokenStream(name, value)`.
+                if owned.enabled {
+                    if let Some((standard, text)) = owned_standard_text(analyzer, field) {
+                        return Self::invert_owned_standard(
+                            standard,
+                            &text,
+                            owned,
+                            info_stream,
+                            terms_writer,
+                            term_vectors,
+                            per_field,
+                            doc_id,
+                            field,
+                            first,
+                            aborting_error,
+                        );
+                    }
+                }
+                Self::invert_token_stream(
+                    analyzer,
+                    info_stream,
+                    terms_writer,
+                    term_vectors,
+                    per_field,
+                    doc_id,
+                    field,
+                    first,
+                    aborting_error,
+                )
+            }
             None => Err(LuceneError::illegal_argument(format!(
                 "field \"{}\" is not indexed but reached the inverter",
                 field.name()
@@ -2718,6 +2791,243 @@ impl DefaultIndexingChain {
         consumer.add(index, &per_field.invert_state, text_start, token)
     }
 
+    /// `invertTokenStream` over the indexing chain's own
+    /// [`OwnedStandardChain`] (rmp #679 ownership prototype): the same steps
+    /// as [`invert_token_stream`](Self::invert_token_stream) — the stream's
+    /// `reset`, `termsHashPerField.start`, the token loop, `end` and the end
+    /// position and offset, `close`, then the analyzer's gaps — with the
+    /// chain's attributes read in place instead of through shared cells.
+    ///
+    /// `invertState.setAttributeSource(stream)` has no counterpart: the
+    /// chain's attributes live in no `AttributeSource`; the path is only taken
+    /// under `BM25Similarity`, whose `computeNorm` reads the invert state's
+    /// counters, never its attribute source.
+    #[allow(clippy::too_many_arguments)]
+    fn invert_owned_standard(
+        analyzer: &StandardAnalyzer,
+        text: &str,
+        owned: &mut OwnedChainSlot,
+        info_stream: &dyn InfoStream,
+        terms_writer: &mut FreqProxTermsWriter,
+        term_vectors: Option<&mut TermVectorsConsumer>,
+        per_field: &mut PerField,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        first: bool,
+        aborting_error: &mut Option<LuceneError>,
+    ) -> Result<()> {
+        let key = analyzer as *const StandardAnalyzer as usize;
+        let chain = match &mut owned.chain {
+            Some((built_for, chain)) if *built_for == key => chain,
+            slot => &mut slot.insert((key, OwnedStandardChain::new(analyzer))).1,
+        };
+        // A panic (Java's unchecked throwable) inside the previous value left
+        // the chain open; Java's try-with-resources closed its stream.
+        chain.close_if_open();
+        let is_term_doc = per_field.field_info().is_term_doc_field();
+        // `field.tokenStream(analyzer, tokenStream)`, logged on failure as the
+        // shared path logs it.
+        if let Err(error) = chain.set_text(analyzer, text) {
+            if info_stream.is_enabled("DW") {
+                info_stream.message(
+                    "DW",
+                    &format!(
+                        "An exception was thrown while processing field {}",
+                        per_field.field_name
+                    ),
+                );
+            }
+            return Err(error);
+        }
+        let mut term_vectors = term_vectors;
+        let mut term_bytes = std::mem::take(&mut per_field.term_bytes);
+        let outcome = (|| -> Result<()> {
+            chain.reset();
+            Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
+            while chain.increment_token()? {
+                let att = chain.attributes();
+                att.copy_bytes_ref_to(&mut term_bytes);
+                // The chain has no `PayloadAttribute`: Java's
+                // `getAttribute(PayloadAttribute.class)` is `null`.
+                let token = RawToken {
+                    has_term: true,
+                    position_increment: att.get_position_increment(),
+                    start_offset: att.start_offset(),
+                    end_offset: att.end_offset(),
+                    payload: None,
+                    term_freq: att.get_term_frequency(),
+                    has_term_freq_attribute: true,
+                };
+                Self::invert_one_token(
+                    info_stream,
+                    terms_writer,
+                    term_vectors.as_deref_mut(),
+                    per_field,
+                    doc_id,
+                    field,
+                    is_term_doc,
+                    &token,
+                    &term_bytes,
+                    aborting_error,
+                )?;
+            }
+            chain.end();
+            let att = chain.attributes();
+            per_field.invert_state.position += att.get_position_increment();
+            per_field.invert_state.offset += att.end_offset();
+            Ok(())
+        })();
+        per_field.term_bytes = term_bytes;
+        let close_outcome = chain.close();
+        if outcome.is_err() && info_stream.is_enabled("DW") {
+            info_stream.message(
+                "DW",
+                &format!(
+                    "An exception was thrown while processing field {}",
+                    per_field.field_name
+                ),
+            );
+        }
+        outcome?;
+        close_outcome?;
+        per_field.invert_state.position +=
+            analyzer.get_position_increment_gap(Some(&per_field.field_name));
+        per_field.invert_state.offset += analyzer.get_offset_gap(Some(&per_field.field_name));
+        Ok(())
+    }
+
+    /// One token of `invertTokenStream`'s loop (`IndexingChain.java:1913-2032`),
+    /// after the token was read: position, offset and length accounting, then
+    /// the postings and term vectors. Shared by the shared-chain loop and the
+    /// owned-chain prototype ([`OwnedStandardChain`]).
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn invert_one_token(
+        info_stream: &dyn InfoStream,
+        terms_writer: &mut FreqProxTermsWriter,
+        term_vectors: Option<&mut TermVectorsConsumer>,
+        per_field: &mut PerField,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        is_term_doc: bool,
+        token: &RawToken,
+        term_bytes: &BytesRef,
+        aborting_error: &mut Option<LuceneError>,
+    ) -> Result<()> {
+        let state = &mut per_field.invert_state;
+
+        let position_increment = token.position_increment;
+        // Java `int` arithmetic wraps; the overflow is what the
+        // "position overflowed" branch reports (`IndexingChain.java:1924-1946`).
+        state.position = state.position.wrapping_add(position_increment);
+        if state.position < state.last_position {
+            return Err(LuceneError::illegal_argument(if position_increment == 0 {
+                format!(
+                    "first position increment must be > 0 (got 0) for field '{}'",
+                    field.name()
+                )
+            } else if position_increment < 0 {
+                format!(
+                    "position increment must be >= 0 (got {position_increment}) for field '{}'",
+                    field.name()
+                )
+            } else {
+                format!(
+                    "position overflowed Integer.MAX_VALUE (got posIncr={position_increment} lastPosition={} position={}) for field '{}'",
+                    state.last_position,
+                    state.position,
+                    field.name()
+                )
+            }));
+        }
+        if state.position > MAX_POSITION {
+            return Err(LuceneError::illegal_argument(format!(
+                "position {} is too large for field '{}': max allowed position is {MAX_POSITION}",
+                state.position,
+                field.name()
+            )));
+        }
+        state.last_position = state.position;
+        if position_increment == 0 {
+            state.num_overlap += 1;
+        }
+
+        let start_offset = state.offset.wrapping_add(token.start_offset);
+        let end_offset = state.offset.wrapping_add(token.end_offset);
+        if start_offset < state.last_start_offset || end_offset < start_offset {
+            return Err(LuceneError::illegal_argument(format!(
+                "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
+                state.last_start_offset,
+                field.name()
+            )));
+        }
+        state.last_start_offset = start_offset;
+
+        let counted = if is_term_doc { 1 } else { token.term_freq };
+        // `Math.addExact` throws `ArithmeticException("integer
+        // overflow")`, rethrown with that cause
+        // (`IndexingChain.java:1980-1991`).
+        state.length = state.length.checked_add(counted).ok_or_else(|| {
+            LuceneError::illegal_argument_with_cause(
+                format!("too many tokens for field \"{}\"", field.name()),
+                Arc::new(LuceneError::integer_overflow()),
+            )
+        })?;
+
+        let inverted = InvertedToken {
+            start_offset: token.start_offset,
+            end_offset: token.end_offset,
+            payload: token.payload.as_ref().map(BytesRef::slice),
+            term_freq: token.term_freq,
+            has_term_freq_attribute: token.has_term_freq_attribute,
+        };
+        // `pf.termsHashPerField` is set for every field that inverts
+        // (`IndexingChain.java:1155-1168`).
+        let writer_index = per_field
+            .writer_index
+            .expect("INVARIANT: an inverted field has a postings writer");
+        let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
+        // `termsHashPerField.add(...)` — the postings and, through
+        // `nextPerField.add`, the term vectors — inside one `try`
+        // (`IndexingChain.java:2001-2027`).
+        // `invertState.termAttribute.getBytesRef()` on a `null`
+        // attribute throws `NullPointerException` inside the `try`,
+        // whose `catch (Throwable th)` aborts.
+        let term: &[u8] = if token.has_term {
+            term_bytes.slice()
+        } else {
+            &[]
+        };
+        let added = token
+            .has_term
+            .then_some(())
+            .ok_or_else(|| TermsHashAddError::Other(LuceneError::null_pointer()))
+            .and_then(|_| {
+                writer.add_classified(
+                    pool,
+                    int_pool,
+                    &mut per_field.invert_state,
+                    term,
+                    doc_id,
+                    &inverted,
+                )
+            })
+            .and_then(|text_start| {
+                Self::add_to_vectors(term_vectors, per_field, text_start, &inverted)
+                    .map_err(TermsHashAddError::Other)
+            });
+        if let Err(error) = added {
+            return Err(Self::catch_terms_hash_add_error(
+                info_stream,
+                aborting_error,
+                field.name(),
+                term,
+                error,
+            ));
+        }
+        Ok(())
+    }
+
     /// Inverts a field through its token stream.
     ///
     /// Equivalent to `IndexingChain.PerField.invertTokenStream`.
@@ -2794,122 +3104,18 @@ impl DefaultIndexingChain {
             };
             while tokens.increment_token()? {
                 let token = read_token(per_field.invert_state.attributes()?, &mut term_bytes)?;
-                let state = &mut per_field.invert_state;
-
-                let position_increment = token.position_increment;
-                // Java `int` arithmetic wraps; the overflow is what the
-                // "position overflowed" branch reports (`IndexingChain.java:1924-1946`).
-                state.position = state.position.wrapping_add(position_increment);
-                if state.position < state.last_position {
-                    return Err(LuceneError::illegal_argument(if position_increment == 0 {
-                        format!(
-                            "first position increment must be > 0 (got 0) for field '{}'",
-                            field.name()
-                        )
-                    } else if position_increment < 0 {
-                        format!(
-                            "position increment must be >= 0 (got {position_increment}) for field '{}'",
-                            field.name()
-                        )
-                    } else {
-                        format!(
-                            "position overflowed Integer.MAX_VALUE (got posIncr={position_increment} lastPosition={} position={}) for field '{}'",
-                            state.last_position,
-                            state.position,
-                            field.name()
-                        )
-                    }));
-                }
-                if state.position > MAX_POSITION {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "position {} is too large for field '{}': max allowed position is {MAX_POSITION}",
-                        state.position,
-                        field.name()
-                    )));
-                }
-                state.last_position = state.position;
-                if position_increment == 0 {
-                    state.num_overlap += 1;
-                }
-
-                let start_offset = state.offset.wrapping_add(token.start_offset);
-                let end_offset = state.offset.wrapping_add(token.end_offset);
-                if start_offset < state.last_start_offset || end_offset < start_offset {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
-                        state.last_start_offset,
-                        field.name()
-                    )));
-                }
-                state.last_start_offset = start_offset;
-
-                let counted = if is_term_doc { 1 } else { token.term_freq };
-                // `Math.addExact` throws `ArithmeticException("integer
-                // overflow")`, rethrown with that cause
-                // (`IndexingChain.java:1980-1991`).
-                state.length = state.length.checked_add(counted).ok_or_else(|| {
-                    LuceneError::illegal_argument_with_cause(
-                        format!("too many tokens for field \"{}\"", field.name()),
-                        Arc::new(LuceneError::integer_overflow()),
-                    )
-                })?;
-
-                let inverted = InvertedToken {
-                    start_offset: token.start_offset,
-                    end_offset: token.end_offset,
-                    payload: token.payload.as_ref().map(BytesRef::slice),
-                    term_freq: token.term_freq,
-                    has_term_freq_attribute: token.has_term_freq_attribute,
-                };
-                // `pf.termsHashPerField` is set for every field that inverts
-                // (`IndexingChain.java:1155-1168`).
-                let writer_index = per_field
-                    .writer_index
-                    .expect("INVARIANT: an inverted field has a postings writer");
-                let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
-                // `termsHashPerField.add(...)` — the postings and, through
-                // `nextPerField.add`, the term vectors — inside one `try`
-                // (`IndexingChain.java:2001-2027`).
-                // `invertState.termAttribute.getBytesRef()` on a `null`
-                // attribute throws `NullPointerException` inside the `try`,
-                // whose `catch (Throwable th)` aborts.
-                let term: &[u8] = if token.has_term {
-                    term_bytes.slice()
-                } else {
-                    &[]
-                };
-                let added = token
-                    .has_term
-                    .then_some(())
-                    .ok_or_else(|| TermsHashAddError::Other(LuceneError::null_pointer()))
-                    .and_then(|_| {
-                        writer.add_classified(
-                            pool,
-                            int_pool,
-                            &mut per_field.invert_state,
-                            term,
-                            doc_id,
-                            &inverted,
-                        )
-                    })
-                    .and_then(|text_start| {
-                        Self::add_to_vectors(
-                            term_vectors.as_deref_mut(),
-                            per_field,
-                            text_start,
-                            &inverted,
-                        )
-                        .map_err(TermsHashAddError::Other)
-                    });
-                if let Err(error) = added {
-                    return Err(Self::catch_terms_hash_add_error(
-                        info_stream,
-                        aborting_error,
-                        field.name(),
-                        term,
-                        error,
-                    ));
-                }
+                Self::invert_one_token(
+                    info_stream,
+                    terms_writer,
+                    term_vectors.as_deref_mut(),
+                    per_field,
+                    doc_id,
+                    field,
+                    is_term_doc,
+                    &token,
+                    &term_bytes,
+                    aborting_error,
+                )?;
             }
             drop(hoisted);
 
@@ -3523,6 +3729,7 @@ impl DefaultIndexingChain {
                 field,
                 first,
                 &mut self.aborting_error,
+                &mut self.owned_standard,
             )?;
             if first {
                 self.per_fields[pf].first = false;
@@ -4441,6 +4648,7 @@ impl DefaultIndexingChain {
                         field,
                         first,
                         &mut self.aborting_error,
+                        &mut self.owned_standard,
                     )
                 })) {
                     Ok(result) => result,

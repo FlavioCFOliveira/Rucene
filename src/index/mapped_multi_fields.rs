@@ -294,32 +294,21 @@ impl TermsEnum for MappedMultiTermsEnum {
         reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
-        let mut mapping_docs_and_positions_enum: Box<dyn PostingsEnum> = match reuse {
+        // PERF: the reused enum is unboxed once, through the hidden `into_any`
+        // hook, and the `MultiPostingsEnum` is passed by its concrete type,
+        // instead of a `dyn` downcast at each step (rmp #679); an enum that
+        // cannot be reused is dropped, as Java drops its reference.
+        let mut mapping: Box<MappingMultiPostingsEnum> = match reuse
+            .and_then(|reuse| reuse.into_any())
+            .and_then(|any| any.downcast::<MappingMultiPostingsEnum>().ok())
+        {
             // `reuse instanceof MappingMultiPostingsEnum postings`
-            Some(mut reuse) => match reuse
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
-            {
-                Some(postings) if postings.field() == self.field => reuse,
-                _ => Box::new(MappingMultiPostingsEnum::new(
-                    &self.field,
-                    Arc::clone(&self.merge_state),
-                )?),
-            },
-            None => Box::new(MappingMultiPostingsEnum::new(
+            Some(postings) if postings.field() == self.field => postings,
+            _ => Box::new(MappingMultiPostingsEnum::new(
                 &self.field,
                 Arc::clone(&self.merge_state),
             )?),
         };
-        let mapping = mapping_docs_and_positions_enum
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<MappingMultiPostingsEnum>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "INVARIANT: the enum was just checked or built as a MappingMultiPostingsEnum"
-                        .to_string(),
-                )
-            })?;
 
         let mut docs_and_positions_enum = self
             .inner
@@ -341,8 +330,16 @@ impl TermsEnum for MappedMultiTermsEnum {
                 ),
             ));
         }
-        mapping.reset(docs_and_positions_enum)?;
-        Ok(Some(mapping_docs_and_positions_enum))
+        let multi = docs_and_positions_enum
+            .into_any()
+            .and_then(|any| any.downcast::<MultiPostingsEnum>().ok())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked to be a MultiPostingsEnum".to_string(),
+                )
+            })?;
+        mapping.reset_multi(multi)?;
+        Ok(Some(mapping))
     }
 
     /// Inherited from `FilterTermsEnum.impacts(int)`, which delegates to the

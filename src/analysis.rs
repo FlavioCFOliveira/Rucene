@@ -1591,6 +1591,17 @@ pub trait Analyzer: Debug + Send + Sync {
         crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
     }
 
+    /// This analyzer as [`Any`], for a crate-internal static fast path over a
+    /// core analyzer type; `None` (the default) keeps every consumer on the
+    /// generic path.
+    ///
+    /// **No counterpart in Lucene 10.5.0**: a hidden devirtualisation hook,
+    /// as the other hot traits' `as_any` (rmp #679 ownership prototype).
+    #[doc(hidden)]
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
     ///
     /// Equivalent to `Analyzer.createComponents(String)`. An unchecked

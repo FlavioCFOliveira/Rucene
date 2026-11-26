@@ -204,6 +204,64 @@ impl StandardTokenizerLogic {
     }
 }
 
+impl StandardTokenizerLogic {
+    /// `incrementToken()` after `clearAttributes()`, writing the token into
+    /// `packed`, the default factory's implementation of the tokenizer's four
+    /// attributes, owned by the caller: the same scanner steps and the same
+    /// writes, in the same order, as [`TokenizerLogic::increment_token`]'s
+    /// packed path.
+    ///
+    /// Crate-internal: the owned-chain prototype of rmp #679
+    /// ([`OwnedStandardChain`]).
+    pub(crate) fn increment_token_packed(
+        &mut self,
+        packed: &mut PackedTokenAttributeImpl,
+        reader: &mut dyn CharReader,
+    ) -> Result<bool> {
+        self.skipped_positions = 0;
+        loop {
+            let token_type = self.scanner.get_next_token(reader)?;
+            if token_type == YYEOF {
+                return Ok(false);
+            }
+            if self.scanner.yylength() <= self.max_token_length {
+                let position_increment = self.skipped_positions + 1;
+                let start = self.scanner.yychar();
+                let input: &dyn CharReader = reader;
+                let correct =
+                    |offset: i32| Tokenizer::<Self>::correct_offset_of(Some(input), offset);
+                let (start_offset, end_offset) =
+                    (correct(start), correct(start + self.scanner.yylength()));
+                packed.set_position_increment(position_increment);
+                self.scanner.get_text_into(packed);
+                packed.set_offset(start_offset, end_offset);
+                packed.set_type_static(TOKEN_TYPES[token_type as usize]);
+                return Ok(true);
+            }
+            // When we skip a too-long term, we still increment the
+            // position increment
+            self.skipped_positions += 1;
+        }
+    }
+
+    /// `StandardTokenizer.end()` after `super.end()`, over `packed`.
+    pub(crate) fn end_packed(
+        &mut self,
+        packed: &mut PackedTokenAttributeImpl,
+        input: Option<&dyn CharReader>,
+    ) {
+        // set final offset
+        let final_offset = Tokenizer::<Self>::correct_offset_of(
+            input,
+            self.scanner.yychar() + self.scanner.yylength(),
+        );
+        packed.set_offset(final_offset, final_offset);
+        // adjust any skipped tokens
+        let current = packed.get_position_increment();
+        packed.set_position_increment(current + self.skipped_positions);
+    }
+}
+
 impl Default for StandardTokenizerLogic {
     fn default() -> Self {
         Self::new()
@@ -369,6 +427,189 @@ pub fn new_standard_tokenizer_with_factory(
 }
 
 // -----------------------------------------------------------------------------
+// OwnedStandardChain (rmp #679 ownership prototype)
+// -----------------------------------------------------------------------------
+
+/// The token stream [`StandardAnalyzer`] builds — `StandardTokenizer` →
+/// `LowerCaseFilter` → `StopFilter` (`StandardAnalyzer.java:84-96`) — owned
+/// by one consumer, with its attributes owned in place.
+///
+/// **Prototype of the ownership restructure (rmp #679/#682, user decision
+/// 2026-11-26).** Lucene's chain shares one `AttributeSource` between its
+/// stages by reference; the port's shared chain keeps each attribute
+/// implementation in an `Arc<AtomicRefCell>` and borrows it on every token and
+/// stage. This chain is driven by one thread only (the indexing chain of one
+/// `DocumentsWriterPerThread`), so the stages take the attribute by `&mut`:
+/// the same steps as Lucene's stages, in the same order, over the default
+/// factory's `PackedTokenAttributeImpl`, which is the only implementation the
+/// chain's source holds (so `clearAttributes()`/`endAttributes()` are its
+/// `clear()`/`end()`). It reads its text through its own
+/// `ReusableStringReader`, as `Analyzer.tokenStream(String, String)` does.
+/// The shared chain stays the path of every other consumer and analyzer.
+#[derive(Debug)]
+pub(crate) struct OwnedStandardChain {
+    tokenizer: StandardTokenizerLogic,
+    reader: crate::analysis::reusable_string_reader::ReusableStringReader,
+    /// Whether `reader` is the tokenizer's `input` (between `reset()` and
+    /// `close()`); Java's `input` is `ILLEGAL_STATE_READER` otherwise.
+    input_open: bool,
+    att: PackedTokenAttributeImpl,
+    /// `StopFilter.stopWords`: the analyzer's unmodifiable set.
+    stop_words: CharArraySet,
+    /// The term's UTF-16 units for the stop-set lookup (see `StopFilterLogic`).
+    scratch: Vec<u16>,
+    /// `FilteringTokenFilter.skippedPositions`.
+    stop_skipped_positions: i32,
+}
+
+impl OwnedStandardChain {
+    /// The chain `analyzer.createComponents` builds, owned.
+    pub(crate) fn new(analyzer: &StandardAnalyzer) -> Self {
+        Self {
+            tokenizer: StandardTokenizerLogic::new(),
+            reader: crate::analysis::reusable_string_reader::ReusableStringReader::new(),
+            input_open: false,
+            att: PackedTokenAttributeImpl::new(),
+            stop_words: analyzer.base.stopwords().clone(),
+            scratch: Vec::new(),
+            stop_skipped_positions: 0,
+        }
+    }
+
+    /// `Analyzer.tokenStream(fieldName, text)` on reused components: the
+    /// reader takes the text and the components' source lambda sets the
+    /// analyzer's current maximum token length, then `setReader`
+    /// (`StandardAnalyzer.java:88-92`, `Tokenizer.setReader`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalArgumentException` for an out-of-range maximum length, and
+    /// Java's `IllegalStateException` when the previous input was not closed.
+    pub(crate) fn set_text(&mut self, analyzer: &StandardAnalyzer, text: &str) -> Result<()> {
+        self.tokenizer
+            .set_max_token_length(analyzer.max_token_length())?;
+        if self.input_open {
+            return Err(LuceneError::illegal_state(
+                "TokenStream contract violation: close() call missing".to_string(),
+            ));
+        }
+        self.reader.set_value(text);
+        Ok(())
+    }
+
+    /// `StopFilter.reset()` → `LowerCaseFilter.reset()` →
+    /// `StandardTokenizer.reset()`.
+    pub(crate) fn reset(&mut self) {
+        self.input_open = true;
+        // StandardTokenizer.reset(): scanner.yyreset(input); skippedPositions = 0
+        self.tokenizer.scanner.yyreset();
+        self.tokenizer.skipped_positions = 0;
+        // FilteringTokenFilter.reset(): skippedPositions = 0
+        self.stop_skipped_positions = 0;
+    }
+
+    /// `StopFilter.incrementToken()` (`FilteringTokenFilter.java:43-61`) over
+    /// `LowerCaseFilter.incrementToken()` over
+    /// `StandardTokenizer.incrementToken()`.
+    #[inline]
+    pub(crate) fn increment_token(&mut self) -> Result<bool> {
+        self.stop_skipped_positions = 0;
+        while self.lower_case_increment_token()? {
+            if self.accept() {
+                if self.stop_skipped_positions != 0 {
+                    let pos_incr = self.att.get_position_increment();
+                    self.att
+                        .set_position_increment(pos_incr + self.stop_skipped_positions);
+                }
+                return Ok(true);
+            }
+            self.stop_skipped_positions += self.att.get_position_increment();
+        }
+        Ok(false)
+    }
+
+    /// `LowerCaseFilter.incrementToken()`.
+    #[inline]
+    fn lower_case_increment_token(&mut self) -> Result<bool> {
+        // StandardTokenizer.incrementToken(): clearAttributes() first.
+        AttributeImpl::clear(&mut self.att);
+        if !self
+            .tokenizer
+            .increment_token_packed(&mut self.att, &mut self.reader)?
+        {
+            return Ok(false);
+        }
+        let length = self.att.length();
+        crate::analysis::character_utils::to_lower_case(self.att.buffer_mut(), 0, length);
+        Ok(true)
+    }
+
+    /// `StopFilter.accept()`: `!stopWords.contains(termAtt.buffer(), 0,
+    /// termAtt.length())`, as `StopFilterLogic::accept` answers it.
+    #[inline]
+    fn accept(&mut self) -> bool {
+        if self.stop_words.is_empty() {
+            return true;
+        }
+        let length = self.att.length();
+        crate::analysis::character_utils::term_to_utf16(
+            &self.att.buffer()[..length],
+            &mut self.scratch,
+        );
+        !self
+            .stop_words
+            .contains_chars(Some(&self.scratch), 0, self.scratch.len())
+    }
+
+    /// The token the last [`increment_token`](Self::increment_token) produced
+    /// (and, after [`end`](Self::end), the end-of-stream state).
+    #[inline]
+    pub(crate) fn attributes(&self) -> &PackedTokenAttributeImpl {
+        &self.att
+    }
+
+    /// `StopFilter.end()`: `input.end()` — `LowerCaseFilter` passes it to
+    /// `StandardTokenizer.end()`, `super.end()` (`endAttributes()`) then the
+    /// final offset and skipped positions — then this filter's skipped
+    /// positions.
+    pub(crate) fn end(&mut self) {
+        AttributeImpl::end(&mut self.att);
+        let input: Option<&dyn CharReader> = if self.input_open {
+            Some(&self.reader)
+        } else {
+            None
+        };
+        self.tokenizer.end_packed(&mut self.att, input);
+        let pos_incr = self.att.get_position_increment();
+        self.att
+            .set_position_increment(pos_incr + self.stop_skipped_positions);
+    }
+
+    /// [`close`](Self::close) when the input is still open: the
+    /// `try`-with-resources close a throwable took past.
+    pub(crate) fn close_if_open(&mut self) {
+        if self.input_open {
+            let _ = self.close();
+        }
+    }
+
+    /// `StopFilter.close()` → ... → `Tokenizer.close()`: `input.close()`,
+    /// then `StandardTokenizer.close()` (`scanner.yyreset(input)`).
+    pub(crate) fn close(&mut self) -> Result<()> {
+        let closed = if self.input_open {
+            self.reader.close()
+        } else {
+            Ok(())
+        };
+        self.input_open = false;
+        closed?;
+        // StandardTokenizer.close(): scanner.yyreset(input)
+        self.tokenizer.scanner.yyreset();
+        Ok(())
+    }
+}
+
+// -----------------------------------------------------------------------------
 // StopwordAnalyzerBase
 // -----------------------------------------------------------------------------
 
@@ -531,6 +772,10 @@ impl Analyzer for StandardAnalyzer {
         "org.apache.lucene.analysis.standard.StandardAnalyzer"
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     /// Equivalent to `StandardAnalyzer.createComponents(String)`
     /// (`StandardAnalyzer.java:84-96`): the tokenizer receives the analyzer's
     /// maximum token length, which fails for an out-of-range length before
@@ -577,6 +822,121 @@ impl Analyzer for StandardAnalyzer {
 
 #[cfg(test)]
 mod tests {
+
+    /// rmp #679 ownership prototype: the owned chain produces, value after
+    /// value, exactly the tokens (term, position increment, offsets, type,
+    /// term frequency) and the end state of the analyzer's shared chain:
+    /// with and without stop words, with tokens longer than the maximum
+    /// length (skipped positions), after a maximum-length change, and over
+    /// an empty value.
+    #[test]
+    fn owned_standard_chain_matches_the_shared_chain() {
+        use crate::analysis::tokenattributes::{
+            PositionIncrementAttribute as _, TermFrequencyAttribute, TypeAttribute as _,
+        };
+        type Tok = (String, i32, i32, i32, String, i32);
+        fn shared(analyzer: &StandardAnalyzer, text: &str) -> (Vec<Tok>, (i32, i32, i32)) {
+            let stream = analyzer.token_stream_from_str("f", text).unwrap();
+            let mut stream = stream.borrow_mut();
+            stream.reset().unwrap();
+            let mut toks = Vec::new();
+            while stream.increment_token().unwrap() {
+                let source = stream.attribute_source();
+                let term = source
+                    .get_attribute_interface::<dyn CharTermAttribute>()
+                    .unwrap();
+                let term: String = term.buffer()[..term.length()].iter().collect();
+                let pi = source
+                    .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                    .unwrap()
+                    .get_position_increment();
+                let off = source
+                    .get_attribute_interface::<dyn OffsetAttribute>()
+                    .unwrap();
+                let (so, eo) = (off.start_offset(), off.end_offset());
+                drop(off);
+                let ty = source
+                    .get_attribute_interface::<dyn TypeAttribute>()
+                    .unwrap()
+                    .type_value()
+                    .to_string();
+                let tf = source
+                    .get_attribute_interface::<dyn TermFrequencyAttribute>()
+                    .unwrap()
+                    .get_term_frequency();
+                toks.push((term, pi, so, eo, ty, tf));
+            }
+            stream.end().unwrap();
+            let source = stream.attribute_source();
+            let pi = source
+                .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                .unwrap()
+                .get_position_increment();
+            let off = source
+                .get_attribute_interface::<dyn OffsetAttribute>()
+                .unwrap();
+            let end = (pi, off.start_offset(), off.end_offset());
+            drop(off);
+            stream.close().unwrap();
+            (toks, end)
+        }
+        fn owned(
+            chain: &mut OwnedStandardChain,
+            analyzer: &StandardAnalyzer,
+            text: &str,
+        ) -> (Vec<Tok>, (i32, i32, i32)) {
+            chain.set_text(analyzer, text).unwrap();
+            chain.reset();
+            let mut toks = Vec::new();
+            while chain.increment_token().unwrap() {
+                let a = chain.attributes();
+                toks.push((
+                    a.buffer()[..a.length()].iter().collect(),
+                    a.get_position_increment(),
+                    a.start_offset(),
+                    a.end_offset(),
+                    a.type_value().to_string(),
+                    a.get_term_frequency(),
+                ));
+            }
+            chain.end();
+            let a = chain.attributes();
+            let end = (a.get_position_increment(), a.start_offset(), a.end_offset());
+            chain.close().unwrap();
+            (toks, end)
+        }
+        let texts = [
+            "The Quick brown FOX, jumps over the lazy dog's back 1234 x.y.z 3.14!",
+            "",
+            "   ",
+            "a an and are as at be but by for if in into is it no not of on or such",
+            "Well, this is just some plain text we use for creating the test documents.",
+            "supercalifragilisticexpialidocious antidisestablishmentarianism ok",
+            "\u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} caf\u{e9} na\u{ef}ve \u{1F600} emoji",
+        ];
+        let stops = crate::analysis::stop_filter::make_stop_set(
+            [
+                "a", "an", "and", "are", "as", "at", "be", "the", "of", "is", "it", "for", "this",
+            ],
+            false,
+        );
+        for mut analyzer in [
+            StandardAnalyzer::new(),
+            StandardAnalyzer::with_stopwords(stops),
+        ] {
+            let mut chain = OwnedStandardChain::new(&analyzer);
+            for max in [255, 5] {
+                analyzer.set_max_token_length(max);
+                for text in texts {
+                    assert_eq!(
+                        owned(&mut chain, &analyzer, text),
+                        shared(&analyzer, text),
+                        "text {text:?}, max {max}"
+                    );
+                }
+            }
+        }
+    }
     use super::*;
     use crate::error::LuceneErrorKind;
 
