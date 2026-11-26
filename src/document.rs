@@ -2109,6 +2109,10 @@ pub struct Document {
     fields: Vec<Arc<dyn IndexableField>>,
 }
 
+/// `ArrayList.DEFAULT_CAPACITY`, the capacity the first `add` gives a list
+/// built with `new ArrayList<>()`.
+const ARRAY_LIST_DEFAULT_CAPACITY: usize = 10;
+
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Document>();
@@ -2157,7 +2161,7 @@ impl Document {
     /// for a field no one else holds: the document keeps the one reference
     /// to it, allocated once.
     pub fn add<F: IndexableField + 'static>(&mut self, field: F) {
-        self.fields.push(Arc::new(field));
+        self.push_field(Arc::new(field));
     }
 
     /// Adds a field that the caller, or other entries, also hold.
@@ -2167,6 +2171,20 @@ impl Document {
     /// than once, to one document or to several, and a change made through
     /// any holder is seen by every entry.
     pub fn add_shared(&mut self, field: Arc<dyn IndexableField>) {
+        self.push_field(field);
+    }
+
+    /// `fields.add(field)` on Java's `new ArrayList<>()`
+    /// (`Document.java:38, 61-63`).
+    ///
+    /// PERF: the first add sizes the list for `ArrayList.DEFAULT_CAPACITY`
+    /// (10) elements, as `ArrayList.grow` does for a list built with the
+    /// default constructor, instead of growing it by doubling from four, which
+    /// reallocated a five-field document's list once more.
+    fn push_field(&mut self, field: Arc<dyn IndexableField>) {
+        if self.fields.capacity() == 0 {
+            self.fields.reserve_exact(ARRAY_LIST_DEFAULT_CAPACITY);
+        }
         self.fields.push(field);
     }
 
@@ -2493,8 +2511,12 @@ impl StringField {
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// indexed bytes and the stored value follow the new string.
     pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
-        let value = set_string_fields_data(&self.fields_data, value.into())?;
-        *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
+        let bytes = set_string_fields_data(
+            &self.fields_data,
+            value.into(),
+            BytesRef::from_char_sequence,
+        )?;
+        *self.binary_value.borrow_mut() = Some(bytes);
         // `storedValue.setStringValue(value)`: the stored value mirrors
         // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
@@ -2676,7 +2698,7 @@ impl TextField {
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// stored value follows the new string.
     pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
-        set_string_fields_data(&self.fields_data, value.into())?;
+        set_string_fields_data(&self.fields_data, value.into(), |_| ())?;
         // `storedValue.setStringValue(value)`: the stored value mirrors
         // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
@@ -3241,8 +3263,9 @@ impl KeywordField {
     ///
     /// `IllegalArgumentException` when the field does not hold a string.
     pub fn set_string_value(&self, value: String) -> Result<()> {
-        let value = set_string_fields_data(&self.fields_data, Some(value))?;
-        *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
+        let bytes =
+            set_string_fields_data(&self.fields_data, Some(value), BytesRef::from_char_sequence)?;
+        *self.binary_value.borrow_mut() = Some(bytes);
         // `storedValue.setStringValue(value)`: the stored value mirrors
         // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
@@ -7105,13 +7128,18 @@ impl DateTools {
     /// past 9999 gives a longer string; the other fields are zero-padded to
     /// their letter count.
     pub fn time_to_string(time: i64, resolution: Resolution) -> String {
+        use std::fmt::Write as _;
         let cal = GregorianFields::from_millis(Self::round(time, resolution));
         let year_of_era = if cal.year <= 0 {
             1 - cal.year
         } else {
             cal.year
         };
-        let mut out = format!("{year_of_era:04}");
+        // PERF: one buffer, sized for the longest pattern
+        // (`yyyyMMddHHmmssSSS`), written in place rather than through a
+        // temporary `String` per field.
+        let mut out = String::with_capacity(17);
+        let _ = write!(out, "{year_of_era:04}");
         let fields = [
             (i64::from(cal.month) + 1, 2),
             (i64::from(cal.day_of_month), 2),
@@ -7130,7 +7158,7 @@ impl DateTools {
             Resolution::MILLISECOND => 6,
         };
         for &(value, width) in fields.iter().take(count) {
-            out.push_str(&format!("{value:0width$}"));
+            let _ = write!(out, "{value:0width$}");
         }
         out
     }
@@ -8485,13 +8513,18 @@ fn cannot_change_value_type(from: &str, to: &str) -> LuceneError {
 
 /// `Field.setStringValue(String)` (`Field.java:304-313`) on a field's value
 /// cell: the value-type check, then the null check, then the assignment.
-/// Returns the new string, for the subclass overrides that copy it into their
-/// own state (`StringField.java:100-106`, `TextField.java:94-99`,
-/// `KeywordField.java:117-123`).
-fn set_string_fields_data(
+/// Returns what `derive` makes of the new string, for the subclass overrides
+/// that derive their own state from it (`StringField.java:100-106`,
+/// `TextField.java:94-99`, `KeywordField.java:117-123`).
+///
+/// PERF: Java's `fieldsData` and the override then share one `String`; here
+/// `derive` reads the string before it is stored, instead of the string being
+/// copied so that both could hold it.
+fn set_string_fields_data<R>(
     fields_data: &AtomicRefCell<FieldData>,
     value: Option<String>,
-) -> Result<String> {
+    derive: impl FnOnce(&str) -> R,
+) -> Result<R> {
     let mut data = fields_data.borrow_mut();
     if !matches!(*data, FieldData::String(_)) {
         return Err(cannot_change_value_type(
@@ -8504,8 +8537,9 @@ fn set_string_fields_data(
             "value must not be null".to_string(),
         ));
     };
-    *data = FieldData::String(value.clone());
-    Ok(value)
+    let derived = derive(&value);
+    *data = FieldData::String(value);
+    Ok(derived)
 }
 
 /// `Field.setBytesValue(BytesRef)` (`Field.java:335-346`) on a field's value

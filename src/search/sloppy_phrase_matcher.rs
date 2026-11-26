@@ -68,6 +68,14 @@ pub struct SloppyPhraseMatcher {
     /// Each group holds the phrase positions that repeat each other — that is,
     /// carry the same term — sorted by their query offset.
     rpt_groups: Vec<Vec<usize>>,
+    /// One re-queue bit set per repetition group, the
+    /// `new FixedBitSet(rg.length)` of `advanceRpts`, kept between calls.
+    ///
+    /// PERF: Java allocates the set on every collision check; it is reused
+    /// here, cleared on entry, because a fresh atomic word array per call was
+    /// 84 % of a sloppy-phrase search's allocations. `None` until the group's
+    /// first call, or after a call that grew the set past `rg.length`.
+    rpt_bits: Vec<Option<FixedBitSet>>,
     /// A temporary stack for switching colliding repeating positions.
     rpt_stack: Vec<usize>,
     positioned: bool,
@@ -160,6 +168,7 @@ impl SloppyPhraseMatcher {
             checked_rpts: false,
             has_multi_term_rpts: false,
             rpt_groups: Vec::new(),
+            rpt_bits: Vec::new(),
             rpt_stack: Vec::new(),
             positioned: false,
             match_length: i32::MAX,
@@ -219,8 +228,15 @@ impl SloppyPhraseMatcher {
         }
         let group = self.phrase_positions[pp].rpt_group as usize;
         let rg_len = self.rpt_groups[group].len();
-        // For re-queuing after the collisions are resolved.
-        let mut bits = FixedBitSet::new(rg_len);
+        // For re-queuing after the collisions are resolved: an empty set of
+        // `rg.length` bits, as Java's fresh `new FixedBitSet(rg.length)`.
+        let mut bits = match self.rpt_bits[group].take() {
+            Some(mut bits) => {
+                bits.clear_all();
+                bits
+            }
+            None => FixedBitSet::new(rg_len),
+        };
         let k0 = self.phrase_positions[pp].rpt_ind;
         loop {
             let k = self.collide(pp);
@@ -232,6 +248,7 @@ impl SloppyPhraseMatcher {
             pp = self.lesser(pp, other);
             if !self.advance_pp(pp)? {
                 // Exhausted.
+                self.keep_rpt_bits(group, bits, rg_len);
                 return Ok(false);
             }
             if k != k0 {
@@ -268,7 +285,17 @@ impl SloppyPhraseMatcher {
         for i in (0..n).rev() {
             self.pq.add(&self.phrase_positions, self.rpt_stack[i]);
         }
+        self.keep_rpt_bits(group, bits, rg_len);
         Ok(true)
+    }
+
+    /// Keeps `bits` as `group`'s re-queue set for the next
+    /// [`advance_rpts`](Self::advance_rpts), unless it grew past `rg_len`
+    /// bits: the next call must start from exactly `rg.length` bits.
+    fn keep_rpt_bits(&mut self, group: usize, bits: FixedBitSet, rg_len: usize) {
+        if bits.length() == rg_len {
+            self.rpt_bits[group] = Some(bits);
+        }
     }
 
     /// Compares two phrase positions, but only by position and offset.
@@ -490,6 +517,7 @@ impl SloppyPhraseMatcher {
     /// initialised faster.
     fn sort_rpt_groups(&mut self, rgs: Vec<Vec<usize>>) {
         self.rpt_groups = Vec::with_capacity(rgs.len());
+        self.rpt_bits = (0..rgs.len()).map(|_| None).collect();
         for mut rg in rgs {
             // Java sorts with `Comparator.comparingInt(pp -> pp.offset)` and a
             // stable merge sort; `sort_by_key` is stable too.

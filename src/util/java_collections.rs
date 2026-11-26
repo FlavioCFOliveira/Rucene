@@ -187,6 +187,30 @@ pub struct JavaHashMap<V, K = String> {
     treeified: bool,
 }
 
+/// Moves one bucket of an old table into `new_table`, appending each entry
+/// to the bucket `index` names, in the bucket's order.
+///
+/// PERF: Java's `resize` relinks the existing nodes of a bucket into its low
+/// and high lists and allocates nothing but the new table. A bucket whose entries all land in one bucket
+/// that is still empty — every bucket of one entry, and most others — moves
+/// whole here, its storage included, instead of being copied entry by entry
+/// into a freshly allocated chain. The resulting chains are the same either
+/// way: the moved bucket keeps its order, and the target was empty.
+fn rehash_bucket<E>(new_table: &mut [Vec<E>], bucket: Vec<E>, index: impl Fn(&E) -> usize) {
+    let Some(first) = bucket.first() else {
+        return;
+    };
+    let target = index(first);
+    if new_table[target].is_empty() && bucket.iter().all(|entry| index(entry) == target) {
+        new_table[target] = bucket;
+        return;
+    }
+    for entry in bucket {
+        let i = index(&entry);
+        new_table[i].push(entry);
+    }
+}
+
 /// `new HashMap<>()`, for any way of holding the key.
 impl<V, K> Default for JavaHashMap<V, K> {
     fn default() -> Self {
@@ -503,10 +527,9 @@ impl<V, K: Borrow<str>> JavaHashMap<V, K> {
         let mut new_table: Vec<Vec<Entry<K, V>>> = Vec::with_capacity(new_cap);
         new_table.resize_with(new_cap, Vec::new);
         for bucket in old_table {
-            for entry in bucket {
-                let index = index_for(entry.hash, new_cap);
-                new_table[index].push(entry);
-            }
+            rehash_bucket(&mut new_table, bucket, |entry| {
+                index_for(entry.hash, new_cap)
+            });
         }
         self.table = new_table;
     }
@@ -881,9 +904,9 @@ impl<V> JavaIntHashMap<V> {
         let mut new_table: Vec<Vec<(i32, V)>> = Vec::with_capacity(new_cap);
         new_table.resize_with(new_cap, Vec::new);
         for bucket in old_table {
-            for (key, value) in bucket {
-                new_table[index_for(spread_int(key), new_cap)].push((key, value));
-            }
+            rehash_bucket(&mut new_table, bucket, |&(key, _)| {
+                index_for(spread_int(key), new_cap)
+            });
         }
         self.table = new_table;
     }

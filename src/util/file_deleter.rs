@@ -23,6 +23,7 @@
 //! has no overloading, so the collection forms are named `inc_ref_files` and
 //! `dec_ref_files`. Behaviour is unchanged.
 
+use std::borrow::Borrow;
 use std::io;
 use std::sync::Arc;
 
@@ -47,13 +48,26 @@ pub enum MsgType {
 /// Equivalent to Java's `BiConsumer<MsgType, String>`.
 pub type Messenger = Arc<dyn Fn(MsgType, &str) + Send + Sync>;
 
+/// A file name held by a to-delete set as the caller handed it in.
+///
+/// PERF: Java's `toDelete` sets hold the caller's `String` objects; this
+/// holds the caller's name value (an owned name, a shared name or a borrowed
+/// one) instead of copying its characters into a new `String`.
+struct CallerName<S>(S);
+
+impl<S: AsRef<str>> Borrow<str> for CallerName<S> {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
 /// Tracks the reference count for a single index file.
 ///
-/// Equivalent to `FileDeleter.RefCount`.
+/// Equivalent to `FileDeleter.RefCount`. Java's `RefCount` keeps its
+/// `fileName` only to name the file in its assertion messages; this port
+/// passes the name in from the map's key instead of keeping a second copy.
 #[derive(Debug)]
 struct RefCount {
-    /// File name, kept only so that failed invariants name the offending file.
-    file_name: String,
     /// Whether this count has ever been incremented.
     ///
     /// Lucene uses this to allow the very first `incRef` to happen on a count
@@ -74,9 +88,8 @@ fn current_thread_name() -> String {
 }
 
 impl RefCount {
-    fn new(file_name: &str) -> Self {
+    fn new() -> Self {
         Self {
-            file_name: file_name.to_string(),
             init_done: false,
             count: 0,
         }
@@ -85,13 +98,13 @@ impl RefCount {
     /// Increments and returns the new count.
     ///
     /// Equivalent to `FileDeleter.RefCount.incRef`.
-    fn inc_ref(&mut self) -> i32 {
+    fn inc_ref(&mut self, file_name: &str) -> i32 {
         if self.init_done {
             debug_assert!(
                 self.count > 0,
                 "{}: RefCount is 0 pre-increment for file \"{}\"",
                 current_thread_name(),
-                self.file_name
+                file_name
             );
         } else {
             self.init_done = true;
@@ -114,12 +127,12 @@ impl RefCount {
     /// `decRef(Collection)`, catches it and goes on (`FileDeleter.java:98-106`).
     /// The message starts with the thread's name, as Java's
     /// `Thread.currentThread().getName() + ": "` (`FileDeleter.java:278-282`).
-    fn dec_ref(&mut self) -> Result<i32> {
+    fn dec_ref(&mut self, file_name: &str) -> Result<i32> {
         if cfg!(debug_assertions) && self.count <= 0 {
             return Err(LuceneError::from(LuceneErrorKind::AssertionError(format!(
                 "{}: RefCount is 0 pre-decrement for file \"{}\"",
                 current_thread_name(),
-                self.file_name
+                file_name
             ))));
         }
         self.count -= 1;
@@ -194,7 +207,7 @@ impl FileDeleter {
         ref_counts: &'a mut JavaHashMap<RefCount>,
         file_name: &str,
     ) -> &'a mut RefCount {
-        ref_counts.compute_if_absent(file_name, || RefCount::new(file_name))
+        ref_counts.compute_if_absent(file_name, RefCount::new)
     }
 
     /// Increments the reference count of `file_name`.
@@ -207,7 +220,7 @@ impl FileDeleter {
         self.message(MsgType::Ref, || {
             format!("IncRef \"{file_name}\": pre-incr count is {pre}")
         });
-        Self::ref_count_internal(&mut self.ref_counts, file_name).inc_ref();
+        Self::ref_count_internal(&mut self.ref_counts, file_name).inc_ref(file_name);
     }
 
     /// Decrements the reference count of every file in `file_names`, deleting
@@ -235,17 +248,16 @@ impl FileDeleter {
         S: AsRef<str>,
     {
         // `Set<String> toDelete = new HashSet<>()`.
-        let mut to_delete = JavaHashSet::new();
+        let mut to_delete = JavaHashSet::default();
         // `Throwable firstThrowable = null`.
         let mut first_error: Option<LuceneError> = None;
 
         for file in file_names {
-            let file = file.as_ref();
             // `try { ... } catch (Throwable t) { firstThrowable =
             // IOUtils.useOrSuppress(firstThrowable, t); }`.
-            match self.dec_ref_one(file) {
+            match self.dec_ref_one(file.as_ref()) {
                 Ok(true) => {
-                    to_delete.insert(file.to_string());
+                    to_delete.insert(CallerName(file));
                 }
                 Ok(false) => {}
                 Err(e) => use_or_suppress(&mut first_error, e),
@@ -280,7 +292,7 @@ impl FileDeleter {
                 &format!("DecRef \"{file_name}\": pre-decr count is {}", rc.count),
             );
         }
-        if rc.dec_ref()? == 0 {
+        if rc.dec_ref(file_name)? == 0 {
             self.ref_counts.remove(file_name);
             Ok(true)
         } else {
@@ -359,14 +371,14 @@ impl FileDeleter {
         S: AsRef<str>,
     {
         // `Set<String> toDelete = new HashSet<>()`.
-        let mut to_delete = JavaHashSet::new();
+        let mut to_delete = JavaHashSet::default();
         for file in files {
             let file_name = file.as_ref();
             if !self.exists(file_name) {
                 self.message(MsgType::File, || {
                     format!("will delete new file \"{file_name}\"")
                 });
-                to_delete.insert(file_name.to_string());
+                to_delete.insert(CallerName(file));
             }
         }
         self.delete_all(&to_delete)
@@ -402,12 +414,12 @@ impl FileDeleter {
     ///
     /// Equivalent to the private `FileDeleter.delete(Collection<String>)`:
     /// each pass walks `to_delete` in its iteration order.
-    fn delete_all(&mut self, to_delete: &JavaHashSet) -> Result<()> {
+    fn delete_all<K: Borrow<str>>(&mut self, to_delete: &JavaHashSet<K>) -> Result<()> {
         self.message(MsgType::File, || {
             // `"now delete " + toDelete.size() + " files: " + toDelete`
             // (`FileDeleter.java:209`): the set as
             // `AbstractCollection.toString()` prints it, `[a, b]`.
-            let names: Vec<&str> = to_delete.iter().map(String::as_str).collect();
+            let names: Vec<&str> = to_delete.iter().map(Borrow::borrow).collect();
             format!(
                 "now delete {} files: [{}]",
                 to_delete.len(),
@@ -416,6 +428,7 @@ impl FileDeleter {
         });
 
         for file_name in to_delete.iter() {
+            let file_name: &str = file_name.borrow();
             debug_assert!(!self.exists(file_name));
             if file_name.starts_with(SEGMENTS) {
                 self.delete_one(file_name)?;
@@ -425,6 +438,7 @@ impl FileDeleter {
         // Only now that every commit point is gone do we remove what they
         // referenced, so a crash never leaves a corrupt commit behind.
         for file_name in to_delete.iter() {
+            let file_name: &str = file_name.borrow();
             debug_assert!(!self.exists(file_name));
             if !file_name.starts_with(SEGMENTS) {
                 self.delete_one(file_name)?;

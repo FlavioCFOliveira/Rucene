@@ -792,6 +792,19 @@ impl FieldInfo {
         )
     }
 
+    /// The internal codec attributes map itself, shared rather than copied:
+    /// `FieldInfo.attributes()` (`FieldInfo.java:682-685`) for a caller that
+    /// only reads it. A later [`put_attribute`](Self::put_attribute) replaces
+    /// the map and leaves this one as it was.
+    pub(crate) fn attributes_shared(&self) -> Arc<JavaStringMap> {
+        Arc::clone(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// Verifies that the combination of field options is internally consistent.
     ///
     /// # Errors
@@ -2199,7 +2212,9 @@ impl FieldInfosBuilder {
             // `FieldInfos.Builder.add` walks `fi.attributes().keySet()`, so
             // the order the attributes are re-put in is the source map's
             // iteration order and the merged map's own order follows from it.
-            let attributes = info.attributes();
+            // PERF: the source map is read in place, as Java reads
+            // `fi.attributes()`, not copied first.
+            let attributes = info.attributes_shared();
             let has_payloads = info.has_payloads();
             let current = self
                 .by_name
