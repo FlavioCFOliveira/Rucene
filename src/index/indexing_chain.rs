@@ -2508,19 +2508,38 @@ impl DefaultIndexingChain {
                         if let Some(chain) =
                             owned.chain(field_index, analyzer, &per_field.field_name)
                         {
-                            return Self::invert_owned(
-                                analyzer,
-                                &text,
-                                chain,
-                                info_stream,
-                                terms_writer,
-                                term_vectors,
-                                per_field,
-                                doc_id,
-                                field,
-                                first,
-                                aborting_error,
-                            );
+                            // The analyzer's reusable components, created as
+                            // `tokenStream` creates them; a failure is
+                            // `field.tokenStream`'s, logged as the shared
+                            // path logs it.
+                            let bound = chain
+                                .bind(analyzer, Some(&per_field.field_name))
+                                .inspect_err(|_| {
+                                    if info_stream.is_enabled("DW") {
+                                        info_stream.message(
+                                            "DW",
+                                            &format!(
+                                                "An exception was thrown while processing field {}",
+                                                per_field.field_name
+                                            ),
+                                        );
+                                    }
+                                })?;
+                            if bound {
+                                return Self::invert_owned(
+                                    analyzer,
+                                    &text,
+                                    chain,
+                                    info_stream,
+                                    terms_writer,
+                                    term_vectors,
+                                    per_field,
+                                    doc_id,
+                                    field,
+                                    first,
+                                    aborting_error,
+                                );
+                            }
                         }
                     }
                 }
@@ -7353,6 +7372,173 @@ mod tests {
                     document.add(
                         TextField::new(*name, text.to_string(), Store::NO).expect("text field"),
                     );
+                }
+                chain
+                    .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
+                    .unwrap();
+            }
+            std::mem::take(&mut *SEEN.lock().unwrap())
+        };
+        let owned = run(Arc::new(StandardAnalyzer::new()));
+        let shared = run(Arc::new(SharedOnly(
+            StandardAnalyzer::new(),
+            AnalyzerState::new(Box::new(crate::analysis::GlobalReuseStrategy)),
+        )));
+        assert!(!owned.is_empty());
+        assert_eq!(owned, shared);
+    }
+
+    /// rmp #679 owned chain, mixed use: one analyzer inverts string values
+    /// through the owned chain and reader values through the shared stream,
+    /// in the same document and across documents. Lucene's single components
+    /// instance (GlobalReuseStrategy) holds one attribute source, so a
+    /// similarity reading it in `computeNorm` (after every field of the
+    /// document) sees the last inverted value's state for every field; the
+    /// owned chain must work in that same source.
+    #[test]
+    fn mixed_string_and_reader_fields_share_one_attribute_source_on_both_paths() {
+        use crate::analysis::tokenattributes::{
+            OffsetAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
+        };
+        use crate::analysis::{Analyzer, AnalyzerState, TokenStreamComponents};
+        use crate::document::{Store, TextField};
+
+        type Seen = (String, usize, String, i32, i32, i32, bool, i32, i32, i32);
+        static SEEN: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
+        #[derive(Debug)]
+        struct SourceReadingSimilarity;
+        impl Similarity for SourceReadingSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
+            fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
+                let source = state.get_attribute_source().expect("a stream was inverted");
+                let term = source
+                    .get_attribute_interface::<dyn CharTermAttribute>()
+                    .expect("term attribute");
+                let text: String = term.buffer()[..term.length()].iter().collect();
+                drop(term);
+                let offset = source
+                    .get_attribute_interface::<dyn OffsetAttribute>()
+                    .expect("offset attribute");
+                let (so, eo) = (offset.start_offset(), offset.end_offset());
+                drop(offset);
+                let pi = source
+                    .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                    .expect("position increment attribute")
+                    .get_position_increment();
+                SEEN.lock().unwrap().push((
+                    state.name().to_string(),
+                    source.attribute_classes().count(),
+                    text,
+                    so,
+                    eo,
+                    pi,
+                    source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
+                    state.length(),
+                    state.position(),
+                    state.offset(),
+                ));
+                Ok(1)
+            }
+
+            fn scorer<'a>(
+                &'a self,
+                boost: f32,
+                _collection_stats: &CollectionStatistics,
+                _term_stats: &[TermStatistics],
+            ) -> Box<dyn SimScorer + 'a> {
+                struct ConstantScorer(f32);
+                impl SimScorer for ConstantScorer {
+                    fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                        self.0
+                    }
+                }
+                Box::new(ConstantScorer(boost))
+            }
+        }
+
+        /// StandardAnalyzer without owned stages: the shared stream.
+        #[derive(Debug)]
+        struct SharedOnly(StandardAnalyzer, AnalyzerState);
+        impl Analyzer for SharedOnly {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                &self.1
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.standard.StandardAnalyzer"
+            }
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
+                self.0.create_components(field_name)
+            }
+        }
+
+        let run = |analyzer: Arc<dyn Analyzer>| -> Vec<Seen> {
+            SEEN.lock().unwrap().clear();
+            let live = LiveIndexWriterConfig::new(Some(analyzer));
+            live.set_similarity(Arc::new(SourceReadingSimilarity));
+            let config = Arc::new(live);
+            let codec = ensure_codec();
+            let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                ByteBuffersDirectory::new(),
+            )));
+            let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+            let info = SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                -1,
+                false,
+                false,
+                codec,
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info");
+            let mut chain =
+                DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
+                    .expect("bind segment");
+            let mut field_infos = builder();
+            enum Value {
+                Text(&'static str),
+                Reader(&'static str),
+            }
+            let docs = [
+                vec![
+                    ("body", Value::Text("The quick brown fox, jumps!")),
+                    ("rdr", Value::Reader("read from a reader")),
+                    ("title", Value::Text("Hello World")),
+                ],
+                vec![
+                    ("rdr", Value::Reader("only the reader")),
+                    ("body", Value::Text("a b")),
+                ],
+                vec![("body", Value::Text("text after"))],
+                vec![
+                    ("rdr", Value::Reader("first")),
+                    ("rdr", Value::Reader("second value, longer")),
+                    ("title", Value::Text("t")),
+                ],
+            ];
+            for (doc_id, fields) in docs.iter().enumerate() {
+                let mut document = Document::new();
+                for (name, value) in fields {
+                    match value {
+                        Value::Text(text) => document.add(
+                            TextField::new(*name, text.to_string(), Store::NO).expect("text field"),
+                        ),
+                        Value::Reader(text) => document.add(
+                            TextField::new_with_reader(
+                                *name,
+                                Box::new(crate::analysis::StringCharReader::new(*text)),
+                            )
+                            .expect("reader field"),
+                        ),
+                    }
                 }
                 chain
                     .process_document(doc_id as i32, Some(&document), true, &mut field_infos)

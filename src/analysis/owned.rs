@@ -47,7 +47,7 @@ use std::fmt::Debug;
 
 use crate::analysis::tokenattributes::KeywordAttributeImpl;
 use crate::analysis::tokenattributes::{CharTermAttribute, PackedTokenAttributeImpl};
-use crate::analysis::{Analyzer, AttributeHandle, TokenStream};
+use crate::analysis::{Analyzer, AttributeHandle, TokenStreamComponents};
 use crate::error::Result;
 use crate::index::{IndexableField, IndexableFieldType};
 use crate::util::atomic_ref_cell::AtomicRefCell;
@@ -265,39 +265,28 @@ impl OwnedInput for Below<'_> {
     }
 }
 
-/// An analyzer's token stream driven by one consumer: its owned stages over
-/// the attribute source of components the analyzer built for it.
-pub struct OwnedTokenChain {
-    /// The components' stream, kept for its attribute source; never stepped.
-    _view: Arc<AtomicRefCell<dyn TokenStream>>,
+/// The attribute source an [`OwnedTokenChain`] works in: the source of the
+/// analyzer's reusable components (the instance its shared stream uses),
+/// with the handles of its implementation cells, or `None` when it holds an
+/// implementation the owned stages do not drive.
+struct View {
+    components: Arc<AtomicRefCell<TokenStreamComponents>>,
+    cells: Option<ViewCells>,
+}
+
+struct ViewCells {
     source: AttributeSource,
     term: AttributeHandle<dyn CharTermAttribute>,
     keyword: Option<AttributeHandle<dyn crate::analysis::tokenattributes::KeywordAttribute>>,
-    stages: OwnedStages,
-    /// Between `reset()` and `close()`: a throwable that escaped the
-    /// consumer leaves it set, and the next value closes the chain first,
-    /// as Java's try-with-resources closed the stream.
-    open: bool,
 }
 
-impl Debug for OwnedTokenChain {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OwnedTokenChain")
-            .field("stages", &self.stages)
-            .finish_non_exhaustive()
-    }
-}
-
-impl OwnedTokenChain {
-    /// The owned chain of `analyzer` for `field_name`, or `None` when the
-    /// analyzer does not describe its stages, its components cannot be built,
-    /// or their source holds an implementation other than the default
-    /// factory's `PackedTokenAttributeImpl` and a `KeywordAttributeImpl`.
-    pub fn build(analyzer: &dyn Analyzer, field_name: Option<&str>) -> Option<Self> {
-        let stages = analyzer.owned_stages(field_name)?.ok()?;
-        let components = analyzer.create_components(field_name).ok()?;
-        let view = components.token_stream();
-        let source = AttributeSource::new_from(view.borrow().attribute_source());
+impl ViewCells {
+    /// The cells of `components`' source, when it holds only the default
+    /// factory's `PackedTokenAttributeImpl` and at most one
+    /// `KeywordAttributeImpl`.
+    fn of(components: &Arc<AtomicRefCell<TokenStreamComponents>>) -> Option<Self> {
+        let stream = components.borrow().token_stream();
+        let source = AttributeSource::new_from(stream.borrow().attribute_source());
         let mut packed = 0;
         let mut keywords = 0;
         for cell in source.attribute_impls_iter() {
@@ -320,19 +309,102 @@ impl OwnedTokenChain {
             return None;
         }
         Some(Self {
-            _view: view,
             source,
             term,
             keyword,
+        })
+    }
+}
+
+/// An analyzer's token stream driven by one consumer: its owned stages,
+/// working in the attribute source of the analyzer's own reusable
+/// components.
+///
+/// The chain uses the components instance the analyzer's reuse strategy
+/// holds for the field on the current thread — the one
+/// `Analyzer.tokenStream` would use, created and stored there when missing,
+/// as `tokenStream` does — so a field inverted through the shared stream and
+/// one inverted through the owned chain write the same attribute source, as
+/// Lucene's single components instance does. That instance, once stored for
+/// a thread (and a field, under a per-field strategy), is never replaced
+/// while the analyzer is open (`Analyzer.close()` empties the store, and a
+/// closed analyzer takes no owned chain), so the chain looks it up again
+/// only when it runs on another thread ([`bind`](Self::bind)).
+pub struct OwnedTokenChain {
+    stages: OwnedStages,
+    view: Option<View>,
+    /// The thread the view was bound on ([`current_thread_key`]).
+    bound_thread: u64,
+    /// Between `reset()` and `close()`: a throwable that escaped the
+    /// consumer leaves it set, and the next value closes the chain first,
+    /// as Java's try-with-resources closed the stream.
+    open: bool,
+}
+
+impl Debug for OwnedTokenChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedTokenChain")
+            .field("stages", &self.stages)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OwnedTokenChain {
+    /// The owned chain of `analyzer` for `field_name`, or `None` when the
+    /// analyzer does not describe its stages.
+    pub fn build(analyzer: &dyn Analyzer, field_name: Option<&str>) -> Option<Self> {
+        let stages = analyzer.owned_stages(field_name)?.ok()?;
+        Some(Self {
             stages,
+            view: None,
+            bound_thread: 0,
             open: false,
         })
     }
 
-    /// The chain's attribute source: what the shared stream's
-    /// `attributeSource` is.
+    /// Binds the chain to the reusable components
+    /// `Analyzer.tokenStream(field_name, ...)` uses on this thread (`Analyzer.java:153-198`: `reuseStrategy
+    /// .getReusableComponents`, else `createComponents` and
+    /// `setReusableComponents`). Answers whether the chain can run in their
+    /// attribute source; `false` keeps the value on the shared stream.
+    ///
+    /// # Errors
+    ///
+    /// What `createComponents` raises, as `tokenStream` raises it.
+    pub fn bind(&mut self, analyzer: &dyn Analyzer, field_name: Option<&str>) -> Result<bool> {
+        let thread = current_thread_key();
+        if self.bound_thread != thread {
+            let state = analyzer.analyzer_state();
+            let strategy = state.reuse_strategy();
+            let components = match strategy.get_reusable_components(state, field_name) {
+                Some(components) => components,
+                None => {
+                    let components =
+                        Arc::new(AtomicRefCell::new(analyzer.create_components(field_name)?));
+                    strategy.set_reusable_components(state, field_name, Arc::clone(&components));
+                    components
+                }
+            };
+            if !matches!(&self.view, Some(view) if Arc::ptr_eq(&view.components, &components)) {
+                let cells = ViewCells::of(&components);
+                self.view = Some(View { components, cells });
+            }
+            self.bound_thread = thread;
+        }
+        Ok(self.view.as_ref().is_some_and(|view| view.cells.is_some()))
+    }
+
+    fn cells(&self) -> &ViewCells {
+        self.view
+            .as_ref()
+            .and_then(|view| view.cells.as_ref())
+            .expect("INVARIANT: bind answered true before the chain is used")
+    }
+
+    /// The chain's attribute source: the shared stream's own (after a
+    /// [`bind`](Self::bind) that answered `true`).
     pub fn attribute_source(&self) -> &AttributeSource {
-        &self.source
+        &self.cells().source
     }
 
     /// `Analyzer.tokenStream(fieldName, text)` on reused components: the
@@ -378,16 +450,21 @@ impl OwnedTokenChain {
         mut on_token: impl FnMut(&PackedTokenAttributeImpl) -> Result<()>,
     ) -> Result<(i32, i32)> {
         use crate::analysis::tokenattributes::{OffsetAttribute, PositionIncrementAttribute};
-        let mut term_impl = self.term.borrow_impl_mut();
-        let mut keyword_impl = self.keyword.as_ref().map(AttributeHandle::borrow_impl_mut);
+        let cells = self
+            .view
+            .as_ref()
+            .and_then(|view| view.cells.as_ref())
+            .expect("INVARIANT: bind answered true before the chain is used");
+        let mut term_impl = cells.term.borrow_impl_mut();
+        let mut keyword_impl = cells.keyword.as_ref().map(AttributeHandle::borrow_impl_mut);
         let term = term_impl
             .as_any_mut()
             .downcast_mut::<PackedTokenAttributeImpl>()
-            .expect("INVARIANT: build checked the implementation");
+            .expect("INVARIANT: bind checked the implementation");
         let keyword = keyword_impl.as_mut().map(|k| {
             k.as_any_mut()
                 .downcast_mut::<KeywordAttributeImpl>()
-                .expect("INVARIANT: build checked the implementation")
+                .expect("INVARIANT: bind checked the implementation")
         });
         let mut attrs = TokenAttrs { term, keyword };
         let OwnedStages { tokenizer, filters } = &mut self.stages;
@@ -422,6 +499,17 @@ impl OwnedTokenChain {
         }
         outcome
     }
+}
+
+/// A key of the current thread, unique among the process's threads and
+/// never 0: the analyzer's reusable components are stored per thread.
+fn current_thread_key() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static KEY: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+    }
+    KEY.with(|key| *key)
 }
 
 /// The text `field.tokenStream(analyzer, reuse)` hands to
@@ -526,6 +614,9 @@ pub fn owned_and_shared_tokens(
         stream.close()?;
         (tokens, end)
     };
+    if !chain.bind(analyzer, Some(field_name))? {
+        return Ok(None);
+    }
     chain.set_text(text)?;
     chain.reset()?;
     let mut tokens = Vec::new();
