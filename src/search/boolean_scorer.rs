@@ -417,6 +417,42 @@ impl BooleanScorer {
         if doc < window_min {
             doc = self.wrappers[w].iterator().advance(window_min)?;
         }
+        if self.buckets.is_none() {
+            // PERF: with `minShouldMatch == 1` and no scores (`buckets == null`),
+            // the docs of `[doc, end)` are collected through the bit-set
+            // replay Java's `scoreWindowIntoBitSetAndReplay` uses for this case
+            // (`BooleanScorer.java:142-144, 175-180`): `intoBitSet` per
+            // `SIZE`-doc window, live docs masked, then one `BitSetDocIdStream`.
+            // The collector gets the same docs in the same order as Java's
+            // per-doc `nextDoc`/`collect` loop (`BooleanScorer.java:285-289`);
+            // no score is read, so the scorer it was handed does not matter.
+            while doc < end {
+                let base = doc & !MASK;
+                let window_end = end.min(base.saturating_add(SIZE));
+                {
+                    let Self {
+                        wrappers, matching, ..
+                    } = self;
+                    wrappers[w]
+                        .iterator()
+                        .into_bit_set(window_end, matching, base)?;
+                }
+                if let Some(accept_docs) = accept_docs {
+                    accept_docs.apply_mask(&mut self.matching, base as usize)?;
+                }
+                {
+                    let Self {
+                        matching, score, ..
+                    } = self;
+                    let mut stream = BitSetDocIdStream::new(matching, base);
+                    collector.collect_stream(&mut stream, score)?;
+                }
+                self.matching.clear_all();
+                doc = self.wrappers[w].iterator().doc_id();
+            }
+            self.wrappers[w].doc = doc;
+            return Ok(());
+        }
         collector.set_scorer(&mut ScorerAsScorable::new(self.wrappers[w].scorer()))?;
         while doc < end {
             if accept_docs.is_none_or(|bits| bits.get(doc as usize)) {

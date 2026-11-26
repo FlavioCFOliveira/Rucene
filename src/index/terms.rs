@@ -1760,17 +1760,13 @@ impl TermStates {
     /// [`total_term_freq`](Self::total_term_freq) refuse to answer, exactly as
     /// in Java.
     ///
-    /// **Divergence from Lucene 10.5.0.** Java visits every leaf up front only
-    /// when `needsStats` is `true`; otherwise it defers the term-dictionary
-    /// seek to the first [`get`](Self::get) for that leaf, and it schedules the
-    /// seeks in the background through
-    /// [`TermsEnum::prepare_seek_exact`]. This port visits every leaf up front
-    /// in both cases, because the deferred path mutates the state array from
-    /// `&self` — which Rust would need interior mutability for, since a
-    /// [`Weight`](crate::search::Weight) is `Sync`. The states registered, the
-    /// statistics accumulated and every value [`get`](Self::get) answers are
-    /// identical; only the moment the term-dictionary seek happens differs, and
-    /// leaves that end up not being scored are now seeked eagerly.
+    /// As in Java (`TermStates.java:96-123`), every leaf is visited up front
+    /// only when `needs_stats` is `true`; otherwise each leaf is looked up when
+    /// a weight asks for it ([`get`](Self::get), and `get_supplier` for a term
+    /// weight). **Divergence from Lucene 10.5.0:** with statistics, Java first
+    /// calls `prepareSeekExact` on every leaf and then resolves the suppliers,
+    /// so that the term-dictionary I/O of the leaves overlaps; this port seeks
+    /// each leaf in turn. The states and statistics are the same.
     ///
     /// # Errors
     ///
@@ -1928,6 +1924,64 @@ impl TermStates {
         Ok(self.states_guard()[ord]
             .as_ref()
             .and_then(|state| state.as_ref().map(|state| state.clone_box())))
+    }
+
+    /// `TermStates.get(LeafReaderContext)` (`TermStates.java:175-218`) as a
+    /// term weight consumes it: the outer `None` is Java's `null` supplier, and
+    /// `Some(state)` is what that supplier's `get()` returns — `None` for a
+    /// term the leaf does not hold.
+    ///
+    /// With `needs_stats = false` Java returns a supplier for every leaf whose
+    /// field exists and whose `prepareSeekExact` does not rule the term out,
+    /// so an absent term still yields a supplier, of a `null` state
+    /// (`TermStates.java:184-211`). That keeps the clause, and so the scorer
+    /// shape, of a `TermQuery` that matches nothing in the leaf
+    /// (`TermQuery.java:125-151`). The seek the supplier defers is done here,
+    /// and the supplier is consumed at once, which is what the weight does
+    /// right after; the states then end as Java's do after `get()`.
+    pub(crate) fn get_supplier(
+        &self,
+        ctx: &LeafReaderContext,
+    ) -> Result<Option<Option<Box<dyn TermState>>>> {
+        let Some(term) = self.term.as_ref() else {
+            // `TermStates.java:177-183`.
+            return Ok(self.get(ctx)?.map(Some));
+        };
+        let ord = ctx.ord();
+        let len = self.states_guard().len();
+        debug_assert!(ord >= 0 && (ord as usize) < len);
+        if ord < 0 || ord as usize >= len {
+            return Err(LuceneError::illegal_argument(format!(
+                "leaf ordinal {ord} is out of range for a TermStates over {len} leaves"
+            )));
+        }
+        let ord = ord as usize;
+        // `TermStates.java:213-217`: a leaf already resolved.
+        if let Some(resolved) = self.states_guard()[ord].as_ref() {
+            return Ok(resolved.as_ref().map(|state| Some(state.clone_box())));
+        }
+        // `TermStates.java:185-195`.
+        let Some(terms) = ctx.leaf_reader().terms(term.field())? else {
+            self.states_guard()[ord] = Some(None);
+            return Ok(None);
+        };
+        let mut terms_enum = terms.iterator()?;
+        let found = match terms_enum.prepare_seek_exact(term.bytes())? {
+            None => {
+                self.states_guard()[ord] = Some(None);
+                return Ok(None);
+            }
+            Some(mut supplier) => supplier.get()?,
+        };
+        // `TermStates.java:196-210`: the supplier's `get()`.
+        let state = if found {
+            Some(terms_enum.term_state()?)
+        } else {
+            None
+        };
+        let returned = state.as_ref().map(|state| state.clone_box());
+        self.states_guard()[ord] = Some(state);
+        Ok(Some(returned))
     }
 
     /// Returns the accumulated document frequency of every registered

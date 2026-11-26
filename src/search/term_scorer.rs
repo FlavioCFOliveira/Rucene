@@ -14,6 +14,7 @@ use crate::search::max_score_cache::MaxScoreCache;
 use crate::search::scorable::Scorable;
 use crate::search::scorer::Scorer;
 use crate::search::sim_scorer_source::{SharedSimScorer, SharedSimScorerRef};
+use crate::search::similarities::BulkSimScorer;
 use crate::util::Bits;
 
 /// A [`Box<dyn ImpactsEnum>`] seen as an [`ImpactsEnum`].
@@ -187,6 +188,9 @@ pub struct TermScorer {
     scorer: SharedSimScorer,
     norms: Option<Box<dyn NumericDocValues>>,
     norm_values: Vec<i64>,
+    /// `TermScorer.bulkScorer`, built once from the scorer
+    /// (`TermScorer.java:40, 54, 77`); `None` for the default bulk scorer.
+    bulk_scorer: Option<Box<dyn BulkSimScorer + Send + Sync>>,
 }
 
 impl std::fmt::Debug for TermScorer {
@@ -210,6 +214,7 @@ impl TermScorer {
         let max_score_cache = MaxScoreCache::new(Box::new(SharedSimScorerRef::new(scorer.clone())));
         Self {
             iteration: Iteration::Slow(SlowImpactsEnum::new(postings_enum), max_score_cache),
+            bulk_scorer: scorer.owned_bulk_sim_scorer(),
             scorer,
             norms,
             norm_values: Vec::new(),
@@ -238,6 +243,7 @@ impl TermScorer {
         };
         Self {
             iteration,
+            bulk_scorer: scorer.owned_bulk_sim_scorer(),
             scorer,
             norms,
             norm_values: Vec::new(),
@@ -365,18 +371,18 @@ impl Scorer for TermScorer {
         // buffer.features)` (`TermScorer.java:166`), with Java's `features` as
         // both the frequencies and the destination.
         //
-        // PERF: Java builds `bulkScorer` once, in the constructor
-        // (`TermScorer.java:54, 77`). This port's `as_bulk_sim_scorer` borrows
-        // the scorer, so it was boxed again on every call, through a
-        // `SharedSimScorerRef` whose bulk scorer is the default one: each
-        // score is `score(freq, norm)`. That default loop now runs here, in
-        // place, without the per-call box, `Arc` clone and spare copy; every
-        // frequency is read before the score at its index is written, so the
-        // values are the same.
-        let scorer = &*self.scorer;
-        let norms = &self.norm_values[..size];
-        for (feature, &norm) in buffer.features[..size].iter_mut().zip(norms) {
-            *feature = scorer.score(*feature, norm);
+        // `bulkScorer` was built once, in the constructor; a scorer without a
+        // specialised bulk form gets the default one, `score(freq, norm)` per
+        // document, run here in place.
+        match self.bulk_scorer.as_mut() {
+            Some(bulk) => bulk.score_in_place(size, &mut buffer.features, &self.norm_values),
+            None => {
+                let scorer = &*self.scorer;
+                let norms = &self.norm_values[..size];
+                for (feature, &norm) in buffer.features[..size].iter_mut().zip(norms) {
+                    *feature = scorer.score(*feature, norm);
+                }
+            }
         }
         Ok(())
     }

@@ -14,6 +14,7 @@ use crate::index::{
 };
 use crate::search::batch_score_bulk_scorer::BatchScoreBulkScorer;
 use crate::search::bulk_scorer::BulkScorer;
+use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::index_searcher::IndexSearcher;
@@ -355,18 +356,33 @@ impl TermWeight {
             "The top-reader used to create Weight is not the same as the current reader's \
              top-reader ({context}"
         );
-        let Some(state) = self.term_state(context)? else {
+        // `termStates.get(context)`, `null` meaning no supplier
+        // (`TermQuery.java:125-128`).
+        let states = self
+            .term_states
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)?;
+        let Some(state) = states.get_supplier(context)? else {
             return Ok(None);
         };
         let reader = context.leaf_reader();
-        let Some(mut terms_enum) = Self::seek(&reader, self.term(), &*state)? else {
-            return Ok(None);
+        let mut terms_enum = match state {
+            Some(state) => Self::seek(&reader, self.term(), &*state)?,
+            // A supplier of a `null` state: the term is absent from this leaf,
+            // but the clause stays, scoring nothing (`TermQuery.java:149-151`).
+            None => None,
         };
-        let doc_freq = terms_enum.doc_freq()?;
+        let absent = terms_enum.is_none();
+        let doc_freq = match terms_enum {
+            Some(ref mut terms_enum) => terms_enum.doc_freq()?,
+            // `te == null ? 0 : te.docFreq()` (`TermQuery.java:183`).
+            None => 0,
+        };
         Ok(Some(TermScorerSupplier {
             reader,
             field: self.term().field().to_string(),
-            terms_enum: Some(terms_enum),
+            terms_enum,
+            absent,
             doc_freq,
             sim_scorer: self.sim_scorer.clone(),
             score_mode: self.score_mode,
@@ -431,7 +447,12 @@ impl Weight for TermWeight {
     }
 
     fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {
-        if let Some(mut supplier) = self.term_scorer_supplier(context)? {
+        if let Some(mut supplier) = self
+            .term_scorer_supplier(context)?
+            .filter(|supplier| !supplier.absent)
+        {
+            // An absent term's supplier gives an empty scorer, whose
+            // `advance(doc)` never lands on `doc`.
             let mut scorer = supplier.term_scorer()?;
             let new_doc = scorer.iterator().advance(doc)?;
             if new_doc == doc {
@@ -521,6 +542,10 @@ pub struct TermScorerSupplier {
     reader: Arc<dyn LeafReader>,
     field: String,
     terms_enum: Option<Box<dyn TermsEnum>>,
+    /// The leaf's state supplier gave a `null` state: `getTermsEnum()` is
+    /// `null` and `get` returns an empty `ConstantScoreScorer`
+    /// (`TermQuery.java:149-151`).
+    absent: bool,
     doc_freq: i32,
     sim_scorer: Option<SharedSimScorer>,
     score_mode: ScoreMode,
@@ -592,6 +617,15 @@ impl TermScorerSupplier {
 
 impl ScorerSupplier for TermScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        if self.absent {
+            // `new ConstantScoreScorer(0f, scoreMode, DocIdSetIterator.empty())`
+            // (`TermQuery.java:150-151`).
+            return Ok(Box::new(ConstantScoreScorer::from_iterator(
+                0.0,
+                self.score_mode,
+                Box::new(crate::search::doc_id_set_iterator::empty()),
+            )));
+        }
         if self.terms_enum.is_none() {
             return Err(LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),

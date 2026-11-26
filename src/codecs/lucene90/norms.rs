@@ -1550,28 +1550,46 @@ impl NumericDocValues for SparseNormsIterator {
         let segment = self.values.clone().filter(|s| s.is_alive());
         let bytes: &[u8] = segment.as_ref().map_or(&[], |s| s.bytes());
         let bytes_per_norm = self.bytes_per_norm;
-        let end = docs_offset.wrapping_add(size);
-        let (mut di, mut vi) = (docs_offset, values_offset);
-        while di < end {
+        // PERF: the docs both arrays hold for the whole batch are scored over
+        // zipped slices, with no per-doc index conversion or bound check; the
+        // first index out of either array then raises Java's
+        // `ArrayIndexOutOfBoundsException` exactly where the per-doc loop
+        // would, after the docs before it were written.
+        let in_range = |offset: i32, length: usize| -> usize {
+            usize::try_from(offset).map_or(0, |offset| length.saturating_sub(offset))
+        };
+        let count = usize::try_from(size).unwrap_or(0);
+        let whole = count
+            .min(in_range(docs_offset, docs.len()))
+            .min(in_range(values_offset, values.len()));
+        if whole > 0 {
+            let (d0, v0) = (docs_offset as usize, values_offset as usize);
+            for (&doc, value) in docs[d0..d0 + whole].iter().zip(&mut values[v0..v0 + whole]) {
+                *value = if self.disi.advance_exact(doc)? {
+                    match norm_in_bytes(bytes, self.disi.index(), bytes_per_norm) {
+                        Some(value) => value,
+                        None => self.long_value()?,
+                    }
+                } else {
+                    default_value
+                };
+            }
+        }
+        if whole < count {
+            // The per-doc loop's next step: the docs index is checked before
+            // the doc is read, the values index after its value is computed.
+            let di = docs_offset.wrapping_add(whole as i32);
+            let vi = values_offset.wrapping_add(whole as i32);
             let doc = usize::try_from(di)
                 .ok()
                 .and_then(|i| docs.get(i).copied())
                 .ok_or_else(|| aioobe(di, docs.len()))?;
-            let value = if self.disi.advance_exact(doc)? {
-                match norm_in_bytes(bytes, self.disi.index(), bytes_per_norm) {
-                    Some(value) => value,
-                    None => self.long_value()?,
-                }
-            } else {
-                default_value
-            };
-            let length = values.len();
-            *usize::try_from(vi)
-                .ok()
-                .and_then(|i| values.get_mut(i))
-                .ok_or_else(|| aioobe(vi, length))? = value;
-            di += 1;
-            vi = vi.wrapping_add(1);
+            if self.disi.advance_exact(doc)?
+                && norm_in_bytes(bytes, self.disi.index(), bytes_per_norm).is_none()
+            {
+                self.long_value()?;
+            }
+            return Err(aioobe(vi, values.len()));
         }
         Ok(())
     }
