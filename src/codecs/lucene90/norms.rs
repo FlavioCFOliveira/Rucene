@@ -1524,6 +1524,58 @@ impl DocValuesIterator for SparseNormsIterator {
 }
 
 impl NumericDocValues for SparseNormsIterator {
+    /// The default `NumericDocValues.longValues` loop (`advanceExact`, then
+    /// `longValue` or the default, per doc; same bounds errors), with the
+    /// values' mapped bytes and liveness resolved once per call instead of
+    /// per document.
+    ///
+    /// PERF (rmp #680): the term scorer reads its norms in batches through
+    /// this; Java's JIT reduces the per-doc read to a load. A read the bytes
+    /// cannot serve goes through [`long_value`](Self::long_value), as before.
+    fn long_values(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        docs_offset: i32,
+        values: &mut [i64],
+        values_offset: i32,
+        default_value: i64,
+    ) -> Result<()> {
+        let aioobe = |index: i32, length: usize| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {length}"),
+            )
+        };
+        let segment = self.values.clone().filter(|s| s.is_alive());
+        let bytes: &[u8] = segment.as_ref().map_or(&[], |s| s.bytes());
+        let bytes_per_norm = self.bytes_per_norm;
+        let end = docs_offset.wrapping_add(size);
+        let (mut di, mut vi) = (docs_offset, values_offset);
+        while di < end {
+            let doc = usize::try_from(di)
+                .ok()
+                .and_then(|i| docs.get(i).copied())
+                .ok_or_else(|| aioobe(di, docs.len()))?;
+            let value = if self.disi.advance_exact(doc)? {
+                match norm_in_bytes(bytes, self.disi.index(), bytes_per_norm) {
+                    Some(value) => value,
+                    None => self.long_value()?,
+                }
+            } else {
+                default_value
+            };
+            let length = values.len();
+            *usize::try_from(vi)
+                .ok()
+                .and_then(|i| values.get_mut(i))
+                .ok_or_else(|| aioobe(vi, length))? = value;
+            di += 1;
+            vi = vi.wrapping_add(1);
+        }
+        Ok(())
+    }
+
     fn long_value(&self) -> Result<i64> {
         // PERF: see `values`.
         if let Some(values) = self.values.as_ref().filter(|s| s.is_alive()) {
