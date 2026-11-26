@@ -2342,7 +2342,7 @@ impl DefaultIndexingChain {
                 .add_value(doc_id, field, &mut self.doc_values_byte_pool)?;
         }
         if field.field_type().point_dimension_count() != 0 {
-            match field.binary_value() {
+            match field.binary_value_ref() {
                 Some(value) => self.per_fields[pf]
                     .point_values
                     .as_mut()
@@ -4740,7 +4740,7 @@ impl DefaultIndexingChain {
             // with "point value must not be null"; here the absent value is an
             // `Option`, and the same message is raised for it.
             if field_type.point_dimension_count() != 0 {
-                let result = match field.binary_value() {
+                let result = match field.binary_value_ref() {
                     Some(value) => self.per_fields[index]
                         .point_values
                         .as_mut()

@@ -587,7 +587,6 @@ impl crate::analysis::owned::OwnedTokenizer for OwnedStandardAnalyzerStage {
         &mut self,
         attrs: &mut crate::analysis::owned::TokenAttrs<'_>,
     ) -> Result<bool> {
-        use crate::analysis::owned::OwnedTokenizer as _;
         let tokenizer = &mut self.tokenizer;
         self.stop.increment_with(attrs, |attrs| {
             // LowerCaseFilter.incrementToken()
