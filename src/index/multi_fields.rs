@@ -1309,10 +1309,23 @@ impl TermsEnum for MultiTermsEnum {
         // the live vectors keep their capacity from term to term, as Java's
         // `subDocs` and `subs` arrays are allocated once
         // (`MultiTermsEnum.java:69-72`, `MultiPostingsEnum.java:44-51`).
-        for (sub, sub_index) in multi.subs.drain(..).zip(multi.live_sub_indices.drain(..)) {
-            if let (Some(postings_enum), Some(sub_index)) = (sub.postings_enum, sub_index) {
-                if let Some(slot) = multi.sub_postings_enums.get_mut(sub_index) {
-                    *slot = Some(postings_enum);
+        // PERF (rmp #679): returned in place; the live slots are then refilled
+        // in place below, as Java refills its `subDocs` array, instead of a
+        // drain and a push per sub per term.
+        {
+            let MultiPostingsEnum {
+                subs,
+                live_sub_indices,
+                sub_postings_enums,
+                ..
+            } = &mut *multi;
+            for (sub, sub_index) in subs.iter_mut().zip(live_sub_indices.iter()) {
+                if let (Some(postings_enum), Some(sub_index)) =
+                    (sub.postings_enum.take(), *sub_index)
+                {
+                    if let Some(slot) = sub_postings_enums.get_mut(sub_index) {
+                        *slot = Some(postings_enum);
+                    }
                 }
             }
         }
@@ -1354,11 +1367,21 @@ impl TermsEnum for MultiTermsEnum {
             // goes straight into the live slot, and back to
             // `subPostingsEnums` on the next reuse. Rust-only: the slot's
             // `live_sub_indices` entry records that `subPostingsEnums` index.
-            multi
-                .subs
-                .push(EnumWithSlice::new(sub_postings_enum, entry.sub_slice));
-            multi.live_sub_indices.push(Some(sub_index));
+            if let Some(live) = multi.subs.get_mut(i) {
+                live.postings_enum = Some(sub_postings_enum);
+                live.slice = entry.sub_slice;
+                multi.live_sub_indices[i] = Some(sub_index);
+            } else {
+                multi
+                    .subs
+                    .push(EnumWithSlice::new(sub_postings_enum, entry.sub_slice));
+                multi.live_sub_indices.push(Some(sub_index));
+            }
         }
+        // `numSubs = upto`: the live slots beyond this term's are dropped
+        // (their enums are already back in `sub_postings_enums`).
+        multi.subs.truncate(self.top.len());
+        multi.live_sub_indices.truncate(self.top.len());
 
         // The rest of `docsEnum.reset(subDocs, upto)`
         // (`MultiPostingsEnum.java:59-69`): `numSubs` is the live slots'

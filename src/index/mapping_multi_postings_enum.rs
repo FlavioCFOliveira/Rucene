@@ -88,6 +88,31 @@ impl SubPostings {
         }
     }
 
+    /// `postings`, its concrete type decided once per source segment:
+    /// `block` records, on the first call, whether the segment's postings
+    /// are a [`BlockPostingsEnum`] (a segment's postings reader always hands
+    /// back the same type), and later calls unbox by that answer.
+    ///
+    /// PERF (rmp #679): one `into_any` per term instead of a type test and
+    /// an `into_any`; a segment whose postings are not block postings keeps
+    /// them boxed with no test at all.
+    fn from_reader(postings: Box<dyn PostingsEnum>, block: &mut Option<bool>) -> Self {
+        match *block {
+            None => {
+                let sub = Self::new(postings);
+                *block = Some(matches!(sub, SubPostings::Block(_)));
+                sub
+            }
+            Some(false) => SubPostings::Dyn(postings),
+            Some(true) => SubPostings::Block(
+                postings
+                    .into_any()
+                    .and_then(|any| any.downcast::<BlockPostingsEnum>().ok())
+                    .expect("INVARIANT: this segment's postings were seen to be block postings"),
+            ),
+        }
+    }
+
     /// The enum boxed as `dyn PostingsEnum` again, for its slot.
     fn into_dyn(self) -> Box<dyn PostingsEnum> {
         match self {
@@ -149,6 +174,9 @@ struct MappingPostingsSub {
     /// Index of this sub in `MappingMultiPostingsEnum::all_subs` — the source
     /// segment's reader index — so that the sub can go back to its slot.
     reader_index: usize,
+    /// Whether this segment's postings are block postings, decided on the
+    /// first term ([`SubPostings::from_reader`]).
+    block: Option<bool>,
 }
 
 impl DocIDMergerSub for MappingPostingsSub {
@@ -260,6 +288,7 @@ impl MappingMultiPostingsEnum {
                 postings: None,
                 mapped_doc_id: -1,
                 reader_index: i,
+                block: None,
             }));
         }
         let doc_id_merger = DocIDMerger::of(Vec::new(), count, merge_state.needs_index_sort)?;
@@ -364,7 +393,11 @@ impl MappingMultiPostingsEnum {
                     self.field
                 ))
             })?;
-            sub.postings = slot.postings_enum.take().map(SubPostings::new);
+            let block = &mut sub.block;
+            sub.postings = slot
+                .postings_enum
+                .take()
+                .map(|postings| SubPostings::from_reader(postings, block));
             self.doc_id_merger.subs_mut().push(sub);
         }
         self.doc_id_merger.reset()?;
