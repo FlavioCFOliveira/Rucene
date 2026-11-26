@@ -172,6 +172,7 @@ impl MemoryIndexOffsetStrategy {
                 Ok(KeepWordLogic {
                     char_att: AttributeHandle::add(source)?,
                     matcher,
+                    units: Vec::new(),
                 })
             },
         )?))
@@ -183,14 +184,23 @@ impl MemoryIndexOffsetStrategy {
 struct KeepWordLogic {
     char_att: AttributeHandle<dyn CharTermAttribute>,
     matcher: Arc<dyn CharArrayMatcher>,
+    /// The term's UTF-16 units, the `char[]` Java's `CharTermAttribute`
+    /// already holds.
+    ///
+    /// PERF (rmp #680): one buffer reused for every token, instead of a
+    /// `String` and a `Vec<u16>` allocated per token.
+    units: Vec<u16>,
 }
 
 impl FilteringTokenFilterLogic for KeepWordLogic {
     fn accept(&mut self, _source: &AttributeSource) -> Result<bool> {
         let att = self.char_att.borrow();
-        let chars: String = att.buffer()[..att.length()].iter().collect();
-        let units: Vec<u16> = chars.encode_utf16().collect();
-        Ok(self.matcher.match_chars(&units, 0, units.len()))
+        self.units.clear();
+        let mut pair = [0u16; 2];
+        for &ch in &att.buffer()[..att.length()] {
+            self.units.extend_from_slice(ch.encode_utf16(&mut pair));
+        }
+        Ok(self.matcher.match_chars(&self.units, 0, self.units.len()))
     }
 }
 

@@ -292,6 +292,13 @@ fn categorize<K: Ord + Clone>(
 pub(crate) struct RuleTable {
     /// `(first code point, category)`, in order.
     ranges: Vec<(u32, i32)>,
+    /// The category of every BMP code point, the role of the JDK's
+    /// `charCategoryTable` (`RuleBasedBreakIterator.lookupCategory`: a
+    /// `CompactByteArray` read in constant time for `c < 0x10000`).
+    ///
+    /// PERF (rmp #680): built once from `ranges`, so a BMP lookup is one
+    /// load instead of a binary search over the ranges per character.
+    bmp: Box<[i16]>,
     /// The number of categories, the width of `state_table`.
     num_categories: usize,
     /// The next state by state and category; state 0 is `STOP_STATE`.
@@ -313,6 +320,24 @@ pub(crate) struct RuleTable {
     /// The category of a code point the rules do not mention (the JDK's
     /// category 0), which the supplementary table's default entries name.
     default_category: i32,
+}
+
+/// The category of each BMP code point (`0..0x10000`), from the category runs
+/// `ranges` (each run lasts until the next one starts).
+fn bmp_table(ranges: &[(u32, i32)]) -> Box<[i16]> {
+    let mut table = vec![0i16; 0x10000];
+    for (i, &(first, category)) in ranges.iter().enumerate() {
+        if first >= 0x10000 {
+            break;
+        }
+        let end = ranges
+            .get(i + 1)
+            .map_or(0x10000, |&(next, _)| next.min(0x10000));
+        let category = i16::try_from(category)
+            .expect("INVARIANT: a rule table has fewer than 2^15 categories");
+        table[first as usize..end as usize].fill(category);
+    }
+    table.into_boxed_slice()
 }
 
 /// The encoding of a category in [`supplementary_table`]: the JDK's value
@@ -427,7 +452,11 @@ impl RuleTable {
     ///
     /// A supplementary code point is looked up in the JDK's
     /// `SupplementaryCharacterData` table ([`supplementary_table`]).
+    #[inline]
     pub(crate) fn lookup_category(&self, c: i32) -> i32 {
+        if let Some(&category) = usize::try_from(c).ok().and_then(|c| self.bmp.get(c)) {
+            return i32::from(category);
+        }
         if (0x10000..=0x10FFFF).contains(&c) {
             return supplementary_category(&self.supplementary, c, self.default_category);
         }
@@ -686,6 +715,7 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
     RuleTable {
         supplementary,
         default_category,
+        bmp: bmp_table(&categories.ranges),
         ranges: categories.ranges,
         num_categories: categories.count,
         state_table,
@@ -1288,6 +1318,7 @@ pub(crate) fn sentence_rules() -> &'static RuleTable {
         RuleTable {
             supplementary,
             default_category,
+            bmp: bmp_table(&categories.ranges),
             ranges: categories.ranges,
             num_categories: categories.count,
             state_table,
@@ -2066,6 +2097,7 @@ fn compile_jdk(
     RuleTable {
         supplementary,
         default_category,
+        bmp: bmp_table(&categories.ranges),
         ranges: categories.ranges,
         num_categories: n,
         state_table,
