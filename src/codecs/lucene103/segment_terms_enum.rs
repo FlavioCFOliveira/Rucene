@@ -1073,7 +1073,10 @@ pub struct SegmentTermsEnum {
     /// frames at or below it are still positioned before the new target and
     /// need no rewind. `-1` means there was no prior seek.
     target_before_current_length: i64,
-    attributes: AttributeSource,
+    /// `BaseTermsEnum.atts`, created on the first
+    /// [`attributes`](TermsEnum::attributes) call as Java's is
+    /// (`BaseTermsEnum.java:40, 75-79`).
+    attributes: Option<AttributeSource>,
 }
 
 impl std::fmt::Debug for SegmentTermsEnum {
@@ -1108,7 +1111,7 @@ impl SegmentTermsEnum {
             started: false,
             valid_index_prefix: 0,
             target_before_current_length: -1,
-            attributes: AttributeSource::new(),
+            attributes: None,
         })
     }
 
@@ -1923,7 +1926,7 @@ impl TermsEnum for SegmentTermsEnum {
     }
 
     fn attributes(&mut self) -> &mut AttributeSource {
-        &mut self.attributes
+        self.attributes.get_or_insert_with(AttributeSource::new)
     }
 
     /// Equivalent to `SegmentTermsEnum.next()` (`SegmentTermsEnum.java:881-965`),

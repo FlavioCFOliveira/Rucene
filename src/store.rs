@@ -7444,13 +7444,6 @@ pub const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
 /// (`public static final int`, `ByteBuffersDataOutput.java:57`).
 pub const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
 
-/// Number of characters converted at a time by
-/// `ByteBuffersDataOutput::write_long_string`.
-///
-/// Equivalent to
-/// `org.apache.lucene.store.ByteBuffersDataOutput.MAX_CHARS_PER_WINDOW`.
-const MAX_CHARS_PER_WINDOW: usize = 1024;
-
 /// A heap `java.nio.ByteBuffer` view of a byte block: the block's content is
 /// shared by every view of it, and each view has its own position and limit.
 ///
@@ -9138,9 +9131,10 @@ impl ByteBuffersDataOutput {
     /// the [`write_string`](DataOutput::write_string) override, which reaches
     /// here when the string does not fit in what is left of the current block.
     ///
-    /// The string is converted a window at a time so that the whole UTF-8 form
-    /// is never held at once, which is the reason Lucene splits this out of
-    /// `writeString`.
+    /// Lucene converts the string a window at a time so that the whole UTF-8
+    /// form is never held at once, which is why it splits this out of
+    /// `writeString`; a Rust `str` is already UTF-8, so its bytes are written
+    /// directly, with the same result.
     ///
     /// Equivalent to the private
     /// `org.apache.lucene.store.ByteBuffersDataOutput#writeLongString`.
@@ -9149,28 +9143,13 @@ impl ByteBuffersDataOutput {
     ///
     /// Returns any error raised while writing.
     fn write_long_string(&mut self, byte_len: usize, s: &str) -> Result<()> {
-        let units: Vec<u16> = s.encode_utf16().collect();
-        let mut buf = vec![
-            0u8;
-            byte_len.min(
-                crate::util::unicode_util::MAX_UTF8_BYTES_PER_CHAR * MAX_CHARS_PER_WINDOW
-            )
-        ];
-        let end = units.len();
-        let mut i = 0usize;
-        while i < end {
-            // do one fewer chars than MAX_CHARS_PER_WINDOW in case we run into
-            // an unpaired surrogate below and need to increase the step to
-            // cover the lower surrogate as well
-            let mut step = (end - i).min(MAX_CHARS_PER_WINDOW - 1);
-            if i + step < end && (0xD800..=0xDBFF).contains(&units[i + step - 1]) {
-                step += 1;
-            }
-            let up_to = crate::util::UnicodeUtil::utf16_to_utf8(&units, i, step, &mut buf);
-            self.write_bytes(&buf, 0, up_to)?;
-            i += step;
-        }
-        Ok(())
+        // PERF: Java converts the string a window of `MAX_CHARS_PER_WINDOW`
+        // (1024) UTF-16 units at a time, each window kept whole on a surrogate pair,
+        // so the concatenated windows are the string's UTF-8 form. A Rust
+        // `str` already is that form: its bytes are written as they are,
+        // instead of through a UTF-16 copy of the whole string and a window
+        // buffer.
+        self.write_bytes(s.as_bytes(), 0, byte_len)
     }
 }
 
