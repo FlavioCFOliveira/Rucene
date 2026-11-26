@@ -99,11 +99,11 @@ use crate::index::sorting_consumers::{SortingStoredFieldsConsumer, SortingTermVe
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::vector_values_consumer::VectorValuesConsumer;
+use crate::index::NumericValue;
 use crate::index::{
-    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldIterable,
-    IndexableFieldType, SegmentInfo,
+    DocValuesType, FieldInfo, FieldsIter, IndexOptions, IndexableField, IndexableFieldIterable,
+    IndexableFieldType, SegmentInfo, StoredValueRef,
 };
-use crate::index::{NumericValue, StoredValue};
 use crate::search::Similarity;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
@@ -1511,7 +1511,9 @@ impl DefaultIndexingChain {
         // This port drains the cursor eagerly in `stored_value()`, so the same
         // read failure surfaces one call earlier and must be routed to the same
         // place: a half-read stored value leaves the segment untrustworthy.
-        let value = field.stored_value().inspect_err(|error| {
+        // PERF: the value is read through `stored_value_ref`, so a string or
+        // binary value is written from the field without a copy.
+        let value = field.stored_value_ref().inspect_err(|error| {
             // Java hands the throwable itself to `onAbortingException`.
             self.on_aborting_exception(error.duplicate());
         })?;
@@ -1552,7 +1554,7 @@ impl DefaultIndexingChain {
                 field.name()
             )));
         };
-        let written = consumer.write_field(info, value);
+        let written = consumer.write_field(info, &value);
         if let Err(error) = &written {
             // Java hands the throwable itself to `onAbortingException`.
             self.on_aborting_exception(error.duplicate());
@@ -4342,10 +4344,10 @@ impl std::ops::DerefMut for ChainStoredFields {
 impl ChainStoredFields {
     /// `StoredFieldsConsumer.writeField(FieldInfo, StoredValue)`, which the
     /// sorting subclass overrides to remember that a field was stored.
-    fn write_field(&mut self, info: &FieldInfo, value: StoredValue) -> Result<()> {
+    fn write_field(&mut self, info: &FieldInfo, value: &StoredValueRef<'_>) -> Result<()> {
         match self {
-            Self::Plain(consumer) => consumer.write_field(info, value),
-            Self::Sorting(consumer) => consumer.write_field(info, value),
+            Self::Plain(consumer) => consumer.write_field_ref(info, value),
+            Self::Sorting(consumer) => consumer.write_field_ref(info, value),
         }
     }
 
@@ -4554,8 +4556,10 @@ impl DefaultIndexingChain {
         // document, and an exception the iterator throws leaves the pass
         // there.
         'first_pass: for item in doc
-            .map(IndexableFieldIterable::iterator)
-            .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+            .map(IndexableFieldIterable::fields_iter)
+            .unwrap_or_else(|| {
+                FieldsIter::Boxed(Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+            })
         {
             let field = match item {
                 Ok(field) => field,
@@ -4637,7 +4641,7 @@ impl DefaultIndexingChain {
         // 2nd pass – document fields (`IndexingChain.java:659-667`): a new
         // iteration over the document, whose failure leaves the pass too.
         let second_pass = match (&outcome, doc) {
-            (Ok(()), Some(doc)) => Some(doc.iterator()),
+            (Ok(()), Some(doc)) => Some(doc.fields_iter()),
             _ => None,
         };
         for (doc_field_idx, item) in second_pass.into_iter().flatten().enumerate() {

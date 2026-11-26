@@ -346,12 +346,38 @@ impl StoredFieldsConsumer {
     /// Returns [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) when no document frame is open,
     /// and propagates any I/O error.
     pub fn write_field(&mut self, info: &FieldInfo, value: StoredValue) -> Result<()> {
+        self.write_stored_value(info, &value)
+    }
+
+    /// [`write_field`](Self::write_field) with a value the field lends: a
+    /// string or binary value is written from the field's own storage.
+    ///
+    /// # Errors
+    ///
+    /// As [`write_field`](Self::write_field).
+    pub fn write_field_ref(
+        &mut self,
+        info: &FieldInfo,
+        value: &crate::index::StoredValueRef<'_>,
+    ) -> Result<()> {
+        use crate::index::StoredValueRef;
+        match value {
+            StoredValueRef::String(value) => self.writer_mut()?.write_field_string(info, value),
+            StoredValueRef::Binary(value) => {
+                self.writer_mut()?.write_field_bytes(info, value.slice())
+            }
+            StoredValueRef::Owned(value) => self.write_stored_value(info, value),
+        }
+    }
+
+    /// The dispatch of `writeField` over the value's type.
+    fn write_stored_value(&mut self, info: &FieldInfo, value: &StoredValue) -> Result<()> {
         let writer = self.writer_mut()?;
         match value {
-            StoredValue::Integer(value) => writer.write_field_i32(info, value),
-            StoredValue::Long(value) => writer.write_field_i64(info, value),
-            StoredValue::Float(value) => writer.write_field_f32(info, value),
-            StoredValue::Double(value) => writer.write_field_f64(info, value),
+            StoredValue::Integer(value) => writer.write_field_i32(info, *value),
+            StoredValue::Long(value) => writer.write_field_i64(info, *value),
+            StoredValue::Float(value) => writer.write_field_f32(info, *value),
+            StoredValue::Double(value) => writer.write_field_f64(info, *value),
             StoredValue::Binary(value) => writer.write_field_bytes(info, value.slice()),
             StoredValue::DataInput(value) => {
                 // `StoredFieldDataInput.getLength()` is an `int`.
@@ -361,7 +387,7 @@ impl StoredFieldsConsumer {
                 let mut data_input = StoredFieldDataInput::new(&mut input, length);
                 writer.write_field_data_input(info, &mut data_input)
             }
-            StoredValue::String(value) => writer.write_field_string(info, &value),
+            StoredValue::String(value) => writer.write_field_string(info, value),
         }
     }
 

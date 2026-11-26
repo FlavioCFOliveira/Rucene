@@ -520,20 +520,20 @@ fn current_thread_key() -> u64 {
 ///   nor a reader value (`Field.java:465-498`);
 /// * a [`TextField`](crate::document::TextField) with a string value, whose
 ///   `tokenStream` does the same.
-pub fn analyzed_text(field: &dyn IndexableField) -> Option<String> {
+pub fn analyzed_text(field: &dyn IndexableField) -> Option<crate::index::StringValueRef<'_>> {
     let any = field.as_any()?;
+    // PERF: the string is lent by the field (`string_value_ref`), not copied.
     if let Some(field) = any.downcast_ref::<crate::document::Field>() {
         if !field.field_type().tokenized() {
             return None;
         }
         // A string (or number) value excludes a token-stream and a reader
         // value: they are variants of the one field value.
-        return field.string_value();
+        return IndexableField::string_value_ref(field);
     }
     // A `TextField`'s string value excludes its token-stream and reader
     // values in the same way.
-    any.downcast_ref::<crate::document::TextField>()?
-        .string_value()
+    IndexableField::string_value_ref(any.downcast_ref::<crate::document::TextField>()?)
 }
 
 /// One token as the tests compare it: term, position increment, position

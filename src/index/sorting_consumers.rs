@@ -326,6 +326,21 @@ impl SortingStoredFieldsConsumer {
         Ok(())
     }
 
+    /// [`write_field`](Self::write_field) with a value the field lends.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the wrapped consumer raises.
+    pub fn write_field_ref(
+        &mut self,
+        info: &FieldInfo,
+        value: &crate::index::StoredValueRef<'_>,
+    ) -> Result<()> {
+        self.inner.write_field_ref(info, value)?;
+        self.has_stored_fields = true;
+        Ok(())
+    }
+
     /// Writes the buffered stored fields into the segment in the sorted order.
     ///
     /// Equivalent to `SortingStoredFieldsConsumer.flush(SegmentWriteState,

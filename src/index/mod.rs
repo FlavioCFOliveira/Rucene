@@ -527,6 +527,60 @@ impl std::ops::Deref for BinaryValueRef<'_> {
     }
 }
 
+/// A field's string value as [`IndexableField::string_value_ref`] gives it:
+/// borrowed from the field, or an owned copy.
+#[derive(Debug)]
+pub enum StringValueRef<'a> {
+    /// The string the field holds, borrowed for as long as this lives.
+    Borrowed(crate::util::atomic_ref_cell::AtomicRef<'a, str>),
+    /// A copy of the value, or a string made from it.
+    Owned(String),
+}
+
+impl std::ops::Deref for StringValueRef<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(value) => value,
+        }
+    }
+}
+
+/// A field's stored value as [`IndexableField::stored_value_ref`] gives it:
+/// the string or bytes the field holds, borrowed, or an owned
+/// [`StoredValue`].
+#[derive(Debug)]
+pub enum StoredValueRef<'a> {
+    /// `StoredValue.Type.STRING`, borrowed from the field.
+    String(crate::util::atomic_ref_cell::AtomicRef<'a, str>),
+    /// `StoredValue.Type.BINARY`, borrowed from the field.
+    Binary(crate::util::atomic_ref_cell::AtomicRef<'a, BytesRef>),
+    /// Any value, owned.
+    Owned(StoredValue),
+}
+
+impl StoredValueRef<'_> {
+    /// The type of the value, as [`StoredValue::value_type`] gives it.
+    pub fn value_type(&self) -> crate::document::StoredValueType {
+        match self {
+            Self::String(_) => crate::document::StoredValueType::STRING,
+            Self::Binary(_) => crate::document::StoredValueType::BINARY,
+            Self::Owned(value) => value.value_type(),
+        }
+    }
+
+    /// The string value, when the value is a string.
+    pub fn string_value(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            Self::Binary(_) => None,
+            Self::Owned(value) => value.string_value().ok(),
+        }
+    }
+}
+
 /// Represents a single field for indexing.
 ///
 /// Equivalent to `org.apache.lucene.index.IndexableField`.
@@ -616,6 +670,18 @@ pub trait IndexableField: std::fmt::Display + Send + Sync {
     /// Non-null if this field has a string value.
     fn string_value(&self) -> Option<String>;
 
+    /// The value [`string_value`](Self::string_value) returns, borrowed from
+    /// the field when the field can lend it.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `stringValue()`
+    /// returns the field's own `String` by reference. The port's
+    /// `string_value` returns an owned copy; the indexing chain reads the
+    /// value through this method instead, so a field that holds its string
+    /// lends it without that copy. The default is `string_value()` itself.
+    fn string_value_ref(&self) -> Option<StringValueRef<'_>> {
+        self.string_value().map(StringValueRef::Owned)
+    }
+
     /// Non-null if this field has a string value.
     fn char_sequence_value(&self) -> Option<String> {
         self.string_value()
@@ -669,6 +735,22 @@ pub trait IndexableField: std::fmt::Display + Send + Sync {
     /// Propagates any I/O error raised while materialising the value.
     fn stored_value(&self) -> Result<Option<StoredValue>>;
 
+    /// The value [`stored_value`](Self::stored_value) returns, with a string
+    /// or binary value borrowed from the field when the field can lend it.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `storedValue()`
+    /// returns a `StoredValue` that refers to the field's own `String` or
+    /// `BytesRef`. The port's `stored_value` copies them; the indexing chain
+    /// reads the value through this method instead. The default is
+    /// `stored_value()` itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`stored_value`](Self::stored_value).
+    fn stored_value_ref(&self) -> Result<Option<StoredValueRef<'_>>> {
+        Ok(self.stored_value()?.map(StoredValueRef::Owned))
+    }
+
     /// Describes how this field should be inverted.
     fn invertable_type(&self) -> Option<InvertableType>;
 
@@ -701,11 +783,50 @@ pub trait IndexableFieldIterable {
     /// is the unchecked exception the Java iterator throws; the iteration
     /// ends there.
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_>;
+
+    /// The iteration [`iterator`](Self::iterator) gives, without boxing it
+    /// when the fields are a slice.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `iterator()` the
+    /// JIT keeps off the heap. The indexing chain iterates a document through
+    /// this method; the default is `iterator()` itself, so the items and
+    /// where an iteration fails are the same.
+    fn fields_iter(&self) -> FieldsIter<'_> {
+        FieldsIter::Boxed(self.iterator())
+    }
+}
+
+/// The iteration [`IndexableFieldIterable::fields_iter`] gives: over a slice
+/// of fields, or over any boxed iterator.
+pub enum FieldsIter<'a> {
+    /// The fields of a [`Document`](crate::document::Document).
+    Shared(std::slice::Iter<'a, std::sync::Arc<dyn IndexableField>>),
+    /// A slice of owned fields.
+    Owned(std::slice::Iter<'a, Box<dyn IndexableField>>),
+    /// Any other iteration.
+    Boxed(Box<dyn Iterator<Item = Result<&'a dyn IndexableField>> + 'a>),
+}
+
+impl<'a> Iterator for FieldsIter<'a> {
+    type Item = Result<&'a dyn IndexableField>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Shared(fields) => fields.next().map(|field| Ok(field.as_ref())),
+            Self::Owned(fields) => fields.next().map(|field| Ok(field.as_ref())),
+            Self::Boxed(fields) => fields.next(),
+        }
+    }
 }
 
 impl IndexableFieldIterable for crate::document::Document {
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
         Box::new(self.get_fields().iter().map(|field| Ok(field.as_ref())))
+    }
+
+    fn fields_iter(&self) -> FieldsIter<'_> {
+        FieldsIter::Shared(self.get_fields().iter())
     }
 }
 
@@ -714,11 +835,19 @@ impl IndexableFieldIterable for [Box<dyn IndexableField>] {
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
         Box::new(self.iter().map(|field| Ok(field.as_ref())))
     }
+
+    fn fields_iter(&self) -> FieldsIter<'_> {
+        FieldsIter::Owned(self.iter())
+    }
 }
 
 impl IndexableFieldIterable for Vec<Box<dyn IndexableField>> {
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
         self.as_slice().iterator()
+    }
+
+    fn fields_iter(&self) -> FieldsIter<'_> {
+        self.as_slice().fields_iter()
     }
 }
 
@@ -729,6 +858,10 @@ impl<D: IndexableFieldIterable + ?Sized> IndexableFieldIterable for &D {
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
         (**self).iterator()
     }
+
+    fn fields_iter(&self) -> FieldsIter<'_> {
+        (**self).fields_iter()
+    }
 }
 
 /// A borrowed [`IndexableFieldIterable`] of any type, sized so that it can be
@@ -738,6 +871,10 @@ struct FieldIterableRef<'a, D: IndexableFieldIterable + ?Sized>(&'a D);
 impl<D: IndexableFieldIterable + ?Sized> IndexableFieldIterable for FieldIterableRef<'_, D> {
     fn iterator(&self) -> Box<dyn Iterator<Item = Result<&dyn IndexableField>> + '_> {
         self.0.iterator()
+    }
+
+    fn fields_iter(&self) -> FieldsIter<'_> {
+        self.0.fields_iter()
     }
 }
 
