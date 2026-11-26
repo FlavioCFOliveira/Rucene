@@ -475,27 +475,34 @@ impl PostingsReaderBase for Lucene104PostingsReader {
         &self,
         field_info: &FieldInfo,
         state: &BlockTermState,
-        mut reuse: Option<Box<dyn PostingsEnum>>,
+        reuse: Option<Box<dyn PostingsEnum>>,
         flags: i32,
     ) -> Result<Box<dyn PostingsEnum>> {
         // `reuse instanceof BlockPostingsEnum everythingEnum
         //     && everythingEnum.canReuse(docIn, fieldInfo, flags, false)`
-        let can_reuse = reuse
-            .as_mut()
-            .and_then(|reuse| reuse.as_any_mut())
-            .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
-            .is_some_and(|everything_enum| {
-                everything_enum.can_reuse(self.doc_in_identity, field_info, flags, false)
-            });
-        let mut postings: Box<dyn PostingsEnum> = match reuse {
-            Some(everything_enum) if can_reuse => everything_enum,
-            _ => self.new_block_postings_enum(field_info, flags, false)?,
+        // PERF (rmp #679): one by-value downcast through the hidden
+        // `into_any` hook (a merge calls this once per term and segment),
+        // instead of a downcast to decide and another to reset; an enum that
+        // cannot be reused is dropped, as before.
+        // A rejected enum is kept until the new one is built, as Java's
+        // caller still holds it: the new enum is a distinct object.
+        let offered = reuse
+            .and_then(|reuse| reuse.into_any())
+            .and_then(|any| any.downcast::<BlockPostingsEnum>().ok());
+        let (reused, rejected) = match offered {
+            Some(everything_enum)
+                if everything_enum.can_reuse(self.doc_in_identity, field_info, flags, false) =>
+            {
+                (Some(everything_enum), None)
+            }
+            other => (None, other),
         };
-        postings
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<BlockPostingsEnum>())
-            .expect("INVARIANT: the enum was just checked or built as a BlockPostingsEnum")
-            .reset(state, self.doc_in.as_ref())?;
+        let mut postings = match reused {
+            Some(everything_enum) => everything_enum,
+            None => self.new_block_postings_enum(field_info, flags, false)?,
+        };
+        drop(rejected);
+        postings.reset(state, self.doc_in.as_ref())?;
         Ok(postings)
     }
 

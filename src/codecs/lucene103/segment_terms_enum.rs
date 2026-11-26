@@ -2162,10 +2162,11 @@ impl TermsEnum for SegmentTermsEnum {
         // `fr.parent.postingsReader.postings(fr.fieldInfo, currentFrame.state,
         // reuse, flags)` (`SegmentTermsEnum.java:999`): the field info is borrowed, as
         // Java passes its reference.
-        let state = self.current_frame().state;
+        // PERF (rmp #679): the frame's state by reference, as Java passes
+        // `currentFrame.state`, instead of a copy per call.
         Ok(Some(self.field.shared().postings_reader.postings(
             self.field.field_info(),
-            &state,
+            &self.current_frame().state,
             reuse,
             flags,
         )?))
