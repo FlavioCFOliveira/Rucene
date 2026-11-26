@@ -55,7 +55,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 use rucene::error::Result;
 
@@ -210,8 +210,14 @@ pub struct LocaleData {
     pub name_records: Vec<Vec<usize>>,
     /// Number records.
     pub numbers: Vec<NumberRecord>,
-    /// Zone rows.
-    pub rows: Vec<ZoneRow>,
+    /// Zone rows, decoded on first use (see [`rows`](Self::rows)).
+    rows: OnceLock<Vec<ZoneRow>>,
+    /// The inflated data and the offset and length of each string in it,
+    /// kept to decode the zone rows on first use.
+    raw: Vec<u8>,
+    string_spans: Vec<(u32, u32)>,
+    /// The offset of the zone-row section in `raw`.
+    rows_pos: usize,
     /// Zone tables: row indices.
     pub tables: Vec<Vec<usize>>,
     /// String arrays (`None` entries for Java's `null`).
@@ -229,13 +235,17 @@ pub struct LocaleData {
 }
 
 /// The data, inflated and decoded on first use.
+///
+/// PERF: the 108 093 zone rows (four UTF-16 names each), which only a
+/// pattern with a zone field reads, are decoded on their first use rather
+/// than with the rest (rmp #679: the eager decode was ~80 ms per process).
 pub fn data() -> &'static LocaleData {
     static DATA: LazyLock<LocaleData> = LazyLock::new(|| {
         let mut bytes = Vec::new();
         flate2::read::ZlibDecoder::new(DATA_BYTES)
             .read_to_end(&mut bytes)
             .expect("INVARIANT: the embedded format data inflates");
-        LocaleData::decode(&bytes)
+        LocaleData::decode(bytes)
     });
     &DATA
 }
@@ -274,6 +284,13 @@ pub fn from_symbols(calendar_type: usize, field: i32, style: i32) -> bool {
     format && !(field == ERA && style == SHORT_FORMAT) && field != YEAR
 }
 
+/// The string at `span` (offset, length) of the inflated data, validated
+/// as UTF-8 when the data was decoded.
+fn span_str(bytes: &[u8], span: (u32, u32)) -> &str {
+    let (offset, len) = (span.0 as usize, span.1 as usize);
+    std::str::from_utf8(&bytes[offset..offset + len]).expect("INVARIANT: the strings are UTF-8")
+}
+
 /// A reader of the generator's varints.
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -297,20 +314,23 @@ impl Reader<'_> {
 }
 
 impl LocaleData {
-    fn decode(bytes: &[u8]) -> LocaleData {
+    fn decode(raw: Vec<u8>) -> LocaleData {
+        let bytes = raw.as_slice();
         assert_eq!(&bytes[..4], b"JFD1", "INVARIANT: the data format");
         let mut r = Reader { bytes, pos: 4 };
         let n = r.v();
-        let mut strings = Vec::with_capacity(n);
+        // PERF: the strings are validated once and kept as spans of the
+        // inflated data; each use copies only the string it reads.
+        let mut string_spans = Vec::with_capacity(n);
         for _ in 0..n {
             let len = r.v();
-            let s = std::str::from_utf8(&bytes[r.pos..r.pos + len])
-                .expect("INVARIANT: the strings are UTF-8")
-                .to_string();
+            std::str::from_utf8(&bytes[r.pos..r.pos + len])
+                .expect("INVARIANT: the strings are UTF-8");
+            string_spans.push((r.pos as u32, len as u32));
             r.pos += len;
-            strings.push(s);
         }
-        let st = |r: &mut Reader<'_>| strings[r.v()].clone();
+        let string = |i: usize| -> &str { span_str(bytes, string_spans[i]) };
+        let st = |r: &mut Reader<'_>| string(r.v()).to_string();
         let u16s = |s: &str| -> Vec<u16> { s.encode_utf16().collect() };
         let set_of = |r: &mut Reader<'_>| -> HashSet<String> {
             let n = r.v();
@@ -347,7 +367,9 @@ impl LocaleData {
             } else {
                 let m = r.v();
                 sets.push(Some(
-                    (0..m).map(|_| (u16s(&st(&mut r)), r.v() as i32)).collect(),
+                    (0..m)
+                        .map(|_| (u16s(string(r.v())), r.v() as i32))
+                        .collect(),
                 ));
             }
         }
@@ -386,24 +408,11 @@ impl LocaleData {
                 pattern: s(),
             });
         }
+        // The zone rows are skipped here and decoded by `rows()`.
+        let rows_pos = r.pos;
         let n = r.v();
-        let mut rows = Vec::with_capacity(n);
-        for _ in 0..n {
-            let id = st(&mut r);
-            let resolved_id = st(&mut r);
-            let names = [
-                u16s(&st(&mut r)),
-                u16s(&st(&mut r)),
-                u16s(&st(&mut r)),
-                u16s(&st(&mut r)),
-            ];
-            let digit_mask = r.v() as u8;
-            rows.push(ZoneRow {
-                id,
-                resolved_id,
-                names,
-                digit_mask,
-            });
+        for _ in 0..n * 7 {
+            r.v();
         }
         let n = r.v();
         let tables = (0..n)
@@ -422,7 +431,7 @@ impl LocaleData {
                         if id == 0 {
                             None
                         } else {
-                            Some(strings[id - 1].clone())
+                            Some(string(id - 1).to_string())
                         }
                     })
                     .collect()
@@ -455,7 +464,7 @@ impl LocaleData {
                     *p = if id == 0 {
                         None
                     } else {
-                        Some(strings[id - 1].clone())
+                        Some(string(id - 1).to_string())
                     };
                 }
             }
@@ -486,6 +495,10 @@ impl LocaleData {
             zone_classes.insert(key, ZoneClass { table, latin });
         }
         LocaleData {
+            rows: OnceLock::new(),
+            raw,
+            string_spans,
+            rows_pos,
             langtags,
             fallback_tags,
             fallback_zone_tags,
@@ -501,7 +514,6 @@ impl LocaleData {
             combos,
             name_records,
             numbers,
-            rows,
             tables,
             arrays,
             dcombos,
@@ -511,6 +523,40 @@ impl LocaleData {
             classes,
             zone_classes,
         }
+    }
+
+    /// Zone rows (`DateFormatSymbols.getZoneStrings()` rows), decoded from
+    /// the inflated data on first use.
+    pub fn rows(&self) -> &[ZoneRow] {
+        self.rows.get_or_init(|| {
+            let bytes = self.raw.as_slice();
+            let string = |i: usize| span_str(bytes, self.string_spans[i]);
+            let u16s = |s: &str| -> Vec<u16> { s.encode_utf16().collect() };
+            let mut r = Reader {
+                bytes,
+                pos: self.rows_pos,
+            };
+            let n = r.v();
+            let mut rows = Vec::with_capacity(n);
+            for _ in 0..n {
+                let id = string(r.v()).to_string();
+                let resolved_id = string(r.v()).to_string();
+                let names = [
+                    u16s(string(r.v())),
+                    u16s(string(r.v())),
+                    u16s(string(r.v())),
+                    u16s(string(r.v())),
+                ];
+                let digit_mask = r.v() as u8;
+                rows.push(ZoneRow {
+                    id,
+                    resolved_id,
+                    names,
+                    digit_mask,
+                });
+            }
+            rows
+        })
     }
 
     /// The week data of `region`: `(firstDayOfWeek,

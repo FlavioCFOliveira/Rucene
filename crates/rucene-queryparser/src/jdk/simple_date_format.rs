@@ -59,7 +59,7 @@ use super::calendar::{
 };
 use super::character::{get_type, SPACE_SEPARATOR};
 use super::date::{current_time_millis, Date};
-use super::decimal_format::{DecimalFormat, DecimalFormatSymbols};
+use super::decimal_format::{DecimalFormat, DecimalFormatSymbols, DigitList};
 use super::format::{parse_exception, FieldDelegate, FieldPosition, FormatField, ParsePosition};
 use super::locale::Locale;
 use super::locale_data::{
@@ -489,6 +489,12 @@ fn time_zone_override(data: &LocaleData, locale: &Locale) -> Option<TimeZone> {
 #[derive(Debug)]
 struct State {
     calendar: Calendar,
+    /// PERF: the UTF-16 units of the text being parsed (Java's `String`
+    /// already is UTF-16) and the number parser's digit list (Java's
+    /// `DecimalFormat.digitList` field), both reused across parses instead
+    /// of allocated per parse (rmp #679).
+    units: Vec<u16>,
+    digits: DigitList,
 }
 
 /// A `java.text.SimpleDateFormat`.
@@ -678,10 +684,11 @@ impl SimpleDateFormat {
         let zones = has_zone_field.then(|| {
             let zone_class = data.zone_class_of(locale);
             let zero = record.zero_digit;
+            let rows = data.rows();
             data.tables[zone_class.table]
                 .iter()
                 .map(|&r| {
-                    let row = &data.rows[r];
+                    let row = &rows[r];
                     let mut names = row.names.clone();
                     if zone_class.latin {
                         for (i, name) in names.iter_mut().enumerate() {
@@ -728,7 +735,11 @@ impl SimpleDateFormat {
             zones,
             default_century_start,
             default_century_start_year,
-            state: Mutex::new(State { calendar }),
+            state: Mutex::new(State {
+                calendar,
+                units: Vec::new(),
+                digits: DigitList::default(),
+            }),
         })
     }
 
@@ -1095,9 +1106,15 @@ impl SimpleDateFormat {
     /// merge, and `UnsupportedOperationException` for a week date (see the
     /// module documentation).
     pub fn parse_position(&self, text: &str, pos: &mut ParsePosition) -> Result<Option<Date>> {
-        let text: Vec<u16> = text.encode_utf16().collect();
         let mut state = self.state();
-        let calendar = &mut state.calendar;
+        let State {
+            calendar,
+            units,
+            digits,
+        } = &mut *state;
+        units.clear();
+        units.extend(text.encode_utf16());
+        let text: &[u16] = units;
         let mut start = pos.index;
         let old_start = start;
         let text_length = text.len();
@@ -1145,7 +1162,8 @@ impl SimpleDateFormat {
                     }
                     match self.sub_parse(
                         calendar,
-                        &text,
+                        digits,
+                        text,
                         start,
                         *tag,
                         *count,
@@ -1300,9 +1318,14 @@ impl SimpleDateFormat {
     }
 
     /// The integer `DecimalFormat.parse(text, pos)`.
-    fn parse_number(&self, text: &[u16], pos: &mut ParsePosition) -> Option<i32> {
+    fn parse_number(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+        digits: &mut DigitList,
+    ) -> Option<i32> {
         self.number_format
-            .parse_units(text, pos)
+            .parse_units_with(text, pos, digits)
             .map(|n| n.int_value())
     }
 
@@ -1312,6 +1335,7 @@ impl SimpleDateFormat {
     fn sub_parse(
         &self,
         calendar: &mut Calendar,
+        digits: &mut DigitList,
         text: &[u16],
         start: usize,
         pattern_char_index: usize,
@@ -1355,9 +1379,9 @@ impl SimpleDateFormat {
                     if start + count > text.len() {
                         break 'parsing;
                     }
-                    self.parse_number(&text[..start + count], &mut pos)
+                    self.parse_number(&text[..start + count], &mut pos, digits)
                 } else {
-                    self.parse_number(text, &mut pos)
+                    self.parse_number(text, &mut pos, digits)
                 };
                 match number {
                     None => {
@@ -1588,9 +1612,9 @@ impl SimpleDateFormat {
                         if start + count > text.len() {
                             break 'parsing;
                         }
-                        self.parse_number(&text[..start + count], &mut pos)
+                        self.parse_number(&text[..start + count], &mut pos, digits)
                     } else {
-                        self.parse_number(text, &mut pos)
+                        self.parse_number(text, &mut pos, digits)
                     };
                     if let Some(v) = number {
                         value = v;

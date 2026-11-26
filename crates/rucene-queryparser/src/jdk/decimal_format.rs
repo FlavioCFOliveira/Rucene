@@ -171,7 +171,7 @@ impl DecimalFormatSymbols {
 
 /// `java.text.DigitList`.
 #[derive(Debug, Clone, Default)]
-struct DigitList {
+pub(crate) struct DigitList {
     decimal_at: i32,
     /// `digits[0..count]`, as the ASCII digits `'0'..='9'`.
     digits: Vec<u8>,
@@ -1991,18 +1991,32 @@ impl DecimalFormat {
     /// `parse(String text, ParsePosition pos)` over UTF-16 units: the
     /// `Long` or `Double` parsed, `None` where Java returns `null`.
     pub fn parse_units(&self, text: &[u16], pos: &mut ParsePosition) -> Option<JavaNumber> {
+        self.parse_units_with(text, pos, &mut DigitList::default())
+    }
+
+    /// [`parse_units`](Self::parse_units) into `digit_list`, a digit list the
+    /// caller keeps across parses, as Java's `DecimalFormat.parse` works in
+    /// the instance's own `digitList` field; `subparseNumber` clears it
+    /// before use.
+    ///
+    /// PERF: no digit-list allocation per parse (rmp #679).
+    pub(crate) fn parse_units_with(
+        &self,
+        text: &[u16],
+        pos: &mut ParsePosition,
+        digit_list: &mut DigitList,
+    ) -> Option<JavaNumber> {
         if region_matches(text, pos.index, &self.symbols.nan) {
             pos.index += self.symbols.nan.len();
             return Some(JavaNumber::Double(f64::NAN));
         }
-        let mut digit_list = DigitList::default();
         let mut status_infinite = false;
         let status_positive = self.subparse(
             text,
             pos,
             &self.positive_prefix,
             &self.negative_prefix,
-            &mut digit_list,
+            digit_list,
             false,
             &mut status_infinite,
         )?;

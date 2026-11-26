@@ -159,6 +159,13 @@ pub fn java_trim_utf16(s: &[u16]) -> &[u16] {
 /// surrogate (core [`UnicodeUtil::utf16_to_utf8`](rucene::util::unicode_util::UnicodeUtil::utf16_to_utf8)).
 pub fn utf16_to_string(s: &[u16]) -> String {
     use rucene::util::unicode_util::{UnicodeUtil, MAX_UTF8_BYTES_PER_CHAR};
+    // PERF: an all-ASCII text (a unit below 0x80 is its own UTF-8 byte and
+    // never a surrogate) is narrowed directly, without the 3x scratch buffer
+    // and the general encoder: the same bytes (rmp #679, sample.alg bodies).
+    if s.iter().all(|&u| u < 0x80) {
+        let bytes: Vec<u8> = s.iter().map(|&u| u as u8).collect();
+        return String::from_utf8(bytes).expect("INVARIANT: ASCII bytes are UTF-8");
+    }
     let mut out = vec![0u8; s.len() * MAX_UTF8_BYTES_PER_CHAR];
     let n = UnicodeUtil::utf16_to_utf8(s, 0, s.len(), &mut out);
     out.truncate(n);
@@ -626,6 +633,31 @@ pub mod system {
 
 #[cfg(test)]
 mod tests {
+
+    /// The ASCII fast path of `utf16_to_string` gives the general encoder's
+    /// text, and a non-ASCII text (an unpaired surrogate included) still
+    /// takes the encoder.
+    #[test]
+    fn utf16_to_string_ascii_fast_path_matches_the_encoder() {
+        use super::utf16_to_string;
+        use rucene::util::unicode_util::{UnicodeUtil, MAX_UTF8_BYTES_PER_CHAR};
+        let general = |s: &[u16]| {
+            let mut out = vec![0u8; s.len() * MAX_UTF8_BYTES_PER_CHAR];
+            let n = UnicodeUtil::utf16_to_utf8(s, 0, s.len(), &mut out);
+            out.truncate(n);
+            String::from_utf8(out).unwrap()
+        };
+        let ascii: Vec<u16> = (0u16..0x80)
+            .chain("Well, this is text. ".encode_utf16())
+            .collect();
+        assert_eq!(utf16_to_string(&ascii), general(&ascii));
+        let mixed: Vec<u16> = "a\u{e7}\u{10000}z"
+            .encode_utf16()
+            .chain([0xD800, 0x41])
+            .collect();
+        assert_eq!(utf16_to_string(&mixed), general(&mixed));
+        assert_eq!(utf16_to_string(&[]), "");
+    }
     use super::Runtime;
 
     /// The lib's test binary runs on [`super::CountingAllocator`] (see

@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rucene::analysis::tokenattributes::TermToBytesRefAttribute;
+use rucene::analysis::AttributeHandle;
 use rucene::document::Document;
 use rucene::error::{LuceneError, Result};
 use rucene::index::IndexOptions;
@@ -122,12 +123,16 @@ impl PerfTask for ReadTokensTask {
             // reset the TokenStream to the first token
             stream.reset()?;
 
+            // `TermToBytesRefAttribute termAtt = stream.getAttribute(...)`, once
+            // per field, before the token loop (`ReadTokensTask.java`).
+            let term_att =
+                AttributeHandle::<dyn TermToBytesRefAttribute>::get(stream.attribute_source());
             while stream.increment_token()? {
-                let term_att = stream
-                    .attribute_source()
-                    .get_attribute_interface::<dyn TermToBytesRefAttribute>()
-                    .ok_or_else(|| LuceneError::illegal_argument("TermToBytesRefAttribute"))?;
-                term_att.copy_bytes_ref_to(&mut term_bytes);
+                term_att
+                    .as_ref()
+                    .ok_or_else(|| LuceneError::illegal_argument("TermToBytesRefAttribute"))?
+                    .borrow()
+                    .copy_bytes_ref_to(&mut term_bytes);
                 token_count += 1;
             }
             stream.end()?;
