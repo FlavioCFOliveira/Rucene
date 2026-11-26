@@ -428,6 +428,15 @@ pub struct IndexedDISI {
     jump_table_entry_count: i32,
     dense_rank_power: i8,
     dense_rank_table: Vec<u8>,
+    /// The length of `denseRankTable` (`DENSE_BLOCK_LONGS >> (denseRankPower
+    /// - 7)`, `0` without a rank power).
+    ///
+    /// PERF (rmp #679): `dense_rank_table` is allocated on the first DENSE
+    /// block instead of at construction (a merge builds one `IndexedDISI`
+    /// per term and field through `getNorms`, mostly over SPARSE blocks);
+    /// it is read only after a DENSE block filled it, so every read sees the
+    /// same bytes.
+    dense_rank_table_size: usize,
     cost: i64,
 
     block: i32,
@@ -520,10 +529,10 @@ impl IndexedDISI {
         } else {
             dense_rank_power as usize - 7
         };
-        let dense_rank_table = if dense_rank_power == -1 {
-            Vec::new()
+        let dense_rank_table_size = if dense_rank_power == -1 {
+            0
         } else {
-            vec![0u8; DENSE_BLOCK_LONGS >> rank_index_shift]
+            DENSE_BLOCK_LONGS >> rank_index_shift
         };
         let block_bytes = block_segment_of(slice.as_ref());
         Ok(Self {
@@ -533,7 +542,8 @@ impl IndexedDISI {
             jump_table,
             jump_table_entry_count,
             dense_rank_power,
-            dense_rank_table,
+            dense_rank_table: Vec::new(),
+            dense_rank_table_size,
             cost,
             block: -1,
             block_end: 0,
@@ -658,11 +668,14 @@ impl IndexedDISI {
                 + if self.dense_rank_power == -1 {
                     0
                 } else {
-                    self.dense_rank_table.len() as i64
+                    self.dense_rank_table_size as i64
                 };
             self.block_end = self.dense_bitmap_offset + (1i64 << 13);
             if self.dense_rank_power != -1 {
-                let len = self.dense_rank_table.len();
+                let len = self.dense_rank_table_size;
+                if self.dense_rank_table.len() != len {
+                    self.dense_rank_table.resize(len, 0);
+                }
                 self.slice
                     .read_bytes(Some(&mut self.dense_rank_table), 0, len)?;
             }
