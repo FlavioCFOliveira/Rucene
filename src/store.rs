@@ -10286,8 +10286,14 @@ impl<W: Write> Write for ChunkedOutput<W> {
 pub struct OutputStreamIndexOutput<W: Write + Send + Sync> {
     name: String,
     resource_description: String,
-    out: io::BufWriter<W>,
-    crc: BufferedChecksum,
+    /// `os`: Java's `XBufferedOutputStream` over a `CheckedOutputStream(out,
+    /// crc)` (`OutputStreamIndexOutput.java:44-50`). The checksum is taken
+    /// below the buffer, on the bytes the buffer passes down, as in Java.
+    ///
+    /// PERF (rmp #679): a write is one buffer copy; the CRC runs over whole
+    /// buffered chunks instead of a second per-write copy into a
+    /// [`BufferedChecksum`].
+    out: io::BufWriter<CheckedWriter<W>>,
     bytes_written: i64,
     flushed_on_close: bool,
     /// `DataOutput.copyBuffer`.
@@ -10315,8 +10321,13 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
         Ok(Self {
             name: name.into(),
             resource_description: resource_description.into(),
-            out: io::BufWriter::with_capacity(buffer_size, out),
-            crc: BufferedChecksum::new(),
+            out: io::BufWriter::with_capacity(
+                buffer_size,
+                CheckedWriter {
+                    inner: out,
+                    crc: crc32fast::Hasher::new(),
+                },
+            ),
             bytes_written: 0,
             flushed_on_close: false,
             copy_buffer: CopyBuffer::default(),
@@ -10342,7 +10353,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     }
 
     fn write_byte(&mut self, b: u8) -> Result<()> {
-        self.crc.update(b);
         self.out.write_all(&[b]).map_err(LuceneError::from)?;
         self.bytes_written += 1;
         Ok(())
@@ -10369,7 +10379,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
             ));
         }
         let end = offset + len;
-        self.crc.update_bytes(b, offset, len)?;
         self.out
             .write_all(&b[offset..end])
             .map_err(LuceneError::from)?;
@@ -10381,7 +10390,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         let mut buf = [0u8; 2];
         buf[0] = i as u8;
         buf[1] = (i >> 8) as u8;
-        self.crc.update_bytes(&buf, 0, 2)?;
         self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 2;
         Ok(())
@@ -10393,7 +10401,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         buf[1] = (i >> 8) as u8;
         buf[2] = (i >> 16) as u8;
         buf[3] = (i >> 24) as u8;
-        self.crc.update_bytes(&buf, 0, 4)?;
         self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 4;
         Ok(())
@@ -10409,7 +10416,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         buf[5] = (i >> 40) as u8;
         buf[6] = (i >> 48) as u8;
         buf[7] = (i >> 56) as u8;
-        self.crc.update_bytes(&buf, 0, 8)?;
         self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 8;
         Ok(())
@@ -10429,11 +10435,14 @@ impl<W: Write + Send + Sync> IndexOutput for OutputStreamIndexOutput<W> {
         self.bytes_written
     }
 
+    /// Java flushes the buffer and reads the CRC (`os.flush(); return
+    /// crc.getValue()`). The same value without the flush, which keeps this
+    /// method `&self`: the CRC of the bytes already passed down, continued
+    /// over the bytes still in the buffer.
     fn checksum(&self) -> Result<i64> {
-        // The CRC is updated on every write, so no flush is required to obtain the
-        // current checksum.  This also avoids interior mutability, keeping the
-        // type `Sync`.
-        Ok(self.crc.get_value())
+        let mut crc = self.out.get_ref().crc.clone();
+        crc.update(self.out.buffer());
+        Ok(i64::from(crc.finalize()))
     }
 
     fn resource_description(&self) -> &str {
@@ -10442,6 +10451,26 @@ impl<W: Write + Send + Sync> IndexOutput for OutputStreamIndexOutput<W> {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+/// `java.util.zip.CheckedOutputStream` over a `CRC32`: forwards every write
+/// to `inner` and checksums exactly the bytes `inner` accepted.
+#[derive(Debug)]
+pub struct CheckedWriter<W> {
+    inner: W,
+    crc: crc32fast::Hasher,
+}
+
+impl<W: Write> Write for CheckedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.crc.update(&buf[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -10549,7 +10578,7 @@ impl IndexOutput for FSIndexOutput {
     /// suppressed by a failure to flush.
     fn close(&mut self) -> Result<()> {
         let flushed = self.0.close();
-        let closed = self.0.out.get_mut().inner.0.close();
+        let closed = self.0.out.get_mut().inner.inner.0.close();
         flushed?;
         closed.map_err(LuceneError::from)
     }

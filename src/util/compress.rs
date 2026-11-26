@@ -52,8 +52,11 @@ fn lz4_hash_hc(i: u32) -> usize {
 /// ensures byte-for-byte compatibility with those files.
 ///
 /// Equivalent to `org.apache.lucene.util.compress.LZ4#readInt`.
+#[inline]
 fn read_native_int(buf: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]])
+    // PERF (rmp #679): one range check for the four bytes instead of four.
+    let b = &buf[i..i + 4];
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
 
 /// Returns the number of consecutive matching bytes starting at `o1` and `o2`,
@@ -61,21 +64,35 @@ fn read_native_int(buf: &[u8], i: usize) -> u32 {
 ///
 /// Mirrors `org.apache.lucene.util.compress.LZ4.commonBytes`, which is built
 /// on `Arrays.mismatch`.
+#[inline]
 fn common_bytes(b: &[u8], o1: usize, o2: usize, limit: usize) -> usize {
     debug_assert!(o1 < o2);
     // The second range [o2, limit) is always the shorter (or equal) one because
     // o1 < o2. We count matching bytes up to the point where that range ends,
     // mirroring Java's Arrays.mismatch(b, o1, limit, b, o2, limit).
     let len = limit - o2;
-    for i in 0..len {
-        if b[o1 + i] != b[o2 + i] {
+    let (x, y) = (&b[o1..o1 + len], &b[o2..o2 + len]);
+    // PERF (rmp #679): eight bytes per step, as `Arrays.mismatch` compares
+    // wide words; the first differing byte of a word is its lowest set byte
+    // of the XOR (little-endian), so the index returned is the same.
+    let (xw, _) = x.as_chunks::<8>();
+    let (yw, _) = y.as_chunks::<8>();
+    for (i, (a, c)) in xw.iter().zip(yw).enumerate() {
+        let diff = u64::from_le_bytes(*a) ^ u64::from_le_bytes(*c);
+        if diff != 0 {
+            return i * 8 + (diff.trailing_zeros() / 8) as usize;
+        }
+    }
+    let done = xw.len() * 8;
+    for i in done..len {
+        if x[i] != y[i] {
             return i;
         }
     }
     len
 }
 
-fn encode_len(l: usize, out: &mut dyn DataOutput) -> Result<()> {
+fn encode_len<O: DataOutput + ?Sized>(l: usize, out: &mut O) -> Result<()> {
     let mut l = l;
     while l >= 0xFF {
         out.write_byte(0xFF)?;
@@ -84,12 +101,12 @@ fn encode_len(l: usize, out: &mut dyn DataOutput) -> Result<()> {
     out.write_byte(l as u8)
 }
 
-fn encode_literals(
+fn encode_literals<O: DataOutput + ?Sized>(
     bytes: &[u8],
     token: u8,
     anchor: usize,
     literal_len: usize,
-    out: &mut dyn DataOutput,
+    out: &mut O,
 ) -> Result<()> {
     out.write_byte(token)?;
     if literal_len >= 0x0F {
@@ -98,23 +115,23 @@ fn encode_literals(
     out.write_bytes(bytes, anchor, literal_len)
 }
 
-fn encode_last_literals(
+fn encode_last_literals<O: DataOutput + ?Sized>(
     bytes: &[u8],
     anchor: usize,
     literal_len: usize,
-    out: &mut dyn DataOutput,
+    out: &mut O,
 ) -> Result<()> {
     let token = (literal_len.min(0x0F) << 4) as u8;
     encode_literals(bytes, token, anchor, literal_len, out)
 }
 
-fn encode_sequence(
+fn encode_sequence<O: DataOutput + ?Sized>(
     bytes: &[u8],
     anchor: usize,
     match_ref: usize,
     match_off: usize,
     match_len: usize,
-    out: &mut dyn DataOutput,
+    out: &mut O,
 ) -> Result<()> {
     let literal_len = match_off - anchor;
     debug_assert!(match_len >= LZ4_MIN_MATCH);
@@ -178,17 +195,6 @@ impl OffsetTable {
         match self {
             OffsetTable::U16(_) => 16,
             OffsetTable::U32(_) => 32,
-        }
-    }
-
-    fn set(&mut self, index: usize, value: usize) {
-        match self {
-            OffsetTable::U16(v) => {
-                // `Table16.set` (`LZ4.java:243-246`).
-                debug_assert!(value < 1 << 16);
-                v[index] = value as u16;
-            }
-            OffsetTable::U32(v) => v[index] = value as u32,
         }
     }
 
@@ -276,14 +282,29 @@ impl Lz4HashTable for FastCompressionHashTable {
     }
 
     fn init_dictionary(&mut self, bytes: &[u8], dict_len: usize) {
-        for i in 0..dict_len {
-            let v = read_native_int(bytes, self.base + i);
-            let h = lz4_hash(v, self.hash_log);
-            self.table.set(h, i);
+        // PERF (rmp #679): the table's width is matched once, not per entry;
+        // the same `hashTable.set(h, i)` for every `i` (`LZ4.java:330-337`).
+        let (base, hash_log) = (self.base, self.hash_log);
+        match &mut self.table {
+            OffsetTable::U16(table) => {
+                for i in 0..dict_len {
+                    let h = lz4_hash(read_native_int(bytes, base + i), hash_log);
+                    // `Table16.set` (`LZ4.java:243-246`).
+                    debug_assert!(i < 1 << 16);
+                    table[h] = i as u16;
+                }
+            }
+            OffsetTable::U32(table) => {
+                for i in 0..dict_len {
+                    let h = lz4_hash(read_native_int(bytes, base + i), hash_log);
+                    table[h] = i as u32;
+                }
+            }
         }
         self.last_off += dict_len as isize;
     }
 
+    #[inline]
     fn get(&mut self, bytes: &[u8], off: usize) -> Option<usize> {
         debug_assert!(off as isize > self.last_off);
         debug_assert!(off < self.end);
@@ -495,12 +516,12 @@ impl Lz4 {
     /// `ht` should not be shared across threads but can be reused.
     ///
     /// Equivalent to `org.apache.lucene.util.compress.LZ4.compress`.
-    pub fn compress(
+    pub fn compress<O: DataOutput + ?Sized, H: Lz4HashTable + ?Sized>(
         bytes: &[u8],
         off: usize,
         len: usize,
-        out: &mut dyn DataOutput,
-        ht: &mut dyn Lz4HashTable,
+        out: &mut O,
+        ht: &mut H,
     ) -> Result<()> {
         Self::compress_with_dictionary(bytes, off, 0, len, out, ht)
     }
@@ -510,13 +531,21 @@ impl Lz4 {
     /// must not exceed [`LZ4_MAX_DISTANCE`].
     ///
     /// Equivalent to `org.apache.lucene.util.compress.LZ4.compressWithDictionary`.
-    pub fn compress_with_dictionary(
+    ///
+    /// Generic over the output and the hash table, as [`decompress`](Self::decompress)
+    /// is over its input: a caller holding the concrete types (the stored
+    /// fields compressor holds a `ByteBuffersDataOutput` and a
+    /// `FastCompressionHashTable`) gets the per-position `get` and the
+    /// per-token writes statically dispatched and inlined, as the JIT
+    /// devirtualises Java's monomorphic call sites (rmp #679); a caller
+    /// holding trait objects instantiates it with them.
+    pub fn compress_with_dictionary<O: DataOutput + ?Sized, H: Lz4HashTable + ?Sized>(
         bytes: &[u8],
         dict_off: usize,
         dict_len: usize,
         len: usize,
-        out: &mut dyn DataOutput,
-        ht: &mut dyn Lz4HashTable,
+        out: &mut O,
+        ht: &mut H,
     ) -> Result<()> {
         // `Objects.checkFromIndexSize(dictOff, dictLen, bytes.length)` and
         // `Objects.checkFromIndexSize(dictOff + dictLen, len, bytes.length)`
