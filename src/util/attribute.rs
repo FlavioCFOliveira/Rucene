@@ -1298,6 +1298,11 @@ impl AttributeSource {
 
     /// The implementations, in insertion order (Java's `getCurrentState()`
     /// walk).
+    /// The number of unique attribute implementations in this source.
+    pub(crate) fn impl_count(&self) -> usize {
+        self.shared.borrow().impls.len()
+    }
+
     fn impl_cells(&self) -> Vec<AttributeCell> {
         self.shared
             .borrow()

@@ -1469,4 +1469,18 @@ impl crate::analysis::factories::TokenizerFactory for StandardTokenizerFactory {
         logic.set_max_token_length(self.max_token_length)?;
         Ok(Tokenizer::with_source(source, Box::new(logic)))
     }
+
+    /// `create()` as an owned stage: a `StandardTokenizer` whose maximum
+    /// token length is set (`StandardTokenizerFactory.java:57-62`).
+    fn owned_tokenizer(
+        &self,
+    ) -> Option<crate::error::Result<Box<dyn crate::analysis::owned::OwnedTokenizer>>> {
+        let mut tokenizer = OwnedStandardTokenizer::new();
+        Some(
+            tokenizer
+                .logic
+                .set_max_token_length(self.max_token_length)
+                .map(|()| Box::new(tokenizer) as Box<dyn crate::analysis::owned::OwnedTokenizer>),
+        )
+    }
 }

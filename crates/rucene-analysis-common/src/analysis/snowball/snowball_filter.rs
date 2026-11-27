@@ -73,26 +73,85 @@ impl TokenFilterLogic for SnowballFilterLogic {
             let is_keyword = self.keyword_attr.borrow().is_keyword();
             if !is_keyword {
                 let mut term_att = self.term_att.borrow_mut();
-                let mut term_buffer = std::mem::take(&mut self.units);
-                chars_to_utf16_into(&term_att.buffer()[..term_att.length()], &mut term_buffer);
-                let length = term_buffer.len() as i32;
-                AsMut::<SnowballProgram>::as_mut(&mut *self.stemmer)
-                    .set_current_buffer(term_buffer, length);
-                self.stemmer.stem();
-                let program = AsRef::<SnowballProgram>::as_ref(&*self.stemmer);
-                let final_term = program.get_current_buffer();
-                let new_length = program.get_current_buffer_length() as usize;
-                utf16_to_term_chars_into(&final_term[..new_length], &mut self.chars);
-                term_att.copy_buffer(&self.chars, 0, self.chars.len());
-                // The stemmer's buffer (the one handed over, or its longer
-                // replacement) is kept for the next token.
-                self.units =
-                    AsMut::<SnowballProgram>::as_mut(&mut *self.stemmer).take_current_buffer();
+                stem_term(
+                    &mut *self.stemmer,
+                    &mut self.units,
+                    &mut self.chars,
+                    &mut *term_att,
+                );
             }
             Ok(true)
         } else {
             Ok(false)
         }
+    }
+}
+
+/// The stemming step of `SnowballFilter.incrementToken()` on a term that is
+/// not a keyword (`SnowballFilter.java:92-108`): the stemmer's buffer set to
+/// the term, `stem()`, and the stem copied back. Shared by the filter and its
+/// owned stage.
+fn stem_term<A: CharTermAttribute + ?Sized>(
+    stemmer: &mut dyn SnowballStemmer,
+    units: &mut Vec<u16>,
+    chars: &mut Vec<char>,
+    term_att: &mut A,
+) {
+    let mut term_buffer = std::mem::take(units);
+    chars_to_utf16_into(&term_att.buffer()[..term_att.length()], &mut term_buffer);
+    let length = term_buffer.len() as i32;
+    AsMut::<SnowballProgram>::as_mut(stemmer).set_current_buffer(term_buffer, length);
+    stemmer.stem();
+    let program = AsRef::<SnowballProgram>::as_ref(stemmer);
+    let final_term = program.get_current_buffer();
+    let new_length = program.get_current_buffer_length() as usize;
+    utf16_to_term_chars_into(&final_term[..new_length], chars);
+    term_att.copy_buffer(chars, 0, chars.len());
+    // The stemmer's buffer (the one handed over, or its longer replacement)
+    // is kept for the next token.
+    *units = AsMut::<SnowballProgram>::as_mut(stemmer).take_current_buffer();
+}
+
+/// `SnowballFilter` as an owned stage (see [`rucene::analysis::owned`]):
+/// the same keyword test and stemming step as [`SnowballFilterLogic`].
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct OwnedSnowballFilter {
+    stemmer: Box<dyn SnowballStemmer>,
+    units: Vec<u16>,
+    chars: Vec<char>,
+}
+
+impl OwnedSnowballFilter {
+    /// The stage of `new SnowballFilter(input, stemmer)`.
+    pub fn new(stemmer: Box<dyn SnowballStemmer>) -> Self {
+        Self {
+            stemmer,
+            units: Vec::new(),
+            chars: Vec::new(),
+        }
+    }
+}
+
+impl rucene::analysis::owned::OwnedTokenFilter for OwnedSnowballFilter {
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut rucene::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn rucene::analysis::owned::OwnedInput,
+    ) -> Result<bool> {
+        if !input.increment_token(attrs)? {
+            return Ok(false);
+        }
+        if !attrs.is_keyword() {
+            stem_term(
+                &mut *self.stemmer,
+                &mut self.units,
+                &mut self.chars,
+                &mut *attrs.term,
+            );
+        }
+        Ok(true)
     }
 }
 

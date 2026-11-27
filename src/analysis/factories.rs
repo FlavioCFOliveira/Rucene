@@ -1001,6 +1001,17 @@ pub trait TokenizerFactory: Send + Sync + std::fmt::Debug {
     ///
     /// Returns what the tokenizer's construction and configuration return.
     fn create_with_factory(&self, factory: Arc<dyn AttributeFactory>) -> Result<FactoryTokenizer>;
+
+    /// The tokenizer [`create`](Self::create) builds, as an owned stage (see
+    /// [`owned`](crate::analysis::owned)), or `None` (the default) when the
+    /// factory does not describe one. An implementation that answers must
+    /// reproduce exactly the tokenizer `create()` builds, with its settings.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679/#682 owned stream).
+    #[doc(hidden)]
+    fn owned_tokenizer(&self) -> Option<Result<Box<dyn crate::analysis::owned::OwnedTokenizer>>> {
+        None
+    }
     /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is
     /// not one.
     ///
@@ -1043,6 +1054,19 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
     /// Returns what the filter's construction returns (Java's `addAttribute`
     /// failures).
     fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>>;
+
+    /// The filter [`create`](Self::create) builds, as an owned stage (see
+    /// [`owned`](crate::analysis::owned)), or `None` (the default) when the
+    /// factory does not describe one. An implementation that answers must
+    /// reproduce exactly the filter `create(input)` builds, with its
+    /// settings, and add no attribute implementation other than the default
+    /// factory's packed one and a `KeywordAttributeImpl`.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679/#682 owned stream).
+    #[doc(hidden)]
+    fn owned_filter(&self) -> Option<Result<Box<dyn crate::analysis::owned::OwnedTokenFilter>>> {
+        None
+    }
 
     /// Normalizes `input`.
     ///

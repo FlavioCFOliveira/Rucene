@@ -102,7 +102,7 @@ impl TokenAttrs<'_> {
 /// takes the text (as `Analyzer.tokenStream(String, String)` hands it a
 /// `ReusableStringReader`), and the four lifecycle calls are those of
 /// `Tokenizer`, `clearAttributes()`/`endAttributes()` included.
-pub trait OwnedTokenizer: Debug + Send {
+pub trait OwnedTokenizer: Debug + Send + Sync {
     /// The components' `setReader` (the source lambda's settings, then
     /// `Tokenizer.setReader`) over `text`.
     ///
@@ -164,7 +164,7 @@ pub trait OwnedInput {
 /// `incrementToken()` and `end()` call the input as the Java class calls
 /// `input`; `reset()` and `close()` are the subclass's own work, run after
 /// the stages below, as `TokenFilter.reset()` calls `input.reset()` first.
-pub trait OwnedTokenFilter: Debug + Send {
+pub trait OwnedTokenFilter: Debug + Send + Sync {
     /// `incrementToken()`.
     ///
     /// # Errors
@@ -284,8 +284,8 @@ impl ViewCells {
     /// The cells of `components`' source, when it holds only the default
     /// factory's `PackedTokenAttributeImpl` and at most one
     /// `KeywordAttributeImpl`.
-    fn of(components: &Arc<AtomicRefCell<TokenStreamComponents>>) -> Option<Self> {
-        let stream = components.borrow().token_stream();
+    fn of(components: &TokenStreamComponents) -> Option<Self> {
+        let stream = components.token_stream();
         let source = AttributeSource::new_from(stream.borrow().attribute_source());
         let mut packed = 0;
         let mut keywords = 0;
@@ -379,14 +379,13 @@ impl OwnedTokenChain {
             let components = match strategy.get_reusable_components(state, field_name) {
                 Some(components) => components,
                 None => {
-                    let components =
-                        Arc::new(AtomicRefCell::new(analyzer.create_components(field_name)?));
+                    let components = new_reusable_components(analyzer, field_name)?;
                     strategy.set_reusable_components(state, field_name, Arc::clone(&components));
                     components
                 }
             };
             if !matches!(&self.view, Some(view) if Arc::ptr_eq(&view.components, &components)) {
-                let cells = ViewCells::of(&components);
+                let cells = ViewCells::of(&components.borrow());
                 self.view = Some(View { components, cells });
             }
             self.bound_thread = thread;
@@ -501,6 +500,234 @@ impl OwnedTokenChain {
     }
 }
 
+/// The owned stages of an analyzer built from factories — a tokenizer
+/// factory and token filter factories, no char filter — composed from each
+/// factory's own owned stage (`CustomAnalyzer.createComponents`,
+/// `CustomAnalyzer.java:161-168`); `None` when a factory describes none.
+///
+/// # Errors
+///
+/// What a factory raises building its stage, as its `create` raises it.
+#[doc(hidden)]
+pub fn stages_of_factories(
+    tokenizer: &dyn crate::analysis::factories::TokenizerFactory,
+    filters: &[Arc<dyn crate::analysis::factories::TokenFilterFactory>],
+) -> Option<Result<OwnedStages>> {
+    let mut stages = match tokenizer.owned_tokenizer()? {
+        Ok(tokenizer) => OwnedStages::new(tokenizer),
+        Err(error) => return Some(Err(error)),
+    };
+    for filter in filters {
+        match filter.owned_filter()? {
+            Ok(filter) => stages = stages.with_filter(filter),
+            Err(error) => return Some(Err(error)),
+        }
+    }
+    Some(Ok(stages))
+}
+
+/// `createComponents(fieldName)`, with the owned stream of the new
+/// components attached when the analyzer describes owned stages for them
+/// ([`OwnedTokenStream`]).
+///
+/// # Errors
+///
+/// What `createComponents` raises.
+pub(crate) fn new_reusable_components<A: Analyzer + ?Sized>(
+    analyzer: &A,
+    field_name: Option<&str>,
+) -> Result<Arc<AtomicRefCell<TokenStreamComponents>>> {
+    let components = Arc::new(AtomicRefCell::new(analyzer.create_components(field_name)?));
+    if let Some(Ok(stages)) = analyzer.owned_stages(field_name) {
+        let adapter = {
+            let built = components.borrow();
+            ViewCells::of(&built).map(|cells| OwnedTokenStream {
+                impls: 1 + usize::from(cells.keyword.is_some()),
+                stages,
+                cells,
+                components: Arc::downgrade(&components),
+                shared: built.token_stream(),
+                text: String::new(),
+                pending: false,
+                shared_mode: false,
+            })
+        };
+        if let Some(adapter) = adapter {
+            components.borrow_mut().owned = Some(Arc::new(AtomicRefCell::new(adapter)));
+        }
+    }
+    Ok(components)
+}
+
+/// The stream `Analyzer.tokenStream(fieldName, text)` returns for reused
+/// components whose analyzer describes owned stages (rmp #679/#682, user
+/// decision 2026-11-27: "the owned adapter").
+///
+/// **No counterpart in Lucene 10.5.0**, whose `tokenStream` returns the
+/// components' sink, the last filter of the chain
+/// (`Analyzer.java:172-190`). This stream stands in for that sink: it runs
+/// the analyzer's owned stages ([`OwnedStages`]) on the attributes of the
+/// components' own source, borrowing the implementation cells once per call
+/// and releasing them before returning, so a consumer reads exactly the
+/// attributes the sink would have set, in the same source. The stages follow
+/// the `Tokenizer` contract of the sink's tokenizer (`setReader` after
+/// `reset` without `close` fails; reading without `reset` reads the
+/// illegal-state reader).
+///
+/// When the source no longer holds only the implementations the stages
+/// drive (a consumer added another attribute implementation after
+/// `tokenStream`), `reset()` hands the text to the components' shared sink
+/// and the stream delegates to it until `close()`, so every implementation
+/// is cleared and set as Lucene's chain does.
+pub struct OwnedTokenStream {
+    stages: OwnedStages,
+    cells: ViewCells,
+    /// The number of implementations the source held when the stream was
+    /// built: the packed one, and the keyword one when present.
+    impls: usize,
+    components: std::sync::Weak<AtomicRefCell<TokenStreamComponents>>,
+    /// The components' shared sink, the fallback.
+    shared: Arc<AtomicRefCell<dyn crate::analysis::TokenStream>>,
+    /// The text of the last `set_text`, for the fallback.
+    text: String,
+    /// Whether a text was set and not yet taken by `reset()`.
+    pending: bool,
+    /// Whether the stream delegates to the shared sink (between `reset()`
+    /// and `close()`).
+    shared_mode: bool,
+}
+
+impl Debug for OwnedTokenStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedTokenStream")
+            .field("stages", &self.stages)
+            .field("shared_mode", &self.shared_mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OwnedTokenStream {
+    /// The components' `setReader` over `text`
+    /// (`Analyzer.tokenStream(String, String)`, `Analyzer.java:184-190`).
+    ///
+    /// # Errors
+    ///
+    /// `IllegalStateException` "TokenStream contract violation: close() call
+    /// missing" when the stream was reset and not closed, as
+    /// `Tokenizer.setReader` raises it.
+    pub(crate) fn set_text(&mut self, text: &str) -> Result<()> {
+        if self.shared_mode {
+            return Err(crate::error::LuceneError::illegal_state(
+                "TokenStream contract violation: close() call missing".to_string(),
+            ));
+        }
+        self.stages.tokenizer.set_text(text)?;
+        self.text.clear();
+        self.text.push_str(text);
+        self.pending = true;
+        Ok(())
+    }
+
+    /// Runs `step` on the source's implementations, borrowed for the call.
+    #[inline]
+    fn with_attrs<R>(&mut self, step: impl FnOnce(&mut Below<'_>, &mut TokenAttrs<'_>) -> R) -> R {
+        let mut term_impl = self.cells.term.borrow_impl_mut();
+        let mut keyword_impl = self
+            .cells
+            .keyword
+            .as_ref()
+            .map(AttributeHandle::borrow_impl_mut);
+        let term = term_impl
+            .as_any_mut()
+            .downcast_mut::<PackedTokenAttributeImpl>()
+            .expect("INVARIANT: the stream was built over a packed implementation");
+        let keyword = keyword_impl.as_mut().map(|k| {
+            k.as_any_mut()
+                .downcast_mut::<KeywordAttributeImpl>()
+                .expect("INVARIANT: the stream was built over a keyword implementation")
+        });
+        let mut attrs = TokenAttrs { term, keyword };
+        let OwnedStages { tokenizer, filters } = &mut self.stages;
+        let mut top = Below {
+            filters: filters.as_mut_slice(),
+            tokenizer: tokenizer.as_mut(),
+        };
+        step(&mut top, &mut attrs)
+    }
+}
+
+impl crate::analysis::TokenStream for OwnedTokenStream {
+    #[inline]
+    fn increment_token(&mut self) -> Result<bool> {
+        if self.shared_mode {
+            return self.shared.borrow_mut().increment_token();
+        }
+        self.with_attrs(|top, attrs| top.increment_token(attrs))
+    }
+
+    fn end(&mut self) -> Result<()> {
+        if self.shared_mode {
+            return self.shared.borrow_mut().end();
+        }
+        self.with_attrs(|top, attrs| top.end(attrs))
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        let pending = std::mem::take(&mut self.pending);
+        if self.cells.source.impl_count() == self.impls {
+            self.stages.tokenizer.reset()?;
+            for filter in &mut self.stages.filters {
+                filter.reset()?;
+            }
+            return Ok(());
+        }
+        // The source holds an implementation the stages do not drive: the
+        // shared sink takes the text and runs the value.
+        self.shared_mode = true;
+        if pending {
+            let components = self
+                .components
+                .upgrade()
+                .expect("INVARIANT: the components own this stream");
+            let mut reader = crate::analysis::reusable_string_reader::ReusableStringReader::new();
+            reader.set_value(&self.text);
+            components.borrow_mut().set_reader(Box::new(reader))?;
+        }
+        self.shared.borrow_mut().reset()
+    }
+
+    fn close(&mut self) -> Result<()> {
+        self.pending = false;
+        if std::mem::take(&mut self.shared_mode) {
+            return self.shared.borrow_mut().close();
+        }
+        let mut outcome = self.stages.tokenizer.close();
+        for filter in &mut self.stages.filters {
+            let closed = filter.close();
+            if outcome.is_ok() {
+                outcome = closed;
+            }
+        }
+        outcome
+    }
+
+    fn attribute_source(&self) -> &AttributeSource {
+        &self.cells.source
+    }
+
+    fn attribute_source_mut(&mut self) -> &mut AttributeSource {
+        &mut self.cells.source
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
 /// A key of the current thread, unique among the process's threads and
 /// never 0: the analyzer's reusable components are stored per thread.
 fn current_thread_key() -> u64 {
@@ -559,50 +786,12 @@ pub fn owned_and_shared_tokens(
         (Vec<TokenRecord>, (i32, i32, i32)),
     )>,
 > {
-    use crate::analysis::tokenattributes::{
-        KeywordAttribute, OffsetAttribute, PositionIncrementAttribute, PositionLengthAttribute,
-        TermFrequencyAttribute, TypeAttribute,
-    };
-    fn record(source: &AttributeSource) -> TokenRecord {
-        let term = source
-            .get_attribute_interface::<dyn CharTermAttribute>()
-            .expect("a token stream has a term attribute");
-        let text: String = term.buffer()[..term.length()].iter().collect();
-        drop(term);
-        let pi = source
-            .get_attribute_interface::<dyn PositionIncrementAttribute>()
-            .map_or(1, |a| a.get_position_increment());
-        let pl = source
-            .get_attribute_interface::<dyn PositionLengthAttribute>()
-            .map_or(1, |a| a.get_position_length());
-        let (so, eo) = source
-            .get_attribute_interface::<dyn OffsetAttribute>()
-            .map_or((0, 0), |a| (a.start_offset(), a.end_offset()));
-        let ty = source
-            .get_attribute_interface::<dyn TypeAttribute>()
-            .map_or(String::new(), |a| a.type_value().to_string());
-        let tf = source
-            .get_attribute_interface::<dyn TermFrequencyAttribute>()
-            .map_or(1, |a| a.get_term_frequency());
-        let kw = source
-            .get_attribute_interface::<dyn KeywordAttribute>()
-            .is_some_and(|a| a.is_keyword());
-        (text, pi, pl, so, eo, ty, tf, kw)
-    }
-    fn end_state(source: &AttributeSource) -> (i32, i32, i32) {
-        let pi = source
-            .get_attribute_interface::<dyn PositionIncrementAttribute>()
-            .map_or(0, |a| a.get_position_increment());
-        let (so, eo) = source
-            .get_attribute_interface::<dyn OffsetAttribute>()
-            .map_or((0, 0), |a| (a.start_offset(), a.end_offset()));
-        (pi, so, eo)
-    }
     let Some(mut chain) = OwnedTokenChain::build(analyzer, Some(field_name)) else {
         return Ok(None);
     };
     let shared = {
-        let stream = analyzer.token_stream_from_str(field_name, text)?;
+        let stream =
+            crate::analysis::shared_token_stream_from_str(analyzer, Some(field_name), text)?;
         let mut stream = stream.borrow_mut();
         stream.reset()?;
         let mut tokens = Vec::new();
@@ -643,4 +832,98 @@ pub fn owned_and_shared_tokens(
     let end = end_state(chain.attribute_source());
     chain.close()?;
     Ok(Some((shared, (tokens, end))))
+}
+
+/// The tokens and end state of `text` through the analyzer's shared sink
+/// and through its public `tokenStream(fieldName, text)`, for the
+/// owned-stream identity tests; `None` when the public stream is not the
+/// owned stream (the analyzer describes no owned stages).
+///
+/// # Errors
+///
+/// What either stream raises.
+#[allow(clippy::type_complexity)]
+pub fn public_and_shared_tokens(
+    analyzer: &dyn Analyzer,
+    field_name: &str,
+    text: &str,
+) -> Result<
+    Option<(
+        (Vec<TokenRecord>, (i32, i32, i32)),
+        (Vec<TokenRecord>, (i32, i32, i32)),
+    )>,
+> {
+    fn run(
+        stream: &Arc<AtomicRefCell<dyn crate::analysis::TokenStream>>,
+    ) -> Result<(Vec<TokenRecord>, (i32, i32, i32))> {
+        let mut stream = stream.borrow_mut();
+        stream.reset()?;
+        let mut tokens = Vec::new();
+        while stream.increment_token()? {
+            tokens.push(record(stream.attribute_source()));
+        }
+        stream.end()?;
+        let end = end_state(stream.attribute_source());
+        stream.close()?;
+        Ok((tokens, end))
+    }
+    let public = analyzer.token_stream_from_str(field_name, text)?;
+    let is_owned = public
+        .borrow()
+        .as_any()
+        .is_some_and(|any| any.is::<OwnedTokenStream>());
+    if !is_owned {
+        return Ok(None);
+    }
+    let public = run(&public)?;
+    let shared = run(&crate::analysis::shared_token_stream_from_str(
+        analyzer,
+        Some(field_name),
+        text,
+    )?)?;
+    Ok(Some((shared, public)))
+}
+
+/// One token of `source`, as the identity tests record it.
+fn record(source: &AttributeSource) -> TokenRecord {
+    use crate::analysis::tokenattributes::{
+        KeywordAttribute, OffsetAttribute, PositionIncrementAttribute, PositionLengthAttribute,
+        TermFrequencyAttribute, TypeAttribute,
+    };
+    let term = source
+        .get_attribute_interface::<dyn CharTermAttribute>()
+        .expect("a token stream has a term attribute");
+    let text: String = term.buffer()[..term.length()].iter().collect();
+    drop(term);
+    let pi = source
+        .get_attribute_interface::<dyn PositionIncrementAttribute>()
+        .map_or(1, |a| a.get_position_increment());
+    let pl = source
+        .get_attribute_interface::<dyn PositionLengthAttribute>()
+        .map_or(1, |a| a.get_position_length());
+    let (so, eo) = source
+        .get_attribute_interface::<dyn OffsetAttribute>()
+        .map_or((0, 0), |a| (a.start_offset(), a.end_offset()));
+    let ty = source
+        .get_attribute_interface::<dyn TypeAttribute>()
+        .map_or(String::new(), |a| a.type_value().to_string());
+    let tf = source
+        .get_attribute_interface::<dyn TermFrequencyAttribute>()
+        .map_or(1, |a| a.get_term_frequency());
+    let kw = source
+        .get_attribute_interface::<dyn KeywordAttribute>()
+        .is_some_and(|a| a.is_keyword());
+    (text, pi, pl, so, eo, ty, tf, kw)
+}
+/// The end-of-stream state of `source`: position increment, start and end
+/// offset.
+fn end_state(source: &AttributeSource) -> (i32, i32, i32) {
+    use crate::analysis::tokenattributes::{OffsetAttribute, PositionIncrementAttribute};
+    let pi = source
+        .get_attribute_interface::<dyn PositionIncrementAttribute>()
+        .map_or(0, |a| a.get_position_increment());
+    let (so, eo) = source
+        .get_attribute_interface::<dyn OffsetAttribute>()
+        .map_or((0, 0), |a| (a.start_offset(), a.end_offset()));
+    (pi, so, eo)
 }

@@ -21,12 +21,15 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 
+use rucene::analysis::owned::{OwnedInput, TokenAttrs};
+use rucene::analysis::tokenattributes::KeywordAttributeImpl;
 use rucene::analysis::{
     AttributeHandle, CharTermAttribute, OffsetAttribute, PackedTokenAttributeImpl,
     PositionIncrementAttribute, PositionLengthAttribute, TokenFilter, TokenFilterLogic,
     TokenStream, TypeAttribute,
 };
 use rucene::error::{LuceneError, Result};
+use rucene::util::attribute::AttributeImpl;
 use rucene::util::attribute::{AttributeSource, CapturedState};
 
 /// filler token for when positionIncrement is more than 1
@@ -818,5 +821,481 @@ impl InputWindowToken {
         self.term_att
             .borrow_mut()
             .copy_buffer(buffer, 0, buffer.len());
+    }
+}
+
+// -----------------------------------------------------------------------------
+// OwnedShingleFilter (rmp #679/#682 owned stream)
+// -----------------------------------------------------------------------------
+
+/// The attribute state of one token of an owned chain: what
+/// `AttributeSource.cloneAttributes()` and `captureState()` hold for a source
+/// whose implementations are the default factory's packed one and, when a
+/// stage added it, a `KeywordAttributeImpl`.
+#[derive(Debug, Clone)]
+struct OwnedState {
+    packed: PackedTokenAttributeImpl,
+    keyword: Option<KeywordAttributeImpl>,
+}
+
+impl OwnedState {
+    /// `source.cloneAttributes()` (`AttributeSource.java:431-448`).
+    fn of(attrs: &TokenAttrs<'_>) -> Self {
+        Self {
+            packed: attrs.term.clone(),
+            keyword: attrs.keyword.as_deref().cloned(),
+        }
+    }
+
+    /// The source `ShingleFilter.getNextToken` builds at the end of the
+    /// input for the trailing fillers: a new `AttributeSource` with a
+    /// `CharTermAttribute` and an `OffsetAttribute`, one packed
+    /// implementation (`ShingleFilter.java:380-388`).
+    fn end_filler(end: i32) -> Self {
+        let mut packed = PackedTokenAttributeImpl::new();
+        packed.set_offset(end, end);
+        Self {
+            packed,
+            keyword: None,
+        }
+    }
+
+    /// `this.copyTo(target)` (`AttributeSource.java:457-468`): every
+    /// implementation of this state into the target's of the same class.
+    fn copy_to_state(&self, target: &mut OwnedState) -> Result<()> {
+        AttributeImpl::copy_to(&self.packed, &mut target.packed);
+        if let Some(keyword) = &self.keyword {
+            let Some(target) = target.keyword.as_mut() else {
+                return Err(missing_in_target());
+            };
+            AttributeImpl::copy_to(keyword, target);
+        }
+        Ok(())
+    }
+
+    /// `this.copyTo(source)` into the chain's attributes.
+    fn copy_to_attrs(&self, attrs: &mut TokenAttrs<'_>) -> Result<()> {
+        AttributeImpl::copy_to(&self.packed, attrs.term);
+        if let Some(keyword) = &self.keyword {
+            let Some(target) = attrs.keyword.as_deref_mut() else {
+                return Err(missing_in_target());
+            };
+            AttributeImpl::copy_to(keyword, target);
+        }
+        Ok(())
+    }
+
+    /// `source.copyTo(this)`.
+    fn copy_from_attrs(&mut self, attrs: &TokenAttrs<'_>) -> Result<()> {
+        AttributeImpl::copy_to(&*attrs.term, &mut self.packed);
+        if let Some(keyword) = attrs.keyword.as_deref() {
+            let Some(target) = self.keyword.as_mut() else {
+                return Err(missing_in_target());
+            };
+            AttributeImpl::copy_to(keyword, target);
+        }
+        Ok(())
+    }
+}
+
+/// The `IllegalArgumentException` of `AttributeSource.copyTo` for a target
+/// without the `KeywordAttributeImpl` the source holds.
+fn missing_in_target() -> LuceneError {
+    LuceneError::illegal_argument(format!(
+        "This AttributeSource contains AttributeImpl of type {:?} that is not in the target",
+        std::any::TypeId::of::<KeywordAttributeImpl>()
+    ))
+}
+
+/// A token of the owned filter's input window: `InputWindowToken`
+/// (`ShingleFilter.java:544-555`) over an [`OwnedState`].
+#[derive(Debug)]
+struct OwnedWindowToken {
+    state: OwnedState,
+    is_filler: bool,
+}
+
+impl OwnedWindowToken {
+    /// `termAtt.copyBuffer(buffer, 0, buffer.length)`.
+    fn set_term(&mut self, buffer: &[char]) {
+        self.state.packed.copy_buffer(buffer, 0, buffer.len());
+    }
+}
+
+/// `ShingleFilter` as an owned stage (see [`rucene::analysis::owned`]): the
+/// same window, fillers and output as [`ShingleFilterLogic`], with each
+/// window token's attribute state held as a value.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct OwnedShingleFilter {
+    input_window: VecDeque<OwnedWindowToken>,
+    gram_size: CircularSequence,
+    gram_builder: Vec<char>,
+    token_type: Cow<'static, str>,
+    token_separator: String,
+    filler_token: Vec<char>,
+    output_unigrams: bool,
+    output_unigrams_if_no_shingles: bool,
+    max_shingle_size: i32,
+    min_shingle_size: i32,
+    num_filler_tokens_to_insert: i32,
+    next_input_stream_token: Option<OwnedState>,
+    is_next_input_stream_token: bool,
+    is_output_here: bool,
+    no_shingle_output: bool,
+    end_state: Option<OwnedState>,
+    exhausted: bool,
+}
+
+impl OwnedShingleFilter {
+    /// The stage of `new ShingleFilter(input, minShingleSize,
+    /// maxShingleSize)` (`ShingleFilter.java:135-145`).
+    ///
+    /// # Errors
+    ///
+    /// What `setMaxShingleSize` and `setMinShingleSize` raise.
+    pub fn new(min_shingle_size: i32, max_shingle_size: i32) -> Result<Self> {
+        let mut filter = Self {
+            input_window: VecDeque::new(),
+            gram_size: CircularSequence::new(true, 0),
+            gram_builder: Vec::new(),
+            token_type: Cow::Borrowed(DEFAULT_TOKEN_TYPE),
+            token_separator: DEFAULT_TOKEN_SEPARATOR.to_string(),
+            filler_token: DEFAULT_FILLER_TOKEN.chars().collect(),
+            output_unigrams: true,
+            output_unigrams_if_no_shingles: false,
+            max_shingle_size: 0,
+            min_shingle_size: 0,
+            num_filler_tokens_to_insert: 0,
+            next_input_stream_token: None,
+            is_next_input_stream_token: false,
+            is_output_here: false,
+            no_shingle_output: true,
+            end_state: None,
+            exhausted: false,
+        };
+        filter.set_max_shingle_size(max_shingle_size)?;
+        filter.set_min_shingle_size(min_shingle_size)?;
+        Ok(filter)
+    }
+
+    /// `setTokenType(String)`.
+    pub fn set_token_type(&mut self, token_type: impl Into<String>) {
+        self.token_type = Cow::Owned(token_type.into());
+    }
+
+    /// `setOutputUnigrams(boolean)`.
+    pub fn set_output_unigrams(&mut self, output_unigrams: bool) {
+        self.output_unigrams = output_unigrams;
+        self.gram_size = CircularSequence::new(self.output_unigrams, self.min_shingle_size);
+    }
+
+    /// `setOutputUnigramsIfNoShingles(boolean)`.
+    pub fn set_output_unigrams_if_no_shingles(&mut self, output_unigrams_if_no_shingles: bool) {
+        self.output_unigrams_if_no_shingles = output_unigrams_if_no_shingles;
+    }
+
+    /// `setMaxShingleSize(int)`.
+    ///
+    /// # Errors
+    ///
+    /// "Max shingle size must be >= 2".
+    pub fn set_max_shingle_size(&mut self, max_shingle_size: i32) -> Result<()> {
+        if max_shingle_size < 2 {
+            return Err(LuceneError::illegal_argument(
+                "Max shingle size must be >= 2",
+            ));
+        }
+        self.max_shingle_size = max_shingle_size;
+        Ok(())
+    }
+
+    /// `setMinShingleSize(int)`.
+    ///
+    /// # Errors
+    ///
+    /// "Min shingle size must be >= 2" or "Min shingle size must be <= max
+    /// shingle size".
+    pub fn set_min_shingle_size(&mut self, min_shingle_size: i32) -> Result<()> {
+        if min_shingle_size < 2 {
+            return Err(LuceneError::illegal_argument(
+                "Min shingle size must be >= 2",
+            ));
+        }
+        if min_shingle_size > self.max_shingle_size {
+            return Err(LuceneError::illegal_argument(
+                "Min shingle size must be <= max shingle size",
+            ));
+        }
+        self.min_shingle_size = min_shingle_size;
+        self.gram_size = CircularSequence::new(self.output_unigrams, self.min_shingle_size);
+        Ok(())
+    }
+
+    /// `setTokenSeparator(String)`; `None` is the empty string.
+    pub fn set_token_separator(&mut self, token_separator: Option<&str>) {
+        self.token_separator = token_separator.unwrap_or("").to_string();
+    }
+
+    /// `setFillerToken(String)`; `None` is the empty string.
+    pub fn set_filler_token(&mut self, filler_token: Option<&str>) {
+        self.filler_token = filler_token.unwrap_or("").chars().collect();
+    }
+
+    /// `getNextToken(InputWindowToken)` (`ShingleFilter.java:328-397`).
+    fn get_next_token(
+        &mut self,
+        attrs: &mut TokenAttrs<'_>,
+        input: &mut dyn OwnedInput,
+        target: Option<OwnedWindowToken>,
+    ) -> Result<Option<OwnedWindowToken>> {
+        let new_target;
+        if self.num_filler_tokens_to_insert > 0 {
+            let next_input_stream_token = self
+                .next_input_stream_token
+                .as_ref()
+                .expect("INVARIANT: filler tokens are inserted before a held token");
+            let mut token = match target {
+                None => OwnedWindowToken {
+                    state: next_input_stream_token.clone(),
+                    is_filler: false,
+                },
+                Some(mut target) => {
+                    next_input_stream_token.copy_to_state(&mut target.state)?;
+                    target
+                }
+            };
+            // A filler token occupies no space
+            let start = token.state.packed.start_offset();
+            token.state.packed.set_offset(start, start);
+            token.set_term(&self.filler_token);
+            token.is_filler = true;
+            self.num_filler_tokens_to_insert -= 1;
+            new_target = Some(token);
+        } else if self.is_next_input_stream_token {
+            let next_input_stream_token = self
+                .next_input_stream_token
+                .as_ref()
+                .expect("INVARIANT: the held token is set with its flag");
+            let mut token = match target {
+                None => OwnedWindowToken {
+                    state: next_input_stream_token.clone(),
+                    is_filler: false,
+                },
+                Some(mut target) => {
+                    next_input_stream_token.copy_to_state(&mut target.state)?;
+                    target
+                }
+            };
+            self.is_next_input_stream_token = false;
+            token.is_filler = false;
+            new_target = Some(token);
+        } else if !self.exhausted {
+            if input.increment_token(attrs)? {
+                let mut token = match target {
+                    None => OwnedWindowToken {
+                        state: OwnedState::of(attrs),
+                        is_filler: false,
+                    },
+                    Some(mut target) => {
+                        target.state.copy_from_attrs(attrs)?;
+                        target
+                    }
+                };
+                let position_increment = attrs.term.get_position_increment();
+                if position_increment > 1 {
+                    // Each output shingle must contain at least one input token,
+                    // so no more than (maxShingleSize - 1) filler tokens will be inserted.
+                    self.num_filler_tokens_to_insert =
+                        (position_increment - 1).min(self.max_shingle_size - 1);
+                    // Save the current token as the next input stream token
+                    match &mut self.next_input_stream_token {
+                        None => self.next_input_stream_token = Some(OwnedState::of(attrs)),
+                        Some(next) => next.copy_from_attrs(attrs)?,
+                    }
+                    self.is_next_input_stream_token = true;
+                    // A filler token occupies no space
+                    let start = attrs.term.start_offset();
+                    token.state.packed.set_offset(start, start);
+                    token.set_term(&self.filler_token);
+                    token.is_filler = true;
+                    self.num_filler_tokens_to_insert -= 1;
+                } else {
+                    token.is_filler = false;
+                }
+                new_target = Some(token);
+            } else {
+                self.exhausted = true;
+                input.end(attrs)?;
+                self.end_state = Some(OwnedState::of(attrs));
+                let position_increment = attrs.term.get_position_increment();
+                self.num_filler_tokens_to_insert =
+                    position_increment.min(self.max_shingle_size - 1);
+                if self.num_filler_tokens_to_insert > 0 {
+                    let end = attrs.term.end_offset();
+                    self.next_input_stream_token = Some(OwnedState::end_filler(end));
+                    // Recurse/loop just once:
+                    return self.get_next_token(attrs, input, target);
+                } else {
+                    new_target = None;
+                }
+            }
+        } else {
+            new_target = None;
+        }
+        Ok(new_target)
+    }
+
+    /// `shiftInputWindow()` (`ShingleFilter.java:416-446`).
+    fn shift_input_window(
+        &mut self,
+        attrs: &mut TokenAttrs<'_>,
+        input: &mut dyn OwnedInput,
+    ) -> Result<()> {
+        let mut first_token = self.input_window.pop_front();
+        while (self.input_window.len() as i32) < self.max_shingle_size {
+            if let Some(token) = first_token.take() {
+                // recycle the firstToken, if available
+                match self.get_next_token(attrs, input, Some(token))? {
+                    // the firstToken becomes the last
+                    Some(token) => self.input_window.push_back(token),
+                    None => break, // end of input stream
+                }
+            } else {
+                match self.get_next_token(attrs, input, None)? {
+                    Some(next_token) => self.input_window.push_back(next_token),
+                    None => break, // end of input stream
+                }
+            }
+        }
+        if self.output_unigrams_if_no_shingles
+            && self.no_shingle_output
+            && self.gram_size.min_value > 1
+            && (self.input_window.len() as i32) < self.min_shingle_size
+        {
+            self.gram_size.min_value = 1;
+        }
+        self.gram_size.reset();
+        self.is_output_here = false;
+        Ok(())
+    }
+}
+
+impl rucene::analysis::owned::OwnedTokenFilter for OwnedShingleFilter {
+    /// `ShingleFilter.incrementToken()` (`ShingleFilter.java:262-314`).
+    fn increment_token(
+        &mut self,
+        attrs: &mut TokenAttrs<'_>,
+        input: &mut dyn OwnedInput,
+    ) -> Result<bool> {
+        let mut token_available = false;
+        let mut built_gram_size = 0;
+        if self.gram_size.at_min_value()
+            || (self.input_window.len() as i32) < self.gram_size.get_value()
+        {
+            self.shift_input_window(attrs, input)?;
+            self.gram_builder.clear();
+        } else {
+            built_gram_size = self.gram_size.get_previous_value();
+        }
+        if self.input_window.len() as i32 >= self.gram_size.get_value() {
+            let mut is_all_filler = true;
+            let mut next_token: Option<usize> = None;
+            let mut gram_num = 1;
+            let mut index = 0;
+            while index < self.input_window.len() && built_gram_size < self.gram_size.get_value() {
+                next_token = Some(index);
+                let token = &self.input_window[index];
+                index += 1;
+                if built_gram_size < gram_num {
+                    if built_gram_size > 0 {
+                        self.gram_builder.extend(self.token_separator.chars());
+                    }
+                    let term = &token.state.packed;
+                    self.gram_builder
+                        .extend_from_slice(&term.buffer()[..term.length()]);
+                    built_gram_size += 1;
+                }
+                if is_all_filler && token.is_filler {
+                    if gram_num == self.gram_size.get_value() {
+                        self.gram_size
+                            .advance(self.min_shingle_size, self.max_shingle_size);
+                    }
+                } else {
+                    is_all_filler = false;
+                }
+                gram_num += 1;
+            }
+            if !is_all_filler && built_gram_size == self.gram_size.get_value() {
+                self.input_window
+                    .front()
+                    .expect("INVARIANT: the window holds the gram's tokens")
+                    .state
+                    .copy_to_attrs(attrs)?;
+                let position_increment = if self.is_output_here { 0 } else { 1 };
+                let next_token =
+                    &self.input_window[next_token.expect("INVARIANT: the loop ran at least once")];
+                let position_length = if self.output_unigrams {
+                    built_gram_size
+                } else {
+                    // position length for this token is the number of position created by shingles of smaller
+                    // size.
+                    1.max((built_gram_size - self.min_shingle_size) + 1)
+                };
+                let is_shingle = self.gram_size.get_value() > 1;
+                let packed = &mut *attrs.term;
+                packed.set_position_increment(position_increment);
+                packed.copy_buffer(&self.gram_builder, 0, self.gram_builder.len());
+                if is_shingle {
+                    match &self.token_type {
+                        Cow::Borrowed(token_type) => packed.set_type_static(token_type),
+                        Cow::Owned(token_type) => packed.set_type(token_type.clone()),
+                    }
+                }
+                let end_offset = next_token.state.packed.end_offset();
+                let start_offset = packed.start_offset();
+                packed.set_offset(start_offset, end_offset);
+                packed.set_position_length(position_length);
+                if is_shingle {
+                    self.no_shingle_output = false;
+                }
+                self.is_output_here = true;
+                self.gram_size
+                    .advance(self.min_shingle_size, self.max_shingle_size);
+                token_available = true;
+            }
+        }
+        Ok(token_available)
+    }
+
+    /// `ShingleFilter.end()` (`ShingleFilter.java:400-406`).
+    fn end(&mut self, attrs: &mut TokenAttrs<'_>, input: &mut dyn OwnedInput) -> Result<()> {
+        if !self.exhausted {
+            input.end(attrs)
+        } else {
+            if let Some(end_state) = &self.end_state {
+                end_state.copy_to_attrs(attrs)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// `ShingleFilter.reset()` (`ShingleFilter.java:449-464`), after the
+    /// stages below.
+    fn reset(&mut self) -> Result<()> {
+        self.gram_size.reset();
+        self.input_window.clear();
+        self.next_input_stream_token = None;
+        self.is_next_input_stream_token = false;
+        self.num_filler_tokens_to_insert = 0;
+        self.is_output_here = false;
+        self.no_shingle_output = true;
+        self.exhausted = false;
+        self.end_state = None;
+        if self.output_unigrams_if_no_shingles && !self.output_unigrams {
+            // Fix up gramSize if minValue was reset for outputUnigramsIfNoShingles
+            self.gram_size.min_value = self.min_shingle_size;
+        }
+        Ok(())
     }
 }

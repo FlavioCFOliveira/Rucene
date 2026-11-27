@@ -1320,6 +1320,10 @@ pub struct TokenStreamComponents {
     /// through, shared with the source as Java shares the object, so the
     /// next call reuses it (`Analyzer.java:184-198`).
     reusable_string_reader: Option<Arc<AtomicRefCell<ReusableStringReader>>>,
+    /// The stream `tokenStream(String, String)` returns when the analyzer
+    /// describes owned stages for these components
+    /// ([`owned::OwnedTokenStream`]); set when the components are created.
+    owned: Option<Arc<AtomicRefCell<owned::OwnedTokenStream>>>,
 }
 
 /// A [`CharReader`] handle to the [`ReusableStringReader`] of a
@@ -1361,6 +1365,7 @@ impl TokenStreamComponents {
             source,
             sink,
             reusable_string_reader: None,
+            owned: None,
         }
     }
 
@@ -1395,6 +1400,7 @@ impl TokenStreamComponents {
             source: self.source,
             sink,
             reusable_string_reader: self.reusable_string_reader,
+            owned: None,
         }
     }
 }
@@ -1581,6 +1587,85 @@ impl ReuseStrategy for PerFieldReuseStrategy {
 // Analyzer
 // -----------------------------------------------------------------------------
 
+/// `Analyzer.tokenStream(String, String)` (`Analyzer.java:172-190`); with
+/// `use_owned`, the components' owned stream stands in for their sink when
+/// the analyzer describes owned stages.
+fn token_stream_from_str_impl<A: Analyzer + ?Sized>(
+    analyzer: &A,
+    field_name: Option<&str>,
+    text: &str,
+    use_owned: bool,
+) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
+    if analyzer.analyzer_state().is_closed() {
+        return Err(LuceneError::already_closed(
+            "this Analyzer is closed".to_string(),
+        ));
+    }
+    let components = analyzer
+        .analyzer_state()
+        .reuse_strategy()
+        .get_reusable_components(analyzer.analyzer_state(), field_name);
+    // rmp #679/#682: the components' owned stream, when the analyzer
+    // describes owned stages ([`owned::OwnedTokenStream`]).
+    if use_owned {
+        if let Some(owned) = components.as_ref().and_then(|c| c.borrow().owned.clone()) {
+            owned.borrow_mut().set_text(text)?;
+            return Ok(owned);
+        }
+    }
+    // PERF: the components' reader is reused, as Java reuses it
+    // (`Analyzer.java:184-188`), and its buffer with it.
+    let str_reader = components
+        .as_ref()
+        .and_then(|c| c.borrow().reusable_string_reader.clone())
+        .unwrap_or_else(|| Arc::new(AtomicRefCell::new(ReusableStringReader::new())));
+    str_reader.borrow_mut().set_value(text);
+    let reader = analyzer.init_reader(
+        field_name,
+        Box::new(SharedStringReader(Arc::clone(&str_reader))),
+    );
+    let components = match components {
+        Some(c) => c,
+        None => {
+            let c = owned::new_reusable_components(analyzer, field_name)?;
+            analyzer
+                .analyzer_state()
+                .reuse_strategy()
+                .set_reusable_components(analyzer.analyzer_state(), field_name, Arc::clone(&c));
+            c
+        }
+    };
+    if use_owned {
+        if let Some(owned) = components.borrow().owned.clone() {
+            // New components: `initReader` returned the reader unchanged (the
+            // contract of `owned_stages`), so the owned stream takes the text.
+            owned.borrow_mut().set_text(text)?;
+            return Ok(owned);
+        }
+    }
+    // PERF: one borrow for the reader and the stream (rmp #679).
+    let mut components = components.borrow_mut();
+    components.set_reader(reader)?;
+    components.reusable_string_reader = Some(str_reader);
+    Ok(components.token_stream())
+}
+
+/// The stream `Analyzer.tokenStream(String, String)` returns through the
+/// components' shared sink, never their owned stream: the reference of the
+/// owned-stream identity tests.
+///
+/// # Errors
+///
+/// What `tokenStream` raises.
+#[doc(hidden)]
+pub fn shared_token_stream_from_str(
+    analyzer: &dyn Analyzer,
+    field_name: Option<&str>,
+    text: &str,
+) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
+    token_stream_from_str_impl(analyzer, field_name, text, false)
+}
+
 /// Builds [`TokenStream`]s that analyze text, equivalent to
 /// `org.apache.lucene.analysis.Analyzer`.
 ///
@@ -1741,7 +1826,7 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
+                let c = owned::new_reusable_components(self, field_name)?;
                 self.analyzer_state()
                     .reuse_strategy()
                     .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
@@ -1789,41 +1874,7 @@ pub trait Analyzer: Debug + Send + Sync {
         field_name: Option<&str>,
         text: &str,
     ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
-        if self.analyzer_state().is_closed() {
-            return Err(LuceneError::already_closed(
-                "this Analyzer is closed".to_string(),
-            ));
-        }
-        let components = self
-            .analyzer_state()
-            .reuse_strategy()
-            .get_reusable_components(self.analyzer_state(), field_name);
-        // PERF: the components' reader is reused, as Java reuses it
-        // (`Analyzer.java:184-188`), and its buffer with it.
-        let str_reader = components
-            .as_ref()
-            .and_then(|c| c.borrow().reusable_string_reader.clone())
-            .unwrap_or_else(|| Arc::new(AtomicRefCell::new(ReusableStringReader::new())));
-        str_reader.borrow_mut().set_value(text);
-        let reader = self.init_reader(
-            field_name,
-            Box::new(SharedStringReader(Arc::clone(&str_reader))),
-        );
-        let components = match components {
-            Some(c) => c,
-            None => {
-                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
-                self.analyzer_state()
-                    .reuse_strategy()
-                    .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
-                c
-            }
-        };
-        // PERF: one borrow for the reader and the stream (rmp #679).
-        let mut components = components.borrow_mut();
-        components.set_reader(reader)?;
-        components.reusable_string_reader = Some(str_reader);
-        Ok(components.token_stream())
+        token_stream_from_str_impl(self, field_name, text, true)
     }
 
     /// Normalizes `text` to the representation it would have in the index.
