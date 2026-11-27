@@ -171,8 +171,13 @@ use crate::search::weight::Weight;
 ///
 /// Equivalent to the inner `final class TermQuery.TermWeight`.
 pub struct TermWeight {
-    query: TermQuery,
-    query_handle: Arc<dyn Query>,
+    /// `TermQuery.this`: the query the weight was made for, held once and
+    /// handed out by [`get_query`](Weight::get_query).
+    ///
+    /// PERF: Java's inner class references the query and its term; this port
+    /// kept the query, a second copy of it for `get_query` and a copy of its
+    /// term, three copies made for every term of every query.
+    query: Arc<TermQuery>,
     similarity: Arc<dyn Similarity>,
     /// `None` when the term does not exist in any segment, in which case the
     /// similarity is never used.
@@ -213,7 +218,7 @@ impl TermWeight {
                 "termStates are required when scores are needed".to_string(),
             ));
         }
-        let term = query.get_term().clone();
+        let term = query.get_term();
         let similarity = Arc::clone(searcher.get_similarity());
 
         let (collection_stats, term_stats) = if score_mode.needs_scores() {
@@ -224,7 +229,7 @@ impl TermWeight {
                 searcher.collection_statistics(term.field())?,
                 if states.doc_freq()? > 0 {
                     Some(searcher.term_statistics(
-                        &term,
+                        term,
                         states.doc_freq()?,
                         states.total_term_freq()?,
                     )?)
@@ -263,10 +268,8 @@ impl TermWeight {
             }
         };
 
-        let query_handle: Arc<dyn Query> = Arc::new(query.clone());
         Ok(Self {
-            query,
-            query_handle,
+            query: Arc::new(query),
             similarity,
             sim_scorer,
             term_states,
@@ -399,7 +402,7 @@ impl SegmentCacheable for TermWeight {
 
 impl Weight for TermWeight {
     fn get_query(&self) -> Arc<dyn Query> {
-        Arc::clone(&self.query_handle)
+        Arc::clone(&self.query) as Arc<dyn Query>
     }
 
     fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
